@@ -1,0 +1,92 @@
+---
+type: spec
+status: ready
+tier: 4
+stage: 1
+updated: 2026-10-05
+---
+
+# SPEC-03. Приход и остатки
+
+## Задача
+
+Оформление приходной накладной, пересчёт средней себестоимости, движения склада и проверка остатков.
+
+## Приход
+
+- `POST /receipts {op_id, supplier_id?, supplier_doc?, comment?, lines: [{product_id, qty, cost_tyiyn}]}`
+  - `qty` — в единицах учёта (штуки или мл), > 0;
+  - `cost_tyiyn` — сумма закупки по строке, ≥ 0.
+- `GET /receipts?from=&to=`, `GET /receipts/{id}`.
+- `POST /receipts/{id}/reverse {op_id, comment}` — сторно целиком. Второй раз сторнировать нельзя (409), сторно сторно — нельзя.
+- Номер — счётчик филиала `receipt_seq`.
+- Клиент для масла вводит количество канистр и цену канистры, отправляет `qty = n × container_ml`, `cost = n × цена`.
+
+## Алгоритм проведения прихода
+
+```
+в run_operation:
+  проверить строки (непустые, товары существуют, qty > 0, cost ≥ 0)
+  receipt = insert (number = next(receipt_seq))
+  для каждой строки:
+     insert receipt_line
+     apply_movement(product, +qty, +cost, 'receipt', receipt.id)
+     branch_products.last_cost_qty = qty, last_cost_tyiyn = cost   (если qty > 0)
+  audit receipt.post
+```
+
+```
+apply_movement(product, dq, dv, doc_type, doc_id):
+  select branch_products ... for update   (строка создаётся, если её нет)
+  insert stock_movements(dq, dv)
+  stock_qty += dq; stock_value += dv
+  если stock_qty < 0 → needs_review = true
+```
+
+## Себестоимость списания (ADR-011)
+
+```
+cost_of(q, stock_qty, stock_value, last_qty, last_cost):    q > 0
+  если stock_qty ≥ q:          вернуть div_round(q · stock_value, stock_qty)
+  covered = max(stock_qty, 0)
+  part1 = covered > 0 ? stock_value : 0
+  rest  = q − covered
+  part2 = last_qty > 0 ? div_round(rest · last_cost, last_qty) : 0
+  вернуть part1 + part2
+```
+Функция чистая, живёт в `domain::costing`, покрыта тестами.
+
+## Сторно прихода
+
+```
+для каждой строки исходного прихода:
+  apply_movement(product, −qty, −cost, 'receipt_reversal', reversal.id)
+receipt reversal: reversal_of = исходный, строки с отрицательными qty и cost
+```
+Остаток может уйти в минус — товар помечается для проверки (инвариант 10).
+
+## Остатки
+
+- `GET /stock?category_id=&low=true` — остатки филиала; `low` — ниже `min_stock`.
+- `GET /stock/verify` (владелец) — сравнивает кэш с суммой движений, отдаёт список расхождений; пустой список — норма.
+- `POST /stock/{product_id}/review-done` (владелец) — снимает пометку `needs_review`.
+
+## Права
+
+Приход и его сторно — владелец и администратор (ADR-008). Средняя цена и стоимость остатка в `/stock` — только владельцу.
+
+## Клиент
+
+- Экран «Приход»: выбор поставщика, номер его документа, строки через сканер или поиск. Незнакомый код открывает быстрое создание товара (SPEC-02) с подставленным кодом. Для масла — канистры и цена канистры, для штучного — количество и цена за штуку; итог по строке и документу.
+- Кнопка «Печать этикеток» по строкам прихода (количество = пришедшее, для масла — канистры).
+- Список приходов, просмотр, сторно с комментарием.
+- Экран «Остатки»: фильтр, масло в виде «3 кан. по 4 л + 2,5 л», пометки «проверить».
+
+## Критерии приёмки
+
+- [ ] Приход 10 шт на 1000 с, затем 10 шт на 2000 с → стоимость остатка 3000 с, средняя 150 с.
+- [ ] Продажа всех единиц обнуляет и количество, и стоимость без остатка в тыйынах.
+- [ ] `cost_of` при нулевом остатке использует цену последнего прихода.
+- [ ] Сторно прихода возвращает остаток и стоимость к прежним значениям.
+- [ ] Повторное сторно — 409.
+- [ ] `/stock/verify` пуст после любой последовательности операций в тестах.
