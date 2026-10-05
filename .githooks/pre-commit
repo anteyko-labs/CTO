@@ -13,8 +13,8 @@ if [ -n "$blocked" ]; then
   fail=1
 fi
 
-# 2. Запрещённые слова в добавленных строках (сами хуки не проверяем).
-added=$(git diff --cached -U0 -- . ':(exclude).githooks' | grep -E '^\+[^+]' )
+# 2. Запрещённые слова в добавленных строках (хуки и генерируемые lock-файлы не проверяем).
+added=$(git diff --cached -U0 -- . ':(exclude).githooks' ':(exclude)**/package-lock.json' ':(exclude)**/Cargo.lock' ':(exclude)**/.sqlx/**' | grep -E '^\+[^+]' )
 if [ -n "$added" ] && ! printf '%s\n' "$added" | check_forbidden >&2; then
   echo "pre-commit: добавленные строки содержат запрещённые слова." >&2
   fail=1
