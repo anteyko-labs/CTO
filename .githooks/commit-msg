@@ -1,0 +1,20 @@
+#!/bin/sh
+. "$(dirname "$0")/lib.sh"
+
+msg_file="$1"
+
+if ! grep -v '^#' "$msg_file" | check_forbidden; then
+  echo "commit-msg: сообщение содержит запрещённые слова или трейлеры." >&2
+  exit 1
+fi
+
+# Первая строка: не пустая и не длиннее 72 символов.
+subject=$(grep -v '^#' "$msg_file" | head -n 1)
+if [ -z "$subject" ]; then
+  echo "commit-msg: пустой заголовок." >&2
+  exit 1
+fi
+if [ "$(printf '%s' "$subject" | wc -m)" -gt 72 ]; then
+  echo "commit-msg: заголовок длиннее 72 символов." >&2
+  exit 1
+fi

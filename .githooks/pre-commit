@@ -1,0 +1,44 @@
+#!/bin/sh
+. "$(dirname "$0")/lib.sh"
+
+fail=0
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# 1. Исходные материалы и файлы окружения не должны попадать в индекс.
+blocked=$(printf '%s\n' "$staged" | grep -E '^rec\.txt$|(^|/)\.env($|\.)' | grep -v '\.env\.example$')
+if [ -n "$blocked" ]; then
+  echo "pre-commit: эти файлы не коммитятся:" >&2
+  printf '  %s\n' $blocked >&2
+  fail=1
+fi
+
+# 2. Запрещённые слова в добавленных строках (сами хуки не проверяем).
+added=$(git diff --cached -U0 -- . ':(exclude).githooks' | grep -E '^\+[^+]' )
+if [ -n "$added" ] && ! printf '%s\n' "$added" | check_forbidden >&2; then
+  echo "pre-commit: добавленные строки содержат запрещённые слова." >&2
+  fail=1
+fi
+
+# 3. Похожее на секреты.
+if printf '%s\n' "$added" | grep -nE '(BEGIN [A-Z ]*PRIVATE KEY|(password|secret|token|api_key)[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{6,})' >&2; then
+  echo "pre-commit: похоже на секрет в коде (инвариант 19)." >&2
+  fail=1
+fi
+
+# 4. Rust: формат и clippy (инвариант 18 обеспечивается lint-ами unwrap_used/expect_used/panic).
+if printf '%s\n' "$staged" | grep -qE '\.rs$|Cargo\.(toml|lock)$'; then
+  if command -v cargo >/dev/null 2>&1; then
+    cargo fmt --all -- --check >/dev/null 2>&1 || { echo "pre-commit: cargo fmt --check не прошёл." >&2; fail=1; }
+    if ! out=$(cargo clippy --all-targets --quiet -- -D warnings 2>&1); then
+      printf '%s
+' "$out" | tail -n 30 >&2
+      echo "pre-commit: clippy нашёл ошибки." >&2
+      fail=1
+    fi
+  else
+    echo "pre-commit: cargo не найден, проверки Rust пропущены." >&2
+  fi
+fi
+
+exit $fail

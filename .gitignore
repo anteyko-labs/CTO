@@ -1,0 +1,28 @@
+# Исходные материалы — вне репозитория
+/rec.txt
+/МЕТОДОЛОГИЯ*.md
+/Технический Blueprint*.md
+/docs/tier-6/
+
+# Локальные настройки хуков
+/.githooks/forbidden.local
+
+# Секреты
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Сборка
+target/
+node_modules/
+dist/
+coverage/
+*.log
+
+# ОС и редакторы
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
