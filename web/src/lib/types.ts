@@ -52,6 +52,8 @@ export interface Product {
   min_stock: number
   stock_qty: number
   needs_review: boolean
+  /** Цена последнего прихода за штуку или канистру. */
+  last_purchase_price_tyiyn: number | null
   avg_cost_tyiyn?: number
   stock_value_tyiyn?: number
 }

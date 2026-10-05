@@ -20,3 +20,64 @@
     background: white;
   }
 }
+
+/* Таблицы на телефоне: строки карточками, подписи из data-label (компонент Table). */
+@media (max-width: 767px) {
+  table.responsive thead {
+    display: none;
+  }
+  table.responsive,
+  table.responsive tbody {
+    display: block;
+  }
+  table.responsive tbody > tr {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 2px;
+  }
+  table.responsive tbody > tr > td {
+    display: block;
+    overflow: hidden;
+    padding: 0 !important;
+    text-align: right !important;
+  }
+  table.responsive tbody > tr > td::before {
+    content: attr(data-label);
+    float: left;
+    margin-right: 12px;
+    color: rgb(100 116 139);
+    font-size: 12px;
+    line-height: 20px;
+  }
+  table.responsive tbody > tr > td[data-label='']::before {
+    content: none;
+  }
+  table.responsive tbody > tr > td:first-child {
+    text-align: left !important;
+    font-size: 15px;
+  }
+  table.responsive tbody > tr > td:first-child::before {
+    content: none;
+  }
+  /* Флажок выбора в первой ячейке — рядом с названием, а название остаётся заголовком карточки. */
+  table.responsive tbody > tr:has(> td:first-child > input[type='checkbox']:only-child) {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 10px;
+  }
+  table.responsive tbody > tr:has(> td:first-child > input[type='checkbox']:only-child) > td:nth-child(n + 3) {
+    grid-column: 1 / -1;
+  }
+  table.responsive tbody > tr > td:first-child:has(> input[type='checkbox']:only-child) + td {
+    grid-column: 2;
+    text-align: left !important;
+    font-size: 15px;
+  }
+  table.responsive tbody > tr > td:first-child:has(> input[type='checkbox']:only-child) + td::before {
+    content: none;
+  }
+  table.responsive tbody > tr > td:empty {
+    display: none;
+  }
+}

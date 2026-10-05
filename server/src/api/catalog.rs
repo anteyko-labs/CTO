@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::barcode;
 use crate::domain::costing::{Pool, average};
+use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid, is_unique_violation};
 use crate::ops::{self, new_id};
 use crate::state::AppState;
@@ -271,6 +272,8 @@ pub struct ProductOut {
     pub min_stock: i64,
     pub stock_qty: i64,
     pub needs_review: bool,
+    /// Цена последнего прихода за штуку или канистру (ADR-008: закупочные цены видны обеим ролям).
+    pub last_purchase_price_tyiyn: Option<i64>,
     /// Средняя себестоимость за штуку или канистру — только владельцу.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_cost_tyiyn: Option<i64>,
@@ -314,6 +317,8 @@ pub async fn query_products(
                   coalesce(bp.stock_qty, 0) as "stock_qty!",
                   coalesce(bp.stock_value_tyiyn, 0) as "stock_value_tyiyn!",
                   coalesce(bp.needs_review, false) as "needs_review!",
+                  coalesce(bp.last_cost_qty, 0) as "last_cost_qty!",
+                  coalesce(bp.last_cost_tyiyn, 0) as "last_cost_tyiyn!",
                   coalesce((select array_agg(b.code order by b.created_at) from product_barcodes b
                             where b.product_id = p.id), '{}') as "barcodes!: Vec<String>"
            from products p
@@ -369,6 +374,14 @@ pub async fn query_products(
                 min_stock: r.min_stock,
                 stock_qty: r.stock_qty,
                 needs_review: r.needs_review,
+                last_purchase_price_tyiyn: (r.last_cost_qty > 0)
+                    .then(|| {
+                        div_round(
+                            i128::from(r.last_cost_tyiyn) * i128::from(per),
+                            i128::from(r.last_cost_qty),
+                        )
+                    })
+                    .flatten(),
                 avg_cost_tyiyn: if owner { average(&pool, per) } else { None },
                 stock_value_tyiyn: owner.then_some(r.stock_value_tyiyn),
             }

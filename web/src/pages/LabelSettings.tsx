@@ -33,6 +33,7 @@ const SAMPLE: Product = {
   min_stock: 0,
   stock_qty: 0,
   needs_review: false,
+  last_purchase_price_tyiyn: null,
 }
 
 interface Form {

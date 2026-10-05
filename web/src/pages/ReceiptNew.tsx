@@ -5,7 +5,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
-import { formatLiters, formatSom, parseSom } from '../lib/format'
+import { formatLiters, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Product, Receipt, Supplier } from '../lib/types'
 
@@ -55,7 +55,11 @@ export default function ReceiptNew() {
   const addProduct = (p: Product) => {
     setLines((ls) => {
       const i = ls.findIndex((l) => l.product.id === p.id)
-      if (i < 0) return [...ls, { key: crypto.randomUUID(), product: p, count: '1', price: '' }]
+      if (i < 0) {
+        // Цена подставляется из прошлого прихода; её можно изменить.
+        const price = p.last_purchase_price_tyiyn != null ? somInput(p.last_purchase_price_tyiyn) : ''
+        return [...ls, { key: crypto.randomUUID(), product: p, count: '1', price }]
+      }
       return ls.map((l, j) => {
         if (j !== i) return l
         const n = parseCount(l.count)

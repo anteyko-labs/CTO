@@ -64,8 +64,10 @@ test('товар, приход, продажа, возврат и остаток
   await page.getByRole('combobox', { name: /^Кассир/ }).selectOption({ label: cashier })
   await scan(page, code)
   await expect(page.getByText(product)).toBeVisible()
-  await page.getByLabel('Получено, с').fill('1000')
-  await expect(page.getByText(money('Сдача: 500,00'))).toBeVisible()
+  // Касса с одним кассиром выбирает его сама; быстрая кнопка подставляет купюру.
+  await page.getByRole('button', { name: money('1 000,00 с') }).click()
+  await expect(page.getByLabel('Получено, с')).toHaveValue('1000,00')
+  await expect(page.getByText('Сдача', { exact: true }).locator('..')).toContainText(money('500,00'))
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 

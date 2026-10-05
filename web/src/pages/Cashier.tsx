@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { printSale } from '../components/salePrint'
@@ -61,17 +61,57 @@ function lineAmount(l: CartLine): number | null {
   return Number.isSafeInteger(amount) ? amount : null
 }
 
-let keySeq = 0
-const nextKey = () => String(++keySeq)
+const nextKey = () => crypto.randomUUID()
+
+/** Незавершённый чек переживает переход на другой экран и перезагрузку вкладки. */
+const DRAFT_KEY = 'avtodom.cart'
+
+interface Draft {
+  saleType: 'takeaway' | 'service'
+  masterId: string
+  lines: CartLine[]
+  comment: string
+}
+
+function loadDraft(): Draft | null {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_KEY)
+    return raw ? (JSON.parse(raw) as Draft) : null
+  } catch {
+    return null
+  }
+}
+
+function saveDraft(d: Draft): void {
+  try {
+    if (d.lines.length === 0 && !d.comment) sessionStorage.removeItem(DRAFT_KEY)
+    else sessionStorage.setItem(DRAFT_KEY, JSON.stringify(d))
+  } catch {
+    // Без хранилища черновик просто не сохранится.
+  }
+}
+
+/** Единицы учёта строки (шт или мл) для сравнения с остатком. */
+function lineUnits(l: CartLine): number {
+  const qty = lineQty(l) ?? 0
+  if (l.kind === 'container') return qty * (l.product?.container_ml ?? 0)
+  return l.kind === 'service' ? 0 : qty
+}
+
+/** Купюры для быстрого ввода полученной суммы, тыйын. */
+const NOTES = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
+
+const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker]')?.focus()
 
 export default function Cashier() {
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
   const services = useLoad(() => get<Service[]>('/services'), [])
-  const [saleType, setSaleType] = useState<'takeaway' | 'service'>('takeaway')
+  const [draft] = useState(loadDraft)
+  const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
   const [cashierId, setCashierId] = useState(() => remembered(CASHIER_KEY))
-  const [masterId, setMasterId] = useState('')
-  const [lines, setLines] = useState<CartLine[]>([])
-  const [comment, setComment] = useState('')
+  const [masterId, setMasterId] = useState(draft?.masterId ?? '')
+  const [lines, setLines] = useState<CartLine[]>(draft?.lines ?? [])
+  const [comment, setComment] = useState(draft?.comment ?? '')
   const [payMode, setPayMode] = useState<PayMode>('cash')
   const [received, setReceived] = useState('')
   const [split, setSplit] = useState<Record<PaymentMethod, string>>({ cash: '', card: '', transfer: '' })
@@ -82,6 +122,26 @@ export default function Cashier() {
   const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
   const masters = employees.data?.filter((e) => e.active && e.is_master) ?? []
   const activeServices = services.data?.filter((s) => s.active) ?? []
+
+  useEffect(() => saveDraft({ saleType, masterId, lines, comment }), [saleType, masterId, lines, comment])
+
+  // Единственный кассир или мастер выбирается сам; выбор несуществующего сбрасывается.
+  useEffect(() => {
+    if (!employees.data) return
+    const ids = cashiers.map((e) => e.id)
+    if (!ids.includes(cashierId)) setCashierId(ids.length === 1 ? ids[0] : '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employees.data])
+  useEffect(() => {
+    if (saleType === 'service' && !masterId && masters.length === 1) setMasterId(masters[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saleType, employees.data])
+
+  // Сколько единиц каждого товара уже в чеке — для предупреждения о нехватке.
+  const unitsInCart = new Map<string, number>()
+  for (const l of lines) {
+    if (l.product) unitsInCart.set(l.product.id, (unitsInCart.get(l.product.id) ?? 0) + lineUnits(l))
+  }
 
   const amounts = lines.map(lineAmount)
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
@@ -135,6 +195,19 @@ export default function Cashier() {
   const changeType = (t: 'takeaway' | 'service') => {
     setSaleType(t)
     if (t === 'takeaway') setLines((ls) => ls.filter((l) => l.kind !== 'service'))
+    // Если услуга одна, она добавляется сразу.
+    if (t === 'service' && activeServices.length === 1 && !lines.some((l) => l.kind === 'service')) addService(activeServices[0])
+  }
+
+  /** Шаг количества: 1 шт/канистра/услуга или 0,5 л для розлива. */
+  const step = (l: CartLine, dir: 1 | -1) => {
+    const q = lineQty(l) ?? 0
+    if (l.kind === 'pour') {
+      const ml = Math.max(500, q + dir * 500)
+      update(l.key, { qtyText: formatLiters(ml).replace(/ л$/, '').replace(/ /g, '') })
+    } else {
+      update(l.key, { qtyText: String(Math.max(1, q + dir)) })
+    }
   }
 
   const reset = () => {
@@ -179,7 +252,20 @@ export default function Cashier() {
       setDone({ sale, change: payMode === 'cash' ? change : null })
       setOpId(newOpId())
       reset()
+      focusPicker()
     })
+
+  const canSubmit = !busy && blockers.length === 0
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmit) {
+        e.preventDefault()
+        void submit()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
@@ -218,12 +304,18 @@ export default function Cashier() {
               {lines.map((l, i) => {
                 const amount = amounts[i]
                 const changed = parseSom(l.priceText) !== listPrice(l)
+                const short = l.product ? (unitsInCart.get(l.product.id) ?? 0) > l.product.stock_qty : false
                 return (
                   <li key={l.key} className="flex flex-wrap items-center gap-3 p-3">
                     <div className="min-w-48 flex-1">
                       <div className="font-medium">{l.product?.name ?? l.service?.name}</div>
                       <div className="text-xs text-slate-500">
                         {l.product ? `Остаток: ${stockText(l.product)}` : 'Услуга'}
+                        {short && (
+                          <span className="ml-2">
+                            <Badge tone="rose">больше, чем на складе</Badge>
+                          </span>
+                        )}
                         {l.product?.needs_review && (
                           <span className="ml-2">
                             <Badge tone="amber">проверить</Badge>
@@ -247,12 +339,30 @@ export default function Cashier() {
                     </div>
                     <label className="flex flex-col text-xs text-slate-500">
                       {l.kind === 'pour' ? 'Литры' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
-                      <input
-                        className="w-20"
-                        inputMode={l.kind === 'pour' ? 'decimal' : 'numeric'}
-                        value={l.qtyText}
-                        onChange={(e) => update(l.key, { qtyText: e.target.value })}
-                      />
+                      <span className="flex items-stretch">
+                        <button
+                          type="button"
+                          className="rounded-l-md border border-r-0 border-slate-300 px-2.5 text-base text-slate-700 hover:bg-slate-50"
+                          aria-label="Меньше"
+                          onClick={() => step(l, -1)}
+                        >
+                          −
+                        </button>
+                        <input
+                          className="w-16 rounded-none text-center"
+                          inputMode={l.kind === 'pour' ? 'decimal' : 'numeric'}
+                          value={l.qtyText}
+                          onChange={(e) => update(l.key, { qtyText: e.target.value })}
+                        />
+                        <button
+                          type="button"
+                          className="rounded-r-md border border-l-0 border-slate-300 px-2.5 text-base text-slate-700 hover:bg-slate-50"
+                          aria-label="Больше"
+                          onClick={() => step(l, 1)}
+                        >
+                          +
+                        </button>
+                      </span>
                     </label>
                     <label className="flex flex-col text-xs text-slate-500">
                       {l.kind === 'pour' ? 'Цена за л' : 'Цена'}
@@ -358,9 +468,47 @@ export default function Cashier() {
             ))}
           </div>
           {payMode === 'cash' && (
-            <Field label="Получено, с" hint={change !== null && change >= 0 ? `Сдача: ${formatSom(change)}` : undefined}>
-              <input inputMode="decimal" value={received} onChange={(e) => setReceived(e.target.value)} />
-            </Field>
+            <div className="flex flex-col gap-2">
+              <Field label="Получено, с">
+                <input
+                  inputMode="decimal"
+                  value={received}
+                  onChange={(e) => setReceived(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && canSubmit) void submit()
+                  }}
+                />
+              </Field>
+              {total > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
+                    onClick={() => setReceived(somInput(total))}
+                  >
+                    Без сдачи
+                  </button>
+                  {NOTES.filter((n) => n > total)
+                    .slice(0, 3)
+                    .map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
+                        onClick={() => setReceived(somInput(n))}
+                      >
+                        {formatSom(n)}
+                      </button>
+                    ))}
+                </div>
+              )}
+              {change !== null && change >= 0 && (
+                <div className="flex items-baseline justify-between rounded-md bg-emerald-50 px-3 py-2 text-emerald-800">
+                  <span className="text-sm">Сдача</span>
+                  <span className="text-xl font-semibold">{formatSom(change)}</span>
+                </div>
+              )}
+            </div>
           )}
           {payMode === 'mixed' && (
             <div className="grid grid-cols-3 gap-2">
@@ -376,9 +524,10 @@ export default function Cashier() {
           </Field>
           <ErrorBox error={error} />
           {blockers.length > 0 && lines.length > 0 && <div className="text-xs text-slate-500">Чтобы провести: {blockers.join(', ')}</div>}
-          <Button className="py-3 text-base" disabled={busy || blockers.length > 0} onClick={() => void submit()}>
+          <Button className="py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
             Провести чек
           </Button>
+          <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — провести</div>
           {lines.length > 0 && (
             <Button variant="ghost" onClick={reset}>
               Очистить

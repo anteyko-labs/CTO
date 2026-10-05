@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom } from '../lib/format'
@@ -17,18 +18,20 @@ export default function Stock() {
   const owner = useUser().role === 'owner'
   const [q, setQ] = useState('')
   const [categoryId, setCategoryId] = useState('')
-  const [low, setLow] = useState(false)
+  const [filter, setFilter] = useState<'all' | 'low' | 'review'>('all')
+  const [editing, setEditing] = useState<Product | null>(null)
   const query = useDebounced(q.trim())
   const categories = useLoad(() => get<Category[]>('/categories'), [])
-  const stock = useLoad(
-    () => get<Product[]>(`/stock${qs({ q: query, category_id: categoryId, low: low || undefined })}`),
-    [query, categoryId, low],
-  )
+  const stock = useLoad(() => get<Product[]>(`/stock${qs({ q: query, category_id: categoryId })}`), [query, categoryId])
   const [mismatches, setMismatches] = useState<Mismatch[] | null>(null)
   const verify = useAction()
   const review = useAction()
 
-  const rows = stock.data ?? []
+  const all = stock.data ?? []
+  const isLow = (p: Product) => p.stock_qty < p.min_stock
+  const lowCount = all.filter(isLow).length
+  const reviewCount = all.filter((p) => p.needs_review).length
+  const rows = filter === 'low' ? all.filter(isLow) : filter === 'review' ? all.filter((p) => p.needs_review) : all
   const categoryName = new Map((categories.data ?? []).map((c) => [c.id, c.name]))
   const totalValue = rows.reduce((acc, p) => acc + (p.stock_value_tyiyn ?? 0), 0)
 
@@ -82,8 +85,23 @@ export default function Stock() {
               ))}
             </select>
           </Field>
-          <div className="pb-2">
-            <Checkbox label="Только заканчивающиеся" checked={low} onChange={setLow} />
+          <div className="flex overflow-hidden rounded-md border border-slate-300 text-sm">
+            {(
+              [
+                ['all', `Все · ${all.length}`],
+                ['low', `Мало · ${lowCount}`],
+                ['review', `Проверить · ${reviewCount}`],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`whitespace-nowrap px-3 py-2 ${filter === key ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                onClick={() => setFilter(key)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
         <ErrorBox error={stock.error ?? categories.error} />
@@ -96,7 +114,7 @@ export default function Stock() {
           <>
             <Table head={head}>
               {rows.map((p) => (
-                <tr key={p.id}>
+                <tr key={p.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setEditing(p)}>
                   <td className="px-2 py-2">
                     <div className="font-medium">{p.name}</div>
                     <div className="mt-1 flex flex-wrap gap-1">
@@ -127,7 +145,14 @@ export default function Stock() {
                   )}
                   <td className="px-2 py-2 text-right">
                     {owner && p.needs_review && (
-                      <Button variant="secondary" disabled={review.busy} onClick={() => markReviewed(p)}>
+                      <Button
+                        variant="secondary"
+                        disabled={review.busy}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          markReviewed(p)
+                        }}
+                      >
                         Проверено
                       </Button>
                     )}
@@ -146,6 +171,17 @@ export default function Stock() {
           </>
         )}
       </Card>
+
+      {editing && (
+        <ProductFormModal
+          product={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            stock.reload()
+          }}
+        />
+      )}
 
       {mismatches && (
         <Modal title="Сверка остатков" wide onClose={() => setMismatches(null)}>

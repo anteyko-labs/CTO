@@ -77,6 +77,7 @@ export function ProductPicker({
     <div className="relative">
       <input
         ref={input}
+        data-picker
         autoFocus={autoFocus}
         className="w-full text-base"
         placeholder={placeholder}

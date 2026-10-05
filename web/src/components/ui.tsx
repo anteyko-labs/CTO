@@ -1,4 +1,4 @@
-import { useEffect, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost'
 
@@ -104,10 +104,23 @@ export function Modal({
   )
 }
 
+/**
+ * Таблица. На узком экране строки показываются карточками: подпись столбца берётся из `head`
+ * и проставляется ячейкам атрибутом data-label (см. index.css).
+ */
 export function Table({ head, children }: { head: ReactNode[]; children: ReactNode }) {
+  const ref = useRef<HTMLTableElement>(null)
+  const labels = head.map((h) => (typeof h === 'string' ? h : ''))
+  useLayoutEffect(() => {
+    ref.current?.querySelectorAll('tbody > tr').forEach((tr) => {
+      Array.from(tr.children).forEach((td, i) => {
+        if (td instanceof HTMLElement) td.dataset.label = labels[i] ?? ''
+      })
+    })
+  })
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table ref={ref} className="responsive w-full text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
             {head.map((h, i) => (
@@ -119,6 +132,57 @@ export function Table({ head, children }: { head: ReactNode[]; children: ReactNo
         </thead>
         <tbody className="divide-y divide-slate-100">{children}</tbody>
       </table>
+    </div>
+  )
+}
+
+// ---------- Уведомления ----------
+
+type ToastTone = 'success' | 'error'
+interface ToastItem {
+  id: number
+  text: string
+  tone: ToastTone
+}
+
+let toastSeq = 0
+const listeners = new Set<(items: ToastItem[]) => void>()
+let toasts: ToastItem[] = []
+
+function emit() {
+  for (const l of listeners) l(toasts)
+}
+
+/** Короткое уведомление в углу экрана. */
+export function toast(text: string, tone: ToastTone = 'success'): void {
+  const item = { id: ++toastSeq, text, tone }
+  toasts = [...toasts, item]
+  emit()
+  setTimeout(() => {
+    toasts = toasts.filter((t) => t.id !== item.id)
+    emit()
+  }, 3000)
+}
+
+export function Toaster() {
+  const [items, setItems] = useState<ToastItem[]>([])
+  useEffect(() => {
+    listeners.add(setItems)
+    return () => {
+      listeners.delete(setItems)
+    }
+  }, [])
+  return (
+    <div className="no-print pointer-events-none fixed inset-x-0 bottom-20 z-50 flex flex-col items-center gap-2 px-4 md:bottom-6 md:items-end">
+      {items.map((t) => (
+        <div
+          key={t.id}
+          role="status"
+          className={`rounded-md px-4 py-2 text-sm font-medium text-white shadow-lg ${t.tone === 'success' ? 'bg-emerald-600' : 'bg-rose-600'}`}
+        >
+          {t.text}
+        </div>
+      ))}
     </div>
   )
 }

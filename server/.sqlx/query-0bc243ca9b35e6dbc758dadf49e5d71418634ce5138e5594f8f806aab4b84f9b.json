@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.id, p.category_id, c.kind as category_kind, p.name, p.brand, p.article, p.unit,\n                  p.container_ml, p.attrs, p.archived,\n                  coalesce(bp.sale_price_tyiyn, 0) as \"sale_price_tyiyn!\",\n                  bp.pour_price_per_l_tyiyn as \"pour_price_per_l_tyiyn?\",\n                  coalesce(bp.min_stock, 0) as \"min_stock!\",\n                  coalesce(bp.stock_qty, 0) as \"stock_qty!\",\n                  coalesce(bp.stock_value_tyiyn, 0) as \"stock_value_tyiyn!\",\n                  coalesce(bp.needs_review, false) as \"needs_review!\",\n                  coalesce((select array_agg(b.code order by b.created_at) from product_barcodes b\n                            where b.product_id = p.id), '{}') as \"barcodes!: Vec<String>\"\n           from products p\n           join categories c on c.id = p.category_id\n           left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1\n           where ($2::text is null\n                  or p.name ilike '%' || $2 || '%' or p.brand ilike '%' || $2 || '%'\n                  or p.article ilike '%' || $2 || '%'\n                  or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code like $2 || '%'))\n             and ($3::uuid is null or p.category_id = $3)\n             and ($4::jsonb is null or p.attrs @> $4)\n             and ($5::uuid[] is null or p.id = any($5))\n             and (not p.archived or $6)\n             and (not $7 or coalesce(bp.stock_qty, 0) < coalesce(bp.min_stock, 0))\n           order by p.name\n           limit $8",
+  "query": "select p.id, p.category_id, c.kind as category_kind, p.name, p.brand, p.article, p.unit,\n                  p.container_ml, p.attrs, p.archived,\n                  coalesce(bp.sale_price_tyiyn, 0) as \"sale_price_tyiyn!\",\n                  bp.pour_price_per_l_tyiyn as \"pour_price_per_l_tyiyn?\",\n                  coalesce(bp.min_stock, 0) as \"min_stock!\",\n                  coalesce(bp.stock_qty, 0) as \"stock_qty!\",\n                  coalesce(bp.stock_value_tyiyn, 0) as \"stock_value_tyiyn!\",\n                  coalesce(bp.needs_review, false) as \"needs_review!\",\n                  coalesce(bp.last_cost_qty, 0) as \"last_cost_qty!\",\n                  coalesce(bp.last_cost_tyiyn, 0) as \"last_cost_tyiyn!\",\n                  coalesce((select array_agg(b.code order by b.created_at) from product_barcodes b\n                            where b.product_id = p.id), '{}') as \"barcodes!: Vec<String>\"\n           from products p\n           join categories c on c.id = p.category_id\n           left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1\n           where ($2::text is null\n                  or p.name ilike '%' || $2 || '%' or p.brand ilike '%' || $2 || '%'\n                  or p.article ilike '%' || $2 || '%'\n                  or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code like $2 || '%'))\n             and ($3::uuid is null or p.category_id = $3)\n             and ($4::jsonb is null or p.attrs @> $4)\n             and ($5::uuid[] is null or p.id = any($5))\n             and (not p.archived or $6)\n             and (not $7 or coalesce(bp.stock_qty, 0) < coalesce(bp.min_stock, 0))\n           order by p.name\n           limit $8",
   "describe": {
     "columns": [
       {
@@ -85,6 +85,16 @@
       },
       {
         "ordinal": 16,
+        "name": "last_cost_qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 17,
+        "name": "last_cost_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 18,
         "name": "barcodes!: Vec<String>",
         "type_info": "TextArray"
       }
@@ -118,8 +128,10 @@
       null,
       null,
       null,
+      null,
+      null,
       null
     ]
   },
-  "hash": "f60dab4cc5a31d37843e880591221fdf83d5180a118830e0cb640a92bfdbd6d1"
+  "hash": "0bc243ca9b35e6dbc758dadf49e5d71418634ce5138e5594f8f806aab4b84f9b"
 }

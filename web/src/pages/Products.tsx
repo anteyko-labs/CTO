@@ -244,7 +244,11 @@ export default function Products() {
                       variant="ghost"
                       className="px-2 py-1 text-xs"
                       disabled={busy}
-                      onClick={() => void setArchivedFlag(p, !p.archived)}
+                      onClick={() => {
+                        if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
+                          void setArchivedFlag(p, !p.archived)
+                        }
+                      }}
                     >
                       {p.archived ? 'Вернуть' : 'В архив'}
                     </Button>

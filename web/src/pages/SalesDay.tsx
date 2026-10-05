@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Badge, Card, Empty, ErrorBox, Loading, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorBox, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
+import { divRound } from '../lib/money'
 import type { SalesDay as Day } from '../lib/types'
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -15,19 +16,54 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
+/** Сдвиг даты YYYY-MM-DD на `days` дней. */
+function shiftDate(date: string, days: number): string {
+  const d = new Date(`${date}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
 export default function SalesDay() {
   const [date, setDate] = useState(todayBishkek)
   const navigate = useNavigate()
   const { data, error, loading } = useLoad(() => get<Day>(`/sales${qs({ date })}`), [date])
+  const sold = data?.sales.filter((s) => s.kind === 'sale').reduce((acc, s) => acc + s.total_tyiyn, 0) ?? 0
+  const returns = data?.sales.filter((s) => s.kind === 'return') ?? []
+  const returnsSum = returns.reduce((acc, s) => acc + s.total_tyiyn, 0)
 
   return (
     <div>
-      <PageHeader title="Чеки за день" actions={<input type="date" value={date} onChange={(e) => setDate(e.target.value)} />} />
+      <PageHeader
+        title="Чеки за день"
+        actions={
+          <div className="flex items-center gap-1">
+            <Button variant="secondary" aria-label="Предыдущий день" onClick={() => setDate((d) => shiftDate(d, -1))}>
+              ←
+            </Button>
+            <input type="date" value={date} max={todayBishkek()} onChange={(e) => e.target.value && setDate(e.target.value)} />
+            <Button
+              variant="secondary"
+              aria-label="Следующий день"
+              disabled={date >= todayBishkek()}
+              onClick={() => setDate((d) => shiftDate(d, 1))}
+            >
+              →
+            </Button>
+            {date !== todayBishkek() && (
+              <Button variant="ghost" onClick={() => setDate(todayBishkek())}>
+                Сегодня
+              </Button>
+            )}
+          </div>
+        }
+      />
       <ErrorBox error={error} />
       {data && (
-        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
-          <Stat label="Чеков" value={String(data.totals.count)} />
+        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
           <Stat label="Выручка" value={formatSom(data.totals.total_tyiyn)} />
+          <Stat label="Чеков" value={String(data.totals.count)} />
+          <Stat label="Средний чек" value={data.totals.count ? formatSom(divRound(sold, data.totals.count)) : '—'} />
+          <Stat label="Возвраты" value={returns.length ? `${returns.length} · ${formatSom(returnsSum)}` : '—'} />
           <Stat label="Наличные" value={formatSom(data.totals.cash_tyiyn)} />
           <Stat label="Карта" value={formatSom(data.totals.card_tyiyn)} />
           <Stat label="Перевод" value={formatSom(data.totals.transfer_tyiyn)} />

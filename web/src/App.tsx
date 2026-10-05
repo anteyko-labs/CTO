@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
-import { Loading } from './components/ui'
+import { Loading, Toaster } from './components/ui'
 import Cashier from './pages/Cashier'
 import Categories from './pages/Categories'
 import Employees from './pages/Employees'
@@ -68,6 +68,7 @@ function Shell() {
   const [open, setOpen] = useState(false)
   if (!user) return <Navigate to="/login" replace />
   const owner = user.role === 'owner'
+  const roleLabel = owner ? 'Владелец' : 'Администратор'
 
   const nav = (
     <nav className="flex flex-col gap-4">
@@ -101,7 +102,10 @@ function Shell() {
         {nav}
         <div className="mt-6 border-t border-slate-700 px-3 pt-4 text-sm text-slate-300">
           <div className="font-medium text-white">{user.full_name}</div>
-          <div className="text-xs">{owner ? 'Владелец' : 'Администратор'}</div>
+          <div className="text-xs">
+            {user.login}
+            {user.full_name !== roleLabel && ` · ${roleLabel}`}
+          </div>
           <button type="button" className="mt-2 text-xs text-sky-300 hover:underline" onClick={() => void logout()}>
             Выйти
           </button>
@@ -109,11 +113,9 @@ function Shell() {
       </aside>
       <div className="no-print flex items-center justify-between bg-slate-900 px-4 py-3 text-white md:hidden">
         <span className="font-bold">Avtodom</span>
-        <button type="button" onClick={() => setOpen((o) => !o)} aria-label="Меню">
-          ☰
-        </button>
+        <span className="text-xs text-slate-300">{user.full_name}</span>
       </div>
-      <main className="min-w-0 flex-1 p-4 md:p-6">
+      <main className="min-w-0 flex-1 p-4 pb-24 md:p-6">
         <Routes>
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />
@@ -132,9 +134,47 @@ function Shell() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <nav className="no-print fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white text-xs md:hidden">
+        {MOBILE_TABS.map((t) => (
+          <NavLink
+            key={t.to}
+            to={t.to}
+            end={t.to === '/'}
+            onClick={() => setOpen(false)}
+            className={({ isActive }) => `flex flex-col items-center gap-0.5 py-2 ${isActive ? 'text-sky-700' : 'text-slate-600'}`}
+          >
+            <span className="text-lg leading-none" aria-hidden>
+              {t.icon}
+            </span>
+            {t.label}
+          </NavLink>
+        ))}
+        <button
+          type="button"
+          className={`flex flex-col items-center gap-0.5 py-2 ${open ? 'text-sky-700' : 'text-slate-600'}`}
+          onClick={() => {
+            setOpen((o) => !o)
+            window.scrollTo({ top: 0 })
+          }}
+        >
+          <span className="text-lg leading-none" aria-hidden>
+            ☰
+          </span>
+          Ещё
+        </button>
+      </nav>
+      <Toaster />
     </div>
   )
 }
+
+/** Нижнее меню телефона: самые частые экраны, остальное — в «Ещё». */
+const MOBILE_TABS = [
+  { to: '/', label: 'Касса', icon: '▣' },
+  { to: '/sales', label: 'Чеки', icon: '≡' },
+  { to: '/stock', label: 'Остатки', icon: '▤' },
+  { to: '/receipts', label: 'Приход', icon: '⇩' },
+]
 
 function Root() {
   const { user, loading } = useAuth()

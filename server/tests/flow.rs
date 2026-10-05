@@ -235,6 +235,14 @@ async fn oil_container_and_pour(pool: PgPool) {
     let w = seed(&pool).await;
     // 2 канистры по 4 л за 1500 с каждая.
     receive(&pool, &w.admin, w.oil, 8000, 300_000).await;
+    // Последняя закупочная цена — за канистру, видна и администратору.
+    let mut conn = pool.acquire().await.unwrap();
+    let p = avtodom_server::api::catalog::product_by_id(&mut conn, &w.admin.user, w.oil)
+        .await
+        .unwrap();
+    assert_eq!(p.last_purchase_price_tyiyn, Some(150_000));
+    assert!(p.avg_cost_tyiyn.is_none());
+    drop(conn);
     let sale = sell(
         &pool,
         &w.admin,

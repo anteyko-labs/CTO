@@ -4,7 +4,7 @@ import { useUser } from '../lib/auth'
 import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Category, Product } from '../lib/types'
-import { Badge, Button, ErrorBox, Field, Modal } from './ui'
+import { Badge, Button, ErrorBox, Field, Modal, toast } from './ui'
 
 interface Form {
   category_id: string
@@ -127,6 +127,7 @@ export function ProductFormModal({
           ? await patch<Product>(`/products/${product.id}/prices`, prices)
           : await get<Product>(`/products/${product.id}`)
       }
+      toast(product ? 'Товар сохранён' : 'Товар создан')
       onSaved(saved)
     })
 
