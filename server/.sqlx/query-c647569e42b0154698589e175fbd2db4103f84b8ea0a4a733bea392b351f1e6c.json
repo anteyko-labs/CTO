@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,\n                  s.master_id, m.full_name as \"master_name?\", s.total_tyiyn, s.comment, s.reversal_of,\n                  u.full_name as user_name, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           join users u on u.id = s.user_id\n           where s.id = $1 and s.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "cashier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "cashier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "master_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "master_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c647569e42b0154698589e175fbd2db4103f84b8ea0a4a733bea392b351f1e6c"
+}

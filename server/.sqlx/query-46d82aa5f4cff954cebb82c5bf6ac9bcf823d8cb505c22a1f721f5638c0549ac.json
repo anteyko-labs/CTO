@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bp.product_id, bp.stock_qty as cached_qty,\n                  coalesce(m.qty, 0) as \"moved_qty!\",\n                  bp.stock_value_tyiyn as cached_value_tyiyn,\n                  coalesce(m.value, 0) as \"moved_value_tyiyn!\"\n           from branch_products bp\n           left join (select product_id, sum(qty_delta)::bigint as qty, sum(value_delta_tyiyn)::bigint as value\n                      from stock_movements where branch_id = $1 group by product_id) m\n             on m.product_id = bp.product_id\n           where bp.branch_id = $1\n             and (bp.stock_qty <> coalesce(m.qty, 0) or bp.stock_value_tyiyn <> coalesce(m.value, 0))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "cached_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "moved_qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "cached_value_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "moved_value_tyiyn!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "46d82aa5f4cff954cebb82c5bf6ac9bcf823d8cb505c22a1f721f5638c0549ac"
+}

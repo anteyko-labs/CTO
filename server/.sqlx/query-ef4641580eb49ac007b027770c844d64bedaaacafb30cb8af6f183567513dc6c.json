@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml, l.qty, l.cost_tyiyn\n           from receipt_lines l join products p on p.id = l.product_id\n           where l.receipt_id = $1 order by l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ef4641580eb49ac007b027770c844d64bedaaacafb30cb8af6f183567513dc6c"
+}

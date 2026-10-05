@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, full_name, is_cashier, is_master, active from employees where branch_id = $1 order by full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_master",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "79673f7aa4c00c2ff02ad8ae3676ba0c9a6593a31aa93d06aa1e65e4c13465db"
+}

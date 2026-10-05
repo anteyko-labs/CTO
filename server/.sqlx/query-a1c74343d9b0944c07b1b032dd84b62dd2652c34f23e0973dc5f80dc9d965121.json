@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branch_products (branch_id, product_id) values ($1, $2) on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1c74343d9b0944c07b1b032dd84b62dd2652c34f23e0973dc5f80dc9d965121"
+}

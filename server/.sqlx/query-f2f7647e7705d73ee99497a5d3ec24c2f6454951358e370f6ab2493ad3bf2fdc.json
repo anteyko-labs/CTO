@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select method, amount_tyiyn from sale_payments where sale_id = $1 order by method",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f2f7647e7705d73ee99497a5d3ec24c2f6454951358e370f6ab2493ad3bf2fdc"
+}

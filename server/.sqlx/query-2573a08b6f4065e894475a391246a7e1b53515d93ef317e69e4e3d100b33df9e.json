@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branch_products (branch_id, product_id, sale_price_tyiyn, pour_price_per_l_tyiyn, min_stock)\n           values ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2573a08b6f4065e894475a391246a7e1b53515d93ef317e69e4e3d100b33df9e"
+}

@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.id, u.branch_id, u.login, u.full_name, u.role\n               from sessions s join users u on u.id = s.user_id\n               where s.token_hash = $1 and s.expires_at > now() and u.active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "login",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "role",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "01b8d418208678cbabdb68fa37df1519e9255e3aabb61962614160f6e162bd2b"
+}

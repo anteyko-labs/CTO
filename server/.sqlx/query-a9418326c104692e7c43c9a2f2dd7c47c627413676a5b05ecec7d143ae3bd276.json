@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from settings where branch_id = $1 and key = 'labels'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a9418326c104692e7c43c9a2f2dd7c47c627413676a5b05ecec7d143ae3bd276"
+}

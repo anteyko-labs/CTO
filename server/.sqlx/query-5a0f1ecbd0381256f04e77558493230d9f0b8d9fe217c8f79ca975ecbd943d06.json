@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update suppliers set name = coalesce($2, name), phone = coalesce($3, phone),\n             comment = coalesce($4, comment), active = coalesce($5, active)\n           where id = $1 returning id, name, phone, comment, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5a0f1ecbd0381256f04e77558493230d9f0b8d9fe217c8f79ca975ecbd943d06"
+}

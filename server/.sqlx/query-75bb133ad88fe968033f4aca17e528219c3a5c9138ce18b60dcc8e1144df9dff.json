@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pg_advisory_xact_lock(hashtextextended($1::text, 1))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pg_advisory_xact_lock",
+        "type_info": "Void"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "75bb133ad88fe968033f4aca17e528219c3a5c9138ce18b60dcc8e1144df9dff"
+}

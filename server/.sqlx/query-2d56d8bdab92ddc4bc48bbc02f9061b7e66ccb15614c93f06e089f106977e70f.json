@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update products set name = coalesce($2, name), brand = coalesce($3, brand),\n             article = coalesce($4, article), category_id = $5, attrs = coalesce($6, attrs),\n             archived = coalesce($7, archived)\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d56d8bdab92ddc4bc48bbc02f9061b7e66ccb15614c93f06e089f106977e70f"
+}

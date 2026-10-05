@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, sale_type, cashier_id, master_id from sales where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sale_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "cashier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "master_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "950a636fdf754aaee6993b7324d940846eeba17053531d4227d3e48f0d4c3352"
+}

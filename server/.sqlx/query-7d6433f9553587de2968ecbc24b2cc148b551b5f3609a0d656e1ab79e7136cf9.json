@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.supplier_id, s.name as \"supplier_name?\", r.supplier_doc, r.comment,\n                  r.total_tyiyn, r.reversal_of, u.full_name as user_name, r.created_at,\n                  (select x.id from receipts x where x.reversal_of = r.id) as reversed_by\n           from receipts r\n           join users u on u.id = r.user_id\n           left join suppliers s on s.id = r.supplier_id\n           where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversed_by",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "7d6433f9553587de2968ecbc24b2cc148b551b5f3609a0d656e1ab79e7136cf9"
+}

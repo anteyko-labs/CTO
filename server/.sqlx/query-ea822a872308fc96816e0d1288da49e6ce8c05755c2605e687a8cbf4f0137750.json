@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as \"master_name?\",\n                  s.total_tyiyn, s.reversal_of, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           where s.branch_id = $1\n             and s.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek'\n             and s.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'\n           order by s.created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "cashier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "master_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "ea822a872308fc96816e0d1288da49e6ce8c05755c2605e687a8cbf4f0137750"
+}

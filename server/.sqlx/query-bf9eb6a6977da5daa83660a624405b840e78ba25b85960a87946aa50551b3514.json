@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update users set\n             full_name = coalesce($3, full_name),\n             role = coalesce($4, role),\n             active = coalesce($5, active),\n             password_hash = coalesce($6, password_hash)\n           where id = $1 and branch_id = $2\n           returning id, login, full_name, role, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "login",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bf9eb6a6977da5daa83660a624405b840e78ba25b85960a87946aa50551b3514"
+}

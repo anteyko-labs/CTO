@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branches (id, name) values ($1, 'Основной')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f7c81b2070bbf25756fc597bf591977bc686497c579c053223270b9deea12f9"
+}

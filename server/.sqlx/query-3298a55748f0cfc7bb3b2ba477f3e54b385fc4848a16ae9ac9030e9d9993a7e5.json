@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, number, total_tyiyn from sales where reversal_of = $1 order by created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3298a55748f0cfc7bb3b2ba477f3e54b385fc4848a16ae9ac9030e9d9993a7e5"
+}

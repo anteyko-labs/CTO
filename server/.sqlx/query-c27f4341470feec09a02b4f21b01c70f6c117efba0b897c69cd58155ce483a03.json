@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select user_id, kind, response from operations where op_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "response",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c27f4341470feec09a02b4f21b01c70f6c117efba0b897c69cd58155ce483a03"
+}

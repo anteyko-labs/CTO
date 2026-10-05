@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into counters (branch_id, name, value) values ($1, $2, 1)\n           on conflict (branch_id, name) do update set value = counters.value + 1\n           returning value",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1defb2468d185dae03c5d70968e118aec05e91f84d4d158f7a975d97e808b39c"
+}

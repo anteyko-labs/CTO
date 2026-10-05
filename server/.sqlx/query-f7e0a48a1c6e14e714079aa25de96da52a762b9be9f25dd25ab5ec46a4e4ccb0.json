@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, attributes from categories where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "attributes",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f7e0a48a1c6e14e714079aa25de96da52a762b9be9f25dd25ab5ec46a4e4ccb0"
+}

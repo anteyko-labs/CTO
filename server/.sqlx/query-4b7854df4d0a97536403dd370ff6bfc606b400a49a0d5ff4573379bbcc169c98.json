@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = lower($1) and active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "login",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "password_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4b7854df4d0a97536403dd370ff6bfc606b400a49a0d5ff4573379bbcc169c98"
+}

@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(l.qty), 0)::bigint as \"qty!\", coalesce(sum(l.units), 0)::bigint as \"units!\",\n                      coalesce(sum(-l.amount_tyiyn), 0)::bigint as \"amount!\", coalesce(sum(-l.cost_tyiyn), 0)::bigint as \"cost!\",\n                      coalesce(sum(-l.master_fee_tyiyn), 0)::bigint as \"fee!\"\n               from sale_lines l join sales s on s.id = l.sale_id\n               where s.reversal_of = $1 and l.line_no = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "units!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "cost!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "aebe365a99bc75578a583ab3e5ecec2645a5136c5ad6acc10b8bc71f397dff28"
+}

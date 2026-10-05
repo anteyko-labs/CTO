@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, $3, $4, 'owner', 'Владелец')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2aaf51b5dca3bc04b445203380153d65ba3689aa681cefab706403b3bbb3b905"
+}

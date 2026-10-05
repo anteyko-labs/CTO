@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, s.name as \"supplier_name?\", r.supplier_doc, r.total_tyiyn, r.reversal_of,\n                  exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\",\n                  u.full_name as user_name, r.created_at\n           from receipts r\n           join users u on u.id = r.user_id\n           left join suppliers s on s.id = r.supplier_id\n           where r.branch_id = $1\n             and ($2::date is null or r.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by r.created_at desc\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "0bbc5ae018658e9d24b4a930b0804c1883174dc0df5ee2ec64021193409ad7c0"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select nextval('internal_barcode_seq') as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "55ddf5200c4c9523b4cfd06357c46d2461ef5ef4349011be18a39304ef5c553e"
+}

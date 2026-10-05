@@ -27,10 +27,12 @@ if printf '%s\n' "$added" | grep -nE '(BEGIN [A-Z ]*PRIVATE KEY|(password|secret
 fi
 
 # 4. Rust: формат и clippy (инвариант 18 обеспечивается lint-ами unwrap_used/expect_used/panic).
-if printf '%s\n' "$staged" | grep -qE '\.rs$|Cargo\.(toml|lock)$'; then
+if printf '%s
+' "$staged" | grep -qE '^server/'; then
   if command -v cargo >/dev/null 2>&1; then
-    cargo fmt --all -- --check >/dev/null 2>&1 || { echo "pre-commit: cargo fmt --check не прошёл." >&2; fail=1; }
-    if ! out=$(cargo clippy --all-targets --quiet -- -D warnings 2>&1); then
+    manifest="$(git rev-parse --show-toplevel)/server/Cargo.toml"
+    cargo fmt --manifest-path "$manifest" --all -- --check >/dev/null 2>&1 || { echo "pre-commit: cargo fmt --check не прошёл." >&2; fail=1; }
+    if ! out=$(cargo clippy --manifest-path "$manifest" --all-targets --quiet -- -D warnings 2>&1); then
       printf '%s
 ' "$out" | tail -n 30 >&2
       echo "pre-commit: clippy нашёл ошибки." >&2

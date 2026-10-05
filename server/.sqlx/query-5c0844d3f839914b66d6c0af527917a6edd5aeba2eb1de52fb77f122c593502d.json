@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from branches order by created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5c0844d3f839914b66d6c0af527917a6edd5aeba2eb1de52fb77f122c593502d"
+}

@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update services set name = coalesce($3, name), price_tyiyn = coalesce($4, price_tyiyn),\n             master_fee_tyiyn = coalesce($5, master_fee_tyiyn), active = coalesce($6, active)\n           where id = $1 and branch_id = $2\n           returning id, name, price_tyiyn, master_fee_tyiyn, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "296dea261f741bbdef51d4beff5fa86ab13933b9b4c25755b50a1d1de31c66d2"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name from product_barcodes b join products p on p.id = b.product_id where b.code = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4446c7ab2286bb92476064ea6af8d1d4c37424bc721e7ff478f815102a5580d5"
+}

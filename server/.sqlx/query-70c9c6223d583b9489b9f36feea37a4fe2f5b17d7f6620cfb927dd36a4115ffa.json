@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select stock_qty, stock_value_tyiyn, last_cost_qty, last_cost_tyiyn\n           from branch_products where branch_id = $1 and product_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stock_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "stock_value_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_cost_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_cost_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "70c9c6223d583b9489b9f36feea37a4fe2f5b17d7f6620cfb927dd36a4115ffa"
+}
