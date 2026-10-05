@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { BrowserRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { Fragment, useState, type ReactNode } from 'react'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
 import { Loading } from './components/ui'
 import Cashier from './pages/Cashier'
@@ -57,6 +57,12 @@ const NAV: { title?: string; items: NavItem[] }[] = [
   },
 ]
 
+/** Пересоздаёт страницу при смене :id, чтобы окна и идентификаторы операций не переносились между документами. */
+function ByParam({ children }: { children: ReactNode }) {
+  const { id } = useParams()
+  return <Fragment key={id}>{children}</Fragment>
+}
+
 function Shell() {
   const { user, logout } = useAuth()
   const [open, setOpen] = useState(false)
@@ -111,10 +117,10 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />
-          <Route path="/sales/:id" element={<SaleView />} />
+          <Route path="/sales/:id" element={<ByParam><SaleView /></ByParam>} />
           <Route path="/receipts" element={<Receipts />} />
           <Route path="/receipts/new" element={<ReceiptNew />} />
-          <Route path="/receipts/:id" element={<ReceiptView />} />
+          <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
           <Route path="/categories" element={<Categories />} />
