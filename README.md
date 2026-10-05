@@ -48,6 +48,8 @@ updated: 2026-10-05
 
 ## Разработка
 
+Нужны: Rust stable, Node.js 22, PostgreSQL 16.
+
 После клонирования включить проверки репозитория:
 
 ```sh
@@ -55,3 +57,36 @@ git config core.hooksPath .githooks
 ```
 
 Хуки проверяют сообщения коммитов, не пропускают файлы окружения и секреты, а для Rust-кода запускают `cargo fmt --check` и `cargo clippy`.
+
+### Сервер
+
+```sh
+cd server
+echo "DATABASE_URL=postgres://postgres:ПАРОЛЬ@localhost:5432/avtodom" > .env
+createdb avtodom
+BOOTSTRAP_OWNER_LOGIN=owner BOOTSTRAP_OWNER_PASSWORD=пароль-владельца cargo run
+```
+
+Миграции применяются при старте. Владелец создаётся, только если в базе нет пользователей. API — `http://127.0.0.1:8080/api/v1`.
+
+Тесты (каждый тест создаёт временную базу): `cargo test`. После изменения SQL-запросов обновить данные для сборки без базы: `cargo sqlx prepare -- --all-targets`.
+
+### Клиент
+
+```sh
+cd web
+npm install
+npm run dev      # http://localhost:5173, запросы /api проксируются на сервер
+npm test
+npm run build    # сборка в web/dist, её раздаёт сервер
+```
+
+## Развёртывание
+
+```sh
+cd deploy
+cp .env.example .env   # заполнить домен, пароль базы, первого владельца
+docker compose up -d --build
+```
+
+Поднимаются PostgreSQL, приложение, Caddy (HTTPS) и ежедневная резервная копия в `deploy/backups/`. Копии нужно регулярно переносить за пределы сервера.

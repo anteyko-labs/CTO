@@ -1,0 +1,66 @@
+# Запуск: cd deploy && cp .env.example .env && (заполнить .env) && docker compose up -d --build
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: avtodom
+      POSTGRES_USER: avtodom
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?задайте DB_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avtodom -d avtodom"]
+      interval: 5s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://avtodom:${DB_PASSWORD}@db:5432/avtodom
+      COOKIE_SECURE: "true"
+      BOOTSTRAP_OWNER_LOGIN: ${OWNER_LOGIN:-}
+      BOOTSTRAP_OWNER_PASSWORD: ${OWNER_PASSWORD:-}
+      RUST_LOG: info
+
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?задайте DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+  # Ежедневная копия базы в ./backups; хранится 30 дней. Копирование вне сервера — см. README.
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          pg_dump -h db -U avtodom -d avtodom -Fc -f /backups/avtodom-$$(date +%F).dump
+          find /backups -name 'avtodom-*.dump' -mtime +30 -delete
+          sleep 86400
+        done
+
+volumes:
+  db-data:
+  caddy-data:

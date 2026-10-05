@@ -1,0 +1,7 @@
+**/node_modules
+**/target
+web/dist
+.git
+.env
+**/.env
+docs

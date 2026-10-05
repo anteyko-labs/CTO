@@ -26,3 +26,4 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+/deploy/backups/
