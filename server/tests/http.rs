@@ -245,3 +245,50 @@ async fn catalog_rules(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(code["code"], "2200000000019");
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn brute_force_is_locked_out(pool: PgPool) {
+    let app = setup(pool).await;
+    let attempt = |login: &'static str, password: &'static str| {
+        let app = app.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/auth/login",
+                None,
+                Some(json!({ "login": login, "password": password })),
+            )
+            .await
+            .0
+        }
+    };
+    for _ in 0..5 {
+        assert_eq!(
+            attempt("owner", "wrong-pass").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // Даже верный пароль отклоняется, пока действует блокировка.
+    assert_eq!(
+        attempt("OWNER", "owner-pass-1").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Неизвестный логин блокируется так же, не выдавая отсутствие пользователя.
+    for _ in 0..5 {
+        assert_eq!(
+            attempt("ghost", "wrong-pass").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        attempt("ghost", "wrong-pass").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Другие пользователи входят как обычно, успешный вход сбрасывает счётчик.
+    assert_eq!(
+        attempt("admin", "wrong-pass").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(attempt("admin", "admin-pass-1").await, StatusCode::OK);
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())\n           on conflict (login) do update set\n             failures = case when login_attempts.last_failed_at < now() - make_interval(mins => $2)\n                             then 1 else login_attempts.failures + 1 end,\n             last_failed_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3e676c310c77f34d3de9b071f59ccd58aeaa526ef26427fd4d1dd91ebe497fb9"
+}

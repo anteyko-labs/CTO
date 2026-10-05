@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = lower($1) and active",
+  "query": "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = $1 and active",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       false
     ]
   },
-  "hash": "4b7854df4d0a97536403dd370ff6bfc606b400a49a0d5ff4573379bbcc169c98"
+  "hash": "83ed98518b7f3a417c5ba5b32eb439b65513b822a34ab73e8fdba3ce581214b1"
 }

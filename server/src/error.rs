@@ -15,6 +15,8 @@ pub enum AppError {
     Validation(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    TooManyRequests(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error("{0}")]
@@ -39,6 +41,7 @@ impl AppError {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            Self::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
             Self::Db(_) | Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

@@ -37,14 +37,66 @@ fn session_cookie(state: &AppState, value: &str, max_age: i64) -> String {
     )
 }
 
+/// Неудачных попыток до блокировки и её длительность в минутах.
+const MAX_FAILURES: i32 = 5;
+const LOCK_MINUTES: i32 = 15;
+
+/// Сколько минут осталось до снятия блокировки логина, если он заблокирован.
+async fn locked_minutes(state: &AppState, key: &str) -> AppResult<Option<i64>> {
+    let left = sqlx::query_scalar!(
+        r#"select ceil(extract(epoch from locked_until - now()) / 60)::bigint as "m!"
+           from login_attempts where login = $1 and locked_until > now()"#,
+        key
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(left.map(|m| m.max(1)))
+}
+
+/// Учитывает неудачную попытку; счётчик сбрасывается через LOCK_MINUTES без ошибок.
+/// Неизвестные логины учитываются так же, чтобы блокировка не выдавала их наличие.
+async fn register_failure(state: &AppState, key: &str) -> AppResult<()> {
+    sqlx::query!(
+        r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
+           on conflict (login) do update set
+             failures = case when login_attempts.last_failed_at < now() - make_interval(mins => $2)
+                             then 1 else login_attempts.failures + 1 end,
+             last_failed_at = now()"#,
+        key,
+        LOCK_MINUTES
+    )
+    .execute(&state.pool)
+    .await?;
+    let locked = sqlx::query!(
+        r#"update login_attempts set failures = 0, locked_until = now() + make_interval(mins => $3)
+           where login = $1 and failures >= $2"#,
+        key,
+        MAX_FAILURES,
+        LOCK_MINUTES
+    )
+    .execute(&state.pool)
+    .await?
+    .rows_affected();
+    if locked > 0 {
+        tracing::warn!(login = %key, "вход заблокирован после неудачных попыток");
+    }
+    Ok(())
+}
+
 async fn login(
     State(state): State<AppState>,
     parts: Parts,
     Json(req): Json<LoginReq>,
 ) -> AppResult<impl IntoResponse> {
+    let key = req.login.trim().to_lowercase();
+    if let Some(minutes) = locked_minutes(&state, &key).await? {
+        return Err(AppError::TooManyRequests(format!(
+            "слишком много неудачных попыток, повторите через {minutes} мин"
+        )));
+    }
     let row = sqlx::query!(
-        "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = lower($1) and active",
-        req.login.trim()
+        "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = $1 and active",
+        key
     )
     .fetch_optional(&state.pool)
     .await?;
@@ -56,8 +108,14 @@ async fn login(
     let ok = verify_password(req.password, hash).await;
     let row = match row {
         Some(r) if ok => r,
-        _ => return Err(AppError::Unauthorized),
+        _ => {
+            register_failure(&state, &key).await?;
+            return Err(AppError::Unauthorized);
+        }
     };
+    sqlx::query!("delete from login_attempts where login = $1", key)
+        .execute(&state.pool)
+        .await?;
     let user = CurrentUser {
         id: row.id,
         branch_id: row.branch_id,
