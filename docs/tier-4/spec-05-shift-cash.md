@@ -27,7 +27,8 @@ cash_accounts (id, branch_id, name, kind, owner_only, is_default, active, balanc
 cash_movements (id, branch_id, account_id, shift_id?, kind, amount_tyiyn,
                 doc_type, doc_id, comment, user_id, device_id, created_at)   -- неизменяемая
   kind: sale | sale_return | cash_in | cash_out | transfer_in | transfer_out
-      | bank_fee | expense | payout | count_diff | reversal
+      | bank_fee | expense | payout | supplier_payment | debt_repayment
+      | count_diff | reversal
   amount_tyiyn со знаком: приход в кассу > 0, расход < 0
 
 cash_transfers (id, branch_id, number, from_account_id, to_account_id, amount_tyiyn,
