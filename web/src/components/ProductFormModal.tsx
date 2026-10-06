@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { get, newOpId, patch, post, qs } from '../lib/api'
+import { del, get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -92,6 +92,13 @@ export function ProductFormModal({
     return { sale, pour, container, min }
   }
 
+  // Чего не хватает для сохранения: кнопка заблокирована, пока список не пуст.
+  const missing: string[] = []
+  if (!form.category_id) missing.push('категорию')
+  if (!form.name.trim()) missing.push('название')
+  if (isOil && !form.container_l.trim()) missing.push('объём канистры')
+  if (!form.sale_price.trim()) missing.push('цену продажи')
+
   const save = () =>
     run(async () => {
       if (!form.category_id) throw new Error('Выберите категорию')
@@ -129,6 +136,13 @@ export function ProductFormModal({
       }
       toast(product ? 'Товар сохранён' : 'Товар создан')
       onSaved(saved)
+    })
+
+  const removeCode = (code: string) =>
+    run(async () => {
+      if (!product) return
+      await del(`/products/${product.id}/barcodes/${encodeURIComponent(code)}`)
+      setCodes((c) => c.filter((x) => x !== code))
     })
 
   const addCode = (generate: boolean) =>
@@ -226,7 +240,14 @@ export function ProductFormModal({
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
         <div className="sm:col-span-2">
-          <Field label="Штрихкод" hint={editing ? 'Сканируйте заводской код или создайте свой' : 'Сканируйте заводской код; без кода можно создать свой после сохранения'}>
+          <Field
+            label="Штрихкод"
+            hint={
+              editing
+                ? 'Кодов может быть несколько: привязывайте сюда заводские коды разных поставок'
+                : 'Сканируйте заводской код; без кода система создаст свой при сохранении'
+            }
+          >
             <div className="flex gap-2">
               <input className="flex-1" value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />
               {editing && (
@@ -242,9 +263,22 @@ export function ProductFormModal({
             </div>
           </Field>
           {codes.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               {codes.map((c) => (
-                <Badge key={c}>{c}</Badge>
+                <span key={c} className="inline-flex items-center gap-1">
+                  <Badge>{c}</Badge>
+                  {editing && codes.length > 1 && (
+                    <button
+                      type="button"
+                      className="text-xs text-slate-400 hover:text-rose-600"
+                      aria-label={`Отвязать код ${c}`}
+                      disabled={busy}
+                      onClick={() => void removeCode(c)}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </span>
               ))}
             </div>
           )}
@@ -252,11 +286,12 @@ export function ProductFormModal({
       </div>
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />
+        {missing.length > 0 && <div className="text-right text-sm text-amber-700">Заполните: {missing.join(', ')}</div>}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy} onClick={() => void save()}>
+          <Button disabled={busy || missing.length > 0} onClick={() => void save()}>
             Сохранить
           </Button>
         </div>

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
+import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
@@ -48,6 +49,7 @@ export default function ReceiptNew() {
   const [lines, setLines] = useState<Line[]>([])
   const [print, setPrint] = useState(false)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
+  const [newProductCode, setNewProductCode] = useState<string | null>(null)
   const [newSupplier, setNewSupplier] = useState<{ name: string; phone: string } | null>(null)
   const save = useAction()
   const supplierAction = useAction()
@@ -95,6 +97,14 @@ export default function ReceiptNew() {
       setSupplierId(s.id)
       setNewSupplier(null)
     }
+  }
+
+  // Чего не хватает для проведения: кнопка заблокирована, пока список не пуст.
+  const missing: string[] = []
+  if (lines.length === 0) missing.push('товары')
+  else {
+    const bad = calcs.findIndex((c) => typeof c === 'string')
+    if (bad >= 0) missing.push(`количество и цену в строке ${bad + 1}`)
   }
 
   const submit = () => {
@@ -192,7 +202,7 @@ export default function ReceiptNew() {
               <Field label="Телефон">
                 <input value={newSupplier.phone} onChange={(e) => setNewSupplier({ ...newSupplier, phone: e.target.value })} />
               </Field>
-              <Button disabled={supplierAction.busy} onClick={() => void createSupplier()}>
+              <Button disabled={supplierAction.busy || !newSupplier.name.trim()} onClick={() => void createSupplier()}>
                 Добавить
               </Button>
               <div className="sm:col-span-3">
@@ -270,19 +280,34 @@ export default function ReceiptNew() {
         </Card>
 
         <ErrorBox error={save.error} />
-        <div className="flex justify-end">
-          <Button disabled={save.busy || lines.length === 0} onClick={submit}>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {missing.length > 0 && <span className="text-sm text-amber-700">Заполните: {missing.join(', ')}</span>}
+          <Button disabled={save.busy || missing.length > 0} onClick={submit}>
             Провести приход
           </Button>
         </div>
       </div>
 
       {unknownCode !== null && (
-        <ProductFormModal
-          presetBarcode={unknownCode}
+        <UnknownCodeModal
+          code={unknownCode}
           onClose={() => setUnknownCode(null)}
-          onSaved={(p) => {
+          onLinked={(p) => {
             setUnknownCode(null)
+            addProduct(p)
+          }}
+          onCreateNew={() => {
+            setNewProductCode(unknownCode)
+            setUnknownCode(null)
+          }}
+        />
+      )}
+      {newProductCode !== null && (
+        <ProductFormModal
+          presetBarcode={newProductCode}
+          onClose={() => setNewProductCode(null)}
+          onSaved={(p) => {
+            setNewProductCode(null)
             addProduct(p)
           }}
         />

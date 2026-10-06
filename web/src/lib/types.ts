@@ -169,6 +169,8 @@ export interface Sale {
   master_id: string | null
   master_name: string | null
   total_tyiyn: number
+  /** Начисление мастеру за замену: ставка на чек, а не строка услуги. */
+  master_fee_tyiyn: number
   comment: string
   reversal_of: string | null
   user_name: string

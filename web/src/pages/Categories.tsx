@@ -120,7 +120,7 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy} onClick={() => void save()}>
+          <Button disabled={busy || !name.trim() || rows.some((r) => !r.key.trim() || !r.label.trim())} onClick={() => void save()}>
             Сохранить
           </Button>
         </div>

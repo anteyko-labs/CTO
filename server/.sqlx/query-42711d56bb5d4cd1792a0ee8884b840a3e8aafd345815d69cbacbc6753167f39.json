@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select kind, sale_type, cashier_id, master_id from sales where id = $1 and branch_id = $2",
+  "query": "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn from sales where id = $1 and branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
         "ordinal": 3,
         "name": "master_id",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -34,8 +39,9 @@
       false,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "950a636fdf754aaee6993b7324d940846eeba17053531d4227d3e48f0d4c3352"
+  "hash": "42711d56bb5d4cd1792a0ee8884b840a3e8aafd345815d69cbacbc6753167f39"
 }

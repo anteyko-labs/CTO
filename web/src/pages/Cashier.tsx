@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
+import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
-import { PAYMENT_LABELS, type Employee, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service } from '../lib/types'
+import { PAYMENT_LABELS, type Employee, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
 
 interface CartLine {
   key: string
   kind: SaleLineKind
   product?: Product
-  service?: Service
   qtyText: string
   priceText: string
 }
@@ -38,13 +39,12 @@ function remember(key: string, value: string): void {
   }
 }
 
-function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>): number {
-  if (l.kind === 'service') return l.service?.price_tyiyn ?? 0
+function listPrice(l: Pick<CartLine, 'kind' | 'product'>): number {
   if (l.kind === 'pour') return l.product?.pour_price_per_l_tyiyn ?? 0
   return l.product?.sale_price_tyiyn ?? 0
 }
 
-/** Количество строки в единицах запроса: шт, канистры, услуги или мл для розлива. */
+/** Количество строки в единицах запроса: шт, канистры или мл для розлива. */
 function lineQty(l: CartLine): number | null {
   if (l.kind === 'pour') {
     const ml = parseLiters(l.qtyText)
@@ -95,7 +95,7 @@ function saveDraft(d: Draft): void {
 function lineUnits(l: CartLine): number {
   const qty = lineQty(l) ?? 0
   if (l.kind === 'container') return qty * (l.product?.container_ml ?? 0)
-  return l.kind === 'service' ? 0 : qty
+  return qty
 }
 
 /** Купюры для быстрого ввода полученной суммы, тыйын. */
@@ -105,7 +105,6 @@ const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker
 
 export default function Cashier() {
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
-  const services = useLoad(() => get<Service[]>('/services'), [])
   const [draft] = useState(loadDraft)
   const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
   const [cashierId, setCashierId] = useState(() => remembered(CASHIER_KEY))
@@ -117,11 +116,12 @@ export default function Cashier() {
   const [split, setSplit] = useState<Record<PaymentMethod, string>>({ cash: '', card: '', transfer: '' })
   const [opId, setOpId] = useState(newOpId)
   const [done, setDone] = useState<{ sale: Sale; change: number | null } | null>(null)
+  const [unknownCode, setUnknownCode] = useState<string | null>(null)
+  const [newProductCode, setNewProductCode] = useState<string | null>(null)
   const { busy, error, setError, run } = useAction()
 
   const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
   const masters = employees.data?.filter((e) => e.active && e.is_master) ?? []
-  const activeServices = services.data?.filter((s) => s.active) ?? []
 
   useEffect(() => saveDraft({ saleType, masterId, lines, comment }), [saleType, masterId, lines, comment])
 
@@ -178,28 +178,15 @@ export default function Cashier() {
     })
   }
 
-  const addService = (s: Service) => {
-    setDone(null)
-    setLines((ls) => {
-      const same = ls.find((l) => l.service?.id === s.id)
-      if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(l) ?? 0) + 1) } : l))
-      return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(s.price_tyiyn) }]
-    })
-  }
-
   const switchOil = (l: CartLine, kind: 'container' | 'pour') => {
     if (l.kind === kind) return
     update(l.key, { kind, qtyText: '1', priceText: somInput(listPrice({ kind, product: l.product })) })
   }
 
-  const changeType = (t: 'takeaway' | 'service') => {
-    setSaleType(t)
-    if (t === 'takeaway') setLines((ls) => ls.filter((l) => l.kind !== 'service'))
-    // Если услуга одна, она добавляется сразу.
-    if (t === 'service' && activeServices.length === 1 && !lines.some((l) => l.kind === 'service')) addService(activeServices[0])
-  }
+  // Замена масла — отметка чека, а не строка услуги: цена товара от этого не меняется (ADR-027).
+  const changeType = (t: 'takeaway' | 'service') => setSaleType(t)
 
-  /** Шаг количества: 1 шт/канистра/услуга или 0,5 л для розлива. */
+  /** Шаг количества: 1 шт или канистра, 0,5 л для розлива. */
   const step = (l: CartLine, dir: 1 | -1) => {
     const q = lineQty(l) ?? 0
     if (l.kind === 'pour') {
@@ -224,7 +211,6 @@ export default function Cashier() {
   const blockers: string[] = []
   if (!cashierId) blockers.push('выберите кассира')
   if (saleType === 'service' && !masterId) blockers.push('выберите мастера')
-  if (saleType === 'service' && !lines.some((l) => l.kind === 'service')) blockers.push('добавьте услугу')
   if (lines.length === 0) blockers.push('добавьте товары')
   else if (!valid) blockers.push('проверьте количество и цены')
   if (payments === null) blockers.push('неверная сумма оплаты')
@@ -243,7 +229,7 @@ export default function Cashier() {
         lines: lines.map((l) => ({
           kind: l.kind,
           product_id: l.product?.id ?? null,
-          service_id: l.service?.id ?? null,
+          service_id: null,
           qty: lineQty(l),
           unit_price_tyiyn: parseSom(l.priceText),
         })),
@@ -271,7 +257,7 @@ export default function Cashier() {
     <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
       <div className="flex min-w-0 flex-col gap-4">
         <Card>
-          <ProductPicker onPick={addProduct} />
+          <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} />
         </Card>
 
         {done && (
@@ -308,7 +294,7 @@ export default function Cashier() {
                 return (
                   <li key={l.key} className="flex flex-wrap items-center gap-3 p-3">
                     <div className="min-w-48 flex-1">
-                      <div className="font-medium">{l.product?.name ?? l.service?.name}</div>
+                      <div className="font-medium">{l.product?.name}</div>
                       <div className="text-xs text-slate-500">
                         {l.product ? `Остаток: ${stockText(l.product)}` : 'Услуга'}
                         {short && (
@@ -433,13 +419,8 @@ export default function Cashier() {
                   ))}
                 </select>
               </Field>
-              <div className="flex flex-wrap gap-2">
-                {activeServices.length === 0 && <span className="text-sm text-slate-500">Нет услуг в справочнике</span>}
-                {activeServices.map((s) => (
-                  <Button key={s.id} variant="secondary" onClick={() => addService(s)}>
-                    + {s.name}
-                  </Button>
-                ))}
+              <div className="text-xs text-slate-500">
+                Замена в чеке строкой не печатается, цена масла та же. Мастеру начисляется ставка за этот чек.
               </div>
             </>
           )}
@@ -535,6 +516,32 @@ export default function Cashier() {
           )}
         </Card>
       </div>
+      {unknownCode !== null && (
+        <UnknownCodeModal
+          code={unknownCode}
+          onClose={() => setUnknownCode(null)}
+          onLinked={(p) => {
+            setUnknownCode(null)
+            addProduct(p)
+            focusPicker()
+          }}
+          onCreateNew={() => {
+            setNewProductCode(unknownCode)
+            setUnknownCode(null)
+          }}
+        />
+      )}
+      {newProductCode !== null && (
+        <ProductFormModal
+          presetBarcode={newProductCode}
+          onClose={() => setNewProductCode(null)}
+          onSaved={(p) => {
+            setNewProductCode(null)
+            addProduct(p)
+            focusPicker()
+          }}
+        />
+      )}
     </div>
   )
 }

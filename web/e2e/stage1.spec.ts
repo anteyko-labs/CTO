@@ -40,9 +40,11 @@ test('товар, приход, продажа, возврат и остаток
   await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true, is_master: true })
   await apiPost(page.request, '/categories', { name: category, kind: 'filter' })
 
-  // Приход: незнакомый код открывает создание товара.
+  // Приход: незнакомый код предлагает привязать его к товару или создать новый.
   await page.goto('/receipts/new')
   await scan(page, code)
+  await expect(page.getByRole('heading', { name: new RegExp(`Код ${code} не найден`) })).toBeVisible()
+  await page.getByRole('button', { name: 'Новый товар' }).click()
   const modal = page.getByRole('heading', { name: 'Новый товар' })
   await expect(modal).toBeVisible()
   await page.getByLabel('Категория').selectOption({ label: category })

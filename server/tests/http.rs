@@ -247,6 +247,123 @@ async fn catalog_rules(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn every_product_has_a_barcode(pool: PgPool) {
+    // Товара без штрихкода не бывает, кодов может быть несколько (ADR-026).
+    let app = setup(pool).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let cat_id = cat["id"].as_str().unwrap().to_string();
+
+    // Код не указан — система выдала свой.
+    let body = json!({ "op_id": Uuid::now_v7(), "category_id": cat_id, "name": "Фильтр без кода" });
+    let (status, _, p) = call(&app, "POST", "/api/v1/products", Some(&admin), Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    let codes = p["barcodes"].as_array().unwrap();
+    assert_eq!(codes.len(), 1);
+    let own = codes[0].as_str().unwrap().to_string();
+    assert!(own.starts_with("22"));
+    let pid = p["id"].as_str().unwrap().to_string();
+
+    // Единственный код не отвязать.
+    let (status, _, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/products/{pid}/barcodes/{own}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Заводской код этого же товара — второй код в той же карточке, без дубля.
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/products/{pid}/barcodes"),
+        Some(&admin),
+        Some(json!({ "code": "4006381333931" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for code in ["4006381333931", own.as_str()] {
+        let (status, _, found) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/products/by-barcode/{code}"),
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(found["id"].as_str(), Some(pid.as_str()));
+    }
+
+    // Теперь кодов два, лишний отвязывается.
+    let (status, _, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/products/{pid}/barcodes/4006381333931"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, p) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{pid}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(p["barcodes"].as_array().map(Vec::len), Some(1));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn oil_change_fee_is_a_setting(pool: PgPool) {
+    // Ставку замены меняет только владелец (ADR-019, ADR-027).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (status, _, v) = call(&app, "GET", "/api/v1/settings/sales", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["oil_change_master_fee_tyiyn"], 3000);
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/v1/settings/sales",
+            Some(&admin),
+            Some(json!({ "oil_change_master_fee_tyiyn": 5000 })),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/v1/settings/sales",
+            Some(&owner),
+            Some(json!({ "oil_change_master_fee_tyiyn": 5000 })),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, _, v) = call(&app, "GET", "/api/v1/settings/sales", Some(&admin), None).await;
+    assert_eq!(v["oil_change_master_fee_tyiyn"], 5000);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

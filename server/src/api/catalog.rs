@@ -39,6 +39,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/products/{id}/prices", routing::patch(update_prices))
         .route("/products/{id}/barcodes", routing::post(add_barcode))
+        .route(
+            "/products/{id}/barcodes/{code}",
+            routing::delete(remove_barcode),
+        )
 }
 
 // ---------- Категории ----------
@@ -675,12 +679,22 @@ async fn create_product(
     )
     .execute(&mut *tx)
     .await?;
+    let mut codes = 0usize;
     for code in &req.barcodes {
         let code = code.trim();
+        if code.is_empty() {
+            continue;
+        }
         if !barcode::is_acceptable(code) {
             return Err(invalid("недопустимый штрихкод"));
         }
         insert_barcode(&mut tx, id, code, false).await?;
+        codes += 1;
+    }
+    if codes == 0 {
+        // Товара без штрихкода не бывает: заводского кода нет — выдаём свой.
+        let code = next_internal_code(&mut tx).await?;
+        insert_barcode(&mut tx, id, &code, true).await?;
     }
     ops::audit(
         &mut tx,
@@ -848,6 +862,14 @@ struct BarcodeOut {
     internal: bool,
 }
 
+/// Следующий внутренний код. Счётчик общий для всех филиалов: код уникален глобально.
+async fn next_internal_code(tx: &mut sqlx::PgConnection) -> AppResult<String> {
+    let seq = sqlx::query_scalar!("select nextval('internal_barcode_seq') as \"v!\"")
+        .fetch_one(&mut *tx)
+        .await?;
+    barcode::internal_code(seq).ok_or_else(|| AppError::Internal("кончились коды".into()))
+}
+
 async fn add_barcode(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -870,17 +892,7 @@ async fn add_barcode(
             }
             (c, false)
         }
-        None => {
-            // Счётчик общий для всех филиалов: код уникален глобально.
-            let seq = sqlx::query_scalar!("select nextval('internal_barcode_seq') as \"v!\"")
-                .fetch_one(&mut *tx)
-                .await?;
-            (
-                barcode::internal_code(seq)
-                    .ok_or_else(|| AppError::Internal("кончились коды".into()))?,
-                true,
-            )
-        }
+        None => (next_internal_code(&mut tx).await?, true),
     };
     insert_barcode(&mut tx, id, &code, internal).await?;
     ops::audit(
@@ -894,4 +906,48 @@ async fn add_barcode(
     .await?;
     tx.commit().await?;
     Ok(Json(BarcodeOut { code, internal }))
+}
+
+async fn remove_barcode(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((id, code)): Path<(Uuid, String)>,
+) -> AppResult<Json<Value>> {
+    let mut tx = state.pool.begin().await?;
+    let total = sqlx::query_scalar!(
+        "select count(*) as \"n!\" from product_barcodes where product_id = $1",
+        id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if total == 0 {
+        return Err(AppError::NotFound);
+    }
+    if total == 1 {
+        return Err(invalid(
+            "это последний штрихкод товара, без кода товар не продать",
+        ));
+    }
+    let removed = sqlx::query!(
+        "delete from product_barcodes where product_id = $1 and code = $2",
+        id,
+        code
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if removed == 0 {
+        return Err(AppError::NotFound);
+    }
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "product.barcode_remove",
+        "product",
+        Some(id),
+        json!({ "code": code }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "ok": true })))
 }

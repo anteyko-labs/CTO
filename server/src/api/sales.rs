@@ -25,6 +25,25 @@ pub fn routes() -> Router<AppState> {
         .route("/sales/{id}/return", routing::post(return_sale))
 }
 
+/// Ставка мастера за замену по умолчанию — 30 сом (ADR-027).
+pub const DEFAULT_OIL_CHANGE_FEE: i64 = 3000;
+
+/// Ставка замены из настроек филиала.
+async fn oil_change_fee(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'sales'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(v.and_then(|v| {
+        v.get("oil_change_master_fee_tyiyn")
+            .and_then(serde_json::Value::as_i64)
+    })
+    .filter(|v| *v >= 0)
+    .unwrap_or(DEFAULT_OIL_CHANGE_FEE))
+}
+
 #[derive(Deserialize, Clone)]
 pub struct SaleLineReq {
     pub kind: String,
@@ -95,6 +114,8 @@ pub struct SaleOut {
     pub master_id: Option<Uuid>,
     pub master_name: Option<String>,
     pub total_tyiyn: i64,
+    /// Начисление мастеру за замену: ставка на чек, а не строка услуги (ADR-027).
+    pub master_fee_tyiyn: i64,
     pub comment: String,
     pub reversal_of: Option<Uuid>,
     pub user_name: String,
@@ -111,7 +132,8 @@ pub async fn load_sale(
 ) -> AppResult<SaleOut> {
     let h = sqlx::query!(
         r#"select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,
-                  s.master_id, m.full_name as "master_name?", s.total_tyiyn, s.comment, s.reversal_of,
+                  s.master_id, m.full_name as "master_name?", s.total_tyiyn, s.master_fee_tyiyn,
+                  s.comment, s.reversal_of,
                   u.full_name as user_name, s.created_at
            from sales s
            join employees c on c.id = s.cashier_id
@@ -178,6 +200,7 @@ pub async fn load_sale(
         master_id: h.master_id,
         master_name: h.master_name,
         total_tyiyn: h.total_tyiyn,
+        master_fee_tyiyn: h.master_fee_tyiyn,
         comment: h.comment,
         reversal_of: h.reversal_of,
         user_name: h.user_name,
@@ -212,7 +235,7 @@ async fn prepare_line(
     if l.kind == "service" {
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
         let s = sqlx::query!(
-            "select price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2 and active",
+            "select price_tyiyn from services where id = $1 and branch_id = $2 and active",
             sid,
             branch_id
         )
@@ -228,7 +251,9 @@ async fn prepare_line(
             unit_price: l.unit_price_tyiyn,
             list_price: s.price_tyiyn,
             amount: mul(l.qty, l.unit_price_tyiyn).ok_or_else(overflow)?,
-            master_fee: mul(l.qty, s.master_fee_tyiyn).ok_or_else(overflow)?,
+            // Мастеру начисляет отметка замены в чеке, а не строка работы (ADR-027):
+            // иначе за один и тот же чек начислилось бы дважды.
+            master_fee: 0,
         });
     }
     let pid = l.product_id.ok_or_else(|| invalid("не указан товар"))?;
@@ -386,9 +411,6 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             let master = req
                 .master_id
                 .ok_or_else(|| invalid("в сервисе нужен мастер"))?;
-            if !has_service {
-                return Err(invalid("в продаже «в сервис» нужна услуга"));
-            }
             check_employee(conn, branch_id, master, true).await?;
         }
         _ => return Err(invalid("тип продажи: takeaway или service")),
@@ -403,6 +425,12 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         prepared.push(p);
     }
     check_payments(&req.payments, total)?;
+    // Замена строкой в чеке не печатается: мастеру идёт одна ставка за чек (ADR-027).
+    let master_fee = if req.sale_type == "service" {
+        oil_change_fee(conn, branch_id).await?
+    } else {
+        0
+    };
 
     lock_products(
         conn,
@@ -414,8 +442,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let id = new_id();
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
-                              comment, user_id, device_id, client_time)
-           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                              master_fee_tyiyn, comment, user_id, device_id, client_time)
+           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         id,
         branch_id,
         number,
@@ -423,6 +451,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         req.cashier_id,
         req.master_id,
         total,
+        master_fee,
         req.comment.trim(),
         ctx.user.id,
         ctx.device_id,
@@ -553,7 +582,7 @@ pub async fn return_sale_tx(
     .execute(&mut *conn)
     .await?;
     let orig = sqlx::query!(
-        "select kind, sale_type, cashier_id, master_id from sales where id = $1 and branch_id = $2",
+        "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn from sales where id = $1 and branch_id = $2",
         id,
         branch_id
     )
@@ -626,6 +655,27 @@ pub async fn return_sale_tx(
         });
     }
     check_payments(&req.payments, total)?;
+    // Работу мастер уже сделал: ставка снимается только если вернули чек целиком (ADR-027).
+    let sold_qty = sqlx::query_scalar!(
+        r#"select coalesce(sum(qty), 0)::bigint as "v!" from sale_lines where sale_id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let returned_qty = sqlx::query_scalar!(
+        r#"select coalesce(sum(l.qty), 0)::bigint as "v!"
+           from sale_lines l join sales s on s.id = l.sale_id where s.reversal_of = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let now_qty: i64 = req.lines.iter().map(|l| l.qty).sum();
+    let full_return = returned_qty + now_qty >= sold_qty;
+    let fee_back = if full_return {
+        -orig.master_fee_tyiyn
+    } else {
+        0
+    };
 
     let products: BTreeSet<Uuid> = planned.iter().filter_map(|x| x.p.product_id).collect();
     lock_products(conn, branch_id, products).await?;
@@ -633,8 +683,8 @@ pub async fn return_sale_tx(
     let rid = new_id();
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
-                              comment, reversal_of, user_id, device_id)
-           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                              master_fee_tyiyn, comment, reversal_of, user_id, device_id)
+           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         rid,
         branch_id,
         number,
@@ -642,6 +692,7 @@ pub async fn return_sale_tx(
         orig.cashier_id,
         orig.master_id,
         -total,
+        fee_back,
         req.comment.trim(),
         id,
         ctx.user.id,

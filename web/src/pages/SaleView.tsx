@@ -156,6 +156,7 @@ export default function SaleView() {
         <div>Тип: {sale.sale_type === 'service' ? 'В сервис' : 'На вынос'}</div>
         <div>Кассир: {sale.cashier_name}</div>
         <div>Мастер: {sale.master_name ?? '—'}</div>
+        {sale.master_fee_tyiyn !== 0 && <div>Мастеру за замену: {formatSom(sale.master_fee_tyiyn)}</div>}
         <div>Провёл: {sale.user_name}</div>
         {sale.comment && <div>Комментарий: {sale.comment}</div>}
         {sale.reversal_of && (

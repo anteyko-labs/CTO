@@ -15,8 +15,11 @@ describe('формат', () => {
     expect(nb(formatLiters(2500))).toBe('2,5 л')
     expect(nb(formatLiters(4000))).toBe('4 л')
     expect(nb(formatLiters(125))).toBe('0,125 л')
-    expect(nb(formatOilStock(14500, 4000))).toBe('3 кан. по 4 л + 2,5 л')
-    expect(nb(formatOilStock(8000, 4000))).toBe('2 кан. по 4 л')
+    expect(nb(formatOilStock(14500, 4000))).toBe('14,5 л · 3 кан. по 4 л + 2,5 л')
+    expect(nb(formatOilStock(8000, 4000))).toBe('8 л · 2 кан. по 4 л')
+    expect(nb(formatOilStock(4000, 4000))).toBe('4 л')
+    expect(nb(formatOilStock(2500, 4000))).toBe('2,5 л')
+    expect(nb(formatOilStock(0, 4000))).toBe('0 л')
   })
 
   it('разбор ввода без дробных чисел', () => {

@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
-import { get, patch, post } from '../lib/api'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
+import { get, patch, post, put } from '../lib/api'
+import { useUser } from '../lib/auth'
 import { formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Service } from '../lib/types'
 
-const FEE_HINT = 'Начисляется мастеру за каждую такую услугу в продаже'
+const FEE_HINT = 'Начисляется мастеру за каждую такую работу в чеке'
 
 function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn: number } {
   const p = parseSom(price)
@@ -63,6 +64,47 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
   )
 }
 
+/** Ставка мастера за чек с заменой: замена в чеке строкой не печатается (ADR-027). */
+function OilChangeFee() {
+  const owner = useUser().role === 'owner'
+  const settings = useLoad(() => get<{ oil_change_master_fee_tyiyn: number }>('/settings/sales'), [])
+  const [fee, setFee] = useState<string | null>(null)
+  const save = useAction()
+  const current = settings.data?.oil_change_master_fee_tyiyn ?? 0
+  const value = fee ?? somInput(current)
+
+  const submit = () =>
+    save.run(async () => {
+      const v = parseSom(value)
+      if (v === null) throw new Error('Неверная ставка')
+      await put('/settings/sales', { oil_change_master_fee_tyiyn: v })
+      setFee(null)
+      settings.reload()
+      toast('Ставка сохранена')
+    })
+
+  return (
+    <Card className="mb-4">
+      <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+        <Field
+          label="Мастеру за замену, с"
+          hint="Одна ставка на чек с отметкой «в сервис». Замена отдельной строкой в чеке не печатается, цена масла та же."
+        >
+          <input inputMode="decimal" disabled={!owner || settings.loading} value={value} onChange={(e) => setFee(e.target.value)} />
+        </Field>
+        {owner && (
+          <Button disabled={save.busy || fee === null || !value.trim()} onClick={() => void submit()}>
+            Сохранить
+          </Button>
+        )}
+      </div>
+      <div className="mt-2">
+        <ErrorBox error={settings.error ?? save.error} />
+      </div>
+    </Card>
+  )
+}
+
 export default function Services() {
   const list = useLoad(() => get<Service[]>('/services'), [])
   const [form, setForm] = useState({ name: '', price: '', fee: '30' })
@@ -82,6 +124,8 @@ export default function Services() {
     <div>
       <PageHeader title="Услуги" />
 
+      <OilChangeFee />
+
       <Card className="mb-4">
         <form onSubmit={create} className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr_auto] sm:items-end">
           <Field label="Название">
@@ -97,7 +141,9 @@ export default function Services() {
             Добавить
           </Button>
         </form>
-        <p className="mt-2 text-xs text-slate-500">{FEE_HINT}.</p>
+        <p className="mt-2 text-xs text-slate-500">
+          {FEE_HINT}. Замена масла здесь не нужна: она отмечается в чеке и платится ставкой выше.
+        </p>
         <div className="mt-2">
           <ErrorBox error={error} />
         </div>

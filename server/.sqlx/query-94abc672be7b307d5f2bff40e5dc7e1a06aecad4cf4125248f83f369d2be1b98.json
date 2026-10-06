@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,\n                              master_fee_tyiyn, comment, reversal_of, user_id, device_id)\n           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "94abc672be7b307d5f2bff40e5dc7e1a06aecad4cf4125248f83f369d2be1b98"
+}

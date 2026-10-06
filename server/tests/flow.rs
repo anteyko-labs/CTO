@@ -286,39 +286,89 @@ async fn payments_must_match_total(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn service_sale_requires_master(pool: PgPool) {
+async fn oil_change_is_a_mark_not_a_service_line(pool: PgPool) {
     let w = seed(&pool).await;
-    let svc = SaleLineReq {
-        kind: "service".into(),
-        product_id: None,
-        service_id: Some(w.service),
-        qty: 1,
-        unit_price_tyiyn: 25_000,
-    };
-    let mut req = takeaway(&w, vec![svc.clone()], cash(25_000));
+    receive(&pool, &w.admin, w.filter, 10, 100).await;
+
+    // «В сервис» без мастера не проводится.
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
     req.sale_type = "service".into();
     assert!(matches!(
         sell(&pool, &w.owner, req).await,
         Err(AppError::Validation(_))
     ));
 
+    // Мастер на вынос тоже не проводится.
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    req.master_id = Some(w.master);
+    assert!(matches!(
+        sell(&pool, &w.owner, req).await,
+        Err(AppError::Validation(_))
+    ));
+
+    // Чек с заменой: ставка одна на чек, строк услуг в чеке нет (ADR-027).
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000));
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    let service_sale = sell(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(service_sale.master_fee_tyiyn, 3000);
+    assert!(service_sale.lines.iter().all(|l| l.kind != "service"));
+
+    // Тот же товар на вынос стоит столько же, но мастеру не идёт ничего.
+    let takeaway_sale = sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(takeaway_sale.total_tyiyn, service_sale.total_tyiyn);
+    assert_eq!(takeaway_sale.master_fee_tyiyn, 0);
+
+    // Частичный возврат ставку не снимает, полный — снимает.
+    let ret = |qty| ReturnReq {
+        op_id: Uuid::now_v7(),
+        comment: String::new(),
+        lines: vec![ReturnLineReq { line_no: 1, qty }],
+        payments: cash(50_000 * qty),
+    };
+    let mut tx = pool.begin().await.unwrap();
+    let partial = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(1))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(partial.master_fee_tyiyn, 0);
+    let mut tx = pool.begin().await.unwrap();
+    let full = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(1))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(full.master_fee_tyiyn, -3000);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn other_work_still_sells_as_a_service_line(pool: PgPool) {
+    // Замена ушла из строк чека, но прочие работы в API остались (ADR-027).
+    let w = seed(&pool).await;
     let mut req = takeaway(
         &w,
-        vec![svc, line("piece", w.filter, 1, 50_000)],
-        cash(75_000),
+        vec![SaleLineReq {
+            kind: "service".into(),
+            product_id: None,
+            service_id: Some(w.service),
+            qty: 1,
+            unit_price_tyiyn: 20_000,
+        }],
+        cash(20_000),
     );
     req.sale_type = "service".into();
     req.master_id = Some(w.master);
     let sale = sell(&pool, &w.owner, req).await.unwrap();
-    assert_eq!(sale.lines[0].master_fee_tyiyn, 3000);
     assert_eq!(sale.lines[0].list_price_tyiyn, 20_000);
-    // Цена работы изменена в чеке — запись в журнале.
-    let overrides: i64 =
-        sqlx::query_scalar("select count(*) from audit_log where action = 'sale.price_override'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(overrides, 1);
+    // Строка работы мастеру больше не начисляет: ставка одна, за чек.
+    assert_eq!(sale.lines[0].master_fee_tyiyn, 0);
+    assert_eq!(sale.master_fee_tyiyn, 3000);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

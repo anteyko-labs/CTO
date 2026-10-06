@@ -22,15 +22,16 @@ export function formatLiters(ml: number): string {
   return `${sign}${group(String(whole))}${frac ? ',' + frac : ''}\u00a0л`
 }
 
-/** Остаток масла: «3 кан. по 4 л + 2,5 л» */
+/** Остаток масла: «14,5 л · 3 кан. по 4 л + 2,5 л» — считаем литрами, тара в расшифровке. */
 export function formatOilStock(ml: number, containerMl: number): string {
-  if (ml <= 0 || containerMl <= 0) return formatLiters(ml)
+  const total = formatLiters(ml)
+  if (ml <= 0 || containerMl <= 0) return total
   const full = Math.trunc(ml / containerMl)
   const rest = ml % containerMl
   const parts: string[] = []
   if (full > 0) parts.push(`${full} кан. по ${formatLiters(containerMl)}`)
   if (rest > 0) parts.push(formatLiters(rest))
-  return parts.join(' + ')
+  return parts.length > 1 || full > 1 ? `${total} · ${parts.join(' + ')}` : total
 }
 
 /** Разбор десятичной строки в целое с `scale` знаками: «12,5» при scale=2 → 1250. */

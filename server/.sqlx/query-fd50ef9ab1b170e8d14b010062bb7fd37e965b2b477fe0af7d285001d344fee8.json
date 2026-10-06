@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(l.qty), 0)::bigint as \"v!\"\n           from sale_lines l join sales s on s.id = l.sale_id where s.reversal_of = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fd50ef9ab1b170e8d14b010062bb7fd37e965b2b477fe0af7d285001d344fee8"
+}

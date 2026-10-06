@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from product_barcodes where product_id = $1 and code = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ed1262955a7f2c8d219ae0522bad8ebc02e95280ee1f854f8e1180ee5f4162b4"
+}
