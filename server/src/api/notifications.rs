@@ -1,0 +1,200 @@
+//! Уведомления владельцу: важные события из журнала действий (инвариант 5).
+//! Отдельной таблицы нет — журнал уже хранит всё, здесь только выборка и отметка «просмотрено».
+
+use axum::extract::{Query, State};
+use axum::{Json, Router, routing};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::auth::{Ctx, CurrentUser};
+use crate::error::{AppError, AppResult};
+use crate::state::AppState;
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/notifications", routing::get(list))
+        .route("/notifications/seen", routing::post(mark_seen))
+}
+
+/// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
+const WATCHED: [&str; 8] = [
+    "product.prices",
+    "sale.price_override",
+    "sale.credit_limit_exceeded",
+    "sale.return",
+    "receipt.reverse",
+    "debt.adjust",
+    "user.create",
+    "user.update",
+];
+
+#[derive(Serialize)]
+struct NotificationOut {
+    id: Uuid,
+    action: String,
+    title: String,
+    details: String,
+    user_name: Option<String>,
+    at: DateTime<Utc>,
+    entity_id: Option<Uuid>,
+    new: bool,
+}
+
+#[derive(Serialize)]
+struct NotificationsOut {
+    unseen: i64,
+    items: Vec<NotificationOut>,
+}
+
+#[derive(Deserialize)]
+struct ListQuery {
+    limit: Option<i64>,
+}
+
+fn money(v: Option<i64>) -> String {
+    match v {
+        Some(t) => format!("{},{:02} с", t / 100, (t % 100).abs()),
+        None => "—".into(),
+    }
+}
+
+fn describe(action: &str, data: &Value) -> (String, String) {
+    let num = |key: &str| data.get(key).and_then(Value::as_i64);
+    match action {
+        "product.prices" => (
+            "Изменена цена товара".into(),
+            format!(
+                "было {}, стало {}",
+                money(num("old_sale_price_tyiyn")),
+                money(num("sale_price_tyiyn"))
+            ),
+        ),
+        "sale.price_override" => (
+            "Цена изменена прямо в чеке".into(),
+            data.get("lines")
+                .and_then(Value::as_array)
+                .map(|l| format!("строк: {}", l.len()))
+                .unwrap_or_default(),
+        ),
+        "sale.credit_limit_exceeded" => (
+            "Долг клиента вышел за лимит".into(),
+            format!("в долг {}", money(num("debt"))),
+        ),
+        "sale.return" => (
+            "Оформлен возврат".into(),
+            format!(
+                "чек № {}, {}",
+                num("number").unwrap_or(0),
+                money(num("total"))
+            ),
+        ),
+        "receipt.reverse" => (
+            "Сторно прихода".into(),
+            format!("накладная № {}", num("number").unwrap_or(0)),
+        ),
+        "debt.adjust" => (
+            "Правка долга вручную".into(),
+            format!(
+                "{} — {}",
+                money(num("amount_tyiyn")),
+                data.get("comment").and_then(Value::as_str).unwrap_or("")
+            ),
+        ),
+        "user.create" => (
+            "Создан пользователь".into(),
+            data.get("login")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .into(),
+        ),
+        "user.update" => (
+            "Изменён пользователь".into(),
+            data.get("login")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .into(),
+        ),
+        _ => (action.into(), String::new()),
+    }
+}
+
+async fn seen_at(state: &AppState, user: &CurrentUser) -> AppResult<Option<DateTime<Utc>>> {
+    let key = format!("notifications_seen:{}", user.id);
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = $2",
+        user.branch_id,
+        key
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(
+        v.and_then(|v| v.get("at").and_then(Value::as_str).map(str::to_string))
+            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            .map(|d| d.with_timezone(&Utc)),
+    )
+}
+
+async fn list(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<ListQuery>,
+) -> AppResult<Json<NotificationsOut>> {
+    // Сводные события — только владельцу (инвариант 13).
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let seen = seen_at(&state, &user).await?;
+    let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let rows = sqlx::query!(
+        r#"select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as "user_name?"
+           from audit_log a
+           left join users u on u.id = a.user_id
+           where a.branch_id = $1 and a.action = any($2)
+           order by a.created_at desc
+           limit $3"#,
+        user.branch_id,
+        &watched,
+        limit
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let items: Vec<NotificationOut> = rows
+        .into_iter()
+        .map(|r| {
+            let (title, details) = describe(&r.action, &r.data);
+            NotificationOut {
+                id: r.id,
+                action: r.action,
+                title,
+                details,
+                user_name: r.user_name,
+                at: r.created_at,
+                entity_id: r.entity_id,
+                new: seen.is_none_or(|s| r.created_at > s),
+            }
+        })
+        .collect();
+    let unseen = i64::try_from(items.iter().filter(|i| i.new).count()).unwrap_or(i64::MAX);
+    Ok(Json(NotificationsOut { unseen, items }))
+}
+
+async fn mark_seen(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Value>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let key = format!("notifications_seen:{}", ctx.user.id);
+    let value = json!({ "at": Utc::now().to_rfc3339() });
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, $2, $3)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        ctx.user.branch_id,
+        key,
+        value
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(Json(value))
+}

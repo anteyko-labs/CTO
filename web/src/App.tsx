@@ -10,6 +10,7 @@ import Clients from './pages/Clients'
 import Employees from './pages/Employees'
 import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
+import Notifications from './pages/Notifications'
 import Products from './pages/Products'
 import ReceiptNew from './pages/ReceiptNew'
 import ReceiptView from './pages/ReceiptView'
@@ -34,6 +35,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/', label: 'Касса' },
       { to: '/sales', label: 'Чеки' },
       { to: '/debts', label: 'Долги' },
+      { to: '/notifications', label: 'Уведомления', ownerOnly: true },
     ],
   },
   {
@@ -132,6 +134,7 @@ function Shell() {
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
           <Route path="/debts" element={<Debts />} />
+          {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />
           <Route path="/clients/:id" element={<ByParam><ClientCard /></ByParam>} />
           <Route path="/categories" element={<Categories />} />

@@ -563,6 +563,102 @@ async fn supplier_debt_is_tracked_and_paid(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn price_changes_are_owner_only_and_notify(pool: PgPool) {
+    // Цену заведённого товара меняет только владелец, и он же об этом узнаёт (ADR-032).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let (_, _, product) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр",
+            "sale_price_tyiyn": 50_000
+        })),
+    )
+    .await;
+    let pid = product["id"].as_str().unwrap().to_string();
+
+    // Администратор цену не меняет, минимальный остаток — меняет.
+    assert_eq!(
+        call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/products/{pid}/prices"),
+            Some(&admin),
+            Some(json!({ "sale_price_tyiyn": 60_000 })),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/products/{pid}/prices"),
+            Some(&admin),
+            Some(json!({ "min_stock": 3 })),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/products/{pid}/prices"),
+            Some(&owner),
+            Some(json!({ "sale_price_tyiyn": 60_000 })),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    // Владельцу видно, что цену меняли; администратору уведомления не отдаются.
+    assert_eq!(
+        call(&app, "GET", "/api/v1/notifications", Some(&admin), None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list["unseen"].as_i64().unwrap() >= 1);
+    let first = &list["items"][0];
+    assert_eq!(first["title"], "Изменена цена товара");
+    assert_eq!(first["new"], json!(true));
+
+    // Открыли экран — уведомления больше не новые.
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/notifications/seen",
+            Some(&owner),
+            Some(json!({}))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    assert_eq!(list["unseen"], 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

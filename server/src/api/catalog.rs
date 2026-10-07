@@ -792,7 +792,10 @@ async fn update_prices(
     Path(id): Path<Uuid>,
     Json(req): Json<PricesReq>,
 ) -> AppResult<Json<ProductOut>> {
-    if req.pour_price_per_l_tyiyn.is_some() && !ctx.user.is_owner() {
+    // Менять цену заведённого товара может только владелец (ADR-032).
+    if (req.pour_price_per_l_tyiyn.is_some() || req.sale_price_tyiyn.is_some())
+        && !ctx.user.is_owner()
+    {
         return Err(AppError::Forbidden);
     }
     if [
@@ -841,6 +844,8 @@ async fn update_prices(
         "product",
         Some(id),
         json!({
+            "old_sale_price_tyiyn": old.sale_price_tyiyn,
+            "sale_price_tyiyn": req.sale_price_tyiyn.unwrap_or(old.sale_price_tyiyn),
             "old": { "sale": old.sale_price_tyiyn, "pour": old.pour_price_per_l_tyiyn, "min_stock": old.min_stock },
             "new": { "sale": req.sale_price_tyiyn, "pour": req.pour_price_per_l_tyiyn, "min_stock": req.min_stock },
         }),

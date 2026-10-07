@@ -68,6 +68,41 @@ const nextKey = () => crypto.randomUUID()
 /** Незавершённый чек переживает переход на другой экран и перезагрузку вкладки. */
 const DRAFT_KEY = 'avtodom.cart'
 
+/** Отложенные чеки: клиент ушёл за второй канистрой, а касса свободна. */
+const PARKED_KEY = 'avtodom.parked'
+
+interface Parked {
+  id: string
+  at: string
+  label: string
+  saleType: 'takeaway' | 'service'
+  masterId: string
+  lines: CartLine[]
+  comment: string
+  party: Party | null
+  contactId: string
+  vehicleId: string
+}
+
+function loadParked(): Parked[] {
+  try {
+    const raw = localStorage.getItem(PARKED_KEY)
+    return raw ? (JSON.parse(raw) as Parked[]) : []
+  } catch {
+    return []
+  }
+}
+
+function saveParked(list: Parked[]): void {
+  try {
+    localStorage.setItem(PARKED_KEY, JSON.stringify(list))
+  } catch {
+    // Без хранилища отложенные живут до перезагрузки.
+  }
+}
+
+const parkedTotal = (p: Parked): number => p.lines.reduce((acc, l) => acc + (lineAmount(l) ?? 0), 0)
+
 interface Draft {
   saleType: 'takeaway' | 'service'
   masterId: string
@@ -122,6 +157,8 @@ export default function Cashier() {
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
   const [newProductName, setNewProductName] = useState<string | null>(null)
   const [party, setParty] = useState<Party | null>(null)
+  const [parked, setParked] = useState<Parked[]>(loadParked)
+  const [parkedId, setParkedId] = useState<string | null>(null)
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
   const { busy, error, setError, run } = useAction()
@@ -218,6 +255,57 @@ export default function Cashier() {
   }
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
+  /** Откладывает текущий чек, возвращая новый список отложенных. */
+  const parkCurrent = (list: Parked[]): Parked[] => {
+    if (lines.length === 0) return list
+    const id = parkedId ?? crypto.randomUUID()
+    const item: Parked = {
+      id,
+      at: new Date().toISOString(),
+      label: party?.name ?? '',
+      saleType,
+      masterId,
+      lines,
+      comment,
+      party,
+      contactId,
+      vehicleId,
+    }
+    return [...list.filter((p) => p.id !== id), item]
+  }
+
+  const park = () => {
+    const next = parkCurrent(parked)
+    setParked(next)
+    saveParked(next)
+    setParkedId(null)
+    reset()
+    focusPicker()
+  }
+
+  const resume = (p: Parked) => {
+    // Текущий чек не теряется: он уходит в отложенные.
+    const next = parkCurrent(parked).filter((x) => x.id !== p.id)
+    setParked(next)
+    saveParked(next)
+    setSaleType(p.saleType)
+    setMasterId(p.masterId)
+    setLines(p.lines)
+    setComment(p.comment)
+    setParty(p.party)
+    setContactId(p.contactId)
+    setVehicleId(p.vehicleId)
+    setParkedId(p.id)
+    setDone(null)
+    focusPicker()
+  }
+
+  const dropParked = (id: string) => {
+    const next = parked.filter((p) => p.id !== id)
+    setParked(next)
+    saveParked(next)
+  }
+
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]'],
     [lines.length === 0 || valid, 'количество и цены в строках'],
@@ -251,6 +339,8 @@ export default function Cashier() {
         payments,
       })
       setDone({ sale, change: payMode === 'cash' ? change : null })
+      if (parkedId) dropParked(parkedId)
+      setParkedId(null)
       setOpId(newOpId())
       reset()
       focusPicker()
@@ -271,6 +361,29 @@ export default function Cashier() {
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
       <div className="flex min-w-0 flex-col gap-4">
+        {parked.length > 0 && (
+          <Card className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-slate-500">Отложенные:</span>
+            {parked.map((p) => (
+              <span
+                key={p.id}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-sm"
+              >
+                <button type="button" className="font-medium hover:text-sky-700" onClick={() => resume(p)}>
+                  {p.label || `Чек на ${p.lines.length} поз.`} · {formatSom(parkedTotal(p))}
+                </button>
+                <button
+                  type="button"
+                  className="text-slate-400 hover:text-rose-600"
+                  aria-label="Удалить отложенный чек"
+                  onClick={() => dropParked(p.id)}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </Card>
+        )}
         <Card>
           <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
         </Card>
@@ -556,9 +669,14 @@ export default function Cashier() {
           </Button>
           <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — провести</div>
           {lines.length > 0 && (
-            <Button variant="ghost" onClick={reset}>
-              Очистить
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="secondary" className="flex-1" onClick={park}>
+                Отложить
+              </Button>
+              <Button variant="ghost" className="flex-1" onClick={reset}>
+                Очистить
+              </Button>
+            </div>
           )}
         </Card>
       </div>

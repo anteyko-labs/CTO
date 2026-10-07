@@ -296,3 +296,21 @@ export interface PartyCard {
   last_at: string | null
   timeline: PartyTimelineItem[]
 }
+
+// ---------- Уведомления владельцу ----------
+
+export interface NotificationItem {
+  id: string
+  action: string
+  title: string
+  details: string
+  user_name: string | null
+  at: string
+  entity_id: string | null
+  new: boolean
+}
+
+export interface NotificationsOut {
+  unseen: number
+  items: NotificationItem[]
+}

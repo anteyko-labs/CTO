@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as \"user_name?\"\n           from audit_log a\n           left join users u on u.id = a.user_id\n           where a.branch_id = $1 and a.action = any($2)\n           order by a.created_at desc\n           limit $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_name?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "44b1b646b92090a15934aa87309059e1ea3d942c1b5e937ffb949b1294678b11"
+}
