@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e2e0' }
-const PICKER = 'Сканируйте штрихкод или введите название'
+const PICKER = /Сканируйте штрихкод/
 
 /** Уникальная метка прогона, чтобы тесты не мешали данным в базе. */
 const RUN = Date.now().toString().slice(-8)
