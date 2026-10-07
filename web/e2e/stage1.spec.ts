@@ -109,3 +109,50 @@ test('администратор не видит пользователей и �
   expect(res.status()).toBe(403)
   await ctx.close()
 })
+
+test('касса работает без сети, чек уходит при её появлении', async ({ page, context }) => {
+  const code = `26${RUN}777`
+  const cashier = `Кассир офлайн ${RUN}`
+  const product = `Фильтр офлайн ${RUN}`
+
+  await login(page, OWNER, OWNER_PASSWORD)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Офлайн ${RUN}`, kind: 'filter' })
+  const prod = await apiPost<{ id: string }>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: product,
+    barcodes: [code],
+    sale_price_tyiyn: 70000,
+  })
+  await apiPost(page.request, '/receipts', {
+    op_id: crypto.randomUUID(),
+    lines: [{ product_id: prod.id, qty: 5, cost_tyiyn: 150000 }],
+  })
+  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true })
+
+  // Снимок каталога должен успеть лечь на устройство.
+  await page.goto('/')
+  await page.waitForSelector('[data-picker]')
+  await page.waitForTimeout(2500)
+
+  await context.setOffline(true)
+  await scan(page, code)
+  await page.getByRole('combobox', { name: /^Кассир/ }).selectOption({ label: cashier })
+  await expect(page.getByText(/Нет сети/)).toBeVisible()
+  await page.getByRole('button', { name: 'Провести чек' }).click()
+  await expect(page.getByText(/Чек № Ч-.* проведён/)).toBeVisible()
+
+  // Сеть вернулась — чек уходит сам.
+  await context.setOffline(false)
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.get('/api/v1/sales')
+        const day = (await res.json()) as { sales: { total_tyiyn: number }[] }
+        return day.sales.some((s) => s.total_tyiyn === 70000)
+      },
+      { timeout: 20000 },
+    )
+    .toBe(true)
+})

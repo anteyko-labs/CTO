@@ -12,6 +12,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "idb": "^8.0.4",
     "jsbarcode": "^3.12.3",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
@@ -30,6 +31,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
+    "vite-plugin-pwa": "^2.0.0",
     "vitest": "^5.0.3"
   }
 }

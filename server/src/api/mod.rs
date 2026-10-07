@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod expenses;
 pub mod gifts;
 pub mod notifications;
+pub mod offline;
 pub mod parties;
 pub mod payroll;
 pub mod receipts;
@@ -23,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .merge(expenses::routes())
         .merge(gifts::routes())
         .merge(notifications::routes())
+        .merge(offline::routes())
         .merge(parties::routes())
         .merge(payroll::routes())
         .merge(refs::routes())

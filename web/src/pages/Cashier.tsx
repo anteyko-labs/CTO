@@ -9,6 +9,7 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Missing, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
+import { enqueueSale, syncOutbox } from '../lib/offline'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -358,7 +359,7 @@ export default function Cashier() {
 
   const submit = () =>
     run(async () => {
-      const sale = await post<Sale>('/sales', {
+      const body = {
         op_id: opId,
         client_time: new Date().toISOString(),
         sale_type: saleType,
@@ -377,7 +378,47 @@ export default function Cashier() {
           unit_price_tyiyn: parseSom(l.priceText),
         })),
         payments,
-      })
+      }
+      // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
+      const queued = await enqueueSale(opId, body)
+      let sale: Sale
+      try {
+        sale = await post<Sale>('/sales', body)
+      } catch (e) {
+        if (!navigator.onLine) {
+          const offlineSale = {
+            id: '',
+            number: queued.temp_no,
+            kind: 'sale',
+            sale_type: saleType,
+            cashier_name: cashiers.find((c) => c.id === cashierId)?.full_name ?? '',
+            master_name: masters.find((m) => m.id === masterId)?.full_name ?? null,
+            total_tyiyn: total,
+            created_at: new Date().toISOString(),
+            lines: lines.map((l, i) => ({
+              line_no: i + 1,
+              kind: l.kind,
+              gift: Boolean(l.gift),
+              name: l.product?.name ?? '',
+              container_ml: l.product?.container_ml ?? null,
+              qty: lineQty(l) ?? 0,
+              amount_tyiyn: lineAmount(l) ?? 0,
+              unit_price_tyiyn: parseSom(l.priceText) ?? 0,
+              list_price_tyiyn: listPrice(l),
+            })),
+            payments,
+          } as unknown as Sale
+          setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
+          setOpId(newOpId())
+          if (parkedId) dropParked(parkedId)
+          setParkedId(null)
+          reset()
+          focusPicker()
+          return
+        }
+        throw e
+      }
+      void syncOutbox()
       setDone({ sale, change: payMode === 'cash' ? change : null })
       if (parkedId) dropParked(parkedId)
       setParkedId(null)
@@ -442,9 +483,13 @@ export default function Cashier() {
                 <Button variant="secondary" onClick={() => printSale(done.sale, done.change)}>
                   Печать чека
                 </Button>
-                <Link className="self-center text-sm text-sky-700 hover:underline" to={`/sales/${done.sale.id}`}>
-                  Открыть
-                </Link>
+                {done.sale.id ? (
+                  <Link className="self-center text-sm text-sky-700 hover:underline" to={`/sales/${done.sale.id}`}>
+                    Открыть
+                  </Link>
+                ) : (
+                  <span className="self-center text-xs text-emerald-800">уйдёт на сервер, когда появится сеть</span>
+                )}
               </div>
             </div>
           </Card>

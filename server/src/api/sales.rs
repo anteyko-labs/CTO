@@ -599,7 +599,11 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
                               user_id, device_id, client_time, business_date)
            values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                   (now() at time zone 'Asia/Bishkek')::date)"#,
+                   case when $15::timestamptz is not null
+                         and $15::timestamptz > now() - interval '2 days'
+                         and $15::timestamptz < now() + interval '5 minutes'
+                        then ($15::timestamptz at time zone 'Asia/Bishkek')::date
+                        else (now() at time zone 'Asia/Bishkek')::date end)"#,
         id,
         branch_id,
         number,

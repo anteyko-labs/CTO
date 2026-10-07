@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
 import { formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
+import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
 import type { Product } from '../lib/types'
 
 /**
@@ -44,7 +45,14 @@ export function ProductPicker({
           setActive(0)
         }
       })
-      .catch(() => alive && setResults([]))
+      .catch(async () => {
+        // Нет связи — ищем в снимке каталога на устройстве (SPEC-09).
+        const snap = await readSnapshot()
+        if (alive) {
+          setResults(snap ? searchSnapshot(snap, query) : [])
+          setActive(0)
+        }
+      })
     return () => {
       alive = false
     }
@@ -68,6 +76,16 @@ export function ProductPicker({
     try {
       pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`))
     } catch (e) {
+      if (e instanceof ApiError && e.status === 0) {
+        const snap = await readSnapshot()
+        const found = snap ? findByBarcode(snap, code) : undefined
+        if (found) {
+          pick(found)
+          return
+        }
+        setMessage(`Без сети: код ${code} в снимке каталога не найден`)
+        return
+      }
       if (e instanceof ApiError && e.status === 404) {
         setText('')
         if (onUnknownCode) onUnknownCode(code)

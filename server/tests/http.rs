@@ -861,6 +861,42 @@ async fn profit_is_owner_only(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_snapshot_has_no_cost(pool: PgPool) {
+    // Снимок каталога для кассы: без себестоимости, с кодами и остатком (SPEC-09).
+    let app = setup(pool).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр офлайн",
+            "barcodes": ["4600000000031"], "sale_price_tyiyn": 50_000
+        })),
+    )
+    .await;
+
+    let (status, _, snap) = call(&app, "GET", "/api/v1/offline/snapshot", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let product = &snap["products"][0];
+    assert_eq!(product["name"], "Фильтр офлайн");
+    assert_eq!(product["barcodes"][0], "4600000000031");
+    assert!(product.get("avg_cost_tyiyn").is_none());
+    assert!(product.get("stock_value_tyiyn").is_none());
+    assert!(snap["version"].as_str().is_some_and(|v| !v.is_empty()));
+    assert_eq!(snap["oil_change_master_fee_tyiyn"], 3000);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

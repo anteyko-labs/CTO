@@ -1,6 +1,8 @@
-import { Fragment, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
+import { startOfflineLoop } from './lib/offline'
+import { OfflineBar } from './components/OfflineBar'
 import { Loading, Toaster } from './components/ui'
 import Cashier from './pages/Cashier'
 import Categories from './pages/Categories'
@@ -85,6 +87,8 @@ function ByParam({ children }: { children: ReactNode }) {
 function Shell() {
   const { user, logout } = useAuth()
   const [open, setOpen] = useState(false)
+  // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
+  useEffect(() => (user ? startOfflineLoop() : undefined), [user])
   if (!user) return <Navigate to="/login" replace />
   const owner = user.role === 'owner'
   const roleLabel = owner ? 'Владелец' : 'Администратор'
@@ -134,7 +138,9 @@ function Shell() {
         <span className="font-bold">Avtodom</span>
         <span className="text-xs text-slate-300">{user.full_name}</span>
       </div>
-      <main className="min-w-0 flex-1 p-4 pb-24 md:p-6">
+      <main className="min-w-0 flex-1 pb-24">
+        <OfflineBar />
+        <div className="p-4 md:p-6">
         <Routes>
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />
@@ -163,6 +169,7 @@ function Shell() {
           {owner && <Route path="/users" element={<Users />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </div>
       </main>
       <nav className="no-print fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white text-xs md:hidden">
         {MOBILE_TABS.map((t) => (
