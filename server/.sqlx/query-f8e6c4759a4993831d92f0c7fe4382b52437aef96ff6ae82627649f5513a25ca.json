@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,\n                                         base_tyiyn, rule_id, doc_type, doc_id, comment, user_id, device_id)\n           values ($1, $2, $3, coalesce($4, (now() at time zone 'Asia/Bishkek')::date), $5, $6,\n                   $7, $8, $9, $10, $11, $12, $13)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Text",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f8e6c4759a4993831d92f0c7fe4382b52437aef96ff6ae82627649f5513a25ca"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select least((date_trunc('month', $1::date) + interval '1 month - 1 day')::date,\n                        (now() at time zone 'Asia/Bishkek')::date) as \"d!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "d!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "126f82e23728f574d51b58a68cd96d0f3ce207cee8ef0eac649f773a5515bbb1"
+}

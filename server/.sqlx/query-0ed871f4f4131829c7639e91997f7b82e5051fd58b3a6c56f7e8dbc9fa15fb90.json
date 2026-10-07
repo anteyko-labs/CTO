@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select account_id, cashier_employee_id, business_date from shifts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "cashier_employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0ed871f4f4131829c7639e91997f7b82e5051fd58b3a6c56f7e8dbc9fa15fb90"
+}

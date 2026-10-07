@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id as \"employee_id!\", e.full_name as \"full_name!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date < $2), 0)::bigint\n             - coalesce((select sum(p.amount_tyiyn) from payouts p\n                         where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)::bigint\n               as \"opening!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2), 0)::bigint as \"accrued!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'service_fee'), 0)::bigint as \"service_fee!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as \"percent!\",\n             coalesce((select sum(a.base_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as \"base!\",\n             coalesce((select sum(p.amount_tyiyn) from payouts p\n                       where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as \"paid!\"\n           from employees e\n           where e.branch_id = $1\n           order by e.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "opening!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "service_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "base!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "paid!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "8e437b669a9005ef20baa8f5bcf5c65bb80cba498b42fa7a8b04cccccbe238fc"
+}

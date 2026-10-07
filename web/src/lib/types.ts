@@ -383,3 +383,19 @@ export interface Expense {
   user_name: string
   created_at: string
 }
+
+// ---------- Расчёт сотрудников (SPEC-07) ----------
+
+export interface PayrollRow {
+  employee_id: string
+  full_name: string
+  opening_tyiyn: number
+  accrued_tyiyn: number
+  service_fee_tyiyn: number
+  percent_tyiyn: number
+  other_tyiyn: number
+  /** База процента — валовая прибыль; администратору не отдаётся. */
+  base_tyiyn: number | null
+  paid_tyiyn: number
+  balance_tyiyn: number
+}

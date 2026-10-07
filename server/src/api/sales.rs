@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::api::cash::{self, CashEntry};
 use crate::api::parties;
+use crate::api::payroll;
 use crate::api::receipts::lock_products;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::costing::cost_of;
@@ -619,6 +620,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     .await?;
 
     let mut overrides = Vec::new();
+    // Валовая прибыль чека: с неё считается процент кассира (ADR-036).
+    let mut gross: i64 = 0;
     for (i, p) in prepared.iter().enumerate() {
         let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
         let mut cost = 0;
@@ -650,6 +653,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             p.qty,
         )
         .await?;
+        gross = gross.checked_add(p.amount - cost).ok_or_else(overflow)?;
         if p.unit_price != p.list_price {
             overrides
                 .push(json!({ "line_no": line_no, "list": p.list_price, "price": p.unit_price }));
@@ -698,6 +702,47 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         )
         .await?;
     }
+    // Начисления сотрудникам в той же транзакции, что и чек (инвариант 7).
+    let business_date = sqlx::query_scalar!(
+        r#"select business_date as "d!" from sales where id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if let Some(master_id) = req.master_id
+        && master_fee != 0
+    {
+        payroll::add_accrual(
+            conn,
+            ctx,
+            Some(business_date),
+            payroll::Accrual {
+                employee_id: master_id,
+                kind: "service_fee",
+                amount: master_fee,
+                base: None,
+                rule_id: None,
+                doc_type: "sale",
+                doc_id: Some(id),
+                comment: "",
+            },
+        )
+        .await?;
+    }
+    payroll::accrue_for_sale(
+        conn,
+        ctx,
+        payroll::SaleAccrual {
+            sale_id: id,
+            business_date,
+            cashier_id: req.cashier_id,
+            party_id: req.party_id,
+            gross,
+            total,
+            debt: debt_total,
+        },
+    )
+    .await?;
     ops::audit(
         conn,
         ctx,

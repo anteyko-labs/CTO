@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update employee_pay_rules\n           set active_to = (now() at time zone 'Asia/Bishkek')::date\n           where branch_id = $1 and employee_id = $2 and kind = $3 and active_to is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "27c143e942fcb7a9b37077b5f7b8bd017c718e94c0685a5d67b0cf997e6e08b8"
+}

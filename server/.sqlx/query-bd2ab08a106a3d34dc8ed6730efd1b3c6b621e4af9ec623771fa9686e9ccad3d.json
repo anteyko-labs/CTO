@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from payroll_accruals\n           where employee_id = $1 and kind = 'monthly_salary'\n             and date_trunc('month', business_date) = date_trunc('month', $2::date)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bd2ab08a106a3d34dc8ed6730efd1b3c6b621e4af9ec623771fa9686e9ccad3d"
+}

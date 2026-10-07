@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into payroll_pending (id, branch_id, party_id, sale_id, employee_id, rule_id,\n                                                rate_bp, gross_tyiyn, debt_total_tyiyn, debt_remaining_tyiyn)\n                   values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "067cb5655d00972bb181aaa1b0af40d84804d5ceb5444ea3e49f51ab151091ac"
+}

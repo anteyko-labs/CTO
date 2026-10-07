@@ -492,6 +492,76 @@ async fn cash_follows_payments(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
+    // 2 % с валовой прибыли: с оплаченной части сразу, с долговой — при погашении (ADR-035, ADR-036).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 30_000).await;
+    sqlx::query(
+        "insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base, rate_bp, user_id)
+         values ($1, $2, $3, 'revenue_percent', 'cashier', 'gross', 200, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let party = Uuid::now_v7();
+    sqlx::query(
+        "insert into parties (id, branch_id, role, kind, name) values ($1, $2, 'customer', 'company', 'ОсОО Процент')",
+    )
+    .bind(party)
+    .bind(w.owner.user.branch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Приход 10 шт на 30 000 → 3 000 за штуку. Чек на 100 000 за 2 шт: валовая 94 000,
+    // процент 2 % = 1 880, половина чека оплачена наличными.
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 2, 50_000)],
+        vec![
+            PaymentReq {
+                method: "cash".into(),
+                amount_tyiyn: 50_000,
+            },
+            PaymentReq {
+                method: "debt".into(),
+                amount_tyiyn: 50_000,
+            },
+        ],
+    );
+    req.party_id = Some(party);
+    sell(&pool, &w.owner, req).await.unwrap();
+
+    let accrued = |employee: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where employee_id = $1",
+            )
+            .bind(employee)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // Половина чека оплачена — начислена половина процента.
+    assert_eq!(accrued(w.cashier).await, 940);
+
+    let remaining: i64 =
+        sqlx::query_scalar("select debt_remaining_tyiyn from payroll_pending where party_id = $1")
+            .bind(party)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, 50_000);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn idempotent_sale(pool: PgPool) {
     let w = seed(&pool).await;
     let op = Uuid::now_v7();

@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, kind, role, base as \"base?\", amount_tyiyn as \"amount_tyiyn?\",\n                  rate_bp as \"rate_bp?\", active_from, active_to as \"active_to?\"\n           from employee_pay_rules\n           where branch_id = $1 and employee_id = $2\n           order by active_to nulls first, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "base?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "rate_bp?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "active_from",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 7,
+        "name": "active_to?",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "5a4df7a6698d48a3dd1d833575d8c66ef57d4cda9eb1d1a27fa536bf56477706"
+}

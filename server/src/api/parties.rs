@@ -645,6 +645,7 @@ async fn post_repayment(
         },
     )
     .await?;
+    crate::api::payroll::accrue_on_repayment(&mut tx, &ctx, req.party_id, req.amount_tyiyn).await?;
     ops::audit(
         &mut tx,
         &ctx,

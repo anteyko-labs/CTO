@@ -486,7 +486,7 @@ async fn close_shift(
         return Ok(Json(done));
     }
     let shift = sqlx::query!(
-        "select account_id from shifts where id = $1 and branch_id = $2",
+        "select account_id, cashier_employee_id, business_date from shifts where id = $1 and branch_id = $2",
         id,
         branch_id
     )
@@ -521,6 +521,15 @@ async fn close_shift(
         )
         .await?;
     }
+    crate::api::payroll::accrue_for_shift_close(
+        &mut tx,
+        &ctx,
+        id,
+        shift.business_date,
+        shift.cashier_employee_id,
+        diff,
+    )
+    .await?;
     let seq = sqlx::query_scalar!(
         r#"select coalesce(max(seq), 0) + 1 as "n!" from shift_closes where shift_id = $1"#,
         id

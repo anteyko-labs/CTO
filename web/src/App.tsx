@@ -13,6 +13,7 @@ import Gifts from './pages/Gifts'
 import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
 import Notifications from './pages/Notifications'
+import Payroll from './pages/Payroll'
 import Products from './pages/Products'
 import ReceiptNew from './pages/ReceiptNew'
 import ReceiptView from './pages/ReceiptView'
@@ -39,6 +40,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/sales', label: 'Чеки' },
       { to: '/shift', label: 'Смена' },
       { to: '/expenses', label: 'Расходы' },
+      { to: '/payroll', label: 'Расчёт' },
       { to: '/debts', label: 'Долги' },
       { to: '/notifications', label: 'Уведомления', ownerOnly: true },
     ],
@@ -141,6 +143,7 @@ function Shell() {
           <Route path="/products" element={<Products />} />
           <Route path="/shift" element={<Shift />} />
           <Route path="/expenses" element={<Expenses />} />
+          <Route path="/payroll" element={<Payroll />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />
