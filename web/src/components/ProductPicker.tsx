@@ -5,8 +5,10 @@ import { useDebounced } from '../lib/hooks'
 import type { Product } from '../lib/types'
 
 /**
- * Поле для сканера и поиска. Enter со строкой из цифр — поиск по штрихкоду,
- * иначе — выбор из списка найденных. Незнакомый код передаётся в `onUnknownCode`.
+ * Поле для сканера и поиска. Enter со строкой из цифр — точный поиск по штрихкоду,
+ * иначе — выбор из списка найденных. Набранный или вставленный код ищется и без Enter:
+ * сервер ищет его среди кодов товара наравне с названием и артикулом.
+ * Незнакомый код передаётся в `onUnknownCode`.
  */
 export function ProductPicker({
   onPick,
@@ -27,7 +29,7 @@ export function ProductPicker({
   const query = useDebounced(text.trim(), 200)
 
   useEffect(() => {
-    if (query.length < 2 || /^\d{8,}$/.test(query)) {
+    if (query.length < 2) {
       setResults([])
       return
     }

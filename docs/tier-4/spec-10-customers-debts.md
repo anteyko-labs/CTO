@@ -118,6 +118,8 @@ payments: [{method: cash | card | transfer | debt, amount_tyiyn}]
 
 ## Карточка контрагента
 
+Карточка поставщика сделана раньше срока, на таблице `suppliers` этапа 1: его накладные, что привозил, в каком количестве, на какую сумму и по какой цене в последний раз (`GET /suppliers/{id}`, `GET /suppliers/{id}/supplies`, `GET /receipts?supplier_id=`). При переходе на `parties` эти экраны переезжают на общую карточку без изменения состава данных.
+
 `GET /parties/{id}/card?from&to` — одна страница на всю историю:
 
 ```

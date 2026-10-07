@@ -51,6 +51,8 @@ export default function ReceiptNew() {
   const [print, setPrint] = useState(false)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const labels = useAction()
   const [newSupplier, setNewSupplier] = useState<{ name: string; phone: string } | null>(null)
   const save = useAction()
   const supplierAction = useAction()
@@ -69,6 +71,13 @@ export default function ReceiptNew() {
         return { ...l, count: String(n === null ? 1 : n + 1) }
       })
     })
+  }
+
+  /** Этикетки на товар строки: столько же, сколько принимаем. */
+  const printLine = (l: Line) => {
+    const c = lineCalc(l)
+    const copies = typeof c === 'string' ? 1 : c.n
+    void labels.run(() => printLabels([{ product: l.product, copies }]))
   }
 
   const updateLine = (key: string, patch: Partial<Line>) =>
@@ -261,13 +270,33 @@ export default function ReceiptNew() {
                       {typeof c === 'string' ? <span className="text-rose-600">{c}</span> : formatSom(c.cost)}
                     </td>
                     <td className="px-2 py-2 pt-6 text-right">
-                      <Button
-                        variant="ghost"
-                        aria-label="Удалить строку"
-                        onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
-                      >
-                        ✕
-                      </Button>
+                      <div className="flex flex-wrap justify-end gap-1">
+                        <Button
+                          variant="secondary"
+                          className="px-2 py-1 text-xs"
+                          disabled={labels.busy}
+                          title="Напечатать этикетки на этот товар"
+                          onClick={() => printLine(l)}
+                        >
+                          Этикетки
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          className="px-2 py-1 text-xs"
+                          title="Карточка товара: цена, штрихкоды, свой код"
+                          onClick={() => setEditingProduct(l.product)}
+                        >
+                          Карточка
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          className="px-2 py-1"
+                          aria-label="Удалить строку"
+                          onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
+                        >
+                          ✕
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -280,7 +309,7 @@ export default function ReceiptNew() {
           </div>
         </Card>
 
-        <ErrorBox error={save.error} />
+        <ErrorBox error={save.error ?? labels.error} />
         <div className="flex flex-wrap items-center justify-end gap-3">
           <Missing items={missing} />
           <Button disabled={save.busy || missing.length > 0} onClick={submit}>
@@ -300,6 +329,17 @@ export default function ReceiptNew() {
           onCreateNew={() => {
             setNewProductCode(unknownCode)
             setUnknownCode(null)
+          }}
+        />
+      )}
+      {editingProduct && (
+        <ProductFormModal
+          product={editingProduct}
+          onClose={() => setEditingProduct(null)}
+          onSaved={(p) => {
+            setEditingProduct(null)
+            // Цена и коды могли измениться — обновляем товар в строке.
+            setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, product: p } : l)))
           }}
         />
       )}

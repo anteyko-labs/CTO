@@ -357,6 +357,8 @@ async fn get_receipt(
 pub struct PeriodQuery {
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
+    /// Накладные одного поставщика — для его карточки (SPEC-10).
+    pub supplier_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -388,11 +390,13 @@ async fn list_receipts(
            where r.branch_id = $1
              and ($2::date is null or r.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')
              and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')
+             and ($4::uuid is null or r.supplier_id = $4)
            order by r.created_at desc
            limit 500"#,
         user.branch_id,
         q.from,
-        q.to
+        q.to,
+        q.supplier_id
     )
     .fetch_all(&state.pool)
     .await?;

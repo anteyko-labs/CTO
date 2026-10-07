@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.product_id as \"product_id!\", p.name as \"name!\", p.unit as \"unit!\",\n                  p.container_ml as \"container_ml?\",\n                  count(distinct r.id) as \"receipts!\",\n                  sum(l.qty)::bigint as \"qty!\",\n                  sum(l.cost_tyiyn)::bigint as \"amount_tyiyn!\",\n                  (array_agg(l.cost_tyiyn order by r.created_at desc))[1] as \"last_cost!\",\n                  (array_agg(l.qty order by r.created_at desc))[1] as \"last_qty!\",\n                  max(r.created_at) as \"last_at!\"\n           from receipt_lines l\n           join receipts r on r.id = l.receipt_id\n           join products p on p.id = l.product_id\n           where r.branch_id = $1 and r.supplier_id = $2\n           group by l.product_id, p.name, p.unit, p.container_ml\n           order by max(r.created_at) desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "unit!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "container_ml?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "receipts!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "amount_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "last_cost!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "last_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a00b3c77f8cfce29bf9f27a2fd8c6754aa5da9232ff24d873bb83cccffaeda5a"
+}

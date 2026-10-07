@@ -364,6 +364,109 @@ async fn oil_change_fee_is_a_setting(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn supplier_card_shows_what_was_delivered(pool: PgPool) {
+    // Карточка поставщика: его накладные и что он привозил (SPEC-10).
+    let app = setup(pool).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let (_, _, product) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр" })),
+    )
+    .await;
+    let (_, _, supplier) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(json!({ "name": "Поставщик А", "phone": "+996700000000" })),
+    )
+    .await;
+    let (_, _, other) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(json!({ "name": "Поставщик Б" })),
+    )
+    .await;
+    let sid = supplier["id"].as_str().unwrap().to_string();
+    let line = |qty: i64, cost: i64| json!({ "product_id": product["id"], "qty": qty, "cost_tyiyn": cost });
+    for (who, qty, cost) in [(&sid, 10, 30_000), (&sid, 5, 20_000)] {
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/v1/receipts",
+            Some(&admin),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": who, "lines": [line(qty, cost)] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "supplier_id": other["id"], "lines": [line(1, 1000)] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Накладные фильтруются по поставщику: чужая не попадает.
+    let (status, _, docs) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/receipts?supplier_id={sid}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(docs.as_array().map(Vec::len), Some(2));
+
+    // Что привозил: количество и сумма сложены, цена — из последней поставки.
+    let (status, _, supplies) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{sid}/supplies"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(supplies.as_array().map(Vec::len), Some(1));
+    let row = &supplies[0];
+    assert_eq!(row["receipts"], 2);
+    assert_eq!(row["qty"], 15);
+    assert_eq!(row["amount_tyiyn"], 50_000);
+    assert_eq!(row["last_price_tyiyn"], 4000);
+
+    let (status, _, one) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{sid}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one["name"], "Поставщик А");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

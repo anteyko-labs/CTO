@@ -2,11 +2,13 @@
 
 use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{Ctx, CurrentUser};
+use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops::{self, new_id};
 use crate::state::AppState;
@@ -27,7 +29,11 @@ pub fn routes() -> Router<AppState> {
             "/suppliers",
             routing::get(list_suppliers).post(create_supplier),
         )
-        .route("/suppliers/{id}", routing::patch(update_supplier))
+        .route(
+            "/suppliers/{id}",
+            routing::get(get_supplier).patch(update_supplier),
+        )
+        .route("/suppliers/{id}/supplies", routing::get(supplier_supplies))
         .route("/settings/labels", routing::get(get_labels).put(put_labels))
         .route(
             "/settings/sales",
@@ -534,4 +540,83 @@ async fn put_sales_settings(
     .await?;
     tx.commit().await?;
     Ok(Json(value))
+}
+
+// ---------- Карточка поставщика ----------
+
+#[derive(Serialize)]
+struct SupplyRow {
+    product_id: Uuid,
+    name: String,
+    unit: String,
+    container_ml: Option<i64>,
+    receipts: i64,
+    qty: i64,
+    amount_tyiyn: i64,
+    /// Цена последней поставки за штуку или канистру.
+    last_price_tyiyn: i64,
+    last_at: DateTime<Utc>,
+}
+
+async fn get_supplier(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<SupplierOut>> {
+    sqlx::query_as!(
+        SupplierOut,
+        "select id, name, phone, comment, active from suppliers where id = $1",
+        id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .map(Json)
+    .ok_or(AppError::NotFound)
+}
+
+/// Что поставщик привозил: по товарам, с количеством, суммой и последней ценой.
+/// Сторно накладных входит со своим знаком, поэтому отменённая поставка сама себя гасит.
+async fn supplier_supplies(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<Vec<SupplyRow>>> {
+    let rows = sqlx::query!(
+        r#"select l.product_id as "product_id!", p.name as "name!", p.unit as "unit!",
+                  p.container_ml as "container_ml?",
+                  count(distinct r.id) as "receipts!",
+                  sum(l.qty)::bigint as "qty!",
+                  sum(l.cost_tyiyn)::bigint as "amount_tyiyn!",
+                  (array_agg(l.cost_tyiyn order by r.created_at desc))[1] as "last_cost!",
+                  (array_agg(l.qty order by r.created_at desc))[1] as "last_qty!",
+                  max(r.created_at) as "last_at!"
+           from receipt_lines l
+           join receipts r on r.id = l.receipt_id
+           join products p on p.id = l.product_id
+           where r.branch_id = $1 and r.supplier_id = $2
+           group by l.product_id, p.name, p.unit, p.container_ml
+           order by max(r.created_at) desc"#,
+        user.branch_id,
+        id
+    )
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|r| SupplyRow {
+        product_id: r.product_id,
+        name: r.name,
+        unit: r.unit,
+        container_ml: r.container_ml,
+        receipts: r.receipts,
+        qty: r.qty,
+        amount_tyiyn: r.amount_tyiyn,
+        last_price_tyiyn: if r.last_qty > 0 {
+            div_round(i128::from(r.last_cost), i128::from(r.last_qty)).unwrap_or(0)
+        } else {
+            0
+        },
+        last_at: r.last_at,
+    })
+    .collect();
+    Ok(Json(rows))
 }

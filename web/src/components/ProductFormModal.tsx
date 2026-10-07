@@ -4,7 +4,7 @@ import { useUser } from '../lib/auth'
 import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
-import type { Category, Product } from '../lib/types'
+import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
 import { Badge, Button, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
 interface Form {
@@ -55,6 +55,8 @@ export function ProductFormModal({
   const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode))
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
+  const [newCategory, setNewCategory] = useState<{ name: string; kind: CategoryKind } | null>(null)
+  const categoryAction = useAction()
   const { busy, error, setError, run } = useAction()
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const category = useMemo(
@@ -92,6 +94,19 @@ export function ProductFormModal({
     if (min === null) throw new Error('Неверный минимальный остаток')
     return { sale, pour, container, min }
   }
+
+  /** Новая категория создаётся здесь же и сразу выбирается в товаре. */
+  const createCategory = () =>
+    categoryAction.run(async () => {
+      if (!newCategory) return
+      const name = newCategory.name.trim()
+      if (!name) throw new Error('Введите название категории')
+      const c = await post<Category>('/categories', { name, kind: newCategory.kind })
+      categories.setData((list) => [...(list ?? []), c])
+      set('category_id', c.id)
+      setNewCategory(null)
+      toast('Категория создана')
+    })
 
   // Чего не хватает для сохранения: кнопка заблокирована, пока список не пуст.
   const missing = missingWithFocus(
@@ -157,10 +172,63 @@ export function ProductFormModal({
       set('barcode', '')
     })
 
+  if (newCategory) {
+    return (
+      <Modal title="Новая категория" onClose={() => setNewCategory(null)}>
+        <div className="flex flex-col gap-3">
+          <Field label="Название" required>
+            <input
+              autoFocus
+              value={newCategory.name}
+              onChange={(e) => setNewCategory({ ...newCategory, name: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void createCategory()
+                }
+              }}
+            />
+          </Field>
+          <Field label="Вид" hint="Масло учитывается в литрах, остальное — в штуках">
+            <select
+              value={newCategory.kind}
+              onChange={(e) => setNewCategory({ ...newCategory, kind: e.target.value as CategoryKind })}
+            >
+              {(Object.keys(KIND_LABELS) as CategoryKind[]).map((k) => (
+                <option key={k} value={k}>
+                  {KIND_LABELS[k]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <ErrorBox error={categoryAction.error} />
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setNewCategory(null)}>
+              Отмена
+            </Button>
+            <Button disabled={categoryAction.busy || !newCategory.name.trim()} onClick={() => void createCategory()}>
+              Создать
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    )
+  }
+
   return (
     <Modal title={editing ? 'Товар' : 'Новый товар'} onClose={onClose} wide>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Категория" required>
+        <Field
+          label="Категория"
+          required
+          hint={
+            editing ? undefined : (
+              <button type="button" className="text-sky-700 underline" onClick={() => setNewCategory({ name: '', kind: 'oil' })}>
+                + новая категория
+              </button>
+            )
+          }
+        >
           <select
             id="product-category"
             value={form.category_id}

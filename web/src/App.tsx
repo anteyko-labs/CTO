@@ -15,6 +15,7 @@ import SaleView from './pages/SaleView'
 import SalesDay from './pages/SalesDay'
 import Services from './pages/Services'
 import Stock from './pages/Stock'
+import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
 import Users from './pages/Users'
 
@@ -129,6 +130,7 @@ function Shell() {
           <Route path="/employees" element={<Employees />} />
           <Route path="/services" element={<Services />} />
           <Route path="/suppliers" element={<Suppliers />} />
+          <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />
           {owner && <Route path="/users" element={<Users />} />}
           <Route path="*" element={<Navigate to="/" replace />} />

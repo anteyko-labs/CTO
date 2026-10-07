@@ -82,6 +82,19 @@ export interface Supplier {
   active: boolean
 }
 
+/** Строка «что привозил поставщик» для его карточки. */
+export interface SupplierSupply {
+  product_id: string
+  name: string
+  unit: 'piece' | 'ml'
+  container_ml: number | null
+  receipts: number
+  qty: number
+  amount_tyiyn: number
+  last_price_tyiyn: number
+  last_at: string
+}
+
 export interface LabelSettings {
   width_mm: number
   height_mm: number
