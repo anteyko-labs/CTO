@@ -67,6 +67,7 @@ export default function SalesDay() {
           <Stat label="Наличные" value={formatSom(data.totals.cash_tyiyn)} />
           <Stat label="Карта" value={formatSom(data.totals.card_tyiyn)} />
           <Stat label="Перевод" value={formatSom(data.totals.transfer_tyiyn)} />
+          <Stat label="В долг" value={formatSom(data.totals.debt_tyiyn)} />
         </div>
       )}
       <Card>
@@ -75,13 +76,21 @@ export default function SalesDay() {
         ) : !data || data.sales.length === 0 ? (
           <Empty>За этот день чеков нет. Переключите день стрелками или откройте кассу.</Empty>
         ) : (
-          <Table head={['№', 'Время', 'Тип', 'Кассир', 'Мастер', 'Сумма']}>
+          <Table head={['№', 'Время', 'Тип', 'Клиент', 'Кассир', 'Мастер', 'Сумма']}>
             {data.sales.map((s) => (
               <tr key={s.id} className="cursor-pointer hover:bg-slate-50" onClick={() => navigate(`/sales/${s.id}`)}>
                 <td className="px-2 py-2 font-medium">{s.number}</td>
                 <td className="px-2 py-2">{formatDateTime(s.created_at)}</td>
                 <td className="px-2 py-2">
                   {s.kind === 'return' ? <Badge tone="rose">возврат</Badge> : s.sale_type === 'service' ? 'В сервис' : 'На вынос'}
+                </td>
+                <td className="px-2 py-2">
+                  {s.party_name ?? '—'}
+                  {s.debt_tyiyn !== 0 && (
+                    <div>
+                      <Badge tone="amber">в долг {formatSom(Math.abs(s.debt_tyiyn))}</Badge>
+                    </div>
+                  )}
                 </td>
                 <td className="px-2 py-2">{s.cashier_name}</td>
                 <td className="px-2 py-2">{s.master_name ?? '—'}</td>

@@ -873,6 +873,9 @@ struct SaleListItem {
     sale_type: String,
     cashier_name: String,
     master_name: Option<String>,
+    party_name: Option<String>,
+    /// Сколько из этого чека ушло в долг.
+    debt_tyiyn: i64,
     total_tyiyn: i64,
     reversal_of: Option<Uuid>,
     created_at: DateTime<Utc>,
@@ -885,6 +888,7 @@ struct DayTotals {
     cash_tyiyn: i64,
     card_tyiyn: i64,
     transfer_tyiyn: i64,
+    debt_tyiyn: i64,
 }
 
 #[derive(Serialize)]
@@ -910,10 +914,14 @@ async fn list_sales(
     let sales = sqlx::query_as!(
         SaleListItem,
         r#"select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as "master_name?",
+                  pt.name as "party_name?",
+                  coalesce((select sum(p.amount_tyiyn) from sale_payments p
+                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt_tyiyn!",
                   s.total_tyiyn, s.reversal_of, s.created_at
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id
+           left join parties pt on pt.id = s.party_id
            where s.branch_id = $1
              and s.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek'
              and s.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'
@@ -927,7 +935,8 @@ async fn list_sales(
         r#"select
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'cash'), 0)::bigint as "cash!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as "card!",
-             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!"
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!"
            from sale_payments p join sales s on s.id = p.sale_id
            where s.branch_id = $1
              and s.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek'
@@ -943,6 +952,7 @@ async fn list_sales(
         cash_tyiyn: t.cash,
         card_tyiyn: t.card,
         transfer_tyiyn: t.transfer,
+        debt_tyiyn: t.debt,
     };
     Ok(Json(DayOut {
         date,

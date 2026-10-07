@@ -13,11 +13,14 @@ import type { Product } from '../lib/types'
 export function ProductPicker({
   onPick,
   onUnknownCode,
+  onCreate,
   autoFocus = true,
-  placeholder = 'Сканируйте штрихкод или введите название',
+  placeholder = 'Сканируйте штрихкод, введите название или бренд',
 }: {
   onPick: (p: Product) => void
   onUnknownCode?: (code: string) => void
+  /** «Новый товар» прямо из списка: передаётся набранный текст. */
+  onCreate?: (text: string) => void
   autoFocus?: boolean
   placeholder?: string
 }) {
@@ -104,8 +107,11 @@ export function ProductPicker({
         }}
       />
       {message && <div className="mt-1 text-sm text-rose-600">{message}</div>}
-      {results.length > 0 && (
+      {query.length >= 2 && (results.length > 0 || Boolean(onCreate)) && (
         <ul className="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+          {results.length === 0 && (
+            <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{query}»</li>
+          )}
           {results.map((p, i) => (
             <li key={p.id}>
               <button
@@ -126,6 +132,22 @@ export function ProductPicker({
               </button>
             </li>
           ))}
+          {onCreate && (
+            <li className="border-t border-slate-200">
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-sm font-medium text-sky-700 hover:bg-sky-50"
+                onClick={() => {
+                  const text = query
+                  setText('')
+                  setResults([])
+                  onCreate(text)
+                }}
+              >
+                + Завести товар «{query}»
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </div>

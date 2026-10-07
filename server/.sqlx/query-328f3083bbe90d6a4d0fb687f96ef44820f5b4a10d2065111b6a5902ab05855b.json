@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.sale_id as \"sale_id!\", coalesce(p.name, sv.name) as \"name!\", l.qty as \"qty!\",\n                  l.kind as \"kind!\", p.container_ml as \"container_ml?\"\n           from sale_lines l\n           left join products p on p.id = l.product_id\n           left join services sv on sv.id = l.service_id\n           where l.sale_id = any($1)\n           order by l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sale_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "kind!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "container_ml?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "328f3083bbe90d6a4d0fb687f96ef44820f5b4a10d2065111b6a5902ab05855b"
+}

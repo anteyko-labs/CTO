@@ -20,12 +20,12 @@ interface Form {
   min_stock: string
 }
 
-function initialForm(p: Product | undefined, presetBarcode: string | undefined): Form {
+function initialForm(p: Product | undefined, presetBarcode: string | undefined, presetName: string | undefined): Form {
   const oil = p?.unit === 'ml'
   const toLiters = (ml: number) => formatLiters(ml).replace(/ л$/, '').replace(/ /g, '')
   return {
     category_id: p?.category_id ?? '',
-    name: p?.name ?? '',
+    name: p?.name ?? presetName ?? '',
     brand: p?.brand ?? '',
     article: p?.article ?? '',
     container_l: p?.container_ml ? toLiters(p.container_ml) : '',
@@ -41,18 +41,21 @@ function initialForm(p: Product | undefined, presetBarcode: string | undefined):
 export function ProductFormModal({
   product,
   presetBarcode,
+  presetName,
   onClose,
   onSaved,
 }: {
   product?: Product
   presetBarcode?: string
+  /** Название, набранное в поиске: товар заводится без повторного ввода. */
+  presetName?: string
   onClose: () => void
   onSaved: (p: Product) => void
 }) {
   const user = useUser()
   const owner = user.role === 'owner'
   const editing = Boolean(product)
-  const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode))
+  const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName))
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
   const [newCategory, setNewCategory] = useState<{ name: string; kind: CategoryKind } | null>(null)

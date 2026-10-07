@@ -120,6 +120,7 @@ export default function Cashier() {
   const [done, setDone] = useState<{ sale: Sale; change: number | null } | null>(null)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
+  const [newProductName, setNewProductName] = useState<string | null>(null)
   const [party, setParty] = useState<Party | null>(null)
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
@@ -271,7 +272,7 @@ export default function Cashier() {
     <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
       <div className="flex min-w-0 flex-col gap-4">
         <Card>
-          <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} />
+          <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
         </Card>
 
         {done && (
@@ -588,6 +589,16 @@ export default function Cashier() {
           onCreateNew={() => {
             setNewProductCode(unknownCode)
             setUnknownCode(null)
+          }}
+        />
+      )}
+      {newProductName !== null && (
+        <ProductFormModal
+          presetName={newProductName}
+          onClose={() => setNewProductName(null)}
+          onSaved={(p) => {
+            setNewProductName(null)
+            addProduct(p)
           }}
         />
       )}

@@ -206,6 +206,8 @@ export interface SaleListItem {
   sale_type: 'takeaway' | 'service'
   cashier_name: string
   master_name: string | null
+  party_name: string | null
+  debt_tyiyn: number
   total_tyiyn: number
   reversal_of: string | null
   created_at: string
@@ -220,6 +222,7 @@ export interface SalesDay {
     cash_tyiyn: number
     card_tyiyn: number
     transfer_tyiyn: number
+    debt_tyiyn: number
   }
 }
 

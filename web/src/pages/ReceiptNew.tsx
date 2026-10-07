@@ -47,10 +47,12 @@ export default function ReceiptNew() {
   const [supplierId, setSupplierId] = useState('')
   const [supplierDoc, setSupplierDoc] = useState('')
   const [comment, setComment] = useState('')
+  const [onDebt, setOnDebt] = useState(false)
   const [lines, setLines] = useState<Line[]>([])
   const [print, setPrint] = useState(false)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
+  const [newProductName, setNewProductName] = useState<string | null>(null)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const labels = useAction()
   const [newSupplier, setNewSupplier] = useState<{ name: string; phone: string } | null>(null)
@@ -113,6 +115,7 @@ export default function ReceiptNew() {
   const badLine = calcs.findIndex((c) => typeof c === 'string')
   const missing = missingWithFocus(
     [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
+    [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
     [badLine < 0, `количество и цену в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
   )
 
@@ -140,6 +143,7 @@ export default function ReceiptNew() {
       const r = await post<Receipt>('/receipts', {
         op_id: opId,
         supplier_id: supplierId || null,
+        payment: onDebt ? 'debt' : 'paid',
         supplier_doc: supplierDoc.trim(),
         comment: comment.trim(),
         lines: body,
@@ -172,7 +176,7 @@ export default function ReceiptNew() {
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <Field label="Поставщик">
               <div className="flex gap-2">
-                <select className="min-w-0 flex-1" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+                <select id="receipt-supplier" className="min-w-0 flex-1" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
                   <option value="">— без поставщика —</option>
                   {activeSuppliers.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -223,7 +227,7 @@ export default function ReceiptNew() {
 
         <Card>
           <div className="mb-3">
-            <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} />
+            <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
           </div>
           {lines.length === 0 ? (
             <Empty>Сканируйте штрихкод или найдите товар по названию — он добавится строкой</Empty>
@@ -304,7 +308,10 @@ export default function ReceiptNew() {
             </Table>
           )}
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-3">
-            <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
+            <div className="flex flex-wrap items-center gap-4">
+              <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
+              <Checkbox label="Остались должны поставщику" checked={onDebt} onChange={setOnDebt} />
+            </div>
             <div className="text-lg font-semibold">Итого: {total === null ? '—' : formatSom(total)}</div>
           </div>
         </Card>
@@ -340,6 +347,16 @@ export default function ReceiptNew() {
             setEditingProduct(null)
             // Цена и коды могли измениться — обновляем товар в строке.
             setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, product: p } : l)))
+          }}
+        />
+      )}
+      {newProductName !== null && (
+        <ProductFormModal
+          presetName={newProductName}
+          onClose={() => setNewProductName(null)}
+          onSaved={(p) => {
+            setNewProductName(null)
+            addProduct(p)
           }}
         />
       )}

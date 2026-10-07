@@ -613,13 +613,27 @@ async fn post_repayment(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
+    // Клиент гасит свой долг, мы — свой перед поставщиком: знак разный.
+    let role = sqlx::query_scalar!(
+        "select role from parties where id = $1 and branch_id = $2",
+        req.party_id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let signed = if role == "supplier" {
+        req.amount_tyiyn
+    } else {
+        -req.amount_tyiyn
+    };
     let balance = add_ledger(
         &mut tx,
         &ctx,
         LedgerEntry {
             party_id: req.party_id,
             kind: "repayment",
-            amount: -req.amount_tyiyn,
+            amount: signed,
             doc_type: "repayment",
             doc_id: None,
             comment: req.comment.trim(),
@@ -792,6 +806,33 @@ async fn party_card(
     .fetch_all(&mut *conn)
     .await?;
 
+    // Что именно брали: состав чеков короткой строкой.
+    let sale_ids: Vec<Uuid> = sales.iter().map(|s| s.id).collect();
+    let line_rows = sqlx::query!(
+        r#"select l.sale_id as "sale_id!", coalesce(p.name, sv.name) as "name!", l.qty as "qty!",
+                  l.kind as "kind!", p.container_ml as "container_ml?"
+           from sale_lines l
+           left join products p on p.id = l.product_id
+           left join services sv on sv.id = l.service_id
+           where l.sale_id = any($1)
+           order by l.line_no"#,
+        &sale_ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut goods: std::collections::HashMap<Uuid, Vec<String>> = std::collections::HashMap::new();
+    for r in line_rows {
+        let qty = if r.kind == "pour" {
+            format!("{} мл", r.qty)
+        } else {
+            format!("{} шт", r.qty)
+        };
+        goods
+            .entry(r.sale_id)
+            .or_default()
+            .push(format!("{} × {}", r.name, qty));
+    }
+
     let purchases = sales.iter().filter(|s| s.kind == "sale").count() as i64;
     let purchases_tyiyn = sales.iter().map(|s| s.total_tyiyn).sum();
     let debt_taken_tyiyn = ledger
@@ -828,10 +869,13 @@ async fn party_card(
             amount_tyiyn: s.total_tyiyn,
             number: Some(s.number),
             doc_id: Some(s.id),
-            comment: if who.is_empty() {
-                s.comment.clone()
-            } else {
-                who
+            comment: {
+                let what = goods.get(&s.id).map(|g| g.join(", ")).unwrap_or_default();
+                [what, who, s.comment.clone()]
+                    .into_iter()
+                    .filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
             },
         });
     }

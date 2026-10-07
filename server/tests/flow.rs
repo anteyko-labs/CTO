@@ -128,6 +128,7 @@ async fn receive(
         ctx,
         ReceiptReq {
             op_id: Uuid::now_v7(),
+            payment: None,
             supplier_id: None,
             supplier_doc: String::new(),
             comment: String::new(),

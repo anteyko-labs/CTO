@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'cash'), 0)::bigint as \"cash!\",\n             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as \"card!\",\n             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as \"transfer!\",\n             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as \"debt!\"\n           from sale_payments p join sales s on s.id = p.sale_id\n           where s.branch_id = $1\n             and s.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek'\n             and s.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cash!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "card!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "transfer!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "debt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "87234a25961cc55b2347ce12f407f87b24a72c6a0f64396b03aa16785c1eda19"
+}

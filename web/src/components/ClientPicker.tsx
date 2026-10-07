@@ -6,6 +6,15 @@ import type { Party, PartyContact, PartyVehicle } from '../lib/types'
 import { Badge, Button, ErrorBox, Field, Missing, Modal } from './ui'
 import { missingWithFocus } from '../lib/forms'
 
+/** Что набрали в поиске: ИНН, телефон или имя. Нужно, чтобы завести клиента одним нажатием. */
+export function guessField(text: string): { field: 'inn' | 'phone' | 'name'; kind: 'person' | 'company' } {
+  const digits = text.replace(/[^\d]/g, '')
+  const onlyDigits = /^[\d\s+()-]+$/.test(text)
+  if (onlyDigits && digits.length >= 12) return { field: 'inn', kind: 'company' }
+  if (onlyDigits && digits.length >= 9) return { field: 'phone', kind: 'person' }
+  return { field: 'name', kind: 'person' }
+}
+
 /** Долг клиента словами: кто кому должен. */
 export function balanceText(balance: number): string {
   if (balance === 0) return 'долга нет'
@@ -144,6 +153,7 @@ export function ClientPicker({
   const [q, setQ] = useState('')
   const query = useDebounced(q.trim(), 250)
   const [creating, setCreating] = useState(false)
+  const quick = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const add = useAction()
   const found = useLoad(
@@ -160,6 +170,22 @@ export function ClientPicker({
         : Promise.resolve(null),
     [party?.id],
   )
+
+  /** Завести клиента прямо из списка: что набрали, то и записываем в нужное поле. */
+  const quickAdd = () =>
+    void quick.run(async () => {
+      const text = query
+      const { field, kind } = guessField(text)
+      const p = await post<Party>('/parties', {
+        role: 'customer',
+        kind,
+        name: text,
+        phone: field === 'phone' ? text : '',
+        inn: field === 'inn' ? text : '',
+      })
+      setQ('')
+      onParty(p)
+    })
 
   const addRow = (value: string) =>
     void add.run(async () => {
@@ -248,38 +274,73 @@ export function ClientPicker({
     )
   }
 
+  const list = (found.data ?? []).slice(0, 5)
+
   return (
-    <div className="flex flex-col gap-1">
+    <div className="relative flex flex-col gap-1">
       <Field label="Клиент" hint="Можно не указывать. Для продажи в долг — обязателен">
-        <input placeholder="Название, телефон или ИНН" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input
+          data-client-input
+          placeholder="ИНН, имя или телефон"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              if (list[0]) {
+                onParty(list[0])
+                setQ('')
+              } else if (query.length >= 2) {
+                quickAdd()
+              }
+            }
+          }}
+        />
       </Field>
       {query.length >= 2 && (
-        <div className="flex flex-col gap-1">
-          {(found.data ?? []).map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 px-2 py-1.5 text-left text-sm hover:bg-slate-50"
-              onClick={() => {
-                onParty(p)
-                setQ('')
-              }}
-            >
-              <span className="min-w-0">
-                <span className="block truncate font-medium">{p.name}</span>
-                <span className="text-xs text-slate-500">
-                  {p.phone || p.inn || (p.kind === 'company' ? 'юрлицо' : 'физлицо')}
+        <ul className="absolute top-full z-30 mt-1 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+          {list.map((p) => (
+            <li key={p.id}>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                onClick={() => {
+                  onParty(p)
+                  setQ('')
+                }}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">{p.name}</span>
+                  <span className="text-xs text-slate-500">
+                    {[p.phone, p.inn && `ИНН ${p.inn}`].filter(Boolean).join(' · ') ||
+                      (p.kind === 'company' ? 'юрлицо' : 'физлицо')}
+                  </span>
                 </span>
-              </span>
-              {p.balance_tyiyn !== 0 && <Badge tone={p.balance_tyiyn > 0 ? 'amber' : 'sky'}>{balanceText(p.balance_tyiyn)}</Badge>}
-            </button>
+                {p.balance_tyiyn !== 0 && (
+                  <Badge tone={p.balance_tyiyn > 0 ? 'amber' : 'sky'}>{balanceText(p.balance_tyiyn)}</Badge>
+                )}
+              </button>
+            </li>
           ))}
-          {!found.loading && (found.data ?? []).length === 0 && <div className="text-xs text-slate-500">Никого не нашли</div>}
-          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setCreating(true)}>
-            + новый клиент
-          </Button>
-        </div>
+          {list.length === 0 && !found.loading && (
+            <li className="px-3 py-2 text-sm text-slate-500">Никого не нашли по «{query}»</li>
+          )}
+          <li className="flex items-center justify-between gap-2 border-t border-slate-200 px-3 py-2">
+            <button
+              type="button"
+              className="text-left text-sm font-medium text-sky-700 hover:underline"
+              disabled={quick.busy}
+              onClick={quickAdd}
+            >
+              + Добавить «{query}»
+            </button>
+            <button type="button" className="text-xs text-slate-500 hover:underline" onClick={() => setCreating(true)}>
+              подробнее
+            </button>
+          </li>
+        </ul>
       )}
+      <ErrorBox error={quick.error} />
       {creating && (
         <NewClientModal
           onClose={() => setCreating(false)}

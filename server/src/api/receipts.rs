@@ -40,6 +40,8 @@ pub struct ReceiptLineReq {
 pub struct ReceiptReq {
     pub op_id: Uuid,
     pub supplier_id: Option<Uuid>,
+    /// `paid` — рассчитались сразу, `debt` — остались должны поставщику (SPEC-10).
+    pub payment: Option<String>,
     #[serde(default)]
     pub supplier_doc: String,
     #[serde(default)]
@@ -163,6 +165,14 @@ pub async fn post_receipt_tx(
             .await?
             .ok_or_else(|| invalid("поставщик не найден"))?;
     }
+    let on_debt = match req.payment.as_deref() {
+        None | Some("paid") => false,
+        Some("debt") => true,
+        Some(_) => return Err(invalid("расчёт: paid или debt")),
+    };
+    if on_debt && req.supplier_id.is_none() {
+        return Err(invalid("для накладной в долг укажите поставщика"));
+    }
     let branch_id = ctx.user.branch_id;
     lock_products(conn, branch_id, distinct).await?;
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
@@ -226,6 +236,23 @@ pub async fn post_receipt_tx(
         json!({ "number": number, "total": total }),
     )
     .await?;
+    if on_debt {
+        let sid = req.supplier_id.ok_or_else(|| invalid("нужен поставщик"))?;
+        // Мы должны поставщику: его баланс уходит в минус (SPEC-10).
+        crate::api::parties::add_ledger(
+            conn,
+            ctx,
+            crate::api::parties::LedgerEntry {
+                party_id: sid,
+                kind: "debt",
+                amount: -total,
+                doc_type: "receipt",
+                doc_id: Some(id),
+                comment: "",
+            },
+        )
+        .await?;
+    }
     let out = load_receipt(conn, branch_id, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)

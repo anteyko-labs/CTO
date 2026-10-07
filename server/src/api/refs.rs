@@ -346,6 +346,17 @@ async fn create_supplier(
     )
     .execute(&mut *tx)
     .await?;
+    sqlx::query!(
+        r#"insert into parties (id, branch_id, role, kind, name, phone, comment)
+           values ($1, $2, 'supplier', 'company', $3, $4, $5)"#,
+        id,
+        ctx.user.branch_id,
+        name,
+        phone,
+        comment
+    )
+    .execute(&mut *tx)
+    .await?;
     ops::audit(
         &mut tx,
         &ctx,
@@ -395,6 +406,16 @@ async fn update_supplier(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    sqlx::query!(
+        "update parties set name = $2, phone = $3, comment = $4, active = $5 where id = $1",
+        id,
+        out.name,
+        out.phone,
+        out.comment,
+        out.active
+    )
+    .execute(&mut *tx)
+    .await?;
     ops::audit(
         &mut tx,
         &ctx,

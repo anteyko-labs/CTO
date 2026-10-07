@@ -467,6 +467,102 @@ async fn supplier_card_shows_what_was_delivered(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn supplier_debt_is_tracked_and_paid(pool: PgPool) {
+    // Накладная в долг: мы должны поставщику, оплата долг гасит (SPEC-10).
+    let app = setup(pool).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let (_, _, product) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр" })),
+    )
+    .await;
+    let (_, _, supplier) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(json!({ "name": "Поставщик В" })),
+    )
+    .await;
+    let sid = supplier["id"].as_str().unwrap().to_string();
+
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "supplier_id": sid, "payment": "debt",
+            "lines": [{ "product_id": product["id"], "qty": 10, "cost_tyiyn": 50_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, party) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(party["balance_tyiyn"], -50_000);
+    assert_eq!(party["role"], "supplier");
+
+    // Частичная оплата уменьшает наш долг.
+    let (status, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": sid, "amount_tyiyn": 20_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(r["balance_tyiyn"], -30_000);
+
+    // В списке долгов он виден как «должны мы».
+    let (_, _, debtors) = call(
+        &app,
+        "GET",
+        "/api/v1/parties?only_debtors=true",
+        Some(&admin),
+        None,
+    )
+    .await;
+    let rows = debtors.as_array().unwrap();
+    assert!(
+        rows.iter()
+            .any(|p| p["id"] == json!(sid) && p["balance_tyiyn"] == -30_000)
+    );
+
+    // Накладная в долг без поставщика не проводится.
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "payment": "debt",
+            "lines": [{ "product_id": product["id"], "qty": 1, "cost_tyiyn": 100 }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

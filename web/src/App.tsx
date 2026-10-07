@@ -5,6 +5,7 @@ import { Loading, Toaster } from './components/ui'
 import Cashier from './pages/Cashier'
 import Categories from './pages/Categories'
 import ClientCard from './pages/ClientCard'
+import Debts from './pages/Debts'
 import Clients from './pages/Clients'
 import Employees from './pages/Employees'
 import LabelSettingsPage from './pages/LabelSettings'
@@ -32,6 +33,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     items: [
       { to: '/', label: 'Касса' },
       { to: '/sales', label: 'Чеки' },
+      { to: '/debts', label: 'Долги' },
     ],
   },
   {
@@ -129,6 +131,7 @@ function Shell() {
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
+          <Route path="/debts" element={<Debts />} />
           <Route path="/clients" element={<Clients />} />
           <Route path="/clients/:id" element={<ByParam><ClientCard /></ByParam>} />
           <Route path="/categories" element={<Categories />} />
