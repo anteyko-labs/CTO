@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, balance_tyiyn from cash_accounts where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ed929008c466eae529c4533007ee5cbd5124c9c25b69a643ddbfa816fe3a51b8"
+}

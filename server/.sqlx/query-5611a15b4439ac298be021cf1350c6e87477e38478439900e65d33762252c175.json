@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.business_date, s.account_id, a.name as account_name,\n                  e.full_name as cashier_name, u.full_name as opened_by, s.opened_at,\n                  s.opening_expected_tyiyn, a.balance_tyiyn\n           from shifts s\n           join cash_accounts a on a.id = s.account_id\n           join employees e on e.id = s.cashier_employee_id\n           join users u on u.id = s.opened_by\n           where s.id = $1 and s.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "account_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "cashier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "opened_by",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "opened_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "opening_expected_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5611a15b4439ac298be021cf1350c6e87477e38478439900e65d33762252c175"
+}

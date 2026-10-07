@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id,\n                               opened_by, opened_device, opening_expected_tyiyn, opening_counted_tyiyn)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Date",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d80fae0d1889143c2f917b24c72b0775f93642b2b1ef71dff1439942c0929da"
+}

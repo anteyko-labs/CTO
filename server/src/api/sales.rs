@@ -10,6 +10,7 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::cash::{self, CashEntry};
 use crate::api::parties;
 use crate::api::receipts::lock_products;
 use crate::auth::{Ctx, CurrentUser};
@@ -403,19 +404,92 @@ async fn insert_line(
     Ok(())
 }
 
+/// Платежи чека: деньги попадают в кассу и на счёт, комиссия банка фиксируется в платеже
+/// и уходит со счёта (ADR-022, ADR-024). Долг кассу не трогает.
 async fn insert_payments(
     conn: &mut PgConnection,
+    ctx: &Ctx,
     sale_id: Uuid,
     payments: &[PaymentReq],
     sign: i64,
 ) -> AppResult<()> {
+    let branch_id = ctx.user.branch_id;
+    let register = cash::default_account(conn, branch_id).await?;
+    let bank = cash::bank_account(conn, branch_id).await?;
+    let movement_kind = if sign > 0 { "sale" } else { "sale_return" };
     for p in payments {
+        let amount = sign * p.amount_tyiyn;
+        let fee = match p.method.as_str() {
+            "card" | "transfer" => {
+                let rate = sqlx::query_scalar!(
+                    "select rate_bp from payment_method_fees where branch_id = $1 and method = $2",
+                    branch_id,
+                    p.method
+                )
+                .fetch_optional(&mut *conn)
+                .await?
+                .unwrap_or(0);
+                div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        match p.method.as_str() {
+            "cash" => {
+                cash::add_movement(
+                    conn,
+                    ctx,
+                    CashEntry {
+                        account_id: register,
+                        kind: movement_kind,
+                        amount,
+                        doc_type: "sale",
+                        doc_id: Some(sale_id),
+                        comment: "",
+                    },
+                )
+                .await?;
+            }
+            "card" | "transfer" => {
+                if let Some(bank_id) = bank {
+                    cash::add_movement(
+                        conn,
+                        ctx,
+                        CashEntry {
+                            account_id: bank_id,
+                            kind: movement_kind,
+                            amount,
+                            doc_type: "sale",
+                            doc_id: Some(sale_id),
+                            comment: "",
+                        },
+                    )
+                    .await?;
+                    if fee != 0 {
+                        cash::add_movement(
+                            conn,
+                            ctx,
+                            CashEntry {
+                                account_id: bank_id,
+                                kind: "bank_fee",
+                                amount: -fee,
+                                doc_type: "sale",
+                                doc_id: Some(sale_id),
+                                comment: "",
+                            },
+                        )
+                        .await?;
+                    }
+                }
+            }
+            _ => {}
+        }
         sqlx::query!(
-            "insert into sale_payments (id, sale_id, method, amount_tyiyn) values ($1, $2, $3, $4)",
+            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn) values ($1, $2, $3, $4, $5)",
             new_id(),
             sale_id,
             p.method,
-            sign * p.amount_tyiyn
+            amount,
+            fee
         )
         .execute(&mut *conn)
         .await?;
@@ -522,8 +596,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
-                              user_id, device_id, client_time)
-           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
+                              user_id, device_id, client_time, business_date)
+           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                   (now() at time zone 'Asia/Bishkek')::date)"#,
         id,
         branch_id,
         number,
@@ -580,7 +655,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
                 .push(json!({ "line_no": line_no, "list": p.list_price, "price": p.unit_price }));
         }
     }
-    insert_payments(conn, id, &req.payments, 1).await?;
+    insert_payments(conn, ctx, id, &req.payments, 1).await?;
     if debt_total > 0 {
         let party_id = req
             .party_id
@@ -801,8 +876,9 @@ pub async fn return_sale_tx(
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
-                              reversal_of, user_id, device_id)
-           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
+                              reversal_of, user_id, device_id, business_date)
+           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                   (now() at time zone 'Asia/Bishkek')::date)"#,
         rid,
         branch_id,
         number,
@@ -842,7 +918,7 @@ pub async fn return_sale_tx(
         )
         .await?;
     }
-    insert_payments(conn, rid, &req.payments, -1).await?;
+    insert_payments(conn, ctx, rid, &req.payments, -1).await?;
     let debt_back: i64 = req
         .payments
         .iter()

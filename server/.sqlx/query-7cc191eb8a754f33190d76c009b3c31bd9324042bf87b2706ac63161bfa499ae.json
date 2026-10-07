@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into cash_movements (id, branch_id, account_id, shift_id, kind, amount_tyiyn,\n                                       doc_type, doc_id, comment, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7cc191eb8a754f33190d76c009b3c31bd9324042bf87b2706ac63161bfa499ae"
+}

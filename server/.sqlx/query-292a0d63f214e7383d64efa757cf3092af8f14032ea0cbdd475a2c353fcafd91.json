@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,\n                              master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,\n                              reversal_of, user_id, device_id, business_date)\n           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,\n                   (now() at time zone 'Asia/Bishkek')::date)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "292a0d63f214e7383d64efa757cf3092af8f14032ea0cbdd475a2c353fcafd91"
+}

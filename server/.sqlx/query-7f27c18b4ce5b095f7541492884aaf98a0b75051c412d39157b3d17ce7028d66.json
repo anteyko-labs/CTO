@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select rate_bp from payment_method_fees where branch_id = $1 and method = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rate_bp",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7f27c18b4ce5b095f7541492884aaf98a0b75051c412d39157b3d17ce7028d66"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into payment_method_fees (branch_id, method, rate_bp) values ($1, $2, 50)\n               on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d7f54584909b5df893e29dbeb9f885ba5670920d80ec8d843233f9aac83f27c"
+}

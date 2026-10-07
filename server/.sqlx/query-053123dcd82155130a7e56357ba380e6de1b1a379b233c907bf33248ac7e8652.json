@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select is_cashier, active from employees where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "053123dcd82155130a7e56357ba380e6de1b1a379b233c907bf33248ac7e8652"
+}

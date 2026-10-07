@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update cash_accounts set balance_tyiyn = $2 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a5fe79e9aa70daa22aa76e4e83d1d87fbf7c1871bf4d382d5cff8952210e8455"
+}

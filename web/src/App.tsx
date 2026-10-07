@@ -19,6 +19,7 @@ import Receipts from './pages/Receipts'
 import SaleView from './pages/SaleView'
 import SalesDay from './pages/SalesDay'
 import Services from './pages/Services'
+import Shift from './pages/Shift'
 import Stock from './pages/Stock'
 import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
@@ -35,6 +36,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     items: [
       { to: '/', label: 'Касса' },
       { to: '/sales', label: 'Чеки' },
+      { to: '/shift', label: 'Смена' },
       { to: '/debts', label: 'Долги' },
       { to: '/notifications', label: 'Уведомления', ownerOnly: true },
     ],
@@ -135,6 +137,7 @@ function Shell() {
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
+          <Route path="/shift" element={<Shift />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

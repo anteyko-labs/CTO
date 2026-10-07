@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(max(seq), 0) + 1 as \"n!\" from shift_closes where shift_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fb2fcadb9088ba276a460600878fb19a7e0462c3ec937764ceabc13e9f61e59d"
+}

@@ -325,3 +325,36 @@ export interface GiftRule {
   active: boolean
   items: { gift_product_id: string; name: string; gift_qty: number }[]
 }
+
+// ---------- Кассы и смена (SPEC-05) ----------
+
+export interface CashAccount {
+  id: string
+  name: string
+  kind: 'register' | 'bank' | 'safe' | 'other'
+  owner_only: boolean
+  is_default: boolean
+  balance_tyiyn: number
+}
+
+export interface Shift {
+  id: string
+  number: number
+  business_date: string
+  account_id: string
+  account_name: string
+  cashier_name: string
+  opened_by: string
+  opened_at: string
+  opening_expected_tyiyn: number
+  /** Сколько должно быть в кассе сейчас. */
+  expected_tyiyn: number
+  closed_at: string | null
+  counted_tyiyn: number | null
+  diff_tyiyn: number | null
+  breakdown: { kind: string; sum_tyiyn: number }[]
+  cash_sales_tyiyn: number
+  card_tyiyn: number
+  transfer_tyiyn: number
+  debt_tyiyn: number
+}

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod cash;
 pub mod catalog;
 pub mod gifts;
 pub mod notifications;
@@ -14,6 +15,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(auth::routes())
+        .merge(cash::routes())
         .merge(catalog::routes())
         .merge(gifts::routes())
         .merge(notifications::routes())

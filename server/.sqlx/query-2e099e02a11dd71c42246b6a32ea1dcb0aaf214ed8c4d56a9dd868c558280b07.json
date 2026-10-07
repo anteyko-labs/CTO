@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id from shifts s\n           where s.branch_id = $1 and s.account_id = $2\n             and not exists (\n               select 1 from shift_closes c\n               where c.shift_id = s.id\n                 and not exists (select 1 from shift_reopens r where r.close_id = c.id))\n           order by s.opened_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2e099e02a11dd71c42246b6a32ea1dcb0aaf214ed8c4d56a9dd868c558280b07"
+}

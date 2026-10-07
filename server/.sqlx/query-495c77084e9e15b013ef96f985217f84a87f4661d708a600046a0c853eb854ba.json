@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from shifts\n           where branch_id = $1\n             and ($2::date is null or business_date >= $2)\n             and ($3::date is null or business_date <= $3)\n           order by business_date desc limit 60",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "495c77084e9e15b013ef96f985217f84a87f4661d708a600046a0c853eb854ba"
+}

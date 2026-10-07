@@ -444,6 +444,54 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cash_follows_payments(pool: PgPool) {
+    // Наличные идут в кассу, безнал — на счёт за вычетом комиссии банка (SPEC-05, ADR-024).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 100).await;
+    let balance = |kind: &'static str| {
+        let pool = pool.clone();
+        async move {
+            // Кассы заводятся при первой операции, до неё их просто нет.
+            sqlx::query_scalar::<_, i64>(
+                "select balance_tyiyn from cash_accounts where branch_id = $1 and kind = $2",
+            )
+            .bind(w.owner.user.branch_id)
+            .bind(kind)
+            .fetch_optional(&pool)
+            .await
+            .unwrap()
+            .unwrap_or(0)
+        }
+    };
+    let before_cash = balance("register").await;
+    let before_bank = balance("bank").await;
+
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 1, 100_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(balance("register").await, before_cash + 100_000);
+
+    let mut by_card = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 100_000)],
+        vec![PaymentReq {
+            method: "card".into(),
+            amount_tyiyn: 100_000,
+        }],
+    );
+    by_card.op_id = Uuid::now_v7();
+    sell(&pool, &w.owner, by_card).await.unwrap();
+    // 0,5 % комиссии: на счёт пришло 99 500 тыйын.
+    assert_eq!(balance("bank").await, before_bank + 99_500);
+    assert_eq!(balance("register").await, before_cash + 100_000);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn idempotent_sale(pool: PgPool) {
     let w = seed(&pool).await;
     let op = Uuid::now_v7();
