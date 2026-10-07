@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -10,7 +11,7 @@ import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
-import { PAYMENT_LABELS, type Employee, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
+import { PAYMENT_LABELS, type Employee, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -114,11 +115,14 @@ export default function Cashier() {
   const [comment, setComment] = useState(draft?.comment ?? '')
   const [payMode, setPayMode] = useState<PayMode>('cash')
   const [received, setReceived] = useState('')
-  const [split, setSplit] = useState<Record<PaymentMethod, string>>({ cash: '', card: '', transfer: '' })
+  const [split, setSplit] = useState<Record<PaymentMethod, string>>({ cash: '', card: '', transfer: '', debt: '' })
   const [opId, setOpId] = useState(newOpId)
   const [done, setDone] = useState<{ sale: Sale; change: number | null } | null>(null)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
+  const [party, setParty] = useState<Party | null>(null)
+  const [contactId, setContactId] = useState('')
+  const [vehicleId, setVehicleId] = useState('')
   const { busy, error, setError, run } = useAction()
 
   const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
@@ -151,7 +155,7 @@ export default function Cashier() {
   const payments = ((): { method: PaymentMethod; amount_tyiyn: number }[] | null => {
     if (payMode !== 'mixed') return [{ method: payMode, amount_tyiyn: total }]
     const list: { method: PaymentMethod; amount_tyiyn: number }[] = []
-    for (const m of ['cash', 'card', 'transfer'] as const) {
+    for (const m of ['cash', 'card', 'transfer', 'debt'] as const) {
       if (!split[m].trim()) continue
       const v = parseSom(split[m])
       if (v === null) return null
@@ -202,13 +206,17 @@ export default function Cashier() {
     setLines([])
     setComment('')
     setReceived('')
-    setSplit({ cash: '', card: '', transfer: '' })
+    setSplit({ cash: '', card: '', transfer: '', debt: '' })
     setPayMode('cash')
     setMasterId('')
     setSaleType('takeaway')
+    setParty(null)
+    setContactId('')
+    setVehicleId('')
     setError(null)
   }
 
+  const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]'],
     [lines.length === 0 || valid, 'количество и цены в строках'],
@@ -217,6 +225,7 @@ export default function Cashier() {
     [payments !== null, 'сумму оплаты', '[data-pay]'],
     [payments === null || paid === total, `оплату: ${formatSom(paid ?? 0)} вместо ${formatSom(total)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
+    [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
   )
 
   const submit = () =>
@@ -227,6 +236,9 @@ export default function Cashier() {
         sale_type: saleType,
         cashier_id: cashierId,
         master_id: saleType === 'service' ? masterId : null,
+        party_id: party?.id ?? null,
+        contact_id: party && contactId ? contactId : null,
+        vehicle_id: party && vehicleId ? vehicleId : null,
         comment,
         lines: lines.map((l) => ({
           kind: l.kind,
@@ -427,6 +439,21 @@ export default function Cashier() {
               </div>
             </>
           )}
+          <div data-client>
+            <ClientPicker
+              party={party}
+              contactId={contactId}
+              vehicleId={vehicleId}
+              onParty={(p) => {
+                setParty(p)
+                setContactId('')
+                setVehicleId('')
+                if (!p && payMode === 'debt') setPayMode('cash')
+              }}
+              onContact={setContactId}
+              onVehicle={setVehicleId}
+            />
+          </div>
           {employees.data && cashiers.length === 0 && (
             <div className="text-sm text-amber-700">
               В справочнике нет кассиров. <Link className="underline" to="/employees">Добавить сотрудника</Link>
@@ -439,8 +466,8 @@ export default function Cashier() {
             <span className="text-sm text-slate-500">Итого</span>
             <span className="text-3xl font-bold">{formatSom(total)}</span>
           </div>
-          <div data-pay tabIndex={-1} className="grid grid-cols-4 overflow-hidden rounded-md border border-slate-300 text-xs">
-            {(['cash', 'card', 'transfer', 'mixed'] as const).map((m) => (
+          <div data-pay tabIndex={-1} className="grid grid-cols-5 overflow-hidden rounded-md border border-slate-300 text-xs">
+            {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m) => (
               <button
                 key={m}
                 type="button"
@@ -495,9 +522,23 @@ export default function Cashier() {
               )}
             </div>
           )}
+          {payMode === 'debt' && (
+            <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {party ? (
+                <>
+                  Весь чек в долг: {party.name}, {balanceText(party.balance_tyiyn)}
+                  {party.credit_limit_tyiyn !== null && (
+                    <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - total)}</>
+                  )}
+                </>
+              ) : (
+                'Выберите клиента выше — без него долг не записать'
+              )}
+            </div>
+          )}
           {payMode === 'mixed' && (
-            <div className="grid grid-cols-3 gap-2">
-              {(['cash', 'card', 'transfer'] as const).map((m) => (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
                 <Field key={m} label={PAYMENT_LABELS[m]}>
                   <input inputMode="decimal" value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
                 </Field>

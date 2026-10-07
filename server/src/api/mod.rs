@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod catalog;
+pub mod parties;
 pub mod receipts;
 pub mod refs;
 pub mod sales;
@@ -12,6 +13,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(auth::routes())
         .merge(catalog::routes())
+        .merge(parties::routes())
         .merge(refs::routes())
         .merge(receipts::routes())
         .merge(sales::routes())

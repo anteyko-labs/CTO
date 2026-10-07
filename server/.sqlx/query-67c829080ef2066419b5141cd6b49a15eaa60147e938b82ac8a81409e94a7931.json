@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select credit_limit_tyiyn, balance_tyiyn from parties where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credit_limit_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "67c829080ef2066419b5141cd6b49a15eaa60147e938b82ac8a81409e94a7931"
+}

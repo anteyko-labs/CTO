@@ -4,6 +4,8 @@ import { AuthProvider, useAuth } from './lib/auth'
 import { Loading, Toaster } from './components/ui'
 import Cashier from './pages/Cashier'
 import Categories from './pages/Categories'
+import ClientCard from './pages/ClientCard'
+import Clients from './pages/Clients'
 import Employees from './pages/Employees'
 import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
@@ -43,6 +45,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
   {
     title: 'Справочники',
     items: [
+      { to: '/clients', label: 'Клиенты' },
       { to: '/categories', label: 'Категории' },
       { to: '/employees', label: 'Сотрудники' },
       { to: '/services', label: 'Услуги' },
@@ -126,6 +129,8 @@ function Shell() {
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
+          <Route path="/clients" element={<Clients />} />
+          <Route path="/clients/:id" element={<ByParam><ClientCard /></ByParam>} />
           <Route path="/categories" element={<Categories />} />
           <Route path="/employees" element={<Employees />} />
           <Route path="/services" element={<Services />} />

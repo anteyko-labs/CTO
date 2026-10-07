@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn from sales where id = $1 and branch_id = $2",
+  "query": "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn,\n                  party_id as \"party_id?\", contact_id as \"contact_id?\", vehicle_id as \"vehicle_id?\"\n           from sales where id = $1 and branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,21 @@
         "ordinal": 4,
         "name": "master_fee_tyiyn",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "party_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "contact_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "vehicle_id?",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -40,8 +55,11 @@
       false,
       false,
       true,
-      false
+      false,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "42711d56bb5d4cd1792a0ee8884b840a3e8aafd345815d69cbacbc6753167f39"
+  "hash": "42c419122fe78b0e243109714eaead94624308cc185239fa6dbe3395d65566e1"
 }

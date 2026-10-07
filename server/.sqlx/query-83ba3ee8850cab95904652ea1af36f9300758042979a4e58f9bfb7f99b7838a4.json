@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties\n           set name = coalesce(nullif(trim($3), ''), name),\n               phone = coalesce($4, phone),\n               inn = coalesce($5, inn),\n               comment = coalesce($6, comment),\n               kind = coalesce($7, kind),\n               credit_limit_tyiyn = coalesce($8, credit_limit_tyiyn),\n               due_days = coalesce($9, due_days),\n               active = coalesce($10, active)\n           where id = $1 and branch_id = $2\n           returning id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "83ba3ee8850cab95904652ea1af36f9300758042979a4e58f9bfb7f99b7838a4"
+}

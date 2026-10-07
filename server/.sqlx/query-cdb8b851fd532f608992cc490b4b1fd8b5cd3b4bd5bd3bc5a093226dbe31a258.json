@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.kind, s.total_tyiyn, s.created_at, s.comment,\n                  c.full_name as \"contact?\", v.plate as \"plate?\"\n           from sales s\n           left join party_contacts c on c.id = s.contact_id\n           left join party_vehicles v on v.id = s.vehicle_id\n           where s.party_id = $1 and s.branch_id = $2\n             and ($3::date is null or s.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::date is null or s.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by s.created_at desc\n           limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "contact?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "plate?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cdb8b851fd532f608992cc490b4b1fd8b5cd3b4bd5bd3bc5a093226dbe31a258"
+}

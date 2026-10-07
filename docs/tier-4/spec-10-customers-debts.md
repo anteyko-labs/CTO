@@ -101,6 +101,8 @@ payments: [{method: cash | card | transfer | debt, amount_tyiyn}]
 
 ## Погашение
 
+Пока этап 2 не сделан, касса ещё не ведёт наличные, поэтому погашение меняет только баланс контрагента и пишется в журнал. Как только появятся кассы и смены (SPEC-05), та же операция будет в одной транзакции писать и движение денег; порядок полей запроса для этого уже готов.
+
 `POST /debts/repayments {op_id, party_id, amount_tyiyn, source account | outside, account_id?, comment?}`
 
 ```

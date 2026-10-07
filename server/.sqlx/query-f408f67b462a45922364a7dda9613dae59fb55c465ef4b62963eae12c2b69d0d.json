@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,\n                  s.master_id, m.full_name as \"master_name?\", s.total_tyiyn, s.master_fee_tyiyn,\n                  s.comment, s.reversal_of,\n                  u.full_name as user_name, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           join users u on u.id = s.user_id\n           where s.id = $1 and s.branch_id = $2",
+  "query": "select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,\n                  s.master_id, m.full_name as \"master_name?\", s.total_tyiyn, s.master_fee_tyiyn,\n                  s.comment, s.reversal_of,\n                  s.party_id as \"party_id?\", pt.name as \"party_name?\", pt.balance_tyiyn as \"party_balance_tyiyn?\",\n                  pc.full_name as \"contact_name?\", pv.plate as \"vehicle_plate?\",\n                  u.full_name as user_name, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           left join party_contacts pc on pc.id = s.contact_id\n           left join party_vehicles pv on pv.id = s.vehicle_id\n           join users u on u.id = s.user_id\n           where s.id = $1 and s.branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -65,11 +65,36 @@
       },
       {
         "ordinal": 12,
+        "name": "party_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "party_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "party_balance_tyiyn?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "contact_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "vehicle_plate?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
         "name": "user_name",
         "type_info": "Text"
       },
       {
-        "ordinal": 13,
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -93,9 +118,14 @@
       false,
       false,
       true,
+      true,
+      false,
+      false,
+      false,
+      false,
       false,
       false
     ]
   },
-  "hash": "3f1c2a07a4c74d9366b8282a9a45543f9b024bf9d76d1782a3b361462c1367ee"
+  "hash": "f408f67b462a45922364a7dda9613dae59fb55c465ef4b62963eae12c2b69d0d"
 }

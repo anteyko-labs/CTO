@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_vehicles\n           set plate = coalesce(nullif(upper(trim($3)), ''), plate),\n               brand = $4, model = $5, comment = $6,\n               active = coalesce($7, active)\n           where id = $1 and party_id = $2\n           returning id, plate, brand, model, comment, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0c8caed8aaa51b57ba29732c492c2a68ecf7fd574739394b04dcd93e2ba4c3f5"
+}

@@ -149,7 +149,7 @@ export interface StockMismatch {
 }
 
 export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service'
-export type PaymentMethod = 'cash' | 'card' | 'transfer'
+export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt'
 
 export interface SaleLine {
   line_no: number
@@ -181,6 +181,12 @@ export interface Sale {
   cashier_name: string
   master_id: string | null
   master_name: string | null
+  party_id: string | null
+  party_name: string | null
+  contact_name: string | null
+  vehicle_plate: string | null
+  /** Баланс клиента после чека: сколько он теперь должен. */
+  party_balance_tyiyn: number | null
   total_tyiyn: number
   /** Начисление мастеру за замену: ставка на чек, а не строка услуги. */
   master_fee_tyiyn: number
@@ -221,6 +227,7 @@ export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   cash: 'Наличные',
   card: 'Карта',
   transfer: 'Перевод',
+  debt: 'В долг',
 }
 
 export const KIND_LABELS: Record<CategoryKind, string> = {
@@ -228,4 +235,61 @@ export const KIND_LABELS: Record<CategoryKind, string> = {
   filter: 'Фильтр',
   battery: 'Аккумулятор',
   other: 'Прочее',
+}
+
+// ---------- Контрагенты и долги (SPEC-10) ----------
+
+export interface Party {
+  id: string
+  role: 'customer' | 'supplier'
+  kind: 'person' | 'company'
+  name: string
+  phone: string
+  inn: string
+  comment: string
+  credit_limit_tyiyn: number | null
+  due_days: number | null
+  active: boolean
+  /** > 0 должен нам, < 0 аванс клиента. */
+  balance_tyiyn: number
+}
+
+export interface PartyContact {
+  id: string
+  full_name: string
+  phone: string
+  position: string
+  inn: string
+  active: boolean
+}
+
+export interface PartyVehicle {
+  id: string
+  plate: string
+  brand: string
+  model: string
+  comment: string
+  active: boolean
+}
+
+export interface PartyTimelineItem {
+  at: string
+  kind: 'sale' | 'sale_return' | 'debt' | 'repayment' | 'adjust'
+  title: string
+  amount_tyiyn: number
+  number: number | null
+  doc_id: string | null
+  comment: string
+}
+
+export interface PartyCard {
+  party: Party
+  contacts: PartyContact[]
+  vehicles: PartyVehicle[]
+  purchases: number
+  purchases_tyiyn: number
+  debt_taken_tyiyn: number
+  repaid_tyiyn: number
+  last_at: string | null
+  timeline: PartyTimelineItem[]
 }

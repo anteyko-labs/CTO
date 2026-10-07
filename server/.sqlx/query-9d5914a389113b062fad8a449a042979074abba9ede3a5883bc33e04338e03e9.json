@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select balance_tyiyn from parties where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9d5914a389113b062fad8a449a042979074abba9ede3a5883bc33e04338e03e9"
+}

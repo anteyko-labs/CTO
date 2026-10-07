@@ -10,6 +10,7 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::parties;
 use crate::api::receipts::lock_products;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::costing::cost_of;
@@ -66,6 +67,10 @@ pub struct SaleReq {
     pub sale_type: String,
     pub cashier_id: Uuid,
     pub master_id: Option<Uuid>,
+    /// Покупатель и, для фирмы, кто приехал и на какой машине (SPEC-10).
+    pub party_id: Option<Uuid>,
+    pub contact_id: Option<Uuid>,
+    pub vehicle_id: Option<Uuid>,
     #[serde(default)]
     pub comment: String,
     pub lines: Vec<SaleLineReq>,
@@ -113,6 +118,12 @@ pub struct SaleOut {
     pub cashier_name: String,
     pub master_id: Option<Uuid>,
     pub master_name: Option<String>,
+    pub party_id: Option<Uuid>,
+    pub party_name: Option<String>,
+    pub contact_name: Option<String>,
+    pub vehicle_plate: Option<String>,
+    /// Баланс клиента после чека: сколько он теперь должен.
+    pub party_balance_tyiyn: Option<i64>,
     pub total_tyiyn: i64,
     /// Начисление мастеру за замену: ставка на чек, а не строка услуги (ADR-027).
     pub master_fee_tyiyn: i64,
@@ -134,10 +145,15 @@ pub async fn load_sale(
         r#"select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,
                   s.master_id, m.full_name as "master_name?", s.total_tyiyn, s.master_fee_tyiyn,
                   s.comment, s.reversal_of,
+                  s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
+                  pc.full_name as "contact_name?", pv.plate as "vehicle_plate?",
                   u.full_name as user_name, s.created_at
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id
+           left join parties pt on pt.id = s.party_id
+           left join party_contacts pc on pc.id = s.contact_id
+           left join party_vehicles pv on pv.id = s.vehicle_id
            join users u on u.id = s.user_id
            where s.id = $1 and s.branch_id = $2"#,
         id,
@@ -199,6 +215,11 @@ pub async fn load_sale(
         cashier_name: h.cashier_name,
         master_id: h.master_id,
         master_name: h.master_name,
+        party_id: h.party_id,
+        party_name: h.party_name,
+        contact_name: h.contact_name,
+        vehicle_plate: h.vehicle_plate,
+        party_balance_tyiyn: h.party_balance_tyiyn,
         total_tyiyn: h.total_tyiyn,
         master_fee_tyiyn: h.master_fee_tyiyn,
         comment: h.comment,
@@ -301,8 +322,8 @@ async fn prepare_line(
 fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     let mut sum: i64 = 0;
     for p in payments {
-        if !matches!(p.method.as_str(), "cash" | "card" | "transfer") {
-            return Err(invalid("способ оплаты: cash, card или transfer"));
+        if !matches!(p.method.as_str(), "cash" | "card" | "transfer" | "debt") {
+            return Err(invalid("способ оплаты: cash, card, transfer или debt"));
         }
         if p.amount_tyiyn <= 0 {
             return Err(invalid("сумма платежа больше нуля"));
@@ -417,6 +438,23 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     }
     check_employee(conn, branch_id, req.cashier_id, false).await?;
 
+    let debt_total: i64 = req
+        .payments
+        .iter()
+        .filter(|p| p.method == "debt")
+        .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
+        .ok_or_else(overflow)?;
+    match req.party_id {
+        Some(pid) => {
+            parties::check_sale_party(conn, branch_id, pid, req.contact_id, req.vehicle_id).await?
+        }
+        None if debt_total > 0 => return Err(invalid("для продажи в долг укажите клиента")),
+        None if req.contact_id.is_some() || req.vehicle_id.is_some() => {
+            return Err(invalid("работник и машина указываются вместе с клиентом"));
+        }
+        None => {}
+    }
+
     let mut prepared = Vec::with_capacity(req.lines.len());
     let mut total: i64 = 0;
     for l in &req.lines {
@@ -442,8 +480,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let id = new_id();
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
-                              master_fee_tyiyn, comment, user_id, device_id, client_time)
-           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+                              master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
+                              user_id, device_id, client_time)
+           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
         id,
         branch_id,
         number,
@@ -453,6 +492,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         total,
         master_fee,
         req.comment.trim(),
+        req.party_id,
+        req.contact_id,
+        req.vehicle_id,
         ctx.user.id,
         ctx.device_id,
         req.client_time
@@ -498,6 +540,37 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
     }
     insert_payments(conn, id, &req.payments, 1).await?;
+    if debt_total > 0 {
+        let party_id = req
+            .party_id
+            .ok_or_else(|| invalid("для долга нужен клиент"))?;
+        let left = parties::credit_limit_left(conn, party_id).await?;
+        parties::add_ledger(
+            conn,
+            ctx,
+            parties::LedgerEntry {
+                party_id,
+                kind: "debt",
+                amount: debt_total,
+                doc_type: "sale",
+                doc_id: Some(id),
+                comment: "",
+            },
+        )
+        .await?;
+        if left.is_some_and(|l| debt_total > l) {
+            // Лимит не запрещает продажу, но владелец должен это увидеть (SPEC-10).
+            ops::audit(
+                conn,
+                ctx,
+                "sale.credit_limit_exceeded",
+                "sale",
+                Some(id),
+                json!({ "party_id": party_id, "debt": debt_total, "left": left }),
+            )
+            .await?;
+        }
+    }
     if !overrides.is_empty() {
         ops::audit(
             conn,
@@ -582,7 +655,9 @@ pub async fn return_sale_tx(
     .execute(&mut *conn)
     .await?;
     let orig = sqlx::query!(
-        "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn from sales where id = $1 and branch_id = $2",
+        r#"select kind, sale_type, cashier_id, master_id, master_fee_tyiyn,
+                  party_id as "party_id?", contact_id as "contact_id?", vehicle_id as "vehicle_id?"
+           from sales where id = $1 and branch_id = $2"#,
         id,
         branch_id
     )
@@ -683,8 +758,9 @@ pub async fn return_sale_tx(
     let rid = new_id();
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
-                              master_fee_tyiyn, comment, reversal_of, user_id, device_id)
-           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+                              master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
+                              reversal_of, user_id, device_id)
+           values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
         rid,
         branch_id,
         number,
@@ -694,6 +770,9 @@ pub async fn return_sale_tx(
         -total,
         fee_back,
         req.comment.trim(),
+        orig.party_id,
+        orig.contact_id,
+        orig.vehicle_id,
         id,
         ctx.user.id,
         ctx.device_id
@@ -722,6 +801,30 @@ pub async fn return_sale_tx(
         .await?;
     }
     insert_payments(conn, rid, &req.payments, -1).await?;
+    let debt_back: i64 = req
+        .payments
+        .iter()
+        .filter(|p| p.method == "debt")
+        .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
+        .ok_or_else(overflow)?;
+    if debt_back > 0 {
+        let party_id = orig
+            .party_id
+            .ok_or_else(|| invalid("в исходном чеке не было клиента"))?;
+        parties::add_ledger(
+            conn,
+            ctx,
+            parties::LedgerEntry {
+                party_id,
+                kind: "debt",
+                amount: -debt_back,
+                doc_type: "sale_return",
+                doc_id: Some(rid),
+                comment: "",
+            },
+        )
+        .await?;
+    }
     ops::audit(
         conn,
         ctx,

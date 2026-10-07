@@ -176,6 +176,9 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         sale_type: "takeaway".into(),
         cashier_id: w.cashier,
         master_id: None,
+        party_id: None,
+        contact_id: None,
+        vehicle_id: None,
         comment: String::new(),
         lines,
         payments,
@@ -369,6 +372,72 @@ async fn other_work_still_sells_as_a_service_line(pool: PgPool) {
     // Строка работы мастеру больше не начисляет: ставка одна, за чек.
     assert_eq!(sale.lines[0].master_fee_tyiyn, 0);
     assert_eq!(sale.master_fee_tyiyn, 3000);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn debt_sale_moves_customer_balance(pool: PgPool) {
+    // Продажа в долг ложится на клиента, возврат долг уменьшает (SPEC-10).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 100).await;
+    let party = Uuid::now_v7();
+    sqlx::query(
+        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Тест', '12345')",
+    )
+    .bind(party)
+    .bind(w.owner.user.branch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let pay = |method: &str, amount: i64| PaymentReq {
+        method: method.into(),
+        amount_tyiyn: amount,
+    };
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 3, 1000)],
+        vec![pay("cash", 1000), pay("debt", 2000)],
+    );
+    req.party_id = Some(party);
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(sale.party_balance_tyiyn, Some(2000));
+    assert_eq!(sale.party_name.as_deref(), Some("ОсОО Тест"));
+
+    // Долг без клиента не проводится.
+    let bad = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 1000)],
+        vec![pay("debt", 1000)],
+    );
+    assert!(matches!(
+        sell(&pool, &w.owner, bad).await,
+        Err(AppError::Validation(_))
+    ));
+
+    // Возврат одной штуки гасит часть долга.
+    let mut tx = pool.begin().await.unwrap();
+    let back = return_sale_tx(
+        &mut tx,
+        &w.owner,
+        sale.id,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            comment: "вернули".into(),
+            lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
+            payments: vec![pay("debt", 1000)],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(back.party_id, Some(party));
+    let balance: i64 = sqlx::query_scalar("select balance_tyiyn from parties where id = $1")
+        .bind(party)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(balance, 1000);
+    assert_stock_consistent(&pool, &w).await;
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
