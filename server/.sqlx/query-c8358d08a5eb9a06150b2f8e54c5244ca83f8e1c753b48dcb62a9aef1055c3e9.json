@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update expense_articles\n           set name = coalesce(nullif(trim($3), ''), name),\n               owner_only = coalesce($4, owner_only),\n               active = coalesce($5, active)\n           where id = $1 and branch_id = $2\n           returning id, name, owner_only, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c8358d08a5eb9a06150b2f8e54c5244ca83f8e1c753b48dcb62a9aef1055c3e9"
+}

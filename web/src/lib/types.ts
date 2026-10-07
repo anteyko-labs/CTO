@@ -358,3 +358,28 @@ export interface Shift {
   transfer_tyiyn: number
   debt_tyiyn: number
 }
+
+// ---------- Расходы (SPEC-06) ----------
+
+export interface ExpenseArticle {
+  id: string
+  name: string
+  owner_only: boolean
+  active: boolean
+}
+
+export interface Expense {
+  id: string
+  number: number
+  article_id: string
+  article_name: string
+  amount_tyiyn: number
+  source: 'account' | 'outside'
+  account_name: string | null
+  expense_date: string
+  comment: string
+  reversal_of: string | null
+  reversed: boolean
+  user_name: string
+  created_at: string
+}

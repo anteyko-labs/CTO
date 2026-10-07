@@ -8,6 +8,7 @@ import ClientCard from './pages/ClientCard'
 import Debts from './pages/Debts'
 import Clients from './pages/Clients'
 import Employees from './pages/Employees'
+import Expenses from './pages/Expenses'
 import Gifts from './pages/Gifts'
 import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
@@ -37,6 +38,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/', label: 'Касса' },
       { to: '/sales', label: 'Чеки' },
       { to: '/shift', label: 'Смена' },
+      { to: '/expenses', label: 'Расходы' },
       { to: '/debts', label: 'Долги' },
       { to: '/notifications', label: 'Уведомления', ownerOnly: true },
     ],
@@ -138,6 +140,7 @@ function Shell() {
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
           <Route path="/shift" element={<Shift />} />
+          <Route path="/expenses" element={<Expenses />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

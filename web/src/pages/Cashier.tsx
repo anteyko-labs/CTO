@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
+import { QuickExpense } from '../components/QuickExpense'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -163,6 +164,7 @@ export default function Cashier() {
   const [parked, setParked] = useState<Parked[]>(loadParked)
   const [parkedId, setParkedId] = useState<string | null>(null)
   const [giftRule, setGiftRule] = useState<GiftRule | null>(null)
+  const [expense, setExpense] = useState(false)
   const limitAsk = useAction()
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
@@ -613,6 +615,9 @@ export default function Cashier() {
               onVehicle={setVehicleId}
             />
           </div>
+          <button type="button" className="self-start text-xs text-sky-700 underline" onClick={() => setExpense(true)}>
+            Мелкий расход из кассы
+          </button>
           {employees.data && cashiers.length === 0 && (
             <div className="text-sm text-amber-700">
               В справочнике нет кассиров. <Link className="underline" to="/employees">Добавить сотрудника</Link>
@@ -759,6 +764,7 @@ export default function Cashier() {
         </div>
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
+      {expense && <QuickExpense onClose={() => setExpense(false)} />}
       {unknownCode !== null && (
         <UnknownCodeModal
           code={unknownCode}

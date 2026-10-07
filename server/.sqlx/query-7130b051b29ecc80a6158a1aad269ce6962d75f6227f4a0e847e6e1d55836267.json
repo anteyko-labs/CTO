@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, owner_only from cash_accounts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_only",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7130b051b29ecc80a6158a1aad269ce6962d75f6227f4a0e847e6e1d55836267"
+}

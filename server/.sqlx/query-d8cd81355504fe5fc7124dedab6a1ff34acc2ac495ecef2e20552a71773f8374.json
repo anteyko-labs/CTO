@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id, e.number, e.article_id, a.name as article_name, e.amount_tyiyn, e.source,\n                  c.name as \"account_name?\", e.expense_date, e.comment, e.reversal_of,\n                  exists (select 1 from expenses x where x.reversal_of = e.id) as \"reversed!\",\n                  u.full_name as user_name, e.created_at\n           from expenses e\n           join expense_articles a on a.id = e.article_id\n           join users u on u.id = e.user_id\n           left join cash_accounts c on c.id = e.account_id\n           where e.id = $1 and e.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "article_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "article_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "expense_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 8,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "d8cd81355504fe5fc7124dedab6a1ff34acc2ac495ecef2e20552a71773f8374"
+}

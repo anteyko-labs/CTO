@@ -739,6 +739,107 @@ async fn duplicate_products_can_be_merged(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn expenses_take_money_from_the_till(pool: PgPool) {
+    // Расход из кассы уменьшает наличные, сторно их возвращает (SPEC-06).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, accounts) = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None).await;
+    let till = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["is_default"] == json!(true))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Кладём в кассу деньги, чтобы было из чего платить.
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cash/movements",
+            Some(&admin),
+            Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 100_000, "comment": "размен" })),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let (_, _, articles) = call(&app, "GET", "/api/v1/expense-articles", Some(&admin), None).await;
+    let list = articles.as_array().unwrap();
+    // Личные расходы администратору не видны.
+    assert!(list.iter().all(|a| a["name"] != json!("Личные расходы")));
+    let household = list
+        .iter()
+        .find(|a| a["name"] == json!("Хозтовары"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _, exp) = call(
+        &app,
+        "POST",
+        "/api/v1/expenses",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 30_000, "comment": "швабра" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let balance = |cookie: &str| {
+        let app = app.clone();
+        let cookie = cookie.to_string();
+        let till = till.clone();
+        async move {
+            let (_, _, accs) =
+                call(&app, "GET", "/api/v1/cash/accounts", Some(&cookie), None).await;
+            accs.as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == json!(till))
+                .unwrap()["balance_tyiyn"]
+                .as_i64()
+                .unwrap()
+        }
+    };
+    assert_eq!(balance(&admin).await, 70_000);
+
+    // Расход задним числом и по статье владельца администратору недоступен.
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/expenses",
+            Some(&admin),
+            Some(json!({
+                "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 1000,
+                "expense_date": "2026-01-01"
+            })),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+
+    // Сторно возвращает деньги в кассу.
+    let eid = exp["id"].as_str().unwrap();
+    let (status, _, back) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/expenses/{eid}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(back["amount_tyiyn"], -30_000);
+    assert_eq!(balance(&admin).await, 100_000);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {
