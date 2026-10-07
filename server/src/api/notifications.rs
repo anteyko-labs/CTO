@@ -19,7 +19,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-const WATCHED: [&str; 8] = [
+const WATCHED: [&str; 10] = [
+    "party.limit_request",
+    "gift.rule",
     "product.prices",
     "sale.price_override",
     "sale.credit_limit_exceeded",
@@ -93,6 +95,23 @@ fn describe(action: &str, data: &Value) -> (String, String) {
         "receipt.reverse" => (
             "Сторно прихода".into(),
             format!("накладная № {}", num("number").unwrap_or(0)),
+        ),
+        "party.limit_request" => (
+            "Просят поднять лимит долга".into(),
+            format!(
+                "{}: не хватает {}{}",
+                data.get("name").and_then(Value::as_str).unwrap_or(""),
+                money(num("amount_tyiyn")),
+                data.get("comment")
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.is_empty())
+                    .map(|c| format!(" — {c}"))
+                    .unwrap_or_default()
+            ),
+        ),
+        "gift.rule" => (
+            "Изменены правила подарков".into(),
+            format!("подарков в списке: {}", num("items").unwrap_or(0)),
         ),
         "debt.adjust" => (
             "Правка долга вручную".into(),

@@ -156,6 +156,7 @@ async fn pool_of(pool: &PgPool, product: Uuid) -> (i64, i64, bool) {
 fn line(kind: &str, product: Uuid, qty: i64, price: i64) -> SaleLineReq {
     SaleLineReq {
         kind: kind.into(),
+        gift: false,
         product_id: Some(product),
         service_id: None,
         qty,
@@ -359,6 +360,7 @@ async fn other_work_still_sells_as_a_service_line(pool: PgPool) {
         &w,
         vec![SaleLineReq {
             kind: "service".into(),
+            gift: false,
             product_id: None,
             service_id: Some(w.service),
             qty: 1,

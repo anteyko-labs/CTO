@@ -28,6 +28,7 @@ pub fn routes() -> Router<AppState> {
             "/parties/{id}/vehicles/{vehicle_id}",
             routing::patch(update_vehicle),
         )
+        .route("/parties/{id}/limit-request", routing::post(limit_request))
         .route("/debts/repayments", routing::post(post_repayment))
         .route("/debts/adjust", routing::post(post_adjust))
 }
@@ -153,6 +154,10 @@ async fn create_party(
     if (req.credit_limit_tyiyn.is_some() || req.due_days.is_some()) && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    // У юрлица срок оплаты по умолчанию 14 дней, дальше правится в карточке.
+    let due_days = req
+        .due_days
+        .or_else(|| (kind == "company" && role == "customer").then_some(14));
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
@@ -168,7 +173,7 @@ async fn create_party(
         req.inn.trim(),
         req.comment.trim(),
         req.credit_limit_tyiyn,
-        req.due_days
+        due_days
     )
     .execute(&mut *tx)
     .await?;
@@ -909,4 +914,43 @@ async fn party_card(
         last_at,
         timeline,
     }))
+}
+
+#[derive(Deserialize)]
+struct LimitRequestReq {
+    amount_tyiyn: i64,
+    #[serde(default)]
+    comment: String,
+}
+
+/// Долг упёрся в лимит: касса просит владельца поднять его (SPEC-10).
+/// Сам лимит меняет только владелец, в карточке клиента.
+async fn limit_request(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<LimitRequestReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    if req.amount_tyiyn <= 0 {
+        return Err(invalid("сумма повышения больше нуля"));
+    }
+    let mut tx = state.pool.begin().await?;
+    let party = load_party(&mut tx, ctx.user.branch_id, id).await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "party.limit_request",
+        "party",
+        Some(id),
+        json!({
+            "name": party.name,
+            "amount_tyiyn": req.amount_tyiyn,
+            "limit_tyiyn": party.credit_limit_tyiyn,
+            "balance_tyiyn": party.balance_tyiyn,
+            "comment": req.comment.trim(),
+        }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "ok": true })))
 }

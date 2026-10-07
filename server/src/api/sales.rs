@@ -48,6 +48,9 @@ async fn oil_change_fee(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i
 #[derive(Deserialize, Clone)]
 pub struct SaleLineReq {
     pub kind: String,
+    /// Подарок: цена ноль, товар из списка правила (SPEC-11).
+    #[serde(default)]
+    pub gift: bool,
     pub product_id: Option<Uuid>,
     pub service_id: Option<Uuid>,
     pub qty: i64,
@@ -81,6 +84,7 @@ pub struct SaleReq {
 pub struct SaleLineOut {
     pub line_no: i32,
     pub kind: String,
+    pub gift: bool,
     pub product_id: Option<Uuid>,
     pub service_id: Option<Uuid>,
     pub name: String,
@@ -166,7 +170,8 @@ pub async fn load_sale(
     let lines = sqlx::query!(
         r#"select l.line_no, l.kind, l.product_id, l.service_id,
                   coalesce(p.name, sv.name) as "name!", p.container_ml as "container_ml?",
-                  l.qty, l.units, l.unit_price_tyiyn, l.list_price_tyiyn, l.amount_tyiyn, l.cost_tyiyn, l.master_fee_tyiyn
+                  l.qty, l.units, l.unit_price_tyiyn, l.list_price_tyiyn, l.amount_tyiyn, l.cost_tyiyn,
+                  l.master_fee_tyiyn, l.gift
            from sale_lines l
            left join products p on p.id = l.product_id
            left join services sv on sv.id = l.service_id
@@ -179,6 +184,7 @@ pub async fn load_sale(
     .map(|r| SaleLineOut {
         line_no: r.line_no,
         kind: r.kind,
+        gift: r.gift,
         product_id: r.product_id,
         service_id: r.service_id,
         name: r.name,
@@ -234,6 +240,7 @@ pub async fn load_sale(
 
 /// Строка, подготовленная к проведению.
 struct Prepared {
+    gift: bool,
     kind: String,
     product_id: Option<Uuid>,
     service_id: Option<Uuid>,
@@ -264,6 +271,7 @@ async fn prepare_line(
         .await?
         .ok_or_else(|| invalid("услуга не найдена"))?;
         return Ok(Prepared {
+            gift: false,
             kind: l.kind.clone(),
             product_id: None,
             service_id: Some(sid),
@@ -307,6 +315,7 @@ async fn prepare_line(
         _ => return Err(invalid("неизвестный вид строки")),
     };
     Ok(Prepared {
+        gift: l.gift,
         kind: l.kind.clone(),
         product_id: Some(pid),
         service_id: None,
@@ -371,8 +380,9 @@ async fn insert_line(
 ) -> AppResult<()> {
     sqlx::query!(
         r#"insert into sale_lines (id, sale_id, line_no, kind, product_id, service_id, qty, units,
-                                   unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn, master_fee_tyiyn)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
+                                   unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn, master_fee_tyiyn,
+                                   gift)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
         new_id(),
         sale_id,
         line_no,
@@ -385,7 +395,8 @@ async fn insert_line(
         p.list_price,
         amount,
         cost,
-        fee
+        fee,
+        p.gift
     )
     .execute(&mut *conn)
     .await?;
@@ -461,6 +472,36 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         let p = prepare_line(conn, branch_id, l).await?;
         total = total.checked_add(p.amount).ok_or_else(overflow)?;
         prepared.push(p);
+    }
+    let gifts: Vec<Uuid> = prepared
+        .iter()
+        .filter(|p| p.gift)
+        .filter_map(|p| p.product_id)
+        .collect();
+    if !gifts.is_empty() {
+        if prepared.iter().any(|p| p.gift && p.amount != 0) {
+            return Err(invalid("подарок идёт с нулевой ценой"));
+        }
+        let in_cart: Vec<Uuid> = prepared
+            .iter()
+            .filter(|p| !p.gift)
+            .filter_map(|p| p.product_id)
+            .collect();
+        let allowed = sqlx::query_scalar!(
+            r#"select count(distinct i.gift_product_id) as "n!"
+               from gift_rules r join gift_rule_items i on i.rule_id = r.id
+               where r.branch_id = $1 and r.active
+                 and r.trigger_product_id = any($2) and i.gift_product_id = any($3)"#,
+            branch_id,
+            &in_cart,
+            &gifts
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let distinct: BTreeSet<Uuid> = gifts.iter().copied().collect();
+        if usize::try_from(allowed).ok() != Some(distinct.len()) {
+            return Err(invalid("этот товар нельзя подарить к покупке"));
+        }
     }
     check_payments(&req.payments, total)?;
     // Замена строкой в чеке не печатается: мастеру идёт одна ставка за чек (ADR-027).
@@ -680,7 +721,7 @@ pub async fn return_sale_tx(
     for rl in &req.lines {
         let o = sqlx::query!(
             r#"select kind, product_id, service_id, qty, units, unit_price_tyiyn, list_price_tyiyn,
-                      amount_tyiyn, cost_tyiyn, master_fee_tyiyn
+                      amount_tyiyn, cost_tyiyn, master_fee_tyiyn, gift
                from sale_lines where sale_id = $1 and line_no = $2"#,
             id,
             rl.line_no
@@ -713,6 +754,7 @@ pub async fn return_sale_tx(
         total = total.checked_add(amount).ok_or_else(overflow)?;
         planned.push(Planned {
             p: Prepared {
+                gift: o.gift,
                 kind: o.kind,
                 product_id: o.product_id,
                 service_id: o.service_id,

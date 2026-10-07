@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
+import { GiftPicker } from '../components/GiftPicker'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
-import { Badge, Button, Card, ErrorBox, Field, Missing } from '../components/ui'
-import { get, newOpId, post } from '../lib/api'
+import { Badge, Button, Card, ErrorBox, Field, Missing, toast } from '../components/ui'
+import { get, newOpId, post, qs } from '../lib/api'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
-import { PAYMENT_LABELS, type Employee, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
+import { PAYMENT_LABELS, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -19,6 +20,8 @@ interface CartLine {
   product?: Product
   qtyText: string
   priceText: string
+  /** Подарок: цена ноль, в чеке помечен (SPEC-11). */
+  gift?: boolean
 }
 
 type PayMode = PaymentMethod | 'mixed'
@@ -159,6 +162,8 @@ export default function Cashier() {
   const [party, setParty] = useState<Party | null>(null)
   const [parked, setParked] = useState<Parked[]>(loadParked)
   const [parkedId, setParkedId] = useState<string | null>(null)
+  const [giftRule, setGiftRule] = useState<GiftRule | null>(null)
+  const limitAsk = useAction()
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
   const { busy, error, setError, run } = useAction()
@@ -208,8 +213,35 @@ export default function Cashier() {
   const update = (key: string, patch: Partial<CartLine>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 
+  /** Есть ли к этому товару подарки — спрашиваем сразу после добавления. */
+  const askGift = (p: Product) => {
+    void get<GiftRule[]>(`/gift-rules${qs({ product_id: p.id })}`)
+      .then((rules) => {
+        const rule = rules.find((r) => r.active && r.items.length > 0)
+        if (rule) setGiftRule(rule)
+      })
+      .catch(() => undefined)
+  }
+
+  const addGift = (g: { product_id: string; qty: number; name: string }) => {
+    setLines((ls) => [
+      ...ls,
+      {
+        key: nextKey(),
+        kind: 'piece',
+        product: { id: g.product_id, name: g.name } as Product,
+        qtyText: String(g.qty),
+        priceText: '0',
+        gift: true,
+      },
+    ])
+    setGiftRule(null)
+    focusPicker()
+  }
+
   const addProduct = (p: Product) => {
     setDone(null)
+    askGift(p)
     const kind: SaleLineKind = p.unit === 'ml' ? 'container' : 'piece'
     setLines((ls) => {
       const same = ls.find((l) => l.product?.id === p.id && l.kind === kind)
@@ -255,6 +287,11 @@ export default function Cashier() {
   }
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
+  // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
+  const overLimit =
+    party?.credit_limit_tyiyn != null && debtAmount > 0
+      ? Math.max(0, party.balance_tyiyn + debtAmount - party.credit_limit_tyiyn)
+      : 0
   /** Откладывает текущий чек, возвращая новый список отложенных. */
   const parkCurrent = (list: Parked[]): Parked[] => {
     if (lines.length === 0) return list
@@ -331,6 +368,7 @@ export default function Cashier() {
         comment,
         lines: lines.map((l) => ({
           kind: l.kind,
+          gift: Boolean(l.gift),
           product_id: l.product?.id ?? null,
           service_id: null,
           qty: lineQty(l),
@@ -422,7 +460,14 @@ export default function Cashier() {
                 return (
                   <li key={l.key} className="flex flex-wrap items-center gap-3 p-3">
                     <div className="min-w-48 flex-1">
-                      <div className="font-medium">{l.product?.name}</div>
+                      <div className="font-medium">
+                        {l.product?.name}
+                        {l.gift && (
+                          <span className="ml-2">
+                            <Badge tone="green">подарок</Badge>
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-slate-500">
                         {l.product ? `Остаток: ${stockText(l.product)}` : 'Услуга'}
                         {short && (
@@ -644,6 +689,24 @@ export default function Cashier() {
                   {party.credit_limit_tyiyn !== null && (
                     <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - total)}</>
                   )}
+                  {overLimit > 0 && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span>Лимит превышен на {formatSom(overLimit)}.</span>
+                      <Button
+                        variant="secondary"
+                        className="px-2 py-1 text-xs"
+                        disabled={limitAsk.busy}
+                        onClick={() =>
+                          void limitAsk.run(async () => {
+                            await post(`/parties/${party.id}/limit-request`, { amount_tyiyn: overLimit })
+                            toast('Владельцу отправлено уведомление')
+                          })
+                        }
+                      >
+                        Запросить повышение
+                      </Button>
+                    </div>
+                  )}
                 </>
               ) : (
                 'Выберите клиента выше — без него долг не записать'
@@ -695,6 +758,7 @@ export default function Cashier() {
           </Button>
         </div>
       )}
+      {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {unknownCode !== null && (
         <UnknownCodeModal
           code={unknownCode}

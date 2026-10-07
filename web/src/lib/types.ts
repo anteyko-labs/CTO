@@ -154,6 +154,7 @@ export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt'
 export interface SaleLine {
   line_no: number
   kind: SaleLineKind
+  gift: boolean
   product_id: string | null
   service_id: string | null
   name: string
@@ -313,4 +314,14 @@ export interface NotificationItem {
 export interface NotificationsOut {
   unseen: number
   items: NotificationItem[]
+}
+
+// ---------- Подарки (SPEC-11) ----------
+
+export interface GiftRule {
+  id: string
+  trigger_product_id: string
+  trigger_name: string
+  active: boolean
+  items: { gift_product_id: string; name: string; gift_qty: number }[]
 }

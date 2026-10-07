@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into gift_rule_items (rule_id, gift_product_id, gift_qty) values ($1, $2, $3)\n               on conflict (rule_id, gift_product_id) do update set gift_qty = excluded.gift_qty",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "da63593de89d2448faa26ad02b7344cbf6aca7978b9e1b40f6e00cb172a1aed3"
+}

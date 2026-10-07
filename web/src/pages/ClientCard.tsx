@@ -106,6 +106,7 @@ export default function ClientCard() {
   const owner = useUser().role === 'owner'
   const [money, setMoney] = useState<null | 'repay' | 'adjust'>(null)
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
+  const [limits, setLimits] = useState<{ limit: string; days: string } | null>(null)
   const [value, setValue] = useState('')
   const row = useAction()
   const card = useLoad(() => get<PartyCard>(`/parties/${id}/card`), [id])
@@ -123,6 +124,20 @@ export default function ClientCard() {
       setAdding(null)
       setValue('')
       card.reload()
+    })
+
+  /** Лимит долга и срок оплаты правит только владелец (SPEC-10). */
+  const saveLimits = () =>
+    void row.run(async () => {
+      if (!limits) return
+      const limit = limits.limit.trim() ? parseSom(limits.limit) : null
+      if (limits.limit.trim() && limit === null) throw new Error('Неверная сумма лимита')
+      const days = limits.days.trim() ? Number(limits.days) : null
+      if (days !== null && (!Number.isInteger(days) || days < 0)) throw new Error('Неверный срок')
+      await patch<Party>(`/parties/${party.id}`, { credit_limit_tyiyn: limit, due_days: days })
+      setLimits(null)
+      card.reload()
+      toast('Сохранено')
     })
 
   const toggleActive = () =>
@@ -182,12 +197,51 @@ export default function ClientCard() {
           <div className="text-xs text-slate-500">{party.kind === 'company' ? 'ИНН фирмы' : 'ИНН'}</div>
           <div className="font-medium">{party.inn || '—'}</div>
         </div>
-        {party.credit_limit_tyiyn !== null && (
-          <div>
-            <div className="text-xs text-slate-500">Лимит долга</div>
-            <div className="font-medium">{formatSom(party.credit_limit_tyiyn)}</div>
+        <div>
+          <div className="text-xs text-slate-500">Лимит долга</div>
+          <div className="font-medium">
+            {party.credit_limit_tyiyn !== null ? formatSom(party.credit_limit_tyiyn) : 'без лимита'}
+            {party.due_days !== null && <span className="text-xs text-slate-500"> · оплата {party.due_days} дн.</span>}
           </div>
-        )}
+          {owner &&
+            (limits ? (
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <input
+                  className="w-28"
+                  inputMode="decimal"
+                  placeholder="лимит, с"
+                  value={limits.limit}
+                  onChange={(e) => setLimits({ ...limits, limit: e.target.value })}
+                />
+                <input
+                  className="w-20"
+                  inputMode="numeric"
+                  placeholder="дней"
+                  value={limits.days}
+                  onChange={(e) => setLimits({ ...limits, days: e.target.value })}
+                />
+                <Button className="px-2 py-1 text-xs" disabled={row.busy} onClick={saveLimits}>
+                  Сохранить
+                </Button>
+                <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setLimits(null)}>
+                  Отмена
+                </Button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="mt-1 text-xs text-sky-700 underline"
+                onClick={() =>
+                  setLimits({
+                    limit: party.credit_limit_tyiyn !== null ? String(Math.trunc(party.credit_limit_tyiyn / 100)) : '',
+                    days: party.due_days !== null ? String(party.due_days) : '',
+                  })
+                }
+              >
+                изменить лимит и срок
+              </button>
+            ))}
+        </div>
         <div className="ml-auto flex items-center gap-2">
           {!party.active && <Badge tone="rose">отключён</Badge>}
           <Button variant="secondary" className="px-2 py-1 text-xs" disabled={row.busy} onClick={toggleActive}>

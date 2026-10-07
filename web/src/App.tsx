@@ -8,6 +8,7 @@ import ClientCard from './pages/ClientCard'
 import Debts from './pages/Debts'
 import Clients from './pages/Clients'
 import Employees from './pages/Employees'
+import Gifts from './pages/Gifts'
 import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
 import Notifications from './pages/Notifications'
@@ -53,6 +54,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/categories', label: 'Категории' },
       { to: '/employees', label: 'Сотрудники' },
       { to: '/services', label: 'Услуги' },
+      { to: '/gifts', label: 'Подарки', ownerOnly: true },
       { to: '/suppliers', label: 'Поставщики' },
     ],
   },
@@ -140,6 +142,7 @@ function Shell() {
           <Route path="/categories" element={<Categories />} />
           <Route path="/employees" element={<Employees />} />
           <Route path="/services" element={<Services />} />
+          {owner && <Route path="/gifts" element={<Gifts />} />}
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />

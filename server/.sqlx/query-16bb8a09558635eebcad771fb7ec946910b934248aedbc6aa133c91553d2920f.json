@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select kind, product_id, service_id, qty, units, unit_price_tyiyn, list_price_tyiyn,\n                      amount_tyiyn, cost_tyiyn, master_fee_tyiyn\n               from sale_lines where sale_id = $1 and line_no = $2",
+  "query": "select kind, product_id, service_id, qty, units, unit_price_tyiyn, list_price_tyiyn,\n                      amount_tyiyn, cost_tyiyn, master_fee_tyiyn, gift\n               from sale_lines where sale_id = $1 and line_no = $2",
   "describe": {
     "columns": [
       {
@@ -52,6 +52,11 @@
         "ordinal": 9,
         "name": "master_fee_tyiyn",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "gift",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -70,8 +75,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "35a25f3f6137e760fe489627119f3b066c7455f68c4ea9de4f1949a266bd67d5"
+  "hash": "16bb8a09558635eebcad771fb7ec946910b934248aedbc6aa133c91553d2920f"
 }
