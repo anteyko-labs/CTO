@@ -659,6 +659,86 @@ async fn price_changes_are_owner_only_and_notify(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn duplicate_products_can_be_merged(pool: PgPool) {
+    // Дубль сливается в основной товар: коды и остаток переходят, дубль в архив (SPEC-02).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let make = |name: &'static str, code: &'static str| {
+        let app = app.clone();
+        let owner = owner.clone();
+        let cat_id = cat["id"].clone();
+        async move {
+            let (_, _, p) = call(
+                &app,
+                "POST",
+                "/api/v1/products",
+                Some(&owner),
+                Some(json!({
+                    "op_id": Uuid::now_v7(), "category_id": cat_id, "name": name,
+                    "barcodes": [code], "sale_price_tyiyn": 50_000
+                })),
+            )
+            .await;
+            p["id"].as_str().unwrap().to_string()
+        }
+    };
+    let main = make("Фильтр основной", "4600000000017").await;
+    let dup = make("Фильтр дубль", "4600000000024").await;
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "lines": [{ "product_id": dup, "qty": 4, "cost_tyiyn": 20_000 }] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, merged) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/products/{dup}/merge"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "into_product_id": main })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(merged["stock_qty"], 4);
+    assert_eq!(merged["stock_value_tyiyn"], 20_000);
+    let codes = merged["barcodes"].as_array().unwrap();
+    assert_eq!(codes.len(), 2);
+
+    // Код дубля теперь ведёт на основной товар, сам дубль в архиве.
+    let (_, _, found) = call(
+        &app,
+        "GET",
+        "/api/v1/products/by-barcode/4600000000024",
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(found["id"].as_str(), Some(main.as_str()));
+    let (_, _, old) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{dup}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(old["archived"], json!(true));
+    assert_eq!(old["stock_qty"], 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

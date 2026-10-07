@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update product_barcodes set product_id = $2 where product_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ff3580e23d8b3f804e9c4fecca093db8e95308d3d7f4606125dba82335a6fae"
+}

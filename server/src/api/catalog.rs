@@ -14,7 +14,7 @@ use crate::domain::barcode;
 use crate::domain::costing::{Pool, average};
 use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid, is_unique_violation};
-use crate::ops::{self, new_id};
+use crate::ops::{self, Movement, new_id};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -38,6 +38,7 @@ pub fn routes() -> Router<AppState> {
             routing::get(get_product).patch(update_product),
         )
         .route("/products/{id}/prices", routing::patch(update_prices))
+        .route("/products/{id}/merge", routing::post(merge_product))
         .route("/products/{id}/barcodes", routing::post(add_barcode))
         .route(
             "/products/{id}/barcodes/{code}",
@@ -955,4 +956,106 @@ async fn remove_barcode(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct MergeReq {
+    op_id: Uuid,
+    into_product_id: Uuid,
+}
+
+/// Объединение карточек-дублей: коды и остаток переходят на основной товар,
+/// дубль уходит в архив, проведённые документы остаются за ним (SPEC-02).
+async fn merge_product(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<MergeReq>,
+) -> AppResult<Json<ProductOut>> {
+    const KIND: &str = "product.merge";
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if id == req.into_product_id {
+        return Err(invalid("это один и тот же товар"));
+    }
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let branch_id = ctx.user.branch_id;
+    let dup = sqlx::query!(
+        "select name, unit, container_ml, archived from products where id = $1",
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let main = sqlx::query!(
+        "select name, unit, container_ml, archived from products where id = $1",
+        req.into_product_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| invalid("основной товар не найден"))?;
+    if dup.archived || main.archived {
+        return Err(invalid("архивный товар не объединяется"));
+    }
+    if dup.unit != main.unit || dup.container_ml != main.container_ml {
+        return Err(invalid("у товаров разные единицы учёта или объём тары"));
+    }
+
+    // Остаток и его стоимость переезжают движениями: история склада остаётся сходящейся.
+    let pool = ops::lock_pool(&mut tx, branch_id, id).await?;
+    ops::lock_pool(&mut tx, branch_id, req.into_product_id).await?;
+    let (qty, value) = (pool.qty, pool.value);
+    if qty != 0 || value != 0 {
+        ops::apply_movement(
+            &mut tx,
+            Movement {
+                branch_id,
+                product_id: id,
+                qty_delta: -qty,
+                value_delta: -value,
+                doc_type: "merge",
+                doc_id: req.into_product_id,
+            },
+        )
+        .await?;
+        ops::apply_movement(
+            &mut tx,
+            Movement {
+                branch_id,
+                product_id: req.into_product_id,
+                qty_delta: qty,
+                value_delta: value,
+                doc_type: "merge",
+                doc_id: id,
+            },
+        )
+        .await?;
+    }
+    sqlx::query!(
+        "update product_barcodes set product_id = $2 where product_id = $1",
+        id,
+        req.into_product_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!("update products set archived = true where id = $1", id)
+        .execute(&mut *tx)
+        .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "product",
+        Some(req.into_product_id),
+        json!({ "from": id, "from_name": dup.name, "into_name": main.name, "qty": qty, "value": value }),
+    )
+    .await?;
+    let out = product_by_id(&mut tx, &ctx.user, req.into_product_id).await?;
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }

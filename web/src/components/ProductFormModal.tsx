@@ -5,7 +5,7 @@ import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
-import { Badge, Button, ErrorBox, Field, Missing, Modal, toast } from './ui'
+import { Badge, Button, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
 interface Form {
   category_id: string
@@ -59,6 +59,9 @@ export function ProductFormModal({
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
   const [newCategory, setNewCategory] = useState<{ name: string; kind: CategoryKind } | null>(null)
+  const [merging, setMerging] = useState(false)
+  const [mergeQuery, setMergeQuery] = useState('')
+  const merge = useAction()
   const categoryAction = useAction()
   const { busy, error, setError, run } = useAction()
   const categories = useLoad(() => get<Category[]>('/categories'), [])
@@ -174,6 +177,37 @@ export function ProductFormModal({
       setCodes((c) => [...c, res.code])
       set('barcode', '')
     })
+
+  /** Слить дубль в основной товар: коды и остаток уходят туда, дубль в архив (SPEC-02). */
+  const doMerge = (into: Product) =>
+    merge.run(async () => {
+      if (!product) return
+      if (!window.confirm(`Перенести коды и остаток «${product.name}» в «${into.name}»? Дубль уйдёт в архив.`)) return
+      const saved = await post<Product>(`/products/${product.id}/merge`, {
+        op_id: newOpId(),
+        into_product_id: into.id,
+      })
+      toast('Товары объединены')
+      setMerging(false)
+      onSaved(saved)
+    })
+
+  if (merging && product) {
+    return (
+      <Modal title="Объединить дубли" onClose={() => setMerging(false)}>
+        <div className="flex flex-col gap-3">
+          <div className="text-sm text-slate-600">
+            Куда перенести коды и остаток товара «{product.name}»? Сам он уйдёт в архив, его чеки останутся за ним.
+          </div>
+          <Field label="Основной товар">
+            <input autoFocus placeholder="Название, бренд, артикул" value={mergeQuery} onChange={(e) => setMergeQuery(e.target.value)} />
+          </Field>
+          <MergeTargets query={mergeQuery} exclude={product.id} busy={merge.busy} onPick={(p) => void doMerge(p)} />
+          <ErrorBox error={merge.error} />
+        </div>
+      </Modal>
+    )
+  }
 
   if (newCategory) {
     return (
@@ -362,7 +396,12 @@ export function ProductFormModal({
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />
         <Missing items={missing} className="text-right" />
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          {editing && owner && (
+            <Button variant="secondary" className="mr-auto" onClick={() => setMerging(true)}>
+              Объединить дубли
+            </Button>
+          )}
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
@@ -372,5 +411,39 @@ export function ProductFormModal({
         </div>
       </div>
     </Modal>
+  )
+}
+
+/** Поиск основного товара при объединении дублей. */
+function MergeTargets({
+  query,
+  exclude,
+  busy,
+  onPick,
+}: {
+  query: string
+  exclude: string
+  busy: boolean
+  onPick: (p: Product) => void
+}) {
+  const text = useDebounced(query.trim(), 250)
+  const found = useLoad(
+    () => (text.length < 2 ? Promise.resolve<Product[]>([]) : get<Product[]>(`/products${qs({ q: text, limit: 8 })}`)),
+    [text],
+  )
+  const rows = (found.data ?? []).filter((p) => p.id !== exclude)
+  if (text.length < 2) return <Empty>Введите хотя бы две буквы</Empty>
+  if (rows.length === 0 && !found.loading) return <Empty>Ничего не нашлось</Empty>
+  return (
+    <ul className="flex flex-col gap-1">
+      {rows.map((p) => (
+        <li key={p.id}>
+          <Button variant="secondary" className="w-full justify-between" disabled={busy} onClick={() => onPick(p)}>
+            <span>{p.name}</span>
+            <span className="text-xs text-slate-500">{p.article || '—'}</span>
+          </Button>
+        </li>
+      ))}
+    </ul>
   )
 }
