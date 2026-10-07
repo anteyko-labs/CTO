@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(b), 0)::bigint as \"v!\" from (\n             select coalesce((select sum(a.amount_tyiyn) from payroll_accruals a where a.employee_id = e.id), 0)\n                  - coalesce((select sum(p.amount_tyiyn) from payouts p where p.employee_id = e.id), 0) as b\n             from employees e where e.branch_id = $1\n           ) x where b > 0",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f0492bc15cee13c6b3553a4e5eecd4f972caae2b5ce24601c24c98b635ea4117"
+}

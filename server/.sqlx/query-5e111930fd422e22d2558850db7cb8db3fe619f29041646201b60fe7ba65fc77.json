@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name as \"name!\", balance_tyiyn as \"balance!\" from cash_accounts\n           where branch_id = $1 and active order by is_default desc, kind, name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "balance!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5e111930fd422e22d2558850db7cb8db3fe619f29041646201b60fe7ba65fc77"
+}

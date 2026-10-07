@@ -840,6 +840,27 @@ async fn expenses_take_money_from_the_till(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn profit_is_owner_only(pool: PgPool) {
+    // Прибыль и сводка — только владельцу (инвариант 13, SPEC-08).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    for path in ["/api/v1/reports/profit", "/api/v1/owner/dashboard"] {
+        assert_eq!(
+            call(&app, "GET", path, Some(&admin), None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&app, "GET", path, Some(&owner), None).await.0,
+            StatusCode::OK
+        );
+    }
+    let (_, _, report) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
+    assert_eq!(report["totals"]["net_tyiyn"], 0);
+    assert_eq!(report["totals"]["margin_bp"], json!(null));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

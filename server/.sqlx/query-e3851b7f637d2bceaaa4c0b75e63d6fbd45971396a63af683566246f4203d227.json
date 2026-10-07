@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n             coalesce(sum(balance_tyiyn) filter (where balance_tyiyn > 0), 0)::bigint as \"owe_us!\",\n             coalesce(sum(-balance_tyiyn) filter (where balance_tyiyn < 0), 0)::bigint as \"we_owe!\"\n           from parties where branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owe_us!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "we_owe!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "e3851b7f637d2bceaaa4c0b75e63d6fbd45971396a63af683566246f4203d227"
+}

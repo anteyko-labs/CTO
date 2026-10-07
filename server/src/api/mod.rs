@@ -8,6 +8,7 @@ pub mod parties;
 pub mod payroll;
 pub mod receipts;
 pub mod refs;
+pub mod reports;
 pub mod sales;
 
 use axum::Router;
@@ -26,5 +27,6 @@ pub fn routes() -> Router<AppState> {
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())
+        .merge(reports::routes())
         .merge(sales::routes())
 }

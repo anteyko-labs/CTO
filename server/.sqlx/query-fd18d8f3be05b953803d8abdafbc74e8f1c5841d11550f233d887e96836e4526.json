@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.name as \"name!\",\n             coalesce(sum(l.amount_tyiyn), 0)::bigint as \"revenue!\",\n             coalesce(sum(l.cost_tyiyn), 0)::bigint as \"cost!\"\n           from sale_lines l\n           join sales s on s.id = l.sale_id\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id\n           where s.branch_id = $1 and s.business_date between $2 and $3\n           group by c.name order by 2 desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "revenue!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "cost!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "fd18d8f3be05b953803d8abdafbc74e8f1c5841d11550f233d887e96836e4526"
+}

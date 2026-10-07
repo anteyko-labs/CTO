@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from payroll_pending\n           where branch_id = $1 and debt_remaining_tyiyn > 0",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e0e8560ff5204b8ea1a92a4b80159b1f25855a9afde8898c4702ade12d3b9ede"
+}

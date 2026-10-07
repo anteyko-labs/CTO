@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(-total_tyiyn), 0)::bigint as \"v!\" from sales\n           where branch_id = $1 and business_date = $2 and kind = 'return'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4bc197580ca0a63dc3c9759b11014d2e5fb172ecdea20df96833c6bbc1b90736"
+}

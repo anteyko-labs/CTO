@@ -13,6 +13,7 @@ import Gifts from './pages/Gifts'
 import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
 import Notifications from './pages/Notifications'
+import Profit, { OwnerDashboard } from './pages/Owner'
 import Payroll from './pages/Payroll'
 import Products from './pages/Products'
 import ReceiptNew from './pages/ReceiptNew'
@@ -36,11 +37,13 @@ interface NavItem {
 const NAV: { title?: string; items: NavItem[] }[] = [
   {
     items: [
+      { to: '/summary', label: 'Сводка', ownerOnly: true },
       { to: '/', label: 'Касса' },
       { to: '/sales', label: 'Чеки' },
       { to: '/shift', label: 'Смена' },
       { to: '/expenses', label: 'Расходы' },
       { to: '/payroll', label: 'Расчёт' },
+      { to: '/profit', label: 'Прибыль', ownerOnly: true },
       { to: '/debts', label: 'Долги' },
       { to: '/notifications', label: 'Уведомления', ownerOnly: true },
     ],
@@ -144,6 +147,8 @@ function Shell() {
           <Route path="/shift" element={<Shift />} />
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/payroll" element={<Payroll />} />
+          {owner && <Route path="/summary" element={<OwnerDashboard />} />}
+          {owner && <Route path="/profit" element={<Profit />} />}
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n             coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as \"goods!\",\n             coalesce(sum(l.amount_tyiyn) filter (where l.kind = 'service'), 0)::bigint as \"services!\",\n             coalesce(sum(l.cost_tyiyn), 0)::bigint as \"cost!\"\n           from sale_lines l join sales s on s.id = l.sale_id\n           where s.branch_id = $1 and s.business_date between $2 and $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "goods!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "services!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "cost!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "ce0fac469dfe7e68449dcf03c7231fa0176a1f7a2a2317f726476bcc1adbffbc"
+}

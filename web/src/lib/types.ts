@@ -399,3 +399,44 @@ export interface PayrollRow {
   paid_tyiyn: number
   balance_tyiyn: number
 }
+
+// ---------- Прибыль и сводка (SPEC-08) ----------
+
+export interface ProfitTotals {
+  goods_tyiyn: number
+  services_tyiyn: number
+  cost_tyiyn: number
+  gross_tyiyn: number
+  payroll_tyiyn: number
+  bank_fee_tyiyn: number
+  expenses_tyiyn: number
+  net_tyiyn: number
+  margin_bp: number | null
+  sales_count: number
+}
+
+export interface ProfitReport {
+  from: string
+  to: string
+  totals: ProfitTotals
+  categories: { name: string; revenue_tyiyn: number; cost_tyiyn: number; gross_tyiyn: number }[]
+  days: { date: string; revenue_tyiyn: number; gross_tyiyn: number; payroll_tyiyn: number; expenses_tyiyn: number; net_tyiyn: number }[]
+  articles: { name: string; amount_tyiyn: number }[]
+  warnings: string[]
+}
+
+export interface Dashboard {
+  date: string
+  totals: ProfitTotals
+  returns_tyiyn: number
+  average_check_tyiyn: number
+  accounts: { name: string; balance_tyiyn: number }[]
+  money_total_tyiyn: number
+  shift_open: boolean
+  shift_cashier: string | null
+  to_pay_tyiyn: number
+  debts_in_tyiyn: number
+  debts_out_tyiyn: number
+  low_stock: number
+  needs_review: number
+}

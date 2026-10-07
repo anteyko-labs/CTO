@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(p.fee_tyiyn), 0)::bigint as \"v!\"\n           from sale_payments p join sales s on s.id = p.sale_id\n           where s.branch_id = $1 and s.business_date between $2 and $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b98e970e25423793af010ca949a1d5122dd5cfdf1a25ae4040ef802a0caa44a2"
+}

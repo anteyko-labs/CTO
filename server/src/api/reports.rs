@@ -1,0 +1,402 @@
+//! Прибыль и сводка владельца (SPEC-08). Администратору не отдаётся (инвариант 13).
+
+use axum::extract::{Query, State};
+use axum::{Json, Router, routing};
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+use sqlx::PgConnection;
+use uuid::Uuid;
+
+use crate::auth::CurrentUser;
+use crate::domain::money::div_round;
+use crate::error::{AppError, AppResult, invalid};
+use crate::state::AppState;
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/reports/profit", routing::get(profit))
+        .route("/owner/dashboard", routing::get(dashboard))
+}
+
+#[derive(Serialize, Default)]
+struct Totals {
+    goods_tyiyn: i64,
+    services_tyiyn: i64,
+    cost_tyiyn: i64,
+    gross_tyiyn: i64,
+    payroll_tyiyn: i64,
+    bank_fee_tyiyn: i64,
+    expenses_tyiyn: i64,
+    net_tyiyn: i64,
+    margin_bp: Option<i64>,
+    sales_count: i64,
+}
+
+#[derive(Serialize)]
+struct CategoryRow {
+    name: String,
+    revenue_tyiyn: i64,
+    cost_tyiyn: i64,
+    gross_tyiyn: i64,
+}
+
+#[derive(Serialize)]
+struct DayRow {
+    date: NaiveDate,
+    revenue_tyiyn: i64,
+    gross_tyiyn: i64,
+    payroll_tyiyn: i64,
+    expenses_tyiyn: i64,
+    net_tyiyn: i64,
+}
+
+#[derive(Serialize)]
+struct ArticleRow {
+    name: String,
+    amount_tyiyn: i64,
+}
+
+#[derive(Serialize)]
+struct ProfitOut {
+    from: NaiveDate,
+    to: NaiveDate,
+    totals: Totals,
+    categories: Vec<CategoryRow>,
+    days: Vec<DayRow>,
+    articles: Vec<ArticleRow>,
+    warnings: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Period {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+}
+
+async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
+    Ok(
+        sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
+}
+
+/// Деньги за период: выручка, себестоимость, оплата труда, комиссия и расходы.
+async fn totals_for(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Totals> {
+    let lines = sqlx::query!(
+        r#"select
+             coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as "goods!",
+             coalesce(sum(l.amount_tyiyn) filter (where l.kind = 'service'), 0)::bigint as "services!",
+             coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!"
+           from sale_lines l join sales s on s.id = l.sale_id
+           where s.branch_id = $1 and s.business_date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let count = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from sales
+           where branch_id = $1 and business_date between $2 and $3 and kind = 'sale'"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let payroll = sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from payroll_accruals
+           where branch_id = $1 and business_date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let fee = sqlx::query_scalar!(
+        r#"select coalesce(sum(p.fee_tyiyn), 0)::bigint as "v!"
+           from sale_payments p join sales s on s.id = p.sale_id
+           where s.branch_id = $1 and s.business_date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let expenses = sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from expenses
+           where branch_id = $1 and expense_date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let revenue = lines.goods + lines.services;
+    let gross = revenue - lines.cost;
+    Ok(Totals {
+        goods_tyiyn: lines.goods,
+        services_tyiyn: lines.services,
+        cost_tyiyn: lines.cost,
+        gross_tyiyn: gross,
+        payroll_tyiyn: payroll,
+        bank_fee_tyiyn: fee,
+        expenses_tyiyn: expenses,
+        net_tyiyn: gross - payroll - fee - expenses,
+        margin_bp: (revenue != 0)
+            .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
+            .flatten(),
+        sales_count: count,
+    })
+}
+
+async fn profit(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<Period>,
+) -> AppResult<Json<ProfitOut>> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let mut conn = state.pool.acquire().await?;
+    let today = today(&mut conn).await?;
+    let to = q.to.unwrap_or(today);
+    let from = q.from.unwrap_or(to);
+    if from > to {
+        return Err(invalid("начало периода позже конца"));
+    }
+    if (to - from).num_days() > 366 {
+        return Err(invalid("период не больше года"));
+    }
+    let branch_id = user.branch_id;
+    let totals = totals_for(&mut conn, branch_id, from, to).await?;
+
+    let categories = sqlx::query!(
+        r#"select c.name as "name!",
+             coalesce(sum(l.amount_tyiyn), 0)::bigint as "revenue!",
+             coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!"
+           from sale_lines l
+           join sales s on s.id = l.sale_id
+           join products p on p.id = l.product_id
+           join categories c on c.id = p.category_id
+           where s.branch_id = $1 and s.business_date between $2 and $3
+           group by c.name order by 2 desc"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| CategoryRow {
+        name: r.name,
+        revenue_tyiyn: r.revenue,
+        cost_tyiyn: r.cost,
+        gross_tyiyn: r.revenue - r.cost,
+    })
+    .collect();
+
+    let days = sqlx::query!(
+        r#"with d as (select generate_series($2::date, $3::date, interval '1 day')::date as day)
+           select d.day as "day!",
+             coalesce((select sum(l.amount_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
+                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "revenue!",
+             coalesce((select sum(l.amount_tyiyn - l.cost_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
+                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "gross!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.branch_id = $1 and a.business_date = d.day), 0)::bigint as "payroll!",
+             coalesce((select sum(e.amount_tyiyn) from expenses e
+                       where e.branch_id = $1 and e.expense_date = d.day), 0)::bigint as "expenses!",
+             coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "fee!"
+           from d order by d.day desc"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| DayRow {
+        date: r.day,
+        revenue_tyiyn: r.revenue,
+        gross_tyiyn: r.gross,
+        payroll_tyiyn: r.payroll,
+        expenses_tyiyn: r.expenses,
+        net_tyiyn: r.gross - r.payroll - r.expenses - r.fee,
+    })
+    .collect();
+
+    let articles = sqlx::query!(
+        r#"select a.name as "name!", coalesce(sum(e.amount_tyiyn), 0)::bigint as "amount!"
+           from expenses e join expense_articles a on a.id = e.article_id
+           where e.branch_id = $1 and e.expense_date between $2 and $3
+           group by a.name having coalesce(sum(e.amount_tyiyn), 0) <> 0 order by 2 desc"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| ArticleRow {
+        name: r.name,
+        amount_tyiyn: r.amount,
+    })
+    .collect();
+
+    let mut warnings = Vec::new();
+    let review = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from branch_products where branch_id = $1 and needs_review"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if review > 0 {
+        warnings.push(format!(
+            "у {review} товаров себестоимость оценена по последней закупке: проверьте остатки"
+        ));
+    }
+    let pending = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from payroll_pending
+           where branch_id = $1 and debt_remaining_tyiyn > 0"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if pending > 0 {
+        warnings.push(format!(
+            "по {pending} чекам в долг процент кассира начислится после погашения"
+        ));
+    }
+
+    Ok(Json(ProfitOut {
+        from,
+        to,
+        totals,
+        categories,
+        days,
+        articles,
+        warnings,
+    }))
+}
+
+#[derive(Serialize)]
+struct AccountRow {
+    name: String,
+    balance_tyiyn: i64,
+}
+
+#[derive(Serialize)]
+struct Dashboard {
+    date: NaiveDate,
+    totals: Totals,
+    returns_tyiyn: i64,
+    average_check_tyiyn: i64,
+    accounts: Vec<AccountRow>,
+    money_total_tyiyn: i64,
+    shift_open: bool,
+    shift_cashier: Option<String>,
+    to_pay_tyiyn: i64,
+    debts_in_tyiyn: i64,
+    debts_out_tyiyn: i64,
+    low_stock: i64,
+    needs_review: i64,
+}
+
+async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Dashboard>> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let mut conn = state.pool.acquire().await?;
+    let date = today(&mut conn).await?;
+    let branch_id = user.branch_id;
+    let totals = totals_for(&mut conn, branch_id, date, date).await?;
+    let returns = sqlx::query_scalar!(
+        r#"select coalesce(sum(-total_tyiyn), 0)::bigint as "v!" from sales
+           where branch_id = $1 and business_date = $2 and kind = 'return'"#,
+        branch_id,
+        date
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let accounts: Vec<AccountRow> = sqlx::query!(
+        r#"select name as "name!", balance_tyiyn as "balance!" from cash_accounts
+           where branch_id = $1 and active order by is_default desc, kind, name"#,
+        branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| AccountRow {
+        name: r.name,
+        balance_tyiyn: r.balance,
+    })
+    .collect();
+    let shift = sqlx::query!(
+        r#"select e.full_name as "cashier!" from shifts s
+           join employees e on e.id = s.cashier_employee_id
+           where s.branch_id = $1
+             and not exists (select 1 from shift_closes c
+                             where c.shift_id = s.id
+                               and not exists (select 1 from shift_reopens r where r.close_id = c.id))
+           order by s.opened_at desc limit 1"#,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let to_pay = sqlx::query_scalar!(
+        r#"select coalesce(sum(b), 0)::bigint as "v!" from (
+             select coalesce((select sum(a.amount_tyiyn) from payroll_accruals a where a.employee_id = e.id), 0)
+                  - coalesce((select sum(p.amount_tyiyn) from payouts p where p.employee_id = e.id), 0) as b
+             from employees e where e.branch_id = $1
+           ) x where b > 0"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let debts = sqlx::query!(
+        r#"select
+             coalesce(sum(balance_tyiyn) filter (where balance_tyiyn > 0), 0)::bigint as "owe_us!",
+             coalesce(sum(-balance_tyiyn) filter (where balance_tyiyn < 0), 0)::bigint as "we_owe!"
+           from parties where branch_id = $1"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let stock = sqlx::query!(
+        r#"select
+             coalesce(count(*) filter (where stock_qty < min_stock), 0)::bigint as "low!",
+             coalesce(count(*) filter (where needs_review), 0)::bigint as "review!"
+           from branch_products where branch_id = $1"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let revenue = totals.goods_tyiyn + totals.services_tyiyn;
+    Ok(Json(Dashboard {
+        date,
+        average_check_tyiyn: if totals.sales_count > 0 {
+            div_round(i128::from(revenue), i128::from(totals.sales_count)).unwrap_or(0)
+        } else {
+            0
+        },
+        totals,
+        returns_tyiyn: returns,
+        money_total_tyiyn: accounts.iter().map(|a| a.balance_tyiyn).sum(),
+        accounts,
+        shift_open: shift.is_some(),
+        shift_cashier: shift.map(|s| s.cashier),
+        to_pay_tyiyn: to_pay,
+        debts_in_tyiyn: debts.owe_us,
+        debts_out_tyiyn: debts.we_owe,
+        low_stock: stock.low,
+        needs_review: stock.review,
+    }))
+}

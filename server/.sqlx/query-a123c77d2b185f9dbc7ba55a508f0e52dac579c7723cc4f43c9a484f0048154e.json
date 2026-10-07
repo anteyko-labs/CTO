@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.full_name as \"cashier!\" from shifts s\n           join employees e on e.id = s.cashier_employee_id\n           where s.branch_id = $1\n             and not exists (select 1 from shift_closes c\n                             where c.shift_id = s.id\n                               and not exists (select 1 from shift_reopens r where r.close_id = c.id))\n           order by s.opened_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cashier!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a123c77d2b185f9dbc7ba55a508f0e52dac579c7723cc4f43c9a484f0048154e"
+}
