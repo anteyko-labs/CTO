@@ -4,9 +4,10 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
-import { Badge, Button, Card, ErrorBox, Field } from '../components/ui'
+import { Badge, Button, Card, ErrorBox, Field, Missing } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
 import { PAYMENT_LABELS, type Employee, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
@@ -208,14 +209,15 @@ export default function Cashier() {
     setError(null)
   }
 
-  const blockers: string[] = []
-  if (!cashierId) blockers.push('выберите кассира')
-  if (saleType === 'service' && !masterId) blockers.push('выберите мастера')
-  if (lines.length === 0) blockers.push('добавьте товары')
-  else if (!valid) blockers.push('проверьте количество и цены')
-  if (payments === null) blockers.push('неверная сумма оплаты')
-  else if (paid !== total) blockers.push(`оплата ${formatSom(paid ?? 0)} не равна итогу`)
-  if (payMode === 'cash' && change !== null && change < 0) blockers.push('получено меньше итога')
+  const blockers = missingWithFocus(
+    [lines.length > 0, 'товары', '[data-picker]'],
+    [lines.length === 0 || valid, 'количество и цены в строках'],
+    [Boolean(cashierId), 'кассира', '#cashier-select'],
+    [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select'],
+    [payments !== null, 'сумму оплаты', '[data-pay]'],
+    [payments === null || paid === total, `оплату: ${formatSom(paid ?? 0)} вместо ${formatSom(total)}`, '[data-pay]'],
+    [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
+  )
 
   const submit = () =>
     run(async () => {
@@ -384,15 +386,16 @@ export default function Cashier() {
               <button
                 key={t}
                 type="button"
-                className={`py-2 ${saleType === t ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                className={`min-h-[42px] py-2 ${saleType === t ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => changeType(t)}
               >
                 {t === 'takeaway' ? 'На вынос' : 'В сервис'}
               </button>
             ))}
           </div>
-          <Field label="Кассир">
+          <Field label="Кассир" required>
             <select
+              id="cashier-select"
               value={cashierId}
               onChange={(e) => {
                 setCashierId(e.target.value)
@@ -409,8 +412,8 @@ export default function Cashier() {
           </Field>
           {saleType === 'service' && (
             <>
-              <Field label="Мастер">
-                <select value={masterId} onChange={(e) => setMasterId(e.target.value)}>
+              <Field label="Мастер" required>
+                <select id="master-select" value={masterId} onChange={(e) => setMasterId(e.target.value)}>
                   <option value="">— выберите —</option>
                   {masters.map((e) => (
                     <option key={e.id} value={e.id}>
@@ -436,12 +439,12 @@ export default function Cashier() {
             <span className="text-sm text-slate-500">Итого</span>
             <span className="text-3xl font-bold">{formatSom(total)}</span>
           </div>
-          <div className="grid grid-cols-4 overflow-hidden rounded-md border border-slate-300 text-xs">
+          <div data-pay tabIndex={-1} className="grid grid-cols-4 overflow-hidden rounded-md border border-slate-300 text-xs">
             {(['cash', 'card', 'transfer', 'mixed'] as const).map((m) => (
               <button
                 key={m}
                 type="button"
-                className={`py-2 ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                className={`min-h-[42px] py-2 ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => setPayMode(m)}
               >
                 {m === 'mixed' ? 'Смешанная' : PAYMENT_LABELS[m]}
@@ -452,6 +455,7 @@ export default function Cashier() {
             <div className="flex flex-col gap-2">
               <Field label="Получено, с">
                 <input
+                  data-received
                   inputMode="decimal"
                   value={received}
                   onChange={(e) => setReceived(e.target.value)}
@@ -504,7 +508,7 @@ export default function Cashier() {
             <input value={comment} onChange={(e) => setComment(e.target.value)} />
           </Field>
           <ErrorBox error={error} />
-          {blockers.length > 0 && lines.length > 0 && <div className="text-xs text-slate-500">Чтобы провести: {blockers.join(', ')}</div>}
+          <Missing items={blockers} />
           <Button className="py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
             Провести чек
           </Button>
@@ -516,6 +520,21 @@ export default function Cashier() {
           )}
         </Card>
       </div>
+      {lines.length > 0 && (
+        <div className="no-print fixed inset-x-0 bottom-[52px] z-20 flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden">
+          <div className="min-w-0 flex-1">
+            {blockers.length > 0 ? (
+              <div className="truncate text-xs text-amber-700">Заполните: {blockers.map((x) => x.label).join(', ')}</div>
+            ) : (
+              <div className="text-xs text-slate-500">Итого</div>
+            )}
+            <div className="truncate text-xl font-bold">{formatSom(total)}</div>
+          </div>
+          <Button className="shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
+            Провести чек
+          </Button>
+        </div>
+      )}
       {unknownCode !== null && (
         <UnknownCodeModal
           code={unknownCode}

@@ -193,7 +193,7 @@ export default function Products() {
         {products.loading && !products.data ? (
           <Loading />
         ) : !products.data?.length ? (
-          <Empty>Товары не найдены</Empty>
+          <Empty action={<Button onClick={() => setEditing('new')}>Новый товар</Button>}>Товары не найдены</Empty>
         ) : (
           <Table
             head={['', 'Название', 'Артикул', 'Категория', 'Цена', 'Остаток', ...(owner ? ['Себестоимость'] : []), '']}

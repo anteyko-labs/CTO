@@ -109,7 +109,7 @@ export default function Stock() {
         {stock.loading && !stock.data ? (
           <Loading />
         ) : rows.length === 0 ? (
-          <Empty>Товаров не найдено</Empty>
+          <Empty>Товаров не найдено. Проверьте фильтры или заведите товар на экране «Товары».</Empty>
         ) : (
           <>
             <Table head={head}>

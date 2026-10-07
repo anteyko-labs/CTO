@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
 import { get, patch, post } from '../lib/api'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Role, UserRow } from '../lib/types'
 
@@ -89,20 +90,28 @@ export default function Users() {
     })
   }
 
+  const notFilled = missingWithFocus(
+    [Boolean(form.login.trim()), 'логин', '#user-login'],
+    [Boolean(form.full_name.trim()), 'имя', '#user-name'],
+    [form.password.length >= MIN_PASSWORD, `пароль не короче ${MIN_PASSWORD} символов`, '#user-password'],
+  )
+
   return (
     <div>
       <PageHeader title="Пользователи" />
+      {/* Чего не хватает для создания — рядом с кнопкой (docs/tier-3/ui-rules.md). */}
 
       <Card className="mb-4">
         <form onSubmit={create} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1.5fr_1fr_1fr_auto] lg:items-end">
-          <Field label="Логин">
-            <input autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
+          <Field label="Логин" required>
+            <input id="user-login" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
           </Field>
-          <Field label="Имя">
-            <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+          <Field label="Имя" required>
+            <input id="user-name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
           </Field>
-          <Field label="Пароль">
+          <Field label="Пароль" required>
             <input
+              id="user-password"
               type="password"
               autoComplete="new-password"
               value={form.password}
@@ -112,12 +121,13 @@ export default function Users() {
           <Field label="Роль">
             <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
           </Field>
-          <Button type="submit" disabled={busy || !form.login.trim() || !form.full_name.trim() || !form.password}>
+          <Button type="submit" disabled={busy || notFilled.length > 0}>
             Добавить
           </Button>
         </form>
         <p className="mt-2 text-xs text-slate-500">Пароль — не короче {MIN_PASSWORD} символов.</p>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-col gap-2">
+          <Missing items={notFilled} />
           <ErrorBox error={error} />
         </div>
       </Card>

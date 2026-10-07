@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Category, Product } from '../lib/types'
-import { Badge, Button, ErrorBox, Field, Modal, toast } from './ui'
+import { Badge, Button, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
 interface Form {
   category_id: string
@@ -93,11 +94,12 @@ export function ProductFormModal({
   }
 
   // Чего не хватает для сохранения: кнопка заблокирована, пока список не пуст.
-  const missing: string[] = []
-  if (!form.category_id) missing.push('категорию')
-  if (!form.name.trim()) missing.push('название')
-  if (isOil && !form.container_l.trim()) missing.push('объём канистры')
-  if (!form.sale_price.trim()) missing.push('цену продажи')
+  const missing = missingWithFocus(
+    [Boolean(form.category_id), 'категорию', '#product-category'],
+    [Boolean(form.name.trim()), 'название', '#product-name'],
+    [!isOil || Boolean(form.container_l.trim()), 'объём канистры', '#product-container'],
+    [Boolean(form.sale_price.trim()), 'цену продажи', '#product-price'],
+  )
 
   const save = () =>
     run(async () => {
@@ -158,8 +160,9 @@ export function ProductFormModal({
   return (
     <Modal title={editing ? 'Товар' : 'Новый товар'} onClose={onClose} wide>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Категория">
+        <Field label="Категория" required>
           <select
+            id="product-category"
             value={form.category_id}
             disabled={editing && !category}
             onChange={(e) => {
@@ -177,8 +180,8 @@ export function ProductFormModal({
               ))}
           </select>
         </Field>
-        <Field label="Название">
-          <input autoFocus value={form.name} onChange={(e) => set('name', e.target.value)} />
+        <Field label="Название" required>
+          <input id="product-name" autoFocus value={form.name} onChange={(e) => set('name', e.target.value)} />
         </Field>
         {similar.length > 0 && (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm sm:col-span-2">
@@ -199,8 +202,9 @@ export function ProductFormModal({
           <input value={form.article} onChange={(e) => set('article', e.target.value)} />
         </Field>
         {isOil && (
-          <Field label="Объём канистры, л">
+          <Field label="Объём канистры, л" required>
             <input
+              id="product-container"
               inputMode="decimal"
               disabled={editing}
               value={form.container_l}
@@ -228,8 +232,8 @@ export function ProductFormModal({
             )}
           </Field>
         ))}
-        <Field label={isOil ? 'Цена канистры, с' : 'Цена продажи, с'}>
-          <input inputMode="decimal" value={form.sale_price} onChange={(e) => set('sale_price', e.target.value)} />
+        <Field label={isOil ? 'Цена канистры, с' : 'Цена продажи, с'} required>
+          <input id="product-price" inputMode="decimal" value={form.sale_price} onChange={(e) => set('sale_price', e.target.value)} />
         </Field>
         {isOil && (
           <Field label="Цена розлива за литр, с" hint={owner ? undefined : 'Меняет только владелец'}>
@@ -286,7 +290,7 @@ export function ProductFormModal({
       </div>
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />
-        {missing.length > 0 && <div className="text-right text-sm text-amber-700">Заполните: {missing.join(', ')}</div>}
+        <Missing items={missing} className="text-right" />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Отмена

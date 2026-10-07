@@ -73,7 +73,7 @@ export default function SalesDay() {
         {loading && !data ? (
           <Loading />
         ) : !data || data.sales.length === 0 ? (
-          <Empty>За этот день чеков нет</Empty>
+          <Empty>За этот день чеков нет. Переключите день стрелками или откройте кассу.</Empty>
         ) : (
           <Table head={['№', 'Время', 'Тип', 'Кассир', 'Мастер', 'Сумма']}>
             {data.sales.map((s) => (

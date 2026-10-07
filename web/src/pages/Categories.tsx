@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
-import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
+import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
 import { get, patch, post } from '../lib/api'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { KIND_LABELS, type AttributeDef, type Category, type CategoryKind } from '../lib/types'
 
@@ -144,14 +145,16 @@ export default function Categories() {
     })
   }
 
+  const notFilled = missingWithFocus([Boolean(form.name.trim()), 'название', '#category-name'])
+
   return (
     <div>
       <PageHeader title="Категории" />
 
       <Card className="mb-4">
         <form onSubmit={create} className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
-          <Field label="Название">
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Field label="Название" required>
+            <input id="category-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
           <Field label="Вид">
             <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as CategoryKind })}>
@@ -162,14 +165,15 @@ export default function Categories() {
               ))}
             </select>
           </Field>
-          <Button type="submit" disabled={busy || !form.name.trim()}>
+          <Button type="submit" disabled={busy || notFilled.length > 0}>
             Добавить
           </Button>
         </form>
         <p className="mt-2 text-xs text-slate-500">
           Масло учитывается в литрах, остальное — в штуках. Стандартные характеристики добавляются автоматически.
         </p>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-col gap-2">
+          <Missing items={notFilled} />
           <ErrorBox error={error} />
         </div>
       </Card>
@@ -179,7 +183,7 @@ export default function Categories() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty>Категорий пока нет</Empty>
+          <Empty>Категорий пока нет. Начните с одной: «Масла» или «Фильтры» — товар заводится внутри категории.</Empty>
         ) : (
           <Table head={['Название', 'Вид', 'Характеристик']}>
             {list.data.map((c) => (

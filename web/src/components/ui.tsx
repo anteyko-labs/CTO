@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { focusField } from '../lib/forms'
 
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost'
 
@@ -18,18 +19,71 @@ export function Button({
     <button
       type="button"
       {...props}
-      className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed ${VARIANTS[variant]} ${className}`}
+      className={`inline-flex min-h-[42px] items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed ${VARIANTS[variant]} ${className}`}
     />
   )
 }
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: ReactNode }) {
+/**
+ * Поле формы. `required` ставит звёздочку, `error` — красную строку под полем
+ * и подсветку рамки (docs/tier-3/ui-rules.md).
+ */
+export function Field({
+  label,
+  children,
+  hint,
+  required = false,
+  error,
+}: {
+  label: string
+  children: ReactNode
+  hint?: ReactNode
+  required?: boolean
+  error?: string | null
+}) {
   return (
-    <label className="flex flex-col gap-1 text-sm">
-      <span className="font-medium text-slate-700">{label}</span>
+    <label className={`flex flex-col gap-1 text-sm ${error ? '[&_input]:border-rose-400 [&_select]:border-rose-400' : ''}`}>
+      <span className="font-medium text-slate-700">
+        {label}
+        {required && (
+          <span className="ml-0.5 text-rose-600" title="Обязательное поле">
+            *
+          </span>
+        )}
+      </span>
       {children}
-      {hint && <span className="text-xs text-slate-500">{hint}</span>}
+      {error ? (
+        <span className="text-xs text-rose-700">{error}</span>
+      ) : (
+        hint && <span className="text-xs text-slate-500">{hint}</span>
+      )}
     </label>
+  )
+}
+
+/**
+ * Чего не хватает для проведения. Показывается рядом с главной кнопкой,
+ * пункт можно нажать — фокус перейдёт на поле.
+ */
+export function Missing({ items, className = '' }: { items: (string | { label: string; focus?: string })[]; className?: string }) {
+  if (items.length === 0) return null
+  const list = items.map((it) => (typeof it === 'string' ? { label: it, focus: undefined } : it))
+  return (
+    <div role="status" className={`rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ${className}`}>
+      Заполните:{' '}
+      {list.map((it, i) => (
+        <span key={it.label}>
+          {i > 0 && ', '}
+          {it.focus ? (
+            <button type="button" className="underline decoration-dotted hover:text-amber-900" onClick={() => focusField(it.focus as string)}>
+              {it.label}
+            </button>
+          ) : (
+            it.label
+          )}
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -55,8 +109,13 @@ export function Loading() {
   return <div className="py-8 text-center text-sm text-slate-500">Загрузка…</div>
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="py-8 text-center text-sm text-slate-500">{children}</div>
+export function Empty({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-3 py-8 text-center text-sm text-slate-500">
+      <div>{children}</div>
+      {action}
+    </div>
+  )
 }
 
 export function Badge({ children, tone = 'slate' }: { children: ReactNode; tone?: 'slate' | 'green' | 'amber' | 'rose' | 'sky' }) {

@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
 import { get, patch, post } from '../lib/api'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Employee } from '../lib/types'
 
@@ -61,24 +62,30 @@ export default function Employees() {
     })
   }
 
+  const notFilled = missingWithFocus(
+    [Boolean(form.full_name.trim()), 'ФИО', '#employee-name'],
+    [form.is_cashier || form.is_master, 'роль: кассир или мастер'],
+  )
+
   return (
     <div>
       <PageHeader title="Сотрудники" />
 
       <Card className="mb-4">
         <form onSubmit={create} className="grid gap-3 sm:grid-cols-[2fr_auto_auto] sm:items-end">
-          <Field label="ФИО">
-            <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+          <Field label="ФИО" required>
+            <input id="employee-name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
           </Field>
           <div className="flex flex-wrap gap-4 sm:pb-2">
             <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />
             <Checkbox label="Мастер" checked={form.is_master} onChange={(v) => setForm({ ...form, is_master: v })} />
           </div>
-          <Button type="submit" disabled={busy || !form.full_name.trim()}>
+          <Button type="submit" disabled={busy || notFilled.length > 0}>
             Добавить
           </Button>
         </form>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-col gap-2">
+          <Missing items={notFilled} />
           <ErrorBox error={error} />
         </div>
       </Card>
@@ -88,7 +95,7 @@ export default function Employees() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty>Сотрудников пока нет</Empty>
+          <Empty>Сотрудников пока нет. Заведите кассира и мастера — их выбирают в чеке.</Empty>
         ) : (
           <Table head={['ФИО', 'Кассир', 'Мастер', 'Статус']}>
             {list.data.map((e) => (

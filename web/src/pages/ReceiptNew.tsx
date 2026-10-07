@@ -4,9 +4,10 @@ import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
-import { Button, Card, Checkbox, Empty, ErrorBox, Field, PageHeader, Table } from '../components/ui'
+import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, parseSom, somInput } from '../lib/format'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Product, Receipt, Supplier } from '../lib/types'
 
@@ -100,12 +101,11 @@ export default function ReceiptNew() {
   }
 
   // Чего не хватает для проведения: кнопка заблокирована, пока список не пуст.
-  const missing: string[] = []
-  if (lines.length === 0) missing.push('товары')
-  else {
-    const bad = calcs.findIndex((c) => typeof c === 'string')
-    if (bad >= 0) missing.push(`количество и цену в строке ${bad + 1}`)
-  }
+  const badLine = calcs.findIndex((c) => typeof c === 'string')
+  const missing = missingWithFocus(
+    [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
+    [badLine < 0, `количество и цену в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+  )
 
   const submit = () => {
     if (lines.length === 0) {
@@ -217,7 +217,7 @@ export default function ReceiptNew() {
             <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} />
           </div>
           {lines.length === 0 ? (
-            <Empty>Сканируйте товары или найдите их по названию</Empty>
+            <Empty>Сканируйте штрихкод или найдите товар по названию — он добавится строкой</Empty>
           ) : (
             <Table head={['Товар', 'Количество', 'Цена, с', 'Сумма', '']}>
               {lines.map((l, i) => {
@@ -238,7 +238,8 @@ export default function ReceiptNew() {
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
                         {oil ? `Канистр (по ${formatLiters(l.product.container_ml ?? 0)})` : 'Кол-во, шт'}
                         <input
-                          className="w-24"
+                          id={`line-${i + 1}-count`}
+                          className={`w-24 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
                           inputMode="numeric"
                           value={l.count}
                           onChange={(e) => updateLine(l.key, { count: e.target.value })}
@@ -249,7 +250,7 @@ export default function ReceiptNew() {
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
                         {oil ? 'Цена канистры, с' : 'Цена за шт, с'}
                         <input
-                          className="w-32"
+                          className={`w-32 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
                           inputMode="decimal"
                           value={l.price}
                           onChange={(e) => updateLine(l.key, { price: e.target.value })}
@@ -281,7 +282,7 @@ export default function ReceiptNew() {
 
         <ErrorBox error={save.error} />
         <div className="flex flex-wrap items-center justify-end gap-3">
-          {missing.length > 0 && <span className="text-sm text-amber-700">Заполните: {missing.join(', ')}</span>}
+          <Missing items={missing} />
           <Button disabled={save.busy || missing.length > 0} onClick={submit}>
             Провести приход
           </Button>

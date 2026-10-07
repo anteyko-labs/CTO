@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom, somInput } from '../lib/format'
+import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Service } from '../lib/types'
 
@@ -120,6 +121,11 @@ export default function Services() {
     })
   }
 
+  const notFilled = missingWithFocus(
+    [Boolean(form.name.trim()), 'название', '#service-name'],
+    [Boolean(form.price.trim()), 'цену', '#service-price'],
+  )
+
   return (
     <div>
       <PageHeader title="Услуги" />
@@ -128,23 +134,24 @@ export default function Services() {
 
       <Card className="mb-4">
         <form onSubmit={create} className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr_auto] sm:items-end">
-          <Field label="Название">
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Field label="Название" required>
+            <input id="service-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </Field>
-          <Field label="Цена, с">
-            <input inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+          <Field label="Цена, с" required>
+            <input id="service-price" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
           </Field>
           <Field label="Мастеру, с">
             <input inputMode="decimal" value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
           </Field>
-          <Button type="submit" disabled={busy || !form.name.trim() || !form.price.trim()}>
+          <Button type="submit" disabled={busy || notFilled.length > 0}>
             Добавить
           </Button>
         </form>
         <p className="mt-2 text-xs text-slate-500">
           {FEE_HINT}. Замена масла здесь не нужна: она отмечается в чеке и платится ставкой выше.
         </p>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-col gap-2">
+          <Missing items={notFilled} />
           <ErrorBox error={error} />
         </div>
       </Card>
@@ -154,7 +161,7 @@ export default function Services() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty>Услуг пока нет</Empty>
+          <Empty>Услуг пока нет. Замена масла здесь не нужна — она отмечается в чеке.</Empty>
         ) : (
           <Table head={['Название', 'Цена', 'Мастеру', 'Статус']}>
             {list.data.map((s) => (
