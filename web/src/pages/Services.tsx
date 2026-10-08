@@ -1,3 +1,4 @@
+// Справочник услуг и ставка мастера за замену (SPEC-02, SPEC-07).
 import { useState, type FormEvent } from 'react'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post, put } from '../lib/api'

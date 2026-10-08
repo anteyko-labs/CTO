@@ -1,3 +1,4 @@
+// Справочник поставщиков; карточка поставщика — SupplierCard (SPEC-02, SPEC-10).
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SupplierEditModal } from '../components/SupplierFormModal'

@@ -1,3 +1,4 @@
+// Окно незнакомого штрихкода: привязать код к заведённому товару или завести новый (ADR-026).
 import { useState } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'

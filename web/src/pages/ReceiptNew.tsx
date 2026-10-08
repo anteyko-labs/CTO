@@ -1,3 +1,4 @@
+// Новый приход: сканер, создание незнакомых товаров, цены из прошлого прихода, печать этикеток (SPEC-03).
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { printLabels } from '../components/labels'

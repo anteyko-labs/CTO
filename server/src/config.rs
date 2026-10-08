@@ -1,3 +1,5 @@
+//! Конфигурация из переменных окружения (docs/tier-3/arch-core.md, раздел «Сервер»).
+
 use std::env;
 
 #[derive(Debug, Clone)]

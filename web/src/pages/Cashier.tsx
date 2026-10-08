@@ -1,3 +1,5 @@
+// Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
+// подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { balanceText, ClientPicker } from '../components/ClientPicker'

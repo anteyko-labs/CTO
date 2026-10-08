@@ -1,3 +1,4 @@
+// Экран входа владельца или администратора (SPEC-01).
 import { useState, type FormEvent } from 'react'
 import { Button, ErrorBox, Field } from '../components/ui'
 import { useAuth } from '../lib/auth'

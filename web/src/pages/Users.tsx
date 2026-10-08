@@ -1,3 +1,4 @@
+// Пользователи со входом: владельцы и администраторы; экран только для владельца (SPEC-01).
 import { useState, type FormEvent } from 'react'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
 import { get, patch, post } from '../lib/api'

@@ -1,3 +1,4 @@
+// Просмотр прихода, сторно и печать этикеток (SPEC-03).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { printLabels } from '../components/labels'

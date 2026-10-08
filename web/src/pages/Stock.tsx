@@ -1,3 +1,4 @@
+// Остатки филиала: фильтры «мало» и «проверить», себестоимость и сверка с движениями — только владельцу (SPEC-03).
 import { useState } from 'react'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'

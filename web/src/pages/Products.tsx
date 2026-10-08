@@ -1,3 +1,4 @@
+// Справочник товаров: поиск, фильтры по характеристикам, карточка, архив, печать этикеток (SPEC-02).
 import { useMemo, useState } from 'react'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'

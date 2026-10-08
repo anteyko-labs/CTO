@@ -1,3 +1,5 @@
+//! Точка входа сервера: конфигурация, подключение к базе, миграции, первичная настройка, запуск HTTP.
+
 use std::path::PathBuf;
 
 use avtodom_server::config::Config;

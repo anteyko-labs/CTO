@@ -1,3 +1,5 @@
+//! Вход, выход, текущий пользователь, ограничение перебора паролей и управление пользователями (SPEC-01, ADR-016).
+
 use axum::extract::{Path, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::request::Parts;

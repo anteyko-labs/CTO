@@ -1,3 +1,4 @@
+// Клиенты с живыми итогами «должны нам» и «авансы» (SPEC-10, ADR-028).
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'

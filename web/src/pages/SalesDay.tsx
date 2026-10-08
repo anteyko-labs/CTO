@@ -1,3 +1,4 @@
+// Чеки за день: итоги по способам оплаты, средний чек, возвраты (SPEC-04).
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, PageHeader, Table } from '../components/ui'

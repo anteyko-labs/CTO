@@ -1,3 +1,5 @@
+// Каркас приложения: вход, меню по ролям (боковое и нижнее на телефоне), маршруты всех экранов.
+// Какой экран за какую спецификацию отвечает — docs/DEVELOPMENT.md, раздел «Карта кода».
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'

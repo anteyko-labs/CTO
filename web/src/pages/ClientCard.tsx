@@ -1,3 +1,4 @@
+// Карточка клиента: работники, машины, покупки, долг и погашения (SPEC-10).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'

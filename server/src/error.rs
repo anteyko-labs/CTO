@@ -1,3 +1,5 @@
+//! Единый тип ошибок и его превращение в HTTP-ответ `{error: {code, message}}`.
+
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

@@ -1,3 +1,4 @@
+// Точка входа клиента: монтирует приложение и общие обработчики страницы.
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'

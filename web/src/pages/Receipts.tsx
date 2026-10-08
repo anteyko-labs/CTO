@@ -1,3 +1,4 @@
+// Список приходов за период (SPEC-03).
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'

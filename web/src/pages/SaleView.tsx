@@ -1,3 +1,4 @@
+// Просмотр чека, печать и частичный возврат (SPEC-04).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { lineQtyText, printSale } from '../components/salePrint'

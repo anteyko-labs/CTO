@@ -1,3 +1,4 @@
+// Настройка размера и содержимого этикеток с предпросмотром (SPEC-02, ADR-010).
 import { useState } from 'react'
 import { labelsHtml } from '../components/labels'
 import { Button, Card, Checkbox, ErrorBox, Field, Loading, PageHeader } from '../components/ui'

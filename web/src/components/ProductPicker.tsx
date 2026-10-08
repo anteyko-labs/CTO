@@ -1,3 +1,4 @@
+// Поле сканера и поиска товара для кассы и прихода (SPEC-02, SPEC-04); без сети ищет по снимку каталога (SPEC-09).
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
 import { formatOilStock, formatSom } from '../lib/format'

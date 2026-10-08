@@ -1,3 +1,4 @@
+// Долги: кто должен нам и кому должны мы, с оплатой и погашением (SPEC-10).
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'

@@ -1,3 +1,5 @@
+// Общие элементы интерфейса: кнопки, поля, карточки, окна, таблицы (на телефоне — карточками), уведомления.
+// Правила поведения интерфейса — docs/tier-3/ui-rules.md.
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { focusField } from '../lib/forms'
 

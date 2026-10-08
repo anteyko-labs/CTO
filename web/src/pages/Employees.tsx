@@ -1,3 +1,4 @@
+// Справочник сотрудников: кассиры и мастера без входа в систему (SPEC-02, инвариант 15).
 import { useState, type FormEvent } from 'react'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
 import { get, patch, post } from '../lib/api'
