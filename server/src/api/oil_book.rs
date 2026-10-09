@@ -41,8 +41,8 @@ pub struct VehicleBook {
     pub brand: String,
     pub model: String,
     pub interval_km: i32,
-    pub interval_months: i32,
-    /// Следующая замена: последний известный пробег + интервал, дата последней замены + месяцы.
+    pub interval_days: i32,
+    /// Следующая замена: последний известный пробег + интервал, дата последней замены + дни.
     pub next_km: Option<i32>,
     pub next_date: Option<NaiveDate>,
     pub records: Vec<OilRecord>,
@@ -127,7 +127,7 @@ pub async fn books(
     vehicle_id: Option<Uuid>,
 ) -> AppResult<Vec<VehicleBook>> {
     let vehicles = sqlx::query!(
-        r#"select id, plate, brand, model, interval_km, interval_months
+        r#"select id, plate, brand, model, interval_km, interval_days
            from party_vehicles
            where branch_id = $1 and ($2::uuid is null or party_id = $2) and ($3::uuid is null or id = $3)
              and (active or $3::uuid is not null)
@@ -172,8 +172,8 @@ pub async fn books(
             .find_map(|r| r.mileage_km)
             .map(|m| m.saturating_add(v.interval_km));
         let next_date = recs.first().and_then(|r| {
-            r.change_date.checked_add_months(chrono::Months::new(
-                u32::try_from(v.interval_months).unwrap_or(6),
+            r.change_date.checked_add_days(chrono::Days::new(
+                u64::try_from(v.interval_days).unwrap_or(31),
             ))
         });
         out.push(VehicleBook {
@@ -182,7 +182,7 @@ pub async fn books(
             brand: v.brand,
             model: v.model,
             interval_km: v.interval_km,
-            interval_months: v.interval_months,
+            interval_days: v.interval_days,
             next_km,
             next_date,
             records: recs,
@@ -218,7 +218,7 @@ async fn party_book(
 #[derive(Deserialize)]
 struct SettingsReq {
     interval_km: i32,
-    interval_months: i32,
+    interval_days: i32,
 }
 
 async fn settings(
@@ -227,18 +227,16 @@ async fn settings(
     Path(id): Path<Uuid>,
     Json(req): Json<SettingsReq>,
 ) -> AppResult<Json<VehicleBook>> {
-    if !(500..=100_000).contains(&req.interval_km) || !(1..=36).contains(&req.interval_months) {
-        return Err(invalid(
-            "интервал: от 500 до 100 000 км и от 1 до 36 месяцев",
-        ));
+    if !(500..=100_000).contains(&req.interval_km) || !(1..=730).contains(&req.interval_days) {
+        return Err(invalid("интервал: от 500 до 100 000 км и от 1 до 730 дней"));
     }
     let mut tx = state.pool.begin().await?;
     let found = sqlx::query!(
-        "update party_vehicles set interval_km = $3, interval_months = $4 where id = $1 and branch_id = $2 returning plate",
+        "update party_vehicles set interval_km = $3, interval_days = $4 where id = $1 and branch_id = $2 returning plate",
         id,
         ctx.user.branch_id,
         req.interval_km,
-        req.interval_months
+        req.interval_days
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -249,7 +247,7 @@ async fn settings(
         "vehicle.oil_interval",
         "vehicle",
         Some(id),
-        json!({ "plate": found.plate, "km": req.interval_km, "months": req.interval_months }),
+        json!({ "plate": found.plate, "km": req.interval_km, "days": req.interval_days }),
     )
     .await?;
     let out = books(&mut tx, ctx.user.branch_id, None, Some(id))

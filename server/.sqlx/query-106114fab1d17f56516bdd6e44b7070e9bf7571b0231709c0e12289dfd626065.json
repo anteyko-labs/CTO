@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name from parties\n           where role = 'customer' and active and length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 9\n             and right(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = $1\n           order by created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "106114fab1d17f56516bdd6e44b7070e9bf7571b0231709c0e12289dfd626065"
+}

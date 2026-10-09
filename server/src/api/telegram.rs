@@ -102,7 +102,7 @@ async fn unlink(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Value
 
 // ---------- Логика бота ----------
 
-const HELP: &str = "Команды:\n/сегодня — выручка и прибыль за день, деньги в кассах\n/смена — открытая смена и сколько должно быть в кассе\n/долги — кто сколько должен";
+const HELP: &str = "Команды владельца:\n/сегодня — выручка и прибыль за день, деньги в кассах\n/смена — открытая смена и сколько должно быть в кассе\n/долги — кто сколько должен";
 
 /// Владелец, к которому привязан чат (только активный владелец).
 async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(Uuid, Uuid)>> {
@@ -116,8 +116,276 @@ async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(
     .map(|r| (r.id, r.branch_id)))
 }
 
-/// Ответ на сообщение. Пока чат не привязан, бот отвечает только на код привязки.
-pub async fn handle_text(conn: &mut PgConnection, chat_id: i64, text: &str) -> AppResult<String> {
+/// Ответ бота; `ask_contact` — показать кнопку «Поделиться номером».
+pub struct Reply {
+    pub text: String,
+    pub ask_contact: bool,
+}
+
+impl Reply {
+    fn text(t: impl Into<String>) -> Self {
+        Self {
+            text: t.into(),
+            ask_contact: false,
+        }
+    }
+}
+
+/// Номер для сравнения: последние 9 цифр — так совпадут «+996 555 12 34 56» и «0555123456».
+pub fn phone_key(phone: &str) -> Option<String> {
+    let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+    (digits.len() >= 9).then(|| digits[digits.len() - 9..].to_string())
+}
+
+/// Контакт из Телеграма: номер и чей он (кнопка «Поделиться номером» шлёт свой).
+pub struct SharedContact {
+    pub phone: String,
+    pub user_id: Option<i64>,
+}
+
+/// Сообщение в бот: владелец — команды и привязка кодом; клиент — своя масляная книжка.
+pub async fn handle_message(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    from_id: i64,
+    text: Option<&str>,
+    contact: Option<SharedContact>,
+) -> AppResult<Reply> {
+    if let Some(c) = contact {
+        return link_customer(conn, chat_id, from_id, c).await;
+    }
+    let text = text.unwrap_or("");
+    let owner = handle_text(conn, chat_id, text).await?;
+    if let Some(r) = owner {
+        return Ok(Reply::text(r));
+    }
+    // Не владелец: подключившийся клиент видит свои машины, остальным — кнопка номера.
+    let customer = sqlx::query_scalar!(
+        "select party_id from telegram_customers where chat_id = $1",
+        chat_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(party_id) = customer else {
+        return Ok(Reply {
+            text: "Здравствуйте! Это бот Avtodom. Чтобы видеть замены масла по своей машине и получать напоминания, поделитесь номером телефона — тем, что записан у нас.".into(),
+            ask_contact: true,
+        });
+    };
+    let word = text.split_whitespace().next().unwrap_or("").to_lowercase();
+    if matches!(word.as_str(), "/стоп" | "/stop") {
+        sqlx::query!("delete from telegram_customers where chat_id = $1", chat_id)
+            .execute(&mut *conn)
+            .await?;
+        return Ok(Reply::text(
+            "Готово: напоминаний больше не будет. Чтобы вернуться, поделитесь номером ещё раз.",
+        ));
+    }
+    Ok(Reply::text(customer_book(conn, party_id).await?))
+}
+
+async fn link_customer(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    from_id: i64,
+    c: SharedContact,
+) -> AppResult<Reply> {
+    // Только свой номер: чужую карточку контакта переслать можно, но книжку она не откроет.
+    if c.user_id != Some(from_id) {
+        return Ok(Reply {
+            text: "Поделитесь своим номером кнопкой ниже.".into(),
+            ask_contact: true,
+        });
+    }
+    let Some(key) = phone_key(&c.phone) else {
+        return Ok(Reply::text("Номер не распознан."));
+    };
+    let party = sqlx::query!(
+        r#"select id, name from parties
+           where role = 'customer' and active and length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 9
+             and right(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = $1
+           order by created_at desc limit 1"#,
+        key
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(p) = party else {
+        return Ok(Reply::text(
+            "Этого номера нет среди наших клиентов. Назовите его кассиру при следующей замене — и книжка появится здесь.",
+        ));
+    };
+    sqlx::query!(
+        r#"insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, $3)
+           on conflict (chat_id) do update set party_id = excluded.party_id, phone = excluded.phone, linked_at = now()"#,
+        chat_id,
+        p.id,
+        c.phone
+    )
+    .execute(&mut *conn)
+    .await?;
+    let book = customer_book(conn, p.id).await?;
+    Ok(Reply::text(format!(
+        "{}, вы подключены. Напомним о замене за неделю и за день до срока. Отключить — /стоп.\n\n{book}",
+        p.name
+    )))
+}
+
+fn km(v: i32) -> String {
+    let s = v.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    format!("{out} км")
+}
+
+/// Масляная книжка клиента текстом: по машинам — последняя замена и следующая.
+pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
+    let branch_id = sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    let books = crate::api::oil_book::books(conn, branch_id, Some(party_id), None).await?;
+    if books.is_empty() {
+        return Ok("Машин у вас пока не записано — назовите госномер кассиру при замене.".into());
+    }
+    let parts: Vec<String> = books
+        .iter()
+        .map(|b| {
+            let car = [b.brand.as_str(), b.model.as_str()]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let head = if car.is_empty() {
+                b.plate.clone()
+            } else {
+                format!("{} ({car})", b.plate)
+            };
+            let Some(last) = b.records.first() else {
+                return format!("{head}\nЗамен пока не было.");
+            };
+            let mut lines = vec![
+                head,
+                format!(
+                    "Последняя замена: {}{}",
+                    last.change_date.format("%d.%m.%Y"),
+                    last.mileage_km
+                        .map(|m| format!(", {}", km(m)))
+                        .unwrap_or_default()
+                ),
+            ];
+            if !last.oil_text.is_empty() {
+                lines.push(format!("Масло: {}", last.oil_text));
+            }
+            if !last.filter_text.is_empty() {
+                lines.push(format!("Фильтр: {}", last.filter_text));
+            }
+            let next = [
+                b.next_km.map(|k| format!("на {}", km(k))),
+                b.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y"))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" или ");
+            if !next.is_empty() {
+                lines.push(format!("Следующая замена: {next}"));
+            }
+            lines.join("\n")
+        })
+        .collect();
+    Ok(parts.join("\n\n"))
+}
+
+/// Напоминания клиентам: за 7 дней и за 1 день до срока замены, каждое один раз (ADR-051).
+pub struct Reminder {
+    pub chat_id: i64,
+    pub vehicle_id: Uuid,
+    pub due: chrono::NaiveDate,
+    pub days_before: i32,
+    pub text: String,
+}
+
+pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> {
+    let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    let links = sqlx::query!("select chat_id, party_id from telegram_customers")
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut out = Vec::new();
+    for l in links {
+        let branch_id =
+            sqlx::query_scalar!("select branch_id from parties where id = $1", l.party_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        for b in crate::api::oil_book::books(conn, branch_id, Some(l.party_id), None).await? {
+            let Some(due) = b.next_date else { continue };
+            let left = (due - today).num_days();
+            let days_before = match left {
+                7 => 7,
+                1 => 1,
+                _ => continue,
+            };
+            let sent = sqlx::query_scalar!(
+                r#"select exists (select 1 from oil_reminders
+                                  where vehicle_id = $1 and due_date = $2 and days_before = $3) as "e!""#,
+                b.vehicle_id,
+                due,
+                days_before
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if sent {
+                continue;
+            }
+            let when = if days_before == 1 {
+                "завтра".to_string()
+            } else {
+                format!("через {days_before} дней")
+            };
+            let km_part = b
+                .next_km
+                .map(|k| format!(" или на {}", km(k)))
+                .unwrap_or_default();
+            out.push(Reminder {
+                chat_id: l.chat_id,
+                vehicle_id: b.vehicle_id,
+                due,
+                days_before,
+                text: format!(
+                    "Напоминаем: замена масла для {} — {when}, до {}{km_part}. Ждём вас в Avtodom!",
+                    b.plate,
+                    due.format("%d.%m.%Y")
+                ),
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub async fn mark_reminded(conn: &mut PgConnection, r: &Reminder) -> AppResult<()> {
+    sqlx::query!(
+        r#"insert into oil_reminders (vehicle_id, due_date, days_before) values ($1, $2, $3)
+           on conflict do nothing"#,
+        r.vehicle_id,
+        r.due,
+        r.days_before
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Команды владельца и привязка кодом. `None` — чат не владельца и это не код: дальше решает клиентская часть.
+pub async fn handle_text(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    text: &str,
+) -> AppResult<Option<String>> {
     let text = text.trim();
     let word = text.split_whitespace().next().unwrap_or("").to_lowercase();
     let arg = text.split_whitespace().nth(1).unwrap_or("");
@@ -130,17 +398,17 @@ pub async fn handle_text(conn: &mut PgConnection, chat_id: i64, text: &str) -> A
         ""
     };
     if !code.is_empty() {
-        return link(conn, chat_id, code).await;
+        return link(conn, chat_id, code).await.map(Some);
     }
     let Some((_, branch_id)) = chat_owner(conn, chat_id).await? else {
-        return Ok("Этот бот — для владельца точки. Откройте в системе «Настройки → Телеграм», получите код и отправьте его сюда.".into());
+        return Ok(None);
     };
     let cmd = word.trim_start_matches('/');
     match cmd {
-        "сегодня" | "today" => today(conn, branch_id).await,
-        "смена" | "shift" => shift(conn, branch_id).await,
-        "долги" | "debts" => debts(conn, branch_id).await,
-        _ => Ok(HELP.into()),
+        "сегодня" | "today" => today(conn, branch_id).await.map(Some),
+        "смена" | "shift" => shift(conn, branch_id).await.map(Some),
+        "долги" | "debts" => debts(conn, branch_id).await.map(Some),
+        _ => Ok(Some(HELP.into())),
     }
 }
 
@@ -348,7 +616,20 @@ struct Update {
 #[derive(Deserialize)]
 struct Message {
     chat: Chat,
+    from: Option<From>,
     text: Option<String>,
+    contact: Option<Contact>,
+}
+
+#[derive(Deserialize)]
+struct From {
+    id: i64,
+}
+
+#[derive(Deserialize)]
+struct Contact {
+    phone_number: String,
+    user_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -365,10 +646,18 @@ struct Api {
 impl Api {
     /// Отправка сообщения; `false` — Телеграм не принял (нет связи, ошибка ответа).
     async fn send(&self, chat_id: i64, text: &str) -> bool {
+        self.send_with(chat_id, text, None).await
+    }
+
+    async fn send_with(&self, chat_id: i64, text: &str, markup: Option<Value>) -> bool {
+        let mut body = json!({ "chat_id": chat_id, "text": text });
+        if let Some(m) = markup {
+            body["reply_markup"] = m;
+        }
         let r = self
             .http
             .post(format!("{}/sendMessage", self.base))
-            .json(&json!({ "chat_id": chat_id, "text": text }))
+            .json(&body)
             .timeout(std::time::Duration::from_secs(20))
             .send()
             .await;
@@ -425,14 +714,27 @@ async fn commands_loop(pool: PgPool, api: Api) {
         for u in updates {
             offset = offset.max(u.update_id + 1);
             let Some(m) = u.message else { continue };
-            let Some(text) = m.text else { continue };
+            let from_id = m.from.as_ref().map_or(m.chat.id, |f| f.id);
+            let contact = m.contact.map(|c| SharedContact {
+                phone: c.phone_number,
+                user_id: c.user_id,
+            });
             let reply = match pool.acquire().await {
-                Ok(mut conn) => handle_text(&mut conn, m.chat.id, &text).await,
+                Ok(mut conn) => {
+                    handle_message(&mut conn, m.chat.id, from_id, m.text.as_deref(), contact).await
+                }
                 Err(e) => Err(AppError::from(e)),
             };
             match reply {
                 Ok(r) => {
-                    api.send(m.chat.id, &r).await;
+                    // Кнопка «Поделиться номером» — пока клиент не подключился; потом убираем.
+                    let markup = if r.ask_contact {
+                        json!({ "keyboard": [[{ "text": "Поделиться номером", "request_contact": true }]],
+                                "resize_keyboard": true, "one_time_keyboard": true })
+                    } else {
+                        json!({ "remove_keyboard": true })
+                    };
+                    api.send_with(m.chat.id, &r.text, Some(markup)).await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "телеграм: команда не обработана");
@@ -445,7 +747,26 @@ async fn commands_loop(pool: PgPool, api: Api) {
 }
 
 async fn notify_loop(pool: PgPool, api: Api) {
+    let mut last_reminders: Option<std::time::Instant> = None;
     loop {
+        // Напоминания клиентам о замене — раз в час.
+        if last_reminders.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(3600))
+            && let Ok(mut conn) = pool.acquire().await
+        {
+            match due_reminders(&mut conn).await {
+                Ok(list) => {
+                    for r in list {
+                        if api.send(r.chat_id, &r.text).await
+                            && let Err(e) = mark_reminded(&mut conn, &r).await
+                        {
+                            tracing::warn!(error = %e, "телеграм: напоминание не отмечено");
+                        }
+                    }
+                    last_reminders = Some(std::time::Instant::now());
+                }
+                Err(e) => tracing::warn!(error = %e, "телеграм: напоминания не собраны"),
+            }
+        }
         if let Ok(mut conn) = pool.acquire().await {
             match pending(&mut conn).await {
                 Ok((messages, next)) => {

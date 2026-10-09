@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into oil_reminders (vehicle_id, due_date, days_before) values ($1, $2, $3)\n           on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a7582e3d87f0d15746724e0068a96d84d67293863f76537c05385e976108e6ec"
+}

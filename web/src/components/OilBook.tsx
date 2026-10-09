@@ -22,7 +22,7 @@ export interface VehicleBook {
   brand: string
   model: string
   interval_km: number
-  interval_months: number
+  interval_days: number
   next_km: number | null
   next_date: string | null
   records: OilRecord[]
@@ -53,7 +53,7 @@ export function OilHint({ vehicleId }: { vehicleId: string }) {
 }
 
 function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boolean; onChanged: () => void }) {
-  const [interval, setInterval] = useState<{ km: string; months: string } | null>(null)
+  const [interval, setInterval] = useState<{ km: string; days: string } | null>(null)
   const [manual, setManual] = useState<{ date: string; mileage: string; oil: string; filter: string } | null>(null)
   const act = useAction()
   return (
@@ -66,7 +66,7 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
         <div className="text-sm">
           Следующая замена: <b>{nextText(b)}</b>
           <span className="ml-2 text-xs text-slate-500">
-            (каждые {km(b.interval_km)} или {b.interval_months} мес.)
+            (каждые {km(b.interval_km)} или {b.interval_days} дн.)
           </span>
         </div>
       </div>
@@ -110,7 +110,7 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
       <ErrorBox error={act.error} />
       {editable && (
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setInterval({ km: String(b.interval_km), months: String(b.interval_months) })}>
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setInterval({ km: String(b.interval_km), days: String(b.interval_days) })}>
             Интервал
           </Button>
           <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setManual({ date: todayBishkek(), mileage: '', oil: '', filter: '' })}>
@@ -125,8 +125,8 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
               <Field label="Каждые, км">
                 <input inputMode="numeric" value={interval.km} onChange={(e) => setInterval({ ...interval, km: e.target.value })} />
               </Field>
-              <Field label="Или каждые, мес.">
-                <input inputMode="numeric" value={interval.months} onChange={(e) => setInterval({ ...interval, months: e.target.value })} />
+              <Field label="Или каждые, дней">
+                <input inputMode="numeric" value={interval.days} onChange={(e) => setInterval({ ...interval, days: e.target.value })} />
               </Field>
             </div>
             <ErrorBox error={act.error} />
@@ -135,10 +135,10 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
                 Отмена
               </Button>
               <Button
-                disabled={act.busy || !/^\d+$/.test(interval.km) || !/^\d+$/.test(interval.months)}
+                disabled={act.busy || !/^\d+$/.test(interval.km) || !/^\d+$/.test(interval.days)}
                 onClick={() =>
                   void act.run(async () => {
-                    await patch(`/vehicles/${b.vehicle_id}/oil-settings`, { interval_km: Number(interval.km), interval_months: Number(interval.months) })
+                    await patch(`/vehicles/${b.vehicle_id}/oil-settings`, { interval_km: Number(interval.km), interval_days: Number(interval.days) })
                     setInterval(null)
                     onChanged()
                   })

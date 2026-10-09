@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select party_id from telegram_customers where chat_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "party_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "125129d01216a28f0b5def2d4e8543980aa14888bbdc6355abd7389b6f104aa0"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, plate, brand, model, interval_km, interval_months\n           from party_vehicles\n           where branch_id = $1 and ($2::uuid is null or party_id = $2) and ($3::uuid is null or id = $3)\n             and (active or $3::uuid is not null)\n           order by plate",
+  "query": "select id, plate, brand, model, interval_km, interval_days\n           from party_vehicles\n           where branch_id = $1 and ($2::uuid is null or party_id = $2) and ($3::uuid is null or id = $3)\n             and (active or $3::uuid is not null)\n           order by plate",
   "describe": {
     "columns": [
       {
@@ -30,7 +30,7 @@
       },
       {
         "ordinal": 5,
-        "name": "interval_months",
+        "name": "interval_days",
         "type_info": "Int4"
       }
     ],
@@ -50,5 +50,5 @@
       false
     ]
   },
-  "hash": "f8e1abdd01f2be2a1739d26ac554edf6d980e1314ee9058d687942f339039f31"
+  "hash": "3ee7268dcdf13d7a7f97e666b2882237847acb91ddeb07d8df66b47d23a340fb"
 }

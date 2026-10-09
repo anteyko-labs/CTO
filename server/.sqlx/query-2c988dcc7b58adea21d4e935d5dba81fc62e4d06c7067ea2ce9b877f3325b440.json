@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, $3)\n           on conflict (chat_id) do update set party_id = excluded.party_id, phone = excluded.phone, linked_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c988dcc7b58adea21d4e935d5dba81fc62e4d06c7067ea2ce9b877f3325b440"
+}

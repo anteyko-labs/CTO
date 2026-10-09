@@ -1422,7 +1422,7 @@ async fn oil_book_records_service_change(pool: PgPool) {
         b.next_date,
         b.records[0]
             .change_date
-            .checked_add_months(chrono::Months::new(6))
+            .checked_add_days(chrono::Days::new(31))
     );
     drop(conn);
     // Полный возврат — запись из книжки пропадает.
@@ -1467,19 +1467,137 @@ async fn delivery_address_stays_on_check(pool: PgPool) {
     assert_eq!(sale.total_tyiyn, 50_000);
 }
 
+/// Текст ответа бота на сообщение из чата `chat`.
+async fn say(conn: &mut sqlx::PgConnection, chat: i64, text: &str) -> String {
+    avtodom_server::api::telegram::handle_message(conn, chat, chat, Some(text), None)
+        .await
+        .unwrap()
+        .text
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
+    // Клиент подключается своим номером, видит книжку, напоминания уходят один раз (SPEC-18, ADR-051).
+    use avtodom_server::api::telegram::{
+        SharedContact, due_reminders, handle_message, mark_reminded,
+    };
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    let (party, vehicle) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Эрлан', '0555 12-34-56')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, brand) values ($1, $2, $3, '01KG123ABC', 'Toyota')")
+        .bind(vehicle)
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = takeaway(
+        &w,
+        vec![line("container", w.oil, 1, 200_000)],
+        cash(200_000),
+    );
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.party_id = Some(party);
+    req.vehicle_id = Some(vehicle);
+    req.mileage_km = Some(85_000);
+    sell(&pool, &w.owner, req).await.unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let chat = 555_000_222i64;
+    let first = handle_message(&mut conn, chat, chat, Some("/start"), None)
+        .await
+        .unwrap();
+    assert!(first.ask_contact);
+    // Чужой контакт не подключает.
+    let foreign = SharedContact {
+        phone: "+996555123456".into(),
+        user_id: Some(42),
+    };
+    assert!(
+        handle_message(&mut conn, chat, chat, None, Some(foreign))
+            .await
+            .unwrap()
+            .ask_contact
+    );
+    let unknown = SharedContact {
+        phone: "+996700000000".into(),
+        user_id: Some(chat),
+    };
+    assert!(
+        handle_message(&mut conn, chat, chat, None, Some(unknown))
+            .await
+            .unwrap()
+            .text
+            .contains("нет среди")
+    );
+    let own = SharedContact {
+        phone: "+996555123456".into(),
+        user_id: Some(chat),
+    };
+    let linked = handle_message(&mut conn, chat, chat, None, Some(own))
+        .await
+        .unwrap();
+    assert!(!linked.ask_contact);
+    assert!(
+        linked.text.contains("01KG123ABC (Toyota)"),
+        "{}",
+        linked.text
+    );
+    assert!(linked.text.contains("85 000 км") && linked.text.contains("на 93 000 км"));
+    // Команды владельца клиенту не отвечают — только его книжка.
+    let book = say(&mut conn, chat, "/сегодня").await;
+    assert!(book.contains("Последняя замена") && !book.contains("Выручка"));
+
+    // Через 31 день — не сегодня; ставим интервал 7 дней: напоминание «за неделю».
+    assert!(due_reminders(&mut conn).await.unwrap().is_empty());
+    sqlx::query("update party_vehicles set interval_days = 7 where id = $1")
+        .bind(vehicle)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!((due[0].chat_id, due[0].days_before), (chat, 7));
+    assert!(due[0].text.contains("через 7 дней"));
+    mark_reminded(&mut conn, &due[0]).await.unwrap();
+    assert!(due_reminders(&mut conn).await.unwrap().is_empty());
+    sqlx::query("update party_vehicles set interval_days = 1 where id = $1")
+        .bind(vehicle)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert!(due[0].text.contains("завтра"));
+
+    // Отписка — напоминаний больше нет.
+    assert!(
+        say(&mut conn, chat, "/стоп")
+            .await
+            .contains("больше не будет")
+    );
+    assert!(due_reminders(&mut conn).await.unwrap().is_empty());
+}
+
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     // Бот: привязка по коду, команды владельца, события журнала в чат (SPEC-18).
-    use avtodom_server::api::telegram::{handle_text, pending, save_cursor};
+    use avtodom_server::api::telegram::{pending, save_cursor};
     let w = seed(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
     let chat = 777_000_111i64;
-    let reply = handle_text(&mut conn, chat, "/сегодня").await.unwrap();
-    assert!(reply.contains("для владельца"));
+    let reply = say(&mut conn, chat, "/сегодня").await;
+    assert!(reply.contains("поделитесь номером"));
     assert!(
-        handle_text(&mut conn, chat, "/start 000000")
+        say(&mut conn, chat, "/start 000000")
             .await
-            .unwrap()
             .contains("не подошёл")
     );
     sqlx::query("insert into telegram_codes (code, user_id, expires_at) values ('123456', $1, now() + interval '15 minutes')")
@@ -1488,24 +1606,17 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
         .await
         .unwrap();
     assert!(
-        handle_text(&mut conn, chat, "/start 123456")
+        say(&mut conn, chat, "/start 123456")
             .await
-            .unwrap()
             .starts_with("Готово")
     );
     // Код одноразовый.
-    assert!(
-        handle_text(&mut conn, 1, "123456")
-            .await
-            .unwrap()
-            .contains("не подошёл")
-    );
-    let today = handle_text(&mut conn, chat, "/сегодня").await.unwrap();
+    assert!(say(&mut conn, 1, "123456").await.contains("не подошёл"));
+    let today = say(&mut conn, chat, "/сегодня").await;
     assert!(today.contains("Выручка") && today.contains("Чистая прибыль"));
     assert!(
-        handle_text(&mut conn, chat, "/долги")
+        say(&mut conn, chat, "/долги")
             .await
-            .unwrap()
             .contains("никто не должен")
     );
 
