@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select account_id, shift_id, kind, amount_tyiyn, doc_type from cash_movements\n           where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "shift_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "doc_type",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "20cccf4278d1d2312a7d1da45e63739c51bbd911e14a91f3e43cfc5f17bf1f78"
+}

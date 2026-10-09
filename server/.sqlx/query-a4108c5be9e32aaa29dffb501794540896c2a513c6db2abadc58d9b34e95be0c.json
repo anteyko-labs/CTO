@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into revision_results (revision_id, product_id, expected_qty, counted_qty,\n                                             qty_delta, value_delta_tyiyn)\n               values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a4108c5be9e32aaa29dffb501794540896c2a513c6db2abadc58d9b34e95be0c"
+}

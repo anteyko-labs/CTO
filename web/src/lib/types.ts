@@ -230,7 +230,8 @@ export interface SalesDay {
 export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   cash: 'Наличные',
   card: 'Карта',
-  transfer: 'Перевод',
+  // Код прежний, чтобы не трогать проведённые чеки: на точке это оплата QR через терминал.
+  transfer: 'QR',
   debt: 'В долг',
 }
 
@@ -256,6 +257,8 @@ export interface Party {
   active: boolean
   /** > 0 должен нам, < 0 аванс клиента. */
   balance_tyiyn: number
+  /** Долг старше срока оплаты, ещё не погашенный. */
+  overdue_tyiyn: number
 }
 
 export interface PartyContact {
@@ -278,6 +281,9 @@ export interface PartyVehicle {
 
 export interface PartyTimelineItem {
   at: string
+  /** Запись долга; погашение и правку владелец может сторнировать (SPEC-10). */
+  ledger_id: string | null
+  reversible: boolean
   kind: 'sale' | 'sale_return' | 'debt' | 'repayment' | 'adjust'
   title: string
   amount_tyiyn: number
@@ -322,6 +328,9 @@ export interface GiftRule {
   id: string
   trigger_product_id: string
   trigger_name: string
+  /** `ml` — масло, порог в миллилитрах; иначе в штуках. */
+  trigger_unit: string
+  min_units: number
   active: boolean
   items: { gift_product_id: string; name: string; gift_qty: number }[]
 }
@@ -357,6 +366,24 @@ export interface Shift {
   card_tyiyn: number
   transfer_tyiyn: number
   debt_tyiyn: number
+  bank_fee_tyiyn: number
+  /** Смена закрыта, а что сделали с деньгами (сейф или размен) ещё не отмечено. */
+  handover_pending: boolean
+  to_safe_tyiyn: number | null
+  left_tyiyn: number | null
+}
+
+export interface CashMovement {
+  id: string
+  kind: string
+  amount_tyiyn: number
+  comment: string
+  doc_type: string
+  doc_id: string | null
+  user_name: string
+  created_at: string
+  /** Внесение, изъятие или перемещение, которое ещё можно отменить сторно. */
+  reversible: boolean
 }
 
 // ---------- Расходы (SPEC-06) ----------
@@ -439,4 +466,5 @@ export interface Dashboard {
   debts_out_tyiyn: number
   low_stock: number
   needs_review: number
+  stale_stock: number
 }

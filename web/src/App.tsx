@@ -27,6 +27,9 @@ import SaleView from './pages/SaleView'
 import SalesDay from './pages/SalesDay'
 import Services from './pages/Services'
 import Shift from './pages/Shift'
+import DebtDocsSettings from './pages/DebtDocsSettings'
+import OilTransfer from './pages/OilTransfer'
+import Revision from './pages/Revision'
 import Stock from './pages/Stock'
 import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
@@ -58,6 +61,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/receipts', label: 'Приход' },
       { to: '/stock', label: 'Остатки' },
       { to: '/products', label: 'Товары' },
+      { to: '/revision', label: 'Ревизия' },
+      { to: '/oil-transfer', label: 'Перелив', ownerOnly: true },
     ],
   },
   {
@@ -75,6 +80,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     title: 'Настройки',
     items: [
       { to: '/settings/labels', label: 'Этикетки' },
+      { to: '/settings/documents', label: 'Документы', ownerOnly: true },
       { to: '/users', label: 'Пользователи', ownerOnly: true },
     ],
   },
@@ -165,6 +171,9 @@ function Shell() {
           <Route path="/employees" element={<Employees />} />
           <Route path="/services" element={<Services />} />
           {owner && <Route path="/gifts" element={<Gifts />} />}
+          <Route path="/revision" element={<Revision />} />
+          {owner && <Route path="/oil-transfer" element={<OilTransfer />} />}
+          {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />

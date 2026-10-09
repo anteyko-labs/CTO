@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select date_trunc('month', coalesce($1::date, (now() at time zone 'Asia/Bishkek')::date))::date as \"from!\",\n                  (date_trunc('month', coalesce($1::date, (now() at time zone 'Asia/Bishkek')::date))\n                   + interval '1 month - 1 day')::date as \"to!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "from!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "to!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "9fe9c58fed9a5b4dcbca90967459ac5e794caa4e88560e244580125bde6939da"
+}

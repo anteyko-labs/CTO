@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.name, p.unit, p.container_ml, bp.stock_qty,\n                  x.last_sale, x.first_receipt\n           from branch_products bp\n           join products p on p.id = bp.product_id\n           cross join lateral (\n             select (select max(m.created_at) from stock_movements m\n                      where m.branch_id = bp.branch_id and m.product_id = bp.product_id\n                        and m.doc_type = 'sale') as last_sale,\n                    (select min(m.created_at) from stock_movements m\n                      where m.branch_id = bp.branch_id and m.product_id = bp.product_id\n                        and m.doc_type = 'receipt') as first_receipt\n           ) x\n           where bp.branch_id = $1 and bp.stock_qty > 0 and not p.archived\n             and coalesce(x.last_sale, x.first_receipt) < now() - make_interval(days => $2)\n           order by coalesce(x.last_sale, x.first_receipt)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "stock_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_sale",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "first_receipt",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "1843d6a7ea85693eb2281a5d9fd3d8454883934d0b73f4fcca019001941799dd"
+}

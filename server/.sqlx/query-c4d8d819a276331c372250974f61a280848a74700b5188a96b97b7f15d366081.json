@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_contacts\n           set full_name = coalesce(nullif(trim($3), ''), full_name),\n               phone = $4, position = $5, inn = $6,\n               active = coalesce($7, active)\n           where id = $1 and party_id = $2\n             and party_id in (select p.id from parties p where p.branch_id = $8)\n           returning id, full_name, phone, position, inn, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "position",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c4d8d819a276331c372250974f61a280848a74700b5188a96b97b7f15d366081"
+}

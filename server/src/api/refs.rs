@@ -36,6 +36,10 @@ pub fn routes() -> Router<AppState> {
         .route("/suppliers/{id}/supplies", routing::get(supplier_supplies))
         .route("/settings/labels", routing::get(get_labels).put(put_labels))
         .route(
+            "/settings/debt-docs",
+            routing::get(get_debt_docs).put(put_debt_docs),
+        )
+        .route(
             "/settings/sales",
             routing::get(get_sales_settings).put(put_sales_settings),
         )
@@ -115,6 +119,9 @@ async fn create_employee(
         json!({ "full_name": full_name }),
     )
     .await?;
+    if req.is_cashier {
+        crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?;
+    }
     tx.commit().await?;
     Ok(Json(EmployeeOut {
         id,
@@ -166,6 +173,9 @@ async fn update_employee(
         json!({ "active": out.active }),
     )
     .await?;
+    if req.is_cashier == Some(true) {
+        crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?;
+    }
     tx.commit().await?;
     Ok(Json(out))
 }
@@ -208,9 +218,15 @@ async fn create_service(
     Json(req): Json<ServiceReq>,
 ) -> AppResult<Json<ServiceOut>> {
     let name = required(&req.name, "название")?;
-    let fee = req.master_fee_tyiyn.unwrap_or(3000);
+    // Без ставки по умолчанию: её задаёт владелец, как и остальную оплату труда (ADR-019, ADR-043).
+    let fee = req.master_fee_tyiyn.unwrap_or(0);
     if req.price_tyiyn < 0 || fee < 0 {
         return Err(invalid("суммы не отрицательны"));
+    }
+    ops::check_amount(req.price_tyiyn)?;
+    ops::check_amount(fee)?;
+    if fee != 0 && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
     }
     let id = new_id();
     let mut tx = state.pool.begin().await?;
@@ -265,7 +281,32 @@ async fn update_service(
     {
         return Err(invalid("суммы не отрицательны"));
     }
+    for v in [req.price_tyiyn, req.master_fee_tyiyn]
+        .into_iter()
+        .flatten()
+    {
+        ops::check_amount(v)?;
+    }
     let mut tx = state.pool.begin().await?;
+    // Цену и ставку мастера меняет только владелец (решение заказчика, ADR-047); форма
+    // администратора присылает их без изменений.
+    if !ctx.user.is_owner() && (req.master_fee_tyiyn.is_some() || req.price_tyiyn.is_some()) {
+        let cur = sqlx::query!(
+            "select price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2",
+            id,
+            ctx.user.branch_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+        if req
+            .master_fee_tyiyn
+            .is_some_and(|f| f != cur.master_fee_tyiyn)
+            || req.price_tyiyn.is_some_and(|p| p != cur.price_tyiyn)
+        {
+            return Err(AppError::Forbidden);
+        }
+    }
     let out = sqlx::query_as!(
         ServiceOut,
         r#"update services set name = coalesce($3, name), price_tyiyn = coalesce($4, price_tyiyn),
@@ -450,6 +491,88 @@ impl Default for LabelSettings {
             show_article: false,
         }
     }
+}
+
+/// Реквизиты точки для документов: продавец в расписке, накладной и акте сверки.
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct Seller {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    inn: String,
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    phone: String,
+    #[serde(default)]
+    director: String,
+    #[serde(default)]
+    bank: String,
+    #[serde(default)]
+    city: String,
+}
+
+/// Тексты шаблонов: пустой — касса берёт текст по умолчанию из SPEC-10.
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct DebtDocs {
+    #[serde(default)]
+    seller: Seller,
+    #[serde(default)]
+    person: Option<String>,
+    #[serde(default)]
+    company: Option<String>,
+}
+
+async fn get_debt_docs(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Value>> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'debt_docs'",
+        user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    let docs = v
+        .and_then(|v| serde_json::from_value::<DebtDocs>(v).ok())
+        .unwrap_or_default();
+    Ok(Json(json!(docs)))
+}
+
+/// Реквизиты и тексты правит владелец (SPEC-10, права).
+async fn put_debt_docs(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<DebtDocs>,
+) -> AppResult<Json<Value>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let too_long = [&req.person, &req.company]
+        .into_iter()
+        .flatten()
+        .any(|t| t.chars().count() > 20_000);
+    if too_long {
+        return Err(invalid("текст шаблона не длиннее 20 000 знаков"));
+    }
+    let value = json!(req);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, 'debt_docs', $2)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        ctx.user.branch_id,
+        value
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "settings.debt_docs",
+        "settings",
+        None,
+        json!({ "seller": req.seller.name }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(value))
 }
 
 async fn get_labels(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Value>> {

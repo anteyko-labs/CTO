@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, gross_tyiyn, debt_total_tyiyn, debt_remaining_tyiyn from payroll_pending\n               where sale_id = $1 and branch_id = $2 and debt_remaining_tyiyn > 0\n               for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "gross_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "debt_total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "debt_remaining_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "328e7d87a189418b1722d03f606cd0d3562b1f6906313247a51cdfea8b456885"
+}

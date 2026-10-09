@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from products\n           where not archived and (similarity(name, $1) >= 0.3 or name ilike '%' || $2 || '%')\n           order by similarity(name, $1) desc limit 5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c83b8ab28e3bf4499f884463ed623f9b5771faa2c338bd19f64d67002b793966"
+}

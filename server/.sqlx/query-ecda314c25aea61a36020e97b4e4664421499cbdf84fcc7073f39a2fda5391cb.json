@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of,\n                  exists (select 1 from party_ledger r where r.reversal_of = l.id) as \"reversed!\"\n           from party_ledger l where l.party_id = $1 and l.branch_id = $2\n             and ($3::date is null or l.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::date is null or l.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by l.created_at desc limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "ecda314c25aea61a36020e97b4e4664421499cbdf84fcc7073f39a2fda5391cb"
+}

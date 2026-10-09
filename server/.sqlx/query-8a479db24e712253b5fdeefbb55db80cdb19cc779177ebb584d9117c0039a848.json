@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select party_id, coalesce(sum(amount_tyiyn), 0)::bigint as \"sum!\" from party_ledger\n           where branch_id = $1 and doc_type = 'receipt' and doc_id = $2\n           group by party_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "8a479db24e712253b5fdeefbb55db80cdb19cc779177ebb584d9117c0039a848"
+}

@@ -57,6 +57,10 @@ pub struct SaleLineReq {
     pub service_id: Option<Uuid>,
     pub qty: i64,
     pub unit_price_tyiyn: i64,
+    /// Прайсовая цена, которую видела касса (из снимка без сети, SPEC-09): по ней видно,
+    /// менял ли кассир цену, а не по прайсу на момент отправки.
+    #[serde(default)]
+    pub seen_list_price_tyiyn: Option<i64>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -80,6 +84,10 @@ pub struct SaleReq {
     pub comment: String,
     pub lines: Vec<SaleLineReq>,
     pub payments: Vec<PaymentReq>,
+    /// Чек пришёл из очереди устройства, проведённый без сети (SPEC-09): продажа уже
+    /// состоялась, поэтому нарушение цены не отклоняет его, а уходит владельцу.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -252,22 +260,30 @@ struct Prepared {
     list_price: i64,
     amount: i64,
     master_fee: i64,
+    seen_list: Option<i64>,
 }
 
 async fn prepare_line(
     conn: &mut PgConnection,
     branch_id: Uuid,
     l: &SaleLineReq,
+    offline: bool,
 ) -> AppResult<Prepared> {
     if l.qty <= 0 || l.unit_price_tyiyn < 0 {
         return Err(invalid("количество больше нуля, цена не отрицательна"));
     }
+    if l.qty > 1_000_000_000 {
+        return Err(invalid("слишком большое количество — проверьте ввод"));
+    }
+    ops::check_amount(l.unit_price_tyiyn)?;
     if l.kind == "service" {
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
+        // Чек без сети принимаем и с услугой, которую успели отключить: работа уже сделана.
         let s = sqlx::query!(
-            "select price_tyiyn from services where id = $1 and branch_id = $2 and active",
+            "select price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2 and (active or $3)",
             sid,
-            branch_id
+            branch_id,
+            offline
         )
         .fetch_optional(&mut *conn)
         .await?
@@ -282,14 +298,19 @@ async fn prepare_line(
             unit_price: l.unit_price_tyiyn,
             list_price: s.price_tyiyn,
             amount: mul(l.qty, l.unit_price_tyiyn).ok_or_else(overflow)?,
-            // Мастеру начисляет отметка замены в чеке, а не строка работы (ADR-027):
-            // иначе за один и тот же чек начислилось бы дважды.
-            master_fee: 0,
+            // Ставка мастера за работу фиксируется в строке, как себестоимость (ADR-043).
+            master_fee: mul(l.qty, s.master_fee_tyiyn).ok_or_else(overflow)?,
+            seen_list: l.seen_list_price_tyiyn,
         });
     }
-    let pid = l.product_id.ok_or_else(|| invalid("не указан товар"))?;
+    // Карточку могли влить в другую, пока чек лежал на устройстве: продаём основную.
+    let pid = ops::live_product(
+        conn,
+        l.product_id.ok_or_else(|| invalid("не указан товар"))?,
+    )
+    .await?;
     let p = sqlx::query!(
-        r#"select p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!",
+        r#"select p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!",
                   bp.pour_price_per_l_tyiyn as "pour_price?"
            from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
            where p.id = $1"#,
@@ -299,6 +320,10 @@ async fn prepare_line(
     .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("товар не найден"))?;
+    // Карточка в архиве (дубль после объединения) не продаётся; чек без сети уже состоялся.
+    if p.archived && !offline {
+        return Err(invalid("товар в архиве: найдите основную карточку"));
+    }
     let (units, amount, list_price) = match (l.kind.as_str(), p.unit.as_str(), p.container_ml) {
         ("piece", "piece", _) => (l.qty, mul(l.qty, l.unit_price_tyiyn), p.sale_price),
         ("container", "ml", Some(c)) => (
@@ -327,6 +352,7 @@ async fn prepare_line(
         list_price,
         amount: amount.ok_or_else(overflow)?,
         master_fee: 0,
+        seen_list: l.seen_list_price_tyiyn,
     })
 }
 
@@ -336,7 +362,7 @@ fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
         if !matches!(p.method.as_str(), "cash" | "card" | "transfer" | "debt") {
             return Err(invalid("способ оплаты: cash, card, transfer или debt"));
         }
-        if p.amount_tyiyn <= 0 {
+        if p.amount_tyiyn <= 0 || p.amount_tyiyn > ops::MAX_AMOUNT_TYIYN {
             return Err(invalid("сумма платежа больше нуля"));
         }
         sum = sum.checked_add(p.amount_tyiyn).ok_or_else(overflow)?;
@@ -352,11 +378,14 @@ async fn check_employee(
     branch_id: Uuid,
     id: Uuid,
     master: bool,
+    offline: bool,
 ) -> AppResult<()> {
+    // Чек без сети принимаем и с сотрудником, которого отключили, пока чек лежал на устройстве.
     let r = sqlx::query!(
-        "select is_cashier, is_master from employees where id = $1 and branch_id = $2 and active",
+        "select is_cashier, is_master from employees where id = $1 and branch_id = $2 and (active or $3)",
         id,
-        branch_id
+        branch_id,
+        offline
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -507,6 +536,12 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.lines.is_empty() {
         return Err(invalid("чек пуст"));
     }
+    // Чек без сети признаём, только если он и правда пролежал на устройстве: признак ставит
+    // клиент, а время чека — раньше отправки хотя бы на полминуты (ADR-042).
+    let offline = req.offline
+        && req
+            .client_time
+            .is_some_and(|t| t < Utc::now() - chrono::Duration::seconds(30));
     let has_service = req.lines.iter().any(|l| l.kind == "service");
     match req.sale_type.as_str() {
         "takeaway" if has_service => return Err(invalid("услуги только в продаже «в сервис»")),
@@ -518,11 +553,11 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             let master = req
                 .master_id
                 .ok_or_else(|| invalid("в сервисе нужен мастер"))?;
-            check_employee(conn, branch_id, master, true).await?;
+            check_employee(conn, branch_id, master, true, offline).await?;
         }
         _ => return Err(invalid("тип продажи: takeaway или service")),
     }
-    check_employee(conn, branch_id, req.cashier_id, false).await?;
+    check_employee(conn, branch_id, req.cashier_id, false, offline).await?;
 
     let debt_total: i64 = req
         .payments
@@ -532,7 +567,15 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         .ok_or_else(overflow)?;
     match req.party_id {
         Some(pid) => {
-            parties::check_sale_party(conn, branch_id, pid, req.contact_id, req.vehicle_id).await?
+            parties::check_sale_party(
+                conn,
+                branch_id,
+                pid,
+                req.contact_id,
+                req.vehicle_id,
+                offline,
+            )
+            .await?
         }
         None if debt_total > 0 => return Err(invalid("для продажи в долг укажите клиента")),
         None if req.contact_id.is_some() || req.vehicle_id.is_some() => {
@@ -540,11 +583,26 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
         None => {}
     }
+    // Долг оформляется документом с ПИН или ИНН покупателя (SPEC-10): без него расписка
+    // недействительна. Чек без сети уже состоялся — его принимаем, ПИН допишут в карточке.
+    if debt_total > 0
+        && !offline
+        && let Some(pid) = req.party_id
+    {
+        let inn = sqlx::query_scalar!("select inn from parties where id = $1", pid)
+            .fetch_one(&mut *conn)
+            .await?;
+        if inn.trim().is_empty() {
+            return Err(invalid(
+                "для продажи в долг укажите ПИН (физлицо) или ИНН (фирма) клиента",
+            ));
+        }
+    }
 
     let mut prepared = Vec::with_capacity(req.lines.len());
     let mut total: i64 = 0;
     for l in &req.lines {
-        let p = prepare_line(conn, branch_id, l).await?;
+        let p = prepare_line(conn, branch_id, l, offline).await?;
         total = total.checked_add(p.amount).ok_or_else(overflow)?;
         prepared.push(p);
     }
@@ -557,34 +615,63 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         if prepared.iter().any(|p| p.gift && p.amount != 0) {
             return Err(invalid("подарок идёт с нулевой ценой"));
         }
-        let in_cart: Vec<Uuid> = prepared
-            .iter()
-            .filter(|p| !p.gift)
-            .filter_map(|p| p.product_id)
-            .collect();
-        let allowed = sqlx::query_scalar!(
-            r#"select count(distinct i.gift_product_id) as "n!"
+        // Сколько каждого товара-условия в чеке, в его единицах учёта (мл или штуки).
+        let mut bought: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
+        for p in prepared.iter().filter(|p| !p.gift) {
+            if let Some(pid) = p.product_id {
+                let e = bought.entry(pid).or_insert(0);
+                *e = e.checked_add(p.units).ok_or_else(overflow)?;
+            }
+        }
+        let in_cart: Vec<Uuid> = bought.keys().copied().collect();
+        let rules = sqlx::query!(
+            r#"select r.trigger_product_id, r.min_units, i.gift_product_id, i.gift_qty
                from gift_rules r join gift_rule_items i on i.rule_id = r.id
-               where r.branch_id = $1 and r.active
+               where r.branch_id = $1 and (r.active or $4)
                  and r.trigger_product_id = any($2) and i.gift_product_id = any($3)"#,
             branch_id,
             &in_cart,
-            &gifts
+            &gifts,
+            offline
         )
-        .fetch_one(&mut *conn)
+        .fetch_all(&mut *conn)
         .await?;
+        // Подарок положен, если хоть одно правило с ним выполнено по порогу (SPEC-11);
+        // дарим не больше, чем правило разрешает.
         let distinct: BTreeSet<Uuid> = gifts.iter().copied().collect();
-        if usize::try_from(allowed).ok() != Some(distinct.len()) {
-            return Err(invalid("этот товар нельзя подарить к покупке"));
+        for gift in distinct {
+            let allowed = rules
+                .iter()
+                .filter(|r| r.gift_product_id == gift)
+                .filter(|r| bought.get(&r.trigger_product_id).copied().unwrap_or(0) >= r.min_units)
+                .map(|r| r.gift_qty)
+                .max();
+            let Some(allowed) = allowed else {
+                return Err(invalid("этот товар нельзя подарить к такой покупке"));
+            };
+            let given = prepared
+                .iter()
+                .filter(|p| p.gift && p.product_id == Some(gift))
+                .fold(0i64, |acc, p| acc.saturating_add(p.qty));
+            if given > allowed {
+                return Err(invalid(format!("подарка можно дать не больше {allowed}")));
+            }
         }
     }
+    ops::check_amount(total)?;
     check_payments(&req.payments, total)?;
-    // Замена строкой в чеке не печатается: мастеру идёт одна ставка за чек (ADR-027).
-    let master_fee = if req.sale_type == "service" {
+    // Мастеру: ставка замены за чек «в сервис» с товаром (ADR-027) плюс ставки услуг из строк.
+    // Чек из одних услуг — клиент приехал со своим маслом — ставку замены не даёт (ADR-043).
+    let has_goods = prepared.iter().any(|p| p.product_id.is_some() && !p.gift);
+    let check_fee = if req.sale_type == "service" && has_goods {
         oil_change_fee(conn, branch_id).await?
     } else {
         0
     };
+    let master_fee = prepared
+        .iter()
+        .try_fold(check_fee, |acc, p| acc.checked_add(p.master_fee))
+        .ok_or_else(overflow)?;
 
     lock_products(
         conn,
@@ -592,6 +679,19 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         prepared.iter().filter_map(|p| p.product_id),
     )
     .await?;
+    // Пока ждали блокировку, карточку могли объединить: остаток не должен застрять в архиве.
+    let ids: Vec<Uuid> = prepared.iter().filter_map(|p| p.product_id).collect();
+    let archived = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from products where id = any($1) and archived"#,
+        &ids
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if archived > 0 {
+        return Err(AppError::Conflict(
+            "товар только что объединили с другой карточкой — проведите чек ещё раз".into(),
+        ));
+    }
     let number = ops::next_counter(conn, branch_id, "sale").await?;
     let id = new_id();
     sqlx::query!(
@@ -618,12 +718,16 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         req.vehicle_id,
         ctx.user.id,
         ctx.device_id,
-        req.client_time
+        // Время устройства задаёт учётный день только чеку без сети: онлайн-чек задним
+        // числом в закрытый день не проводится (SPEC-08).
+        if offline { req.client_time } else { None }
     )
     .execute(&mut *conn)
     .await?;
 
     let mut overrides = Vec::new();
+    let mut below_cost = Vec::new();
+    let mut stale = Vec::new();
     // Валовая прибыль чека: с неё считается процент кассира (ADR-036).
     let mut gross: i64 = 0;
     for (i, p) in prepared.iter().enumerate() {
@@ -645,6 +749,21 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             )
             .await?;
         }
+        // Дешевле закупки не продаём, кроме подарка (ADR-042). Сравнение со своей
+        // себестоимостью строки: у розлива она за миллилитры, у канистры — за штуки.
+        if p.product_id.is_some() && !p.gift && p.amount < cost {
+            if !offline {
+                return Err(invalid(if ctx.user.is_owner() {
+                    format!(
+                        "строка {line_no}: цена ниже закупочной ({}), дешевле продать нельзя",
+                        crate::domain::money::format_som(cost)
+                    )
+                } else {
+                    format!("строка {line_no}: цена ниже закупочной, дешевле продать нельзя")
+                }));
+            }
+            below_cost.push(json!({ "line_no": line_no, "amount": p.amount, "cost": cost }));
+        }
         insert_line(
             conn,
             id,
@@ -658,9 +777,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         )
         .await?;
         gross = gross.checked_add(p.amount - cost).ok_or_else(overflow)?;
-        if p.unit_price != p.list_price {
-            overrides
-                .push(json!({ "line_no": line_no, "list": p.list_price, "price": p.unit_price }));
+        // Цену меняли на кассе — если она отличается от прайса, который видела касса; прайс
+        // мог смениться, пока чек лежал без сети: это не правка кассира, а старая цена (SPEC-09).
+        let seen = p.seen_list.unwrap_or(p.list_price);
+        if p.unit_price != seen && !p.gift {
+            overrides.push(json!({ "line_no": line_no, "list": seen, "price": p.unit_price }));
+        }
+        if offline && seen != p.list_price && !p.gift {
+            stale.push(json!({ "line_no": line_no, "seen": seen, "list": p.list_price }));
         }
     }
     insert_payments(conn, ctx, id, &req.payments, 1).await?;
@@ -694,6 +818,28 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             )
             .await?;
         }
+    }
+    if !stale.is_empty() {
+        ops::audit(
+            conn,
+            ctx,
+            "sale.stale_price",
+            "sale",
+            Some(id),
+            json!({ "number": number, "lines": stale }),
+        )
+        .await?;
+    }
+    if !below_cost.is_empty() {
+        ops::audit(
+            conn,
+            ctx,
+            "sale.below_cost",
+            "sale",
+            Some(id),
+            json!({ "number": number, "lines": below_cost }),
+        )
+        .await?;
     }
     if !overrides.is_empty() {
         ops::audit(
@@ -753,7 +899,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         KIND,
         "sale",
         Some(id),
-        json!({ "number": number, "total": total }),
+        json!({ "number": number, "total": total, "offline": offline, "client_time": req.client_time }),
     )
     .await?;
     let out = load_sale(conn, &ctx.user, id).await?;
@@ -880,7 +1026,11 @@ pub async fn return_sale_tx(
             p: Prepared {
                 gift: o.gift,
                 kind: o.kind,
-                product_id: o.product_id,
+                // Возврат по влитой карточке ложится на основную (ADR-044).
+                product_id: match o.product_id {
+                    Some(p) => Some(ops::live_product(conn, p).await?),
+                    None => None,
+                },
                 service_id: o.service_id,
                 qty: rl.qty,
                 units,
@@ -888,6 +1038,7 @@ pub async fn return_sale_tx(
                 list_price: o.list_price_tyiyn,
                 amount,
                 master_fee: fee,
+                seen_list: None,
             },
             line_no: rl.line_no,
             amount,
@@ -896,6 +1047,34 @@ pub async fn return_sale_tx(
         });
     }
     check_payments(&req.payments, total)?;
+    // Сколько по чеку ещё в долгу и сколько заплачено деньгами, за вычетом прежних возвратов.
+    let left = sqlx::query!(
+        r#"select coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
+                  coalesce(sum(p.amount_tyiyn) filter (where p.method <> 'debt'), 0)::bigint as "money!"
+           from sale_payments p join sales s on s.id = p.sale_id
+           where s.id = $1 or s.reversal_of = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let (debt_req, money_req) = req
+        .payments
+        .iter()
+        .try_fold((0i64, 0i64), |(d, m), p| {
+            if p.method == "debt" {
+                d.checked_add(p.amount_tyiyn).map(|d| (d, m))
+            } else {
+                m.checked_add(p.amount_tyiyn).map(|m| (d, m))
+            }
+        })
+        .ok_or_else(overflow)?;
+    // Списать с долга больше, чем этот чек в долг дал, — значит уменьшить чужой долг.
+    if debt_req > left.debt.max(0) {
+        return Err(invalid(format!(
+            "с долга по этому чеку можно списать не больше {}",
+            crate::domain::money::format_som(left.debt.max(0))
+        )));
+    }
     // Работу мастер уже сделал: ставка снимается только если вернули чек целиком (ADR-027).
     let sold_qty = sqlx::query_scalar!(
         r#"select coalesce(sum(qty), 0)::bigint as "v!" from sale_lines where sale_id = $1"#,
@@ -910,7 +1089,10 @@ pub async fn return_sale_tx(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let now_qty: i64 = req.lines.iter().map(|l| l.qty).sum();
+    let now_qty = req
+        .lines
+        .iter()
+        .fold(0i64, |acc, l| acc.saturating_add(l.qty));
     let full_return = returned_qty + now_qty >= sold_qty;
     let fee_back = if full_return {
         -orig.master_fee_tyiyn
@@ -992,6 +1174,47 @@ pub async fn return_sale_tx(
         )
         .await?;
     }
+    let gross_back = planned
+        .iter()
+        .try_fold(0i64, |acc, x| {
+            x.amount
+                .checked_sub(x.cost)
+                .and_then(|g| acc.checked_add(g))
+        })
+        .ok_or_else(overflow)?;
+    let return_date = sqlx::query_scalar!(
+        r#"select business_date as "d!" from sales where id = $1"#,
+        rid
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    payroll::reverse_for_return(
+        conn,
+        ctx,
+        payroll::ReturnAccrual {
+            orig_sale_id: id,
+            return_id: rid,
+            business_date: return_date,
+            gross_back,
+            total_back: total,
+            debt_back,
+            full_return,
+        },
+    )
+    .await?;
+    // Деньгами вернули больше, чем по чеку платили деньгами: законно, если долг уже погашен,
+    // но владелец должен это видеть.
+    if money_req > left.money.max(0) {
+        ops::audit(
+            conn,
+            ctx,
+            "sale.return_over_paid",
+            "sale",
+            Some(rid),
+            json!({ "number": number, "paid": left.money.max(0), "refund": money_req }),
+        )
+        .await?;
+    }
     ops::audit(
         conn,
         ctx,
@@ -1070,6 +1293,7 @@ async fn list_sales(
     user: CurrentUser,
     Query(q): Query<DayQuery>,
 ) -> AppResult<Json<DayOut>> {
+    // День — учётный день чека, как в прибыли: офлайн-чек вчерашнего дня остаётся во вчерашнем (SPEC-08).
     let date = match q.date {
         Some(d) => d,
         None => {
@@ -1090,8 +1314,7 @@ async fn list_sales(
            left join employees m on m.id = s.master_id
            left join parties pt on pt.id = s.party_id
            where s.branch_id = $1
-             and s.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek'
-             and s.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'
+             and s.business_date = $2
            order by s.created_at desc"#,
         user.branch_id,
         date
@@ -1106,8 +1329,7 @@ async fn list_sales(
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!"
            from sale_payments p join sales s on s.id = p.sale_id
            where s.branch_id = $1
-             and s.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek'
-             and s.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'"#,
+             and s.business_date = $2"#,
         user.branch_id,
         date
     )
@@ -1115,7 +1337,9 @@ async fn list_sales(
     .await?;
     let totals = DayTotals {
         count: i64::try_from(sales.iter().filter(|s| s.kind == "sale").count()).unwrap_or(i64::MAX),
-        total_tyiyn: sales.iter().map(|s| s.total_tyiyn).sum(),
+        total_tyiyn: sales
+            .iter()
+            .fold(0i64, |acc, s| acc.saturating_add(s.total_tyiyn)),
         cash_tyiyn: t.cash,
         card_tyiyn: t.card,
         transfer_tyiyn: t.transfer,

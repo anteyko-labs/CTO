@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,\n                                     doc_type, doc_id, comment, reversal_of, user_id, device_id)\n           values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date,\n                   'reversal', $6, $7, $6, $8, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "07e89ef7b56ca0c0954e42fb57a513c74f68e256bf495207ef5d33706bb93b5b"
+}

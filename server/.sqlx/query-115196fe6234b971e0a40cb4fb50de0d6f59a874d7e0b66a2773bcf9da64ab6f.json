@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from cash_movements\n                          where kind = 'reversal' and doc_type = 'cash_movement' and doc_id = $1) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "115196fe6234b971e0a40cb4fb50de0d6f59a874d7e0b66a2773bcf9da64ab6f"
+}

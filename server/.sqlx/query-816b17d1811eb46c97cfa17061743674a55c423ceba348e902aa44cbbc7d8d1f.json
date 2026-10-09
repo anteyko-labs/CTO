@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products set stock_value_tyiyn = $3 where branch_id = $1 and product_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "816b17d1811eb46c97cfa17061743674a55c423ceba348e902aa44cbbc7d8d1f"
+}

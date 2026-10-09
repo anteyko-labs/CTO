@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role, name from parties where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "32a17495ca6d3f5f489bf1613cd1a6fef4b74a2a8990b6fecad02a3a80a1cfd9"
+}

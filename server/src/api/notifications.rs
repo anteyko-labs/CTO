@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-const WATCHED: [&str; 10] = [
+const WATCHED: [&str; 19] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -30,6 +30,15 @@ const WATCHED: [&str; 10] = [
     "debt.adjust",
     "user.create",
     "user.update",
+    "shift.handover",
+    "cash.reverse",
+    "cash.transfer_reverse",
+    "sale.return_over_paid",
+    "sale.below_cost",
+    "receipt.cost_above_price",
+    "sale.offline_rejected",
+    "sale.stale_price",
+    "revision.post",
 ];
 
 #[derive(Serialize)]
@@ -56,23 +65,45 @@ struct ListQuery {
 }
 
 fn money(v: Option<i64>) -> String {
-    match v {
-        Some(t) => format!("{},{:02} с", t / 100, (t % 100).abs()),
-        None => "—".into(),
-    }
+    v.map_or_else(|| "—".into(), crate::domain::money::format_som)
 }
 
 fn describe(action: &str, data: &Value) -> (String, String) {
     let num = |key: &str| data.get(key).and_then(Value::as_i64);
     match action {
-        "product.prices" => (
-            "Изменена цена товара".into(),
-            format!(
-                "было {}, стало {}",
-                money(num("old_sale_price_tyiyn")),
-                money(num("sale_price_tyiyn"))
-            ),
-        ),
+        "product.prices" => {
+            // Что именно поменяли: цену штуки или канистры, розлив за литр; неизменённое не пишем.
+            let side = |which: &str, key: &str| {
+                data.get(which)
+                    .and_then(|v| v.get(key))
+                    .and_then(Value::as_i64)
+            };
+            let mut parts = Vec::new();
+            for (key, label) in [("sale", "цена"), ("pour", "розлив за литр")] {
+                let (old, new) = (side("old", key), side("new", key));
+                if new.is_some() && old != new {
+                    parts.push(format!(
+                        "{label}: было {}, стало {}",
+                        money(old),
+                        money(new)
+                    ));
+                }
+            }
+            if parts.is_empty() {
+                parts.push(format!(
+                    "было {}, стало {}",
+                    money(num("old_sale_price_tyiyn")),
+                    money(num("sale_price_tyiyn"))
+                ));
+            }
+            (
+                format!(
+                    "Изменена цена: {}",
+                    data.get("name").and_then(Value::as_str).unwrap_or("товар")
+                ),
+                parts.join("; "),
+            )
+        }
         "sale.price_override" => (
             "Цена изменена прямо в чеке".into(),
             data.get("lines")
@@ -130,10 +161,123 @@ fn describe(action: &str, data: &Value) -> (String, String) {
         ),
         "user.update" => (
             "Изменён пользователь".into(),
-            data.get("login")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .into(),
+            [
+                data.get("login")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                data.get("active").and_then(Value::as_bool).map(|a| {
+                    if a {
+                        "включён"
+                    } else {
+                        "отключён"
+                    }
+                    .to_string()
+                }),
+                data.get("password_changed")
+                    .and_then(Value::as_bool)
+                    .filter(|c| *c)
+                    .map(|_| "сменён пароль".to_string()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", "),
+        ),
+        "shift.handover" => {
+            let diff = num("diff").unwrap_or(0);
+            let diff_text = match diff {
+                0 => String::new(),
+                d if d < 0 => format!(", недостача {}", money(Some(-d))),
+                d => format!(", излишек {}", money(Some(d))),
+            };
+            (
+                format!("Смена № {} закрыта", num("number").unwrap_or(0)),
+                format!(
+                    "должно было быть {}, пересчитали {}{}; в сейф {}, в кассе осталось {}",
+                    money(num("expected")),
+                    money(num("counted")),
+                    diff_text,
+                    money(num("to_safe")),
+                    money(num("left"))
+                ),
+            )
+        }
+        "revision.post" => (
+            format!("Проведена ревизия № {}", num("number").unwrap_or(0)),
+            format!(
+                "пересчитано товаров: {}; недостача {}, излишек {}",
+                num("lines").unwrap_or(0),
+                money(num("shortage")),
+                money(num("surplus"))
+            ),
+        ),
+        "sale.stale_price" => (
+            "Чек без сети продан по старой цене".into(),
+            format!(
+                "чек № {}, строк: {} — прайс сменили, пока касса была без связи",
+                num("number").unwrap_or(0),
+                data.get("lines")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            ),
+        ),
+        "sale.offline_rejected" => (
+            "Чек без сети не принят сервером".into(),
+            format!(
+                "{} — разберите его на кассе",
+                data.get("error").and_then(Value::as_str).unwrap_or("")
+            ),
+        ),
+        "sale.below_cost" => (
+            "Чек без сети продан дешевле закупки".into(),
+            format!(
+                "чек № {}, строк: {}",
+                num("number").unwrap_or(0),
+                data.get("lines")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            ),
+        ),
+        "receipt.cost_above_price" => (
+            "Закупка дороже цены продажи".into(),
+            format!(
+                "накладная № {}: {} — поднимите цену, иначе товар не продать",
+                num("number").unwrap_or(0),
+                data.get("names")
+                    .and_then(Value::as_array)
+                    .map(|n| n
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default()
+            ),
+        ),
+        "sale.return_over_paid" => (
+            "Возврат деньгами больше оплаченного".into(),
+            format!(
+                "чек № {}: деньгами платили {}, вернули {}",
+                num("number").unwrap_or(0),
+                money(num("paid")),
+                money(num("refund"))
+            ),
+        ),
+        "cash.reverse" => (
+            "Сторно внесения или изъятия".into(),
+            format!(
+                "{} — {}",
+                money(num("amount_tyiyn")),
+                data.get("comment").and_then(Value::as_str).unwrap_or("")
+            ),
+        ),
+        "cash.transfer_reverse" => (
+            "Сторно перемещения денег".into(),
+            format!(
+                "перемещение № {}, {} — {}",
+                num("number").unwrap_or(0),
+                money(num("amount_tyiyn")),
+                data.get("comment").and_then(Value::as_str).unwrap_or("")
+            ),
         ),
         _ => (action.into(), String::new()),
     }

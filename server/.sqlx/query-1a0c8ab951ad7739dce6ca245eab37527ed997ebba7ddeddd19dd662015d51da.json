@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update revisions set status = 'cancelled' where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a0c8ab951ad7739dce6ca245eab37527ed997ebba7ddeddd19dd662015d51da"
+}

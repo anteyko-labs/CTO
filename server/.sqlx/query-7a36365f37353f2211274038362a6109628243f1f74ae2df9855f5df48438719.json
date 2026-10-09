@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.closed_at, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,\n                  h.to_safe_tyiyn as \"to_safe?\", h.left_tyiyn as \"left?\"\n           from shift_closes c\n           left join shift_handovers h on h.close_id = c.id\n           where c.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n           order by c.seq desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "closed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "expected_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "counted_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "to_safe?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "left?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7a36365f37353f2211274038362a6109628243f1f74ae2df9855f5df48438719"
+}

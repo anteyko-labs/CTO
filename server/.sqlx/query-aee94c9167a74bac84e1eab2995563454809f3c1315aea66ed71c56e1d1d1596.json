@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into gift_rules (id, branch_id, trigger_product_id, user_id, min_units)\n           values ($1, $2, $3, $4, $5)\n           on conflict (branch_id, trigger_product_id)\n           do update set active = true, min_units = excluded.min_units returning id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "aee94c9167a74bac84e1eab2995563454809f3c1315aea66ed71c56e1d1d1596"
+}

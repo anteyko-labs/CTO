@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into expense_articles (id, branch_id, name, owner_only) values ($1, $2, $3, $4) on conflict (branch_id, name) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8063116111963d19ed8e3ccfe56e6a5621b8f88bead5b7b69bf18dc420172c26"
+}

@@ -23,6 +23,11 @@ pub fn routes() -> Router<AppState> {
         .route("/receipts/{id}/reverse", routing::post(reverse_receipt))
         .route("/stock", routing::get(stock))
         .route("/stock/verify", routing::get(verify_stock))
+        .route("/stock/stale", routing::get(stale_stock))
+        .route(
+            "/settings/stock",
+            routing::get(get_stock_settings).put(put_stock_settings),
+        )
         .route(
             "/stock/{product_id}/review-done",
             routing::post(review_done),
@@ -117,6 +122,139 @@ async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> App
 }
 
 /// Блокирует строки остатков в порядке идентификаторов, чтобы параллельные документы не взаимоблокировались.
+/// Срок, после которого товар без продаж считается залежалым (ADR-039). По умолчанию 60 дней.
+pub async fn stale_days(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i32> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'stock'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(
+        v.and_then(|v| v.get("stale_days").and_then(serde_json::Value::as_i64))
+            .and_then(|d| i32::try_from(d).ok())
+            .filter(|d| *d > 0)
+            .unwrap_or(60),
+    )
+}
+
+#[derive(Serialize)]
+pub struct StaleRow {
+    pub product_id: Uuid,
+    pub name: String,
+    pub unit: String,
+    pub container_ml: Option<i64>,
+    pub stock_qty: i64,
+    /// Последняя продажа, а если продаж не было — первый приход.
+    pub since: chrono::DateTime<chrono::Utc>,
+    pub days: i32,
+    pub sold_ever: bool,
+}
+
+/// Залежалые товары: остаток есть, а продаж нет дольше срока (ADR-039).
+pub async fn stale_list(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+) -> AppResult<(i32, Vec<StaleRow>)> {
+    let days = stale_days(conn, branch_id).await?;
+    let rows = sqlx::query!(
+        r#"select p.id, p.name, p.unit, p.container_ml, bp.stock_qty,
+                  x.last_sale, x.first_receipt
+           from branch_products bp
+           join products p on p.id = bp.product_id
+           cross join lateral (
+             select (select max(m.created_at) from stock_movements m
+                      where m.branch_id = bp.branch_id and m.product_id = bp.product_id
+                        and m.doc_type = 'sale') as last_sale,
+                    (select min(m.created_at) from stock_movements m
+                      where m.branch_id = bp.branch_id and m.product_id = bp.product_id
+                        and m.doc_type = 'receipt') as first_receipt
+           ) x
+           where bp.branch_id = $1 and bp.stock_qty > 0 and not p.archived
+             and coalesce(x.last_sale, x.first_receipt) < now() - make_interval(days => $2)
+           order by coalesce(x.last_sale, x.first_receipt)"#,
+        branch_id,
+        days
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let now = chrono::Utc::now();
+    let out = rows
+        .into_iter()
+        .filter_map(|r| {
+            let since = r.last_sale.or(r.first_receipt)?;
+            Some(StaleRow {
+                product_id: r.id,
+                name: r.name,
+                unit: r.unit,
+                container_ml: r.container_ml,
+                stock_qty: r.stock_qty,
+                since,
+                days: i32::try_from((now - since).num_days()).unwrap_or(i32::MAX),
+                sold_ever: r.last_sale.is_some(),
+            })
+        })
+        .collect();
+    Ok((days, out))
+}
+
+#[derive(Serialize)]
+struct StaleOut {
+    stale_days: i32,
+    items: Vec<StaleRow>,
+}
+
+async fn stale_stock(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<StaleOut>> {
+    let mut conn = state.pool.acquire().await?;
+    let (stale_days, items) = stale_list(&mut conn, user.branch_id).await?;
+    Ok(Json(StaleOut { stale_days, items }))
+}
+
+#[derive(Serialize, Deserialize)]
+struct StockSettings {
+    stale_days: i32,
+}
+
+async fn get_stock_settings(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<StockSettings>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(StockSettings {
+        stale_days: stale_days(&mut conn, user.branch_id).await?,
+    }))
+}
+
+/// Срок залежалости правит владелец (ADR-039).
+async fn put_stock_settings(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<StockSettings>,
+) -> AppResult<Json<StockSettings>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if !(1..=3650).contains(&req.stale_days) {
+        return Err(invalid("срок от 1 до 3650 дней"));
+    }
+    let mut tx = state.pool.begin().await?;
+    let value = serde_json::json!({ "stale_days": req.stale_days });
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, 'stock', $2)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        ctx.user.branch_id,
+        value
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(&mut tx, &ctx, "settings.stock", "settings", None, value).await?;
+    tx.commit().await?;
+    Ok(Json(req))
+}
+
 pub async fn lock_products(
     conn: &mut PgConnection,
     branch_id: Uuid,
@@ -146,18 +284,24 @@ pub async fn post_receipt_tx(
         if l.qty <= 0 || l.cost_tyiyn < 0 {
             return Err(invalid("количество больше нуля, сумма не отрицательна"));
         }
+        if l.qty > 1_000_000_000 {
+            return Err(invalid("слишком большое количество — проверьте ввод"));
+        }
+        ops::check_amount(l.cost_tyiyn)?;
         total = total.checked_add(l.cost_tyiyn).ok_or_else(overflow)?;
     }
     let ids: Vec<Uuid> = req.lines.iter().map(|l| l.product_id).collect();
     let known = sqlx::query_scalar!(
-        "select count(*) as \"n!\" from products where id = any($1)",
+        "select count(*) as \"n!\" from products where id = any($1) and not archived",
         &ids
     )
     .fetch_one(&mut *conn)
     .await?;
     let distinct: BTreeSet<Uuid> = ids.iter().copied().collect();
     if usize::try_from(known).ok() != Some(distinct.len()) {
-        return Err(invalid("товар не найден"));
+        return Err(invalid(
+            "товар не найден или в архиве: если карточку объединили, примите на основную",
+        ));
     }
     if let Some(sid) = req.supplier_id {
         sqlx::query_scalar!("select id from suppliers where id = $1", sid)
@@ -175,6 +319,18 @@ pub async fn post_receipt_tx(
     }
     let branch_id = ctx.user.branch_id;
     lock_products(conn, branch_id, distinct).await?;
+    // Пока ждали блокировку, карточку могли объединить с другой.
+    let archived = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from products where id = any($1) and archived"#,
+        &ids
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if archived > 0 {
+        return Err(AppError::Conflict(
+            "товар только что объединили с другой карточкой — проведите приход ещё раз".into(),
+        ));
+    }
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let id = new_id();
     sqlx::query!(
@@ -225,6 +381,45 @@ pub async fn post_receipt_tx(
             l.cost_tyiyn
         )
         .execute(&mut *conn)
+        .await?;
+    }
+    // Дешевле закупки продавать нельзя (ADR-042): если новая закупка дороже цены продажи,
+    // кассир этот товар не продаст, пока владелец не поднимет цену. Он узнаёт об этом сразу.
+    let mut dearer = Vec::new();
+    for l in &req.lines {
+        let p = sqlx::query!(
+            r#"select p.name, p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as "sale!",
+                      bp.pour_price_per_l_tyiyn as "pour?"
+               from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
+               where p.id = $1"#,
+            l.product_id,
+            branch_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let qty = i128::from(l.qty);
+        let cost = i128::from(l.cost_tyiyn);
+        // Сравнение без деления: цена × количество против стоимости в тех же единицах.
+        let per_unit = match (p.unit.as_str(), p.container_ml) {
+            ("ml", Some(c)) => i128::from(p.sale) * qty < cost * i128::from(c),
+            _ => i128::from(p.sale) * qty < cost,
+        };
+        let per_liter = p
+            .pour
+            .is_some_and(|pour| i128::from(pour) * qty < cost * 1000);
+        if (per_unit || per_liter) && !dearer.contains(&p.name) {
+            dearer.push(p.name);
+        }
+    }
+    if !dearer.is_empty() {
+        ops::audit(
+            conn,
+            ctx,
+            "receipt.cost_above_price",
+            "receipt",
+            Some(id),
+            json!({ "number": number, "names": dearer }),
+        )
         .await?;
     }
     ops::audit(
@@ -301,7 +496,13 @@ pub async fn reverse_receipt_tx(
     if orig.reversed_by.is_some() {
         return Err(AppError::Conflict("приход уже сторнирован".into()));
     }
-    lock_products(conn, branch_id, orig.lines.iter().map(|l| l.product_id)).await?;
+    // Товар с влитой карточки уже лежит на основной: сторно снимает его оттуда (ADR-044).
+    let mut live = std::collections::HashMap::new();
+    for l in &orig.lines {
+        let p = ops::live_product(conn, l.product_id).await?;
+        live.insert(l.product_id, p);
+    }
+    lock_products(conn, branch_id, live.values().copied()).await?;
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let rid = new_id();
     sqlx::query!(
@@ -332,15 +533,64 @@ pub async fn reverse_receipt_tx(
         )
         .execute(&mut *conn)
         .await?;
+        // Ошибочная цена не должна остаться «последней закупочной»: берём её из последнего
+        // непогашенного прихода, иначе обнуляем (SPEC-03). До движения: если остаток уйдёт
+        // в минус по стоимости, переоценка возьмёт уже восстановленную цену (ADR-044).
+        let last = sqlx::query!(
+            r#"select l.qty, l.cost_tyiyn from receipt_lines l join receipts r on r.id = l.receipt_id
+               where r.branch_id = $1 and l.product_id = $2 and r.reversal_of is null and r.id <> $3
+                 and not exists (select 1 from receipts x where x.reversal_of = r.id)
+               order by r.created_at desc, l.line_no desc limit 1"#,
+            branch_id,
+            l.product_id,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        sqlx::query!(
+            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+            branch_id,
+            live.get(&l.product_id).copied().unwrap_or(l.product_id),
+            last.as_ref().map_or(0, |r| r.qty),
+            last.as_ref().map_or(0, |r| r.cost_tyiyn)
+        )
+        .execute(&mut *conn)
+        .await?;
+        let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
         ops::apply_movement(
             conn,
             Movement {
                 branch_id,
-                product_id: l.product_id,
+                product_id: target,
                 qty_delta: -l.qty,
                 value_delta: -l.cost_tyiyn,
                 doc_type: "receipt_reversal",
                 doc_id: rid,
+            },
+        )
+        .await?;
+    }
+    // Приход был в долг: долг поставщику уходит вместе с товаром (SPEC-10).
+    let debt = sqlx::query!(
+        r#"select party_id, coalesce(sum(amount_tyiyn), 0)::bigint as "sum!" from party_ledger
+           where branch_id = $1 and doc_type = 'receipt' and doc_id = $2
+           group by party_id"#,
+        branch_id,
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for d in debt.into_iter().filter(|d| d.sum != 0) {
+        crate::api::parties::add_ledger(
+            conn,
+            ctx,
+            crate::api::parties::LedgerEntry {
+                party_id: d.party_id,
+                kind: "debt",
+                amount: -d.sum,
+                doc_type: "receipt_reversal",
+                doc_id: Some(rid),
+                comment: "сторно прихода",
             },
         )
         .await?;

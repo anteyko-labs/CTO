@@ -133,19 +133,62 @@ export function watchOutbox(fn: (items: OutboxItem[]) => void): () => void {
 export const pendingCount = (items: OutboxItem[]): number =>
   items.filter((i) => i.status === 'pending' || i.status === 'sending').length
 
-/** Временный номер чека: печатается, пока сервер не дал свой. */
-function tempNumber(): string {
-  const tail = deviceId.replace(/-/g, '').slice(-4).toUpperCase()
-  return `Ч-${tail}-${Date.now().toString().slice(-5)}`
+const TEMP_COUNTER_KEY = 'avtodom.temp_no'
+
+/** Временный номер из хвоста устройства и порядкового номера: «Ч-1A2B-0042». */
+export function formatTempNumber(device: string, seq: string): string {
+  const tail = device.replace(/-/g, '').slice(-4).toUpperCase()
+  return `Ч-${tail}-${seq}`
 }
 
-/** Кладёт чек в очередь и сразу пробует отправить. Возвращает временный номер. */
+/**
+ * Временный номер чека: печатается, пока сервер не дал свой. Счётчик лежит рядом
+ * с номером устройства, поэтому номера на устройстве не повторяются; без хранилища —
+ * время и случайный хвост.
+ */
+function tempNumber(): string {
+  try {
+    const n = Number(localStorage.getItem(TEMP_COUNTER_KEY) ?? '0') + 1
+    if (!Number.isSafeInteger(n)) throw new Error('счётчик')
+    localStorage.setItem(TEMP_COUNTER_KEY, String(n))
+    return formatTempNumber(deviceId, String(n).padStart(4, '0'))
+  } catch {
+    const seq = Date.now().toString(36).slice(-4) + crypto.randomUUID().slice(0, 2)
+    return formatTempNumber(deviceId, seq.toUpperCase())
+  }
+}
+
+/** Чеки, оставшиеся «в отправке» после закрытой вкладки, снова ждут отправки. */
+export function staleSending(items: OutboxItem[]): OutboxItem[] {
+  return items.filter((i) => i.status === 'sending').map((i) => ({ ...i, status: 'pending' as const }))
+}
+
+let recovered: Promise<void> | null = null
+
+/** Один раз за запуск: повтор безопасен, сервер узнает чек по `op_id`. */
+function recover(): Promise<void> {
+  recovered ??= (async () => {
+    try {
+      const d = await db()
+      for (const item of staleSending(await allItems())) await d.put(OUTBOX, item)
+    } catch {
+      // Без IndexedDB восстанавливать нечего.
+    }
+  })()
+  return recovered
+}
+
+/**
+ * Кладёт чек в очередь со статусом «отправляется»: касса сама шлёт его на сервер,
+ * фоновая отправка его не трогает. Возвращает запись с временным номером.
+ */
 export async function enqueueSale(op_id: string, body: unknown): Promise<OutboxItem> {
+  await recover()
   const item: OutboxItem = {
     op_id,
     temp_no: tempNumber(),
     created_at: new Date().toISOString(),
-    status: 'pending',
+    status: 'sending',
     attempts: 0,
     last_error: '',
     body,
@@ -153,6 +196,28 @@ export async function enqueueSale(op_id: string, body: unknown): Promise<OutboxI
   await (await db()).put(OUTBOX, item)
   await emit()
   return item
+}
+
+async function update(op_id: string, patch: Partial<OutboxItem>): Promise<void> {
+  const d = await db()
+  const item: OutboxItem | undefined = await d.get(OUTBOX, op_id)
+  if (!item) return
+  await d.put(OUTBOX, { ...item, ...patch })
+  await emit()
+}
+
+/** Сервер принял чек. */
+export const markSent = (op_id: string, server_number: number): Promise<void> =>
+  update(op_id, { status: 'done', server_number, last_error: '' })
+
+/** Связи нет: чек ждёт фоновой отправки. */
+export const markPending = (op_id: string, last_error: string): Promise<void> =>
+  update(op_id, { status: 'pending', attempts: 1, last_error })
+
+/** Сервер отказал, кассир видит ошибку: чек убирается, сам он не уйдёт. */
+export async function removeSale(op_id: string): Promise<void> {
+  await (await db()).delete(OUTBOX, op_id)
+  await emit()
 }
 
 async function put(item: OutboxItem): Promise<void> {
@@ -163,7 +228,8 @@ async function put(item: OutboxItem): Promise<void> {
 export async function dropDone(): Promise<void> {
   const d = await db()
   for (const item of await allItems()) {
-    if (item.status === 'done' || item.status === 'rejected') await d.delete(OUTBOX, item.op_id)
+    // Отклонённые остаются: их надо разобрать, а не потерять.
+    if (item.status === 'done') await d.delete(OUTBOX, item.op_id)
   }
   await emit()
 }
@@ -178,11 +244,13 @@ export async function syncOutbox(): Promise<void> {
   if (syncing || !navigator.onLine) return
   syncing = true
   try {
+    await recover()
     for (const item of await allItems()) {
       if (item.status !== 'pending') continue
       await put({ ...item, status: 'sending' })
       try {
-        const sale = await api<{ number: number }>('POST', '/sales', item.body)
+        // Чек из очереди проведён без сети: продажа уже была, сервер не отклонит его за цену (ADR-042).
+        const sale = await api<{ number: number }>('POST', '/sales', { ...(item.body as object), offline: true })
         await put({ ...item, status: 'done', server_number: sale.number, last_error: '' })
       } catch (e) {
         if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 401) {

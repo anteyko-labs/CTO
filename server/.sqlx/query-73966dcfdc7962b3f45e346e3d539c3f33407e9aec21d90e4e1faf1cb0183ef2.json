@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,\n                                     doc_type, doc_id, comment, user_id, device_id)\n           values ($1, $2, $3, $4, $5,\n                   -- Долг по чеку — в учётный день чека: офлайн-чек вчерашнего дня в акте сверки вчера.\n                   coalesce((select s.business_date from sales s\n                             where s.id = $7 and $6 in ('sale', 'sale_return')),\n                            (now() at time zone 'Asia/Bishkek')::date),\n                   $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "73966dcfdc7962b3f45e346e3d539c3f33407e9aec21d90e4e1faf1cb0183ef2"
+}

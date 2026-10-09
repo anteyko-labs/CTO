@@ -1,0 +1,98 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id, e.number, e.article_id, a.name as article_name, e.amount_tyiyn, e.source,\n                  c.name as \"account_name?\", e.expense_date, e.comment, e.reversal_of,\n                  exists (select 1 from expenses x where x.reversal_of = e.id) as \"reversed!\",\n                  u.full_name as user_name, e.created_at\n           from expenses e\n           join expense_articles a on a.id = e.article_id\n           join users u on u.id = e.user_id\n           left join cash_accounts c on c.id = e.account_id\n           where e.branch_id = $1\n             and ($2::date is null or e.expense_date >= $2)\n             and ($3::date is null or e.expense_date <= $3)\n             and ($4::uuid is null or e.article_id = $4)\n             and ($5 or (not a.owner_only and e.source = 'account'\n                         and c.kind = 'register' and not c.owner_only\n                         and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))\n           order by e.expense_date desc, e.created_at desc\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "article_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "article_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "expense_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 8,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "5812d07b16cdb4e8f29a2e7a4abefa73fd0fa75484481bee74dd19c8d6909928"
+}

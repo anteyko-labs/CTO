@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update revisions set status = 'posted', posted_by = $2, posted_at = now(),\n             comment = case when comment = '' then $3 else comment || ' · ' || $3 end\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6912f802e7f6f010c772df2d2131a5850c46ae294aae8be2e21c122b031555e5"
+}

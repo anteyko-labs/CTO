@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select shift_id from cash_movements where doc_type = 'expense' and doc_id = $1 and account_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "shift_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b5c39822bc8ab14a1a72e6a1925284605c996f76fed370847fa2643063aea6e8"
+}

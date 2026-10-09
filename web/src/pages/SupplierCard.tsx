@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
-import { get, newOpId, post, qs } from '../lib/api'
-import { formatDateTime, formatLiters, formatSom, parseSom } from '../lib/format'
-import { useAction, useLoad } from '../lib/hooks'
+import { Badge, Button, Card, Empty, ErrorBox, Loading, PageHeader, Table } from '../components/ui'
+import { get, qs } from '../lib/api'
+import { formatDateTime, formatLiters, formatSom } from '../lib/format'
+import { useLoad } from '../lib/hooks'
 import type { Party, ReceiptListItem, Supplier, SupplierSupply } from '../lib/types'
+import { ReconciliationButton } from '../components/ReconciliationButton'
+import { RepaymentModal } from '../components/RepaymentModal'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 
 const qtyText = (s: SupplierSupply): string =>
@@ -16,25 +18,12 @@ export default function SupplierCard() {
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [paying, setPaying] = useState(false)
-  const [sum, setSum] = useState('')
-  const pay = useAction()
   const party = useLoad(() => get<Party>(`/parties/${id}`).catch(() => null), [id])
   const supplier = useLoad(() => get<Supplier>(`/suppliers/${id}`), [id])
   const supplies = useLoad(() => get<SupplierSupply[]>(`/suppliers/${id}/supplies`), [id])
   const receipts = useLoad(() => get<ReceiptListItem[]>(`/receipts${qs({ supplier_id: id })}`), [id])
 
   const owed = party.data ? -Math.min(party.data.balance_tyiyn, 0) : 0
-
-  const payDebt = () =>
-    void pay.run(async () => {
-      const v = parseSom(sum)
-      if (v === null || v <= 0) throw new Error('Неверная сумма')
-      await post('/debts/repayments', { op_id: newOpId(), party_id: id, amount_tyiyn: v })
-      toast('Оплата поставщику записана')
-      setPaying(false)
-      setSum('')
-      party.reload()
-    })
 
   const rows = supplies.data ?? []
   const docs = receipts.data ?? []
@@ -54,6 +43,7 @@ export default function SupplierCard() {
             <Button variant="secondary" onClick={() => navigate('/suppliers')}>
               К списку
             </Button>
+            <ReconciliationButton partyId={id} />
             <Button onClick={() => setEditing(true)}>Изменить</Button>
           </>
         }
@@ -81,14 +71,7 @@ export default function SupplierCard() {
           <div className={`font-medium ${owed > 0 ? 'text-rose-700' : ''}`}>{formatSom(owed)}</div>
         </div>
         {owed > 0 && (
-          <Button
-            onClick={() => {
-              setSum(String(Math.trunc(owed / 100)))
-              setPaying(true)
-            }}
-          >
-            Оплатить
-          </Button>
+          <Button onClick={() => setPaying(true)}>Оплатить</Button>
         )}
         {!s.active && <Badge tone="rose">не работаем</Badge>}
         {s.comment && <div className="w-full text-slate-600">{s.comment}</div>}
@@ -157,27 +140,15 @@ export default function SupplierCard() {
         )}
       </Card>
 
-      {paying && (
-        <Modal title="Оплата поставщику" onClose={() => setPaying(false)}>
-          <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">Должны ему {formatSom(owed)}</div>
-            <Field label="Сумма, с" required>
-              <input autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
-            </Field>
-            <div className="text-xs text-slate-500">
-              Деньги попадут в кассу вместе со сменой на этапе «День»; сейчас записывается только долг.
-            </div>
-            <ErrorBox error={pay.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setPaying(false)}>
-                Отмена
-              </Button>
-              <Button disabled={pay.busy || !sum.trim()} onClick={payDebt}>
-                Записать
-              </Button>
-            </div>
-          </div>
-        </Modal>
+      {paying && party.data && (
+        <RepaymentModal
+          party={party.data}
+          onClose={() => setPaying(false)}
+          onDone={() => {
+            setPaying(false)
+            party.reload()
+          }}
+        />
       )}
       {editing && (
         <SupplierEditModal

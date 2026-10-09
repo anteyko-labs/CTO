@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select active from cash_accounts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0d64ca864fe9745ee53fbb36bc4f940be0c73b7375f2d2dd676e72da248e7d69"
+}

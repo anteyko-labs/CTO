@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.trigger_product_id, r.min_units, i.gift_product_id, i.gift_qty\n               from gift_rules r join gift_rule_items i on i.rule_id = r.id\n               where r.branch_id = $1 and (r.active or $4)\n                 and r.trigger_product_id = any($2) and i.gift_product_id = any($3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trigger_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "min_units",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "gift_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "gift_qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "UuidArray",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "166804af443494ff788960ee222e5955b910a7664e8b3739c9075f834d6db7cd"
+}

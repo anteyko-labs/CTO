@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number, account_id from shifts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1ce8a5f7abe08676dcf3d8a830cca6a253e2f1309f5ac1934dd1a2e7374e593d"
+}

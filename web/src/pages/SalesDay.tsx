@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
-import { formatDateTime, formatSom, todayBishkek } from '../lib/format'
+import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { divRound } from '../lib/money'
 import type { SalesDay as Day } from '../lib/types'
@@ -15,13 +15,6 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="text-lg font-semibold">{value}</div>
     </Card>
   )
-}
-
-/** Сдвиг даты YYYY-MM-DD на `days` дней. */
-function shiftDate(date: string, days: number): string {
-  const d = new Date(`${date}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
 }
 
 export default function SalesDay() {
@@ -67,7 +60,7 @@ export default function SalesDay() {
           <Stat label="Возвраты" value={returns.length ? `${returns.length} · ${formatSom(returnsSum)}` : '—'} />
           <Stat label="Наличные" value={formatSom(data.totals.cash_tyiyn)} />
           <Stat label="Карта" value={formatSom(data.totals.card_tyiyn)} />
-          <Stat label="Перевод" value={formatSom(data.totals.transfer_tyiyn)} />
+          <Stat label="QR" value={formatSom(data.totals.transfer_tyiyn)} />
           <Stat label="В долг" value={formatSom(data.totals.debt_tyiyn)} />
         </div>
       )}

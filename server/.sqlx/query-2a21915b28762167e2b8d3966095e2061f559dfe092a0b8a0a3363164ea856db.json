@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2a21915b28762167e2b8d3966095e2061f559dfe092a0b8a0a3363164ea856db"
+}

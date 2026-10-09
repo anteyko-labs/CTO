@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.category_id, c.name as \"category_name?\", r.status, r.comment,\n                  u.full_name as user_name, r.created_at, r.posted_at,\n                  (select count(*) from revision_lines l where l.revision_id = r.id) as \"counted!\"\n           from revisions r\n           join users u on u.id = r.user_id\n           left join categories c on c.id = r.category_id\n           where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "category_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "posted_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "counted!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "171b4bd5a2df3562e691e55597a243863fa8b073e26e1a1209b45a9e7db78f81"
+}

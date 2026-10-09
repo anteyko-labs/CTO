@@ -19,6 +19,16 @@ pub fn mul(a: i64, b: i64) -> Option<i64> {
     a.checked_mul(b)
 }
 
+/// Сумма для текста сервера: «1 234,50 с». Только для сообщений, не для расчётов.
+pub fn format_som(t: i64) -> String {
+    format!(
+        "{}{},{:02} с",
+        if t < 0 { "−" } else { "" },
+        (t / 100).unsigned_abs(),
+        (t % 100).unsigned_abs()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

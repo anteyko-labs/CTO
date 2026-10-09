@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id as \"employee_id!\", e.full_name as \"full_name!\", e.is_cashier as \"is_cashier!\",\n             e.is_master as \"is_master!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date < $2), 0)::bigint\n             - coalesce((select sum(p.amount_tyiyn) from payouts p\n                         where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)::bigint\n               as \"opening!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'monthly_salary'), 0)::bigint as \"salary!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'revenue_percent'), 0)::bigint as \"percent!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'service_fee'), 0)::bigint as \"service_fee!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'shift_fee'), 0)::bigint as \"shift_fee!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'bonus'), 0)::bigint as \"bonus!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'penalty'), 0)::bigint as \"penalty!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'shortage'), 0)::bigint as \"shortage!\",\n             coalesce(sum(a.amount_tyiyn), 0)::bigint as \"accrued!\",\n             coalesce((select sum(p.amount_tyiyn) from payouts p\n                       where p.employee_id = e.id\n                         and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as \"paid!\",\n             exists (select 1 from payroll_accruals s\n                     where s.employee_id = e.id and s.kind = 'monthly_salary' and s.reversal_of is null\n                       and s.business_date between $2 and $3\n                       and not exists (select 1 from payroll_accruals r where r.reversal_of = s.id)) as \"salary_done!\",\n             (select r.amount_tyiyn from employee_pay_rules r\n               where r.employee_id = e.id and r.kind = 'monthly_salary'\n                 and r.active_from <= $3 and (r.active_to is null or r.active_to > $3)\n               order by r.created_at desc limit 1) as \"salary_rule?\"\n           from employees e\n           left join payroll_accruals a on a.employee_id = e.id and a.business_date between $2 and $3\n           where e.branch_id = $1\n           group by e.id, e.full_name, e.is_cashier, e.is_master, e.active\n           having e.active or coalesce(sum(a.amount_tyiyn), 0) <> 0\n           order by e.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_cashier!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_master!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "opening!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "salary!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "service_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "shift_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "penalty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "shortage!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "paid!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "salary_done!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "salary_rule?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "47398f4d8e970a47ef1c673bcb7f0f4dbf20465c926614a4a8d96fa23c759c7d"
+}

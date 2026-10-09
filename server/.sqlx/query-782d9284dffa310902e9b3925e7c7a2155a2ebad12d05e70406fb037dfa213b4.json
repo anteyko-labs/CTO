@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(-sum(value_delta_tyiyn), 0)::bigint as \"v!\" from stock_movements\n           where branch_id = $1 and doc_type in ('revaluation', 'revision')\n             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "782d9284dffa310902e9b3925e7c7a2155a2ebad12d05e70406fb037dfa213b4"
+}

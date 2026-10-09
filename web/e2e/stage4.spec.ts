@@ -1,0 +1,116 @@
+// Расчёт сотрудника за день и месяц, ревизия склада сканером (SPEC-07, SPEC-15).
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+
+const OWNER = process.env.E2E_LOGIN ?? 'owner'
+const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
+const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e2e4' }
+const RUN = Date.now().toString().slice(-8)
+
+interface ShiftRow {
+  id: string
+  counted_tyiyn: number | null
+}
+
+async function login(page: Page) {
+  await page.goto('/login')
+  await page.getByLabel('Логин').fill(OWNER)
+  await page.getByLabel('Пароль').fill(OWNER_PASSWORD)
+  await page.getByRole('button', { name: 'Войти' }).click()
+  await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
+}
+
+async function apiGet<T>(request: APIRequestContext, path: string): Promise<T> {
+  const res = await request.get(`/api/v1${path}`)
+  expect(res.ok(), `${path}: ${await res.text()}`).toBeTruthy()
+  return (await res.json()) as T
+}
+
+async function apiPost<T>(request: APIRequestContext, path: string, data: unknown): Promise<T> {
+  const res = await request.post(`/api/v1${path}`, { data, headers: DEVICE })
+  expect(res.ok(), `${path}: ${await res.text()}`).toBeTruthy()
+  return (await res.json()) as T
+}
+
+/** Открытая смена: смена одна в день, при повторном прогоне владелец переоткрывает сегодняшнюю. */
+async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
+  if (await apiGet<ShiftRow | null>(request, '/shifts/current')) return
+  const opened = await request.post('/api/v1/shifts/open', {
+    data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId },
+    headers: DEVICE,
+  })
+  if (opened.ok()) return
+  const today = (await apiGet<ShiftRow[]>(request, '/shifts')).find((s) => s.counted_tyiyn !== null)
+  await apiPost(request, `/shifts/${today?.id}/reopen`, { op_id: crypto.randomUUID(), reason: 'сквозной тест' })
+}
+
+async function product(request: APIRequestContext, name: string, code: string, price: number, cost: number, qty: number) {
+  const cat = await apiPost<{ id: string }>(request, '/categories', { name: `Кат ${name}`, kind: 'other' })
+  const p = await apiPost<{ id: string }>(request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name,
+    barcodes: [code],
+    sale_price_tyiyn: price,
+  })
+  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
+  return { ...p, category: `Кат ${name}` }
+}
+
+test('расчёт кассира: 2 % за день, выплата, оклад за месяц', async ({ page }) => {
+  await login(page)
+  const cashier = `Кассир расчёта ${RUN}`
+  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  await ensureOpenShift(page.request, emp.id)
+  const p = await product(page.request, `Щётка расчёт ${RUN}`, `25${RUN}301`, 100_000, 50_000, 5)
+  // Чек на 1000 с при закупке 500 с: валовая 500 с, кассиру 2 % = 10 с.
+  await apiPost(page.request, '/sales', {
+    op_id: crypto.randomUUID(),
+    sale_type: 'takeaway',
+    cashier_id: emp.id,
+    lines: [{ kind: 'piece', gift: false, product_id: p.id, qty: 1, unit_price_tyiyn: 100_000 }],
+    payments: [{ method: 'cash', amount_tyiyn: 100_000 }],
+  })
+
+  await page.goto('/payroll')
+  const row = page.getByRole('row', { name: new RegExp(cashier) })
+  await expect(row).toContainText(/10,00/)
+  await row.getByRole('button', { name: 'Выплатить' }).click()
+  await page.getByRole('button', { name: 'Выплатить', exact: true }).last().click()
+  await expect(page.getByText('Выплачено из кассы')).toBeVisible()
+
+  await page.getByRole('button', { name: 'За месяц' }).click()
+  const month = page.getByRole('row', { name: new RegExp(cashier) })
+  await expect(month.getByText('не начислен')).toBeVisible()
+  await month.getByRole('button', { name: 'Оклад' }).click()
+  await expect(page.getByRole('textbox').last()).toHaveValue(/30\s?000/)
+  await page.getByRole('button', { name: 'Начислить' }).click()
+  await expect(page.getByText('Оклад начислен')).toBeVisible()
+  await expect(month).toContainText(/30\s000,00/)
+  // На конец месяца: оклад 30 000 + 10 − выплачено 10.
+  await expect(month).toContainText(/30\s000,00/)
+})
+
+test('ревизия: сканер считает, владелец проводит, остаток выровнен', async ({ page }) => {
+  await login(page)
+  const code = `25${RUN}302`
+  const p = await product(page.request, `Лампа ревизия ${RUN}`, code, 50_000, 20_000, 5)
+
+  await page.goto('/revision')
+  await page.getByLabel('Что пересчитываем').selectOption({ label: p.category })
+  await page.getByRole('button', { name: 'Начать ревизию' }).click()
+  await expect(page.getByRole('heading', { name: /Ревизия № \d+/ })).toBeVisible()
+  // Нашли только 3 из 5: три скана.
+  const scanner = page.getByPlaceholder('Сканируйте штрихкод')
+  for (let i = 0; i < 3; i++) {
+    await scanner.fill(code)
+    await scanner.press('Enter')
+    await expect(page.getByRole('row', { name: new RegExp(p.category === '' ? '' : `Лампа ревизия ${RUN}`) })).toContainText(`−${5 - (i + 1)} шт`)
+  }
+  await page.getByRole('button', { name: 'Провести' }).click()
+  await page.getByLabel(/Кто пересчитывал/).fill('Айбек, плановая')
+  await page.getByRole('button', { name: 'Провести' }).last().click()
+  await expect(page.getByText('Ревизия проведена')).toBeVisible()
+  await expect(page.getByText(/Итог ревизии в деньгах: −400,00/)).toBeVisible()
+  const stock = await apiGet<{ id: string; stock_qty: number }[]>(page.request, `/stock?q=${encodeURIComponent(`Лампа ревизия ${RUN}`)}`)
+  expect(stock[0].stock_qty).toBe(3)
+})

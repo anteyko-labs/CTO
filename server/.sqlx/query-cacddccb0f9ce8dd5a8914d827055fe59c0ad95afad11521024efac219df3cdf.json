@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.article_id, e.amount_tyiyn, e.source, e.account_id, e.expense_date, e.user_id,\n                  e.reversal_of, a.owner_only,\n                  exists (select 1 from expenses x where x.reversal_of = e.id) as \"reversed!\"\n           from expenses e join expense_articles a on a.id = e.article_id\n           where e.id = $1 and e.branch_id = $2\n           for update of e",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "article_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "expense_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "cacddccb0f9ce8dd5a8914d827055fe59c0ad95afad11521024efac219df3cdf"
+}

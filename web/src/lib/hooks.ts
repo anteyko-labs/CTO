@@ -73,3 +73,13 @@ export function useDebounced<T>(value: T, ms = 250): T {
   }, [value, ms])
   return v
 }
+
+/** Живое обновление: перезапрос раз в `ms`, пока вкладка на экране (ADR-028). */
+export function usePolling(reload: () => void, ms = 15_000) {
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') reload()
+    }, ms)
+    return () => clearInterval(t)
+  }, [reload, ms])
+}

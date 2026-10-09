@@ -64,3 +64,10 @@ export function formatDateTime(iso: string): string {
 export function todayBishkek(): string {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
 }
+
+/** Сдвиг даты YYYY-MM-DD на `days` дней; часовой пояс устройства не участвует. */
+export function shiftDate(date: string, days: number): string {
+  const d = new Date(`${date}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}

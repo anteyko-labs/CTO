@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products m\n           set last_cost_qty = d.last_cost_qty, last_cost_tyiyn = d.last_cost_tyiyn\n           from branch_products d\n           where m.branch_id = $1 and m.product_id = $2 and d.branch_id = $1 and d.product_id = $3\n             and m.last_cost_qty = 0 and d.last_cost_qty > 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aca9277dd3c7e7cf8e67e88fd545a31c45a9aa24ae3df102fa1ffbab8d9daf18"
+}

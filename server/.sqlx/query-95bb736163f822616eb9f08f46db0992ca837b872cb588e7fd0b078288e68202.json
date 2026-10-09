@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select employee_id, amount_tyiyn, source, account_id, reversal_of\n           from payouts where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "95bb736163f822616eb9f08f46db0992ca837b872cb588e7fd0b078288e68202"
+}

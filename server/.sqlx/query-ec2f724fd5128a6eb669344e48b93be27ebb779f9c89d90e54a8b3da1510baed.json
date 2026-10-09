@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select unit, archived from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "archived",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ec2f724fd5128a6eb669344e48b93be27ebb779f9c89d90e54a8b3da1510baed"
+}

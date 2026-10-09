@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select inn from parties where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inn",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "59bcb28ec1a4da029d224f58a3f4b7439a938163a08d604082f777dc4345f905"
+}

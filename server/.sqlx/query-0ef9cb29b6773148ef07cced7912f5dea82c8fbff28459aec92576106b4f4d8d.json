@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from payroll_accruals a\n           where a.employee_id = $1 and a.kind = 'monthly_salary' and a.reversal_of is null\n             and date_trunc('month', a.business_date) = date_trunc('month', $2::date)\n             -- сторнированный оклад можно начислить заново\n             and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0ef9cb29b6773148ef07cced7912f5dea82c8fbff28459aec92576106b4f4d8d"
+}

@@ -18,9 +18,15 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payroll/day", routing::get(day))
+        .route("/payroll/month", routing::get(month))
         .route("/payroll/accruals", routing::post(post_accrual))
         .route("/payroll/salary", routing::post(post_salary))
         .route("/payouts", routing::post(post_payout))
+        .route("/payouts/{id}/reverse", routing::post(reverse_payout))
+        .route(
+            "/payroll/accruals/{id}/reverse",
+            routing::post(reverse_accrual),
+        )
         .route(
             "/employees/{id}/pay-rules",
             routing::get(list_rules).post(create_rule),
@@ -29,6 +35,194 @@ pub fn routes() -> Router<AppState> {
             "/employees/{id}/pay-rules/{rule_id}",
             routing::delete(close_rule),
         )
+}
+
+// ---------- Сторно ----------
+
+#[derive(Deserialize)]
+struct ReverseReq {
+    op_id: Uuid,
+    #[serde(default)]
+    comment: String,
+}
+
+/// Сторно начисления владельцем: удержание недостачи, ошибочный бонус или оклад (SPEC-07).
+/// Начисления из чека снимаются только возвратом чека.
+async fn reverse_accrual(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ReverseReq>,
+) -> AppResult<Json<OkOut>> {
+    const KIND: &str = "payroll.accrual_reverse";
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if req.comment.trim().is_empty() {
+        return Err(invalid("укажите причину"));
+    }
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let a = sqlx::query!(
+        r#"select employee_id, business_date, kind, amount_tyiyn, doc_type, reversal_of
+           from payroll_accruals where id = $1 and branch_id = $2 for update"#,
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if a.reversal_of.is_some() {
+        return Err(invalid("это уже сторно"));
+    }
+    if matches!(a.doc_type.as_str(), "sale" | "sale_return") {
+        return Err(AppError::Conflict(
+            "начисление по чеку снимается возвратом чека".into(),
+        ));
+    }
+    lock_employee(&mut tx, ctx.user.branch_id, a.employee_id).await?;
+    let rid = new_id();
+    sqlx::query!(
+        r#"insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,
+                                         doc_type, doc_id, comment, reversal_of, user_id, device_id)
+           values ($1, $2, $3, $4, $5, $6, 'reversal', $7, $8, $7, $9, $10)"#,
+        rid,
+        ctx.user.branch_id,
+        a.employee_id,
+        a.business_date,
+        a.kind,
+        -a.amount_tyiyn,
+        id,
+        req.comment.trim(),
+        ctx.user.id,
+        ctx.device_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        if crate::error::is_unique_violation(&e) {
+            AppError::Conflict("начисление уже сторнировано".into())
+        } else {
+            AppError::from(e)
+        }
+    })?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "employee",
+        Some(a.employee_id),
+        json!({ "accrual": id, "kind": a.kind, "amount_tyiyn": -a.amount_tyiyn, "comment": req.comment.trim() }),
+    )
+    .await?;
+    let out = OkOut { ok: true };
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно выплаты владельцем: деньги возвращаются в ту кассу, откуда ушли.
+async fn reverse_payout(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ReverseReq>,
+) -> AppResult<Json<PayoutOut>> {
+    const KIND: &str = "payout.reverse";
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if req.comment.trim().is_empty() {
+        return Err(invalid("укажите причину"));
+    }
+    let branch_id = ctx.user.branch_id;
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let p = sqlx::query!(
+        r#"select employee_id, amount_tyiyn, source, account_id, reversal_of
+           from payouts where id = $1 and branch_id = $2 for update"#,
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if p.reversal_of.is_some() {
+        return Err(invalid("это уже сторно"));
+    }
+    lock_employee(&mut tx, branch_id, p.employee_id).await?;
+    let number = ops::next_counter(&mut tx, branch_id, "payout").await?;
+    let rid = new_id();
+    sqlx::query!(
+        r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
+                                account_id, comment, reversal_of, user_id, device_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+        rid,
+        branch_id,
+        number,
+        p.employee_id,
+        -p.amount_tyiyn,
+        p.source,
+        p.account_id,
+        req.comment.trim(),
+        id,
+        ctx.user.id,
+        ctx.device_id
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        if crate::error::is_unique_violation(&e) {
+            AppError::Conflict("выплата уже сторнирована".into())
+        } else {
+            AppError::from(e)
+        }
+    })?;
+    // Деньги возвращаются в кассу смены — только в открытую смену (SPEC-07).
+    if let Some(acc) = p.account_id {
+        cash::require_open_shift(&mut tx, branch_id, acc).await?;
+        cash::add_movement(
+            &mut tx,
+            &ctx,
+            CashEntry {
+                account_id: acc,
+                kind: "reversal",
+                amount: p.amount_tyiyn,
+                doc_type: "payout",
+                doc_id: Some(rid),
+                comment: req.comment.trim(),
+            },
+        )
+        .await?;
+    }
+    let balance = sqlx::query_scalar!(
+        r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
+                - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,
+        p.employee_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "employee",
+        Some(p.employee_id),
+        json!({ "payout": id, "amount_tyiyn": p.amount_tyiyn, "comment": req.comment.trim() }),
+    )
+    .await?;
+    let out = PayoutOut {
+        id: rid,
+        number,
+        balance_tyiyn: balance,
+    };
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 // ---------- Правила оплаты ----------
@@ -94,9 +288,16 @@ async fn create_rule(
         return Err(invalid("неизвестный вид оплаты"));
     }
     let role = req.role.unwrap_or_else(|| "cashier".into());
+    if !matches!(role.as_str(), "cashier" | "master") {
+        return Err(invalid("роль: кассир или мастер"));
+    }
     let base = req
         .base
         .or_else(|| (req.kind == "revenue_percent").then(|| "gross".to_string()));
+    // Процент считается только с валовой прибыли чека (ADR-036): другая база молча не работала бы.
+    if base.as_deref().is_some_and(|b| b != "gross") {
+        return Err(invalid("процент считается с валовой прибыли"));
+    }
     if req.kind == "revenue_percent" {
         if req.rate_bp.is_none_or(|v| v <= 0) {
             return Err(invalid("укажите процент"));
@@ -104,8 +305,16 @@ async fn create_rule(
     } else if req.amount_tyiyn.is_none_or(|v| v <= 0) {
         return Err(invalid("укажите сумму"));
     }
+    if let Some(a) = req.amount_tyiyn {
+        ops::check_amount(a)?;
+    }
+    if req.rate_bp.is_some_and(|r| !(0..=10_000).contains(&r)) {
+        return Err(invalid("процент от 0 до 100"));
+    }
     let rule_id = new_id();
     let mut tx = state.pool.begin().await?;
+    // Под блокировкой сотрудника два одновременных правила не останутся открытыми оба.
+    lock_employee(&mut tx, ctx.user.branch_id, id).await?;
     // Прежнее правило того же вида закрывается сегодняшним днём: история начислений не меняется.
     sqlx::query!(
         r#"update employee_pay_rules
@@ -199,6 +408,7 @@ pub async fn add_accrual(
     if a.amount == 0 {
         return Ok(());
     }
+    ops::check_amount(a.amount)?;
     sqlx::query!(
         r#"insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,
                                          base_tyiyn, rule_id, doc_type, doc_id, comment, user_id, device_id)
@@ -223,20 +433,83 @@ pub async fn add_accrual(
     Ok(())
 }
 
-/// Активное правило сотрудника нужного вида.
+/// Оплата кассира по умолчанию (SPEC-07, ADR-019, ADR-036): 2 % с валовой прибыли чека
+/// и оклад 30 000 сом в месяц. Заводится, только если таких правил у него ещё нет;
+/// дальше владелец правит их в карточке сотрудника.
+pub const DEFAULT_CASHIER_PERCENT_BP: i32 = 200;
+pub const DEFAULT_CASHIER_SALARY_TYIYN: i64 = 3_000_000;
+
+pub async fn ensure_cashier_rules(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    employee_id: Uuid,
+) -> AppResult<()> {
+    for (kind, base, amount, rate) in [
+        (
+            "revenue_percent",
+            Some("gross"),
+            None,
+            Some(DEFAULT_CASHIER_PERCENT_BP),
+        ),
+        (
+            "monthly_salary",
+            None,
+            Some(DEFAULT_CASHIER_SALARY_TYIYN),
+            None,
+        ),
+    ] {
+        let id = new_id();
+        let added = sqlx::query!(
+            r#"insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base,
+                                               amount_tyiyn, rate_bp, user_id)
+               select $1, $2, $3, $4, 'cashier', $5, $6, $7, $8
+               where not exists (select 1 from employee_pay_rules
+                                 where employee_id = $3 and kind = $4 and active_to is null)"#,
+            id,
+            ctx.user.branch_id,
+            employee_id,
+            kind,
+            base,
+            amount,
+            rate,
+            ctx.user.id
+        )
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+        if added > 0 {
+            ops::audit(
+                conn,
+                ctx,
+                "payroll.rule",
+                "employee",
+                Some(employee_id),
+                json!({ "kind": kind, "amount_tyiyn": amount, "rate_bp": rate, "default": true }),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Правило сотрудника нужного вида, действовавшее в день документа (SPEC-07): офлайн-чек
+/// вчерашнего дня получает вчерашнюю ставку, а не ту, что владелец поставил сегодня.
 pub async fn active_rule(
     conn: &mut PgConnection,
     branch_id: Uuid,
     employee_id: Uuid,
     kind: &str,
+    on: NaiveDate,
 ) -> AppResult<Option<(Uuid, Option<i64>, Option<i32>)>> {
     let r = sqlx::query!(
         r#"select id, amount_tyiyn, rate_bp from employee_pay_rules
-           where branch_id = $1 and employee_id = $2 and kind = $3 and active_to is null
+           where branch_id = $1 and employee_id = $2 and kind = $3
+             and active_from <= $4 and (active_to is null or active_to > $4)
            order by created_at desc limit 1"#,
         branch_id,
         employee_id,
-        kind
+        kind,
+        on
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -265,8 +538,14 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         total,
         debt,
     } = s;
-    let Some((rule_id, _, rate)) =
-        active_rule(conn, ctx.user.branch_id, cashier_id, "revenue_percent").await?
+    let Some((rule_id, _, rate)) = active_rule(
+        conn,
+        ctx.user.branch_id,
+        cashier_id,
+        "revenue_percent",
+        business_date,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -313,6 +592,179 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
             .execute(&mut *conn)
             .await?;
         }
+    }
+    Ok(())
+}
+
+/// Возврат по чеку: обратные начисления в день возврата (SPEC-07: «такие же строки с минусом»).
+pub struct ReturnAccrual {
+    pub orig_sale_id: Uuid,
+    pub return_id: Uuid,
+    pub business_date: NaiveDate,
+    /// Валовая прибыль возвращённых строк, сумма возврата и сколько из неё списано с долга.
+    pub gross_back: i64,
+    pub total_back: i64,
+    pub debt_back: i64,
+    pub full_return: bool,
+}
+
+pub async fn reverse_for_return(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    r: ReturnAccrual,
+) -> AppResult<()> {
+    // Начисления по чеку и по прежним возвратам к нему.
+    let rows = sqlx::query!(
+        r#"select a.employee_id, a.kind, a.rule_id,
+                  coalesce(sum(a.amount_tyiyn), 0)::bigint as "net!",
+                  coalesce(sum(a.amount_tyiyn) filter (where a.amount_tyiyn > 0), 0)::bigint as "accrued!",
+                  coalesce(sum(a.base_tyiyn) filter (where a.amount_tyiyn > 0), 0)::bigint as "base!"
+           from payroll_accruals a
+           where a.branch_id = $1 and a.kind in ('service_fee', 'revenue_percent')
+             and ((a.doc_type = 'sale' and a.doc_id = $2)
+                  or (a.doc_type = 'sale_return'
+                      and a.doc_id in (select id from sales where reversal_of = $2)))
+           group by a.employee_id, a.kind, a.rule_id"#,
+        ctx.user.branch_id,
+        r.orig_sale_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    // Процент снимается с той части возврата, что отдана деньгами; долговую часть
+    // процент ещё не получил — она снимается с ожидания ниже.
+    let paid_back = r.total_back.saturating_sub(r.debt_back).max(0);
+    let base_back = if r.total_back > 0 && r.gross_back > 0 {
+        div_round(
+            i128::from(r.gross_back) * i128::from(paid_back),
+            i128::from(r.total_back),
+        )
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    for row in rows {
+        if row.net <= 0 {
+            continue;
+        }
+        let back = match row.kind.as_str() {
+            // Работу мастер сделал: ставка снимается только при возврате чека целиком (ADR-027).
+            "service_fee" if r.full_return => row.net,
+            "revenue_percent" if row.base > 0 && base_back > 0 => div_round(
+                i128::from(row.accrued) * i128::from(base_back),
+                i128::from(row.base),
+            )
+            .unwrap_or(0)
+            .min(row.net),
+            _ => 0,
+        };
+        add_accrual(
+            conn,
+            ctx,
+            Some(r.business_date),
+            Accrual {
+                employee_id: row.employee_id,
+                kind: &row.kind,
+                amount: -back,
+                base: (row.kind == "revenue_percent").then_some(-base_back),
+                rule_id: row.rule_id,
+                doc_type: "sale_return",
+                doc_id: Some(r.return_id),
+                comment: "возврат по чеку",
+            },
+        )
+        .await?;
+    }
+    // Долг уменьшился на возврат: процент с этой части уже никогда не придёт.
+    if r.debt_back > 0 {
+        let pending = sqlx::query!(
+            r#"select id, gross_tyiyn, debt_total_tyiyn, debt_remaining_tyiyn from payroll_pending
+               where sale_id = $1 and branch_id = $2 and debt_remaining_tyiyn > 0
+               for update"#,
+            r.orig_sale_id,
+            ctx.user.branch_id
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        for p in pending {
+            let d = r.debt_back.min(p.debt_remaining_tyiyn);
+            let gross_cut = div_round(
+                i128::from(p.gross_tyiyn) * i128::from(d),
+                i128::from(p.debt_total_tyiyn),
+            )
+            .unwrap_or(0);
+            // Остаток базы делится на остаток долга в той же пропорции, что и раньше.
+            let left_total = (p.debt_total_tyiyn - d).max(1);
+            sqlx::query!(
+                r#"update payroll_pending
+                   set gross_tyiyn = $2, debt_total_tyiyn = $3, debt_remaining_tyiyn = $4
+                   where id = $1"#,
+                p.id,
+                p.gross_tyiyn - gross_cut,
+                left_total,
+                p.debt_remaining_tyiyn - d
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Погашение сторнировали — процент, начисленный за него, снимается, а долговая часть чеков
+/// снова ждёт оплаты. Идём от последних погашенных чеков к первым (обратный порядок).
+pub async fn reverse_repayment(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    party_id: Uuid,
+    mut amount: i64,
+) -> AppResult<()> {
+    let rows = sqlx::query!(
+        r#"select id, sale_id, employee_id, rule_id, rate_bp, gross_tyiyn,
+                  debt_total_tyiyn, debt_remaining_tyiyn
+           from payroll_pending
+           where party_id = $1 and branch_id = $2 and debt_remaining_tyiyn < debt_total_tyiyn
+           order by created_at desc
+           for update"#,
+        party_id,
+        ctx.user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for r in rows {
+        if amount <= 0 {
+            break;
+        }
+        let give = amount.min(r.debt_total_tyiyn - r.debt_remaining_tyiyn);
+        let base = div_round(
+            i128::from(r.gross_tyiyn) * i128::from(give),
+            i128::from(r.debt_total_tyiyn),
+        )
+        .unwrap_or(0);
+        let back = div_round(i128::from(base) * i128::from(r.rate_bp), 10_000).unwrap_or(0);
+        add_accrual(
+            conn,
+            ctx,
+            None,
+            Accrual {
+                employee_id: r.employee_id,
+                kind: "revenue_percent",
+                amount: -back,
+                base: Some(-base),
+                rule_id: r.rule_id,
+                doc_type: "sale",
+                doc_id: Some(r.sale_id),
+                comment: "сторно погашения долга",
+            },
+        )
+        .await?;
+        sqlx::query!(
+            "update payroll_pending set debt_remaining_tyiyn = debt_remaining_tyiyn + $2 where id = $1",
+            r.id,
+            give
+        )
+        .execute(&mut *conn)
+        .await?;
+        amount -= give;
     }
     Ok(())
 }
@@ -374,6 +826,20 @@ pub async fn accrue_on_repayment(
     Ok(())
 }
 
+/// Блокирует сотрудника филиала: выплаты и оклады по нему идут по очереди,
+/// и остаток не уходит в минус от двух одновременных выплат.
+async fn lock_employee(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<()> {
+    sqlx::query_scalar!(
+        "select id from employees where id = $1 and branch_id = $2 for update",
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("сотрудник не найден"))?;
+    Ok(())
+}
+
 /// Закрытие смены: оплата за смену и удержание недостачи с кассира (ADR-020).
 pub async fn accrue_for_shift_close(
     conn: &mut PgConnection,
@@ -391,8 +857,14 @@ pub async fn accrue_for_shift_close(
     .fetch_one(&mut *conn)
     .await?;
     if already == 0
-        && let Some((rule_id, amount, _)) =
-            active_rule(conn, ctx.user.branch_id, cashier_id, "per_shift").await?
+        && let Some((rule_id, amount, _)) = active_rule(
+            conn,
+            ctx.user.branch_id,
+            cashier_id,
+            "per_shift",
+            business_date,
+        )
+        .await?
     {
         add_accrual(
             conn,
@@ -514,6 +986,125 @@ async fn day(
 }
 
 #[derive(Deserialize)]
+struct MonthQuery {
+    /// Любой день месяца; по умолчанию — текущий месяц по Бишкеку.
+    month: Option<NaiveDate>,
+}
+
+#[derive(Serialize)]
+struct MonthRow {
+    employee_id: Uuid,
+    full_name: String,
+    is_cashier: bool,
+    is_master: bool,
+    opening_tyiyn: i64,
+    salary_tyiyn: i64,
+    percent_tyiyn: i64,
+    service_fee_tyiyn: i64,
+    shift_fee_tyiyn: i64,
+    bonus_tyiyn: i64,
+    penalty_tyiyn: i64,
+    shortage_tyiyn: i64,
+    accrued_tyiyn: i64,
+    paid_tyiyn: i64,
+    closing_tyiyn: i64,
+    /// Оклад за этот месяц уже начислен (повторно — 409).
+    salary_done: bool,
+    /// Ставка оклада по действующему правилу — подставляется в форму начисления.
+    salary_rule_tyiyn: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct MonthOut {
+    from: NaiveDate,
+    to: NaiveDate,
+    rows: Vec<MonthRow>,
+}
+
+/// Расчёт за месяц: остаток на начало, начисления по видам, выплаты, остаток на конец (SPEC-07).
+async fn month(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<MonthQuery>,
+) -> AppResult<Json<MonthOut>> {
+    let mut conn = state.pool.acquire().await?;
+    let b = sqlx::query!(
+        r#"select date_trunc('month', coalesce($1::date, (now() at time zone 'Asia/Bishkek')::date))::date as "from!",
+                  (date_trunc('month', coalesce($1::date, (now() at time zone 'Asia/Bishkek')::date))
+                   + interval '1 month - 1 day')::date as "to!""#,
+        q.month
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let rows = sqlx::query!(
+        r#"select e.id as "employee_id!", e.full_name as "full_name!", e.is_cashier as "is_cashier!",
+             e.is_master as "is_master!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.employee_id = e.id and a.business_date < $2), 0)::bigint
+             - coalesce((select sum(p.amount_tyiyn) from payouts p
+                         where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)::bigint
+               as "opening!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'monthly_salary'), 0)::bigint as "salary!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'revenue_percent'), 0)::bigint as "percent!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'service_fee'), 0)::bigint as "service_fee!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'shift_fee'), 0)::bigint as "shift_fee!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'bonus'), 0)::bigint as "bonus!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'penalty'), 0)::bigint as "penalty!",
+             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'shortage'), 0)::bigint as "shortage!",
+             coalesce(sum(a.amount_tyiyn), 0)::bigint as "accrued!",
+             coalesce((select sum(p.amount_tyiyn) from payouts p
+                       where p.employee_id = e.id
+                         and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "paid!",
+             exists (select 1 from payroll_accruals s
+                     where s.employee_id = e.id and s.kind = 'monthly_salary' and s.reversal_of is null
+                       and s.business_date between $2 and $3
+                       and not exists (select 1 from payroll_accruals r where r.reversal_of = s.id)) as "salary_done!",
+             (select r.amount_tyiyn from employee_pay_rules r
+               where r.employee_id = e.id and r.kind = 'monthly_salary'
+                 and r.active_from <= $3 and (r.active_to is null or r.active_to > $3)
+               order by r.created_at desc limit 1) as "salary_rule?"
+           from employees e
+           left join payroll_accruals a on a.employee_id = e.id and a.business_date between $2 and $3
+           where e.branch_id = $1
+           group by e.id, e.full_name, e.is_cashier, e.is_master, e.active
+           having e.active or coalesce(sum(a.amount_tyiyn), 0) <> 0
+           order by e.full_name"#,
+        user.branch_id,
+        b.from,
+        b.to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let rows = rows
+        .into_iter()
+        .map(|r| MonthRow {
+            employee_id: r.employee_id,
+            full_name: r.full_name,
+            is_cashier: r.is_cashier,
+            is_master: r.is_master,
+            opening_tyiyn: r.opening,
+            salary_tyiyn: r.salary,
+            percent_tyiyn: r.percent,
+            service_fee_tyiyn: r.service_fee,
+            shift_fee_tyiyn: r.shift_fee,
+            bonus_tyiyn: r.bonus,
+            penalty_tyiyn: r.penalty,
+            shortage_tyiyn: r.shortage,
+            accrued_tyiyn: r.accrued,
+            paid_tyiyn: r.paid,
+            closing_tyiyn: r.opening.saturating_add(r.accrued).saturating_sub(r.paid),
+            salary_done: r.salary_done,
+            salary_rule_tyiyn: r.salary_rule,
+        })
+        .collect();
+    Ok(Json(MonthOut {
+        from: b.from,
+        to: b.to,
+        rows,
+    }))
+}
+
+#[derive(Deserialize)]
 struct AccrualReq {
     op_id: Uuid,
     employee_id: Uuid,
@@ -544,6 +1135,7 @@ async fn post_accrual(
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма больше нуля"));
     }
+    crate::ops::check_amount(req.amount_tyiyn)?;
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }
@@ -551,6 +1143,7 @@ async fn post_accrual(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
+    lock_employee(&mut tx, ctx.user.branch_id, req.employee_id).await?;
     let amount = if req.kind == "penalty" {
         -req.amount_tyiyn
     } else {
@@ -609,11 +1202,30 @@ async fn post_salary(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
+    lock_employee(&mut tx, ctx.user.branch_id, req.employee_id).await?;
+    // Оклад попадает в последний день месяца, но не в будущее (SPEC-07).
+    let d = sqlx::query!(
+        r#"select least((date_trunc('month', $1::date) + interval '1 month - 1 day')::date,
+                        (now() at time zone 'Asia/Bishkek')::date) as "d!",
+                  date_trunc('month', $1::date) > date_trunc('month', now() at time zone 'Asia/Bishkek')
+                    as "future!""#,
+        req.month
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    // Иначе оклад «за ноябрь» лёг бы в октябрь и закрыл бы начисление настоящего октябрьского.
+    if d.future {
+        return Err(invalid(
+            "оклад за месяц, который ещё не начался, не начисляется",
+        ));
+    }
+    let date = d.d;
     let rule = active_rule(
         &mut tx,
         ctx.user.branch_id,
         req.employee_id,
         "monthly_salary",
+        date,
     )
     .await?;
     let amount = req
@@ -623,18 +1235,12 @@ async fn post_salary(
     if amount <= 0 {
         return Err(invalid("сумма больше нуля"));
     }
-    // Оклад попадает в последний день месяца, но не в будущее (SPEC-07).
-    let date = sqlx::query_scalar!(
-        r#"select least((date_trunc('month', $1::date) + interval '1 month - 1 day')::date,
-                        (now() at time zone 'Asia/Bishkek')::date) as "d!""#,
-        req.month
-    )
-    .fetch_one(&mut *tx)
-    .await?;
     let exists = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from payroll_accruals
-           where employee_id = $1 and kind = 'monthly_salary'
-             and date_trunc('month', business_date) = date_trunc('month', $2::date)"#,
+        r#"select count(*) as "n!" from payroll_accruals a
+           where a.employee_id = $1 and a.kind = 'monthly_salary' and a.reversal_of is null
+             and date_trunc('month', a.business_date) = date_trunc('month', $2::date)
+             -- сторнированный оклад можно начислить заново
+             and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)"#,
         req.employee_id,
         req.month
     )
@@ -705,7 +1311,11 @@ async fn post_payout(
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма больше нуля"));
     }
+    crate::ops::check_amount(req.amount_tyiyn)?;
     let source = req.source.unwrap_or_else(|| "account".into());
+    if !matches!(source.as_str(), "account" | "outside") {
+        return Err(invalid("откуда платим: account или outside"));
+    }
     let owner = ctx.user.is_owner();
     if source == "outside" && !owner {
         return Err(AppError::Forbidden);
@@ -715,6 +1325,7 @@ async fn post_payout(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
+    lock_employee(&mut tx, branch_id, req.employee_id).await?;
     let balance = sqlx::query_scalar!(
         r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
                 - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,
@@ -725,7 +1336,8 @@ async fn post_payout(
     // Аванс сверх заработанного отмечает только владелец (ответ заказчика).
     if req.amount_tyiyn > balance && (!req.advance || !owner) {
         return Err(invalid(format!(
-            "заработано {balance} тыйын: аванс сверх этого отмечает владелец"
+            "заработано {}: аванс сверх этого отмечает владелец",
+            crate::domain::money::format_som(balance)
         )));
     }
     let mut account_id = None;
@@ -767,6 +1379,7 @@ async fn post_payout(
     .execute(&mut *tx)
     .await?;
     if let Some(acc) = account_id {
+        cash::require_open_shift(&mut tx, branch_id, acc).await?;
         cash::add_movement(
             &mut tx,
             &ctx,
@@ -793,7 +1406,9 @@ async fn post_payout(
     let out = PayoutOut {
         id,
         number,
-        balance_tyiyn: balance - req.amount_tyiyn,
+        balance_tyiyn: balance
+            .checked_sub(req.amount_tyiyn)
+            .ok_or_else(crate::error::overflow)?,
     };
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;

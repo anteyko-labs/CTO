@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.id, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,\n                  exists (select 1 from shift_handovers h where h.close_id = c.id) as \"done!\"\n           from shift_closes c\n           where c.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n           order by c.seq desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "expected_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "counted_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "done!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "50f77fe0b331d7a7067234ea37409c240e1bdf18eef6cfac582292476f04e4d5"
+}

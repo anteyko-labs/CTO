@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from employees where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c0efc97f225f7b2199bb0e147e0c935f38dc7a8acae521ca3fd01b8a47664528"
+}

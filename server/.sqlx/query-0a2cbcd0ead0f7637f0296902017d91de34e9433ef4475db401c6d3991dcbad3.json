@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select status from revisions where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0a2cbcd0ead0f7637f0296902017d91de34e9433ef4475db401c6d3991dcbad3"
+}

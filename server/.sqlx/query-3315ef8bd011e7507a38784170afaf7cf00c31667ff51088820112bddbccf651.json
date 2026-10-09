@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update payroll_pending\n                   set gross_tyiyn = $2, debt_total_tyiyn = $3, debt_remaining_tyiyn = $4\n                   where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3315ef8bd011e7507a38784170afaf7cf00c31667ff51088820112bddbccf651"
+}

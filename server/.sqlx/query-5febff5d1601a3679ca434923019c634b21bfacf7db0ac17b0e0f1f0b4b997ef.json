@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind as \"kind!\", sum(amount_tyiyn)::bigint as \"sum!\"\n           from cash_movements where shift_id = $1 and account_id = $2\n           group by kind order by kind",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "5febff5d1601a3679ca434923019c634b21bfacf7db0ac17b0e0f1f0b4b997ef"
+}

@@ -1,20 +1,77 @@
 import { useState } from 'react'
 import { ProductPicker } from '../components/ProductPicker'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, PageHeader, Table } from '../components/ui'
-import { get, post, patch } from '../lib/api'
+import { get, post, patch, qs } from '../lib/api'
+import { formatLiters, formatSom, parseLiters, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { GiftRule, Product } from '../lib/types'
+
+interface GiftReportRow {
+  product_id: string
+  name: string
+  unit: 'piece' | 'ml'
+  qty: number
+  checks: number
+  cost_tyiyn: number
+}
+
+/** Что и сколько подарили за период и во что это обошлось по себестоимости (SPEC-11). */
+function GiftReport() {
+  const [from, setFrom] = useState(todayBishkek().slice(0, 8) + '01')
+  const [to, setTo] = useState(todayBishkek())
+  const report = useLoad(() => get<GiftReportRow[]>(`/reports/gifts${qs({ from, to })}`), [from, to])
+  const rows = report.data ?? []
+  const total = rows.reduce((acc, r) => acc + r.cost_tyiyn, 0)
+  return (
+    <Card className="mt-4 flex flex-col gap-3">
+      <div className="flex flex-wrap items-end gap-3">
+        <h2 className="mr-auto font-semibold">Подарено за период</h2>
+        <Field label="С">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </Field>
+        <Field label="По">
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </Field>
+      </div>
+      <ErrorBox error={report.error} />
+      {report.loading && !report.data ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>За этот период подарков не было</Empty>
+      ) : (
+        <>
+          <Table head={['Подарок', 'Сколько', 'В чеках', 'Себестоимость']}>
+            {rows.map((r) => (
+              <tr key={r.product_id}>
+                <td className="px-2 py-2 font-medium">{r.name}</td>
+                <td className="whitespace-nowrap px-2 py-2">{r.unit === 'ml' ? formatLiters(r.qty) : `${r.qty} шт`}</td>
+                <td className="px-2 py-2">{r.checks}</td>
+                <td className="whitespace-nowrap px-2 py-2">{formatSom(r.cost_tyiyn)}</td>
+              </tr>
+            ))}
+          </Table>
+          <div className="text-right font-semibold">Подарки обошлись в {formatSom(total)} — это уже вычтено из валовой прибыли.</div>
+        </>
+      )}
+    </Card>
+  )
+}
 
 /** Справочник подарков: к товару привязан список того, что можно подарить (SPEC-11). */
 export default function Gifts() {
   const list = useLoad(() => get<GiftRule[]>('/gift-rules'), [])
   const [trigger, setTrigger] = useState<Product | null>(null)
   const [items, setItems] = useState<Product[]>([])
+  const [minText, setMinText] = useState('')
   const save = useAction()
   const toggle = useAction()
 
+  // Порог «от 3 л» у масла вводится литрами и хранится в мл, у остального — штуками.
+  const oil = trigger?.unit === 'ml'
+  const minUnits = !minText.trim() ? 0 : oil ? parseLiters(minText) : /^\d+$/.test(minText.trim()) ? Number(minText) : null
   const notFilled = missingWithFocus(
+    [minUnits !== null, 'порог числом'],
     [Boolean(trigger), 'товар, к которому дарим'],
     [items.length > 0, 'хотя бы один подарок'],
   )
@@ -24,10 +81,12 @@ export default function Gifts() {
       if (!trigger) return
       await post('/gift-rules', {
         trigger_product_id: trigger.id,
+        min_units: minUnits ?? 0,
         items: items.map((p) => ({ gift_product_id: p.id, gift_qty: 1 })),
       })
       setTrigger(null)
       setItems([])
+      setMinText('')
       list.reload()
     })
 
@@ -53,6 +112,9 @@ export default function Gifts() {
           ) : (
             <ProductPicker autoFocus={false} placeholder="Найдите товар" onPick={setTrigger} />
           )}
+        </Field>
+        <Field label={oil ? 'От скольки литров' : 'От скольки штук'} hint="Пусто — с любого количества">
+          <input inputMode="decimal" value={minText} onChange={(e) => setMinText(e.target.value)} placeholder={oil ? 'например, 3' : 'например, 2'} />
         </Field>
         <Field label="Можно подарить" required>
           <ProductPicker
@@ -92,7 +154,14 @@ export default function Gifts() {
           <Table head={['При покупке', 'Подарки', 'Статус', '']}>
             {(list.data ?? []).map((r) => (
               <tr key={r.id} className={r.active ? '' : 'text-slate-400'}>
-                <td className="px-2 py-2 font-medium">{r.trigger_name}</td>
+                <td className="px-2 py-2 font-medium">
+                  {r.trigger_name}
+                  {r.min_units > 0 && (
+                    <span className="ml-1 font-normal text-slate-500">
+                      от {r.trigger_unit === 'ml' ? formatLiters(r.min_units) : `${r.min_units} шт.`}
+                    </span>
+                  )}
+                </td>
                 <td className="px-2 py-2">{r.items.map((i) => `${i.name} × ${i.gift_qty}`).join(', ') || '—'}</td>
                 <td className="px-2 py-2">{r.active ? <Badge tone="green">активно</Badge> : <Badge>отключено</Badge>}</td>
                 <td className="px-2 py-2 text-right">
@@ -105,6 +174,7 @@ export default function Gifts() {
           </Table>
         )}
       </Card>
+      <GiftReport />
     </div>
   )
 }

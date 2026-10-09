@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select merged_into from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "merged_into",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "37b9c253cf85527d33e67659255678f618167f9cafe66fa38bf5e1652393340d"
+}

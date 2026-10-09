@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.id from shift_closes c\n           where c.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n           order by c.seq desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5bedbf3fe9bf07568a424287acd88087221b2a0f6e651e7c88e91d55bae4e657"
+}

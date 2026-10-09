@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.id, m.kind, m.amount_tyiyn, m.comment, m.doc_type, m.doc_id,\n                  u.full_name as user_name, m.created_at,\n                  case\n                    when m.doc_type = 'manual' then not exists (\n                      select 1 from cash_movements r\n                      where r.kind = 'reversal' and r.doc_type = 'cash_movement' and r.doc_id = m.id)\n                    when m.doc_type = 'transfer' and m.kind in ('transfer_in', 'transfer_out') then not exists (\n                      select 1 from cash_transfers t where t.reversal_of = m.doc_id)\n                    else false\n                  end as \"reversible!\"\n           from cash_movements m join users u on u.id = m.user_id\n           where m.account_id = $1 and m.branch_id = $2\n           order by m.created_at desc limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "reversible!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "17b7a8a537e366d6230900f44b7231ff59321cfe98ec3e54cbfe8e97dad7c8da"
+}

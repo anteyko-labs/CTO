@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,\n                                         doc_type, doc_id, comment, reversal_of, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, 'reversal', $7, $8, $7, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93d83d1efe7298e4dd9828499f0d8f851e89ac6beebc336b30e05003cc9a8b83"
+}

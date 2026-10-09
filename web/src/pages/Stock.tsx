@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
-import { get, post, qs } from '../lib/api'
+import { get, post, put, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -19,7 +19,14 @@ export default function Stock() {
   const owner = useUser().role === 'owner'
   const [q, setQ] = useState('')
   const [categoryId, setCategoryId] = useState('')
-  const [filter, setFilter] = useState<'all' | 'low' | 'review'>('all')
+  const [filter, setFilter] = useState<'all' | 'low' | 'review' | 'stale'>('all')
+  // Залежалый товар: остаток есть, продаж нет дольше срока (ADR-039).
+  const staleList = useLoad(
+    () => get<{ stale_days: number; items: { product_id: string; days: number; sold_ever: boolean }[] }>('/stock/stale'),
+    [],
+  )
+  const [staleDays, setStaleDays] = useState('')
+  const staleSave = useAction()
   const [editing, setEditing] = useState<Product | null>(null)
   const query = useDebounced(q.trim())
   const categories = useLoad(() => get<Category[]>('/categories'), [])
@@ -32,7 +39,15 @@ export default function Stock() {
   const isLow = (p: Product) => p.stock_qty < p.min_stock
   const lowCount = all.filter(isLow).length
   const reviewCount = all.filter((p) => p.needs_review).length
-  const rows = filter === 'low' ? all.filter(isLow) : filter === 'review' ? all.filter((p) => p.needs_review) : all
+  const stale = new Map((staleList.data?.items ?? []).map((i) => [i.product_id, i]))
+  const rows =
+    filter === 'low'
+      ? all.filter(isLow)
+      : filter === 'review'
+        ? all.filter((p) => p.needs_review)
+        : filter === 'stale'
+          ? all.filter((p) => stale.has(p.id))
+          : all
   const categoryName = new Map((categories.data ?? []).map((c) => [c.id, c.name]))
   const totalValue = rows.reduce((acc, p) => acc + (p.stock_value_tyiyn ?? 0), 0)
 
@@ -92,6 +107,7 @@ export default function Stock() {
                 ['all', `Все · ${all.length}`],
                 ['low', `Мало · ${lowCount}`],
                 ['review', `Проверить · ${reviewCount}`],
+                ['stale', `Залежался · ${stale.size}`],
               ] as const
             ).map(([key, label]) => (
               <button
@@ -105,6 +121,36 @@ export default function Stock() {
             ))}
           </div>
         </div>
+        {filter === 'stale' && staleList.data && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+            Залежалым считается товар без продаж {staleList.data.stale_days} дней и больше.
+            {owner && (
+              <>
+                <input
+                  className="w-20"
+                  inputMode="numeric"
+                  placeholder={String(staleList.data.stale_days)}
+                  value={staleDays}
+                  onChange={(e) => setStaleDays(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={staleSave.busy || !/^\d+$/.test(staleDays.trim())}
+                  onClick={() =>
+                    void staleSave.run(async () => {
+                      await put('/settings/stock', { stale_days: Number(staleDays) })
+                      setStaleDays('')
+                      staleList.reload()
+                    })
+                  }
+                >
+                  Изменить срок
+                </Button>
+              </>
+            )}
+            <ErrorBox error={staleSave.error ?? staleList.error} />
+          </div>
+        )}
         <ErrorBox error={stock.error ?? categories.error} />
         <ErrorBox error={verify.error ?? review.error} />
         {stock.loading && !stock.data ? (
@@ -121,6 +167,11 @@ export default function Stock() {
                     <div className="mt-1 flex flex-wrap gap-1">
                       {p.stock_qty < p.min_stock && <Badge tone="amber">мало</Badge>}
                       {p.needs_review && <Badge tone="rose">проверить</Badge>}
+                      {stale.has(p.id) && (
+                        <Badge tone="slate">
+                          {stale.get(p.id)?.sold_ever ? 'не продавался' : 'ни разу не продан'} {stale.get(p.id)?.days} дн.
+                        </Badge>
+                      )}
                     </div>
                   </td>
                   <td className="px-2 py-2">{p.article || '—'}</td>

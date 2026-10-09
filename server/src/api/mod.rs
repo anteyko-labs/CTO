@@ -7,11 +7,13 @@ pub mod expenses;
 pub mod gifts;
 pub mod notifications;
 pub mod offline;
+pub mod oil;
 pub mod parties;
 pub mod payroll;
 pub mod receipts;
 pub mod refs;
 pub mod reports;
+pub mod revisions;
 pub mod sales;
 
 use axum::Router;
@@ -27,10 +29,12 @@ pub fn routes() -> Router<AppState> {
         .merge(gifts::routes())
         .merge(notifications::routes())
         .merge(offline::routes())
+        .merge(oil::routes())
         .merge(parties::routes())
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())
         .merge(reports::routes())
+        .merge(revisions::routes())
         .merge(sales::routes())
 }

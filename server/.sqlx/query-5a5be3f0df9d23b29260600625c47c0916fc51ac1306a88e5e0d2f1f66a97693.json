@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select least((date_trunc('month', $1::date) + interval '1 month - 1 day')::date,\n                        (now() at time zone 'Asia/Bishkek')::date) as \"d!\",\n                  date_trunc('month', $1::date) > date_trunc('month', now() at time zone 'Asia/Bishkek')\n                    as \"future!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "d!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "future!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "5a5be3f0df9d23b29260600625c47c0916fc51ac1306a88e5e0d2f1f66a97693"
+}

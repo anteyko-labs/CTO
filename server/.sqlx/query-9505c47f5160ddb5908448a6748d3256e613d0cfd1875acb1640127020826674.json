@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind from cash_accounts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9505c47f5160ddb5908448a6748d3256e613d0cfd1875acb1640127020826674"
+}

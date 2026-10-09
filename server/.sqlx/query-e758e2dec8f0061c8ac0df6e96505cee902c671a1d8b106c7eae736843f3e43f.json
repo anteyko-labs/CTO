@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products\n           set stock_qty = stock_qty + $3,\n               stock_value_tyiyn = stock_value_tyiyn + $4,\n               needs_review = needs_review or (stock_qty + $3 < 0)\n                              or (stock_qty + $3 > 0 and stock_value_tyiyn + $4 <= 0)\n           where branch_id = $1 and product_id = $2\n           returning stock_qty, stock_value_tyiyn, last_cost_qty, last_cost_tyiyn",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stock_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "stock_value_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_cost_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_cost_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e758e2dec8f0061c8ac0df6e96505cee902c671a1d8b106c7eae736843f3e43f"
+}

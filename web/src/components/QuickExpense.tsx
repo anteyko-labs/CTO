@@ -11,6 +11,8 @@ export function QuickExpense({ onClose }: { onClose: () => void }) {
   const articles = useLoad(() => get<ExpenseArticle[]>('/expense-articles'), [])
   const [form, setForm] = useState({ article: '', sum: '', comment: '' })
   const { busy, error, run } = useAction()
+  // Один op_id на открытую форму: повтор после потерянного ответа не задвоит расход.
+  const [opId] = useState(newOpId)
   const active = (articles.data ?? []).filter((a) => a.active && !a.owner_only)
   const notFilled = missingWithFocus(
     [Boolean(form.article), 'статью', '#quick-article'],
@@ -22,7 +24,7 @@ export function QuickExpense({ onClose }: { onClose: () => void }) {
       const sum = parseSom(form.sum)
       if (sum === null || sum <= 0) throw new Error('Неверная сумма')
       await post('/expenses', {
-        op_id: newOpId(),
+        op_id: opId,
         article_id: form.article,
         amount_tyiyn: sum,
         source: 'account',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLiters, formatOilStock, formatSom, parseLiters, parseSom, somInput } from './format'
+import { formatLiters, formatOilStock, formatSom, parseLiters, parseSom, shiftDate, somInput } from './format'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
 
@@ -31,5 +31,11 @@ describe('формат', () => {
     expect(parseSom('abc')).toBeNull()
     expect(parseLiters('1,5')).toBe(1500)
     expect(parseLiters('0,1')).toBe(100)
+  })
+
+  it('сдвиг даты не зависит от часового пояса устройства', () => {
+    expect(shiftDate('2026-03-01', -1)).toBe('2026-02-28')
+    expect(shiftDate('2026-10-08', -7)).toBe('2026-10-01')
+    expect(shiftDate('2026-12-31', 1)).toBe('2027-01-01')
   })
 })

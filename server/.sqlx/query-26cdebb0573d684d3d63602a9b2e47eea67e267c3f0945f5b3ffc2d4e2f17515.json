@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.id, t.number, f.name as from_name, d.name as to_name, t.qty_ml, t.value_tyiyn,\n                  t.comment, u.full_name as user_name, t.created_at\n           from oil_transfers t\n           join products f on f.id = t.from_product_id\n           join products d on d.id = t.to_product_id\n           join users u on u.id = t.user_id\n           where t.branch_id = $1\n           order by t.created_at desc limit 100",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "from_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "to_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "qty_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "value_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "26cdebb0573d684d3d63602a9b2e47eea67e267c3f0945f5b3ffc2d4e2f17515"
+}

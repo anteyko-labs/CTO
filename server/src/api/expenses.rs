@@ -52,7 +52,7 @@ pub async fn ensure_articles(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
         ("Прочее", false),
     ] {
         sqlx::query!(
-            "insert into expense_articles (id, branch_id, name, owner_only) values ($1, $2, $3, $4)",
+            "insert into expense_articles (id, branch_id, name, owner_only) values ($1, $2, $3, $4) on conflict (branch_id, name) do nothing",
             new_id(),
             branch_id,
             name,
@@ -79,7 +79,7 @@ async fn list_articles(
         user.branch_id,
         user.is_owner()
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(Json(rows))
 }
@@ -203,6 +203,7 @@ async fn list(
              and ($3::date is null or e.expense_date <= $3)
              and ($4::uuid is null or e.article_id = $4)
              and ($5 or (not a.owner_only and e.source = 'account'
+                         and c.kind = 'register' and not c.owner_only
                          and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))
            order by e.expense_date desc, e.created_at desc
            limit 500"#,
@@ -259,6 +260,7 @@ async fn post_expense(
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма больше нуля"));
     }
+    crate::ops::check_amount(req.amount_tyiyn)?;
     let source = req.source.unwrap_or_else(|| "account".into());
     if !matches!(source.as_str(), "account" | "outside") {
         return Err(invalid("откуда платим: из кассы или не из денег точки"));
@@ -340,6 +342,7 @@ async fn post_expense(
     .execute(&mut *tx)
     .await?;
     if let Some(acc) = account_id {
+        cash::require_open_shift(&mut tx, branch_id, acc).await?;
         cash::add_movement(
             &mut tx,
             &ctx,
@@ -393,7 +396,8 @@ async fn reverse(
                   e.reversal_of, a.owner_only,
                   exists (select 1 from expenses x where x.reversal_of = e.id) as "reversed!"
            from expenses e join expense_articles a on a.id = e.article_id
-           where e.id = $1 and e.branch_id = $2"#,
+           where e.id = $1 and e.branch_id = $2
+           for update of e"#,
         id,
         branch_id
     )
@@ -408,6 +412,22 @@ async fn reverse(
         && (orig.user_id != ctx.user.id || orig.source != "account" || orig.owner_only)
     {
         return Err(AppError::Forbidden);
+    }
+    // ...и только пока смена, в которой его провели, открыта. Расход вне смены — пока
+    // смену так и не открыли: точка может работать и без смен (ADR-021).
+    if !ctx.user.is_owner() {
+        let acc = orig.account_id.ok_or(AppError::Forbidden)?;
+        let shift = sqlx::query_scalar!(
+            "select shift_id from cash_movements where doc_type = 'expense' and doc_id = $1 and account_id = $2",
+            id,
+            acc
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+        if shift != cash::open_shift_id(&mut tx, branch_id, acc).await? {
+            return Err(AppError::Forbidden);
+        }
     }
     let number = ops::next_counter(&mut tx, branch_id, "expense").await?;
     let rid = new_id();
@@ -429,8 +449,16 @@ async fn reverse(
         ctx.device_id
     )
     .execute(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| {
+        if crate::error::is_unique_violation(&e) {
+            AppError::Conflict("расход уже сторнирован".into())
+        } else {
+            AppError::from(e)
+        }
+    })?;
     if let Some(acc) = orig.account_id {
+        cash::require_open_shift(&mut tx, branch_id, acc).await?;
         cash::add_movement(
             &mut tx,
             &ctx,

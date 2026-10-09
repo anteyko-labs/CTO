@@ -29,6 +29,9 @@ struct GiftRuleOut {
     id: Uuid,
     trigger_product_id: Uuid,
     trigger_name: String,
+    /// Товар-условие — масло: порог в миллилитрах, иначе в штуках.
+    trigger_unit: String,
+    min_units: i64,
     active: bool,
     items: Vec<GiftItem>,
 }
@@ -45,7 +48,8 @@ async fn list(
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Vec<GiftRuleOut>>> {
     let rules = sqlx::query!(
-        r#"select r.id, r.trigger_product_id, p.name as "trigger_name!", r.active
+        r#"select r.id, r.trigger_product_id, p.name as "trigger_name!", p.unit as "trigger_unit!",
+                  r.min_units, r.active
            from gift_rules r join products p on p.id = r.trigger_product_id
            where r.branch_id = $1 and ($2::uuid is null or r.trigger_product_id = $2)
            order by p.name"#,
@@ -69,6 +73,8 @@ async fn list(
             id: r.id,
             trigger_product_id: r.trigger_product_id,
             trigger_name: r.trigger_name,
+            trigger_unit: r.trigger_unit,
+            min_units: r.min_units,
             active: r.active,
             items: items
                 .iter()
@@ -93,6 +99,9 @@ struct ItemReq {
 #[derive(Deserialize)]
 struct RuleReq {
     trigger_product_id: Uuid,
+    /// С какого количества товара-условия дарим: мл у масла, штуки у остального.
+    #[serde(default)]
+    min_units: i64,
     items: Vec<ItemReq>,
 }
 
@@ -108,17 +117,35 @@ async fn create(
     if req.items.is_empty() {
         return Err(invalid("добавьте хотя бы один подарок"));
     }
+    if req.min_units < 0 {
+        return Err(invalid("порог не может быть меньше нуля"));
+    }
+    // Несуществующий товар в правиле дал бы «внутреннюю ошибку» базы: проверяем заранее.
+    let mut ids: Vec<Uuid> = req.items.iter().map(|i| i.gift_product_id).collect();
+    ids.push(req.trigger_product_id);
+    ids.sort();
+    ids.dedup();
     let mut tx = state.pool.begin().await?;
+    let known = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from products where id = any($1) and not archived"#,
+        &ids
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if usize::try_from(known).ok() != Some(ids.len()) {
+        return Err(invalid("товар не найден или в архиве"));
+    }
     let id = new_id();
     sqlx::query!(
-        r#"insert into gift_rules (id, branch_id, trigger_product_id, user_id)
-           values ($1, $2, $3, $4)
+        r#"insert into gift_rules (id, branch_id, trigger_product_id, user_id, min_units)
+           values ($1, $2, $3, $4, $5)
            on conflict (branch_id, trigger_product_id)
-           do update set active = true returning id"#,
+           do update set active = true, min_units = excluded.min_units returning id"#,
         id,
         ctx.user.branch_id,
         req.trigger_product_id,
-        ctx.user.id
+        ctx.user.id,
+        req.min_units
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -128,6 +155,15 @@ async fn create(
         req.trigger_product_id
     )
     .fetch_one(&mut *tx)
+    .await?;
+    // Список подарков заменяется целиком: убранный из формы подарок больше не дарится.
+    let keep: Vec<Uuid> = req.items.iter().map(|i| i.gift_product_id).collect();
+    sqlx::query!(
+        "delete from gift_rule_items where rule_id = $1 and gift_product_id <> all($2)",
+        rule_id,
+        &keep
+    )
+    .execute(&mut *tx)
     .await?;
     for it in &req.items {
         let qty = it.gift_qty.unwrap_or(1);
@@ -150,7 +186,7 @@ async fn create(
         "gift.rule",
         "product",
         Some(req.trigger_product_id),
-        json!({ "items": req.items.len() }),
+        json!({ "items": req.items.len(), "min_units": req.min_units }),
     )
     .await?;
     tx.commit().await?;
@@ -179,16 +215,25 @@ async fn update(
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    let mut tx = state.pool.begin().await?;
     let found = sqlx::query!(
-        "update gift_rules set active = coalesce($3, active) where id = $1 and branch_id = $2 returning id",
+        "update gift_rules set active = coalesce($3, active) where id = $1 and branch_id = $2 returning trigger_product_id, active",
         id,
         ctx.user.branch_id,
         req.active
     )
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "gift.rule_toggle",
+        "product",
+        Some(found.trigger_product_id),
+        json!({ "rule_id": id, "active": found.active }),
+    )
     .await?;
-    if found.is_none() {
-        return Err(AppError::NotFound);
-    }
+    tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }

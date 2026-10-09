@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select balance_tyiyn from cash_accounts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d28592a67832628a0d93efac1e3fd333f8a8171ff1cb41254ac0b1eea9b39f0a"
+}

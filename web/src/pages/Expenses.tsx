@@ -17,6 +17,8 @@ export default function Expenses() {
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const list = useLoad(() => get<Expense[]>(`/expenses${qs({ from, to })}`), [from, to])
   const act = useAction()
+  // op_id формы: повтор после потерянного ответа не задвоит расход, после успеха — новый.
+  const [opId, setOpId] = useState(newOpId)
 
   const active = (articles.data ?? []).filter((a) => a.active)
   const notFilled = missingWithFocus(
@@ -30,7 +32,7 @@ export default function Expenses() {
       const sum = parseSom(form.sum)
       if (sum === null || sum <= 0) throw new Error('Неверная сумма')
       await post('/expenses', {
-        op_id: newOpId(),
+        op_id: opId,
         article_id: form.article,
         amount_tyiyn: sum,
         source: form.outside ? 'outside' : 'account',
@@ -39,6 +41,7 @@ export default function Expenses() {
         comment: form.comment,
       })
       setForm({ ...form, sum: '', comment: '' })
+      setOpId(newOpId())
       list.reload()
       accounts.reload()
       toast('Расход записан')

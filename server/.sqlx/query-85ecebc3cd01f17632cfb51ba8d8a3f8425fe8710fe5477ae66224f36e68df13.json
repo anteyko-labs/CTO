@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(stock_qty), 0)::bigint as \"q!\" from branch_products where product_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "q!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "85ecebc3cd01f17632cfb51ba8d8a3f8425fe8710fe5477ae66224f36e68df13"
+}

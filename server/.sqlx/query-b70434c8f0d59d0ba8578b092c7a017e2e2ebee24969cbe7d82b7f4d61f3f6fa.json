@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update login_attempts set failures = 0, locked_until = now() + make_interval(mins => $2)\n                   where login = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b70434c8f0d59d0ba8578b092c7a017e2e2ebee24969cbe7d82b7f4d61f3f6fa"
+}

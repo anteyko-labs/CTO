@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select category_id, unit, archived, merged_into from products where id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "archived",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "merged_into",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "a8ece93a12e88cdb205ba5bae06778bcc5e3695c76ae3b7dde5dbf4febf41702"
+}

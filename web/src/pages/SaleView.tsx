@@ -7,8 +7,9 @@ import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { divRound } from '../lib/money'
-import { PAYMENT_LABELS, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
+import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
   qty: number
@@ -128,6 +129,7 @@ export default function SaleView() {
   const owner = user.role === 'owner'
   const { data: sale, error, loading } = useLoad(() => get<Sale>(`/sales/${id}`), [id])
   const [returning, setReturning] = useState(false)
+  const docAct = useAction()
 
   if (loading && !sale) return <Loading />
   if (!sale) return <ErrorBox error={error} />
@@ -135,8 +137,21 @@ export default function SaleView() {
   const cost = sale.lines.reduce((acc, l) => acc + (l.cost_tyiyn ?? 0), 0)
   const fullyReturned = sale.kind === 'sale' && sale.returns.reduce((acc, r) => acc + r.total_tyiyn, 0) === -sale.total_tyiyn
 
+  // Расписка физлица в двух экземплярах или накладная юрлица (SPEC-10).
+  const printDoc = () =>
+    void docAct.run(async () => {
+      if (!sale.party_id) return
+      const [party, settings, history] = await Promise.all([
+        get<Party>(`/parties/${sale.party_id}`),
+        get<DebtDocSettings>('/settings/debt-docs'),
+        get<Reconciliation>(`/parties/${sale.party_id}/reconciliation`),
+      ])
+      printDebtDoc({ sale, party, settings, history })
+    })
+
   return (
     <div className="flex flex-col gap-4">
+      <ErrorBox error={docAct.error} />
       <PageHeader
         title={`${sale.kind === 'return' ? 'Возврат' : 'Чек'} № ${sale.number}`}
         actions={
@@ -144,6 +159,11 @@ export default function SaleView() {
             <Button variant="secondary" onClick={() => printSale(sale)}>
               Печать
             </Button>
+            {sale.kind === 'sale' && sale.party_id && sale.payments.some((p) => p.method === 'debt') && (
+              <Button variant="secondary" disabled={docAct.busy} onClick={printDoc}>
+                Документ о долге
+              </Button>
+            )}
             {sale.kind === 'sale' && !fullyReturned && (
               <Button variant="danger" onClick={() => setReturning(true)}>
                 Возврат

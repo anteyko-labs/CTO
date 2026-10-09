@@ -43,46 +43,43 @@ fn session_cookie(state: &AppState, value: &str, max_age: i64) -> String {
 const MAX_FAILURES: i32 = 5;
 const LOCK_MINUTES: i32 = 15;
 
-/// Сколько минут осталось до снятия блокировки логина, если он заблокирован.
-async fn locked_minutes(state: &AppState, key: &str) -> AppResult<Option<i64>> {
-    let left = sqlx::query_scalar!(
-        r#"select ceil(extract(epoch from locked_until - now()) / 60)::bigint as "m!"
-           from login_attempts where login = $1 and locked_until > now()"#,
-        key
-    )
-    .fetch_optional(&state.pool)
-    .await?;
-    Ok(left.map(|m| m.max(1)))
-}
-
-/// Учитывает неудачную попытку; счётчик сбрасывается через LOCK_MINUTES без ошибок.
+/// Учитывает попытку входа до проверки пароля, одной строкой под блокировкой: параллельные
+/// запросы не проскочат лимит (ADR-016). Возвращает минуты до снятия блокировки, если вход закрыт.
 /// Неизвестные логины учитываются так же, чтобы блокировка не выдавала их наличие.
-async fn register_failure(state: &AppState, key: &str) -> AppResult<()> {
-    sqlx::query!(
+/// Успешный вход удаляет строку, поэтому счётчик считает только неудачи.
+async fn reserve_attempt(state: &AppState, key: &str) -> AppResult<Option<i64>> {
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query!(
         r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
            on conflict (login) do update set
              failures = case when login_attempts.last_failed_at < now() - make_interval(mins => $2)
                              then 1 else login_attempts.failures + 1 end,
-             last_failed_at = now()"#,
+             last_failed_at = now()
+           returning failures,
+                     ceil(extract(epoch from locked_until - now()) / 60)::bigint as "left_min?""#,
         key,
         LOCK_MINUTES
     )
-    .execute(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    let locked = sqlx::query!(
-        r#"update login_attempts set failures = 0, locked_until = now() + make_interval(mins => $3)
-           where login = $1 and failures >= $2"#,
-        key,
-        MAX_FAILURES,
-        LOCK_MINUTES
-    )
-    .execute(&state.pool)
-    .await?
-    .rows_affected();
-    if locked > 0 {
-        tracing::warn!(login = %key, "вход заблокирован после неудачных попыток");
-    }
-    Ok(())
+    let left = match row.left_min {
+        Some(m) if m > 0 => Some(m),
+        _ if row.failures > MAX_FAILURES => {
+            sqlx::query!(
+                r#"update login_attempts set failures = 0, locked_until = now() + make_interval(mins => $2)
+                   where login = $1"#,
+                key,
+                LOCK_MINUTES
+            )
+            .execute(&mut *tx)
+            .await?;
+            tracing::warn!(login = %key, "вход заблокирован после неудачных попыток");
+            Some(i64::from(LOCK_MINUTES))
+        }
+        _ => None,
+    };
+    tx.commit().await?;
+    Ok(left)
 }
 
 async fn login(
@@ -90,8 +87,12 @@ async fn login(
     parts: Parts,
     Json(req): Json<LoginReq>,
 ) -> AppResult<impl IntoResponse> {
+    // Логин и пароль разумной длины и без нулевого символа: иначе это не человек у кассы.
+    if req.login.len() > 100 || req.password.len() > 200 || req.login.contains('\0') {
+        return Err(AppError::Unauthorized);
+    }
     let key = req.login.trim().to_lowercase();
-    if let Some(minutes) = locked_minutes(&state, &key).await? {
+    if let Some(minutes) = reserve_attempt(&state, &key).await? {
         return Err(AppError::TooManyRequests(format!(
             "слишком много неудачных попыток, повторите через {minutes} мин"
         )));
@@ -110,10 +111,7 @@ async fn login(
     let ok = verify_password(req.password, hash).await;
     let row = match row {
         Some(r) if ok => r,
-        _ => {
-            register_failure(&state, &key).await?;
-            return Err(AppError::Unauthorized);
-        }
+        _ => return Err(AppError::Unauthorized),
     };
     sqlx::query!("delete from login_attempts where login = $1", key)
         .execute(&state.pool)
@@ -331,7 +329,7 @@ async fn update_user(
         "user.update",
         "user",
         Some(id),
-        json!({ "role": out.role, "active": out.active, "password_changed": hash.is_some() }),
+        json!({ "login": out.login, "role": out.role, "active": out.active, "password_changed": hash.is_some() }),
     )
     .await?;
     tx.commit().await?;

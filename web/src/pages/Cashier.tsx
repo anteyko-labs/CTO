@@ -1,27 +1,32 @@
 // Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
 import { QuickExpense } from '../components/QuickExpense'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
+import { DebtorPayment } from '../components/RepaymentModal'
+import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Missing, toast } from '../components/ui'
-import { get, newOpId, post, qs } from '../lib/api'
-import { enqueueSale, syncOutbox } from '../lib/offline'
+import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
+import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
+import { enqueueSale, markPending, markSent, removeSale } from '../lib/offline'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
-import { PAYMENT_LABELS, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind } from '../lib/types'
+import { PAYMENT_LABELS, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
 
 interface CartLine {
   key: string
   kind: SaleLineKind
   product?: Product
+  /** Работа из справочника услуг: цена и ставка мастера (ADR-043). */
+  service?: Service
   qtyText: string
   priceText: string
   /** Подарок: цена ноль, в чеке помечен (SPEC-11). */
@@ -48,7 +53,8 @@ function remember(key: string, value: string): void {
   }
 }
 
-function listPrice(l: Pick<CartLine, 'kind' | 'product'>): number {
+function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>): number {
+  if (l.kind === 'service') return l.service?.price_tyiyn ?? 0
   if (l.kind === 'pour') return l.product?.pour_price_per_l_tyiyn ?? 0
   return l.product?.sale_price_tyiyn ?? 0
 }
@@ -149,6 +155,8 @@ const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker
 
 export default function Cashier() {
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
+  // Плашка смены: продавать можно и без неё, но деньги потом не с чем сверить (SPEC-05).
+  const shift = useLoad(() => get<Shift | null>('/shifts/current').catch(() => undefined), [])
   const [draft] = useState(loadDraft)
   const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
   const [cashierId, setCashierId] = useState(() => remembered(CASHIER_KEY))
@@ -158,7 +166,8 @@ export default function Cashier() {
   const [payMode, setPayMode] = useState<PayMode>('cash')
   const [received, setReceived] = useState('')
   const [split, setSplit] = useState<Record<PaymentMethod, string>>({ cash: '', card: '', transfer: '', debt: '' })
-  const [opId, setOpId] = useState(newOpId)
+  // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
+  const attempt = useRef<{ key: string; opId: string } | null>(null)
   const [done, setDone] = useState<{ sale: Sale; change: number | null } | null>(null)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
@@ -167,8 +176,17 @@ export default function Cashier() {
   const [parked, setParked] = useState<Parked[]>(loadParked)
   const [parkedId, setParkedId] = useState<string | null>(null)
   const [giftRule, setGiftRule] = useState<GiftRule | null>(null)
+  // Правила подарков по товарам чека и те, от которых в этом чеке уже отказались.
+  const [giftRules, setGiftRules] = useState<Record<string, GiftRule>>({})
+  // Сколько товара-условия было в чеке, когда о подарке уже спросили: отказ не навсегда,
+  // докупили больше — касса спросит снова.
+  const [giftAsked, setGiftAsked] = useState<Record<string, number>>({})
   const [expense, setExpense] = useState(false)
+  const [servicesOpen, setServicesOpen] = useState(false)
+  const [debtPay, setDebtPay] = useState(false)
   const limitAsk = useAction()
+  const innSave = useAction()
+  const [innText, setInnText] = useState('')
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
   const { busy, error, setError, run } = useAction()
@@ -182,11 +200,12 @@ export default function Cashier() {
   useEffect(() => {
     if (!employees.data) return
     const ids = cashiers.map((e) => e.id)
-    if (!ids.includes(cashierId)) setCashierId(ids.length === 1 ? ids[0] : '')
+    // По текущему значению, а не по замкнутому: кассира могли выбрать, пока список грузился.
+    setCashierId((cur) => (ids.includes(cur) ? cur : ids.length === 1 ? ids[0] : ''))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees.data])
   useEffect(() => {
-    if (saleType === 'service' && !masterId && masters.length === 1) setMasterId(masters[0].id)
+    if (saleType === 'service' && masters.length === 1) setMasterId((cur) => cur || masters[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saleType, employees.data])
 
@@ -218,15 +237,32 @@ export default function Cashier() {
   const update = (key: string, patch: Partial<CartLine>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 
-  /** Есть ли к этому товару подарки — спрашиваем сразу после добавления. */
+  /** Есть ли к этому товару подарки: правило запоминается, спросим, когда наберётся порог. */
   const askGift = (p: Product) => {
+    if (giftRules[p.id]) return
     void get<GiftRule[]>(`/gift-rules${qs({ product_id: p.id })}`)
       .then((rules) => {
         const rule = rules.find((r) => r.active && r.items.length > 0)
-        if (rule) setGiftRule(rule)
+        if (rule) setGiftRules((m) => ({ ...m, [p.id]: rule }))
       })
       .catch(() => undefined)
   }
+
+  // Порог набран («от 3 л») и подарка из правила в чеке ещё нет — окно «Выберите подарок» (SPEC-11).
+  useEffect(() => {
+    if (giftRule) return
+    const rule = Object.values(giftRules).find(
+      (r) =>
+        (unitsInCart.get(r.trigger_product_id) ?? 0) >= Math.max(r.min_units, 1) &&
+        (unitsInCart.get(r.trigger_product_id) ?? 0) > (giftAsked[r.id] ?? -1) &&
+        !lines.some((l) => l.gift && r.items.some((i) => i.gift_product_id === l.product?.id)),
+    )
+    if (rule) {
+      setGiftAsked((a) => ({ ...a, [rule.id]: unitsInCart.get(rule.trigger_product_id) ?? 0 }))
+      setGiftRule(rule)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines, giftRules, giftRule])
 
   const addGift = (g: { product_id: string; qty: number; name: string }) => {
     setLines((ls) => [
@@ -241,6 +277,19 @@ export default function Cashier() {
       },
     ])
     setGiftRule(null)
+    focusPicker()
+  }
+
+  /** Услуга встаёт строкой, чек становится «в сервис»: работу делает мастер. */
+  const addService = (s: Service) => {
+    setDone(null)
+    setServicesOpen(false)
+    setLines((ls) => {
+      const same = ls.find((l) => l.kind === 'service' && l.service?.id === s.id)
+      if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(same) ?? 0) + 1) } : l))
+      return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(s.price_tyiyn) }]
+    })
+    setSaleType('service')
     focusPicker()
   }
 
@@ -289,6 +338,8 @@ export default function Cashier() {
     setContactId('')
     setVehicleId('')
     setError(null)
+    setGiftAsked({})
+    attempt.current = null
   }
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
@@ -339,6 +390,7 @@ export default function Cashier() {
     setVehicleId(p.vehicleId)
     setParkedId(p.id)
     setDone(null)
+    attempt.current = null
     focusPicker()
   }
 
@@ -353,17 +405,17 @@ export default function Cashier() {
     [lines.length === 0 || valid, 'количество и цены в строках'],
     [Boolean(cashierId), 'кассира', '#cashier-select'],
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select'],
+    [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»'],
     [payments !== null, 'сумму оплаты', '[data-pay]'],
     [payments === null || paid === total, `оплату: ${formatSom(paid ?? 0)} вместо ${formatSom(total)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
+    [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
   )
 
   const submit = () =>
     run(async () => {
-      const body = {
-        op_id: opId,
-        client_time: new Date().toISOString(),
+      const content = {
         sale_type: saleType,
         cashier_id: cashierId,
         master_id: saleType === 'service' ? masterId : null,
@@ -375,56 +427,76 @@ export default function Cashier() {
           kind: l.kind,
           gift: Boolean(l.gift),
           product_id: l.product?.id ?? null,
-          service_id: null,
+          service_id: l.service?.id ?? null,
           qty: lineQty(l),
           unit_price_tyiyn: parseSom(l.priceText),
+          // Прайс, который видела касса: сервер отличит правку кассира от сменившегося прайса.
+          seen_list_price_tyiyn: l.gift ? 0 : listPrice(l),
         })),
         payments,
       }
+      const key = JSON.stringify(content)
+      if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
+      const opId = attempt.current.opId
+      const body = { op_id: opId, client_time: new Date().toISOString(), ...content }
       // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
       const queued = await enqueueSale(opId, body)
       let sale: Sale
       try {
         sale = await post<Sale>('/sales', body)
       } catch (e) {
-        if (!navigator.onLine) {
-          const offlineSale = {
-            id: '',
-            number: queued.temp_no,
-            kind: 'sale',
-            sale_type: saleType,
-            cashier_name: cashiers.find((c) => c.id === cashierId)?.full_name ?? '',
-            master_name: masters.find((m) => m.id === masterId)?.full_name ?? null,
-            total_tyiyn: total,
-            created_at: new Date().toISOString(),
-            lines: lines.map((l, i) => ({
-              line_no: i + 1,
-              kind: l.kind,
-              gift: Boolean(l.gift),
-              name: l.product?.name ?? '',
-              container_ml: l.product?.container_ml ?? null,
-              qty: lineQty(l) ?? 0,
-              amount_tyiyn: lineAmount(l) ?? 0,
-              unit_price_tyiyn: parseSom(l.priceText) ?? 0,
-              list_price_tyiyn: listPrice(l),
-            })),
-            payments,
-          } as unknown as Sale
-          setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
-          setOpId(newOpId())
-          if (parkedId) dropParked(parkedId)
-          setParkedId(null)
-          reset()
-          focusPicker()
-          return
+        // Ответа нет — это обрыв связи, даже если браузер считает себя в сети.
+        const noAnswer = e instanceof ApiError ? e.status === 0 : !navigator.onLine
+        if (!noAnswer) {
+          // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
+          await removeSale(opId).catch(() => undefined)
+          throw e
         }
-        throw e
+        await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
+        const offlineSale = {
+          id: '',
+          number: queued.temp_no,
+          kind: 'sale',
+          sale_type: saleType,
+          cashier_name: cashiers.find((c) => c.id === cashierId)?.full_name ?? '',
+          master_name: masters.find((m) => m.id === masterId)?.full_name ?? null,
+          total_tyiyn: total,
+          created_at: new Date().toISOString(),
+          lines: lines.map((l, i) => ({
+            line_no: i + 1,
+            kind: l.kind,
+            gift: Boolean(l.gift),
+            name: l.product?.name ?? l.service?.name ?? '',
+            container_ml: l.product?.container_ml ?? null,
+            qty: lineQty(l) ?? 0,
+            amount_tyiyn: lineAmount(l) ?? 0,
+            unit_price_tyiyn: parseSom(l.priceText) ?? 0,
+            list_price_tyiyn: listPrice(l),
+          })),
+          payments,
+        } as unknown as Sale
+        setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
+        if (parkedId) dropParked(parkedId)
+        setParkedId(null)
+        reset()
+        focusPicker()
+        return
       }
-      void syncOutbox()
+      await markSent(opId, sale.number).catch(() => undefined)
       setDone({ sale, change: payMode === 'cash' ? change : null })
+      // Долг сразу оформляется бумагой: расписка физлица в двух экземплярах или накладная фирмы (SPEC-10).
+      if (sale.party_id && sale.payments.some((p) => p.method === 'debt')) {
+        const partyId = sale.party_id
+        void Promise.all([
+          get<Party>(`/parties/${partyId}`),
+          get<DebtDocSettings>('/settings/debt-docs'),
+          get<Reconciliation>(`/parties/${partyId}/reconciliation`),
+        ])
+          .then(([p, settings, history]) => printDebtDoc({ sale, party: p, settings, history }))
+          .catch(() => toast('Документ о долге не напечатан — напечатайте его из чека'))
+      }
       if (parkedId) dropParked(parkedId)
       setParkedId(null)
-      setOpId(newOpId())
       reset()
       focusPicker()
     })
@@ -467,8 +539,31 @@ export default function Cashier() {
             ))}
           </Card>
         )}
+        {shift.data === null && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <span>Смена не открыта: продавать можно, но наличные будет не с чем сверить.</span>
+            <Link to="/shift" className="font-medium underline">
+              Открыть смену
+            </Link>
+          </div>
+        )}
+        {shift.data && (
+          <div className="text-xs text-slate-500">
+            Смена № {shift.data.number} · кассир {shift.data.cashier_name}
+          </div>
+        )}
         <Card>
-          <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
+            </div>
+            <Button variant="secondary" className="shrink-0" onClick={() => setServicesOpen(true)}>
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z" />
+              </svg>
+              Услуги
+            </Button>
+          </div>
         </Card>
 
         {done && (
@@ -510,7 +605,7 @@ export default function Cashier() {
                   <li key={l.key} className="flex flex-wrap items-center gap-3 p-3">
                     <div className="min-w-48 flex-1">
                       <div className="font-medium">
-                        {l.product?.name}
+                        {l.product?.name ?? l.service?.name}
                         {l.gift && (
                           <span className="ml-2">
                             <Badge tone="green">подарок</Badge>
@@ -662,9 +757,14 @@ export default function Cashier() {
               onVehicle={setVehicleId}
             />
           </div>
-          <button type="button" className="self-start text-xs text-sky-700 underline" onClick={() => setExpense(true)}>
-            Мелкий расход из кассы
-          </button>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <button type="button" className="text-xs text-sky-700 underline" onClick={() => setDebtPay(true)}>
+              Принять оплату долга
+            </button>
+            <button type="button" className="text-xs text-sky-700 underline" onClick={() => setExpense(true)}>
+              Мелкий расход из кассы
+            </button>
+          </div>
           {employees.data && cashiers.length === 0 && (
             <div className="text-sm text-amber-700">
               В справочнике нет кассиров. <Link className="underline" to="/employees">Добавить сотрудника</Link>
@@ -765,6 +865,38 @@ export default function Cashier() {
               )}
             </div>
           )}
+          {debtAmount > 0 && party && !party.inn.trim() && (
+            <div className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+              <div className="text-amber-900">
+                Для документа о долге нужен {party.kind === 'company' ? 'ИНН фирмы' : 'ПИН клиента (14 цифр с паспорта)'}.
+              </div>
+              <div className="flex gap-2">
+                <input
+                  id="debt-inn"
+                  className="min-w-0 flex-1"
+                  inputMode="numeric"
+                  placeholder={party.kind === 'company' ? 'ИНН' : 'ПИН'}
+                  value={innText}
+                  onChange={(e) => setInnText(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={innSave.busy || !/^\d{10,14}$/.test(innText.trim())}
+                  onClick={() =>
+                    void innSave.run(async () => {
+                      const saved = await patch<Party>(`/parties/${party.id}`, { inn: innText.trim() })
+                      setParty({ ...party, inn: saved.inn })
+                      setInnText('')
+                      toast('Записано в карточку клиента')
+                    })
+                  }
+                >
+                  Записать
+                </Button>
+              </div>
+              <ErrorBox error={innSave.error} />
+            </div>
+          )}
           {payMode === 'mixed' && (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
@@ -812,6 +944,8 @@ export default function Cashier() {
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {expense && <QuickExpense onClose={() => setExpense(false)} />}
+      {servicesOpen && <ServicePicker onPick={addService} onClose={() => setServicesOpen(false)} />}
+      {debtPay && <DebtorPayment onClose={() => setDebtPay(false)} />}
       {unknownCode !== null && (
         <UnknownCodeModal
           code={unknownCode}

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())\n           on conflict (login) do update set\n             failures = case when login_attempts.last_failed_at < now() - make_interval(mins => $2)\n                             then 1 else login_attempts.failures + 1 end,\n             last_failed_at = now()\n           returning failures,\n                     ceil(extract(epoch from locked_until - now()) / 60)::bigint as \"left_min?\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failures",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "left_min?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "d5a1f50b76014f5ac160ac191983218368189254458727c5930df7f7e66546c9"
+}

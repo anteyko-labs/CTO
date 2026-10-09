@@ -16,6 +16,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/reports/profit", routing::get(profit))
         .route("/owner/dashboard", routing::get(dashboard))
+        .route("/reports/gifts", routing::get(gifts))
 }
 
 #[derive(Serialize, Default)]
@@ -101,6 +102,17 @@ async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Переоценка остатков (ADR-044): списанная стоимость — тоже себестоимость.
+    let revaluation = sqlx::query_scalar!(
+        r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
+           where branch_id = $1 and doc_type in ('revaluation', 'revision')
+             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let count = sqlx::query_scalar!(
         r#"select count(*) as "n!" from sales
            where branch_id = $1 and business_date between $2 and $3 and kind = 'sale'"#,
@@ -119,10 +131,14 @@ async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Комиссия банка: с чеков и с погашений долга картой или переводом (ADR-022).
     let fee = sqlx::query_scalar!(
-        r#"select coalesce(sum(p.fee_tyiyn), 0)::bigint as "v!"
-           from sale_payments p join sales s on s.id = p.sale_id
-           where s.branch_id = $1 and s.business_date between $2 and $3"#,
+        r#"select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                             where s.branch_id = $1 and s.business_date between $2 and $3), 0)
+                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
+                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
+                               and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)
+                 )::bigint as "v!""#,
         branch_id,
         from,
         to
@@ -138,17 +154,22 @@ async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let revenue = lines.goods + lines.services;
-    let gross = revenue - lines.cost;
+    // Суммы из базы; насыщение вместо паники на заведомо нереальных значениях.
+    let revenue = lines.goods.saturating_add(lines.services);
+    let cost = lines.cost.saturating_add(revaluation);
+    let gross = revenue.saturating_sub(cost);
     Ok(Totals {
         goods_tyiyn: lines.goods,
         services_tyiyn: lines.services,
-        cost_tyiyn: lines.cost,
+        cost_tyiyn: cost,
         gross_tyiyn: gross,
         payroll_tyiyn: payroll,
         bank_fee_tyiyn: fee,
         expenses_tyiyn: expenses,
-        net_tyiyn: gross - payroll - fee - expenses,
+        net_tyiyn: gross
+            .saturating_sub(payroll)
+            .saturating_sub(fee)
+            .saturating_sub(expenses),
         margin_bp: (revenue != 0)
             .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
             .flatten(),
@@ -207,14 +228,20 @@ async fn profit(
            select d.day as "day!",
              coalesce((select sum(l.amount_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
                        where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "revenue!",
-             coalesce((select sum(l.amount_tyiyn - l.cost_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
-                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "gross!",
+             (coalesce((select sum(l.amount_tyiyn - l.cost_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
+                        where s.branch_id = $1 and s.business_date = d.day), 0)
+              + coalesce((select sum(m.value_delta_tyiyn) from stock_movements m
+                          where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')
+                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "gross!",
              coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
                        where a.branch_id = $1 and a.business_date = d.day), 0)::bigint as "payroll!",
              coalesce((select sum(e.amount_tyiyn) from expenses e
                        where e.branch_id = $1 and e.expense_date = d.day), 0)::bigint as "expenses!",
-             coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
-                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "fee!"
+             (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                        where s.branch_id = $1 and s.business_date = d.day), 0)
+              + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
+                          where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
+                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "fee!"
            from d order by d.day desc"#,
         branch_id,
         from,
@@ -229,7 +256,11 @@ async fn profit(
         gross_tyiyn: r.gross,
         payroll_tyiyn: r.payroll,
         expenses_tyiyn: r.expenses,
-        net_tyiyn: r.gross - r.payroll - r.expenses - r.fee,
+        net_tyiyn: r
+            .gross
+            .saturating_sub(r.payroll)
+            .saturating_sub(r.expenses)
+            .saturating_sub(r.fee),
     })
     .collect();
 
@@ -308,6 +339,8 @@ struct Dashboard {
     debts_out_tyiyn: i64,
     low_stock: i64,
     needs_review: i64,
+    /// Залежалые: остаток есть, продаж нет дольше срока (ADR-039).
+    stale_stock: i64,
 }
 
 async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Dashboard>> {
@@ -379,6 +412,7 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
     )
     .fetch_one(&mut *conn)
     .await?;
+    let (_, stale) = crate::api::receipts::stale_list(&mut conn, branch_id).await?;
     let revenue = totals.goods_tyiyn + totals.services_tyiyn;
     Ok(Json(Dashboard {
         date,
@@ -389,7 +423,9 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
         },
         totals,
         returns_tyiyn: returns,
-        money_total_tyiyn: accounts.iter().map(|a| a.balance_tyiyn).sum(),
+        money_total_tyiyn: accounts
+            .iter()
+            .fold(0i64, |acc, a| acc.saturating_add(a.balance_tyiyn)),
         accounts,
         shift_open: shift.is_some(),
         shift_cashier: shift.map(|s| s.cashier),
@@ -398,5 +434,56 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
         debts_out_tyiyn: debts.we_owe,
         low_stock: stock.low,
         needs_review: stock.review,
+        stale_stock: i64::try_from(stale.len()).unwrap_or(i64::MAX),
     }))
+}
+
+#[derive(Deserialize)]
+struct GiftsQuery {
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+#[derive(Serialize)]
+struct GiftRow {
+    product_id: Uuid,
+    name: String,
+    unit: String,
+    /// Подарено за вычетом возвратов: штук или мл.
+    qty: i64,
+    checks: i64,
+    cost_tyiyn: i64,
+}
+
+/// Отчёт по подаркам: что и сколько подарили и во что это обошлось (SPEC-11). Только владелец.
+async fn gifts(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<GiftsQuery>,
+) -> AppResult<Json<Vec<GiftRow>>> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if q.from > q.to {
+        return Err(invalid("начало периода позже конца"));
+    }
+    let rows = sqlx::query_as!(
+        GiftRow,
+        r#"select p.id as "product_id!", p.name as "name!", p.unit as "unit!",
+                  coalesce(sum(case when s.kind = 'return' then -l.units else l.units end), 0)::bigint as "qty!",
+                  count(distinct s.id) filter (where s.kind = 'sale') as "checks!",
+                  coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost_tyiyn!"
+           from sale_lines l
+           join sales s on s.id = l.sale_id
+           join products p on p.id = l.product_id
+           where l.gift and s.branch_id = $1 and s.business_date between $2 and $3
+           group by p.id, p.name, p.unit
+           order by 6 desc"#,
+        user.branch_id,
+        q.from,
+        q.to
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(rows))
 }

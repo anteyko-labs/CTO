@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update products set archived = true, merged_into = $2 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "204188658d155122b9b7ca2567b4751e41192bc854f248d60e3f75871e623741"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.employee_id, a.kind, a.rule_id,\n                  coalesce(sum(a.amount_tyiyn), 0)::bigint as \"net!\",\n                  coalesce(sum(a.amount_tyiyn) filter (where a.amount_tyiyn > 0), 0)::bigint as \"accrued!\",\n                  coalesce(sum(a.base_tyiyn) filter (where a.amount_tyiyn > 0), 0)::bigint as \"base!\"\n           from payroll_accruals a\n           where a.branch_id = $1 and a.kind in ('service_fee', 'revenue_percent')\n             and ((a.doc_type = 'sale' and a.doc_id = $2)\n                  or (a.doc_type = 'sale_return'\n                      and a.doc_id in (select id from sales where reversal_of = $2)))\n           group by a.employee_id, a.kind, a.rule_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "rule_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "net!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "base!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "17b4794cae106fbc68db80cbcfd0529c7698447d7dd5b80912ba2f5135eb8008"
+}

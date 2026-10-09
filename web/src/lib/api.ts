@@ -36,6 +36,12 @@ export function setUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn
 }
 
+/** Текст ошибки, когда сервер не объяснил её сам. */
+function statusMessage(status: number): string {
+  if ([502, 503, 504, 530].includes(status)) return 'Сервер недоступен, попробуйте позже'
+  return `Ошибка ${status}`
+}
+
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response
   try {
@@ -51,13 +57,26 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   } catch {
     throw new ApiError(0, 'network', 'Нет связи с сервером')
   }
-  const text = await res.text()
-  const data: unknown = text ? JSON.parse(text) : null
+  let text: string
+  try {
+    text = await res.text()
+  } catch {
+    throw new ApiError(0, 'network', 'Нет связи с сервером')
+  }
+  // Не JSON приходит, когда отвечает не наш сервер: страница ошибки туннеля или прокси.
+  let data: unknown = null
+  let parsed = true
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    parsed = false
+  }
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/auth/')) onUnauthorized()
     const err = (data as { error?: { code?: string; message?: string } } | null)?.error
-    throw new ApiError(res.status, err?.code ?? 'error', err?.message ?? `Ошибка ${res.status}`)
+    throw new ApiError(res.status, err?.code ?? 'error', err?.message ?? statusMessage(res.status))
   }
+  if (!parsed) throw new ApiError(res.status, 'bad_response', 'Сервер прислал непонятный ответ, попробуйте ещё раз')
   return data as T
 }
 

@@ -163,16 +163,29 @@ async fn rejected(
     ctx: Ctx,
     Json(req): Json<RejectedReq>,
 ) -> AppResult<Json<serde_json::Value>> {
+    const KIND: &str = "sale.offline_rejected";
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    // Чек целиком — если он разумного размера; иначе хватит итога и числа строк.
+    let body = if req.body.to_string().len() <= 64 * 1024 {
+        req.body
+    } else {
+        json!({ "truncated": true, "lines": req.body.get("lines").and_then(|l| l.as_array()).map_or(0, Vec::len) })
+    };
+    let error: String = req.error.chars().take(500).collect();
     ops::audit(
         &mut tx,
         &ctx,
-        "sale.offline_rejected",
+        KIND,
         "sale",
         None,
-        json!({ "op_id": req.op_id, "error": req.error, "body": req.body }),
+        json!({ "op_id": req.op_id, "error": error, "body": body }),
     )
     .await?;
+    let out = json!({ "ok": true });
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(out))
 }

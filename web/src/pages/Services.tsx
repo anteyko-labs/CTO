@@ -8,7 +8,7 @@ import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Service } from '../lib/types'
 
-const FEE_HINT = 'Начисляется мастеру за каждую такую работу в чеке'
+const FEE_HINT = 'Из цены услуги — мастеру, остальное остаётся в кассе. Ставку задаёт владелец'
 
 function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn: number } {
   const p = parseSom(price)
@@ -19,6 +19,7 @@ function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_
 }
 
 function EditModal({ service, onClose, onSaved }: { service: Service; onClose: () => void; onSaved: () => void }) {
+  const owner = useUser().role === 'owner'
   const [form, setForm] = useState({
     name: service.name,
     price: somInput(service.price_tyiyn),
@@ -44,11 +45,11 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Цена, с">
-            <input inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+          <Field label="Цена, с" hint={owner ? undefined : 'Цену меняет владелец'}>
+            <input inputMode="decimal" disabled={!owner} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
           </Field>
           <Field label="Мастеру, с" hint={FEE_HINT}>
-            <input inputMode="decimal" value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
+            <input inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
           </Field>
         </div>
         <Checkbox label="Активна" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
@@ -108,8 +109,9 @@ function OilChangeFee() {
 }
 
 export default function Services() {
+  const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
-  const [form, setForm] = useState({ name: '', price: '', fee: '30' })
+  const [form, setForm] = useState({ name: '', price: '', fee: '' })
   const [editing, setEditing] = useState<Service | null>(null)
   const { busy, error, run } = useAction()
 
@@ -117,7 +119,7 @@ export default function Services() {
     e.preventDefault()
     void run(async () => {
       await post<Service>('/services', { name: form.name, ...amounts(form.price, form.fee) })
-      setForm({ name: '', price: '', fee: '30' })
+      setForm({ name: '', price: '', fee: '' })
       list.reload()
     })
   }
@@ -142,14 +144,14 @@ export default function Services() {
             <input id="service-price" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
           </Field>
           <Field label="Мастеру, с">
-            <input inputMode="decimal" value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
+            <input inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
           </Field>
           <Button type="submit" disabled={busy || notFilled.length > 0}>
             Добавить
           </Button>
         </form>
         <p className="mt-2 text-xs text-slate-500">
-          {FEE_HINT}. Замена масла здесь не нужна: она отмечается в чеке и платится ставкой выше.
+          {FEE_HINT}. Услуги появляются в кассе под кнопкой «Услуги». Замена с нашим маслом отмечается в чеке «В сервис» и платится ставкой выше; если клиент привёз своё масло — заведите для этого услугу, например «Замена масла (масло клиента)».
         </p>
         <div className="mt-2 flex flex-col gap-2">
           <Missing items={notFilled} />
@@ -162,7 +164,7 @@ export default function Services() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty>Услуг пока нет. Замена масла здесь не нужна — она отмечается в чеке.</Empty>
+          <Empty>Услуг пока нет. Добавьте, например, «Замена масла (масло клиента)» — она сразу появится в кассе.</Empty>
         ) : (
           <Table head={['Название', 'Цена', 'Мастеру', 'Статус']}>
             {list.data.map((s) => (

@@ -2,6 +2,8 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
+import { ReconciliationButton } from '../components/ReconciliationButton'
+import { RepaymentModal } from '../components/RepaymentModal'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -35,6 +37,8 @@ function MoneyModal({
   const [comment, setComment] = useState('')
   const [sign, setSign] = useState<1 | -1>(adjust ? 1 : 1)
   const { busy, error, run } = useAction()
+  // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
+  const [opId] = useState(newOpId)
 
   const save = () =>
     run(async () => {
@@ -42,9 +46,9 @@ function MoneyModal({
       if (v === null || v <= 0) throw new Error('Неверная сумма')
       if (adjust) {
         if (!comment.trim()) throw new Error('Укажите причину правки')
-        await post('/debts/adjust', { op_id: newOpId(), party_id: party.id, amount_tyiyn: sign * v, comment })
+        await post('/debts/adjust', { op_id: opId, party_id: party.id, amount_tyiyn: sign * v, comment })
       } else {
-        await post('/debts/repayments', { op_id: newOpId(), party_id: party.id, amount_tyiyn: v, comment })
+        await post('/debts/repayments', { op_id: opId, party_id: party.id, amount_tyiyn: v, comment })
       }
       toast(adjust ? 'Баланс исправлен' : 'Погашение записано')
       onDone()
@@ -106,6 +110,8 @@ export default function ClientCard() {
   const navigate = useNavigate()
   const owner = useUser().role === 'owner'
   const [money, setMoney] = useState<null | 'repay' | 'adjust'>(null)
+  const [reversing, setReversing] = useState<{ item: PartyTimelineItem; comment: string; opId: string } | null>(null)
+  const revAct = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const [limits, setLimits] = useState<{ limit: string; days: string } | null>(null)
   const [value, setValue] = useState('')
@@ -156,6 +162,7 @@ export default function ClientCard() {
             <Button variant="secondary" onClick={() => navigate('/clients')}>
               К списку
             </Button>
+            <ReconciliationButton partyId={party.id} />
             {owner && (
               <Button variant="secondary" onClick={() => setMoney('adjust')}>
                 Правка баланса
@@ -175,6 +182,11 @@ export default function ClientCard() {
             {formatSom(Math.abs(party.balance_tyiyn))}
           </div>
           <div className="text-xs text-slate-500">{balanceText(party.balance_tyiyn)}</div>
+          {party.overdue_tyiyn > 0 && (
+            <div className="mt-1">
+              <Badge tone="rose">просрочено {formatSom(party.overdue_tyiyn)}</Badge>
+            </div>
+          )}
         </div>
         <div>
           <div className="text-xs text-slate-500">Покупок</div>
@@ -319,6 +331,11 @@ export default function ClientCard() {
                       Чек
                     </Link>
                   )}
+                  {owner && t.reversible && (
+                    <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ item: t, comment: '', opId: newOpId() })}>
+                      Сторно
+                    </Button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -326,11 +343,53 @@ export default function ClientCard() {
         )}
       </Card>
 
-      {money && (
-        <MoneyModal
-          title={money === 'repay' ? 'Погашение долга' : 'Правка баланса'}
+      {reversing && (
+        <Modal title={`Сторно: ${reversing.item.title.toLowerCase()} ${formatSom(Math.abs(reversing.item.amount_tyiyn))}`} onClose={() => setReversing(null)}>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm text-slate-600">
+              Запись останется в истории, рядом появится обратная. Деньги погашения уйдут из той кассы, куда пришли.
+            </div>
+            <Field label="Причина" required>
+              <input autoFocus value={reversing.comment} onChange={(e) => setReversing({ ...reversing, comment: e.target.value })} />
+            </Field>
+            <ErrorBox error={revAct.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setReversing(null)}>
+                Отмена
+              </Button>
+              <Button
+                variant="danger"
+                disabled={revAct.busy || !reversing.comment.trim()}
+                onClick={() =>
+                  void revAct.run(async () => {
+                    await post(`/debts/ledger/${reversing.item.ledger_id}/reverse`, { op_id: reversing.opId, comment: reversing.comment })
+                    setReversing(null)
+                    card.reload()
+                    toast('Сторно проведено')
+                  })
+                }
+              >
+                Провести сторно
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {money === 'repay' && (
+        <RepaymentModal
           party={party}
-          adjust={money === 'adjust'}
+          onClose={() => setMoney(null)}
+          onDone={() => {
+            setMoney(null)
+            card.reload()
+          }}
+        />
+      )}
+      {money === 'adjust' && (
+        <MoneyModal
+          title="Правка баланса"
+          party={party}
+          adjust
           onClose={() => setMoney(null)}
           onDone={() => {
             setMoney(null)

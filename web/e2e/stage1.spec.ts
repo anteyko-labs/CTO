@@ -74,7 +74,7 @@ test('товар, приход, продажа, возврат и остаток
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 
   // Возврат одной штуки.
-  await page.getByRole('link', { name: 'Открыть' }).click()
+  await page.getByRole('link', { name: 'Открыть', exact: true }).click()
   await expect(page.getByRole('heading', { name: /^Чек № \d+$/ })).toBeVisible()
   await page.getByRole('button', { name: 'Возврат' }).click()
   await page.getByRole('row', { name: new RegExp(product) }).getByRole('textbox').fill('1')

@@ -3,16 +3,9 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
-import { formatDateTime, formatSom, todayBishkek } from '../lib/format'
+import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import type { ReceiptListItem } from '../lib/types'
-
-/** Дата YYYY-MM-DD, сдвинутая на `days` дней. */
-function shiftDate(date: string, days: number): string {
-  const d = new Date(`${date}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
 
 export default function Receipts() {
   const navigate = useNavigate()

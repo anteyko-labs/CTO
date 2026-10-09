@@ -12,6 +12,13 @@ document.addEventListener('focusin', (e) => {
   }
 })
 
+// Просим браузер не вычищать хранилище: в нём очередь чеков, ещё не ушедших на сервер (SPEC-09).
+try {
+  void navigator.storage?.persist?.().catch(() => undefined)
+} catch {
+  // Браузер без Storage API — очередь живёт по общим правилам.
+}
+
 const root = document.getElementById('root')
 if (root) {
   createRoot(root).render(

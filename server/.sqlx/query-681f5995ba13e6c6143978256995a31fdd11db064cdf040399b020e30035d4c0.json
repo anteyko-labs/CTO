@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number, from_account_id, to_account_id, amount_tyiyn, reversal_of\n           from cash_transfers where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "from_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "to_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "681f5995ba13e6c6143978256995a31fdd11db064cdf040399b020e30035d4c0"
+}

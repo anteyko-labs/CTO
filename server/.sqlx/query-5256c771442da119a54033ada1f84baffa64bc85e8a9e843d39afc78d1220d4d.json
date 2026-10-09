@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"v!\" from party_ledger\n           where party_id = $1 and business_date < $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5256c771442da119a54033ada1f84baffa64bc85e8a9e843d39afc78d1220d4d"
+}

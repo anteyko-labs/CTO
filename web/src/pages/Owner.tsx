@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
-import { formatSom, todayBishkek } from '../lib/format'
-import { useLoad } from '../lib/hooks'
+import { formatSom, shiftDate, todayBishkek } from '../lib/format'
+import { useLoad, usePolling } from '../lib/hooks'
 import type { Dashboard, ProfitReport } from '../lib/types'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
@@ -20,6 +20,8 @@ function Tile({ label, value, tone = '' }: { label: string; value: string; tone?
 /** Сводка владельца: что с точкой прямо сейчас (SPEC-08). */
 export function OwnerDashboard() {
   const d = useLoad(() => get<Dashboard>('/owner/dashboard'), [])
+  // Сводка живая: чеки с кассы появляются без перезагрузки страницы.
+  usePolling(d.reload)
   if (d.loading && !d.data) return <Loading />
   if (!d.data) return <ErrorBox error={d.error} />
   const t = d.data.totals
@@ -79,7 +81,7 @@ export function OwnerDashboard() {
           </div>
         </Card>
 
-        {(d.data.low_stock > 0 || d.data.needs_review > 0) && (
+        {(d.data.low_stock > 0 || d.data.needs_review > 0 || d.data.stale_stock > 0) && (
           <Card className="flex flex-wrap items-center gap-3 text-sm">
             {d.data.low_stock > 0 && (
               <Link to="/stock" className="underline">
@@ -89,6 +91,11 @@ export function OwnerDashboard() {
             {d.data.needs_review > 0 && (
               <Link to="/stock" className="underline">
                 <Badge tone="rose">проверить остаток: {d.data.needs_review}</Badge>
+              </Link>
+            )}
+            {d.data.stale_stock > 0 && (
+              <Link to="/stock" className="underline">
+                <Badge tone="slate">залежался: {d.data.stale_stock}</Badge>
               </Link>
             )}
           </Card>
@@ -105,9 +112,7 @@ export default function Profit() {
   const [to, setTo] = useState(today)
   const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to })}`), [from, to])
   const quick = (days: number) => {
-    const d = new Date()
-    d.setDate(d.getDate() - days)
-    setFrom(d.toLocaleDateString('sv-SE'))
+    setFrom(shiftDate(today, -days))
     setTo(today)
   }
 

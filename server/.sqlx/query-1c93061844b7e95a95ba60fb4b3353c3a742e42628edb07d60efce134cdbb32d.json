@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(min(business_date), (now() at time zone 'Asia/Bishkek')::date) as \"first!\",\n                  (now() at time zone 'Asia/Bishkek')::date as \"today!\"\n           from party_ledger where party_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "first!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "today!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "1c93061844b7e95a95ba60fb4b3353c3a742e42628edb07d60efce134cdbb32d"
+}

@@ -492,9 +492,10 @@ async fn similar_products(
     let mut conn = state.pool.acquire().await?;
     let ids = sqlx::query_scalar!(
         r#"select id from products
-           where not archived and (similarity(name, $1) >= 0.3 or name ilike '%' || $1 || '%')
+           where not archived and (similarity(name, $1) >= 0.3 or name ilike '%' || $2 || '%')
            order by similarity(name, $1) desc limit 5"#,
-        name
+        name,
+        escape_like(name)
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -633,7 +634,9 @@ async fn create_product(
     }
     let (unit, container_ml) = if kind == "oil" {
         match req.container_ml {
-            Some(v) if v > 0 => ("ml", Some(v)),
+            // Бочка 200 л — уже много; тысяча литров — предел, дальше явная ошибка ввода.
+            Some(v) if (1..=1_000_000).contains(&v) => ("ml", Some(v)),
+            Some(v) if v > 1_000_000 => return Err(invalid("объём тары не больше 1000 л")),
             _ => return Err(invalid("для масла укажите объём канистры")),
         }
     } else {
@@ -645,6 +648,8 @@ async fn create_product(
     {
         return Err(invalid("цены и минимальный остаток не отрицательны"));
     }
+    ops::check_amount(req.sale_price_tyiyn)?;
+    ops::check_amount(req.pour_price_per_l_tyiyn.unwrap_or(0))?;
     if req.pour_price_per_l_tyiyn.is_some() && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
@@ -730,12 +735,37 @@ async fn update_product(
 ) -> AppResult<Json<ProductOut>> {
     let mut tx = state.pool.begin().await?;
     let cur = sqlx::query!(
-        "select category_id, unit from products where id = $1 for update",
+        "select category_id, unit, archived, merged_into from products where id = $1 for update",
         id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Архив меняет владелец; влитый дубль из архива не возвращается, карточку с остатком
+    // в архив не убрать — остаток стал бы невидимым (ADR-044).
+    if let Some(arch) = req.archived.filter(|a| *a != cur.archived) {
+        if !ctx.user.is_owner() {
+            return Err(AppError::Forbidden);
+        }
+        if !arch && cur.merged_into.is_some() {
+            return Err(invalid(
+                "карточка влита в другую и из архива не возвращается",
+            ));
+        }
+        if arch {
+            let stock = sqlx::query_scalar!(
+                r#"select coalesce(sum(stock_qty), 0)::bigint as "q!" from branch_products where product_id = $1"#,
+                id
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            if stock != 0 {
+                return Err(invalid(
+                    "на складе есть остаток: объедините карточку с основной или спишите его",
+                ));
+            }
+        }
+    }
     let category_id = req.category_id.unwrap_or(cur.category_id);
     let (kind, defs) = category_info(&mut tx, category_id).await?;
     if (kind == "oil") != (cur.unit == "ml") {
@@ -810,6 +840,13 @@ async fn update_prices(
     {
         return Err(invalid("значения не отрицательны"));
     }
+    // Цена с потолком одной операции (ADR-045).
+    for v in [req.sale_price_tyiyn, req.pour_price_per_l_tyiyn]
+        .into_iter()
+        .flatten()
+    {
+        ops::check_amount(v)?;
+    }
     let mut tx = state.pool.begin().await?;
     let unit = sqlx::query_scalar!("select unit from products where id = $1", id)
         .fetch_optional(&mut *tx)
@@ -838,6 +875,9 @@ async fn update_prices(
     )
     .execute(&mut *tx)
     .await?;
+    let name = sqlx::query_scalar!("select name from products where id = $1", id)
+        .fetch_one(&mut *tx)
+        .await?;
     ops::audit(
         &mut tx,
         &ctx,
@@ -845,6 +885,7 @@ async fn update_prices(
         "product",
         Some(id),
         json!({
+            "name": name,
             "old_sale_price_tyiyn": old.sale_price_tyiyn,
             "sale_price_tyiyn": req.sale_price_tyiyn.unwrap_or(old.sale_price_tyiyn),
             "old": { "sale": old.sale_price_tyiyn, "pour": old.pour_price_per_l_tyiyn, "min_stock": old.min_stock },
@@ -883,10 +924,15 @@ async fn add_barcode(
     Json(req): Json<BarcodeReq>,
 ) -> AppResult<Json<BarcodeOut>> {
     let mut tx = state.pool.begin().await?;
-    sqlx::query_scalar!("select id from products where id = $1", id)
+    let archived = sqlx::query_scalar!("select archived from products where id = $1", id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
+    if archived {
+        return Err(invalid(
+            "товар в архиве: штрихкод привязывается к основной карточке",
+        ));
+    }
     let (code, internal) = match req
         .code
         .map(|c| c.trim().to_string())
@@ -920,6 +966,11 @@ async fn remove_barcode(
     Path((id, code)): Path<(Uuid, String)>,
 ) -> AppResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
+    // Блокировка товара: два одновременных удаления не оставят его совсем без кода (ADR-026).
+    sqlx::query_scalar!("select id from products where id = $1 for update", id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let total = sqlx::query_scalar!(
         "select count(*) as \"n!\" from product_barcodes where product_id = $1",
         id
@@ -984,6 +1035,16 @@ async fn merge_product(
         return Ok(Json(done));
     }
     let branch_id = ctx.user.branch_id;
+    // Обе карточки блокируются в порядке id до проверки архива: встречные объединения
+    // не ждут друг друга вечно, а товар, который уже ушёл в архив, не примет остаток.
+    let mut both = [id, req.into_product_id];
+    both.sort();
+    sqlx::query!(
+        "select id from products where id = any($1) order by id for no key update",
+        &both[..]
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     let dup = sqlx::query!(
         "select name, unit, container_ml, archived from products where id = $1",
         id
@@ -1006,8 +1067,9 @@ async fn merge_product(
     }
 
     // Остаток и его стоимость переезжают движениями: история склада остаётся сходящейся.
+    ops::lock_pool(&mut tx, branch_id, both[0]).await?;
+    ops::lock_pool(&mut tx, branch_id, both[1]).await?;
     let pool = ops::lock_pool(&mut tx, branch_id, id).await?;
-    ops::lock_pool(&mut tx, branch_id, req.into_product_id).await?;
     let (qty, value) = (pool.qty, pool.value);
     if qty != 0 || value != 0 {
         ops::apply_movement(
@@ -1042,9 +1104,34 @@ async fn merge_product(
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query!("update products set archived = true where id = $1", id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "update products set archived = true, merged_into = $2 where id = $1",
+        id,
+        req.into_product_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    // Остаток дубля ушёл к основному товару: снимаем его отметку «проверить», а последнюю
+    // закупочную цену отдаём основному, если своей у него ещё нет.
+    sqlx::query!(
+        r#"update branch_products m
+           set last_cost_qty = d.last_cost_qty, last_cost_tyiyn = d.last_cost_tyiyn
+           from branch_products d
+           where m.branch_id = $1 and m.product_id = $2 and d.branch_id = $1 and d.product_id = $3
+             and m.last_cost_qty = 0 and d.last_cost_qty > 0"#,
+        branch_id,
+        req.into_product_id,
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "update branch_products set needs_review = false where branch_id = $1 and product_id = $2",
+        branch_id,
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
     ops::audit(
         &mut tx,
         &ctx,

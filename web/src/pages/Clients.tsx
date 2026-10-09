@@ -147,6 +147,11 @@ export default function Clients() {
                   ) : (
                     <Badge tone={p.balance_tyiyn > 0 ? 'amber' : 'sky'}>{balanceText(p.balance_tyiyn)}</Badge>
                   )}
+                  {p.overdue_tyiyn > 0 && (
+                    <span className="ml-2">
+                      <Badge tone="rose">просрочено {formatSom(p.overdue_tyiyn)}</Badge>
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}

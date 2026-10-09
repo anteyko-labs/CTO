@@ -44,6 +44,7 @@ impl AppError {
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
+            Self::Db(e) if bad_text(e) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Db(_) | Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
@@ -53,6 +54,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, code) = self.status_and_code();
         let message = match &self {
+            Self::Db(e) if bad_text(e) => "в тексте недопустимые символы".to_string(),
             Self::Db(e) => {
                 tracing::error!(error = %e, "ошибка базы данных");
                 "внутренняя ошибка".to_string()
@@ -69,6 +71,11 @@ impl IntoResponse for AppError {
         )
             .into_response()
     }
+}
+
+/// База не принимает такой текст: нулевой символ или неверная кодировка (22021, 22P05).
+fn bad_text(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(d) if matches!(d.code().as_deref(), Some("22021" | "22P05")))
 }
 
 /// Нарушение уникальности в базе (код 23505).

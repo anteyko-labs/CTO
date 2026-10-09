@@ -1,59 +1,15 @@
 // Долги: кто должен нам и кому должны мы, с оплатой и погашением (SPEC-10).
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
-import { get, newOpId, post, qs } from '../lib/api'
-import { formatSom, parseSom } from '../lib/format'
-import { useAction, useLoad } from '../lib/hooks'
+import { RepaymentModal } from '../components/RepaymentModal'
+import { Badge, Button, Card, Empty, ErrorBox, Loading, PageHeader, Table } from '../components/ui'
+import { get, qs } from '../lib/api'
+import { formatSom } from '../lib/format'
+import { useLoad } from '../lib/hooks'
 import type { Party } from '../lib/types'
 
 /** Долги обновляются сами, пока экран открыт (ADR-028). */
 const REFRESH_MS = 10_000
-
-function PayModal({ party, onClose, onDone }: { party: Party; onClose: () => void; onDone: () => void }) {
-  const owed = Math.abs(party.balance_tyiyn)
-  const toUs = party.balance_tyiyn > 0
-  const [sum, setSum] = useState(String(Math.trunc(owed / 100)))
-  const [comment, setComment] = useState('')
-  const { busy, error, run } = useAction()
-
-  const save = () =>
-    run(async () => {
-      const v = parseSom(sum)
-      if (v === null || v <= 0) throw new Error('Неверная сумма')
-      await post('/debts/repayments', { op_id: newOpId(), party_id: party.id, amount_tyiyn: v, comment })
-      toast(toUs ? 'Погашение записано' : 'Оплата поставщику записана')
-      onDone()
-    })
-
-  return (
-    <Modal title={toUs ? `Погашение: ${party.name}` : `Оплата поставщику: ${party.name}`} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <div className="text-sm text-slate-600">
-          {toUs ? 'Должен нам' : 'Должны мы'}: {formatSom(owed)}
-        </div>
-        <Field label="Сумма, с" required>
-          <input autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
-        </Field>
-        <Field label="Комментарий">
-          <input value={comment} onChange={(e) => setComment(e.target.value)} />
-        </Field>
-        <div className="text-xs text-slate-500">
-          Деньги попадут в кассу вместе со сменой на этапе «День»; сейчас записывается только долг.
-        </div>
-        <ErrorBox error={error} />
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            Отмена
-          </Button>
-          <Button disabled={busy || !sum.trim()} onClick={() => void save()}>
-            Записать
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
 
 function Side({
   title,
@@ -98,6 +54,11 @@ function Side({
               <td className="whitespace-nowrap px-2 py-2">{p.phone || '—'}</td>
               <td className="whitespace-nowrap px-2 py-2">
                 <Badge tone={tone}>{formatSom(Math.abs(p.balance_tyiyn))}</Badge>
+                {p.overdue_tyiyn > 0 && (
+                  <span className="ml-2">
+                    <Badge tone="rose">просрочено {formatSom(p.overdue_tyiyn)}</Badge>
+                  </span>
+                )}
               </td>
               <td className="px-2 py-2 text-right">
                 <Button
@@ -169,7 +130,7 @@ export default function Debts() {
         </>
       )}
       {paying && (
-        <PayModal
+        <RepaymentModal
           party={paying}
           onClose={() => setPaying(null)}
           onDone={() => {
