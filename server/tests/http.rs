@@ -1676,3 +1676,170 @@ async fn overdue_debt_is_highlighted(pool: PgPool) {
     .await;
     assert_eq!(p["overdue_tyiyn"], 50_000);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn company_cabinet_by_inn(pool: PgPool) {
+    // Кабинет юрлица: логин — ИНН, начальный пароль avtodom2026 с обязательной сменой;
+    // сбрасывает пароль только владелец (SPEC-12, ADR-049).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let inn = "01204201910123";
+    let (_, _, party) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&owner),
+        Some(json!({ "name": "ОсОО Бишкек Такси", "kind": "company", "inn": inn })),
+    )
+    .await;
+    let pid = party["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/adjust",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 250_000, "comment": "из тетради" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let client_login = |password: &'static str| {
+        let app = app.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/client/login",
+                None,
+                Some(json!({ "inn": inn, "password": password })),
+            )
+            .await
+        }
+    };
+    assert_eq!(client_login("wrong-pass").await.0, StatusCode::UNAUTHORIZED);
+    let (s, cookie, me) = client_login("avtodom2026").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(me["must_change"], json!(true));
+    let c = cookie.unwrap();
+    // Кабинет — не вход в кассу.
+    assert_eq!(
+        call(&app, "GET", "/api/v1/products", Some(&c), None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    // До смены пароля данные закрыты.
+    assert_eq!(
+        call(&app, "GET", "/api/v1/client/sales", Some(&c), None)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/client/password",
+        Some(&c),
+        Some(json!({ "old_password": "avtodom2026", "new_password": "avtodom2026" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/client/password",
+        Some(&c),
+        Some(json!({ "old_password": "avtodom2026", "new_password": "taxi-secret-9" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, me) = call(&app, "GET", "/api/v1/client/me", Some(&c), None).await;
+    assert_eq!(me["must_change"], json!(false));
+    assert_eq!(me["balance_tyiyn"], 250_000);
+    let (s, _, act) = call(&app, "GET", "/api/v1/client/reconciliation", Some(&c), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(act["closing_tyiyn"], 250_000);
+    assert_eq!(
+        call(&app, "GET", "/api/v1/client/sales", Some(&c), None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Начальный пароль больше не подходит.
+    assert_eq!(
+        client_login("avtodom2026").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Сбросить пароль может только владелец; старые входы фирмы закрываются.
+    let reset = format!("/api/v1/parties/{pid}/cabinet/reset");
+    assert_eq!(
+        call(&app, "POST", &reset, Some(&admin), Some(json!({})))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&app, "POST", &reset, Some(&owner), Some(json!({})))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&app, "GET", "/api/v1/client/me", Some(&c), None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, _, me) = client_login("avtodom2026").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(me["must_change"], json!(true));
+    let (_, _, st) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{pid}/cabinet"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(st["available"], json!(true));
+    assert_eq!(st["login"], json!(inn));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn stranger_cannot_lock_out_owner(pool: PgPool) {
+    // Подбор пароля с чужого адреса закрывает вход только этому адресу (ADR-016, ADR-049).
+    let app = setup(pool).await;
+    let attempt = |password: &'static str, addr: Option<&'static str>| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(a) = addr {
+                req = req.header("cf-connecting-ip", a);
+            }
+            let body = json!({ "login": "owner", "password": password }).to_string();
+            app.oneshot(req.body(Body::from(body)).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    for _ in 0..5 {
+        assert_eq!(
+            attempt("wrong-pass", Some("203.0.113.7")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        attempt("owner-pass-1", Some("203.0.113.7")).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Владелец со своего адреса входит.
+    assert_eq!(
+        attempt("owner-pass-1", Some("198.51.100.20")).await,
+        StatusCode::OK
+    );
+}

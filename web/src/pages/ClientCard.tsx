@@ -11,6 +11,60 @@ import { formatDateTime, formatSom, parseSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Party, PartyCard, PartyTimelineItem } from '../lib/types'
 
+interface CabinetState {
+  available: boolean
+  login: string
+  has_account: boolean
+  must_change: boolean
+  last_login_at: string | null
+}
+
+/** Кабинет юрлица: логин — ИНН, пароль сбрасывает только владелец (ADR-049). */
+function CabinetBox({ partyId }: { partyId: string }) {
+  const st = useLoad(() => get<CabinetState>(`/parties/${partyId}/cabinet`), [partyId])
+  const act = useAction()
+  const d = st.data
+  if (!d) return null
+  if (!d.available)
+    return (
+      <Card className="text-sm text-slate-600">
+        Кабинет клиента: у фирмы нет ИНН — впишите его в карточке, и ИНН станет логином для входа.
+      </Card>
+    )
+  const url = `${window.location.origin}/cabinet`
+  return (
+    <Card className="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div>
+        <div className="font-medium">Кабинет клиента</div>
+        <div className="text-slate-600">
+          Адрес {url} · логин {d.login} ·{' '}
+          {!d.has_account
+            ? 'ещё не входили, начальный пароль avtodom2026'
+            : d.must_change
+              ? 'пароль сброшен — при входе попросит сменить'
+              : 'клиент сменил пароль'}
+          {d.last_login_at && ` · последний вход ${formatDateTime(d.last_login_at)}`}
+        </div>
+        <ErrorBox error={act.error ?? st.error} />
+      </div>
+      <Button
+        variant="secondary"
+        disabled={act.busy}
+        onClick={() =>
+          void act.run(async () => {
+            if (!window.confirm('Сбросить пароль кабинета на avtodom2026? Все входы фирмы закроются.')) return
+            await post(`/parties/${partyId}/cabinet/reset`, {})
+            st.reload()
+            toast('Пароль сброшен на avtodom2026')
+          })
+        }
+      >
+        Сбросить пароль
+      </Button>
+    </Card>
+  )
+}
+
 const KIND_TONE: Record<PartyTimelineItem['kind'], 'slate' | 'green' | 'amber' | 'rose' | 'sky'> = {
   sale: 'slate',
   sale_return: 'rose',
@@ -308,6 +362,8 @@ export default function ClientCard() {
           </Card>
         </div>
       )}
+
+      {owner && party.kind === 'company' && party.role === 'customer' && <CabinetBox partyId={party.id} />}
 
       <Card>
         <h2 className="mb-3 font-semibold">История</h2>

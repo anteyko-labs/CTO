@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into client_sessions (token_hash, party_id, expires_at) values ($1, $2, now() + make_interval(days => $3))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aa0b6c5b00778f4f082c58e5d9d82e8a9b18d7556439d5d50ad2f304447a21e1"
+}

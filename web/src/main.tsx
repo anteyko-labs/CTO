@@ -2,6 +2,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import CabinetApp from './pages/cabinet/CabinetApp'
 import './index.css'
 
 // Числовое поле при фокусе выделяется целиком: ввод заменяет значение, а не дописывается к нему.
@@ -23,7 +24,8 @@ const root = document.getElementById('root')
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <App />
+      {/* Кабинет юрлица живёт отдельно от экранов точки: свой вход, без офлайн-кассы (ADR-049). */}
+      {window.location.pathname.startsWith('/cabinet') ? <CabinetApp /> : <App />}
     </StrictMode>,
   )
 }

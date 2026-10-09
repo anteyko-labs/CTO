@@ -42,7 +42,7 @@ export interface Product {
   name: string
   brand: string
   article: string
-  unit: 'piece' | 'ml'
+  unit: 'piece' | 'ml' | 'g'
   container_ml: number | null
   attrs: Record<string, string>
   archived: boolean
@@ -148,7 +148,7 @@ export interface StockMismatch {
   moved_value_tyiyn: number
 }
 
-export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service'
+export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service' | 'weight'
 export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt'
 
 export interface SaleLine {

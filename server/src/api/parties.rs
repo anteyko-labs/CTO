@@ -203,7 +203,11 @@ async fn create_party(
     Ok(Json(out))
 }
 
-async fn load_party(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<PartyOut> {
+pub(crate) async fn load_party(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<PartyOut> {
     sqlx::query_as!(
         PartyOut,
         r#"select id, role, kind, name, phone, inn, comment,
@@ -637,7 +641,7 @@ struct ReconQuery {
 }
 
 #[derive(Serialize)]
-struct ReconRow {
+pub(crate) struct ReconRow {
     date: NaiveDate,
     document: String,
     /// Документ-основание: по нему касса находит свой чек в истории долга.
@@ -651,7 +655,7 @@ struct ReconRow {
 }
 
 #[derive(Serialize)]
-struct ReconOut {
+pub(crate) struct ReconOut {
     party_id: Uuid,
     name: String,
     kind: String,
@@ -677,10 +681,23 @@ async fn reconciliation(
     Query(q): Query<ReconQuery>,
 ) -> AppResult<Json<ReconOut>> {
     let mut conn = state.pool.acquire().await?;
+    Ok(Json(
+        reconciliation_data(&mut conn, user.branch_id, id, q.from, q.to).await?,
+    ))
+}
+
+/// Данные акта сверки: тот же акт видят владелец и юрлицо в своём кабинете (SPEC-10, SPEC-12).
+pub(crate) async fn reconciliation_data(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<ReconOut> {
     let p = sqlx::query!(
         "select name, kind, role, inn, phone from parties where id = $1 and branch_id = $2",
         id,
-        user.branch_id
+        branch_id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -693,8 +710,8 @@ async fn reconciliation(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let from = q.from.unwrap_or(bounds.first);
-    let to = q.to.unwrap_or(bounds.today);
+    let from = from.unwrap_or(bounds.first);
+    let to = to.unwrap_or(bounds.today);
     if from > to {
         return Err(invalid("начало периода позже конца"));
     }
@@ -766,7 +783,7 @@ async fn reconciliation(
             comment: r.comment,
         });
     }
-    Ok(Json(ReconOut {
+    Ok(ReconOut {
         party_id: id,
         name: p.name,
         kind: p.kind,
@@ -780,7 +797,7 @@ async fn reconciliation(
         debit_total_tyiyn: debit,
         credit_total_tyiyn: credit,
         closing_tyiyn: opening.saturating_add(debit).saturating_sub(credit),
-    }))
+    })
 }
 
 #[derive(Deserialize)]

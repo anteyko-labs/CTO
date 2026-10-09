@@ -47,7 +47,7 @@ const LOCK_MINUTES: i32 = 15;
 /// запросы не проскочат лимит (ADR-016). Возвращает минуты до снятия блокировки, если вход закрыт.
 /// Неизвестные логины учитываются так же, чтобы блокировка не выдавала их наличие.
 /// Успешный вход удаляет строку, поэтому счётчик считает только неудачи.
-async fn reserve_attempt(state: &AppState, key: &str) -> AppResult<Option<i64>> {
+pub(crate) async fn reserve_attempt(state: &AppState, key: &str) -> AppResult<Option<i64>> {
     let mut tx = state.pool.begin().await?;
     let row = sqlx::query!(
         r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
@@ -91,7 +91,10 @@ async fn login(
     if req.login.len() > 100 || req.password.len() > 200 || req.login.contains('\0') {
         return Err(AppError::Unauthorized);
     }
-    let key = req.login.trim().to_lowercase();
+    // Ключ блокировки — логин и адрес: подбор с чужого адреса закрывает вход только ему,
+    // а владелец со своего устройства по-прежнему входит (ADR-016, ADR-049).
+    let login = req.login.trim().to_lowercase();
+    let key = format!("{login}|{}", auth::client_addr(&parts));
     if let Some(minutes) = reserve_attempt(&state, &key).await? {
         return Err(AppError::TooManyRequests(format!(
             "слишком много неудачных попыток, повторите через {minutes} мин"
@@ -99,7 +102,7 @@ async fn login(
     }
     let row = sqlx::query!(
         "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = $1 and active",
-        key
+        login
     )
     .fetch_optional(&state.pool)
     .await?;

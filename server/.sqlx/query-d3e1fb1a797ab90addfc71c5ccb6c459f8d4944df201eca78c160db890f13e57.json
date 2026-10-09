@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.branch_id, p.name, a.password_hash as \"hash?\", a.must_change as \"must_change?\"\n           from parties p left join party_accounts a on a.party_id = p.id\n           where p.inn = $1 and p.kind = 'company' and p.role = 'customer' and p.active\n           order by p.created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "hash?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "must_change?",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d3e1fb1a797ab90addfc71c5ccb6c459f8d4944df201eca78c160db890f13e57"
+}

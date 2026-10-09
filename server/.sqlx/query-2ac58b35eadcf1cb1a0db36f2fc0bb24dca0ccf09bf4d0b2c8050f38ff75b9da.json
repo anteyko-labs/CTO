@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into battery_intakes (id, branch_id, number, product_id, grams, price_per_kg_tyiyn,\n                                        amount_tyiyn, account_id, comment, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2ac58b35eadcf1cb1a0db36f2fc0bb24dca0ccf09bf4d0b2c8050f38ff75b9da"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select password_hash from party_accounts where party_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "password_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "71233a0037f394fb27eb3114a7fff55b3ce196642ea70fec2874fe9006f6f0a9"
+}

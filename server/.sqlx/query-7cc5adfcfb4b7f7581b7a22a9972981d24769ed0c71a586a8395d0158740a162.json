@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, coalesce(bp.stock_qty, 0) as \"qty!\", coalesce(bp.stock_value_tyiyn, 0) as \"value!\",\n                  coalesce(bp.sale_price_tyiyn, 0) as \"sale!\"\n           from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n           where p.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "value!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7cc5adfcfb4b7f7581b7a22a9972981d24769ed0c71a586a8395d0158740a162"
+}

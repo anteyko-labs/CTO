@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_accounts set last_login_at = now() where party_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2edaa50fafa133417ab4a0dfe91e619ed16f497f085c9638c4984d62f7b8a2e8"
+}

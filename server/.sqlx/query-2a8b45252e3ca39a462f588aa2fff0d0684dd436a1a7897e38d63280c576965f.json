@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into categories (id, name, kind) values ($1, 'Аккумуляторы', 'battery')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2a8b45252e3ca39a462f588aa2fff0d0684dd436a1a7897e38d63280c576965f"
+}

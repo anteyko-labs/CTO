@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
 import { del, get, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatLiters, formatSom, parseLiters } from '../lib/format'
+import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Category } from '../lib/types'
 
@@ -25,7 +25,7 @@ interface Line {
   name: string
   article: string
   barcodes: string[]
-  unit: 'piece' | 'ml'
+  unit: 'piece' | 'ml' | 'g'
   container_ml: number | null
   expected_qty: number
   counted_qty: number | null
@@ -43,13 +43,14 @@ const STATUS: Record<Head['status'], [string, 'amber' | 'green' | 'slate']> = {
   cancelled: ['отменена', 'slate'],
 }
 
-const qtyText = (l: Pick<Line, 'unit'>, q: number) => (l.unit === 'ml' ? formatLiters(q) : `${q} шт`)
+const qtyText = (l: Pick<Line, 'unit'>, q: number) => (l.unit === 'ml' ? formatLiters(q) : l.unit === 'g' ? formatKg(q) : `${q} шт`)
 
 /** Поле пересчёта: штуки целым числом, масло литрами с запятой. */
 function parseCount(l: Line, text: string): number | null {
   const t = text.trim()
   if (!t) return null
-  if (l.unit === 'ml') return parseLiters(t)
+  // Масло — литрами, аккумуляторы на вес — килограммами; оба с тремя знаками.
+  if (l.unit === 'ml' || l.unit === 'g') return parseLiters(t)
   return /^\d+$/.test(t) ? Number(t) : null
 }
 

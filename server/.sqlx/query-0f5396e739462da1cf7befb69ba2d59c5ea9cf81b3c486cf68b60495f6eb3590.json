@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_accounts (party_id, password_hash, must_change) values ($1, $2, true)\n           on conflict (party_id) do update set password_hash = excluded.password_hash,\n             must_change = true, updated_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f5396e739462da1cf7befb69ba2d59c5ea9cf81b3c486cf68b60495f6eb3590"
+}

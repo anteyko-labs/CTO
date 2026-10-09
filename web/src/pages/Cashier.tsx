@@ -8,6 +8,7 @@ import { QuickExpense } from '../components/QuickExpense'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
+import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
@@ -61,7 +62,8 @@ function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>): number {
 
 /** Количество строки в единицах запроса: шт, канистры или мл для розлива. */
 function lineQty(l: CartLine): number | null {
-  if (l.kind === 'pour') {
+  // На вес — килограммы с граммами, как литры розлива: «12,35» → 12 350 г.
+  if (l.kind === 'pour' || l.kind === 'weight') {
     const ml = parseLiters(l.qtyText)
     return ml && ml > 0 ? ml : null
   }
@@ -72,7 +74,7 @@ function lineAmount(l: CartLine): number | null {
   const qty = lineQty(l)
   const price = parseSom(l.priceText)
   if (qty === null || price === null) return null
-  const amount = l.kind === 'pour' ? pourAmount(qty, price) : qty * price
+  const amount = l.kind === 'pour' || l.kind === 'weight' ? pourAmount(qty, price) : qty * price
   return Number.isSafeInteger(amount) ? amount : null
 }
 
@@ -184,6 +186,9 @@ export default function Cashier() {
   const [expense, setExpense] = useState(false)
   const [servicesOpen, setServicesOpen] = useState(false)
   const [debtPay, setDebtPay] = useState(false)
+  const [batteryIntake, setBatteryIntake] = useState(false)
+  // Средняя закупка аккумуляторов за кг: подсказка «дешевле не продать» (ADR-048).
+  const [batteryAvg, setBatteryAvg] = useState<number | null>(null)
   const limitAsk = useAction()
   const innSave = useAction()
   const [innText, setInnText] = useState('')
@@ -296,7 +301,7 @@ export default function Cashier() {
   const addProduct = (p: Product) => {
     setDone(null)
     askGift(p)
-    const kind: SaleLineKind = p.unit === 'ml' ? 'container' : 'piece'
+    const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
     setLines((ls) => {
       const same = ls.find((l) => l.product?.id === p.id && l.kind === kind)
       if (same) {
@@ -318,7 +323,7 @@ export default function Cashier() {
   /** Шаг количества: 1 шт или канистра, 0,5 л для розлива. */
   const step = (l: CartLine, dir: 1 | -1) => {
     const q = lineQty(l) ?? 0
-    if (l.kind === 'pour') {
+    if (l.kind === 'pour' || l.kind === 'weight') {
       const ml = Math.max(500, q + dir * 500)
       update(l.key, { qtyText: formatLiters(ml).replace(/ л$/, '').replace(/ /g, '') })
     } else {
@@ -614,6 +619,9 @@ export default function Cashier() {
                       </div>
                       <div className="text-xs text-slate-500">
                         {l.product ? `Остаток: ${stockText(l.product)}` : 'Услуга'}
+                        {l.kind === 'weight' && batteryAvg !== null && (
+                          <span className="ml-2 text-amber-700">средняя закупка {formatSom(batteryAvg)} за кг — дешевле не продать</span>
+                        )}
                         {short && (
                           <span className="ml-2">
                             <Badge tone="rose">больше, чем на складе</Badge>
@@ -641,7 +649,7 @@ export default function Cashier() {
                       )}
                     </div>
                     <label className="flex flex-col text-xs text-slate-500">
-                      {l.kind === 'pour' ? 'Литры' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
+                      {l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
                       <span className="flex items-stretch">
                         <button
                           type="button"
@@ -653,7 +661,10 @@ export default function Cashier() {
                         </button>
                         <input
                           className="w-16 rounded-none text-center"
-                          inputMode={l.kind === 'pour' ? 'decimal' : 'numeric'}
+                          data-weight={l.kind === 'weight' ? '' : undefined}
+                          // Подпись вокруг поля относится к первой кнопке «−», поэтому у поля своя.
+                          aria-label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
+                          inputMode={l.kind === 'pour' || l.kind === 'weight' ? 'decimal' : 'numeric'}
                           value={l.qtyText}
                           onChange={(e) => update(l.key, { qtyText: e.target.value })}
                         />
@@ -668,7 +679,7 @@ export default function Cashier() {
                       </span>
                     </label>
                     <label className="flex flex-col text-xs text-slate-500">
-                      {l.kind === 'pour' ? 'Цена за л' : 'Цена'}
+                      {l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'}
                       <input
                         className={`w-28 ${changed ? 'border-amber-400 bg-amber-50' : ''}`}
                         inputMode="decimal"
@@ -944,8 +955,38 @@ export default function Cashier() {
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {expense && <QuickExpense onClose={() => setExpense(false)} />}
-      {servicesOpen && <ServicePicker onPick={addService} onClose={() => setServicesOpen(false)} />}
+      {servicesOpen && (
+        <ServicePicker
+          onPick={addService}
+          onClose={() => setServicesOpen(false)}
+          onBatteryIntake={() => {
+            setServicesOpen(false)
+            setBatteryIntake(true)
+          }}
+          onBatterySale={() => {
+            setServicesOpen(false)
+            void get<BatteryInfo>('/batteries')
+              .then(async (info) => {
+                setBatteryAvg(info.avg_per_kg_tyiyn)
+                const p = await get<Product>(`/products/${info.product_id}`)
+                setLines((ls) => [
+                  ...ls,
+                  {
+                    key: nextKey(),
+                    kind: 'weight',
+                    product: p,
+                    qtyText: '',
+                    priceText: somInput(info.sale_per_kg_tyiyn || info.avg_per_kg_tyiyn || 0),
+                  },
+                ])
+                setTimeout(() => document.querySelector<HTMLInputElement>('[data-weight]:last-of-type')?.focus(), 50)
+              })
+              .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось открыть продажу на вес'))
+          }}
+        />
+      )}
       {debtPay && <DebtorPayment onClose={() => setDebtPay(false)} />}
+      {batteryIntake && <BatteryIntake onClose={() => setBatteryIntake(false)} />}
       {unknownCode !== null && (
         <UnknownCodeModal
           code={unknownCode}

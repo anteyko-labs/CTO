@@ -22,6 +22,11 @@ export function formatLiters(ml: number): string {
   return `${sign}${group(String(whole))}${frac ? ',' + frac : ''}\u00a0л`
 }
 
+/** Вес для показа: 12 350 г → «12,35 кг». */
+export function formatKg(g: number): string {
+  return formatLiters(g).replace(/л$/, 'кг')
+}
+
 /** Остаток масла: «14,5 л · 3 кан. по 4 л + 2,5 л» — считаем литрами, тара в расшифровке. */
 export function formatOilStock(ml: number, containerMl: number): string {
   const total = formatLiters(ml)

@@ -1,6 +1,7 @@
 //! Сквозные проверки критериев приёмки SPEC-01…04 на реальной базе.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use avtodom_server::api::batteries::{IntakeReq, intake_tx};
 use avtodom_server::api::oil::{TransferReq, post_transfer_tx};
 use avtodom_server::api::receipts::{
     ReceiptLineReq, ReceiptReq, ReverseReq, post_receipt_tx, reverse_receipt_tx, verify_stock_tx,
@@ -1255,5 +1256,105 @@ async fn revision_aligns_stock_and_charges_shortage(pool: PgPool) {
     let id = new_revision(9).await;
     let out = post(&w.owner, id).await.unwrap();
     assert_eq!(out.lines[0].value_delta_tyiyn, Some(1_000));
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn batteries_by_weight_average_and_no_loss(pool: PgPool) {
+    // Четыре приёма по разным ценам: средняя за кг по всем; продать дешевле средней нельзя (ADR-048).
+    let w = seed(&pool).await;
+    let till: Uuid = sqlx::query_scalar(
+        "insert into cash_accounts (id, branch_id, name, kind, is_default) values ($1, $2, 'Касса', 'register', true) returning id",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into cash_movements (id, branch_id, account_id, kind, amount_tyiyn, user_id, device_id) values ($1, $2, $3, 'cash_in', 10000000, $4, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(till)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update cash_accounts set balance_tyiyn = 10000000 where id = $1")
+        .bind(till)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id, opened_by, opened_device, opening_expected_tyiyn)
+         values ($1, $2, 1, (now() at time zone 'Asia/Bishkek')::date, $3, $4, $5, $1, 10000000)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(till)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // 10 кг по 100, 15 кг по 80, 5 кг по 120, 20 кг по 90 → 50 кг за 4 600 с, средняя 92 с/кг.
+    let mut last = None;
+    for (kg, price) in [(10, 10_000), (15, 8_000), (5, 12_000), (20, 9_000)] {
+        let mut tx = pool.begin().await.unwrap();
+        let out = intake_tx(
+            &mut tx,
+            &w.admin,
+            IntakeReq {
+                op_id: Uuid::now_v7(),
+                grams: kg * 1000,
+                price_per_kg_tyiyn: price,
+                comment: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        last = Some(out);
+    }
+    let info = last.unwrap().info;
+    assert_eq!(info.stock_g, 50_000);
+    assert_eq!(info.avg_per_kg_tyiyn, Some(9_200));
+    let balance: i64 = sqlx::query_scalar("select balance_tyiyn from cash_accounts where id = $1")
+        .bind(till)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(balance, 10_000_000 - 460_000);
+    let weight = |grams: i64, per_kg: i64| SaleLineReq {
+        kind: "weight".into(),
+        gift: false,
+        product_id: Some(info.product_id),
+        service_id: None,
+        qty: grams,
+        unit_price_tyiyn: per_kg,
+        seen_list_price_tyiyn: None,
+    };
+    // 12,5 кг по 85 с/кг — дешевле средней 92: отказ.
+    assert!(matches!(
+        sell(
+            &pool,
+            &w.admin,
+            takeaway(&w, vec![weight(12_500, 8_500)], cash(106_250))
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    // 12,5 кг по 110 с/кг = 1 375 с — проходит, на складе 37,5 кг.
+    let sale = sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![weight(12_500, 11_000)], cash(137_500)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sale.total_tyiyn, 137_500);
+    let (qty, value, _) = pool_of(&pool, info.product_id).await;
+    assert_eq!((qty, value), (37_500, 345_000));
     assert_stock_consistent(&pool, &w).await;
 }

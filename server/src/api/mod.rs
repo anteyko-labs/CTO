@@ -1,6 +1,8 @@
 //! Все маршруты API `/api/v1`. Каждый модуль отвечает за свою спецификацию — см. заголовок модуля.
 
 pub mod auth;
+pub mod batteries;
+pub mod cabinet;
 pub mod cash;
 pub mod catalog;
 pub mod expenses;
@@ -23,6 +25,8 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(auth::routes())
+        .merge(batteries::routes())
+        .merge(cabinet::routes())
         .merge(cash::routes())
         .merge(catalog::routes())
         .merge(expenses::routes())

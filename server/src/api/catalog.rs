@@ -581,7 +581,7 @@ struct CreateProductReq {
     min_stock: i64,
 }
 
-async fn insert_barcode(
+pub(crate) async fn insert_barcode(
     conn: &mut PgConnection,
     product_id: Uuid,
     code: &str,
@@ -910,7 +910,7 @@ struct BarcodeOut {
 }
 
 /// Следующий внутренний код. Счётчик общий для всех филиалов: код уникален глобально.
-async fn next_internal_code(tx: &mut sqlx::PgConnection) -> AppResult<String> {
+pub(crate) async fn next_internal_code(tx: &mut sqlx::PgConnection) -> AppResult<String> {
     let seq = sqlx::query_scalar!("select nextval('internal_barcode_seq') as \"v!\"")
         .fetch_one(&mut *tx)
         .await?;

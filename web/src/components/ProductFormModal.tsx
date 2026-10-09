@@ -337,7 +337,7 @@ export function ProductFormModal({
             )}
           </Field>
         ))}
-        <Field label={isOil ? 'Цена канистры, с' : 'Цена продажи, с'} required>
+        <Field label={isOil ? 'Цена канистры, с' : product?.unit === 'g' ? 'Цена продажи за кг, с' : 'Цена продажи, с'} required>
           <input id="product-price" inputMode="decimal" value={form.sale_price} onChange={(e) => set('sale_price', e.target.value)} />
         </Field>
         {isOil && (

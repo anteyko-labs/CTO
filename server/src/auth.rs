@@ -106,7 +106,7 @@ pub fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
+pub fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
     parts
         .headers
         .get_all(axum::http::header::COOKIE)
@@ -120,6 +120,22 @@ fn cookie_value<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
 
 pub fn session_token(parts: &Parts) -> Option<&str> {
     cookie_value(parts, SESSION_COOKIE)
+}
+
+/// Адрес клиента: за туннелем — из заголовка Cloudflare, за прокси — первый в цепочке.
+pub fn client_addr(parts: &Parts) -> String {
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.split(',').next().unwrap_or("").trim().to_string())
+            .filter(|v| !v.is_empty() && v.len() <= 64)
+    };
+    header("cf-connecting-ip")
+        .or_else(|| header("x-forwarded-for"))
+        .or_else(|| header("x-real-ip"))
+        .unwrap_or_else(|| "local".into())
 }
 
 pub fn device_id(parts: &Parts) -> Option<Uuid> {

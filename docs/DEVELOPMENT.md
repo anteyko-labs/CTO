@@ -34,10 +34,11 @@ updated: 2026-10-08
 | 09 | Касса без сети | `api/offline.rs` | `lib/offline.ts`, `components/OfflineBar.tsx` |
 | 10 | Контрагенты, долги, балансы | `api/parties.rs` | `pages/Clients.tsx`, `ClientCard.tsx`, `Debts.tsx`, `SupplierCard.tsx`, `components/ClientPicker.tsx` |
 | 11 | Подарки в чеке | `api/gifts.rs` | `pages/Gifts.tsx`, `components/GiftPicker.tsx` |
-| 12 | Кабинет клиента по ссылке | — (план) | — |
+| 12 | Кабинет юрлица по ИНН | `api/cabinet.rs` | `pages/cabinet/CabinetApp.tsx` |
 | 13 | Уведомления владельцу | `api/notifications.rs` | `pages/Notifications.tsx` |
 | 14 | Перелив масла | `api/oil.rs` | `pages/OilTransfer.tsx` |
 | 15 | Ревизия склада | `api/revisions.rs` | `pages/Revision.tsx` |
+| — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:
 

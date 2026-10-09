@@ -5,7 +5,7 @@ import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, post, put, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatLiters, formatSom } from '../lib/format'
+import { formatLiters, formatSom, formatKg } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Category, Product, StockMismatch } from '../lib/types'
 
@@ -13,7 +13,8 @@ type Mismatch = StockMismatch & { product?: Product }
 
 const minText = (p: Product): string => (p.unit === 'ml' ? formatLiters(p.min_stock) : `${p.min_stock} шт`)
 
-const qtyText = (unit: Product['unit'] | undefined, qty: number): string => (unit === 'ml' ? formatLiters(qty) : `${qty} шт`)
+const qtyText = (unit: Product['unit'] | undefined, qty: number): string =>
+  unit === 'ml' ? formatLiters(qty) : unit === 'g' ? formatKg(qty) : `${qty} шт`
 
 export default function Stock() {
   const owner = useUser().role === 'owner'

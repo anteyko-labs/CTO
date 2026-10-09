@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into products (id, category_id, name, unit) values ($1, $2, $3, 'g')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "225bd8508ed00099d71ebef9024716578365bd7fcbf0d301eada3a04e1fc43c4"
+}

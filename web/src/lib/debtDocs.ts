@@ -1,6 +1,6 @@
 // Документы о долге и акт сверки (SPEC-10): тексты по умолчанию, подстановки, сумма прописью, печать A4.
 // Тексты правит владелец в настройках; пустое значение подстановки печатается линией для записи от руки.
-import { formatDateTime, formatLiters, formatSom } from './format'
+import { formatDateTime, formatKg, formatLiters, formatSom } from './format'
 import type { Sale } from './types'
 
 export interface Seller {
@@ -253,6 +253,7 @@ export function printHtml(title: string, body: string): void {
 function qtyText(l: Sale['lines'][number]): string {
   if (l.kind === 'pour') return formatLiters(l.qty)
   if (l.kind === 'container') return `${l.qty} кан.${l.container_ml ? ` × ${formatLiters(l.container_ml)}` : ''}`
+  if (l.kind === 'weight') return formatKg(l.qty)
   if (l.kind === 'service') return `${l.qty} усл.`
   return `${l.qty} шт`
 }
@@ -261,7 +262,7 @@ function itemsTable(sale: Sale): string {
   const rows = sale.lines
     .map(
       (l, i) => `<tr><td class="c">${i + 1}</td><td>${esc(l.name)}${l.gift ? ' (подарок)' : ''}</td>
-        <td class="r">${esc(qtyText(l))}</td><td class="r">${esc(formatSom(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : ''}</td>
+        <td class="r">${esc(qtyText(l))}</td><td class="r">${esc(formatSom(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
         <td class="r">${esc(formatSom(l.amount_tyiyn))}</td></tr>`,
     )
     .join('')

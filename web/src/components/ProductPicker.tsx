@@ -1,7 +1,7 @@
 // Поле сканера и поиска товара для кассы и прихода (SPEC-02, SPEC-04); без сети ищет по снимку каталога (SPEC-09).
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
-import { formatOilStock, formatSom } from '../lib/format'
+import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
 import type { Product } from '../lib/types'
@@ -175,5 +175,6 @@ export function ProductPicker({
 
 /** Остаток товара текстом. */
 export function stockText(p: Pick<Product, 'unit' | 'container_ml' | 'stock_qty'>): string {
+  if (p.unit === 'g') return formatKg(p.stock_qty)
   return p.unit === 'ml' && p.container_ml ? formatOilStock(p.stock_qty, p.container_ml) : `${p.stock_qty} шт`
 }

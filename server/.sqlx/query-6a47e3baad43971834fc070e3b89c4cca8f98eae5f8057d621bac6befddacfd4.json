@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into party_accounts (party_id, password_hash, must_change) values ($1, $2, true)\n               on conflict (party_id) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a47e3baad43971834fc070e3b89c4cca8f98eae5f8057d621bac6befddacfd4"
+}

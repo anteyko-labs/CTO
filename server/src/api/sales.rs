@@ -336,7 +336,13 @@ async fn prepare_line(
             div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
             p.pour_price.unwrap_or(0),
         ),
-        ("piece" | "container" | "pour", _, _) => {
+        // На вес: граммы × цена за кг (ADR-048).
+        ("weight", "g", _) => (
+            l.qty,
+            div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
+            p.sale_price,
+        ),
+        ("piece" | "container" | "pour" | "weight", _, _) => {
             return Err(invalid("вид строки не подходит товару"));
         }
         _ => return Err(invalid("неизвестный вид строки")),

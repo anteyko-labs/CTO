@@ -11,7 +11,17 @@ import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
  * Услуги в кассе: все заведённые работы плитками и новая услуга прямо отсюда (ADR-043).
  * Ставку мастера задаёт владелец, администратор создаёт услугу без неё.
  */
-export function ServicePicker({ onPick, onClose }: { onPick: (s: Service) => void; onClose: () => void }) {
+export function ServicePicker({
+  onPick,
+  onClose,
+  onBatteryIntake,
+  onBatterySale,
+}: {
+  onPick: (s: Service) => void
+  onClose: () => void
+  onBatteryIntake?: () => void
+  onBatterySale?: () => void
+}) {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
   const [query, setQuery] = useState('')
@@ -59,6 +69,30 @@ export function ServicePicker({ onPick, onClose }: { onPick: (s: Service) => voi
           </div>
         )}
 
+        {!form && (onBatteryIntake || onBatterySale) && (
+          <div className="grid grid-cols-2 gap-2">
+            {onBatteryIntake && (
+              <button
+                type="button"
+                className="flex min-h-[64px] flex-col justify-between rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-left hover:border-emerald-500"
+                onClick={onBatteryIntake}
+              >
+                <span className="font-medium">Приём аккумуляторов</span>
+                <span className="text-xs text-emerald-800">по весу, деньги из кассы</span>
+              </button>
+            )}
+            {onBatterySale && (
+              <button
+                type="button"
+                className="flex min-h-[64px] flex-col justify-between rounded-lg border border-amber-300 bg-amber-50 p-3 text-left hover:border-amber-500"
+                onClick={onBatterySale}
+              >
+                <span className="font-medium">Аккумуляторы на вес</span>
+                <span className="text-xs text-amber-800">продажа по весу, не дешевле средней за кг</span>
+              </button>
+            )}
+          </div>
+        )}
         {form ? (
           <div className="flex flex-col gap-3">
             <Field label="Название" required>

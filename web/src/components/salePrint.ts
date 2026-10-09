@@ -1,5 +1,5 @@
 // Печать товарного чека через диалог печати браузера (HTML-шаблон, лента 58–80 мм).
-import { formatDateTime, formatLiters, formatSom } from '../lib/format'
+import { formatDateTime, formatKg, formatLiters, formatSom } from '../lib/format'
 import { PAYMENT_LABELS, type Sale, type SaleLine } from '../lib/types'
 
 const esc = (s: string) =>
@@ -11,6 +11,8 @@ export function lineQtyText(l: Pick<SaleLine, 'kind' | 'qty' | 'container_ml'>):
       return formatLiters(l.qty)
     case 'container':
       return `${l.qty} кан.${l.container_ml ? ` × ${formatLiters(l.container_ml)}` : ''}`
+    case 'weight':
+      return formatKg(l.qty)
     case 'service':
       return `${l.qty} усл.`
     default:
@@ -23,7 +25,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
   const rows = sale.lines
     .map(
       (l) => `<tr><td colspan="2">${esc(l.name)}</td></tr>
-      <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSom(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : ''}</td>
+      <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSom(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
       <td class="r">${esc(formatSom(l.amount_tyiyn))}</td></tr>`,
     )
     .join('')

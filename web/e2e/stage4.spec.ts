@@ -114,3 +114,61 @@ test('ревизия: сканер считает, владелец провод
   const stock = await apiGet<{ id: string; stock_qty: number }[]>(page.request, `/stock?q=${encodeURIComponent(`Лампа ревизия ${RUN}`)}`)
   expect(stock[0].stock_qty).toBe(3)
 })
+
+test('кабинет юрлица: вход по ИНН, смена пароля, долг и покупки', async ({ page, browser }) => {
+  await login(page)
+  const inn = `9${RUN}12345`
+  const name = `ОсОО Кабинет ${RUN}`
+  const party = await apiPost<{ id: string }>(page.request, '/parties', { name, kind: 'company', inn })
+  await apiPost(page.request, '/debts/adjust', { op_id: crypto.randomUUID(), party_id: party.id, amount_tyiyn: 250_000, comment: 'из тетради' })
+
+  // Клиент заходит из своего браузера: входа точки у него нет.
+  const ctx = await browser.newContext()
+  const client = await ctx.newPage()
+  await client.goto('/cabinet')
+  await client.getByLabel('ИНН организации').fill(inn)
+  await client.getByLabel(/^Пароль/).fill('avtodom2026')
+  await client.getByRole('button', { name: 'Войти' }).click()
+  await expect(client.getByText('Это первый вход')).toBeVisible()
+  const pass = client.locator('input[type=password]')
+  await pass.nth(0).fill('avtodom2026')
+  await pass.nth(1).fill('taxi-secret-9')
+  await pass.nth(2).fill('taxi-secret-9')
+  await client.getByRole('button', { name: 'Сменить пароль' }).click()
+  await expect(client.getByText(name)).toBeVisible()
+  await expect(client.getByText('Ваш долг')).toBeVisible()
+  await expect(client.getByText(/2\s500,00/).first()).toBeVisible()
+  await client.getByRole('button', { name: 'Акт сверки' }).click()
+  await expect(client.getByText('Корректировка долга')).toBeVisible()
+  await ctx.close()
+
+  // Владелец видит, что клиент сменил пароль.
+  await page.goto(`/clients/${party.id}`)
+  await expect(page.getByText(/клиент сменил пароль/)).toBeVisible()
+})
+
+test('аккумуляторы на вес: приём из кассы и продажа не дешевле средней', async ({ page }) => {
+  await login(page)
+  const cashier = `Кассир АКБ ${RUN}`
+  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  await ensureOpenShift(page.request, emp.id)
+  await apiPost(page.request, '/cash/movements', { op_id: crypto.randomUUID(), kind: 'cash_in', amount_tyiyn: 500_000, comment: 'размен' })
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Услуги' }).click()
+  await page.getByRole('button', { name: /Приём аккумуляторов/ }).click()
+  await page.getByLabel('Вес, кг').fill('10')
+  await page.getByLabel('Цена за кг, с').fill('100')
+  await expect(page.getByText(/выдать 1\s000,00/)).toBeVisible()
+  await page.getByRole('button', { name: 'Принять и выдать деньги' }).click()
+  await expect(page.getByText(/выдано из кассы 1\s000,00/)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Услуги' }).click()
+  await page.getByRole('button', { name: /Аккумуляторы на вес/ }).click()
+  await expect(page.getByText(/дешевле не продать/)).toBeVisible()
+  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await page.getByLabel('Вес, кг', { exact: true }).last().fill('4')
+  await page.getByLabel(/^Цена за кг/).last().fill('150')
+  await page.getByRole('button', { name: 'Провести чек' }).click()
+  await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+})

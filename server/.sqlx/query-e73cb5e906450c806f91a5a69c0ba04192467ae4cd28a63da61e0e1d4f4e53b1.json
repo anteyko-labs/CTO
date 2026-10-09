@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from client_sessions where party_id = $1 and token_hash is distinct from $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e73cb5e906450c806f91a5a69c0ba04192467ae4cd28a63da61e0e1d4f4e53b1"
+}
