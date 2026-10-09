@@ -160,6 +160,33 @@ function MoneyModal({
 }
 
 /** Карточка клиента: баланс, что покупал, когда брал в долг и когда гасил (SPEC-10). */
+/** Баллы клиента из Телеграм-бота (SPEC-19). */
+function BonusBox({ partyId }: { partyId: string }) {
+  const h = useLoad(
+    () =>
+      get<{ member: boolean; balance_tyiyn: number; rows: { kind: string; amount_tyiyn: number; sale_number: number | null; created_at: string }[] }>(
+        `/parties/${partyId}/loyalty`,
+      ),
+    [partyId],
+  )
+  if (!h.data || (!h.data.member && h.data.rows.length === 0)) return null
+  return (
+    <Card className="text-sm">
+      <div className="font-medium">
+        Баллы: {formatSom(h.data.balance_tyiyn).replace(/\s*с$/, '')}
+        {!h.data.member && <span className="ml-2 font-normal text-slate-500">(отключился от бота — не начисляются)</span>}
+      </div>
+      {h.data.rows.length > 0 && (
+        <div className="mt-1 text-xs text-slate-500">
+          Последнее: {h.data.rows[0].amount_tyiyn > 0 ? '+' : '−'}
+          {formatSom(Math.abs(h.data.rows[0].amount_tyiyn)).replace(/\s*с$/, '')}
+          {h.data.rows[0].sale_number !== null && `, чек № ${h.data.rows[0].sale_number}`}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 export default function ClientCard() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
@@ -365,6 +392,8 @@ export default function ClientCard() {
       )}
 
       {owner && party.kind === 'company' && party.role === 'customer' && <CabinetBox partyId={party.id} />}
+
+      {party.role === 'customer' && <BonusBox partyId={party.id} />}
 
       <div>
         <h2 className="mb-2 font-semibold">Масляная книжка</h2>

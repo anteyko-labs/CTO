@@ -96,7 +96,7 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Вернуть деньги">
               <select value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
-                {(['cash', 'card', 'transfer'] as const).map((m) => (
+                {(sale.payments.some((p) => p.method === 'bonus') ? (['cash', 'card', 'transfer', 'bonus'] as const) : (['cash', 'card', 'transfer'] as const)).map((m) => (
                   <option key={m} value={m}>
                     {PAYMENT_LABELS[m]}
                   </option>

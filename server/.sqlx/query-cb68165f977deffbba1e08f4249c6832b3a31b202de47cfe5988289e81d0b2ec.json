@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from settings where branch_id = $1 and key = 'loyalty'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cb68165f977deffbba1e08f4249c6832b3a31b202de47cfe5988289e81d0b2ec"
+}

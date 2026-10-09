@@ -244,6 +244,7 @@ export default function Shift() {
             <span>QR: {formatSom(shift.transfer_tyiyn)}</span>
             {shift.bank_fee_tyiyn > 0 && <span>Комиссия банка: {formatSom(shift.bank_fee_tyiyn)}</span>}
             <span>В долг: {formatSom(shift.debt_tyiyn)}</span>
+            {(shift.bonus_tyiyn ?? 0) !== 0 && <span>Баллами: {formatSom(shift.bonus_tyiyn ?? 0)}</span>}
           </div>
           {shift.breakdown.length > 0 && (
             <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-200 pt-2 text-sm">

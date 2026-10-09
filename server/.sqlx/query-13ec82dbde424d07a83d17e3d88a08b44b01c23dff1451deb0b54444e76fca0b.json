@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.name, p.phone from parties p\n           where p.role = 'customer' and p.active\n             and length(regexp_replace(p.phone, '[^0-9]', '', 'g')) >= 9\n             and right(regexp_replace(p.phone, '[^0-9]', '', 'g'), 9) = $1\n             and exists (select 1 from telegram_customers t where t.party_id = p.id)\n           order by p.created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "phone",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "13ec82dbde424d07a83d17e3d88a08b44b01c23dff1451deb0b54444e76fca0b"
+}

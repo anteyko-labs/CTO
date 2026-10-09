@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"v!\" from loyalty_ledger where party_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f0cda480536c821cb5b5da7ecf7036c21a7cac90b1e562f6533d7781a8f84b80"
+}

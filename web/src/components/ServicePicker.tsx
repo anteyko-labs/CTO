@@ -16,11 +16,13 @@ export function ServicePicker({
   onClose,
   onBatteryIntake,
   onBatterySale,
+  onBonus,
 }: {
   onPick: (s: Service) => void
   onClose: () => void
   onBatteryIntake?: () => void
   onBatterySale?: () => void
+  onBonus?: () => void
 }) {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
@@ -69,6 +71,16 @@ export function ServicePicker({
           </div>
         )}
 
+        {!form && onBonus && (
+          <button
+            type="button"
+            className="flex min-h-[48px] items-center justify-between rounded-lg border border-sky-300 bg-sky-50 p-3 text-left hover:border-sky-500"
+            onClick={onBonus}
+          >
+            <span className="font-medium">Скидка баллами</span>
+            <span className="text-xs text-sky-800">по номеру клиента из Телеграм-бота</span>
+          </button>
+        )}
         {!form && (onBatteryIntake || onBatterySale) && (
           <div className="grid grid-cols-2 gap-2">
             {onBatteryIntake && (

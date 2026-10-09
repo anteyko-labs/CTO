@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(-sum(l.amount_tyiyn) filter (where l.kind = 'redeem'), 0)::bigint as \"redeemed!\",\n                  coalesce(-sum(l.amount_tyiyn) filter (where l.kind = 'refund'), 0)::bigint as \"refunded!\",\n                  coalesce(sum(l.amount_tyiyn) filter (where l.kind in ('accrual', 'accrual_back')), 0)::bigint as \"accrued!\",\n                  max(l.rate_bp) filter (where l.kind = 'accrual') as rate\n           from loyalty_ledger l\n           where l.doc_id = $1 or l.doc_id in (select id from sales where reversal_of = $1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "redeemed!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "refunded!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "rate",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "6d162fa2fbef7c17350e80fd588d6af3b90667188bbd2b55637a68c623ca359f"
+}

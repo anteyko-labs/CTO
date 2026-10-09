@@ -1,7 +1,7 @@
 // Телеграм-бот владельца: привязка чата одноразовым кодом (SPEC-18, ADR-050).
 import { useState } from 'react'
-import { Button, Card, ErrorBox, Loading, PageHeader, toast } from '../components/ui'
-import { del, get, post } from '../lib/api'
+import { Button, Card, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
+import { del, get, post, put } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 
@@ -9,6 +9,54 @@ interface Status {
   enabled: boolean
   linked: boolean
   linked_at: string | null
+}
+
+/** Процент баллов с покупки: «0,5» ↔ 50 сотых процента (SPEC-19). */
+function LoyaltyRate() {
+  const st = useLoad(() => get<{ rate_bp: number }>('/settings/loyalty'), [])
+  const [text, setText] = useState<string | null>(null)
+  const act = useAction()
+  const m = text === null ? null : /^(\d{1,2})(?:[.,](\d{1,2}))?$/.exec(text.trim())
+  const bp = m ? Number(m[1]) * 100 + Number((m[2] ?? '').padEnd(2, '0')) : null
+  const shown = (v: number) => String(v / 100).replace('.', ',')
+  if (!st.data) return <ErrorBox error={st.error} />
+  return (
+    <Card className="flex flex-wrap items-end gap-3 text-sm">
+      <div className="min-w-0 flex-1 text-slate-700">
+        <div className="font-medium">Баллы клиентам</div>
+        Клиенты, подключившиеся к боту по номеру, получают {shown(st.data.rate_bp)} % от оплаченного деньгами баллами (1 балл = 1 сом). Списать
+        баллы — на кассе «Услуги → Скидка баллами». Списанные баллы уменьшают чистую прибыль.
+      </div>
+      {text === null ? (
+        <Button variant="secondary" onClick={() => setText(shown(st.data!.rate_bp))}>
+          Изменить процент
+        </Button>
+      ) : (
+        <>
+          <Field label="Процент, %" hint="От 0 до 10">
+            <input autoFocus inputMode="decimal" className="w-24" value={text} onChange={(e) => setText(e.target.value)} />
+          </Field>
+          <Button variant="secondary" onClick={() => setText(null)}>
+            Отмена
+          </Button>
+          <Button
+            disabled={act.busy || bp === null || bp > 1000}
+            onClick={() =>
+              void act.run(async () => {
+                await put('/settings/loyalty', { rate_bp: bp })
+                setText(null)
+                st.reload()
+                toast('Процент сохранён')
+              })
+            }
+          >
+            Сохранить
+          </Button>
+        </>
+      )}
+      <ErrorBox error={act.error} />
+    </Card>
+  )
 }
 
 export default function TelegramSettings() {
@@ -85,6 +133,7 @@ export default function TelegramSettings() {
           )}
         </Card>
       )}
+      {s?.enabled && <LoyaltyRate />}
     </div>
   )
 }

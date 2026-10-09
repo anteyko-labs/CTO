@@ -178,8 +178,11 @@ pub async fn handle_message(
             .execute(&mut *conn)
             .await?;
         return Ok(Reply::text(
-            "Готово: напоминаний больше не будет. Чтобы вернуться, поделитесь номером ещё раз.",
+            "Готово: напоминаний больше не будет, баллы не начисляются, накопленные сохранятся. Чтобы вернуться, поделитесь номером ещё раз.",
         ));
+    }
+    if matches!(word.as_str(), "/баллы" | "/bonus" | "баллы") {
+        return Ok(Reply::text(bonus_history(conn, party_id).await?));
     }
     Ok(Reply::text(customer_book(conn, party_id).await?))
 }
@@ -225,7 +228,7 @@ async fn link_customer(
     .await?;
     let book = customer_book(conn, p.id).await?;
     Ok(Reply::text(format!(
-        "{}, вы подключены. Напомним о замене за неделю и за день до срока. Отключить — /стоп.\n\n{book}",
+        "{}, вы подключены. Напомним о замене за неделю и за день до срока. С каждой покупки начисляем баллы: 1 балл = 1 сом, списать — назовите номер на кассе. История баллов — /баллы, отключить — /стоп.\n\n{book}",
         p.name
     )))
 }
@@ -243,13 +246,139 @@ fn km(v: i32) -> String {
 }
 
 /// Масляная книжка клиента текстом: по машинам — последняя замена и следующая.
+fn points(v: i64) -> String {
+    // «12,50 с» → «12,50»: баллы показываем без валюты.
+    format_som(v).trim_end_matches(" с").to_string()
+}
+
+/// Баллы клиента и последние операции (SPEC-19).
+pub async fn bonus_history(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
+    let h = crate::api::loyalty::history(conn, party_id, 10).await?;
+    let mut lines = vec![format!(
+        "Баллов: {} (1 балл = 1 сом, списать — назовите номер на кассе)",
+        points(h.balance_tyiyn)
+    )];
+    for r in &h.rows {
+        let what = match r.kind.as_str() {
+            "accrual" => "начислено",
+            "redeem" => "списано",
+            "refund" => "возвращено при возврате товара",
+            _ => "снято при возврате товара",
+        };
+        let sign = if r.amount_tyiyn > 0 { "+" } else { "−" };
+        lines.push(format!(
+            "{} {sign}{} — {what}{}",
+            // Бишкек — UTC+6 круглый год.
+            (r.created_at + chrono::Duration::hours(6)).format("%d.%m"),
+            points(r.amount_tyiyn.abs()),
+            r.sale_number
+                .map(|n| format!(", чек № {n}"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Сообщения клиентам об операциях с баллами: по одному на чек.
+pub struct BonusNotice {
+    pub chat_id: i64,
+    pub text: String,
+    pub ledger_ids: Vec<Uuid>,
+}
+
+pub async fn bonus_notices(conn: &mut PgConnection) -> AppResult<Vec<BonusNotice>> {
+    let rows = sqlx::query!(
+        r#"select l.id, l.kind, l.amount_tyiyn, l.party_id, l.doc_id, s.number as "sale_number?", t.chat_id
+           from loyalty_ledger l
+           join telegram_customers t on t.party_id = l.party_id and l.created_at >= t.linked_at
+           left join sales s on s.id = l.doc_id
+           where l.created_at > now() - interval '3 days'
+             and not exists (select 1 from loyalty_notices n where n.ledger_id = l.id)
+           order by l.created_at, l.doc_id"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    struct Group {
+        chat_id: i64,
+        doc_id: Uuid,
+        party_id: Uuid,
+        number: Option<i64>,
+        ops: Vec<(String, i64)>,
+        ids: Vec<Uuid>,
+    }
+    let mut out: Vec<Group> = Vec::new();
+    for r in rows {
+        match out
+            .iter_mut()
+            .find(|x| x.chat_id == r.chat_id && x.doc_id == r.doc_id)
+        {
+            Some(x) => {
+                x.ops.push((r.kind, r.amount_tyiyn));
+                x.ids.push(r.id);
+            }
+            None => out.push(Group {
+                chat_id: r.chat_id,
+                doc_id: r.doc_id,
+                party_id: r.party_id,
+                number: r.sale_number,
+                ops: vec![(r.kind, r.amount_tyiyn)],
+                ids: vec![r.id],
+            }),
+        }
+    }
+    let mut notices = Vec::new();
+    for g in out {
+        let parts: Vec<String> = g
+            .ops
+            .iter()
+            .map(|(kind, v)| match kind.as_str() {
+                "accrual" => format!("начислено {}", points(*v)),
+                "redeem" => format!("списано {}", points(-v)),
+                "refund" => format!("возвращено {}", points(*v)),
+                _ => format!("снято {}", points(-v)),
+            })
+            .collect();
+        let balance = crate::api::loyalty::balance(conn, g.party_id).await?;
+        let (chat_id, number, ids) = (g.chat_id, g.number, g.ids);
+        notices.push(BonusNotice {
+            chat_id,
+            text: format!(
+                "Баллы{}: {}. Теперь у вас {}.",
+                number
+                    .map(|n| format!(" по чеку № {n}"))
+                    .unwrap_or_default(),
+                parts.join(", "),
+                points(balance)
+            ),
+            ledger_ids: ids,
+        });
+    }
+    Ok(notices)
+}
+
+pub async fn mark_bonus_notice(conn: &mut PgConnection, n: &BonusNotice) -> AppResult<()> {
+    sqlx::query!(
+        "insert into loyalty_notices (ledger_id) select unnest($1::uuid[]) on conflict do nothing",
+        &n.ledger_ids[..]
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
     let branch_id = sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
         .fetch_one(&mut *conn)
         .await?;
+    let bonus = format!(
+        "Баллов: {} — подробнее /баллы",
+        points(crate::api::loyalty::balance(conn, party_id).await?)
+    );
     let books = crate::api::oil_book::books(conn, branch_id, Some(party_id), None).await?;
     if books.is_empty() {
-        return Ok("Машин у вас пока не записано — назовите госномер кассиру при замене.".into());
+        return Ok(format!(
+            "{bonus}\n\nМашин у вас пока не записано — назовите госномер кассиру при замене."
+        ));
     }
     let parts: Vec<String> = books
         .iter()
@@ -297,7 +426,7 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
             lines.join("\n")
         })
         .collect();
-    Ok(parts.join("\n\n"))
+    Ok(format!("{bonus}\n\n{}", parts.join("\n\n")))
 }
 
 /// Напоминания клиентам: за 7 дней и за 1 день до срока замены, каждое один раз (ADR-051).
@@ -765,6 +894,21 @@ async fn notify_loop(pool: PgPool, api: Api) {
                     last_reminders = Some(std::time::Instant::now());
                 }
                 Err(e) => tracing::warn!(error = %e, "телеграм: напоминания не собраны"),
+            }
+        }
+        if let Ok(mut conn) = pool.acquire().await {
+            match bonus_notices(&mut conn).await {
+                Ok(list) => {
+                    for n in list {
+                        if !api.send(n.chat_id, &n.text).await {
+                            break;
+                        }
+                        if let Err(e) = mark_bonus_notice(&mut conn, &n).await {
+                            tracing::warn!(error = %e, "телеграм: баллы не отмечены");
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "телеграм: баллы не собраны"),
             }
         }
         if let Ok(mut conn) = pool.acquire().await {

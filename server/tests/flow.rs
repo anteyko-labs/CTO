@@ -1540,6 +1540,118 @@ async fn delivery_address_stays_on_check(pool: PgPool) {
     assert_eq!(sale.total_tyiyn, 50_000);
 }
 
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
+    // Баллы 0,5 % с оплаченного деньгами, только клиенту из бота; списание — оплата «bonus» (SPEC-19).
+    use avtodom_server::api::loyalty::balance;
+    use avtodom_server::api::telegram::bonus_notices;
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 10_000).await;
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let pay = |list: &[(&str, i64)]| -> Vec<PaymentReq> {
+        list.iter()
+            .map(|(m, a)| PaymentReq {
+                method: (*m).into(),
+                amount_tyiyn: *a,
+            })
+            .collect()
+    };
+    let sale = |qty: i64, payments: Vec<PaymentReq>| {
+        let mut req = takeaway(&w, vec![line("piece", w.filter, qty, 50_000)], payments);
+        req.party_id = Some(party);
+        req
+    };
+    // Не подключён к боту — баллов нет, оплатить ими нельзя.
+    sell(&pool, &w.owner, sale(1, cash(50_000))).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 0);
+    assert!(matches!(
+        sell(
+            &pool,
+            &w.owner,
+            sale(1, pay(&[("bonus", 100), ("cash", 49_900)]))
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values (555, $1, '+996555123456')")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 1000 с наличными → 5 баллов.
+    sell(&pool, &w.owner, sale(2, cash(100_000))).await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 500);
+    // Больше, чем есть, не списать.
+    assert!(matches!(
+        sell(
+            &pool,
+            &w.owner,
+            sale(1, pay(&[("bonus", 600), ("cash", 49_400)]))
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    // Списали 5, остальное картой: начисление только с 495 с → 2,48.
+    let paid = sell(
+        &pool,
+        &w.owner,
+        sale(1, pay(&[("bonus", 500), ("card", 49_500)])),
+    )
+    .await
+    .unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 248);
+    drop(conn);
+    // Возврат: баллы обратно, начисленное с этого чека снимается.
+    let ret = |payments: Vec<PaymentReq>| ReturnReq {
+        op_id: Uuid::now_v7(),
+        comment: String::new(),
+        lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
+        payments,
+    };
+    let mut tx = pool.begin().await.unwrap();
+    assert!(matches!(
+        return_sale_tx(
+            &mut tx,
+            &w.owner,
+            paid.id,
+            ret(pay(&[("bonus", 600), ("cash", 49_400)]))
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    drop(tx);
+    let mut tx = pool.begin().await.unwrap();
+    return_sale_tx(
+        &mut tx,
+        &w.owner,
+        paid.id,
+        ret(pay(&[("bonus", 500), ("cash", 49_500)])),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 500);
+    // Клиенту в бот — по сообщению на чек.
+    let notices = bonus_notices(&mut conn).await.unwrap();
+    assert_eq!(notices.len(), 3);
+    assert!(
+        notices[0].text.contains("начислено 5,00"),
+        "{}",
+        notices[0].text
+    );
+    assert!(notices[1].text.contains("списано 5,00") && notices[1].text.contains("начислено 2,48"));
+    let book = say(&mut conn, 555, "/баллы").await;
+    assert!(book.contains("Баллов: 5,00"), "{book}");
+}
+
 /// Текст ответа бота на сообщение из чата `chat`.
 async fn say(conn: &mut sqlx::PgConnection, chat: i64, text: &str) -> String {
     avtodom_server::api::telegram::handle_message(conn, chat, chat, Some(text), None)

@@ -375,8 +375,13 @@ async fn prepare_line(
 fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     let mut sum: i64 = 0;
     for p in payments {
-        if !matches!(p.method.as_str(), "cash" | "card" | "transfer" | "debt") {
-            return Err(invalid("способ оплаты: cash, card, transfer или debt"));
+        if !matches!(
+            p.method.as_str(),
+            "cash" | "card" | "transfer" | "debt" | "bonus"
+        ) {
+            return Err(invalid(
+                "способ оплаты: cash, card, transfer, debt или bonus",
+            ));
         }
         if p.amount_tyiyn <= 0 || p.amount_tyiyn > ops::MAX_AMOUNT_TYIYN {
             return Err(invalid("сумма платежа больше нуля"));
@@ -808,6 +813,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
     }
     insert_payments(conn, ctx, id, &req.payments, 1).await?;
+    // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
+    crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments, offline).await?;
     if debt_total > 0 {
         let party_id = req
             .party_id
@@ -1091,7 +1098,7 @@ pub async fn return_sale_tx(
     // Сколько по чеку ещё в долгу и сколько заплачено деньгами, за вычетом прежних возвратов.
     let left = sqlx::query!(
         r#"select coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
-                  coalesce(sum(p.amount_tyiyn) filter (where p.method <> 'debt'), 0)::bigint as "money!"
+                  coalesce(sum(p.amount_tyiyn) filter (where p.method not in ('debt', 'bonus')), 0)::bigint as "money!"
            from sale_payments p join sales s on s.id = p.sale_id
            where s.id = $1 or s.reversal_of = $1"#,
         id
@@ -1104,6 +1111,8 @@ pub async fn return_sale_tx(
         .try_fold((0i64, 0i64), |(d, m), p| {
             if p.method == "debt" {
                 d.checked_add(p.amount_tyiyn).map(|d| (d, m))
+            } else if p.method == "bonus" {
+                Some((d, m))
             } else {
                 m.checked_add(p.amount_tyiyn).map(|m| (d, m))
             }
@@ -1191,6 +1200,7 @@ pub async fn return_sale_tx(
         .await?;
     }
     insert_payments(conn, ctx, rid, &req.payments, -1).await?;
+    crate::api::loyalty::on_return(conn, ctx, id, rid, orig.party_id, &req.payments).await?;
     let debt_back: i64 = req
         .payments
         .iter()

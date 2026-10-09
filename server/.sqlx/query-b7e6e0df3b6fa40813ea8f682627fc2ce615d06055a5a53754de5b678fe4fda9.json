@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into loyalty_notices (ledger_id) select unnest($1::uuid[]) on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b7e6e0df3b6fa40813ea8f682627fc2ce615d06055a5a53754de5b678fe4fda9"
+}

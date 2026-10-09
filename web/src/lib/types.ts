@@ -149,7 +149,7 @@ export interface StockMismatch {
 }
 
 export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service' | 'weight'
-export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt'
+export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt' | 'bonus'
 
 export interface SaleLine {
   line_no: number
@@ -235,6 +235,7 @@ export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   // Код прежний, чтобы не трогать проведённые чеки: на точке это оплата QR через терминал.
   transfer: 'QR',
   debt: 'В долг',
+  bonus: 'Баллы',
 }
 
 export const KIND_LABELS: Record<CategoryKind, string> = {
@@ -368,6 +369,7 @@ export interface Shift {
   card_tyiyn: number
   transfer_tyiyn: number
   debt_tyiyn: number
+  bonus_tyiyn?: number
   bank_fee_tyiyn: number
   /** Смена закрыта, а что сделали с деньгами (сейф или размен) ещё не отмечено. */
   handover_pending: boolean
@@ -439,6 +441,7 @@ export interface ProfitTotals {
   payroll_tyiyn: number
   bank_fee_tyiyn: number
   expenses_tyiyn: number
+  bonus_tyiyn: number
   net_tyiyn: number
   margin_bp: number | null
   sales_count: number

@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, l.kind, l.amount_tyiyn, l.party_id, l.doc_id, s.number as \"sale_number?\", t.chat_id\n           from loyalty_ledger l\n           join telegram_customers t on t.party_id = l.party_id and l.created_at >= t.linked_at\n           left join sales s on s.id = l.doc_id\n           where l.created_at > now() - interval '3 days'\n             and not exists (select 1 from loyalty_notices n where n.ledger_id = l.id)\n           order by l.created_at, l.doc_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "chat_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b4c5cd24837b6c808557f488b3b603e2d664809638524d2f07c34310eee0dd9f"
+}

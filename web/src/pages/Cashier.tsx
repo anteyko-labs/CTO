@@ -9,6 +9,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
+import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
 import { OilHint } from '../components/OilBook'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -168,7 +169,10 @@ export default function Cashier() {
   const [comment, setComment] = useState(draft?.comment ?? '')
   const [payMode, setPayMode] = useState<PayMode>('cash')
   const [received, setReceived] = useState('')
-  const [split, setSplit] = useState<Record<PaymentMethod, string>>({ cash: '', card: '', transfer: '', debt: '' })
+  const [split, setSplit] = useState<Record<Exclude<PaymentMethod, 'bonus'>, string>>({ cash: '', card: '', transfer: '', debt: '' })
+  // Скидка баллами: часть чека оплачивается баллами клиента из бота (SPEC-19).
+  const [bonus, setBonus] = useState<BonusUse | null>(null)
+  const [bonusOpen, setBonusOpen] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
   const attempt = useRef<{ key: string; opId: string } | null>(null)
   const [done, setDone] = useState<{ sale: Sale; change: number | null } | null>(null)
@@ -228,9 +232,12 @@ export default function Cashier() {
   const amounts = lines.map(lineAmount)
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
   const total = amounts.reduce<number>((acc, a) => acc + (a ?? 0), 0)
+  const bonusAmount = bonus?.amount_tyiyn ?? 0
+  // К оплате деньгами или в долг — итог за вычетом баллов.
+  const due = total - bonusAmount
 
-  const payments = ((): { method: PaymentMethod; amount_tyiyn: number }[] | null => {
-    if (payMode !== 'mixed') return [{ method: payMode, amount_tyiyn: total }]
+  const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number }[] | null => {
+    if (payMode !== 'mixed') return due > 0 ? [{ method: payMode, amount_tyiyn: due }] : []
     const list: { method: PaymentMethod; amount_tyiyn: number }[] = []
     for (const m of ['cash', 'card', 'transfer', 'debt'] as const) {
       if (!split[m].trim()) continue
@@ -240,9 +247,11 @@ export default function Cashier() {
     }
     return list
   })()
+  const payments =
+    moneyPayments && bonusAmount > 0 ? [...moneyPayments, { method: 'bonus' as const, amount_tyiyn: bonusAmount }] : moneyPayments
   const paid = payments?.reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? null
   const receivedValue = payMode === 'cash' && received.trim() ? parseSom(received) : null
-  const change = receivedValue !== null ? receivedValue - total : null
+  const change = receivedValue !== null ? receivedValue - due : null
 
   const update = (key: string, patch: Partial<CartLine>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
@@ -358,6 +367,7 @@ export default function Cashier() {
     setComment('')
     setReceived('')
     setSplit({ cash: '', card: '', transfer: '', debt: '' })
+    setBonus(null)
     setPayMode('cash')
     setMasterId('')
     setSaleType('takeaway')
@@ -439,6 +449,9 @@ export default function Cashier() {
     [payments === null || paid === total, `оплату: ${formatSom(paid ?? 0)} вместо ${formatSom(total)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
+    [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента'],
+    [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново'],
+    [!bonus || navigator.onLine, 'баллы списываются только при связи с сервером'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
   )
@@ -449,7 +462,7 @@ export default function Cashier() {
         sale_type: saleType,
         cashier_id: cashierId,
         master_id: saleType === 'service' ? masterId : null,
-        party_id: party?.id ?? null,
+        party_id: party?.id ?? bonus?.party_id ?? null,
         contact_id: party && contactId ? contactId : null,
         vehicle_id: party && vehicleId ? vehicleId : null,
         mileage_km: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
@@ -849,6 +862,17 @@ export default function Cashier() {
             <span className="text-sm text-slate-500">Итого</span>
             <span className="text-3xl font-bold">{formatSom(total)}</span>
           </div>
+          {bonus && (
+            <div className="flex items-center justify-between gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900">
+              <span>
+                Баллами ({bonus.name}): −{formatSom(bonusAmount)}
+                <span className="ml-2 font-semibold">к оплате {formatSom(due)}</span>
+              </span>
+              <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setBonus(null)}>
+                Убрать
+              </Button>
+            </div>
+          )}
           <div data-pay tabIndex={-1} className="grid grid-cols-5 overflow-hidden rounded-md border border-slate-300 text-xs">
             {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m) => (
               <button
@@ -874,16 +898,16 @@ export default function Cashier() {
                   }}
                 />
               </Field>
-              {total > 0 && (
+              {due > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
                     className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
-                    onClick={() => setReceived(somInput(total))}
+                    onClick={() => setReceived(somInput(due))}
                   >
                     Без сдачи
                   </button>
-                  {NOTES.filter((n) => n > total)
+                  {NOTES.filter((n) => n > due)
                     .slice(0, 3)
                     .map((n) => (
                       <button
@@ -909,9 +933,9 @@ export default function Cashier() {
             <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
               {party ? (
                 <>
-                  Весь чек в долг: {party.name}, {balanceText(party.balance_tyiyn)}
+                  {bonus ? "Остаток" : "Весь чек"} в долг: {party.name}, {balanceText(party.balance_tyiyn)}
                   {party.credit_limit_tyiyn !== null && (
-                    <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - total)}</>
+                    <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - due)}</>
                   )}
                   {overLimit > 0 && (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1016,10 +1040,25 @@ export default function Cashier() {
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {expense && <QuickExpense onClose={() => setExpense(false)} />}
+      {bonusOpen && (
+        <BonusRedeem
+          total={total}
+          onClose={() => setBonusOpen(false)}
+          onApply={(b) => {
+            setBonus(b)
+            setBonusOpen(false)
+            toast(`Списано ${formatSom(b.amount_tyiyn)} баллами`)
+          }}
+        />
+      )}
       {servicesOpen && (
         <ServicePicker
           onPick={addService}
           onClose={() => setServicesOpen(false)}
+          onBonus={() => {
+            setServicesOpen(false)
+            setBonusOpen(true)
+          }}
           onBatteryIntake={() => {
             setServicesOpen(false)
             setBatteryIntake(true)

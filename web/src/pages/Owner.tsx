@@ -162,6 +162,7 @@ export default function Profit() {
                 ['− Оплата труда', -t.payroll_tyiyn, ''],
                 ['− Комиссия банка', -t.bank_fee_tyiyn, ''],
                 ['− Расходы', -t.expenses_tyiyn, ''],
+                ['− Скидки баллами', -t.bonus_tyiyn, ''],
                 ['= Чистая прибыль', t.net_tyiyn, 'text-lg font-bold'],
               ].map(([label, value, cls]) => (
                 <div key={label as string} className={`flex justify-between gap-4 ${cls as string}`}>

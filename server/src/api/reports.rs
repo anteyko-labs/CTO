@@ -28,6 +28,8 @@ pub(crate) struct Totals {
     pub(crate) payroll_tyiyn: i64,
     pub(crate) bank_fee_tyiyn: i64,
     pub(crate) expenses_tyiyn: i64,
+    /// Оплачено баллами за вычетом возвращённых — скидка клиентам (SPEC-19).
+    pub(crate) bonus_tyiyn: i64,
     pub(crate) net_tyiyn: i64,
     pub(crate) margin_bp: Option<i64>,
     pub(crate) sales_count: i64,
@@ -154,6 +156,15 @@ pub(crate) async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    let bonus = sqlx::query_scalar!(
+        r#"select coalesce(sum(p.amount_tyiyn), 0)::bigint as "v!" from sale_payments p join sales s on s.id = p.sale_id
+           where s.branch_id = $1 and s.business_date between $2 and $3 and p.method = 'bonus'"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     // Суммы из базы; насыщение вместо паники на заведомо нереальных значениях.
     let revenue = lines.goods.saturating_add(lines.services);
     let cost = lines.cost.saturating_add(revaluation);
@@ -166,10 +177,12 @@ pub(crate) async fn totals_for(
         payroll_tyiyn: payroll,
         bank_fee_tyiyn: fee,
         expenses_tyiyn: expenses,
+        bonus_tyiyn: bonus,
         net_tyiyn: gross
             .saturating_sub(payroll)
             .saturating_sub(fee)
-            .saturating_sub(expenses),
+            .saturating_sub(expenses)
+            .saturating_sub(bonus),
         margin_bp: (revenue != 0)
             .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
             .flatten(),
@@ -241,7 +254,9 @@ async fn profit(
                         where s.branch_id = $1 and s.business_date = d.day), 0)
               + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
                           where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
-                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "fee!"
+                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "fee!",
+             coalesce((select sum(p.amount_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                       where s.branch_id = $1 and s.business_date = d.day and p.method = 'bonus'), 0)::bigint as "bonus!"
            from d order by d.day desc"#,
         branch_id,
         from,
@@ -260,7 +275,8 @@ async fn profit(
             .gross
             .saturating_sub(r.payroll)
             .saturating_sub(r.expenses)
-            .saturating_sub(r.fee),
+            .saturating_sub(r.fee)
+            .saturating_sub(r.bonus),
     })
     .collect();
 
