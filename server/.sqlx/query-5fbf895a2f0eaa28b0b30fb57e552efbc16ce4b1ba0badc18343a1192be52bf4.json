@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select code from product_cross_numbers where product_id = $1 order by code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5fbf895a2f0eaa28b0b30fb57e552efbc16ce4b1ba0badc18343a1192be52bf4"
+}

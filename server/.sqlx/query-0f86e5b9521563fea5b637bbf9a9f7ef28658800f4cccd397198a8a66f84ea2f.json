@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with mine as (\n             select code_norm as n from product_cross_numbers where product_id = $1\n             union select norm_code(article) from products where id = $1 and norm_code(article) <> ''\n           )\n           select p.id, p.name, p.brand, p.article,\n                  coalesce(bp.stock_qty, 0) as \"stock_qty!\",\n                  coalesce(bp.sale_price_tyiyn, 0) as \"sale_price_tyiyn!\"\n           from products p\n           left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n           where p.id <> $1 and not p.archived\n             and (norm_code(p.article) in (select n from mine)\n                  or exists (select 1 from product_cross_numbers x\n                             where x.product_id = p.id and x.code_norm in (select n from mine)))\n           order by (coalesce(bp.stock_qty, 0) > 0) desc, p.name\n           limit 30",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "article",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "stock_qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "sale_price_tyiyn!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "0f86e5b9521563fea5b637bbf9a9f7ef28658800f4cccd397198a8a66f84ea2f"
+}

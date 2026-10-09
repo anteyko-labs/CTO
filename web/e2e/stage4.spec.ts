@@ -214,3 +214,48 @@ test('масляная книжка: замена с пробегом, след�
   await page.getByRole('button', { name: 'Сохранить' }).click()
   await expect(page.getByText(/на 95\s000 км/)).toBeVisible()
 })
+
+test('аналог фильтра вместо отсутствующего и доставка в чеке', async ({ page }) => {
+  await login(page)
+  const cashier = `Кассир аналогов ${RUN}`
+  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Фильтры аналогов ${RUN}`, kind: 'filter' })
+  const code = `24${RUN}401`
+  // Оригинала нет на складе, аналог Mann есть.
+  const original = await apiPost<{ id: string }>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Toyota ориг ${RUN}`,
+    article: `TY-${RUN}`,
+    barcodes: [code],
+    sale_price_tyiyn: 70_000,
+  })
+  const mann = await apiPost<{ id: string }>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Mann аналог ${RUN}`,
+    sale_price_tyiyn: 60_000,
+  })
+  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: mann.id, qty: 5, cost_tyiyn: 175_000 }] })
+  const res = await page.request.put(`/api/v1/products/${mann.id}/cross`, { data: { codes: [`ty ${RUN}`] }, headers: DEVICE })
+  expect(res.ok()).toBeTruthy()
+  expect(original.id).toBeTruthy()
+
+  await page.goto('/')
+  const picker = page.getByPlaceholder(/Сканируйте штрихкод/)
+  await picker.fill(code)
+  await picker.press('Enter')
+  await expect(page.getByText('нет на складе — есть аналог:')).toBeVisible()
+  await page.getByRole('button', { name: new RegExp(`Mann аналог ${RUN}`) }).click()
+  await expect(page.locator('li').filter({ hasText: `Mann аналог ${RUN}` }).first()).toBeVisible()
+  // Связь в обе стороны: теперь оригинал — аналог для Mann.
+  await expect(page.getByRole('button', { name: new RegExp(`Toyota ориг ${RUN} · 0 шт`) })).toBeVisible()
+
+  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await page.getByLabel('Доставка (бесплатно)').check()
+  await page.locator('#delivery-address').fill('г. Бишкек, ул. Ахунбаева 98')
+  await page.getByRole('button', { name: 'Провести чек' }).click()
+  await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+  await page.getByRole('link', { name: 'Открыть', exact: true }).click()
+  await expect(page.getByText('Доставка: г. Бишкек, ул. Ахунбаева 98')).toBeVisible()
+})

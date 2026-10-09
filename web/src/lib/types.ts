@@ -188,6 +188,8 @@ export interface Sale {
   vehicle_plate: string | null
   /** Баланс клиента после чека: сколько он теперь должен. */
   party_balance_tyiyn: number | null
+  /** Адрес доставки; пусто — забрали сами. */
+  delivery_address: string
   total_tyiyn: number
   /** Начисление мастеру за замену: ставка на чек, а не строка услуги. */
   master_fee_tyiyn: number

@@ -189,6 +189,7 @@ export default function SaleView() {
         )}
         {sale.master_fee_tyiyn !== 0 && <div>Мастеру за замену: {formatSom(sale.master_fee_tyiyn)}</div>}
         <div>Провёл: {sale.user_name}</div>
+        {sale.delivery_address && <div>Доставка: {sale.delivery_address}</div>}
         {sale.comment && <div>Комментарий: {sale.comment}</div>}
         {sale.reversal_of && (
           <div>

@@ -332,7 +332,10 @@ pub async fn query_products(
            where ($2::text is null
                   or p.name ilike '%' || $2 || '%' or p.brand ilike '%' || $2 || '%'
                   or p.article ilike '%' || $2 || '%'
-                  or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code like $2 || '%'))
+                  or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code like $2 || '%')
+                  -- по кросс-номеру в любом написании (SPEC-17)
+                  or (norm_code($2) <> '' and exists (select 1 from product_cross_numbers x
+                      where x.product_id = p.id and x.code_norm like norm_code($2) || '%')))
              and ($3::uuid is null or p.category_id = $3)
              and ($4::jsonb is null or p.attrs @> $4)
              and ($5::uuid[] is null or p.id = any($5))

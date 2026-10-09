@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into product_cross_numbers (product_id, code, code_norm) values ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "74d5b39230d445681dcf1a1f88a7336b9628d4e32eda2d7b467e6b24f9d1b69d"
+}

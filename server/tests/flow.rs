@@ -190,6 +190,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         payments,
         offline: false,
         mileage_km: None,
+        delivery_address: String::new(),
     }
 }
 
@@ -1449,4 +1450,19 @@ async fn oil_book_records_service_change(pool: PgPool) {
             .await
             .unwrap();
     assert!(books[0].records.is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn delivery_address_stays_on_check(pool: PgPool) {
+    // Доставка бесплатная: в чеке только адрес (BLUEPRINT §6, вопросы 16 и 21).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 2, 1_000).await;
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    req.delivery_address = "  г. Бишкек, ул. Ахунбаева 98, гараж 4  ".into();
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(
+        sale.delivery_address,
+        "г. Бишкек, ул. Ахунбаева 98, гараж 4"
+    );
+    assert_eq!(sale.total_tyiyn, 50_000);
 }

@@ -49,6 +49,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     <div>${title} № ${sale.number}</div>
     <div>${esc(formatDateTime(sale.created_at))}</div>
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}
+    ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
     <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSom(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
     <div class="center">Спасибо за покупку!</div>
   </body></html>`

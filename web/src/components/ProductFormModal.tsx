@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { del, get, newOpId, patch, post, qs } from '../lib/api'
+import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -70,6 +70,15 @@ export function ProductFormModal({
     [categories.data, form.category_id],
   )
   const isOil = category?.kind === 'oil'
+  const isFilter = category?.kind === 'filter'
+  // Кросс-номера фильтра: по ним касса находит товар и предлагает аналоги (SPEC-17).
+  const [cross, setCross] = useState<string | null>(null)
+  useEffect(() => {
+    if (!product) return
+    void get<{ codes: string[] }>(`/products/${product.id}/cross`)
+      .then((r) => setCross((c) => c ?? r.codes.join(', ')))
+      .catch(() => undefined)
+  }, [product])
 
   const nameQuery = useDebounced(form.name.trim(), 300)
   const [similar, setSimilar] = useState<Product[]>([])
@@ -156,6 +165,10 @@ export function ProductFormModal({
         saved = Object.keys(prices).length
           ? await patch<Product>(`/products/${product.id}/prices`, prices)
           : await get<Product>(`/products/${product.id}`)
+      }
+      if (isFilter && cross !== null) {
+        const list = cross.split(/[,;\n]/).map((c) => c.trim()).filter(Boolean)
+        await put(`/products/${saved.id}/cross`, { codes: list })
       }
       toast(product ? 'Товар сохранён' : 'Товар создан')
       onSaved(saved)
@@ -306,6 +319,11 @@ export function ProductFormModal({
         <Field label="Артикул">
           <input value={form.article} onChange={(e) => set('article', e.target.value)} />
         </Field>
+        {isFilter && (
+          <Field label="Кросс-номера" hint="Номера других производителей через запятую: по ним найдётся товар и подскажутся аналоги">
+            <textarea rows={2} value={cross ?? ''} onChange={(e) => setCross(e.target.value)} placeholder="90915-YZZE1, W 712/75, OC 217" />
+          </Field>
+        )}
         {isOil && (
           <Field label="Объём канистры, л" required>
             <input

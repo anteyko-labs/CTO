@@ -196,6 +196,9 @@ export default function Cashier() {
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
   const [mileage, setMileage] = useState('')
+  const [delivery, setDelivery] = useState<string | null>(null)
+  // Аналоги фильтров по кросс-номерам: подсказка в строке, особенно когда товара нет (SPEC-17).
+  const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
   const { busy, error, setError, run } = useAction()
 
   const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
@@ -300,8 +303,25 @@ export default function Cashier() {
     focusPicker()
   }
 
+  const loadAnalogs = (p: Product) => {
+    if (p.category_kind !== 'filter' || analogs[p.id]) return
+    void get<{ id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>(`/products/${p.id}/analogs`)
+      .then((list) => setAnalogs((m) => ({ ...m, [p.id]: list })))
+      .catch(() => undefined)
+  }
+
+  /** Заменить товар строки аналогом: цена — его, количество — прежнее. */
+  const swapToAnalog = (l: CartLine, id: string) =>
+    void get<Product>(`/products/${id}`)
+      .then((p) => {
+        update(l.key, { product: p, priceText: somInput(p.sale_price_tyiyn) })
+        loadAnalogs(p)
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось заменить'))
+
   const addProduct = (p: Product) => {
     setDone(null)
+    loadAnalogs(p)
     askGift(p)
     const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
     setLines((ls) => {
@@ -345,6 +365,7 @@ export default function Cashier() {
     setContactId('')
     setVehicleId('')
     setMileage('')
+    setDelivery(null)
     setError(null)
     setGiftAsked({})
     attempt.current = null
@@ -418,6 +439,7 @@ export default function Cashier() {
     [payments === null || paid === total, `оплату: ${formatSom(paid ?? 0)} вместо ${formatSom(total)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
+    [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
   )
 
@@ -431,6 +453,7 @@ export default function Cashier() {
         contact_id: party && contactId ? contactId : null,
         vehicle_id: party && vehicleId ? vehicleId : null,
         mileage_km: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
+        delivery_address: delivery?.trim() ?? '',
         comment,
         lines: lines.map((l) => ({
           kind: l.kind,
@@ -623,6 +646,22 @@ export default function Cashier() {
                       </div>
                       <div className="text-xs text-slate-500">
                         {l.product ? `Остаток: ${stockText(l.product)}` : 'Услуга'}
+                        {l.product && (analogs[l.product.id] ?? []).length > 0 && (
+                          <div className={`mt-1 flex flex-wrap items-center gap-1 ${short ? 'text-rose-700' : 'text-slate-600'}`}>
+                            {short ? 'нет на складе — есть аналог:' : 'Аналоги:'}
+                            {(analogs[l.product.id] ?? []).slice(0, 3).map((a) => (
+                              <button
+                                key={a.id}
+                                type="button"
+                                className="rounded border border-slate-300 bg-white px-1.5 py-0.5 hover:border-sky-500"
+                                title="Заменить этим товаром"
+                                onClick={() => swapToAnalog(l, a.id)}
+                              >
+                                {a.name} · {a.stock_qty} шт · {formatSom(a.sale_price_tyiyn)} ⇄
+                              </button>
+                            ))}
+                          </div>
+                        )}
                         {l.kind === 'weight' && batteryAvg !== null && (
                           <span className="ml-2 text-amber-700">средняя закупка {formatSom(batteryAvg)} за кг — дешевле не продать</span>
                         )}
@@ -776,6 +815,15 @@ export default function Cashier() {
             />
           </div>
           {party && vehicleId && <OilHint vehicleId={vehicleId} />}
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={delivery !== null} onChange={(e) => setDelivery(e.target.checked ? '' : null)} />
+            Доставка (бесплатно)
+          </label>
+          {delivery !== null && (
+            <Field label="Адрес доставки" required>
+              <input id="delivery-address" value={delivery} onChange={(e) => setDelivery(e.target.value)} placeholder="Улица, дом, ориентир" />
+            </Field>
+          )}
           {party && vehicleId && saleType === 'service' && (
             <Field label="Пробег, км" hint="Для масляной книжки — можно не заполнять">
               <input inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />

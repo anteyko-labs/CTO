@@ -1843,3 +1843,79 @@ async fn stranger_cannot_lock_out_owner(pool: PgPool) {
         StatusCode::OK
     );
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn filter_analogs_by_cross_numbers(pool: PgPool) {
+    // Кросс-номер связывает фильтры в обе стороны и находится поиском в любом написании (SPEC-17).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let post = |uri: &str, body: Value| {
+        let (app, owner, uri) = (app.clone(), owner.clone(), uri.to_string());
+        async move { call(&app, "POST", &uri, Some(&owner), Some(body)).await }
+    };
+    let (_, _, cat) = post(
+        "/api/v1/categories",
+        json!({ "name": "Фильтры", "kind": "filter" }),
+    )
+    .await;
+    let product = |name: &'static str, article: &'static str| {
+        let cat = cat["id"].clone();
+        async move {
+            post(
+                "/api/v1/products",
+                json!({ "op_id": Uuid::now_v7(), "category_id": cat, "name": name, "article": article, "sale_price_tyiyn": 60000 }),
+            )
+            .await
+            .2["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let toyota = product("Фильтр Toyota", "90915-YZZE1").await;
+    let mann = product("Фильтр Mann", "W 712/75").await;
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/products/{mann}/cross"),
+        Some(&owner),
+        Some(json!({ "codes": ["90915 yzze1", "", "90915-YZZE1"] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, a) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{toyota}/analogs"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(a.as_array().unwrap().len(), 1);
+    assert_eq!(a[0]["id"], json!(mann));
+    assert!(a[0].get("avg_cost_tyiyn").is_none());
+    let (_, _, b) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{mann}/analogs"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(b[0]["id"], json!(toyota));
+    let (_, _, found) = call(
+        &app,
+        "GET",
+        "/api/v1/products?q=90915YZZE",
+        Some(&owner),
+        None,
+    )
+    .await;
+    let ids: Vec<&str> = found
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&mann.as_str()));
+}

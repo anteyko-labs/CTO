@@ -91,6 +91,9 @@ pub struct SaleReq {
     /// Пробег машины при замене — в масляную книжку (SPEC-16).
     #[serde(default)]
     pub mileage_km: Option<i32>,
+    /// Адрес доставки; пусто — забрали сами.
+    #[serde(default)]
+    pub delivery_address: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -145,6 +148,9 @@ pub struct SaleOut {
     /// Начисление мастеру за замену: ставка на чек, а не строка услуги (ADR-027).
     pub master_fee_tyiyn: i64,
     pub comment: String,
+    /// Куда везти; доставка бесплатная, поэтому только адрес (BLUEPRINT §6, вопросы 16 и 21).
+    #[serde(default)]
+    pub delivery_address: String,
     pub reversal_of: Option<Uuid>,
     pub user_name: String,
     pub created_at: DateTime<Utc>,
@@ -161,7 +167,7 @@ pub async fn load_sale(
     let h = sqlx::query!(
         r#"select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,
                   s.master_id, m.full_name as "master_name?", s.total_tyiyn, s.master_fee_tyiyn,
-                  s.comment, s.reversal_of,
+                  s.comment, s.delivery_address, s.reversal_of,
                   s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
                   pc.full_name as "contact_name?", pv.plate as "vehicle_plate?",
                   u.full_name as user_name, s.created_at
@@ -242,6 +248,7 @@ pub async fn load_sale(
         total_tyiyn: h.total_tyiyn,
         master_fee_tyiyn: h.master_fee_tyiyn,
         comment: h.comment,
+        delivery_address: h.delivery_address,
         reversal_of: h.reversal_of,
         user_name: h.user_name,
         created_at: h.created_at,
@@ -545,6 +552,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.lines.is_empty() {
         return Err(invalid("чек пуст"));
     }
+    if req.delivery_address.chars().count() > 300 {
+        return Err(invalid("адрес доставки не длиннее 300 знаков"));
+    }
     // Чек без сети признаём, только если он и правда пролежал на устройстве: признак ставит
     // клиент, а время чека — раньше отправки хотя бы на полминуты (ADR-042).
     let offline = req.offline
@@ -706,8 +716,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     sqlx::query!(
         r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, master_id, total_tyiyn,
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
-                              user_id, device_id, client_time, business_date)
-           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                              user_id, device_id, client_time, delivery_address, business_date)
+           values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                    case when $15::timestamptz is not null
                          and $15::timestamptz > now() - interval '2 days'
                          and $15::timestamptz < now() + interval '5 minutes'
@@ -729,7 +739,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         ctx.device_id,
         // Время устройства задаёт учётный день только чеку без сети: онлайн-чек задним
         // числом в закрытый день не проводится (SPEC-08).
-        if offline { req.client_time } else { None }
+        if offline { req.client_time } else { None },
+        req.delivery_address.trim()
     )
     .execute(&mut *conn)
     .await?;
