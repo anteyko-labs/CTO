@@ -266,11 +266,16 @@ async fn debts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
     Ok(format!("Должны нам всего: {}\n{list}", format_som(total)))
 }
 
+/// Сообщение в чат и время события: курсор двигается только до отправленного.
+pub struct Outgoing {
+    pub at: DateTime<Utc>,
+    pub chat_id: i64,
+    pub text: String,
+}
+
 /// Новые события журнала для привязанных чатов и курсор, до которого дошли.
 /// Первый запуск начинает с «сейчас»: прошлое не присылаем пачкой.
-pub async fn pending(
-    conn: &mut PgConnection,
-) -> AppResult<(Vec<(i64, String)>, Option<DateTime<Utc>>)> {
+pub async fn pending(conn: &mut PgConnection) -> AppResult<(Vec<Outgoing>, Option<DateTime<Utc>>)> {
     let cursor = sqlx::query_scalar!("select value from bot_state where key = 'cursor'")
         .fetch_optional(&mut *conn)
         .await?
@@ -305,7 +310,11 @@ pub async fn pending(
             } else {
                 format!("{title}\n{details}{who}")
             };
-            (r.chat_id, text)
+            Outgoing {
+                at: r.created_at,
+                chat_id: r.chat_id,
+                text,
+            }
         })
         .collect();
     Ok((out, next))
@@ -354,15 +363,26 @@ struct Api {
 }
 
 impl Api {
-    async fn send(&self, chat_id: i64, text: &str) {
+    /// Отправка сообщения; `false` — Телеграм не принял (нет связи, ошибка ответа).
+    async fn send(&self, chat_id: i64, text: &str) -> bool {
         let r = self
             .http
             .post(format!("{}/sendMessage", self.base))
             .json(&json!({ "chat_id": chat_id, "text": text }))
+            .timeout(std::time::Duration::from_secs(20))
             .send()
             .await;
-        if let Err(e) = r {
-            tracing::warn!(error = %e, "телеграм: сообщение не отправлено");
+        match r {
+            Ok(resp) if resp.status().is_success() => true,
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "телеграм: сообщение не принято");
+                // Чат удалён или бот заблокирован — повторять бессмысленно, идём дальше.
+                resp.status().is_client_error()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "телеграм: сообщение не отправлено");
+                false
+            }
         }
     }
 
@@ -411,7 +431,9 @@ async fn commands_loop(pool: PgPool, api: Api) {
                 Err(e) => Err(AppError::from(e)),
             };
             match reply {
-                Ok(r) => api.send(m.chat.id, &r).await,
+                Ok(r) => {
+                    api.send(m.chat.id, &r).await;
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "телеграм: команда не обработана");
                     api.send(m.chat.id, "Не получилось, попробуйте позже.")
@@ -427,10 +449,15 @@ async fn notify_loop(pool: PgPool, api: Api) {
         if let Ok(mut conn) = pool.acquire().await {
             match pending(&mut conn).await {
                 Ok((messages, next)) => {
-                    for (chat, text) in messages {
-                        api.send(chat, &text).await;
+                    // Курсор — до последнего отправленного: без связи события подождут.
+                    let mut sent_up_to = if messages.is_empty() { next } else { None };
+                    for m in messages {
+                        if !api.send(m.chat_id, &m.text).await {
+                            break;
+                        }
+                        sent_up_to = Some(m.at);
                     }
-                    if let Some(at) = next
+                    if let Some(at) = sent_up_to
                         && let Err(e) = save_cursor(&mut conn, at).await
                     {
                         tracing::warn!(error = %e, "телеграм: курсор не сохранён");

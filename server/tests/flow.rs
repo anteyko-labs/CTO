@@ -1524,8 +1524,8 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     .unwrap();
     let (msgs, next) = pending(&mut conn).await.unwrap();
     assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].0, chat);
-    assert!(msgs[0].1.contains("Сторно прихода") && msgs[0].1.contains("№ 7"));
+    assert_eq!(msgs[0].chat_id, chat);
+    assert!(msgs[0].text.contains("Сторно прихода") && msgs[0].text.contains("№ 7"));
     save_cursor(&mut conn, next.unwrap()).await.unwrap();
     assert!(pending(&mut conn).await.unwrap().0.is_empty());
 }
