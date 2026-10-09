@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 19] = [
+pub(crate) const WATCHED: [&str; 20] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -39,6 +39,7 @@ pub(crate) const WATCHED: [&str; 19] = [
     "sale.offline_rejected",
     "sale.stale_price",
     "revision.post",
+    "oil.transfer_reverse",
 ];
 
 #[derive(Serialize)]
@@ -70,6 +71,12 @@ fn money(v: Option<i64>) -> String {
 
 pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
     let num = |key: &str| data.get(key).and_then(Value::as_i64);
+    let text = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     match action {
         "product.prices" => {
             // Что именно поменяли: цену штуки или канистры, розлив за литр; неизменённое не пишем.
@@ -209,6 +216,19 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 num("lines").unwrap_or(0),
                 money(num("shortage")),
                 money(num("surplus"))
+            ) + &match num("over_norm") {
+                Some(n) if n > 0 => format!("; масло сверх нормы: {n}"),
+                _ => String::new(),
+            },
+        ),
+        "oil.transfer_reverse" => (
+            format!("Отменён перелив № {}", num("number").unwrap_or(0)),
+            format!(
+                "{} → {}, {} мл вернулись в источник; причина: {}",
+                text("from_name"),
+                text("to_name"),
+                num("qty_ml").unwrap_or(0),
+                text("comment")
             ),
         ),
         "sale.stale_price" => (

@@ -57,12 +57,28 @@ pub struct RevisionLine {
     /// Стоимость расхождения — только владельцу (инвариант 13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value_delta_tyiyn: Option<i64>,
+    /// Масло: расхождение больше нормы (вопрос 32, ADR-052).
+    #[serde(default)]
+    pub over_norm: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RevisionOut {
     pub head: RevisionHead,
     pub lines: Vec<RevisionLine>,
+    /// Норма расхождения по маслу, сотые доли процента от «должно быть».
+    #[serde(default)]
+    pub oil_norm_bp: i32,
+}
+
+/// Расхождение по маслу больше нормы: |пересчитано − должно| > должно × норма.
+pub fn over_norm(unit: &str, expected: i64, counted: Option<i64>, norm_bp: i32) -> bool {
+    let Some(counted) = counted else { return false };
+    if unit != "ml" {
+        return false;
+    }
+    let diff = i128::from(counted) - i128::from(expected);
+    diff.abs() * 10_000 > i128::from(expected.max(0)) * i128::from(norm_bp)
 }
 
 async fn head(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<RevisionHead> {
@@ -86,6 +102,7 @@ async fn head(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<R
 async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResult<RevisionOut> {
     let h = head(conn, user.branch_id, id).await?;
     let owner = user.is_owner();
+    let norm = crate::api::receipts::oil_norm_bp(conn, user.branch_id).await?;
     let lines = if h.status == "posted" {
         sqlx::query!(
             r#"select p.id, p.name, p.article, p.unit, p.container_ml,
@@ -104,11 +121,12 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             name: r.name,
             article: r.article,
             barcodes: r.barcodes,
-            unit: r.unit,
             container_ml: r.container_ml,
             expected_qty: r.expected_qty,
+            over_norm: over_norm(&r.unit, r.expected_qty, Some(r.counted_qty), norm),
             counted_qty: Some(r.counted_qty),
             value_delta_tyiyn: owner.then_some(r.value_delta_tyiyn),
+            unit: r.unit,
         })
         .collect()
     } else {
@@ -138,6 +156,7 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             name: r.name,
             article: r.article,
             barcodes: r.barcodes,
+            over_norm: over_norm(&r.unit, r.expected, r.counted, norm),
             unit: r.unit,
             container_ml: r.container_ml,
             expected_qty: r.expected,
@@ -146,7 +165,11 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
         })
         .collect()
     };
-    Ok(RevisionOut { head: h, lines })
+    Ok(RevisionOut {
+        head: h,
+        lines,
+        oil_norm_bp: norm,
+    })
 }
 
 async fn list(
@@ -407,16 +430,17 @@ pub async fn post_revision_tx(
     let number = sqlx::query_scalar!("select number from revisions where id = $1", id)
         .fetch_one(&mut *conn)
         .await?;
+    let out = load(conn, &ctx.user, id).await?;
+    let over = out.lines.iter().filter(|l| l.over_norm).count();
     ops::audit(
         conn,
         ctx,
         KIND,
         "revision",
         Some(id),
-        json!({ "number": number, "lines": lines.len(), "shortage": shortage, "surplus": surplus }),
+        json!({ "number": number, "lines": lines.len(), "shortage": shortage, "surplus": surplus, "over_norm": over }),
     )
     .await?;
-    let out = load(conn, &ctx.user, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }

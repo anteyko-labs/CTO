@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use avtodom_server::api::batteries::{IntakeReq, intake_tx};
-use avtodom_server::api::oil::{TransferReq, post_transfer_tx};
+use avtodom_server::api::oil::{TransferReq, post_transfer_tx, reverse_transfer_tx};
 use avtodom_server::api::receipts::{
     ReceiptLineReq, ReceiptReq, ReverseReq, post_receipt_tx, reverse_receipt_tx, verify_stock_tx,
 };
@@ -928,6 +928,71 @@ async fn oil_transfer_averages_cost(pool: PgPool) {
     assert_eq!(out.from.stock_ml, 0);
     assert_eq!(pool_of(&pool, hitec).await.1, 1_050_000);
     assert_stock_consistent(&pool, &w).await;
+
+    // Отмена: масло возвращается в источник той же стоимостью, получатель — как до перелива (ADR-052).
+    let reverse = |ctx, id, comment: &str| {
+        let pool = pool.clone();
+        let comment = comment.to_string();
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let r = reverse_transfer_tx(
+                &mut tx,
+                ctx,
+                id,
+                avtodom_server::api::oil::ReverseReq {
+                    op_id: Uuid::now_v7(),
+                    comment,
+                },
+            )
+            .await;
+            if r.is_ok() {
+                tx.commit().await.unwrap();
+            }
+            r
+        }
+    };
+    assert!(matches!(
+        reverse(&w.admin, out.id, "ошиблись").await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        reverse(&w.owner, out.id, " ").await,
+        Err(AppError::Validation(_))
+    ));
+    let back = reverse(&w.owner, out.id, "перелили не то масло")
+        .await
+        .unwrap();
+    assert_eq!(
+        (back.from.stock_ml, back.from.value_tyiyn),
+        (50_000, 1_000_000)
+    );
+    assert_eq!((back.to.stock_ml, back.to.value_tyiyn), (5_000, 50_000));
+    assert!(matches!(
+        reverse(&w.owner, out.id, "ещё раз").await,
+        Err(AppError::Conflict(_))
+    ));
+    // Перелитое уже ушло дальше — отменить нельзя.
+    let again = transfer(&w.owner, 50_000).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    post_transfer_tx(
+        &mut tx,
+        &w.owner,
+        TransferReq {
+            op_id: Uuid::now_v7(),
+            from_product_id: hitec,
+            to_product_id: w.oil,
+            qty_ml: 20_000,
+            comment: String::new(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        reverse(&w.owner, again.id, "поздно").await,
+        Err(AppError::Validation(_))
+    ));
+    assert_stock_consistent(&pool, &w).await;
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -1196,6 +1261,14 @@ async fn stale_stock_after_sixty_days(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn revision_aligns_stock_and_charges_shortage(pool: PgPool) {
     // Приняли 10 по 100 с, пересчитали 8: недостача 2 по средней, остаток 8 (SPEC-15).
+    use avtodom_server::api::revisions::over_norm;
+    // Норма по маслу 0,5 %: из 100 л расхождение 0,5 л — в норме, 0,501 л — сверх; штучное не считается.
+    assert!(!over_norm("ml", 100_000, Some(99_500), 50));
+    assert!(over_norm("ml", 100_000, Some(99_499), 50));
+    assert!(over_norm("ml", 100_000, Some(100_501), 50));
+    assert!(over_norm("ml", 0, Some(1), 50));
+    assert!(!over_norm("ml", 100_000, None, 50));
+    assert!(!over_norm("piece", 10, Some(1), 50));
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 10, 10_000).await;
     let new_revision = |counted: i64| {

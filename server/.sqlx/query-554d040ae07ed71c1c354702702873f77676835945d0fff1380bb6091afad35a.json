@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select t.id, t.number, f.name as from_name, d.name as to_name, t.qty_ml, t.value_tyiyn,\n                  t.comment, u.full_name as user_name, t.created_at\n           from oil_transfers t\n           join products f on f.id = t.from_product_id\n           join products d on d.id = t.to_product_id\n           join users u on u.id = t.user_id\n           where t.branch_id = $1\n           order by t.created_at desc limit 100",
+  "query": "select t.id, t.number, f.name as from_name, d.name as to_name, t.qty_ml, t.value_tyiyn,\n                  t.comment, u.full_name as user_name, t.created_at,\n                  exists (select 1 from oil_transfer_reversals r where r.transfer_id = t.id) as \"reversed!\"\n           from oil_transfers t\n           join products f on f.id = t.from_product_id\n           join products d on d.id = t.to_product_id\n           join users u on u.id = t.user_id\n           where t.branch_id = $1\n           order by t.created_at desc limit 100",
   "describe": {
     "columns": [
       {
@@ -47,6 +47,11 @@
         "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversed!",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -63,8 +68,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "26cdebb0573d684d3d63602a9b2e47eea67e267c3f0945f5b3ffc2d4e2f17515"
+  "hash": "554d040ae07ed71c1c354702702873f77676835945d0fff1380bb6091afad35a"
 }

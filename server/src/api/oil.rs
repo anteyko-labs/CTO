@@ -1,6 +1,6 @@
 //! Перелив масла: остаток из одного масла в другое со средневзвешенной себестоимостью (SPEC-14).
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,12 @@ use crate::ops::{self, Movement, new_id};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/oil/transfers", routing::get(list).post(post_transfer))
+    Router::new()
+        .route("/oil/transfers", routing::get(list).post(post_transfer))
+        .route(
+            "/oil/transfers/{id}/reverse",
+            routing::post(reverse_transfer),
+        )
 }
 
 #[derive(Deserialize)]
@@ -209,6 +214,137 @@ async fn post_transfer(
     Ok(Json(out))
 }
 
+#[derive(Deserialize)]
+pub struct ReverseReq {
+    pub op_id: Uuid,
+    #[serde(default)]
+    pub comment: String,
+}
+
+/// Отмена перелива: масло возвращается в источник той же стоимостью, с какой ушло (ADR-052).
+/// Если перелитое уже продано и в получателе меньше, чем переливали, — отменить нельзя.
+pub async fn reverse_transfer_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReverseReq,
+) -> AppResult<TransferOut> {
+    const KIND: &str = "oil.transfer_reverse";
+    if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
+    }
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if req.comment.trim().is_empty() {
+        return Err(invalid("укажите причину отмены"));
+    }
+    let branch_id = ctx.user.branch_id;
+    sqlx::query!(
+        "select pg_advisory_xact_lock(hashtextextended($1::text, 1))",
+        id.to_string()
+    )
+    .execute(&mut *conn)
+    .await?;
+    let t = sqlx::query!(
+        r#"select number, from_product_id, to_product_id, qty_ml, value_tyiyn,
+                  exists (select 1 from oil_transfer_reversals r where r.transfer_id = t.id) as "reversed!"
+           from oil_transfers t where id = $1 and branch_id = $2"#,
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if t.reversed {
+        return Err(AppError::Conflict("перелив уже отменён".into()));
+    }
+    // Карточку могли объединить с другой: масло лежит на основной (ADR-044).
+    let from_id = ops::live_product(conn, t.from_product_id).await?;
+    let to_id = ops::live_product(conn, t.to_product_id).await?;
+    if from_id == to_id {
+        return Err(invalid(
+            "масла объединены в одну карточку — отменять нечего",
+        ));
+    }
+    lock_products(conn, branch_id, [from_id, to_id]).await?;
+    let target = ops::lock_pool(conn, branch_id, to_id).await?;
+    if target.qty < t.qty_ml {
+        return Err(invalid(format!(
+            "в получателе осталось {} мл из {} — перелитое уже продано, отмена невозможна",
+            target.qty.max(0),
+            t.qty_ml
+        )));
+    }
+    let rid = new_id();
+    sqlx::query!(
+        r#"insert into oil_transfer_reversals (id, branch_id, transfer_id, comment, user_id, device_id)
+           values ($1, $2, $3, $4, $5, $6)"#,
+        rid,
+        branch_id,
+        id,
+        req.comment.trim(),
+        ctx.user.id,
+        ctx.device_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    for (product_id, sign) in [(to_id, -1i64), (from_id, 1)] {
+        ops::apply_movement(
+            conn,
+            Movement {
+                branch_id,
+                product_id,
+                qty_delta: sign * t.qty_ml,
+                value_delta: sign * t.value_tyiyn,
+                doc_type: "oil_transfer_reversal",
+                doc_id: rid,
+            },
+        )
+        .await?;
+    }
+    let from = oil_state(conn, branch_id, from_id).await?;
+    let to = oil_state(conn, branch_id, to_id).await?;
+    ops::audit(
+        conn,
+        ctx,
+        KIND,
+        "product",
+        Some(from_id),
+        json!({
+            "number": t.number,
+            "from_name": from.name,
+            "to_name": to.name,
+            "qty_ml": t.qty_ml,
+            "value": t.value_tyiyn,
+            "comment": req.comment.trim(),
+        }),
+    )
+    .await?;
+    let out = TransferOut {
+        id,
+        number: t.number,
+        qty_ml: t.qty_ml,
+        value_tyiyn: t.value_tyiyn,
+        from,
+        to,
+    };
+    ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
+}
+
+async fn reverse_transfer(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ReverseReq>,
+) -> AppResult<Json<TransferOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_transfer_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
 #[derive(Serialize)]
 struct TransferRow {
     id: Uuid,
@@ -220,6 +356,7 @@ struct TransferRow {
     comment: String,
     user_name: String,
     created_at: DateTime<Utc>,
+    reversed: bool,
 }
 
 async fn list(
@@ -229,7 +366,8 @@ async fn list(
     let rows = sqlx::query_as!(
         TransferRow,
         r#"select t.id, t.number, f.name as from_name, d.name as to_name, t.qty_ml, t.value_tyiyn,
-                  t.comment, u.full_name as user_name, t.created_at
+                  t.comment, u.full_name as user_name, t.created_at,
+                  exists (select 1 from oil_transfer_reversals r where r.transfer_id = t.id) as "reversed!"
            from oil_transfers t
            join products f on f.id = t.from_product_id
            join products d on d.id = t.to_product_id

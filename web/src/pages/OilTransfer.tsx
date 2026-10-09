@@ -1,6 +1,6 @@
 // Перелив масла: остаток из одного масла в другое, себестоимость получателя — средневзвешенная (SPEC-14).
 import { useState } from 'react'
-import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, PageHeader, Table, toast } from '../components/ui'
+import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -35,6 +35,7 @@ interface TransferRow {
   comment: string
   user_name: string
   created_at: string
+  reversed: boolean
 }
 
 /** Себестоимость литра для показа: стоимость остатка × 1000 / мл. */
@@ -55,6 +56,8 @@ export default function OilTransfer() {
   const [prices, setPrices] = useState({ canister: '', pour: '' })
   const act = useAction()
   const priceAct = useAction()
+  const [reversing, setReversing] = useState<{ row: TransferRow; comment: string; opId: string } | null>(null)
+  const revAct = useAction()
 
   const oils = (products.data ?? []).filter((p) => p.unit === 'ml' && !p.archived)
   const from = oils.find((p) => p.id === form.from)
@@ -244,9 +247,9 @@ export default function OilTransfer() {
         {(history.data ?? []).length === 0 ? (
           <Empty>Переливов ещё не было</Empty>
         ) : (
-          <Table head={['№', 'Когда', 'Откуда', 'Куда', 'Сколько', 'Стоимость', 'Кто']}>
+          <Table head={['№', 'Когда', 'Откуда', 'Куда', 'Сколько', 'Стоимость', 'Кто', '']}>
             {(history.data ?? []).map((t) => (
-              <tr key={t.id}>
+              <tr key={t.id} className={t.reversed ? 'text-slate-400 line-through' : ''}>
                 <td className="px-2 py-2 font-medium">{t.number}</td>
                 <td className="whitespace-nowrap px-2 py-2">{formatDateTime(t.created_at)}</td>
                 <td className="px-2 py-2">{t.from_name}</td>
@@ -254,11 +257,53 @@ export default function OilTransfer() {
                 <td className="whitespace-nowrap px-2 py-2">{formatLiters(t.qty_ml)}</td>
                 <td className="whitespace-nowrap px-2 py-2">{formatSom(t.value_tyiyn)}</td>
                 <td className="px-2 py-2">{t.user_name}</td>
+                <td className="px-2 py-2 text-right">
+                  {t.reversed ? (
+                    <span className="no-underline">отменён</span>
+                  ) : (
+                    <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setReversing({ row: t, comment: '', opId: newOpId() })}>
+                      Отменить
+                    </Button>
+                  )}
+                </td>
               </tr>
             ))}
           </Table>
         )}
       </Card>
+      {reversing && (
+        <Modal title={`Отменить перелив № ${reversing.row.number}`} onClose={() => setReversing(null)}>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm text-slate-600">
+              {formatLiters(reversing.row.qty_ml)} вернутся из «{reversing.row.to_name}» в «{reversing.row.from_name}» той же стоимостью{' '}
+              {formatSom(reversing.row.value_tyiyn)}. Если перелитое уже продано, отменить нельзя — тогда перелейте обратно.
+            </div>
+            <Field label="Причина" required>
+              <input autoFocus value={reversing.comment} onChange={(e) => setReversing({ ...reversing, comment: e.target.value })} />
+            </Field>
+            <ErrorBox error={revAct.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setReversing(null)}>
+                Не отменять
+              </Button>
+              <Button
+                disabled={revAct.busy || !reversing.comment.trim()}
+                onClick={() =>
+                  void revAct.run(async () => {
+                    await post(`/oil/transfers/${reversing.row.id}/reverse`, { op_id: reversing.opId, comment: reversing.comment })
+                    setReversing(null)
+                    products.reload()
+                    history.reload()
+                    toast('Перелив отменён')
+                  })
+                }
+              >
+                Отменить перелив
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

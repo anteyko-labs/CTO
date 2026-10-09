@@ -35,7 +35,23 @@ interface Line {
 interface RevisionOut {
   head: Head
   lines: Line[]
+  /** Норма расхождения по маслу, сотые доли процента (ADR-052). */
+  oil_norm_bp: number
 }
+
+/** Сотые доли процента для показа: 50 → «0,5 %». */
+const percentText = (bp: number): string => `${String(bp / 100).replace('.', ',')} %`
+
+/** «0,5» → 50; больше двух знаков после запятой или не число — null. */
+function parsePercentBp(s: string): number | null {
+  const m = /^(\d{1,2})(?:[.,](\d{1,2}))?$/.exec(s.trim())
+  if (!m) return null
+  return Number(m[1]) * 100 + Number((m[2] ?? '').padEnd(2, '0'))
+}
+
+/** Масло: расхождение больше нормы — как на сервере, целыми. */
+const overNorm = (l: Line, normBp: number): boolean =>
+  l.unit === 'ml' && l.counted_qty !== null && Math.abs(l.counted_qty - l.expected_qty) * 10000 > Math.max(l.expected_qty, 0) * normBp
 
 const STATUS: Record<Head['status'], [string, 'amber' | 'green' | 'slate']> = {
   draft: ['идёт пересчёт', 'amber'],
@@ -94,6 +110,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   const lines = q ? rev.lines.filter((l) => l.name.toLowerCase().includes(q) || l.article.toLowerCase().includes(q)) : rev.lines
   const counted = rev.lines.filter((l) => l.counted_qty !== null)
   const diffs = counted.filter((l) => l.counted_qty !== l.expected_qty)
+  const overs = counted.filter((l) => overNorm(l, rev.oil_norm_bp))
   const valueTotal = rev.lines.reduce((acc, l) => acc + (l.value_delta_tyiyn ?? 0), 0)
 
   return (
@@ -116,8 +133,9 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
             </Field>
           </div>
           <div className="text-sm text-slate-600">
-            Пересчитано {counted.length} из {rev.lines.length}, расхождений {diffs.length}. Непересчитанные товары не меняются; не нашли товар —
-            впишите 0.
+            Пересчитано {counted.length} из {rev.lines.length}, расхождений {diffs.length}
+            {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
+            Непересчитанные товары не меняются; не нашли товар — впишите 0.
           </div>
         </Card>
       )}
@@ -165,6 +183,11 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                   </td>
                   <td className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
                     {diff === null ? '—' : diff === 0 ? 'сходится' : `${diff > 0 ? '+' : '−'}${qtyText(l, Math.abs(diff))}`}
+                    {l.unit === 'ml' && diff !== null && diff !== 0 && (
+                      <div className="mt-0.5">
+                        {overNorm(l, rev.oil_norm_bp) ? <Badge tone="rose">сверх нормы</Badge> : <Badge tone="slate">в норме</Badge>}
+                      </div>
+                    )}
                   </td>
                   {owner && !draft && (
                     <td className="whitespace-nowrap px-2 py-2">{l.value_delta_tyiyn ? formatSom(l.value_delta_tyiyn) : '—'}</td>
@@ -244,6 +267,10 @@ export default function Revision() {
   const rev = useLoad(() => (openId ? get<RevisionOut>(`/revisions/${openId}`) : Promise.resolve(null)), [openId])
   const [category, setCategory] = useState('')
   const act = useAction()
+  const owner = useUser().role === 'owner'
+  const settings = useLoad(() => get<{ stale_days: number; oil_norm_bp: number }>('/settings/stock'), [])
+  const [norm, setNorm] = useState<string | null>(null)
+  const normBp = norm === null ? null : parsePercentBp(norm)
 
   const start = () =>
     void act.run(async () => {
@@ -300,6 +327,45 @@ export default function Revision() {
         </Button>
         <div className="text-xs text-slate-500">Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются.</div>
       </Card>
+      {settings.data && (
+        <Card className="flex flex-wrap items-end gap-3 text-sm">
+          {norm === null ? (
+            <>
+              <div>
+                Норма расхождения по маслу: <span className="font-medium">{percentText(settings.data.oil_norm_bp)}</span> от того, что должно быть.
+                Больше — строка ревизии помечается «сверх нормы», владельцу приходит уведомление.
+              </div>
+              {owner && (
+                <Button variant="secondary" onClick={() => setNorm(String(settings.data!.oil_norm_bp / 100).replace('.', ','))}>
+                  Изменить
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <Field label="Норма по маслу, %" hint="От 0 до 10, например 0,5">
+                <input autoFocus inputMode="decimal" className="w-24" value={norm} onChange={(e) => setNorm(e.target.value)} />
+              </Field>
+              <Button variant="secondary" onClick={() => setNorm(null)}>
+                Отмена
+              </Button>
+              <Button
+                disabled={act.busy || normBp === null || normBp > 1000}
+                onClick={() =>
+                  void act.run(async () => {
+                    await put('/settings/stock', { oil_norm_bp: normBp })
+                    setNorm(null)
+                    settings.reload()
+                    toast('Норма сохранена')
+                  })
+                }
+              >
+                Сохранить
+              </Button>
+            </>
+          )}
+        </Card>
+      )}
       <ErrorBox error={list.error ?? act.error ?? rev.error} />
       <Card className="p-0">
         {list.loading && !list.data ? (

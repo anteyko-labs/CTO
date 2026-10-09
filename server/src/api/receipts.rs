@@ -216,6 +216,30 @@ async fn stale_stock(
 #[derive(Serialize, Deserialize)]
 struct StockSettings {
     stale_days: i32,
+    oil_norm_bp: i32,
+}
+
+/// Что поменять: пустое поле остаётся как было.
+#[derive(Deserialize)]
+struct StockSettingsReq {
+    stale_days: Option<i32>,
+    oil_norm_bp: Option<i32>,
+}
+
+/// Норма расхождения по маслу на ревизии, в сотых долях процента (вопрос 32, ADR-052). По умолчанию 0,5 %.
+pub async fn oil_norm_bp(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i32> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'stock'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(
+        v.and_then(|v| v.get("oil_norm_bp").and_then(serde_json::Value::as_i64))
+            .and_then(|d| i32::try_from(d).ok())
+            .filter(|d| (0..=10_000).contains(d))
+            .unwrap_or(50),
+    )
 }
 
 async fn get_stock_settings(
@@ -225,23 +249,31 @@ async fn get_stock_settings(
     let mut conn = state.pool.acquire().await?;
     Ok(Json(StockSettings {
         stale_days: stale_days(&mut conn, user.branch_id).await?,
+        oil_norm_bp: oil_norm_bp(&mut conn, user.branch_id).await?,
     }))
 }
 
-/// Срок залежалости правит владелец (ADR-039).
+/// Срок залежалости и норму по маслу правит владелец (ADR-039, ADR-052).
 async fn put_stock_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<StockSettings>,
+    Json(req): Json<StockSettingsReq>,
 ) -> AppResult<Json<StockSettings>> {
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    if !(1..=3650).contains(&req.stale_days) {
-        return Err(invalid("срок от 1 до 3650 дней"));
-    }
     let mut tx = state.pool.begin().await?;
-    let value = serde_json::json!({ "stale_days": req.stale_days });
+    let stale = match req.stale_days {
+        Some(d) if !(1..=3650).contains(&d) => return Err(invalid("срок от 1 до 3650 дней")),
+        Some(d) => d,
+        None => stale_days(&mut tx, ctx.user.branch_id).await?,
+    };
+    let norm = match req.oil_norm_bp {
+        Some(n) if !(0..=1000).contains(&n) => return Err(invalid("норма от 0 до 10 %")),
+        Some(n) => n,
+        None => oil_norm_bp(&mut tx, ctx.user.branch_id).await?,
+    };
+    let value = serde_json::json!({ "stale_days": stale, "oil_norm_bp": norm });
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'stock', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,
@@ -252,7 +284,10 @@ async fn put_stock_settings(
     .await?;
     ops::audit(&mut tx, &ctx, "settings.stock", "settings", None, value).await?;
     tx.commit().await?;
-    Ok(Json(req))
+    Ok(Json(StockSettings {
+        stale_days: stale,
+        oil_norm_bp: norm,
+    }))
 }
 
 pub async fn lock_products(
