@@ -292,7 +292,11 @@ pub struct ShiftOut {
     pub left_tyiyn: Option<i64>,
 }
 
-async fn load_shift(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<ShiftOut> {
+pub(crate) async fn load_shift(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<ShiftOut> {
     let h = sqlx::query!(
         r#"select s.id, s.number, s.business_date, s.account_id, a.name as account_name,
                   e.full_name as cashier_name, u.full_name as opened_by, s.opened_at,

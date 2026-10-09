@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-const WATCHED: [&str; 19] = [
+pub(crate) const WATCHED: [&str; 19] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -68,7 +68,7 @@ fn money(v: Option<i64>) -> String {
     v.map_or_else(|| "—".into(), crate::domain::money::format_som)
 }
 
-fn describe(action: &str, data: &Value) -> (String, String) {
+pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
     let num = |key: &str| data.get(key).and_then(Value::as_i64);
     match action {
         "product.prices" => {

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into audit_log (id, branch_id, user_id, action, entity, entity_id, data)\n           values ($1, $2, $3, 'telegram.link', 'user', $3, '{}')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cea3dc89d015875c3beef695bfb04a36702a6e44b455411c17266b35f1e43104"
+}

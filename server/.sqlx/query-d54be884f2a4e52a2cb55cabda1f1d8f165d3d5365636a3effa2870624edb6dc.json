@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(balance_tyiyn) filter (where role = 'customer' and balance_tyiyn > 0), 0)::bigint as \"us!\"\n           from parties where branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "us!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d54be884f2a4e52a2cb55cabda1f1d8f165d3d5365636a3effa2870624edb6dc"
+}

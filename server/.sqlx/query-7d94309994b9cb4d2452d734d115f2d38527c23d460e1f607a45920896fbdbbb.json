@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from bot_state where key = 'cursor'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7d94309994b9cb4d2452d734d115f2d38527c23d460e1f607a45920896fbdbbb"
+}

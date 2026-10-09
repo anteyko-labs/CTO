@@ -1466,3 +1466,66 @@ async fn delivery_address_stays_on_check(pool: PgPool) {
     );
     assert_eq!(sale.total_tyiyn, 50_000);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
+    // Бот: привязка по коду, команды владельца, события журнала в чат (SPEC-18).
+    use avtodom_server::api::telegram::{handle_text, pending, save_cursor};
+    let w = seed(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let chat = 777_000_111i64;
+    let reply = handle_text(&mut conn, chat, "/сегодня").await.unwrap();
+    assert!(reply.contains("для владельца"));
+    assert!(
+        handle_text(&mut conn, chat, "/start 000000")
+            .await
+            .unwrap()
+            .contains("не подошёл")
+    );
+    sqlx::query("insert into telegram_codes (code, user_id, expires_at) values ('123456', $1, now() + interval '15 minutes')")
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        handle_text(&mut conn, chat, "/start 123456")
+            .await
+            .unwrap()
+            .starts_with("Готово")
+    );
+    // Код одноразовый.
+    assert!(
+        handle_text(&mut conn, 1, "123456")
+            .await
+            .unwrap()
+            .contains("не подошёл")
+    );
+    let today = handle_text(&mut conn, chat, "/сегодня").await.unwrap();
+    assert!(today.contains("Выручка") && today.contains("Чистая прибыль"));
+    assert!(
+        handle_text(&mut conn, chat, "/долги")
+            .await
+            .unwrap()
+            .contains("никто не должен")
+    );
+
+    // Первый проход ставит курсор на «сейчас» и ничего не шлёт.
+    let (first, at) = pending(&mut conn).await.unwrap();
+    assert!(first.is_empty());
+    save_cursor(&mut conn, at.unwrap()).await.unwrap();
+    sqlx::query(
+        "insert into audit_log (id, branch_id, user_id, action, entity, data) values ($1, $2, $3, 'receipt.reverse', 'receipt', '{\"number\": 7}')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(w.admin.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (msgs, next) = pending(&mut conn).await.unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].0, chat);
+    assert!(msgs[0].1.contains("Сторно прихода") && msgs[0].1.contains("№ 7"));
+    save_cursor(&mut conn, next.unwrap()).await.unwrap();
+    assert!(pending(&mut conn).await.unwrap().0.is_empty());
+}

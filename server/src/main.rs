@@ -35,9 +35,14 @@ async fn run() -> Result<(), String> {
     bootstrap::ensure_owner(&pool, config.bootstrap_owner.clone())
         .await
         .map_err(|e| format!("первичная настройка: {e}"))?;
-    let state = build_state(pool, config.cookie_secure)
+    let mut state = build_state(pool.clone(), config.cookie_secure)
         .await
         .map_err(|e| e.to_string())?;
+    // Телеграм-бот владельца — только если задан ключ (ADR-050).
+    if let Some(token) = config.telegram_token.clone() {
+        state.telegram_bot = true;
+        avtodom_server::api::telegram::spawn(pool, token);
+    }
     let web_dir = PathBuf::from(&config.web_dir);
     let web = web_dir
         .join("index.html")

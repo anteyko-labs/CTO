@@ -20,17 +20,17 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Serialize, Default)]
-struct Totals {
-    goods_tyiyn: i64,
-    services_tyiyn: i64,
-    cost_tyiyn: i64,
-    gross_tyiyn: i64,
-    payroll_tyiyn: i64,
-    bank_fee_tyiyn: i64,
-    expenses_tyiyn: i64,
-    net_tyiyn: i64,
-    margin_bp: Option<i64>,
-    sales_count: i64,
+pub(crate) struct Totals {
+    pub(crate) goods_tyiyn: i64,
+    pub(crate) services_tyiyn: i64,
+    pub(crate) cost_tyiyn: i64,
+    pub(crate) gross_tyiyn: i64,
+    pub(crate) payroll_tyiyn: i64,
+    pub(crate) bank_fee_tyiyn: i64,
+    pub(crate) expenses_tyiyn: i64,
+    pub(crate) net_tyiyn: i64,
+    pub(crate) margin_bp: Option<i64>,
+    pub(crate) sales_count: i64,
 }
 
 #[derive(Serialize)]
@@ -83,7 +83,7 @@ async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
 }
 
 /// Деньги за период: выручка, себестоимость, оплата труда, комиссия и расходы.
-async fn totals_for(
+pub(crate) async fn totals_for(
     conn: &mut PgConnection,
     branch_id: Uuid,
     from: NaiveDate,

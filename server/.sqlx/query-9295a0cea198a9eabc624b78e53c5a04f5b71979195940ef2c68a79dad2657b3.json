@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into telegram_codes (code, user_id, expires_at) values ($1, $2, now() + interval '15 minutes')\n           on conflict (code) do update set user_id = excluded.user_id, expires_at = excluded.expires_at\n           returning expires_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9295a0cea198a9eabc624b78e53c5a04f5b71979195940ef2c68a79dad2657b3"
+}

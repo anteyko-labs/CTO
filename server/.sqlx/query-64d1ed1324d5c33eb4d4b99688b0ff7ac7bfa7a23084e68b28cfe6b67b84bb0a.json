@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from telegram_codes where code = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "64d1ed1324d5c33eb4d4b99688b0ff7ac7bfa7a23084e68b28cfe6b67b84bb0a"
+}

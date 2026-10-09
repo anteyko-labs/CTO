@@ -31,6 +31,7 @@ import DebtDocsSettings from './pages/DebtDocsSettings'
 import OilTransfer from './pages/OilTransfer'
 import Revision from './pages/Revision'
 import Stock from './pages/Stock'
+import TelegramSettings from './pages/TelegramSettings'
 import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
 import Users from './pages/Users'
@@ -81,6 +82,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     items: [
       { to: '/settings/labels', label: 'Этикетки' },
       { to: '/settings/documents', label: 'Документы', ownerOnly: true },
+      { to: '/settings/telegram', label: 'Телеграм', ownerOnly: true },
       { to: '/users', label: 'Пользователи', ownerOnly: true },
     ],
   },
@@ -174,6 +176,7 @@ function Shell() {
           <Route path="/revision" element={<Revision />} />
           {owner && <Route path="/oil-transfer" element={<OilTransfer />} />}
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
+          {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />

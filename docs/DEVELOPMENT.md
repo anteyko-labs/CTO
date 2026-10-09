@@ -39,6 +39,7 @@ updated: 2026-10-08
 | 14 | Перелив масла | `api/oil.rs` | `pages/OilTransfer.tsx` |
 | 15 | Ревизия склада | `api/revisions.rs` | `pages/Revision.tsx` |
 | 16 | Масляная книжка | `api/oil_book.rs` | `components/OilBook.tsx` |
+| 18 | Телеграм-бот владельца | `api/telegram.rs` | `pages/TelegramSettings.tsx` |
 | 17 | Аналоги фильтров | `api/analogs.rs` | `components/ProductFormModal.tsx`, `pages/Cashier.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 

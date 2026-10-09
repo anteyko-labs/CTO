@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36b94ffb5e1e8a081754e7ccec2b5be649b6d9a3cf77d4fbae5537ee9ec34926"
+}

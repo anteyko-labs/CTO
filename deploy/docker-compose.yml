@@ -26,6 +26,8 @@ services:
       COOKIE_SECURE: "true"
       BOOTSTRAP_OWNER_LOGIN: ${OWNER_LOGIN:-}
       BOOTSTRAP_OWNER_PASSWORD: ${OWNER_PASSWORD:-}
+      # Ключ Телеграм-бота владельца от @BotFather; пусто — бот выключен (ADR-050).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       RUST_LOG: info
 
   proxy:

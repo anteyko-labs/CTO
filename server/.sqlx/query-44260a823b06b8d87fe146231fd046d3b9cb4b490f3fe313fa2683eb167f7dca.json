@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.id, u.branch_id, u.full_name from telegram_codes c join users u on u.id = c.user_id\n           where c.code = $1 and c.expires_at > now() and u.active and u.role = 'owner'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "44260a823b06b8d87fe146231fd046d3b9cb4b490f3fe313fa2683eb167f7dca"
+}

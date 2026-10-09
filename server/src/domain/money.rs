@@ -21,10 +21,19 @@ pub fn mul(a: i64, b: i64) -> Option<i64> {
 
 /// Сумма для текста сервера: «1 234,50 с». Только для сообщений, не для расчётов.
 pub fn format_som(t: i64) -> String {
+    let whole = (t / 100).unsigned_abs().to_string();
+    // Разряды через пробел, как на экранах кассы.
+    let mut grouped = String::with_capacity(whole.len() + whole.len() / 3);
+    for (i, ch) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i).is_multiple_of(3) {
+            grouped.push(' ');
+        }
+        grouped.push(ch);
+    }
     format!(
         "{}{},{:02} с",
         if t < 0 { "−" } else { "" },
-        (t / 100).unsigned_abs(),
+        grouped,
         (t % 100).unsigned_abs()
     )
 }
@@ -49,6 +58,13 @@ mod tests {
         assert_eq!(div_round(1, 0), None);
         assert_eq!(div_round(1, -1), None);
         assert_eq!(div_round(i128::from(i64::MAX) * 4, 2), None);
+    }
+
+    #[test]
+    fn som_text_has_thousands() {
+        assert_eq!(format_som(500_000), "5 000,00 с");
+        assert_eq!(format_som(-123_456_789), "−1 234 567,89 с");
+        assert_eq!(format_som(50), "0,50 с");
     }
 
     #[test]

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from telegram_links where chat_id = $1 or user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c2b99b4a83368daa507d1bb8bfe8ff57eb9f47450c9b81d770198148aad30218"
+}

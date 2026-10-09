@@ -9,6 +9,8 @@ pub struct Config {
     pub web_dir: String,
     pub cookie_secure: bool,
     pub bootstrap_owner: Option<(String, String)>,
+    /// Ключ бота от @BotFather; без него бот выключен (ADR-050).
+    pub telegram_token: Option<String>,
 }
 
 impl Config {
@@ -30,6 +32,10 @@ impl Config {
                 .map(|v| v == "true")
                 .unwrap_or(false),
             bootstrap_owner,
+            telegram_token: env::var("TELEGRAM_BOT_TOKEN")
+                .ok()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
         })
     }
 }
