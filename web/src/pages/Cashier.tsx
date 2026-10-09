@@ -9,6 +9,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
+import { OilHint } from '../components/OilBook'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
@@ -194,6 +195,7 @@ export default function Cashier() {
   const [innText, setInnText] = useState('')
   const [contactId, setContactId] = useState('')
   const [vehicleId, setVehicleId] = useState('')
+  const [mileage, setMileage] = useState('')
   const { busy, error, setError, run } = useAction()
 
   const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
@@ -342,6 +344,7 @@ export default function Cashier() {
     setParty(null)
     setContactId('')
     setVehicleId('')
+    setMileage('')
     setError(null)
     setGiftAsked({})
     attempt.current = null
@@ -427,6 +430,7 @@ export default function Cashier() {
         party_id: party?.id ?? null,
         contact_id: party && contactId ? contactId : null,
         vehicle_id: party && vehicleId ? vehicleId : null,
+        mileage_km: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
         comment,
         lines: lines.map((l) => ({
           kind: l.kind,
@@ -765,9 +769,18 @@ export default function Cashier() {
                 if (!p && payMode === 'debt') setPayMode('cash')
               }}
               onContact={setContactId}
-              onVehicle={setVehicleId}
+              onVehicle={(v) => {
+                setVehicleId(v)
+                setMileage('')
+              }}
             />
           </div>
+          {party && vehicleId && <OilHint vehicleId={vehicleId} />}
+          {party && vehicleId && saleType === 'service' && (
+            <Field label="Пробег, км" hint="Для масляной книжки — можно не заполнять">
+              <input inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
+            </Field>
+          )}
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             <button type="button" className="text-xs text-sky-700 underline" onClick={() => setDebtPay(true)}>
               Принять оплату долга

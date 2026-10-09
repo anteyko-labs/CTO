@@ -172,3 +172,45 @@ test('аккумуляторы на вес: приём из кассы и про
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 })
+
+test('масляная книжка: замена с пробегом, следующая по интервалу', async ({ page }) => {
+  await login(page)
+  const cashier = `Кассир книжки ${RUN}`
+  const master = `Мастер книжки ${RUN}`
+  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  const mst = await apiPost<{ id: string }>(page.request, '/employees', { full_name: master, is_master: true })
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла книжки ${RUN}`, kind: 'oil' })
+  const oil = await apiPost<{ id: string }>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Totachi книжка ${RUN}`,
+    container_ml: 4000,
+    sale_price_tyiyn: 700_000,
+  })
+  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: oil.id, qty: 8000, cost_tyiyn: 1_040_000 }] })
+  const party = await apiPost<{ id: string }>(page.request, '/parties', { name: `Книжкин ${RUN}`, kind: 'person' })
+  const plate = `01KG${RUN.slice(-3)}AAA`
+  const vehicle = await apiPost<{ id: string }>(page.request, `/parties/${party.id}/vehicles`, { plate })
+  await apiPost(page.request, '/sales', {
+    op_id: crypto.randomUUID(),
+    sale_type: 'service',
+    cashier_id: emp.id,
+    master_id: mst.id,
+    party_id: party.id,
+    vehicle_id: vehicle.id,
+    mileage_km: 85_000,
+    lines: [{ kind: 'container', gift: false, product_id: oil.id, qty: 1, unit_price_tyiyn: 700_000 }],
+    payments: [{ method: 'cash', amount_tyiyn: 700_000 }],
+  })
+
+  await page.goto(`/clients/${party.id}`)
+  await expect(page.getByRole('heading', { name: 'Масляная книжка' })).toBeVisible()
+  await expect(page.getByText(plate).first()).toBeVisible()
+  await expect(page.getByText(/на 93\s000 км/)).toBeVisible()
+  await expect(page.getByText(`Totachi книжка ${RUN} · 1 кан. × 4 л`)).toBeVisible()
+  // Интервал машины 10 000 км — следующая замена пересчитывается.
+  await page.getByRole('button', { name: 'Интервал' }).click()
+  await page.getByLabel('Каждые, км').fill('10000')
+  await page.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(page.getByText(/на 95\s000 км/)).toBeVisible()
+})

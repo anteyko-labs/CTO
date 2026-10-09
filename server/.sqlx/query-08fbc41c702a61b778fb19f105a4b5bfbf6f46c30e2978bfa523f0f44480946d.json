@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, c.kind as cat, l.kind, l.qty, p.container_ml\n           from sale_lines l\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id\n           where l.sale_id = $1 and not l.gift and c.kind in ('oil', 'filter')\n           order by l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "cat",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "container_ml",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "08fbc41c702a61b778fb19f105a4b5bfbf6f46c30e2978bfa523f0f44480946d"
+}

@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
+import { OilBookList } from '../components/OilBook'
 import { ReconciliationButton } from '../components/ReconciliationButton'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
@@ -364,6 +365,11 @@ export default function ClientCard() {
       )}
 
       {owner && party.kind === 'company' && party.role === 'customer' && <CabinetBox partyId={party.id} />}
+
+      <div>
+        <h2 className="mb-2 font-semibold">Масляная книжка</h2>
+        <OilBookList path={`/parties/${party.id}/oil-book`} editable />
+      </div>
 
       <Card>
         <h2 className="mb-3 font-semibold">История</h2>

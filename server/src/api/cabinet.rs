@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/client/sales", routing::get(sales))
         .route("/client/contacts", routing::get(contacts))
         .route("/client/reconciliation", routing::get(reconciliation))
+        .route("/client/oil-book", routing::get(oil_book))
         .route("/parties/{id}/cabinet", routing::get(cabinet_state))
         .route("/parties/{id}/cabinet/reset", routing::post(cabinet_reset))
 }
@@ -458,6 +459,16 @@ async fn reconciliation(
     let act =
         reconciliation_data(&mut conn, client.branch_id, client.party_id, q.from, q.to).await?;
     Ok(Json(json!(act)))
+}
+
+/// Машины фирмы: когда меняли масло, что залили и когда следующая замена (SPEC-16).
+async fn oil_book(State(state): State<AppState>, client: Client) -> AppResult<Json<Value>> {
+    client.ready()?;
+    let mut conn = state.pool.acquire().await?;
+    let books =
+        crate::api::oil_book::books(&mut conn, client.branch_id, Some(client.party_id), None)
+            .await?;
+    Ok(Json(json!(books)))
 }
 
 // ---------- Владелец: состояние кабинета и сброс пароля ----------

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Table, Toaster, toast } from '../../components/ui'
 import { ApiError, get, post, qs } from '../../lib/api'
+import { OilBookList } from '../../components/OilBook'
 import { BLANK, printReconciliation, type Reconciliation, type Seller } from '../../lib/debtDocs'
 import { formatDateTime, formatKg, formatLiters, formatSom, todayBishkek } from '../../lib/format'
 import { useAction, useLoad } from '../../lib/hooks'
@@ -290,7 +291,7 @@ export default function CabinetApp() {
       }),
     [],
   )
-  const [tab, setTab] = useState<'sales' | 'contacts' | 'act'>('sales')
+  const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act'>('sales')
   useEffect(() => {
     document.title = 'Кабинет клиента — Avtodom'
   }, [])
@@ -349,11 +350,12 @@ export default function CabinetApp() {
             </div>
           )}
         </Card>
-        <div className="inline-grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm">
+        <div className="inline-grid grid-cols-4 overflow-hidden rounded-md border border-slate-300 text-sm">
           {(
             [
               ['sales', 'Покупки'],
               ['contacts', 'Работники'],
+              ['cars', 'Машины'],
               ['act', 'Акт сверки'],
             ] as const
           ).map(([k, label]) => (
@@ -369,6 +371,7 @@ export default function CabinetApp() {
         </div>
         {tab === 'sales' && <Purchases />}
         {tab === 'contacts' && <Contacts />}
+        {tab === 'cars' && <OilBookList path="/client/oil-book" editable={false} />}
         {tab === 'act' && <Act me={m} />}
       </main>
       <Toaster />

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_vehicles set interval_km = $3, interval_months = $4 where id = $1 and branch_id = $2 returning plate",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "plate",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4092c74fc4127e7f602e71543a71564edadf3792da4b5fdee6ae92ba2a1ae0f2"
+}

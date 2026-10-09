@@ -189,6 +189,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         lines,
         payments,
         offline: false,
+        mileage_km: None,
     }
 }
 
@@ -1357,4 +1358,95 @@ async fn batteries_by_weight_average_and_no_loss(pool: PgPool) {
     let (qty, value, _) = pool_of(&pool, info.product_id).await;
     assert_eq!((qty, value), (37_500, 345_000));
     assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn oil_book_records_service_change(pool: PgPool) {
+    // Замена в сервисе на машине клиента пишет книжку; следующая — пробег + интервал (SPEC-16).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let (party, vehicle) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into parties (id, branch_id, role, kind, name) values ($1, $2, 'customer', 'person', 'Эрлан')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate) values ($1, $2, $3, '01KG123ABC')")
+        .bind(vehicle)
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let service = |lines: Vec<SaleLineReq>, total: i64| {
+        let mut req = takeaway(&w, lines, cash(total));
+        req.sale_type = "service".into();
+        req.master_id = Some(w.master);
+        req.party_id = Some(party);
+        req.vehicle_id = Some(vehicle);
+        req.mileage_km = Some(85_000);
+        req
+    };
+    // Канистра масла и фильтр, пробег 85 000.
+    let sale = sell(
+        &pool,
+        &w.owner,
+        service(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                line("piece", w.filter, 1, 50_000),
+            ],
+            250_000,
+        ),
+    )
+    .await
+    .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let books =
+        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(party), None)
+            .await
+            .unwrap();
+    let b = &books[0];
+    assert_eq!(b.records.len(), 1);
+    assert!(
+        b.records[0]
+            .oil_text
+            .contains("Масло 5W-30 4л · 1 кан. × 4 л")
+    );
+    assert!(b.records[0].filter_text.contains("Фильтр W712"));
+    assert_eq!(b.next_km, Some(93_000));
+    assert_eq!(
+        b.next_date,
+        b.records[0]
+            .change_date
+            .checked_add_months(chrono::Months::new(6))
+    );
+    drop(conn);
+    // Полный возврат — запись из книжки пропадает.
+    let mut tx = pool.begin().await.unwrap();
+    return_sale_tx(
+        &mut tx,
+        &w.owner,
+        sale.id,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            comment: String::new(),
+            lines: vec![
+                ReturnLineReq { line_no: 1, qty: 1 },
+                ReturnLineReq { line_no: 2, qty: 1 },
+            ],
+            payments: cash(250_000),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let books =
+        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(party), None)
+            .await
+            .unwrap();
+    assert!(books[0].records.is_empty());
 }

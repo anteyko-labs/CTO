@@ -38,6 +38,7 @@ updated: 2026-10-08
 | 13 | Уведомления владельцу | `api/notifications.rs` | `pages/Notifications.tsx` |
 | 14 | Перелив масла | `api/oil.rs` | `pages/OilTransfer.tsx` |
 | 15 | Ревизия склада | `api/revisions.rs` | `pages/Revision.tsx` |
+| 16 | Масляная книжка | `api/oil_book.rs` | `components/OilBook.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:

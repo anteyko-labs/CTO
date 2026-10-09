@@ -22,6 +22,12 @@ export function formatLiters(ml: number): string {
   return `${sign}${group(String(whole))}${frac ? ',' + frac : ''}\u00a0л`
 }
 
+/** Дата без времени: «2026-10-09» → «09.10.2026». */
+export function formatDate(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split('-')
+  return `${d}.${m}.${y}`
+}
+
 /** Вес для показа: 12 350 г → «12,35 кг». */
 export function formatKg(g: number): string {
   return formatLiters(g).replace(/л$/, 'кг')

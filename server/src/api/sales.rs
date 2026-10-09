@@ -88,6 +88,9 @@ pub struct SaleReq {
     /// состоялась, поэтому нарушение цены не отклоняет его, а уходит владельцу.
     #[serde(default)]
     pub offline: bool,
+    /// Пробег машины при замене — в масляную книжку (SPEC-16).
+    #[serde(default)]
+    pub mileage_km: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -882,6 +885,27 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
                 doc_id: Some(id),
                 comment: "",
             },
+        )
+        .await?;
+    }
+    // Замена в сервисе на машине клиента — запись в масляную книжку (SPEC-16).
+    if req.sale_type == "service"
+        && let (Some(party_id), Some(vehicle_id)) = (req.party_id, req.vehicle_id)
+    {
+        if req
+            .mileage_km
+            .is_some_and(|m| !(0..=5_000_000).contains(&m))
+        {
+            return Err(invalid("пробег от 0 до 5 000 000 км"));
+        }
+        crate::api::oil_book::record_from_sale(
+            conn,
+            ctx,
+            id,
+            party_id,
+            vehicle_id,
+            business_date,
+            req.mileage_km,
         )
         .await?;
     }
