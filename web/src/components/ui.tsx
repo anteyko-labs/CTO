@@ -2,13 +2,18 @@
 // Правила поведения интерфейса — docs/tier-3/ui-rules.md.
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { focusField } from '../lib/forms'
+import { formatSom } from '../lib/format'
+import { Icon, type IconName } from './icons'
 
-type Variant = 'primary' | 'secondary' | 'danger' | 'ghost'
+// Иерархия кнопок: одна главная (primary) на экран, остальные — рамкой; опасные — красной рамкой
+// (`danger-outline`) или в меню «⋯»; залитая красная — только подтверждение в окне.
+type Variant = 'primary' | 'secondary' | 'danger' | 'danger-outline' | 'ghost'
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-sky-600 text-white hover:bg-sky-700 disabled:bg-sky-300',
+  primary: 'bg-sky-600 text-white hover:bg-sky-700 disabled:bg-slate-200 disabled:text-slate-500',
   secondary: 'bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 disabled:text-slate-400',
   danger: 'bg-rose-600 text-white hover:bg-rose-700 disabled:bg-rose-300',
+  'danger-outline': 'bg-white text-rose-700 border border-rose-300 hover:bg-rose-50 disabled:text-rose-300',
   ghost: 'text-slate-700 hover:bg-slate-200 disabled:text-slate-400',
 }
 
@@ -93,11 +98,116 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
   return <div className={`rounded-lg border border-slate-200 bg-white p-4 shadow-sm ${className}`}>{children}</div>
 }
 
-export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
+export function PageHeader({ title, actions, back, subtitle }: { title: string; actions?: ReactNode; back?: ReactNode; subtitle?: ReactNode }) {
   return (
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <h1 className="text-xl font-semibold">{title}</h1>
+      <div className="min-w-0">
+        {back && <div className="mb-1 text-sm">{back}</div>}
+        <h1 className="text-xl font-semibold text-balance">{title}</h1>
+        {subtitle && <div className="mt-0.5 text-sm text-slate-500">{subtitle}</div>}
+      </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+    </div>
+  )
+}
+
+/** Заголовок карточки — один вид на всех экранах. */
+export function CardTitle({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 className="text-base font-semibold">{children}</h2>
+      {actions}
+    </div>
+  )
+}
+
+/**
+ * Сумма денег: ровные цифры (tabular-nums), настоящий минус, без «,00» для целых сомов.
+ * `tone="sign"` — минус красным, плюс зелёным; `zero="—"` — ноль прочерком.
+ */
+export function Money({
+  value,
+  tone = 'plain',
+  zero,
+  className = '',
+}: {
+  value: number
+  tone?: 'plain' | 'sign' | 'negative'
+  zero?: string
+  className?: string
+}) {
+  const color =
+    tone === 'sign' ? (value < 0 ? 'text-rose-700' : value > 0 ? 'text-emerald-700' : '') : tone === 'negative' && value < 0 ? 'text-rose-700' : ''
+  return <span className={`whitespace-nowrap tabular-nums ${color} ${className}`}>{value === 0 && zero !== undefined ? zero : formatSom(value)}</span>
+}
+
+/** Плашка-подсказка внутри экрана: внимание (amber), ошибка (rose), справка (sky). */
+export function Notice({ children, tone = 'amber' }: { children: ReactNode; tone?: 'amber' | 'rose' | 'sky' | 'green' }) {
+  const tones = {
+    amber: 'border-amber-200 bg-amber-50 text-amber-900',
+    rose: 'border-rose-200 bg-rose-50 text-rose-800',
+    sky: 'border-sky-200 bg-sky-50 text-sky-900',
+    green: 'border-emerald-200 bg-emerald-50 text-emerald-900',
+  }
+  return <div className={`rounded-md border px-3 py-2 text-sm ${tones[tone]}`}>{children}</div>
+}
+
+export interface MenuItem {
+  label: string
+  onClick: () => void
+  danger?: boolean
+  disabled?: boolean
+}
+
+/** Меню «⋯» в строке или шапке: редкие и опасные действия не мешают главному. */
+export function RowMenu({ items, label = 'Ещё действия' }: { items: MenuItem[]; label?: string }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    document.addEventListener('mousedown', close)
+    window.addEventListener('keydown', esc)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', esc)
+    }
+  }, [open])
+  const visible = items.filter((i) => !i.disabled)
+  if (visible.length === 0) return null
+  return (
+    <div ref={ref} className="relative inline-block text-left">
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="dots" />
+      </button>
+      {open && (
+        <div role="menu" className="absolute right-0 z-30 mt-1 min-w-48 overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg">
+          {visible.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              role="menuitem"
+              className={`block w-full px-3 py-2 text-left hover:bg-slate-50 ${it.danger ? 'text-rose-700' : 'text-slate-800'}`}
+              onClick={() => {
+                setOpen(false)
+                it.onClick()
+              }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -111,9 +221,15 @@ export function Loading() {
   return <div className="py-8 text-center text-sm text-slate-500">Загрузка…</div>
 }
 
-export function Empty({ children, action }: { children: ReactNode; action?: ReactNode }) {
+/** Пустой экран: что здесь появится и кнопка первого действия. */
+export function Empty({ children, action, icon }: { children: ReactNode; action?: ReactNode; icon?: IconName }) {
   return (
     <div className="flex flex-col items-center gap-3 py-8 text-center text-sm text-slate-500">
+      {icon && (
+        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+          <Icon name={icon} className="h-6 w-6" />
+        </span>
+      )}
       <div>{children}</div>
       {action}
     </div>
@@ -148,7 +264,7 @@ export function Modal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <div className="no-print fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4" onMouseDown={onClose}>
+    <div className="no-print fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/50 p-4" onMouseDown={onClose}>
       <div
         className={`mt-8 w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-lg bg-white shadow-xl`}
         onMouseDown={(e) => e.stopPropagation()}

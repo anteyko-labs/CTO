@@ -13,6 +13,8 @@ export interface OilRecord {
   oil_text: string
   filter_text: string
   comment: string
+  /** Рекомендовали, клиент отказался (ADR-055). */
+  declined?: string
   sale_id: string | null
   sale_number: number | null
 }

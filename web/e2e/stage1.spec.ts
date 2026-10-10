@@ -8,7 +8,7 @@ const PICKER = /Сканируйте штрихкод/
 
 /** Уникальная метка прогона, чтобы тесты не мешали данным в базе. */
 const RUN = Date.now().toString().slice(-8)
-const money = (text: string) => new RegExp(text.replace(' ', '\\s'))
+const money = (text: string) => new RegExp(text.replace(/ /g, '\\s'))
 
 async function login(page: Page, user: string, password: string) {
   await page.goto('/login')
@@ -59,7 +59,7 @@ test('товар, приход, продажа, возврат и остаток
   if (await print.isChecked()) await print.uncheck()
   await page.getByRole('button', { name: 'Провести приход' }).click()
   await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
-  await expect(page.getByText(money('3 000,00')).first()).toBeVisible()
+  await expect(page.getByText(money('3 000 с')).first()).toBeVisible()
 
   // Продажа за наличные со сдачей.
   await page.getByRole('link', { name: 'Касса' }).click()
@@ -67,9 +67,9 @@ test('товар, приход, продажа, возврат и остаток
   await scan(page, code)
   await expect(page.getByText(product)).toBeVisible()
   // Касса с одним кассиром выбирает его сама; быстрая кнопка подставляет купюру.
-  await page.getByRole('button', { name: money('1 000,00 с') }).click()
-  await expect(page.getByLabel('Получено, с')).toHaveValue('1000,00')
-  await expect(page.getByText('Сдача', { exact: true }).locator('..')).toContainText(money('500,00'))
+  await page.getByRole('button', { name: money('1 000 с') }).click()
+  await expect(page.getByLabel('Получено, с')).toHaveValue('1000')
+  await expect(page.getByText('Сдача', { exact: true }).locator('..')).toContainText(money('500 с'))
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
 
@@ -79,7 +79,7 @@ test('товар, приход, продажа, возврат и остаток
   await page.getByRole('button', { name: 'Возврат' }).click()
   await page.getByRole('row', { name: new RegExp(product) }).getByRole('textbox').fill('1')
   await page.getByLabel('Причина').fill('проверка возврата')
-  await expect(page.getByText(money('К возврату: 500,00'))).toBeVisible()
+  await expect(page.getByText(money('К возврату: 500 с'))).toBeVisible()
   await page.getByRole('button', { name: 'Оформить возврат' }).click()
   await expect(page.getByRole('heading', { name: /^Возврат № \d+$/ })).toBeVisible()
 

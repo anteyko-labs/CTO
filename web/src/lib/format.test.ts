@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLiters, formatOilStock, formatSom, parseLiters, parseSom, shiftDate, somInput } from './format'
+import { formatLiters, formatOilStock, formatSom, formatSomExact, parseLiters, parseSom, shiftDate, somInput } from './format'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
 
@@ -7,8 +7,11 @@ describe('формат', () => {
   it('сомы', () => {
     expect(nb(formatSom(123450))).toBe('1 234,50 с')
     expect(nb(formatSom(5))).toBe('0,05 с')
-    expect(nb(formatSom(-1500))).toBe('−15,00 с')
+    expect(nb(formatSom(-1500))).toBe('−15 с')
+    expect(nb(formatSom(3285000))).toBe('32 850 с')
+    expect(nb(formatSomExact(3285000))).toBe('32 850,00 с')
     expect(somInput(123450)).toBe('1234,50')
+    expect(somInput(40000)).toBe('400')
   })
 
   it('литры и масло', () => {

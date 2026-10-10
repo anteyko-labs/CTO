@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select o.id, o.vehicle_id, o.change_date, o.mileage_km, o.oil_text, o.filter_text, o.comment,\n                  o.sale_id, s.number as \"sale_number?\"\n           from oil_changes o\n           left join sales s on s.id = o.sale_id\n           where o.vehicle_id = any($1)\n             and (s.id is null or coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0) <> -s.total_tyiyn)\n           order by o.change_date desc, o.created_at desc",
+  "query": "select o.id, o.vehicle_id, o.change_date, o.mileage_km, o.oil_text, o.filter_text, o.comment,\n                  o.declined, o.sale_id, s.number as \"sale_number?\"\n           from oil_changes o\n           left join sales s on s.id = o.sale_id\n           where o.vehicle_id = any($1)\n             and (s.id is null or coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0) <> -s.total_tyiyn)\n           order by o.change_date desc, o.created_at desc",
   "describe": {
     "columns": [
       {
@@ -40,11 +40,16 @@
       },
       {
         "ordinal": 7,
+        "name": "declined",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
         "name": "sale_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "sale_number?",
         "type_info": "Int8"
       }
@@ -62,9 +67,10 @@
       false,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "18425e43c29f40541193e3e514aecaa94427ce8bfad4fff2ccdfdf7fa73ed941"
+  "hash": "600458be6dd0f36b2d8e659742f94a8530ccf6cad493d586af869b678100915a"
 }

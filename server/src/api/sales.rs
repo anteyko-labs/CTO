@@ -94,6 +94,9 @@ pub struct SaleReq {
     /// Адрес доставки; пусто — забрали сами.
     #[serde(default)]
     pub delivery_address: String,
+    /// Отказанные работы для масляной книжки: «воздушный фильтр» (ADR-055).
+    #[serde(default)]
+    pub declined: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -567,6 +570,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.lines.is_empty() {
         return Err(invalid("чек пуст"));
     }
+    if req.declined.chars().count() > 300 {
+        return Err(invalid("отказанные работы — не длиннее 300 знаков"));
+    }
     if req.delivery_address.chars().count() > 300 {
         return Err(invalid("адрес доставки не длиннее 300 знаков"));
     }
@@ -935,6 +941,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             vehicle_id,
             business_date,
             req.mileage_km,
+            &req.declined,
         )
         .await?;
     }

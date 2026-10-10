@@ -30,11 +30,17 @@ pub fn format_som(t: i64) -> String {
         }
         grouped.push(ch);
     }
+    // Тыйыны только когда они есть: «32 850 с», «1 234,50 с» — как на экранах.
+    let frac = (t % 100).unsigned_abs();
     format!(
-        "{}{},{:02} с",
+        "{}{}{} с",
         if t < 0 { "−" } else { "" },
         grouped,
-        (t % 100).unsigned_abs()
+        if frac == 0 {
+            String::new()
+        } else {
+            format!(",{frac:02}")
+        }
     )
 }
 
@@ -62,7 +68,7 @@ mod tests {
 
     #[test]
     fn som_text_has_thousands() {
-        assert_eq!(format_som(500_000), "5 000,00 с");
+        assert_eq!(format_som(500_000), "5 000 с");
         assert_eq!(format_som(-123_456_789), "−1 234 567,89 с");
         assert_eq!(format_som(50), "0,50 с");
     }

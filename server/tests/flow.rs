@@ -191,6 +191,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         offline: false,
         mileage_km: None,
         delivery_address: String::new(),
+        declined: String::new(),
     }
 }
 
@@ -1562,6 +1563,7 @@ async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
     req.party_id = Some(party);
     req.vehicle_id = Some(vehicle);
     req.mileage_km = Some(120_500);
+    req.declined = "  воздушный фильтр ".into();
     let sale = sell(&pool, &w.owner, req).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
     let books =
@@ -1572,6 +1574,8 @@ async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
     assert_eq!(r.sale_id, Some(sale.id));
     assert_eq!(r.oil_text, "Замена масла");
     assert_eq!(r.mileage_km, Some(120_500));
+    // Отказанные работы — в книжке, чтобы напомнить в следующий раз (ADR-055).
+    assert_eq!(r.declined, "воздушный фильтр");
     let day: chrono::NaiveDate =
         sqlx::query_scalar("select business_date from sales where id = $1")
             .bind(sale.id)
@@ -1710,13 +1714,13 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
     let notices = bonus_notices(&mut conn).await.unwrap();
     assert_eq!(notices.len(), 3);
     assert!(
-        notices[0].text.contains("начислено 5,00"),
+        notices[0].text.contains("начислено 5."),
         "{}",
         notices[0].text
     );
-    assert!(notices[1].text.contains("списано 5,00") && notices[1].text.contains("начислено 2,48"));
+    assert!(notices[1].text.contains("списано 5,") && notices[1].text.contains("начислено 2,48"));
     let book = say(&mut conn, 555, "/баллы").await;
-    assert!(book.contains("Баллов: 5,00"), "{book}");
+    assert!(book.contains("Баллов: 5 "), "{book}");
 }
 
 fn pay(list: &[(&str, i64)]) -> Vec<PaymentReq> {
@@ -2200,7 +2204,7 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
         .find(|m| m.text.contains("🧾 Чек №"))
         .expect("сообщение о чеке");
     assert!(
-        sale_msg.text.contains("наличными 500,00 с") && sale_msg.text.contains("кассир"),
+        sale_msg.text.contains("наличными 500 с") && sale_msg.text.contains("кассир"),
         "{}",
         sale_msg.text
     );

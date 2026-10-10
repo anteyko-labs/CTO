@@ -68,7 +68,7 @@ test('закрытие смены с недостачей и сдача касс
   await expect(page.getByText(/Сдать кассу · смена №/)).toBeVisible()
   const toSafe = (Number(counted.replace(/\s/g, '').replace(',', '.')) - 50).toFixed(2).replace('.', ',')
   await page.getByLabel(/В сейф/).fill(toSafe)
-  await expect(page.getByText(/Останется в кассе: 50,00/)).toBeVisible()
+  await expect(page.getByText(/Останется в кассе: 50\sс/)).toBeVisible()
   await page.getByRole('button', { name: 'Перевести в сейф' }).click()
   await expect(page.getByText('Выручка в сейфе')).toBeVisible()
   await expect(page.getByText(/касса не сдана/)).toHaveCount(0)

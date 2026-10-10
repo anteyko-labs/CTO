@@ -490,6 +490,29 @@ export interface Dashboard {
   needs_review: number
   stale_stock: number
   staff: StaffPay[]
+  /** Продажи к этому же часу: сегодня, вчера, неделю назад. */
+  compare?: { today: DayPart; yesterday: DayPart; week_ago: DayPart }
+}
+
+export interface DayPart {
+  revenue_tyiyn: number
+  gross_tyiyn: number
+  sales_count: number
+}
+
+/** Тепловая карта продаж: день недели (1 — пн … 7 — вс) и час. */
+export interface HeatCell {
+  dow: number
+  hour: number
+  revenue_tyiyn: number
+  sales_count: number
+}
+
+/** Плитка «ходовое» на кассе: товар или услуга. */
+export interface FavoriteTile {
+  kind: 'product' | 'service'
+  product?: Product
+  service?: Service
 }
 
 /** Кто сколько заработал: виды начислений с количеством. */

@@ -30,6 +30,9 @@ pub struct OilRecord {
     pub oil_text: String,
     pub filter_text: String,
     pub comment: String,
+    /// Рекомендовали, клиент отказался: «воздушный фильтр».
+    #[serde(default)]
+    pub declined: String,
     pub sale_id: Option<Uuid>,
     pub sale_number: Option<i64>,
 }
@@ -67,6 +70,7 @@ fn qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
 }
 
 /// Запись из чека «в сервис» с машиной: что залили и что поставили. Вызывается в транзакции чека.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_from_sale(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -75,6 +79,7 @@ pub async fn record_from_sale(
     vehicle_id: Uuid,
     change_date: NaiveDate,
     mileage_km: Option<i32>,
+    declined: &str,
 ) -> AppResult<()> {
     let lines = sqlx::query!(
         r#"select p.name, c.kind as cat, l.kind, l.qty, p.container_ml
@@ -112,8 +117,8 @@ pub async fn record_from_sale(
     };
     sqlx::query!(
         r#"insert into oil_changes (id, branch_id, vehicle_id, party_id, sale_id, change_date,
-                                    mileage_km, oil_text, filter_text, user_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                    mileage_km, oil_text, filter_text, user_id, declined)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            on conflict (sale_id) where sale_id is not null do nothing"#,
         new_id(),
         ctx.user.branch_id,
@@ -124,7 +129,8 @@ pub async fn record_from_sale(
         mileage_km,
         own_oil.unwrap_or_else(|| join("oil")),
         join("filter"),
-        ctx.user.id
+        ctx.user.id,
+        declined.trim()
     )
     .execute(&mut *conn)
     .await?;
@@ -153,7 +159,7 @@ pub async fn books(
     let ids: Vec<Uuid> = vehicles.iter().map(|v| v.id).collect();
     let records = sqlx::query!(
         r#"select o.id, o.vehicle_id, o.change_date, o.mileage_km, o.oil_text, o.filter_text, o.comment,
-                  o.sale_id, s.number as "sale_number?"
+                  o.declined, o.sale_id, s.number as "sale_number?"
            from oil_changes o
            left join sales s on s.id = o.sale_id
            where o.vehicle_id = any($1)
@@ -175,6 +181,7 @@ pub async fn books(
                 oil_text: r.oil_text.clone(),
                 filter_text: r.filter_text.clone(),
                 comment: r.comment.clone(),
+                declined: r.declined.clone(),
                 sale_id: r.sale_id,
                 sale_number: r.sale_number,
             })
@@ -347,6 +354,7 @@ async fn manual(
 struct EditReq {
     mileage_km: Option<i32>,
     comment: Option<String>,
+    declined: Option<String>,
 }
 
 /// Поправить пробег или комментарий записи: книжка — справка, а не учёт денег (SPEC-16).
@@ -360,12 +368,13 @@ async fn edit(
     let mut tx = state.pool.begin().await?;
     let r = sqlx::query!(
         r#"update oil_changes set mileage_km = coalesce($3, mileage_km),
-             comment = coalesce($4, comment), updated_at = now()
+             comment = coalesce($4, comment), declined = coalesce($5, declined), updated_at = now()
            where id = $1 and branch_id = $2 returning vehicle_id"#,
         id,
         ctx.user.branch_id,
         req.mileage_km,
-        req.comment.as_deref().map(str::trim)
+        req.comment.as_deref().map(str::trim),
+        req.declined.as_deref().map(str::trim)
     )
     .fetch_optional(&mut *tx)
     .await?

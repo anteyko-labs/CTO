@@ -185,7 +185,7 @@ test('услуга «масло клиента»: ставка мастера и
   await page.locator('#service-name').fill(service)
   await page.locator('#service-price').fill('400')
   await page.locator('#service-fee').fill('200')
-  await expect(page.getByText(money('В кассу останется 200,00 с'))).toBeVisible()
+  await expect(page.getByText(money('В кассу останется 200 с'))).toBeVisible()
   await page.getByRole('button', { name: 'Создать и добавить в чек' }).click()
 
   // Услуга в чеке, чек сам стал «в сервис».
@@ -311,15 +311,15 @@ test('оплата долга из кассы попадает в смену', a
   await page.getByPlaceholder('Имя, телефон или ИНН должника').fill(client)
   await page.getByRole('button', { name: new RegExp(client) }).click()
   await expect(page.getByRole('heading', { name: `Оплата долга: ${client}` })).toBeVisible()
-  await expect(page.locator('#repay-sum')).toHaveValue('1000,00')
+  await expect(page.locator('#repay-sum')).toHaveValue('1000')
   await page.locator('#repay-sum').fill('400')
   await page.getByRole('button', { name: 'Принять оплату', exact: true }).click()
-  await expect(page.getByText(money('Оплата долга принята: 400,00 с'))).toBeVisible()
+  await expect(page.getByText(money('Оплата долга принята: 400 с'))).toBeVisible()
 
   await expect.poll(async () => (await apiGet<Party>(page.request, `/parties/${party.id}`)).balance_tyiyn).toBe(60_000)
   await page.goto('/shift')
-  // Строка наличных смены: «Погашения долгов   + 400,00 с».
-  await expect(page.locator('div').filter({ hasText: /^Погашения долгов\+\s[\d\s]+,\d\d\sс$/ }).first()).toBeVisible()
+  // Строка наличных смены: «Погашения долгов   + 400 с».
+  await expect(page.locator('div').filter({ hasText: /^Погашения долгов\+\s[\d\s]+(,\d\d)?\sс$/ }).first()).toBeVisible()
 })
 
 test('подарок по порогу: 1 л розлива мало, канистра 4 л — спрашивает', async ({ page }) => {
@@ -369,14 +369,14 @@ test('подарок по порогу: 1 л розлива мало, канис
   // У подарка нет поля цены: «бесплатно», правится только количество.
   await expect(giftLine).toContainText('бесплатно')
   await expect(giftLine.getByRole('textbox')).toHaveCount(1)
-  await expect(giftLine).toContainText(money('0,00 с'))
+  await expect(giftLine).toContainText(money('0 с'))
 
   await page.locator('#cashier-select').selectOption({ label: cashier })
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
   // 1 л по 800 + канистра 3000, подарок за ноль.
-  await expect(page.getByText(money('Итог 3 800,00 с'))).toBeVisible()
+  await expect(page.getByText(money('Итог 3 800 с'))).toBeVisible()
 })
 
 test('подарок: обычный порядок кассира — скан, розлив 1 л, потом канистра', async ({ page }) => {
@@ -469,7 +469,7 @@ test('цена ниже закупочной: касса показывает о
   await page.locator('#cashier-select').selectOption({ label: cashier })
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
-  await expect(page.getByText(/строка 1: цена ниже закупочной \(300,00\sс\), дешевле продать нельзя/)).toBeVisible()
+  await expect(page.getByText(/строка 1: цена ниже закупочной \(300\sс\), дешевле продать нельзя/)).toBeVisible()
   await expect(page.getByText(/Чек № .* проведён/)).toHaveCount(0)
   // Чек остался в кассе для исправления и не ушёл в очередь без сети.
   await expect(line).toBeVisible()

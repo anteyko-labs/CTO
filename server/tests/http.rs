@@ -1932,3 +1932,83 @@ async fn filter_analogs_by_cross_numbers(pool: PgPool) {
         .collect();
     assert!(ids.contains(&mann.as_str()));
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn favorites_heatmap_and_compare(pool: PgPool) {
+    // Плитки кассы задаёт владелец, видят все; тепловая карта и сравнение — только владельцу (ADR-055).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Масла", "kind": "oil" })),
+    )
+    .await;
+    let (_, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Totachi 5W-30", "container_ml": 4000, "sale_price_tyiyn": 250_000 })),
+    )
+    .await;
+    let (_, _, svc) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&owner),
+        Some(json!({ "name": "Замена масла", "price_tyiyn": 40_000 })),
+    )
+    .await;
+    let tiles =
+        json!([{ "kind": "product", "id": p["id"] }, { "kind": "service", "id": svc["id"] }]);
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/favorites",
+        Some(&admin),
+        Some(tiles.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/favorites",
+        Some(&owner),
+        Some(tiles),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, got) = call(
+        &app,
+        "GET",
+        "/api/v1/settings/favorites",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got.as_array().unwrap().len(), 2);
+    assert_eq!(got[0]["product"]["name"], "Totachi 5W-30");
+    assert_eq!(got[1]["service"]["name"], "Замена масла");
+
+    let (s, _, _) = call(&app, "GET", "/api/v1/reports/heatmap", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, heat) = call(
+        &app,
+        "GET",
+        "/api/v1/reports/heatmap?days=7",
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(heat.is_array());
+    let (_, _, dash) = call(&app, "GET", "/api/v1/owner/dashboard", Some(&owner), None).await;
+    assert!(dash["compare"]["yesterday"]["revenue_tyiyn"].is_i64());
+    assert!(dash["compare"]["week_ago"]["sales_count"].is_i64());
+}

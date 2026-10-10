@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select extract(isodow from s.created_at at time zone 'Asia/Bishkek')::int as \"dow!\",\n                  extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as \"hour!\",\n                  coalesce(sum(s.total_tyiyn), 0)::bigint as \"revenue!\",\n                  count(*) filter (where s.kind = 'sale') as \"count!\"\n           from sales s\n           where s.branch_id = $1\n             and s.business_date > (now() at time zone 'Asia/Bishkek')::date - $2::int\n           group by 1, 2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "dow!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "hour!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "revenue!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "664a4a90f873c704fbef307b132ccf4e7b2506d19e238c07cdd52b9ee518fd1c"
+}

@@ -3,13 +3,21 @@
 
 const group = (digits: string): string => digits.replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0')
 
-/** 123450 → «1 234,50 с» */
+/** На экране: 123450 → «1 234,50 с», 3285000 → «32 850 с» — тыйыны только когда они есть. */
 export function formatSom(tyiyn: number, withUnit = true): string {
   const sign = tyiyn < 0 ? '−' : ''
   const abs = Math.abs(tyiyn)
   const whole = Math.trunc(abs / 100)
   const frac = abs % 100
-  const text = `${sign}${group(String(whole))},${String(frac).padStart(2, '0')}`
+  const text = `${sign}${group(String(whole))}${frac ? ',' + String(frac).padStart(2, '0') : ''}`
+  return withUnit ? `${text}\u00a0с` : text
+}
+
+/** В документах (чек, расписка, акт): всегда с тыйынами — 3285000 → «32 850,00 с». */
+export function formatSomExact(tyiyn: number, withUnit = true): string {
+  const sign = tyiyn < 0 ? '−' : ''
+  const abs = Math.abs(tyiyn)
+  const text = `${sign}${group(String(Math.trunc(abs / 100)))},${String(abs % 100).padStart(2, '0')}`
   return withUnit ? `${text}\u00a0с` : text
 }
 
@@ -20,6 +28,11 @@ export function formatLiters(ml: number): string {
   const whole = Math.trunc(abs / 1000)
   const frac = String(abs % 1000).padStart(3, '0').replace(/0+$/, '')
   return `${sign}${group(String(whole))}${frac ? ',' + frac : ''}\u00a0л`
+}
+
+/** Только время по Бишкеку: «16:28» — для списков за один день. */
+export function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString('ru-RU', { timeZone: 'Asia/Bishkek', hour: '2-digit', minute: '2-digit' })
 }
 
 /** Дата без времени: «2026-10-09» → «09.10.2026». */

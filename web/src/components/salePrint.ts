@@ -1,5 +1,5 @@
 // Печать товарного чека через диалог печати браузера (HTML-шаблон, лента 58–80 мм).
-import { formatDateTime, formatKg, formatLiters, formatSom } from '../lib/format'
+import { formatDateTime, formatKg, formatLiters, formatSomExact } from '../lib/format'
 import { PAYMENT_LABELS, type Sale, type SaleLine } from '../lib/types'
 
 const esc = (s: string) =>
@@ -25,14 +25,14 @@ export function saleHtml(sale: Sale, change: number | null): string {
   const rows = sale.lines
     .map(
       (l) => `<tr><td colspan="2">${esc(l.name)}</td></tr>
-      <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSom(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
-      <td class="r">${esc(formatSom(l.amount_tyiyn))}</td></tr>`,
+      <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSomExact(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
+      <td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`,
     )
     .join('')
   const pays = sale.payments
-    .map((p) => `<tr><td>${PAYMENT_LABELS[p.method]}</td><td class="r">${esc(formatSom(p.amount_tyiyn))}</td></tr>`)
+    .map((p) => `<tr><td>${PAYMENT_LABELS[p.method]}</td><td class="r">${esc(formatSomExact(p.amount_tyiyn))}</td></tr>`)
     .join('')
-  const changeRow = change && change > 0 ? `<tr><td>Сдача</td><td class="r">${esc(formatSom(change))}</td></tr>` : ''
+  const changeRow = change && change > 0 ? `<tr><td>Сдача</td><td class="r">${esc(formatSomExact(change))}</td></tr>` : ''
   const master = sale.master_name ? `<div>Мастер: ${esc(sale.master_name)}</div>` : ''
   return `<!doctype html><html><head><meta charset="utf-8"><title>Чек ${sale.number}</title><style>
     @page { size: 80mm auto; margin: 3mm; }
@@ -50,7 +50,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     <div>${esc(formatDateTime(sale.created_at))}</div>
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
-    <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSom(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
+    <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
     <div class="center">Спасибо за покупку!</div>
   </body></html>`
 }

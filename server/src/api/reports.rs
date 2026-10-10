@@ -17,6 +17,7 @@ pub fn routes() -> Router<AppState> {
         .route("/reports/profit", routing::get(profit))
         .route("/owner/dashboard", routing::get(dashboard))
         .route("/reports/gifts", routing::get(gifts))
+        .route("/reports/heatmap", routing::get(heatmap))
 }
 
 #[derive(Serialize, Default)]
@@ -405,6 +406,96 @@ struct Dashboard {
     stale_stock: i64,
     /// Кто сколько заработал сегодня.
     staff: Vec<crate::api::payroll::StaffPay>,
+    /// Для сравнения: вчера и неделю назад к этому же часу.
+    compare: Compare,
+}
+
+#[derive(Serialize, Default)]
+struct DayPart {
+    revenue_tyiyn: i64,
+    gross_tyiyn: i64,
+    sales_count: i64,
+}
+
+#[derive(Serialize, Default)]
+struct Compare {
+    today: DayPart,
+    yesterday: DayPart,
+    week_ago: DayPart,
+}
+
+/// Продажи дня до того же времени суток, что сейчас: честное «к вчера на этот час».
+async fn day_until_now(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    day: NaiveDate,
+) -> AppResult<DayPart> {
+    let r = sqlx::query!(
+        r#"select coalesce(sum(l.amount_tyiyn), 0)::bigint as "revenue!",
+                  coalesce(sum(l.amount_tyiyn - l.cost_tyiyn), 0)::bigint as "gross!",
+                  count(distinct s.id) filter (where s.kind = 'sale') as "count!"
+           from sales s join sale_lines l on l.sale_id = s.id
+           where s.branch_id = $1 and s.business_date = $2
+             and (s.created_at at time zone 'Asia/Bishkek')::time <= (now() at time zone 'Asia/Bishkek')::time"#,
+        branch_id,
+        day
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(DayPart {
+        revenue_tyiyn: r.revenue,
+        gross_tyiyn: r.gross,
+        sales_count: r.count,
+    })
+}
+
+#[derive(Serialize)]
+struct HeatCell {
+    /// День недели: 1 — понедельник … 7 — воскресенье.
+    dow: i32,
+    hour: i32,
+    revenue_tyiyn: i64,
+    sales_count: i64,
+}
+
+#[derive(Deserialize)]
+struct HeatQuery {
+    days: Option<i64>,
+}
+
+/// Когда идут продажи: сумма по дню недели и часу за последние N дней (по умолчанию 28).
+async fn heatmap(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<HeatQuery>,
+) -> AppResult<Json<Vec<HeatCell>>> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let days = q.days.unwrap_or(28).clamp(7, 366);
+    let rows = sqlx::query!(
+        r#"select extract(isodow from s.created_at at time zone 'Asia/Bishkek')::int as "dow!",
+                  extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as "hour!",
+                  coalesce(sum(s.total_tyiyn), 0)::bigint as "revenue!",
+                  count(*) filter (where s.kind = 'sale') as "count!"
+           from sales s
+           where s.branch_id = $1
+             and s.business_date > (now() at time zone 'Asia/Bishkek')::date - $2::int
+           group by 1, 2"#,
+        user.branch_id,
+        i32::try_from(days).unwrap_or(28)
+    )
+    .fetch_all(&state.pool)
+    .await?
+    .into_iter()
+    .map(|r| HeatCell {
+        dow: r.dow,
+        hour: r.hour,
+        revenue_tyiyn: r.revenue,
+        sales_count: r.count,
+    })
+    .collect();
+    Ok(Json(rows))
 }
 
 async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Dashboard>> {
@@ -478,8 +569,14 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
     .await?;
     let (_, stale) = crate::api::receipts::stale_list(&mut conn, branch_id).await?;
     let revenue = totals.goods_tyiyn + totals.services_tyiyn;
+    let compare = Compare {
+        today: day_until_now(&mut conn, branch_id, date).await?,
+        yesterday: day_until_now(&mut conn, branch_id, date - chrono::Duration::days(1)).await?,
+        week_ago: day_until_now(&mut conn, branch_id, date - chrono::Duration::days(7)).await?,
+    };
     let staff = crate::api::payroll::staff_pay(&mut conn, branch_id, date, date).await?;
     Ok(Json(Dashboard {
+        compare,
         staff,
         date,
         average_check_tyiyn: if totals.sales_count > 0 {

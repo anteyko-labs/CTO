@@ -11,6 +11,124 @@
   }
 }
 
+/* Тёмная тема: палитра Tailwind переопределяется переменными — компоненты не трогаем.
+   Выбор: data-theme на html (переключатель в меню), иначе — как в системе. */
+:root[data-theme='dark'] {
+  --color-slate-50: #121b2c;
+  --color-slate-100: #0b1220;
+  --color-slate-200: #243044;
+  --color-slate-300: #334158;
+  --color-slate-400: #6b7a90;
+  --color-slate-500: #8a98ad;
+  --color-slate-600: #a7b3c4;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-sky-50: #0c2235;
+  --color-sky-100: #0f2f4a;
+  --color-sky-200: #154466;
+  --color-sky-300: #1f5f8c;
+  --color-sky-700: #7cc4f2;
+  --color-sky-800: #a5d6f7;
+  --color-sky-900: #cfe9fb;
+  --color-amber-50: #2a1f0a;
+  --color-amber-100: #3a2a0d;
+  --color-amber-200: #5a4214;
+  --color-amber-300: #7a5a1c;
+  --color-amber-400: #c58a2c;
+  --color-amber-700: #f2b955;
+  --color-amber-800: #f6cc7d;
+  --color-amber-900: #fbe2b0;
+  --color-rose-50: #2d1215;
+  --color-rose-100: #3f171b;
+  --color-rose-200: #5c2128;
+  --color-rose-300: #7d2b34;
+  --color-rose-700: #f59aa3;
+  --color-rose-800: #f8b8be;
+  --color-rose-900: #fbd6da;
+  --color-emerald-50: #0b2a1e;
+  --color-emerald-100: #0f3a29;
+  --color-emerald-200: #165a3e;
+  --color-emerald-700: #6ee0ad;
+  --color-emerald-800: #9debc6;
+  --color-emerald-900: #c8f5df;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+  --color-slate-50: #121b2c;
+  --color-slate-100: #0b1220;
+  --color-slate-200: #243044;
+  --color-slate-300: #334158;
+  --color-slate-400: #6b7a90;
+  --color-slate-500: #8a98ad;
+  --color-slate-600: #a7b3c4;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-sky-50: #0c2235;
+  --color-sky-100: #0f2f4a;
+  --color-sky-200: #154466;
+  --color-sky-300: #1f5f8c;
+  --color-sky-700: #7cc4f2;
+  --color-sky-800: #a5d6f7;
+  --color-sky-900: #cfe9fb;
+  --color-amber-50: #2a1f0a;
+  --color-amber-100: #3a2a0d;
+  --color-amber-200: #5a4214;
+  --color-amber-300: #7a5a1c;
+  --color-amber-400: #c58a2c;
+  --color-amber-700: #f2b955;
+  --color-amber-800: #f6cc7d;
+  --color-amber-900: #fbe2b0;
+  --color-rose-50: #2d1215;
+  --color-rose-100: #3f171b;
+  --color-rose-200: #5c2128;
+  --color-rose-300: #7d2b34;
+  --color-rose-700: #f59aa3;
+  --color-rose-800: #f8b8be;
+  --color-rose-900: #fbd6da;
+  --color-emerald-50: #0b2a1e;
+  --color-emerald-100: #0f3a29;
+  --color-emerald-200: #165a3e;
+  --color-emerald-700: #6ee0ad;
+  --color-emerald-800: #9debc6;
+  --color-emerald-900: #c8f5df;
+  color-scheme: dark;
+  }
+  :root:not([data-theme='light']) .bg-white,
+  :root:not([data-theme='light']) input,
+  :root:not([data-theme='light']) select,
+  :root:not([data-theme='light']) textarea {
+    background-color: #152033;
+  }
+  :root:not([data-theme='light']) .keep-dark {
+  --color-slate-900: #0f172a;
+  --color-slate-800: #1e293b;
+  --color-slate-700: #334155;
+  --color-slate-500: #64748b;
+  --color-slate-400: #94a3b8;
+  --color-slate-300: #cbd5e1;
+  --color-slate-200: #e2e8f0;
+  }
+}
+:root[data-theme='dark'] .bg-white,
+:root[data-theme='dark'] input,
+:root[data-theme='dark'] select,
+:root[data-theme='dark'] textarea {
+  background-color: #152033;
+}
+/* Боковое меню и так тёмное — в тёмной теме не инвертируем. */
+:root[data-theme='dark'] .keep-dark {
+  --color-slate-900: #0f172a;
+  --color-slate-800: #1e293b;
+  --color-slate-700: #334155;
+  --color-slate-500: #64748b;
+  --color-slate-400: #94a3b8;
+  --color-slate-300: #cbd5e1;
+  --color-slate-200: #e2e8f0;
+}
+
 @media print {
   .no-print {
     display: none !important;

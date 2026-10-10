@@ -500,6 +500,9 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
             if !last.filter_text.is_empty() {
                 lines.push(format!("Фильтр: {}", last.filter_text));
             }
+            if !last.declined.is_empty() {
+                lines.push(format!("Мастер рекомендовал: {}", last.declined));
+            }
             let next = [
                 b.next_km.map(|k| format!("на {}", km(k))),
                 b.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y"))),

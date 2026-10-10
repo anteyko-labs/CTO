@@ -73,7 +73,7 @@ test('расчёт кассира: 2 % за день, выплата, оклад
 
   await page.goto('/payroll')
   const row = page.getByRole('row', { name: new RegExp(cashier) })
-  await expect(row).toContainText(/10,00/)
+  await expect(row).toContainText(/10\sс/)
   await row.getByRole('button', { name: 'Выплатить' }).click()
   await page.getByRole('button', { name: 'Выплатить', exact: true }).last().click()
   await expect(page.getByText('Выплачено из кассы')).toBeVisible()
@@ -85,9 +85,9 @@ test('расчёт кассира: 2 % за день, выплата, оклад
   await expect(page.getByRole('textbox').last()).toHaveValue(/30\s?000/)
   await page.getByRole('button', { name: 'Начислить' }).click()
   await expect(page.getByText('Оклад начислен')).toBeVisible()
-  await expect(month).toContainText(/30\s000,00/)
+  await expect(month).toContainText(/30\s000\sс/)
   // На конец месяца: оклад 30 000 + 10 − выплачено 10.
-  await expect(month).toContainText(/30\s000,00/)
+  await expect(month).toContainText(/30\s000\sс/)
 })
 
 test('ревизия: сканер считает, владелец проводит, остаток выровнен', async ({ page }) => {
@@ -110,7 +110,7 @@ test('ревизия: сканер считает, владелец провод
   await page.getByLabel(/Кто пересчитывал/).fill('Айбек, плановая')
   await page.getByRole('button', { name: 'Провести' }).last().click()
   await expect(page.getByText('Ревизия проведена')).toBeVisible()
-  await expect(page.getByText(/Итог ревизии в деньгах: −400,00/)).toBeVisible()
+  await expect(page.getByText(/Итог ревизии в деньгах: −400\sс/)).toBeVisible()
   const stock = await apiGet<{ id: string; stock_qty: number }[]>(page.request, `/stock?q=${encodeURIComponent(`Лампа ревизия ${RUN}`)}`)
   expect(stock[0].stock_qty).toBe(3)
 })
@@ -137,7 +137,7 @@ test('кабинет юрлица: вход по ИНН, смена пароля
   await client.getByRole('button', { name: 'Сменить пароль' }).click()
   await expect(client.getByText(name)).toBeVisible()
   await expect(client.getByText('Ваш долг')).toBeVisible()
-  await expect(client.getByText(/2\s500,00/).first()).toBeVisible()
+  await expect(client.getByText(/2\s500\sс/).first()).toBeVisible()
   await client.getByRole('button', { name: 'Акт сверки' }).click()
   await expect(client.getByText('Корректировка долга')).toBeVisible()
   await ctx.close()
@@ -159,9 +159,9 @@ test('аккумуляторы на вес: приём из кассы и про
   await page.getByRole('button', { name: /Приём аккумуляторов/ }).click()
   await page.getByLabel('Вес, кг').fill('10')
   await page.getByLabel('Цена за кг, с').fill('100')
-  await expect(page.getByText(/выдать 1\s000,00/)).toBeVisible()
+  await expect(page.getByText(/выдать 1\s000\sс/)).toBeVisible()
   await page.getByRole('button', { name: 'Принять и выдать деньги' }).click()
-  await expect(page.getByText(/выдано из кассы 1\s000,00/)).toBeVisible()
+  await expect(page.getByText(/выдано из кассы 1\s000\sс/)).toBeVisible()
 
   await page.getByRole('button', { name: 'Услуги' }).click()
   await page.getByRole('button', { name: /Аккумуляторы на вес/ }).click()

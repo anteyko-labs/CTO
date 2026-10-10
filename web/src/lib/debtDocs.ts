@@ -1,6 +1,6 @@
 // Документы о долге и акт сверки (SPEC-10): тексты по умолчанию, подстановки, сумма прописью, печать A4.
 // Тексты правит владелец в настройках; пустое значение подстановки печатается линией для записи от руки.
-import { formatDateTime, formatKg, formatLiters, formatSom } from './format'
+import { formatDateTime, formatKg, formatLiters, formatSomExact } from './format'
 import type { Sale } from './types'
 
 export interface Seller {
@@ -262,12 +262,12 @@ function itemsTable(sale: Sale): string {
   const rows = sale.lines
     .map(
       (l, i) => `<tr><td class="c">${i + 1}</td><td>${esc(l.name)}${l.gift ? ' (подарок)' : ''}</td>
-        <td class="r">${esc(qtyText(l))}</td><td class="r">${esc(formatSom(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
-        <td class="r">${esc(formatSom(l.amount_tyiyn))}</td></tr>`,
+        <td class="r">${esc(qtyText(l))}</td><td class="r">${esc(formatSomExact(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
+        <td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`,
     )
     .join('')
   return `<table><thead><tr><th>№</th><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr></thead>
-    <tbody>${rows}<tr><td colspan="4" class="r"><b>Итого</b></td><td class="r"><b>${esc(formatSom(sale.total_tyiyn))}</b></td></tr></tbody></table>`
+    <tbody>${rows}<tr><td colspan="4" class="r"><b>Итого</b></td><td class="r"><b>${esc(formatSomExact(sale.total_tyiyn))}</b></td></tr></tbody></table>`
 }
 
 const dateRu = (iso: string) => {
@@ -318,7 +318,7 @@ export function debtHistory(history: Reconciliation, saleId: string): DebtHistor
 
 function historyTable(h: DebtHistory | null): string {
   if (!h || h.rows.length === 0) return '<div>Ранее задолженности не было.</div>'
-  const money = (v: number) => (v ? esc(formatSom(v)) : '')
+  const money = (v: number) => (v ? esc(formatSomExact(v)) : '')
   const rows = h.rows
     .map(
       (r) => `<tr><td>${dateRu(r.date)}</td><td>${esc(r.document)}</td>
@@ -327,7 +327,7 @@ function historyTable(h: DebtHistory | null): string {
     .join('')
   return `<table><thead><tr><th>Дата</th><th>Основание</th><th>Взято в долг</th><th>Оплачено</th></tr></thead>
     <tbody>${rows}<tr><td colspan="2" class="r"><b>Задолженность до этой покупки</b></td>
-    <td colspan="2" class="r"><b>${esc(formatSom(h.before))}</b></td></tr></tbody></table>`
+    <td colspan="2" class="r"><b>${esc(formatSomExact(h.before))}</b></td></tr></tbody></table>`
 }
 
 /** Документ о долге по чеку: расписка физлица в двух экземплярах или накладная юрлица. */
@@ -355,12 +355,12 @@ export function printDebtDoc({ sale, party, settings, history }: DebtDocInput): 
     работник: sale.contact_name ?? '',
     машина: sale.vehicle_plate ?? '',
     чек: String(sale.number),
-    сумма: formatSom(debt),
+    сумма: formatSomExact(debt),
     сумма_словами: somInWords(debt),
     срок_оплаты: party.due_days ? dateRu(addDays(saleDate, party.due_days)) : '',
-    баланс: after === null ? '' : formatSom(after),
+    баланс: after === null ? '' : formatSomExact(after),
     баланс_словами: after === null ? '' : somInWords(after),
-    долг_до: before === null ? '' : formatSom(Math.max(before, 0)),
+    долг_до: before === null ? '' : formatSomExact(Math.max(before, 0)),
     кассир: sale.cashier_name,
   }
   const body = `<div class="doc">${renderTemplate(template, vars, { товары: itemsTable(sale), история_долга: historyTable(h) })}</div>`
@@ -375,7 +375,7 @@ export function printDebtDoc({ sale, party, settings, history }: DebtDocInput): 
 export function printReconciliation(act: Reconciliation, seller: Seller): void {
   const us = seller.name || BLANK
   const them = act.name
-  const money = (v: number) => (v ? esc(formatSom(v)) : '')
+  const money = (v: number) => (v ? esc(formatSomExact(v)) : '')
   const rows = act.rows
     .map(
       (r) => `<tr><td>${dateRu(r.date)}</td><td>${esc(r.document)}${r.comment ? `<div class="muted">${esc(r.comment)}</div>` : ''}</td>
@@ -386,14 +386,14 @@ export function printReconciliation(act: Reconciliation, seller: Seller): void {
   const opening = act.opening_tyiyn
   const closing = act.closing_tyiyn
   const saldoRow = (label: string, v: number) =>
-    `<tr><td colspan="2"><b>${label}</b></td><td class="r"><b>${v > 0 ? esc(formatSom(v)) : ''}</b></td>
-      <td class="r"><b>${v < 0 ? esc(formatSom(-v)) : ''}</b></td><td colspan="2"><b>${label}</b></td><td></td><td></td></tr>`
+    `<tr><td colspan="2"><b>${label}</b></td><td class="r"><b>${v > 0 ? esc(formatSomExact(v)) : ''}</b></td>
+      <td class="r"><b>${v < 0 ? esc(formatSomExact(-v)) : ''}</b></td><td colspan="2"><b>${label}</b></td><td></td><td></td></tr>`
   const verdict =
     closing === 0
       ? `Задолженность между сторонами на ${dateRu(act.to)} отсутствует.`
       : closing > 0
-        ? `На ${dateRu(act.to)} задолженность ${esc(them)} перед ${esc(us)} составляет ${esc(formatSom(closing))} (${esc(somInWords(closing))}).`
-        : `На ${dateRu(act.to)} задолженность ${esc(us)} перед ${esc(them)} составляет ${esc(formatSom(-closing))} (${esc(somInWords(-closing))}).`
+        ? `На ${dateRu(act.to)} задолженность ${esc(them)} перед ${esc(us)} составляет ${esc(formatSomExact(closing))} (${esc(somInWords(closing))}).`
+        : `На ${dateRu(act.to)} задолженность ${esc(us)} перед ${esc(them)} составляет ${esc(formatSomExact(-closing))} (${esc(somInWords(-closing))}).`
   const body = `
     <h1>АКТ СВЕРКИ ВЗАИМНЫХ РАСЧЁТОВ<br>за период с ${dateRu(act.from)} по ${dateRu(act.to)}</h1>
     <p>между ${esc(us)}${seller.inn ? `, ИНН ${esc(seller.inn)}` : ''} и ${esc(them)}${act.inn ? `, ИНН ${esc(act.inn)}` : ''}</p>
@@ -407,8 +407,8 @@ export function printReconciliation(act: Reconciliation, seller: Seller): void {
       <tbody>
         ${saldoRow(`Сальдо на ${dateRu(act.from)}`, opening)}
         ${rows}
-        <tr><td colspan="2"><b>Обороты за период</b></td><td class="r"><b>${esc(formatSom(act.debit_total_tyiyn))}</b></td>
-          <td class="r"><b>${esc(formatSom(act.credit_total_tyiyn))}</b></td><td colspan="2"><b>Обороты за период</b></td><td></td><td></td></tr>
+        <tr><td colspan="2"><b>Обороты за период</b></td><td class="r"><b>${esc(formatSomExact(act.debit_total_tyiyn))}</b></td>
+          <td class="r"><b>${esc(formatSomExact(act.credit_total_tyiyn))}</b></td><td colspan="2"><b>Обороты за период</b></td><td></td><td></td></tr>
         ${saldoRow(`Сальдо на ${dateRu(act.to)}`, closing)}
       </tbody>
     </table>
