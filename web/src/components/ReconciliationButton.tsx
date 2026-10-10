@@ -6,8 +6,8 @@ import { todayBishkek } from '../lib/format'
 import { useAction } from '../lib/hooks'
 import { Button, ErrorBox, Field, Modal } from './ui'
 
-export function ReconciliationButton({ partyId }: { partyId: string }) {
-  const [open, setOpen] = useState(false)
+/** Окно выбора периода и печати акта; открывается кнопкой или из меню «⋯». */
+export function ReconciliationModal({ partyId, onClose }: { partyId: string; onClose: () => void }) {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState(todayBishkek())
   const { busy, error, run } = useAction()
@@ -19,40 +19,45 @@ export function ReconciliationButton({ partyId }: { partyId: string }) {
         get<DebtDocSettings>('/settings/debt-docs'),
       ])
       printReconciliation(act, settings.seller)
-      setOpen(false)
+      onClose()
     })
 
+  return (
+    <Modal title="Акт сверки взаимных расчётов" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="С" hint="Пусто — с первой операции">
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </Field>
+          <Field label="По">
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </Field>
+        </div>
+        <div className="text-xs text-slate-500">
+          В акт попадают все отгрузки, возвраты, оплаты и правки долга за период, входящее и исходящее сальдо. Реквизиты точки — в «Настройки → Документы».
+        </div>
+        <ErrorBox error={error} />
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button disabled={busy} onClick={print}>
+            Печать
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+export function ReconciliationButton({ partyId }: { partyId: string }) {
+  const [open, setOpen] = useState(false)
   return (
     <>
       <Button variant="secondary" onClick={() => setOpen(true)}>
         Акт сверки
       </Button>
-      {open && (
-        <Modal title="Акт сверки взаимных расчётов" onClose={() => setOpen(false)}>
-          <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="С" hint="Пусто — с первой операции">
-                <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-              </Field>
-              <Field label="По">
-                <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-              </Field>
-            </div>
-            <div className="text-xs text-slate-500">
-              В акт попадают все отгрузки, возвраты, оплаты и правки долга за период, входящее и исходящее сальдо. Реквизиты точки — в «Настройки → Документы».
-            </div>
-            <ErrorBox error={error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setOpen(false)}>
-                Отмена
-              </Button>
-              <Button disabled={busy} onClick={print}>
-                Печать
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      {open && <ReconciliationModal partyId={partyId} onClose={() => setOpen(false)} />}
     </>
   )
 }

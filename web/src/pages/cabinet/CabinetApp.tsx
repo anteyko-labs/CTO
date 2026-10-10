@@ -92,6 +92,7 @@ function LoginForm({ onDone }: { onDone: () => void }) {
             Войти
           </Button>
         </form>
+        <p className="border-t border-slate-100 pt-3 text-xs text-slate-500">Забыли пароль? Позвоните на точку — пароль сбросит владелец.</p>
       </Card>
     </div>
   )

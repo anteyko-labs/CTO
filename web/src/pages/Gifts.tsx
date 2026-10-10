@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ProductPicker } from '../components/ProductPicker'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, PageHeader, Table } from '../components/ui'
+import { DirSwitch } from '../components/DirSwitch'
+import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table } from '../components/ui'
 import { get, post, patch, qs } from '../lib/api'
 import { formatLiters, formatSom, parseLiters, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -24,9 +25,9 @@ function GiftReport() {
   const rows = report.data ?? []
   const total = rows.reduce((acc, r) => acc + r.cost_tyiyn, 0)
   return (
-    <Card className="mt-4 flex flex-col gap-3">
+    <Card className="mt-4 flex flex-col gap-3 [&_th:nth-child(4)]:text-right">
       <div className="flex flex-wrap items-end gap-3">
-        <h2 className="mr-auto font-semibold">Подарено за период</h2>
+        <h2 className="mr-auto text-base font-semibold">Подарено за период</h2>
         <Field label="С">
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </Field>
@@ -47,7 +48,9 @@ function GiftReport() {
                 <td className="px-2 py-2 font-medium">{r.name}</td>
                 <td className="whitespace-nowrap px-2 py-2">{r.unit === 'ml' ? formatLiters(r.qty) : `${r.qty} шт`}</td>
                 <td className="px-2 py-2">{r.checks}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(r.cost_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">
+                  <Money value={r.cost_tyiyn} />
+                </td>
               </tr>
             ))}
           </Table>
@@ -101,6 +104,7 @@ export default function Gifts() {
       <PageHeader title="Подарки" />
 
       <Card className="mb-4 flex flex-col gap-3">
+        <h2 className="text-base font-semibold">Новое правило</h2>
         <Field label="При покупке товара" required>
           {trigger ? (
             <div className="flex items-center justify-between gap-2 rounded-md bg-slate-50 px-3 py-2">
@@ -145,13 +149,14 @@ export default function Gifts() {
       </Card>
 
       <Card>
+        <CardTitle>Правила подарков</CardTitle>
         <ErrorBox error={list.error ?? toggle.error} />
         {list.loading && !list.data ? (
           <Loading />
         ) : (list.data ?? []).length === 0 ? (
           <Empty>Правил нет. Выберите товар и что к нему можно подарить — касса спросит об этом сама.</Empty>
         ) : (
-          <Table head={['При покупке', 'Подарки', 'Статус', '']}>
+          <Table head={['При покупке', 'Подарки', 'Статус']}>
             {(list.data ?? []).map((r) => (
               <tr key={r.id} className={r.active ? '' : 'text-slate-400'}>
                 <td className="px-2 py-2 font-medium">
@@ -163,11 +168,8 @@ export default function Gifts() {
                   )}
                 </td>
                 <td className="px-2 py-2">{r.items.map((i) => `${i.name} × ${i.gift_qty}`).join(', ') || '—'}</td>
-                <td className="px-2 py-2">{r.active ? <Badge tone="green">активно</Badge> : <Badge>отключено</Badge>}</td>
-                <td className="px-2 py-2 text-right">
-                  <Button variant="secondary" className="px-2 py-1 text-xs" disabled={toggle.busy} onClick={() => setActive(r, !r.active)}>
-                    {r.active ? 'Отключить' : 'Включить'}
-                  </Button>
+                <td className="px-2 py-2">
+                  <DirSwitch checked={r.active} label={`Подарок к «${r.trigger_name}»`} disabled={toggle.busy} onChange={(v) => setActive(r, v)} />
                 </td>
               </tr>
             ))}

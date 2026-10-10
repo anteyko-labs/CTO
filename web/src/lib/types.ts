@@ -138,6 +138,8 @@ export interface ReceiptListItem {
   reversed: boolean
   user_name: string
   created_at: string
+  /** Взято в долг у поставщика по накладной; 0 — оплачено сразу. */
+  on_debt_tyiyn?: number
 }
 
 export interface StockMismatch {
@@ -210,6 +212,7 @@ export interface SaleListItem {
   cashier_name: string
   master_name: string | null
   party_name: string | null
+  party_phone?: string | null
   debt_tyiyn: number
   total_tyiyn: number
   reversal_of: string | null

@@ -295,3 +295,21 @@ test('сводка владельца: периоды и график валов
   await page.getByRole('button', { name: '30 дней' }).click()
   await expect(page.getByText('Прибыль по дням за 30 дней')).toBeVisible()
 })
+
+test('плитки «ходовое»: товар в чек одним касанием', async ({ page }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Плитки ${RUN}`, kind: 'filter' })
+  const p = await apiPost<{ id: string }>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Плиточный фильтр ${RUN}`,
+    sale_price_tyiyn: 45_000,
+  })
+  const res = await page.request.put('/api/v1/settings/favorites', { data: [{ kind: 'product', id: p.id }], headers: DEVICE })
+  expect(res.ok()).toBeTruthy()
+  await page.goto('/')
+  await page.getByRole('button', { name: new RegExp(`Плиточный фильтр ${RUN}`) }).first().click()
+  await expect(page.getByRole('listitem').filter({ hasText: `Плиточный фильтр ${RUN}` })).toBeVisible()
+  // Плитки убираем, чтобы не мешать другим проверкам кассы.
+  await page.request.put('/api/v1/settings/favorites', { data: [], headers: DEVICE })
+})

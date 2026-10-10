@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
+import { Icon } from '../components/icons'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { StaffPayList } from '../components/StaffPayList'
-import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
+import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import type { CashAccount, CashMovement, Employee, Shift as ShiftRow } from '../lib/types'
@@ -46,7 +47,7 @@ function Row({ label, value, signed = false, strong = false }: { label: string; 
   return (
     <div className={`flex items-baseline justify-between gap-3 py-0.5 ${strong ? 'mt-1 border-t border-slate-200 pt-1 font-semibold' : 'text-slate-700'}`}>
       <span>{label}</span>
-      <span className={signed && value < 0 ? 'text-rose-700' : ''}>
+      <span className={`whitespace-nowrap tabular-nums ${signed && value < 0 ? 'text-rose-700' : ''}`}>
         {signed ? `${value < 0 ? '−' : '+'} ${formatSom(Math.abs(value))}` : formatSom(value)}
       </span>
     </div>
@@ -259,13 +260,13 @@ export default function Shift() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="text-xs text-slate-500">
-                Смена № {shift.number} от {shift.business_date}, кассир {shift.cashier_name}
+                Смена № {shift.number} от {formatDate(shift.business_date)}, кассир {shift.cashier_name}
               </div>
               <div className="text-xs text-slate-500">Открыл {shift.opened_by}, {formatDateTime(shift.opened_at)}</div>
             </div>
             <div className="text-right">
               <div className="text-xs text-slate-500">Должно быть в кассе</div>
-              <div className="text-3xl font-bold">{formatSom(shift.expected_tyiyn)}</div>
+              <div className="text-3xl font-bold tabular-nums">{formatSom(shift.expected_tyiyn)}</div>
             </div>
           </div>
           <div className="grid gap-4 text-sm lg:grid-cols-3">
@@ -338,19 +339,25 @@ export default function Shift() {
         {accs.length === 0 ? (
           <Loading />
         ) : (
-          <div className="flex flex-wrap gap-6">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {accs.map((a) => (
               <button
                 key={a.id}
                 type="button"
-                className={`rounded-md px-2 py-1 text-left hover:bg-slate-100 ${history === a.id ? 'bg-slate-100 ring-1 ring-slate-300' : ''}`}
+                aria-pressed={history === a.id}
+                className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition hover:border-sky-400 hover:bg-slate-50 ${
+                  history === a.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200'
+                }`}
                 onClick={() => setHistory(history === a.id ? '' : a.id)}
               >
-                <div className="text-xs text-slate-500">
-                  {a.name}
-                  {a.owner_only && ' · только владелец'}
+                <div className="min-w-0">
+                  <div className="text-xs text-slate-500">
+                    {a.name}
+                    {a.owner_only && ' · только владелец'}
+                  </div>
+                  <Money value={a.balance_tyiyn} tone="negative" className="text-xl font-bold" />
                 </div>
-                <div className="text-xl font-bold">{formatSom(a.balance_tyiyn)}</div>
+                <Icon name="chevron" className={`h-4 w-4 shrink-0 text-slate-400 transition ${history === a.id ? 'rotate-90 text-sky-600' : ''}`} />
               </button>
             ))}
           </div>
@@ -369,8 +376,8 @@ export default function Shift() {
                   <tr key={m.id}>
                     <td className="whitespace-nowrap px-2 py-2">{formatDateTime(m.created_at)}</td>
                     <td className="px-2 py-2">{KIND_LABELS[m.kind] ?? m.kind}</td>
-                    <td className={`whitespace-nowrap px-2 py-2 font-medium ${m.amount_tyiyn < 0 ? 'text-rose-700' : ''}`}>
-                      {formatSom(m.amount_tyiyn)}
+                    <td className="px-2 py-2 text-right">
+                      <Money value={m.amount_tyiyn} tone="negative" className="font-medium" />
                     </td>
                     <td className="px-2 py-2 text-slate-600">{m.comment}</td>
                     <td className="px-2 py-2">{m.user_name}</td>
@@ -405,20 +412,21 @@ export default function Shift() {
             {(past.data ?? []).map((s) => (
               <tr key={s.id}>
                 <td className="px-2 py-2 font-medium">{s.number}</td>
-                <td className="whitespace-nowrap px-2 py-2">{s.business_date}</td>
+                <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(s.business_date)}</td>
                 <td className="px-2 py-2">{s.cashier_name}</td>
-                <td className="whitespace-nowrap px-2 py-2">{s.counted_tyiyn === null ? '—' : formatSom(s.expected_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{s.counted_tyiyn === null ? 'открыта' : formatSom(s.counted_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">
+                <td className="px-2 py-2 text-right">{s.counted_tyiyn === null ? '—' : <Money value={s.expected_tyiyn} />}</td>
+                <td className="px-2 py-2 text-right">{s.counted_tyiyn === null ? <Badge tone="green">открыта</Badge> : <Money value={s.counted_tyiyn} />}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right">
                   {s.diff_tyiyn ? <Badge tone={s.diff_tyiyn < 0 ? 'rose' : 'amber'}>{formatSom(s.diff_tyiyn)}</Badge> : '—'}
                 </td>
-                <td className="whitespace-nowrap px-2 py-2">
-                  {s.handover_pending ? <Badge tone="amber">не сдана</Badge> : s.to_safe_tyiyn === null ? '—' : formatSom(s.to_safe_tyiyn)}
+                <td className="whitespace-nowrap px-2 py-2 text-right">
+                  {s.handover_pending ? <Badge tone="amber">не сдана</Badge> : s.to_safe_tyiyn === null ? '—' : <Money value={s.to_safe_tyiyn} />}
                 </td>
                 <td className="px-2 py-2 text-right">
                   {owner && s.counted_tyiyn !== null && !shift && (
                     <Button
-                      variant="ghost"
+                      variant="secondary"
+                      className="min-h-9 px-3 py-1"
                       onClick={() => {
                         closeDialogs()
                         setReopen({ shift: s, reason: '', opId: newOpId() })

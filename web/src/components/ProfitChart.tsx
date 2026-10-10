@@ -1,6 +1,6 @@
 // График прибыли линиями: плавная кривая с заливкой, точки, последняя сумма подписана,
 // при наведении — вертикальная линия и карточка со всеми суммами этой точки.
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { formatSom } from '../lib/format'
 
 export interface Series {
@@ -28,8 +28,10 @@ const COLOR: Record<Series['color'], { text: string; dot: string }> = {
 function short(t: number): string {
   const som = t / 100
   const abs = Math.abs(som)
-  if (abs >= 1_000_000) return `${(som / 1_000_000).toFixed(1).replace('.', ',')} млн`
-  if (abs >= 1000) return `${(som / 1000).toFixed(abs >= 10_000 ? 0 : 1).replace('.', ',')} тыс.`
+  // «5 тыс.», а не «5,0 тыс.»: лишний ноль только удлиняет подпись оси.
+  const trim = (v: string) => v.replace(/\.0$/, '').replace('.', ',')
+  if (abs >= 1_000_000) return `${trim((som / 1_000_000).toFixed(1))} млн`
+  if (abs >= 1000) return `${trim((som / 1000).toFixed(abs >= 10_000 ? 0 : 1))} тыс.`
   return `${Math.round(som)}`
 }
 
@@ -41,30 +43,68 @@ function niceStep(span: number, ticks: number): number {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * pow
 }
 
-/** Плавная кривая через точки (монотонная, без «перелётов» выше максимума). */
+/**
+ * Плавная кривая через точки — монотонная кубическая (как monotoneX): между двумя точками
+ * линия не уходит выше большей и ниже меньшей, поэтому не рисует продаж, которых не было.
+ */
 function smoothPath(pts: [number, number][]): string {
-  if (pts.length === 0) return ''
-  if (pts.length === 1) return `M${pts[0][0]},${pts[0][1]}`
+  const n = pts.length
+  if (n === 0) return ''
+  if (n < 3) return pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px},${py}`).join(' ')
+  const dx: number[] = []
+  const m: number[] = []
+  for (let i = 0; i < n - 1; i++) {
+    dx.push(pts[i + 1][0] - pts[i][0])
+    m.push(dx[i] === 0 ? 0 : (pts[i + 1][1] - pts[i][1]) / dx[i])
+  }
+  const t: number[] = [m[0]]
+  for (let i = 1; i < n - 1; i++) {
+    const a = m[i - 1]
+    const b = m[i]
+    // Перелом (вершина или впадина) — касательная горизонтальна, иначе гармоническое среднее наклонов.
+    t.push(a * b <= 0 ? 0 : (3 * (dx[i - 1] + dx[i])) / ((2 * dx[i] + dx[i - 1]) / a + (dx[i] + 2 * dx[i - 1]) / b))
+  }
+  t.push(m[n - 2])
   const d = [`M${pts[0][0]},${pts[0][1]}`]
-  for (let i = 0; i < pts.length - 1; i++) {
+  for (let i = 0; i < n - 1; i++) {
     const [x0, y0] = pts[i]
     const [x1, y1] = pts[i + 1]
-    const dx = (x1 - x0) / 3
-    d.push(`C${x0 + dx},${y0} ${x1 - dx},${y1} ${x1},${y1}`)
+    const h = dx[i] / 3
+    d.push(`C${x0 + h},${y0 + t[i] * h} ${x1 - h},${y1 - t[i + 1] * h} ${x1},${y1}`)
   }
   return d.join(' ')
 }
 
+/** Ширина блока в пикселях: график рисуется в натуральную величину, подписи не мельчают на телефоне. */
+function useWidth(fallback: number) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(fallback)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => el.clientWidth > 0 && setWidth(el.clientWidth)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return { ref, width }
+}
+
 export function ProfitChart({ points, series, empty = 'Продаж за этот период нет' }: { points: Point[]; series: Series[]; empty?: string }) {
   const [hover, setHover] = useState<number | null>(null)
+  const { ref, width } = useWidth(760)
   const all = series.flatMap((s) => s.values)
   const hasData = all.some((v) => v !== 0)
 
-  const W = 760
-  const H = 280
-  const left = 58
-  const right = 16
-  const top = 20
+  // Одна единица рисунка — один пиксель экрана: шрифт 12px остаётся 12px и на телефоне.
+  const W = Math.max(280, Math.round(width))
+  const phone = W < 560
+  const H = phone ? 220 : 280
+  const left = phone ? 60 : 64
+  // Справа запас под подпись последней точки, чтобы её не обрезало.
+  const right = phone ? 20 : 24
+  const top = 16
   const bottom = 30
   const plotW = W - left - right
   const plotH = H - top - bottom
@@ -79,10 +119,14 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
 
   const x = (i: number) => left + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW)
   const y = (v: number) => top + ((max - v) / (max - min || 1)) * plotH
-  const every = Math.ceil(points.length / 10)
+  // На телефоне не больше 5 подписей по оси X, на большом экране — до 10.
+  // Последняя точка подписана всегда, соседняя с ней подпись убирается, чтобы не налезали.
+  const every = Math.max(1, Math.ceil((points.length - 1) / (phone ? 4 : 9)))
+  const labeled = (i: number) => i === points.length - 1 || (i % every === 0 && points.length - 1 - i >= every * 0.6)
+  const anchor = (i: number) => (points.length > 1 && i === points.length - 1 ? 'end' : points.length > 1 && i === 0 ? 'start' : 'middle')
 
   return (
-    <div className="flex flex-col gap-3">
+    <div ref={ref} className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-4 text-xs text-slate-600">
         {series.map((s) => (
           <span key={s.name} className="flex items-center gap-1.5">
@@ -94,14 +138,16 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
       {!hasData ? (
         <div className="rounded-md bg-slate-50 py-10 text-center text-sm text-slate-500">{empty}</div>
       ) : (
-        <div className="relative overflow-x-auto">
+        <div className="relative">
           <svg
             viewBox={`0 0 ${W} ${H}`}
-            className="h-auto w-full min-w-[480px] select-none"
+            width={W}
+            height={H}
+            className="block h-auto w-full touch-pan-y select-none"
             role="img"
             aria-label="График прибыли"
             onMouseLeave={() => setHover(null)}
-            onMouseMove={(e) => {
+            onPointerMove={(e) => {
               const box = e.currentTarget.getBoundingClientRect()
               const px = ((e.clientX - box.left) / box.width) * W
               const i = points.length <= 1 ? 0 : Math.round(((px - left) / plotW) * (points.length - 1))
@@ -120,7 +166,7 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
             {ticks.map((t) => (
               <g key={t}>
                 <line x1={left} x2={W - right} y1={y(t)} y2={y(t)} className={t === 0 ? 'stroke-slate-300' : 'stroke-slate-100'} strokeWidth="1" />
-                <text x={left - 8} y={y(t) + 4} textAnchor="end" className="fill-slate-400 text-[11px]">
+                <text x={left - 8} y={y(t) + 4} textAnchor="end" className="fill-slate-500 text-[12px] tabular-nums">
                   {short(t)}
                 </text>
               </g>
@@ -130,8 +176,8 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
 
             {points.map(
               (p, i) =>
-                i % every === 0 && (
-                  <text key={p.label + i} x={x(i)} y={H - 8} textAnchor="middle" className="fill-slate-400 text-[11px]">
+                labeled(i) && (
+                  <text key={p.label + i} x={x(i)} y={H - 8} textAnchor={anchor(i)} className="fill-slate-500 text-[12px] tabular-nums">
                     {p.label}
                   </text>
                 ),
@@ -150,7 +196,7 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
                       key={i}
                       cx={px}
                       cy={py}
-                      r={hover === i ? 5 : points.length <= 16 ? 3 : 0}
+                      r={hover === i ? 5 : points.length <= (phone ? 10 : 16) ? 3 : 0}
                       className={s.values[i] < 0 ? 'fill-rose-500' : 'fill-current'}
                       stroke="white"
                       strokeWidth="1.5"
@@ -165,11 +211,18 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
 
           {hover !== null && (
             <div
-              className="pointer-events-none absolute top-2 z-10 min-w-52 whitespace-nowrap rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg"
-              style={{
-                left: `${(x(hover) / W) * 100}%`,
-                transform: x(hover) > W * 0.6 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
-              }}
+              className="pointer-events-none absolute top-2 z-10 min-w-48 whitespace-nowrap rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow-lg"
+              style={
+                // На телефоне карточка прижимается к краю напротив точки, чтобы не вылезать за экран.
+                phone
+                  ? x(hover) > W / 2
+                    ? { left: 4 }
+                    : { right: 4 }
+                  : {
+                      left: `${(x(hover) / W) * 100}%`,
+                      transform: x(hover) > W * 0.6 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
+                    }
+              }
             >
               <div className="mb-1 font-medium text-slate-800">{points[hover].title}</div>
               {series.map((s) => (

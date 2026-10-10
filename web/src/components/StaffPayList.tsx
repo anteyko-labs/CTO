@@ -16,7 +16,9 @@ export function StaffPayList({ staff, empty = 'Пока никому не нач
   if (staff.length === 0) return <div className="text-sm text-slate-500">{empty}</div>
   return (
     <ul className="divide-y divide-slate-100">
-      {staff.map((p) => (
+      {staff.map((p) => {
+        const owed = p.owed_tyiyn ?? 0
+        return (
         <li key={p.employee_id} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3 py-2">
           <div className="min-w-0">
             <div className="font-medium">{p.name}</div>
@@ -25,16 +27,30 @@ export function StaffPayList({ staff, empty = 'Пока никому не нач
             </div>
           </div>
           <div className="whitespace-nowrap text-right">
-            <div className={`text-lg font-semibold ${p.total_tyiyn < 0 ? 'text-rose-700' : ''}`}>{formatSom(p.total_tyiyn)}</div>
-            <div className="text-xs text-slate-500">
-              {(p.paid_tyiyn ?? 0) !== 0 && <>выдано {formatSom(p.paid_tyiyn ?? 0)} · </>}
-              <span className={(p.owed_tyiyn ?? 0) > 0 ? 'font-medium text-amber-700' : ''}>
-                {(p.owed_tyiyn ?? 0) > 0 ? `к выдаче ${formatSom(p.owed_tyiyn ?? 0)}` : (p.owed_tyiyn ?? 0) < 0 ? `аванс ${formatSom(-(p.owed_tyiyn ?? 0))}` : 'всё выдано'}
-              </span>
+            {/* Главное — сколько выдать сейчас; заработанное за период — серым ниже. */}
+            {p.owed_tyiyn === undefined ? (
+              <div className={`text-lg font-semibold tabular-nums ${p.total_tyiyn < 0 ? 'text-rose-700' : ''}`}>{formatSom(p.total_tyiyn)}</div>
+            ) : owed > 0 ? (
+              <>
+                <div className="text-xs text-slate-500">к выдаче</div>
+                <div className="text-lg font-semibold tabular-nums">{formatSom(owed)}</div>
+              </>
+            ) : owed < 0 ? (
+              <>
+                <div className="text-xs text-slate-500">аванс</div>
+                <div className="text-lg font-semibold tabular-nums text-rose-700">{formatSom(-owed)}</div>
+              </>
+            ) : (
+              <div className="text-sm font-medium text-emerald-700">всё выдано</div>
+            )}
+            <div className="text-xs tabular-nums text-slate-500">
+              заработал <span className={p.total_tyiyn < 0 ? 'text-rose-700' : ''}>{formatSom(p.total_tyiyn)}</span>
+              {(p.paid_tyiyn ?? 0) !== 0 && <> · выдано {formatSom(p.paid_tyiyn ?? 0)}</>}
             </div>
           </div>
         </li>
-      ))}
+        )
+      })}
     </ul>
   )
 }

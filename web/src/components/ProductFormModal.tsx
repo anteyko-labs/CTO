@@ -268,6 +268,65 @@ export function ProductFormModal({
   return (
     <Modal title={editing ? 'Товар' : 'Новый товар'} onClose={onClose} wide>
       <div className="grid gap-3 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <Field
+            label="Штрихкод"
+            hint={
+              editing
+                ? 'Кодов может быть несколько: привязывайте сюда заводские коды разных поставок'
+                : 'Сканируйте заводской код; без кода система создаст свой при сохранении'
+            }
+          >
+            <div className="flex gap-2">
+              <input
+                id="product-barcode"
+                className="flex-1"
+                autoFocus={!editing && !presetBarcode}
+                placeholder="Сканируйте или введите"
+                value={form.barcode}
+                onChange={(e) => set('barcode', e.target.value)}
+                onKeyDown={(e) => {
+                  // Сканер завершает код Enter: у нового товара переходим к категории, у карточки — привязываем код.
+                  if (e.key !== 'Enter') return
+                  e.preventDefault()
+                  if (editing) {
+                    if (form.barcode.trim()) void addCode(false)
+                  } else document.getElementById('product-category')?.focus()
+                }}
+              />
+              {editing && (
+                <>
+                  <Button variant="secondary" disabled={busy} onClick={() => void addCode(false)}>
+                    Добавить
+                  </Button>
+                  <Button variant="secondary" disabled={busy} onClick={() => void addCode(true)}>
+                    Создать свой
+                  </Button>
+                </>
+              )}
+            </div>
+          </Field>
+          {codes.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {codes.map((c) => (
+                <span key={c} className="inline-flex items-center gap-1">
+                  <Badge>{c}</Badge>
+                  {editing && codes.length > 1 && (
+                    <button
+                      type="button"
+                      className="text-xs text-slate-400 hover:text-rose-600"
+                      aria-label={`Отвязать код ${c}`}
+                      disabled={busy}
+                      onClick={() => void removeCode(c)}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
         <Field
           label="Категория"
           required
@@ -281,6 +340,7 @@ export function ProductFormModal({
         >
           <select
             id="product-category"
+            autoFocus={!editing && Boolean(presetBarcode)}
             value={form.category_id}
             disabled={editing && !category}
             onChange={(e) => {
@@ -299,7 +359,7 @@ export function ProductFormModal({
           </select>
         </Field>
         <Field label="Название" required>
-          <input id="product-name" autoFocus value={form.name} onChange={(e) => set('name', e.target.value)} />
+          <input id="product-name" autoFocus={editing} value={form.name} onChange={(e) => set('name', e.target.value)} />
         </Field>
         {similar.length > 0 && (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm sm:col-span-2">
@@ -366,50 +426,6 @@ export function ProductFormModal({
         <Field label={isOil ? 'Минимальный остаток, л' : 'Минимальный остаток, шт'}>
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
-        <div className="sm:col-span-2">
-          <Field
-            label="Штрихкод"
-            hint={
-              editing
-                ? 'Кодов может быть несколько: привязывайте сюда заводские коды разных поставок'
-                : 'Сканируйте заводской код; без кода система создаст свой при сохранении'
-            }
-          >
-            <div className="flex gap-2">
-              <input className="flex-1" value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />
-              {editing && (
-                <>
-                  <Button variant="secondary" disabled={busy} onClick={() => void addCode(false)}>
-                    Добавить
-                  </Button>
-                  <Button variant="secondary" disabled={busy} onClick={() => void addCode(true)}>
-                    Создать свой
-                  </Button>
-                </>
-              )}
-            </div>
-          </Field>
-          {codes.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {codes.map((c) => (
-                <span key={c} className="inline-flex items-center gap-1">
-                  <Badge>{c}</Badge>
-                  {editing && codes.length > 1 && (
-                    <button
-                      type="button"
-                      className="text-xs text-slate-400 hover:text-rose-600"
-                      aria-label={`Отвязать код ${c}`}
-                      disabled={busy}
-                      onClick={() => void removeCode(c)}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />

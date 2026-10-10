@@ -327,51 +327,67 @@ export default function Revision() {
         </Button>
         <div className="text-xs text-slate-500">Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются.</div>
       </Card>
-      {settings.data && (
-        <Card className="flex flex-wrap items-end gap-3 text-sm">
-          {norm === null ? (
-            <>
-              <div>
-                Норма расхождения по маслу: <span className="font-medium">{percentText(settings.data.oil_norm_bp)}</span> от того, что должно быть.
-                Больше — строка ревизии помечается «сверх нормы», владельцу приходит уведомление.
-              </div>
-              {owner && (
-                <Button variant="secondary" onClick={() => setNorm(String(settings.data!.oil_norm_bp / 100).replace('.', ','))}>
-                  Изменить
-                </Button>
-              )}
-            </>
-          ) : (
-            <>
-              <Field label="Норма по маслу, %" hint="От 0 до 10, например 0,5">
-                <input autoFocus inputMode="decimal" className="w-24" value={norm} onChange={(e) => setNorm(e.target.value)} />
-              </Field>
-              <Button variant="secondary" onClick={() => setNorm(null)}>
-                Отмена
-              </Button>
-              <Button
-                disabled={act.busy || normBp === null || normBp > 1000}
-                onClick={() =>
-                  void act.run(async () => {
-                    await put('/settings/stock', { oil_norm_bp: normBp })
-                    setNorm(null)
-                    settings.reload()
-                    toast('Норма сохранена')
-                  })
-                }
-              >
-                Сохранить
-              </Button>
-            </>
-          )}
-        </Card>
-      )}
+      {settings.data &&
+        (norm === null ? (
+          <div className="-mt-2 px-1 text-sm text-slate-600">
+            <span title="Расхождение по маслу больше нормы помечается «сверх нормы», владельцу приходит уведомление">
+              Норма по маслу: <span className="font-medium text-slate-800">{percentText(settings.data.oil_norm_bp)}</span>
+            </span>
+            {owner && (
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  className="text-sky-700 underline decoration-dotted hover:text-sky-800"
+                  onClick={() => setNorm(String(settings.data!.oil_norm_bp / 100).replace('.', ','))}
+                >
+                  изменить
+                </button>
+              </>
+            )}
+          </div>
+        ) : (
+          <Card className="flex flex-wrap items-end gap-3 text-sm">
+            <div className="w-full text-slate-600">
+              Норма расхождения по маслу — от того, что должно быть. Больше — строка ревизии помечается «сверх нормы», владельцу приходит
+              уведомление.
+            </div>
+            <Field label="Норма по маслу, %" hint="От 0 до 10, например 0,5">
+              <input autoFocus inputMode="decimal" className="w-24" value={norm} onChange={(e) => setNorm(e.target.value)} />
+            </Field>
+            <Button variant="secondary" onClick={() => setNorm(null)}>
+              Отмена
+            </Button>
+            <Button
+              disabled={act.busy || normBp === null || normBp > 1000}
+              onClick={() =>
+                void act.run(async () => {
+                  await put('/settings/stock', { oil_norm_bp: normBp })
+                  setNorm(null)
+                  settings.reload()
+                  toast('Норма сохранена')
+                })
+              }
+            >
+              Сохранить
+            </Button>
+          </Card>
+        ))}
       <ErrorBox error={list.error ?? act.error ?? rev.error} />
       <Card className="p-0">
         {list.loading && !list.data ? (
           <Loading />
         ) : (list.data ?? []).length === 0 ? (
-          <Empty>Ревизий ещё не было</Empty>
+          <Empty
+            icon="revision"
+            action={
+              <Button disabled={act.busy} onClick={start}>
+                Начать первую ревизию
+              </Button>
+            }
+          >
+            Ревизий ещё не было. Выберите, что пересчитываем, и начните — пересчёт идёт сканером.
+          </Empty>
         ) : (
           <Table head={['№', 'Что', 'Начал', 'Пересчитано', 'Статус', '']}>
             {(list.data ?? []).map((h) => (

@@ -1,20 +1,67 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { Badge, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
+import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Money, Notice, PageHeader } from '../components/ui'
+import { Icon } from '../components/icons'
 import { get, qs } from '../lib/api'
 import { formatDate, formatSom, hourBishkek, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad, usePolling } from '../lib/hooks'
+import { Heatmap } from '../components/Heatmap'
 import { StaffPayList } from '../components/StaffPayList'
 import { ProfitChart, type Point, type Series } from '../components/ProfitChart'
-import type { Dashboard, ProfitReport } from '../lib/types'
+import type { Dashboard, HeatCell, ProfitReport } from '../lib/types'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
 
-function Tile({ label, value, tone = '' }: { label: string; value: string; tone?: string }) {
+function Tile({ label, value, tone = '', children }: { label: string; value: string; tone?: string; children?: ReactNode }) {
   return (
     <div>
       <div className="text-xs text-slate-500">{label}</div>
-      <div className={`text-2xl font-bold ${tone}`}>{value}</div>
+      <div className={`text-2xl font-bold tabular-nums ${tone}`}>{value}</div>
+      {children}
+    </div>
+  )
+}
+
+/** Сравнение с прошлым днём к этому же часу: «▲ +12 % к вчера на этот час». */
+function Delta({ now, base, label, then, money }: { now: number; base: number; label: string; then: string; money: boolean }) {
+  // Не с чем сравнить (в тот день к этому часу продаж не было) — строку не показываем.
+  if (base === 0) return null
+  const pct = Math.round(((now - base) * 100) / base)
+  const tone = pct > 0 ? 'text-emerald-700' : pct < 0 ? 'text-rose-700' : 'text-slate-500'
+  // «+8113 %» ничего не говорит: при большой разнице показываем, сколько было тогда.
+  if (Math.abs(pct) > 200) {
+    return (
+      <div className="text-xs text-slate-500">
+        <span className={`font-medium ${tone}`}>{pct > 0 ? '▲' : '▼'}</span> {then}: {money ? formatSom(base) : base}
+      </div>
+    )
+  }
+  return (
+    <div className="text-xs">
+      <span className={`font-medium tabular-nums ${tone}`}>
+        {pct > 0 ? '▲ +' : pct < 0 ? '▼ −' : '= '}
+        {Math.abs(pct)} %
+      </span>{' '}
+      <span className="text-slate-500">{label}</span>
+    </div>
+  )
+}
+
+/** Обе строки сравнения под плиткой: со вчера и с тем же днём неделю назад. */
+function Compare({
+  pick,
+  data,
+  money = true,
+}: {
+  pick: (x: { revenue_tyiyn: number; gross_tyiyn: number; sales_count: number }) => number
+  data: Dashboard['compare']
+  money?: boolean
+}) {
+  if (!data) return null
+  return (
+    <div className="mt-1 flex flex-col gap-0.5">
+      <Delta now={pick(data.today)} base={pick(data.yesterday)} label="к вчера на этот час" then="вчера к этому часу" money={money} />
+      <Delta now={pick(data.today)} base={pick(data.week_ago)} label="к неделе назад" then="неделю назад" money={money} />
     </div>
   )
 }
@@ -24,7 +71,9 @@ function Step({ label, value, strong = false, minus = false }: { label: string; 
   return (
     <div className={`flex items-baseline justify-between gap-4 py-1 ${strong ? 'border-t border-slate-200 font-semibold' : 'text-slate-700'}`}>
       <span>{label}</span>
-      <span className={strong && value < 0 ? 'text-rose-700' : ''}>{minus && value !== 0 ? `− ${formatSom(value)}` : formatSom(value)}</span>
+      <span className={`whitespace-nowrap tabular-nums ${strong && value < 0 ? 'text-rose-700' : ''}`}>
+        {minus && value !== 0 ? `− ${formatSom(value)}` : formatSom(value)}
+      </span>
     </div>
   )
 }
@@ -43,6 +92,7 @@ export function OwnerDashboard() {
   const from = shiftDate(today, -back)
   const d = useLoad(() => get<Dashboard>('/owner/dashboard'), [])
   const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to: today })}`), [from, today])
+  const heat = useLoad(() => get<HeatCell[]>('/reports/heatmap?days=28'), [])
   // Сводка живая: чеки с кассы появляются без перезагрузки страницы.
   usePolling(d.reload)
   usePolling(r.reload)
@@ -50,6 +100,8 @@ export function OwnerDashboard() {
   if (!d.data) return <ErrorBox error={d.error} />
   const t = r.data?.totals ?? d.data.totals
   const revenue = t.goods_tyiyn + t.services_tyiyn
+  // Сравнение «к этому часу» имеет смысл только для сегодняшнего дня.
+  const compare = period === 'today' ? d.data.compare : undefined
   const word = period === 'today' ? 'сегодня' : period === 'week' ? 'за 7 дней' : 'за 30 дней'
   // Сегодня — каждый час с открытия (8:00) до текущего, без пропусков: линия идёт вверх и вниз честно.
   const hours = r.data?.hours ?? []
@@ -114,10 +166,16 @@ export function OwnerDashboard() {
       <div className="flex flex-col gap-4">
         <ErrorBox error={r.error} />
         <Card className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Tile label="Продано" value={formatSom(revenue)} />
-          <Tile label="Валовая прибыль" value={formatSom(t.gross_tyiyn)} />
+          <Tile label="Продано" value={formatSom(revenue)}>
+            <Compare data={compare} pick={(x) => x.revenue_tyiyn} />
+          </Tile>
+          <Tile label="Валовая прибыль" value={formatSom(t.gross_tyiyn)}>
+            <Compare data={compare} pick={(x) => x.gross_tyiyn} />
+          </Tile>
           <Tile label="Чистая прибыль" value={formatSom(t.net_tyiyn)} tone={t.net_tyiyn < 0 ? 'text-rose-700' : 'text-emerald-700'} />
-          <Tile label="Чеков" value={String(t.sales_count)} />
+          <Tile label="Чеков" value={String(t.sales_count)}>
+            <Compare data={compare} pick={(x) => x.sales_count} money={false} />
+          </Tile>
         </Card>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -173,6 +231,15 @@ export function OwnerDashboard() {
           )}
         </Card>
 
+        {/* Карта — подсказка, а не главное: если не загрузилась, сводка работает без неё. */}
+        {!heat.error && (
+          <Card>
+            <h2 className="mb-1 font-semibold">Когда покупают</h2>
+            <div className="mb-3 text-xs text-slate-500">Выручка по дням недели и часам за последние 4 недели</div>
+            {heat.data ? <Heatmap cells={heat.data} /> : <Loading />}
+          </Card>
+        )}
+
         <Card>
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="font-semibold">Деньги сейчас</h2>
@@ -183,36 +250,46 @@ export function OwnerDashboard() {
               </Link>
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="text-xs text-slate-500">Всего денег</div>
+          <div className="text-3xl font-bold tabular-nums">{formatSom(d.data.money_total_tyiyn)}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
             {d.data.accounts.map((a) => (
-              <Tile key={a.name} label={a.name} value={formatSom(a.balance_tyiyn)} />
+              <span key={a.name}>
+                {a.name} <Money value={a.balance_tyiyn} tone="negative" className="font-medium text-slate-800" />
+              </span>
             ))}
-            <Tile label="Всего денег" value={formatSom(d.data.money_total_tyiyn)} />
           </div>
           <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-4">
-            <Tile label="Нам должны" value={formatSom(d.data.debts_in_tyiyn)} tone="text-amber-700" />
-            <Tile label="Мы должны поставщикам" value={formatSom(d.data.debts_out_tyiyn)} />
+            <Link to="/debts" className="rounded-md hover:bg-slate-50">
+              <Tile label="Нам должны" value={formatSom(d.data.debts_in_tyiyn)} tone="text-amber-700" />
+            </Link>
+            <Link to="/debts" className="rounded-md hover:bg-slate-50">
+              <Tile label="Мы должны поставщикам" value={formatSom(d.data.debts_out_tyiyn)} />
+            </Link>
           </div>
         </Card>
 
         {(d.data.low_stock > 0 || d.data.needs_review > 0 || d.data.stale_stock > 0) && (
-          <Card className="flex flex-wrap items-center gap-3 text-sm">
-            <span className="font-medium">Склад:</span>
-            {d.data.low_stock > 0 && (
-              <Link to="/stock" className="underline">
-                <Badge tone="amber">заканчивается: {d.data.low_stock}</Badge>
-              </Link>
-            )}
-            {d.data.needs_review > 0 && (
-              <Link to="/stock" className="underline">
-                <Badge tone="rose">проверить остаток: {d.data.needs_review}</Badge>
-              </Link>
-            )}
-            {d.data.stale_stock > 0 && (
-              <Link to="/stock" className="underline">
-                <Badge tone="slate">залежался: {d.data.stale_stock}</Badge>
-              </Link>
-            )}
+          <Card>
+            <h2 className="mb-1 font-semibold">Склад</h2>
+            <div className="flex flex-col divide-y divide-slate-100 text-sm">
+              {(
+                [
+                  [d.data.needs_review, 'Проверить остаток', 'bg-rose-500'],
+                  [d.data.low_stock, 'Заканчивается', 'bg-amber-500'],
+                  [d.data.stale_stock, 'Залежался больше 60 дней', 'bg-slate-400'],
+                ] as const
+              )
+                .filter(([n]) => n > 0)
+                .map(([n, label, dot]) => (
+                  <Link key={label} to="/stock" className="flex items-center gap-3 py-2 hover:text-sky-700">
+                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot}`} />
+                    <span className="flex-1">{label}</span>
+                    <span className="font-semibold tabular-nums">{n}</span>
+                    <Icon name="chevron" className="h-4 w-4 text-slate-400" />
+                  </Link>
+                ))}
+            </div>
           </Card>
         )}
       </div>
@@ -220,7 +297,71 @@ export function OwnerDashboard() {
   )
 }
 
-/** Прибыль за период с разрезами (SPEC-08). */
+interface Col {
+  label: string
+  right?: boolean
+}
+
+/**
+ * Таблица отчёта: суммы по правому краю ровными цифрами. Своя разметка, а не общий Table,
+ * чтобы выровнять и заголовки; на телефоне — те же карточки (класс responsive, data-label).
+ */
+function ReportTable({ cols, rows, foot }: { cols: Col[]; rows: { key: string; cells: ReactNode[] }[]; foot?: ReactNode[] }) {
+  const align = (c: Col) => (c.right ? 'text-right tabular-nums whitespace-nowrap' : '')
+  return (
+    <div className="overflow-x-auto">
+      <table className="responsive w-full text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+            {cols.map((c) => (
+              <th key={c.label} className={`px-2 py-2 font-medium ${c.right ? 'text-right' : 'text-left'}`}>
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {rows.map((r) => (
+            <tr key={r.key} className="break-inside-avoid">
+              {r.cells.map((cell, i) => (
+                <td key={cols[i].label} data-label={cols[i].label} className={`px-2 py-2 ${align(cols[i])} ${i === 0 ? 'font-medium' : ''}`}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+          {foot && (
+            <tr className="border-t-2 border-slate-200 font-semibold">
+              {foot.map((cell, i) => (
+                <td key={cols[i].label} data-label={cols[i].label} className={`px-2 py-2 ${align(cols[i])}`}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Строка расчёта прибыли: вычеты со знаком «−», итог красным при убытке. */
+function CalcRow({ label, value, minus = false, total = false, big = false }: { label: string; value: number; minus?: boolean; total?: boolean; big?: boolean }) {
+  return (
+    <div
+      className={`flex items-baseline justify-between gap-4 py-1 ${total ? 'border-t border-slate-200 font-semibold' : 'text-slate-700'} ${big ? 'text-lg font-bold' : ''}`}
+    >
+      <span>{label}</span>
+      {minus ? (
+        <span className="whitespace-nowrap tabular-nums">{value === 0 ? formatSom(0) : `− ${formatSom(value)}`}</span>
+      ) : (
+        <Money value={value} tone="negative" />
+      )}
+    </div>
+  )
+}
+
+/** Прибыль за период с разрезами (SPEC-08): отчёт, который можно распечатать. */
 export default function Profit() {
   const today = todayBishkek()
   const [from, setFrom] = useState(today)
@@ -232,32 +373,51 @@ export default function Profit() {
   }
 
   const t = r.data?.totals
+  const days = r.data?.days ?? []
+  const categories = r.data?.categories ?? []
+  const articles = r.data?.articles ?? []
+  const sum = (pick: (x: (typeof days)[number]) => number) => days.reduce((a, x) => a + pick(x), 0)
+  const money = (v: number) => <Money value={v} tone="negative" />
 
   return (
     <div>
-      <PageHeader title="Прибыль" />
-      <Card className="mb-4 flex flex-wrap items-end gap-3">
+      <PageHeader
+        title="Прибыль"
+        subtitle={from === to ? `Отчёт за ${formatDate(from)}` : `Отчёт за период ${formatDate(from)} — ${formatDate(to)}`}
+        actions={
+          <Button variant="secondary" className="no-print" disabled={!t} onClick={() => window.print()}>
+            Печать
+          </Button>
+        }
+      />
+      <Card className="no-print mb-4 flex flex-wrap items-end gap-3">
         <Field label="С">
-          <input type="date" className="w-40" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <input type="date" className="w-40" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} />
         </Field>
         <Field label="По">
-          <input type="date" className="w-40" value={to} onChange={(e) => setTo(e.target.value)} />
+          <input type="date" className="w-40" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} />
         </Field>
-        <div className="flex gap-2">
-          {[
-            [0, 'Сегодня'],
-            [6, '7 дней'],
-            [29, 'Месяц'],
-          ].map(([d, label]) => (
-            <button
-              key={label as string}
-              type="button"
-              className="rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
-              onClick={() => quick(d as number)}
-            >
-              {label as string}
-            </button>
-          ))}
+        <div className="flex flex-wrap gap-2">
+          {(
+            [
+              [0, 'Сегодня'],
+              [6, '7 дней'],
+              [29, 'Месяц'],
+            ] as const
+          ).map(([n, label]) => {
+            const on = to === today && from === shiftDate(today, -n)
+            return (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={on}
+                className={`min-h-[38px] rounded-md border px-3 py-2 text-sm ${on ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 hover:bg-slate-50'}`}
+                onClick={() => quick(n)}
+              >
+                {label}
+              </button>
+            )
+          })}
         </div>
       </Card>
 
@@ -266,88 +426,113 @@ export default function Profit() {
         <Loading />
       ) : t ? (
         <div className="flex flex-col gap-4">
-          <Card>
-            <h2 className="mb-3 font-semibold">Как получилась прибыль</h2>
-            <div className="flex flex-col gap-1 text-sm">
-              {[
-                ['Выручка за товары', t.goods_tyiyn, ''],
-                ['Выручка за работы', t.services_tyiyn, ''],
-                ['− Себестоимость', -t.cost_tyiyn, ''],
-                ['= Валовая прибыль', t.gross_tyiyn, 'font-semibold'],
-                ['− Оплата труда', -t.payroll_tyiyn, ''],
-                ['− Комиссия банка', -t.bank_fee_tyiyn, ''],
-                ['− Расходы', -t.expenses_tyiyn, ''],
-                ['− Скидки баллами', -t.bonus_tyiyn, ''],
-                ['= Чистая прибыль', t.net_tyiyn, 'text-lg font-bold'],
-              ].map(([label, value, cls]) => (
-                <div key={label as string} className={`flex justify-between gap-4 ${cls as string}`}>
-                  <span>{label as string}</span>
-                  <span>{formatSom(value as number)}</span>
-                </div>
-              ))}
+          <Card className="break-inside-avoid">
+            <CardTitle>Как получилась прибыль</CardTitle>
+            <div className="text-sm">
+              <CalcRow label="Выручка за товары" value={t.goods_tyiyn} />
+              <CalcRow label="Выручка за работы" value={t.services_tyiyn} />
+              <CalcRow label="Себестоимость проданного" value={t.cost_tyiyn} minus />
+              <CalcRow label="Валовая прибыль" value={t.gross_tyiyn} total />
+              <CalcRow label="Оплата труда" value={t.payroll_tyiyn} minus />
+              <CalcRow label="Комиссия банка" value={t.bank_fee_tyiyn} minus />
+              <CalcRow label="Расходы" value={t.expenses_tyiyn} minus />
+              <CalcRow label="Скидки баллами" value={t.bonus_tyiyn} minus />
+              <CalcRow label="Чистая прибыль" value={t.net_tyiyn} total big />
               <div className="mt-2 text-xs text-slate-500">
                 Чеков {t.sales_count}, маржа {percent(t.margin_bp)}
               </div>
+              {r.data && r.data.warnings.length > 0 && (
+                <div className="mt-3">
+                  <Notice tone="amber">
+                    {r.data.warnings.map((w) => (
+                      <div key={w}>{w}</div>
+                    ))}
+                  </Notice>
+                </div>
+              )}
             </div>
           </Card>
 
-          {r.data && r.data.warnings.length > 0 && (
-            <Card className="flex flex-col gap-1 text-sm text-amber-800">
-              {r.data.warnings.map((w) => (
-                <div key={w}>{w}</div>
-              ))}
-            </Card>
-          )}
-
           <Card>
-            <h2 className="mb-3 font-semibold">По категориям</h2>
-            {(r.data?.categories ?? []).length === 0 ? (
+            <CardTitle>По категориям</CardTitle>
+            {categories.length === 0 ? (
               <Empty>Продаж за период нет</Empty>
             ) : (
-              <Table head={['Категория', 'Выручка', 'Себестоимость', 'Валовая']}>
-                {(r.data?.categories ?? []).map((c) => (
-                  <tr key={c.name}>
-                    <td className="px-2 py-2 font-medium">{c.name}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{formatSom(c.revenue_tyiyn)}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{formatSom(c.cost_tyiyn)}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{formatSom(c.gross_tyiyn)}</td>
-                  </tr>
-                ))}
-              </Table>
+              <ReportTable
+                cols={[{ label: 'Категория' }, { label: 'Выручка', right: true }, { label: 'Себестоимость', right: true }, { label: 'Валовая', right: true }]}
+                rows={categories.map((c) => ({
+                  key: c.name,
+                  cells: [c.name, money(c.revenue_tyiyn), money(c.cost_tyiyn), money(c.gross_tyiyn)],
+                }))}
+                foot={
+                  categories.length > 1
+                    ? [
+                        'Итого',
+                        money(categories.reduce((a, c) => a + c.revenue_tyiyn, 0)),
+                        money(categories.reduce((a, c) => a + c.cost_tyiyn, 0)),
+                        money(categories.reduce((a, c) => a + c.gross_tyiyn, 0)),
+                      ]
+                    : undefined
+                }
+              />
             )}
           </Card>
 
           <Card>
-            <h2 className="mb-3 font-semibold">По дням</h2>
-            <Table head={['День', 'Выручка', 'Валовая', 'Оплата труда', 'Комиссия', 'Расходы', 'Баллы', 'Чистая']}>
-              {(r.data?.days ?? []).map((d) => (
-                <tr key={d.date}>
-                  <td className="whitespace-nowrap px-2 py-2">{d.date}</td>
-                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.revenue_tyiyn)}</td>
-                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.gross_tyiyn)}</td>
-                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.payroll_tyiyn)}</td>
-                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.fee_tyiyn ?? 0)}</td>
-                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.expenses_tyiyn)}</td>
-                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.bonus_tyiyn ?? 0)}</td>
-                  <td className={`whitespace-nowrap px-2 py-2 font-medium ${d.net_tyiyn < 0 ? 'text-rose-700' : ''}`}>
-                    {formatSom(d.net_tyiyn)}
-                  </td>
-                </tr>
-              ))}
-            </Table>
+            <CardTitle>По дням</CardTitle>
+            {days.length === 0 ? (
+              <Empty>За период нет ни продаж, ни расходов</Empty>
+            ) : (
+              <ReportTable
+                cols={[
+                  { label: 'День' },
+                  { label: 'Выручка', right: true },
+                  { label: 'Валовая', right: true },
+                  { label: 'Оплата труда', right: true },
+                  { label: 'Комиссия', right: true },
+                  { label: 'Расходы', right: true },
+                  { label: 'Баллы', right: true },
+                  { label: 'Чистая', right: true },
+                ]}
+                rows={days.map((x) => ({
+                  key: x.date,
+                  cells: [
+                    formatDate(x.date),
+                    money(x.revenue_tyiyn),
+                    money(x.gross_tyiyn),
+                    money(x.payroll_tyiyn),
+                    money(x.fee_tyiyn ?? 0),
+                    money(x.expenses_tyiyn),
+                    money(x.bonus_tyiyn ?? 0),
+                    <Money key="net" value={x.net_tyiyn} tone="negative" className="font-semibold" />,
+                  ],
+                }))}
+                foot={
+                  days.length > 1
+                    ? [
+                        'Итого',
+                        money(sum((x) => x.revenue_tyiyn)),
+                        money(sum((x) => x.gross_tyiyn)),
+                        money(sum((x) => x.payroll_tyiyn)),
+                        money(sum((x) => x.fee_tyiyn ?? 0)),
+                        money(sum((x) => x.expenses_tyiyn)),
+                        money(sum((x) => x.bonus_tyiyn ?? 0)),
+                        money(sum((x) => x.net_tyiyn)),
+                      ]
+                    : undefined
+                }
+              />
+            )}
           </Card>
 
-          {(r.data?.articles ?? []).length > 0 && (
+          {articles.length > 0 && (
             <Card>
-              <h2 className="mb-3 font-semibold">Расходы по статьям</h2>
-              <Table head={['Статья', 'Сумма']}>
-                {(r.data?.articles ?? []).map((a) => (
-                  <tr key={a.name}>
-                    <td className="px-2 py-2">{a.name}</td>
-                    <td className="whitespace-nowrap px-2 py-2">{formatSom(a.amount_tyiyn)}</td>
-                  </tr>
-                ))}
-              </Table>
+              <CardTitle>Расходы по статьям</CardTitle>
+              <ReportTable
+                cols={[{ label: 'Статья' }, { label: 'Сумма', right: true }]}
+                rows={articles.map((a) => ({ key: a.name, cells: [a.name, money(a.amount_tyiyn)] }))}
+                foot={articles.length > 1 ? ['Итого', money(articles.reduce((a, x) => a + x.amount_tyiyn, 0))] : undefined}
+              />
             </Card>
           )}
         </div>

@@ -325,7 +325,7 @@ export function ClientPicker({
         />
       </Field>
       {query.length >= 2 && (
-        <ul className="absolute top-full z-30 mt-1 w-full overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+        <ul className="absolute top-full z-30 mt-1 max-h-72 w-full overflow-y-auto overscroll-contain rounded-md border border-slate-200 bg-white shadow-lg">
           {list.map((p) => (
             <li key={p.id}>
               <button

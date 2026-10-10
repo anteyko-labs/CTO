@@ -52,7 +52,8 @@ export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null
     ${last.mileage_km !== null ? `<div class="row"><span>Пробег</span><b>${esc(km(last.mileage_km))}</b></div>` : ''}
     ${last.oil_text ? `<div class="row"><span>Масло</span><b>${esc(last.oil_text)}</b></div>` : ''}
     ${last.filter_text ? `<div class="row"><span>Фильтр</span><b>${esc(last.filter_text)}</b></div>` : ''}
-    ${opts.master ? `<div class="row"><span>Мастер</span><b>${esc(opts.master)}</b></div>` : ''}`
+    ${opts.master ? `<div class="row"><span>Мастер</span><b>${esc(opts.master)}</b></div>` : ''}
+    ${last.declined?.trim() ? `<div class="row"><span>Рекомендовано</span><b>${esc(last.declined.trim())}</b></div>` : ''}`
         : '<div class="muted">Замен пока не было</div>'
     }
     ${next ? `<div class="next">Следующая замена<b>${esc(next)}</b><span class="muted">что наступит раньше</span></div>` : ''}

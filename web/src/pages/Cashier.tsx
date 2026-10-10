@@ -2,6 +2,7 @@
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { CashierFavorites } from '../components/CashierFavorites'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
 import { QuickExpense } from '../components/QuickExpense'
@@ -15,7 +16,8 @@ import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
-import { Badge, Button, Card, ErrorBox, Field, Missing, toast } from '../components/ui'
+import { Icon } from '../components/icons'
+import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } from '../components/ui'
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, markPending, markSent, removeSale } from '../lib/offline'
@@ -102,6 +104,7 @@ interface Parked {
   vehicleId: string
   mileage?: string
   delivery?: string | null
+  declined?: string
 }
 
 function loadParked(): Parked[] {
@@ -134,6 +137,7 @@ interface Draft {
   vehicleId?: string
   mileage?: string
   delivery?: string | null
+  declined?: string
 }
 
 function loadDraft(): Draft | null {
@@ -211,6 +215,11 @@ export default function Cashier() {
   const [vehicleId, setVehicleId] = useState(draft?.vehicleId ?? '')
   const [mileage, setMileage] = useState(draft?.mileage ?? '')
   const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
+  // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
+  const [declined, setDeclined] = useState(draft?.declined ?? '')
+  const [commentOpen, setCommentOpen] = useState(false)
+  // Строка, у которой сейчас правят цену: в остальных цена видна текстом.
+  const [priceEdit, setPriceEdit] = useState<string | null>(null)
   // Аналоги фильтров по кросс-номерам: подсказка в строке, особенно когда товара нет (SPEC-17).
   const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
   const { busy, error, setError, run } = useAction()
@@ -219,8 +228,8 @@ export default function Cashier() {
   const masters = employees.data?.filter((e) => e.active && e.is_master) ?? []
 
   useEffect(
-    () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery }),
-    [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery],
+    () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined }),
+    [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined],
   )
 
   // Открыта смена — кассир чека тот, кто на смене: 2 % не уйдут кассиру с прошлого раза.
@@ -274,6 +283,8 @@ export default function Cashier() {
   const mixedLeft = payMode === 'mixed' && paid !== null ? due - (paid - bonusAmount) : null
   const receivedValue = payMode === 'cash' && received.trim() ? parseSom(received) : null
   const change = receivedValue !== null ? receivedValue - due : null
+  // Пустой чек — сдачи нет, сколько бы ни ввели.
+  const shownChange = lines.length > 0 ? change : null
 
   const update = (key: string, patch: Partial<CartLine>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
@@ -365,6 +376,27 @@ export default function Cashier() {
     })
   }
 
+  /** Аккумуляторы на вес: строка по весу, цена — продажная за кг или средняя закупка (ADR-048). */
+  const sellBatteries = () =>
+    void get<BatteryInfo>('/batteries')
+      .then(async (info) => {
+        setDone(null)
+        setBatteryAvg(info.avg_per_kg_tyiyn)
+        const p = await get<Product>(`/products/${info.product_id}`)
+        setLines((ls) => [
+          ...ls,
+          {
+            key: nextKey(),
+            kind: 'weight',
+            product: p,
+            qtyText: '',
+            priceText: somInput(info.sale_per_kg_tyiyn || info.avg_per_kg_tyiyn || 0),
+          },
+        ])
+        setTimeout(() => document.querySelector<HTMLInputElement>('[data-weight]:last-of-type')?.focus(), 50)
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось открыть продажу на вес'))
+
   const switchOil = (l: CartLine, kind: 'container' | 'pour') => {
     if (l.kind === kind) return
     update(l.key, { kind, qtyText: '1', priceText: somInput(listPrice({ kind, product: l.product })) })
@@ -398,6 +430,9 @@ export default function Cashier() {
     setVehicleId('')
     setMileage('')
     setDelivery(null)
+    setDeclined('')
+    setCommentOpen(false)
+    setPriceEdit(null)
     setError(null)
     setGiftAsked({})
     attempt.current = null
@@ -437,6 +472,7 @@ export default function Cashier() {
       vehicleId,
       mileage,
       delivery,
+      declined,
     }
     return [...list.filter((p) => p.id !== id), item]
   }
@@ -466,6 +502,7 @@ export default function Cashier() {
     setVehicleId(p.vehicleId)
     setMileage(p.mileage ?? '')
     setDelivery(p.delivery ?? null)
+    setDeclined(p.declined ?? '')
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -507,6 +544,7 @@ export default function Cashier() {
         vehicle_id: party && vehicleId ? vehicleId : null,
         mileage_km: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
         delivery_address: delivery?.trim() ?? '',
+        declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
         comment,
         lines: lines.map((l) => ({
           kind: l.kind,
@@ -638,9 +676,13 @@ export default function Cashier() {
           </Card>
         )}
         {shift.data === null && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            <span>Смена не открыта: продавать можно, но наличные будет не с чем сверить.</span>
-            <Link to="/shift" className="font-medium underline">
+          <div
+            className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
+            title="Продавать можно, но наличные будет не с чем сверить"
+          >
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Смена не открыта — наличные будет не с чем сверить</span>
+            <Link to="/shift" className="shrink-0 font-medium underline">
               Открыть смену
             </Link>
           </div>
@@ -662,7 +704,26 @@ export default function Cashier() {
               Услуги
             </Button>
           </div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1">
+            <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setDebtPay(true)}>
+              <Icon name="debts" className="h-4 w-4" />
+              Принять оплату долга
+            </button>
+            <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setExpense(true)}>
+              <Icon name="expenses" className="h-4 w-4" />
+              Мелкий расход из кассы
+            </button>
+            <RowMenu
+              label="Ещё действия кассы"
+              items={[
+                { label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) },
+                { label: 'Аккумуляторы на вес', onClick: sellBatteries },
+              ]}
+            />
+          </div>
         </Card>
+
+        <CashierFavorites onProduct={addProduct} onService={addService} />
 
         {done && (
           <Card className="border-emerald-300 bg-emerald-50">
@@ -670,8 +731,13 @@ export default function Cashier() {
               <div>
                 <div className="font-semibold text-emerald-800">Чек № {done.sale.number} проведён</div>
                 <div className="text-sm text-emerald-900">
-                  Итог {formatSom(done.sale.total_tyiyn)}
-                  {done.change !== null && done.change > 0 && <> · сдача {formatSom(done.change)}</>}
+                  Итог <Money value={done.sale.total_tyiyn} />
+                  {done.change !== null && done.change > 0 && (
+                    <>
+                      {' '}
+                      · сдача <Money value={done.change} />
+                    </>
+                  )}
                 </div>
               </div>
               <div className="flex gap-2">
@@ -704,6 +770,9 @@ export default function Cashier() {
                     .filter(Boolean)
                     .join(' · ')}
                 </div>
+                {done.book.records[0].declined?.trim() && (
+                  <div className="text-amber-800">Рекомендовано: {done.book.records[0].declined}</div>
+                )}
                 <div className="text-slate-700">
                   Следующая замена: <b>{nextText(done.book)}</b>
                 </div>
@@ -720,9 +789,10 @@ export default function Cashier() {
               {lines.map((l, i) => {
                 const amount = amounts[i]
                 const changed = parseSom(l.priceText) !== listPrice(l)
+                const priceLabel = l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'
                 const short = l.product ? (unitsInCart.get(l.product.id) ?? 0) > l.product.stock_qty : false
                 return (
-                  <li key={l.key} className="flex flex-wrap items-center gap-3 p-3">
+                  <li key={l.key} className="flex flex-wrap items-center gap-2 p-3">
                     <div className="min-w-48 flex-1">
                       <div className="font-medium">
                         {l.product?.name ?? l.service?.name}
@@ -812,18 +882,42 @@ export default function Cashier() {
                     {l.gift ? (
                       <div className="w-28 text-xs text-emerald-700">бесплатно</div>
                     ) : (
-                      <label className="flex flex-col text-xs text-slate-500">
-                        {l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'}
-                        <input
-                          className={`w-28 ${changed ? 'border-amber-400 bg-amber-50' : ''}`}
-                          inputMode="decimal"
-                          value={l.priceText}
-                          onChange={(e) => update(l.key, { priceText: e.target.value })}
-                          title={changed ? `Прайс: ${formatSom(listPrice(l))}` : undefined}
-                        />
-                      </label>
+                      <div className="flex flex-col text-xs text-slate-500">
+                        <label htmlFor={`price-${l.key}`}>{priceLabel}</label>
+                        <span className="flex items-center gap-0.5">
+                          {/* Цена видна текстом; карандаш или касание по ней — правка в том же поле. */}
+                          <input
+                            id={`price-${l.key}`}
+                            aria-label={priceLabel}
+                            className={`w-20 ${
+                              changed
+                                ? 'border-amber-400 bg-amber-50'
+                                : priceEdit === l.key
+                                  ? ''
+                                  : 'cursor-pointer border-transparent bg-transparent text-right font-medium text-slate-800 shadow-none'
+                            }`}
+                            inputMode="decimal"
+                            value={l.priceText}
+                            onFocus={(e) => {
+                              setPriceEdit(l.key)
+                              e.target.select()
+                            }}
+                            onBlur={() => setPriceEdit((k) => (k === l.key ? null : k))}
+                            onChange={(e) => update(l.key, { priceText: e.target.value })}
+                            title={changed ? `Прайс: ${formatSom(listPrice(l))}` : 'Изменить цену'}
+                          />
+                          <button
+                            type="button"
+                            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-sky-700"
+                            aria-label="Изменить цену"
+                            onClick={() => document.getElementById(`price-${l.key}`)?.focus()}
+                          >
+                            <Icon name="edit" className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                      </div>
                     )}
-                    <div className="w-28 text-right font-medium">{amount === null ? '—' : formatSom(amount)}</div>
+                    <div className="w-20 text-right font-medium">{amount === null ? '—' : <Money value={amount} />}</div>
                     <button
                       type="button"
                       className="text-slate-400 hover:text-rose-600"
@@ -922,23 +1016,32 @@ export default function Cashier() {
                 запишутся сами, клиенту распечатается книжка.
               </div>
             ))}
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={delivery !== null} onChange={(e) => setDelivery(e.target.checked ? '' : null)} />
-            Доставка (бесплатно)
-          </label>
+          {saleType === 'service' && party && vehicleId && (
+            <Field label="Мастер рекомендовал (клиент отказался)" hint="Необязательно. Запишется в книжку, в следующий раз касса напомнит">
+              <input id="declined" maxLength={300} value={declined} onChange={(e) => setDeclined(e.target.value)} placeholder="Например: воздушный фильтр, антифриз" />
+            </Field>
+          )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+            <label className="inline-flex cursor-pointer items-center gap-1.5 text-sky-700">
+              <input type="checkbox" className="h-3.5 w-3.5" checked={delivery !== null} onChange={(e) => setDelivery(e.target.checked ? '' : null)} />
+              Доставка (бесплатно)
+            </label>
+            {!commentOpen && !comment && (
+              <button type="button" className="text-sky-700 hover:underline" onClick={() => setCommentOpen(true)}>
+                + комментарий
+              </button>
+            )}
+          </div>
           {delivery !== null && (
             <Field label="Адрес доставки" required>
               <input id="delivery-address" value={delivery} onChange={(e) => setDelivery(e.target.value)} placeholder="Улица, дом, ориентир" />
             </Field>
           )}
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
-            <button type="button" className="text-xs text-sky-700 underline" onClick={() => setDebtPay(true)}>
-              Принять оплату долга
-            </button>
-            <button type="button" className="text-xs text-sky-700 underline" onClick={() => setExpense(true)}>
-              Мелкий расход из кассы
-            </button>
-          </div>
+          {(commentOpen || comment) && (
+            <Field label="Комментарий">
+              <input autoFocus={commentOpen && !comment} value={comment} onChange={(e) => setComment(e.target.value)} />
+            </Field>
+          )}
           {employees.data && cashiers.length === 0 && (
             <div className="text-sm text-amber-700">
               В справочнике нет кассиров. <Link className="underline" to="/employees">Добавить сотрудника</Link>
@@ -949,31 +1052,42 @@ export default function Cashier() {
         <Card className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between">
             <span className="text-sm text-slate-500">Итого</span>
-            <span className="text-3xl font-bold">{formatSom(total)}</span>
+            <Money value={total} className="text-3xl font-bold" />
           </div>
           {bonus && (
             <div className="flex items-center justify-between gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900">
               <span>
-                Баллами ({bonus.name}): −{formatSom(bonusAmount)}
-                <span className="ml-2 font-semibold">к оплате {formatSom(due)}</span>
+                Баллами ({bonus.name}): −<Money value={bonusAmount} />
+                <span className="ml-2 font-semibold">
+                  к оплате <Money value={due} />
+                </span>
               </span>
               <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setBonus(null)}>
                 Убрать
               </Button>
             </div>
           )}
-          <div data-pay tabIndex={-1} className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-xs sm:grid-cols-5">
-            {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m) => (
+          <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-px overflow-hidden rounded-md border border-slate-300 bg-slate-300 text-sm">
+            {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m, i) => (
               <button
                 key={m}
                 type="button"
-                className={`min-h-[42px] py-2 ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                // 3 + 2: наличные, карта, QR сверху — частые; долг и смешанная ниже.
+                className={`min-h-[44px] py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => setPayMode(m)}
               >
                 {m === 'mixed' ? 'Смешанная' : PAYMENT_LABELS[m]}
               </button>
             ))}
           </div>
+          {!bonus && total > 0 && (
+            <div className="-mt-1 flex justify-end">
+              <button type="button" className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline" onClick={() => setBonusOpen(true)}>
+                <Icon name="star" className="h-3.5 w-3.5" />
+                Баллы клиента
+              </button>
+            </div>
+          )}
           {payMode === 'cash' && (
             <div className="flex flex-col gap-2">
               <Field label="Получено, с">
@@ -987,6 +1101,22 @@ export default function Cashier() {
                   }}
                 />
               </Field>
+              <div
+                className={`flex items-baseline justify-between rounded-md px-3 py-2 ${
+                  shownChange === null ? 'bg-slate-50 text-slate-500' : shownChange >= 0 ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'
+                }`}
+              >
+                <span className="text-sm">Сдача</span>
+                {shownChange === null ? (
+                  <span className="text-2xl font-semibold">—</span>
+                ) : shownChange >= 0 ? (
+                  <Money value={shownChange} className="text-2xl font-semibold" />
+                ) : (
+                  <span className="text-sm font-medium">
+                    не хватает <Money value={-shownChange} />
+                  </span>
+                )}
+              </div>
               {due > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   <button
@@ -1008,12 +1138,6 @@ export default function Cashier() {
                         {formatSom(n)}
                       </button>
                     ))}
-                </div>
-              )}
-              {change !== null && change >= 0 && (
-                <div className="flex items-baseline justify-between rounded-md bg-emerald-50 px-3 py-2 text-emerald-800">
-                  <span className="text-sm">Сдача</span>
-                  <span className="text-xl font-semibold">{formatSom(change)}</span>
                 </div>
               )}
             </div>
@@ -1116,9 +1240,6 @@ export default function Cashier() {
               )}
             </div>
           )}
-          <Field label="Комментарий">
-            <input value={comment} onChange={(e) => setComment(e.target.value)} />
-          </Field>
           <ErrorBox error={error} />
           <Missing items={blockers} />
           <Button className="py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
@@ -1160,7 +1281,9 @@ export default function Cashier() {
             ) : (
               <div className="text-xs text-slate-500">{bonusAmount > 0 ? 'К оплате (с баллами)' : 'Итого'}</div>
             )}
-            <div className="truncate text-xl font-bold">{formatSom(due)}</div>
+            <div className="truncate text-xl font-bold">
+              <Money value={due} />
+            </div>
           </div>
           <Button className="shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
             Провести чек
@@ -1187,33 +1310,13 @@ export default function Cashier() {
         <ServicePicker
           onPick={addService}
           onClose={() => setServicesOpen(false)}
-          onBonus={() => {
-            setServicesOpen(false)
-            setBonusOpen(true)
-          }}
           onBatteryIntake={() => {
             setServicesOpen(false)
             setBatteryIntake(true)
           }}
           onBatterySale={() => {
             setServicesOpen(false)
-            void get<BatteryInfo>('/batteries')
-              .then(async (info) => {
-                setBatteryAvg(info.avg_per_kg_tyiyn)
-                const p = await get<Product>(`/products/${info.product_id}`)
-                setLines((ls) => [
-                  ...ls,
-                  {
-                    key: nextKey(),
-                    kind: 'weight',
-                    product: p,
-                    qtyText: '',
-                    priceText: somInput(info.sale_per_kg_tyiyn || info.avg_per_kg_tyiyn || 0),
-                  },
-                ])
-                setTimeout(() => document.querySelector<HTMLInputElement>('[data-weight]:last-of-type')?.focus(), 50)
-              })
-              .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось открыть продажу на вес'))
+            sellBatteries()
           }}
         />
       )}

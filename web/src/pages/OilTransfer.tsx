@@ -123,10 +123,13 @@ export default function OilTransfer() {
       <ErrorBox error={products.error} />
 
       <Card className="flex flex-col gap-3">
-        <p className="text-sm text-slate-600">
-          Остаток переходит из одного масла в другое вместе со стоимостью. Себестоимость литра у получателя становится средней: 5 л по 100 с и 50 л по
-          200 с дают 190,91 с за литр.
-        </p>
+        <details className="text-sm text-slate-600">
+          <summary className="cursor-pointer select-none text-sky-700 hover:text-sky-800">Как считается?</summary>
+          <p className="mt-1">
+            Остаток переходит из одного масла в другое вместе со стоимостью. Себестоимость литра у получателя становится средней: 5 л по 100 с и 50 л
+            по 200 с дают 190,91 с за литр.
+          </p>
+        </details>
         {products.loading && !products.data ? (
           <Loading />
         ) : oils.length < 2 ? (

@@ -2,7 +2,9 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SupplierEditModal } from '../components/SupplierFormModal'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, PageHeader, Table } from '../components/ui'
+import { Icon } from '../components/icons'
+import { StockBackLink } from '../components/StockBackLink'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, post } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -12,15 +14,23 @@ export default function Suppliers() {
   const list = useLoad(() => get<Supplier[]>('/suppliers'), [])
   const [form, setForm] = useState({ name: '', phone: '', comment: '' })
   const [editing, setEditing] = useState<Supplier | null>(null)
-  const { busy, error, run } = useAction()
+  const [adding, setAdding] = useState(false)
+  const { busy, error, setError, run } = useAction()
 
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
       await post<Supplier>('/suppliers', form)
       setForm({ name: '', phone: '', comment: '' })
+      setAdding(false)
       list.reload()
+      toast('Поставщик добавлен')
     })
+  }
+
+  const openAdd = () => {
+    setError(null)
+    setAdding(true)
   }
 
   const navigate = useNavigate()
@@ -28,35 +38,25 @@ export default function Suppliers() {
 
   return (
     <div>
-      <PageHeader title="Поставщики" />
-
-      <Card className="mb-4">
-        <form onSubmit={create} className="grid gap-3 sm:grid-cols-[1.5fr_1fr_2fr_auto] sm:items-end">
-          <Field label="Название" required>
-            <input id="supplier-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </Field>
-          <Field label="Телефон">
-            <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          </Field>
-          <Field label="Комментарий">
-            <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
-          </Field>
-          <Button type="submit" disabled={busy || notFilled.length > 0}>
+      <PageHeader
+        title="Поставщики"
+        back={<StockBackLink />}
+        actions={
+          <Button onClick={openAdd}>
+            <Icon name="plus" className="h-4 w-4" />
             Добавить
           </Button>
-        </form>
-        <div className="mt-2 flex flex-col gap-2">
-          <Missing items={notFilled} />
-          <ErrorBox error={error} />
-        </div>
-      </Card>
+        }
+      />
 
       <Card>
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty>Поставщиков пока нет. Их выбирают в приходной накладной.</Empty>
+          <Empty icon="incoming" action={<Button onClick={openAdd}>Добавить поставщика</Button>}>
+            Поставщиков пока нет. Их выбирают в приходной накладной.
+          </Empty>
         ) : (
           <Table head={['Название', 'Телефон', 'Комментарий', 'Статус', '']}>
             {list.data.map((s) => (
@@ -69,23 +69,45 @@ export default function Suppliers() {
                 <td className="px-2 py-2 whitespace-nowrap">{s.phone || '—'}</td>
                 <td className="px-2 py-2">{s.comment || '—'}</td>
                 <td className="px-2 py-2">{s.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
-                <td className="px-2 py-2 text-right">
-                  <Button
-                    variant="secondary"
-                    className="px-2 py-1 text-xs"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setEditing(s)
-                    }}
-                  >
-                    Изменить
-                  </Button>
+                <td className="px-2 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                  <RowMenu
+                    items={[
+                      { label: 'Открыть карточку', onClick: () => navigate(`/suppliers/${s.id}`) },
+                      { label: 'Изменить', onClick: () => setEditing(s) },
+                    ]}
+                  />
                 </td>
               </tr>
             ))}
           </Table>
         )}
       </Card>
+
+      {adding && (
+        <Modal title="Новый поставщик" onClose={() => setAdding(false)}>
+          <form onSubmit={create} className="flex flex-col gap-3">
+            <Field label="Название" required>
+              <input id="supplier-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </Field>
+            <Field label="Телефон">
+              <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            </Field>
+            <Field label="Комментарий">
+              <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
+            </Field>
+            <Missing items={notFilled} />
+            <ErrorBox error={error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setAdding(false)}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={busy || notFilled.length > 0}>
+                Добавить
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {editing && (
         <SupplierEditModal

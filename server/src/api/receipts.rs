@@ -692,6 +692,8 @@ struct ReceiptListItem {
     reversed: bool,
     user_name: String,
     created_at: DateTime<Utc>,
+    /// Взято в долг у поставщика по этой накладной (0 — оплачено сразу).
+    on_debt_tyiyn: i64,
 }
 
 async fn list_receipts(
@@ -703,7 +705,9 @@ async fn list_receipts(
         ReceiptListItem,
         r#"select r.id, r.number, s.name as "supplier_name?", r.supplier_doc, r.total_tyiyn, r.reversal_of,
                   exists (select 1 from receipts x where x.reversal_of = r.id) as "reversed!",
-                  u.full_name as user_name, r.created_at
+                  u.full_name as user_name, r.created_at,
+                  abs(coalesce((select sum(l.amount_tyiyn) from party_ledger l
+                                where l.doc_type = 'receipt' and l.doc_id = r.id), 0))::bigint as "on_debt_tyiyn!"
            from receipts r
            join users u on u.id = r.user_id
            left join suppliers s on s.id = r.supplier_id

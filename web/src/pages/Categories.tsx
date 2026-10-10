@@ -1,6 +1,8 @@
 // Справочник категорий товаров и их характеристик для фильтров (SPEC-02).
 import { useState, type FormEvent } from 'react'
-import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
+import { Icon } from '../components/icons'
+import { StockBackLink } from '../components/StockBackLink'
+import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -135,56 +137,48 @@ export default function Categories() {
   const list = useLoad(() => get<Category[]>('/categories'), [])
   const [form, setForm] = useState<{ name: string; kind: CategoryKind }>({ name: '', kind: 'other' })
   const [editing, setEditing] = useState<Category | null>(null)
-  const { busy, error, run } = useAction()
+  const [adding, setAdding] = useState(false)
+  const { busy, error, setError, run } = useAction()
 
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
       await post<Category>('/categories', { name: form.name, kind: form.kind })
       setForm({ name: '', kind: form.kind })
+      setAdding(false)
       list.reload()
+      toast('Категория добавлена')
     })
+  }
+
+  const openAdd = () => {
+    setError(null)
+    setAdding(true)
   }
 
   const notFilled = missingWithFocus([Boolean(form.name.trim()), 'название', '#category-name'])
 
   return (
     <div>
-      <PageHeader title="Категории" />
-
-      <Card className="mb-4">
-        <form onSubmit={create} className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
-          <Field label="Название" required>
-            <input id="category-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          </Field>
-          <Field label="Вид">
-            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as CategoryKind })}>
-              {KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {KIND_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Button type="submit" disabled={busy || notFilled.length > 0}>
+      <PageHeader
+        title="Категории"
+        back={<StockBackLink />}
+        actions={
+          <Button onClick={openAdd}>
+            <Icon name="plus" className="h-4 w-4" />
             Добавить
           </Button>
-        </form>
-        <p className="mt-2 text-xs text-slate-500">
-          Масло учитывается в литрах, остальное — в штуках. Стандартные характеристики добавляются автоматически.
-        </p>
-        <div className="mt-2 flex flex-col gap-2">
-          <Missing items={notFilled} />
-          <ErrorBox error={error} />
-        </div>
-      </Card>
+        }
+      />
 
       <Card>
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty>Категорий пока нет. Начните с одной: «Масла» или «Фильтры» — товар заводится внутри категории.</Empty>
+          <Empty icon="products" action={<Button onClick={openAdd}>Добавить категорию</Button>}>
+            Категорий пока нет. Начните с одной: «Масла» или «Фильтры» — товар заводится внутри категории.
+          </Empty>
         ) : (
           <Table head={['Название', 'Вид', 'Характеристик']}>
             {list.data.map((c) => (
@@ -197,6 +191,35 @@ export default function Categories() {
           </Table>
         )}
       </Card>
+
+      {adding && (
+        <Modal title="Новая категория" onClose={() => setAdding(false)}>
+          <form onSubmit={create} className="flex flex-col gap-3">
+            <Field label="Название" required>
+              <input id="category-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </Field>
+            <Field label="Вид" hint="Масло учитывается в литрах, остальное — в штуках. Стандартные характеристики добавляются автоматически.">
+              <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as CategoryKind })}>
+                {KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {KIND_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Missing items={notFilled} />
+            <ErrorBox error={error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setAdding(false)}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={busy || notFilled.length > 0}>
+                Добавить
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {editing && (
         <EditModal

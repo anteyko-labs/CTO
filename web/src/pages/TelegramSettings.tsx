@@ -1,6 +1,6 @@
 // Телеграм-бот владельца: привязка чата одноразовым кодом (SPEC-18, ADR-050).
 import { useState } from 'react'
-import { Button, Card, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
+import { Button, Card, CardTitle, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
 import { del, get, post, put } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -23,7 +23,7 @@ function LoyaltyRate() {
   return (
     <Card className="flex flex-wrap items-end gap-3 text-sm">
       <div className="min-w-0 flex-1 text-slate-700">
-        <div className="font-medium">Баллы клиентам</div>
+        <CardTitle>Баллы клиентам</CardTitle>
         Клиенты, подключившиеся к боту по номеру, получают {shown(st.data.rate_bp)} % от оплаченного деньгами баллами (1 балл = 1 сом). Списать
         баллы — на кассе «Услуги → Скидка баллами». Списанные баллы уменьшают чистую прибыль.
       </div>
@@ -67,19 +67,20 @@ export default function TelegramSettings() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Телеграм" />
+      <PageHeader title="Телеграм и баллы" />
       <ErrorBox error={st.error ?? act.error} />
       {!s ? (
         <Loading />
       ) : !s.enabled ? (
         <Card className="text-sm text-slate-700">
+          <CardTitle>Бот владельца</CardTitle>
           Бот выключен: на сервере не задан ключ бота. Создайте бота у @BotFather в Телеграме, ключ впишите в настройку сервера
           <code className="mx-1 rounded bg-slate-100 px-1">TELEGRAM_BOT_TOKEN</code>и перезапустите сервер.
         </Card>
       ) : s.linked ? (
         <Card className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <div>
-            <div className="font-medium">Телеграм привязан</div>
+            <CardTitle>Телеграм привязан</CardTitle>
             <div className="text-slate-600">
               С {s.linked_at ? formatDateTime(s.linked_at) : '—'} сюда приходят важные события: закрытие смены и сдача кассы, недостача, возвраты,
               сторно, смена цен, долги. Кнопки внизу чата: «Сегодня», «Смена», «Долги».
@@ -101,7 +102,8 @@ export default function TelegramSettings() {
         </Card>
       ) : (
         <Card className="flex flex-col gap-3 text-sm">
-          <div className="text-slate-700">
+          <CardTitle>Привязать Телеграм</CardTitle>
+          <div className="-mt-3 text-slate-700">
             Команды и уведомления — только для владельца; клиенты, поделившись номером, видят в боте свою масляную книжку. Получите код и отправьте его боту — после этого уведомления будут приходить в этот чат.
           </div>
           {code ? (

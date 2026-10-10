@@ -502,7 +502,7 @@ test('замена в сервисе у физлица: машина, обяза
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
   await page.getByRole('button', { name: '+ новая машина' }).click()
   await page.getByLabel('Госномер').fill(plate)
-  await page.getByRole('button', { name: 'Добавить' }).click()
+  await page.getByRole('button', { name: 'Добавить', exact: true }).click()
   const submit = page.getByRole('button', { name: 'Провести чек' })
   await expect(page.getByRole('status').filter({ hasText: 'пробег машины — спросите у клиента' })).toBeVisible()
   await expect(submit).toBeDisabled()

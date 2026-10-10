@@ -304,7 +304,7 @@ function Shell() {
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm">
                 <div className="font-semibold">{user.full_name}</div>
-                <div className="text-xs text-slate-500">{roleLabel}</div>
+                {user.full_name !== roleLabel && <div className="text-xs text-slate-500">{roleLabel}</div>}
               </div>
               <button type="button" aria-label="Закрыть" className="rounded-md p-2 text-slate-500 hover:bg-slate-100" onClick={() => setOpen(false)}>
                 <Icon name="close" />

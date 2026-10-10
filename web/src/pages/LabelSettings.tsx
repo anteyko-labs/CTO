@@ -1,8 +1,8 @@
 // Настройка размера и содержимого этикеток с предпросмотром (SPEC-02, ADR-010).
 import { useState } from 'react'
 import { labelsHtml } from '../components/labels'
-import { Button, Card, Checkbox, ErrorBox, Field, Loading, PageHeader } from '../components/ui'
-import { get, put } from '../lib/api'
+import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader } from '../components/ui'
+import { get, put, qs } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
 import type { LabelSettings, Product } from '../lib/types'
 
@@ -66,13 +66,25 @@ function toSettings(f: Form): LabelSettings | null {
   return { width_mm, height_mm, show_name: f.show_name, show_price: f.show_price, show_article: f.show_article }
 }
 
+/** Для предпросмотра берём настоящий товар со штрихкодом и ценой; нет товаров — образец. */
+async function previewProduct(): Promise<Product> {
+  try {
+    const list = await get<Product[]>(`/products${qs({ limit: 20 })}`)
+    return list.find((p) => p.barcodes.length > 0 && p.sale_price_tyiyn > 0) ?? list[0] ?? SAMPLE
+  } catch {
+    return SAMPLE
+  }
+}
+
 function Editor({ initial }: { initial: LabelSettings }) {
   const [form, setForm] = useState<Form>(() => toForm(initial))
   const [saved, setSaved] = useState(false)
   const { busy, error, run } = useAction()
   const settings = toSettings(form)
+  const sample = useLoad(previewProduct, [])
+  const product = sample.data ?? SAMPLE
 
-  const preview = settings ? labelsHtml([{ product: SAMPLE, copies: 1 }], settings) : null
+  const preview = settings ? labelsHtml([{ product, copies: 1 }], settings) : null
 
   const update = (patchForm: Partial<Form>) => {
     setForm((f) => ({ ...f, ...patchForm }))
@@ -137,7 +149,8 @@ function Editor({ initial }: { initial: LabelSettings }) {
       </Card>
 
       <Card>
-        <div className="mb-2 text-sm font-medium text-slate-700">Предпросмотр</div>
+        <CardTitle>Предпросмотр</CardTitle>
+        <div className="mb-2 text-xs text-slate-500">{product === SAMPLE ? 'Образец: товаров в справочнике пока нет' : `На примере товара «${product.name}»`}</div>
         {settings && preview ? (
           <div className="overflow-x-auto">
             <iframe

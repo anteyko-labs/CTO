@@ -1,6 +1,7 @@
 // Пользователи со входом: владельцы и администраторы; экран только для владельца (SPEC-01).
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table } from '../components/ui'
+import { Icon } from '../components/icons'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -78,8 +79,10 @@ const EMPTY = { login: '', full_name: '', password: '', role: 'admin' as Role }
 export default function Users() {
   const list = useLoad(() => get<UserRow[]>('/users'), [])
   const [form, setForm] = useState(EMPTY)
+  const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<UserRow | null>(null)
   const { busy, error, run } = useAction()
+  const toggle = useAction()
 
   const create = (e: FormEvent) => {
     e.preventDefault()
@@ -87,9 +90,17 @@ export default function Users() {
       if ([...form.password].length < MIN_PASSWORD) throw new Error(`Пароль не короче ${MIN_PASSWORD} символов`)
       await post<UserRow>('/users', form)
       setForm(EMPTY)
+      setAdding(false)
       list.reload()
     })
   }
+
+  const setActive = (u: UserRow, active: boolean) =>
+    void toggle.run(async () => {
+      await patch<UserRow>(`/users/${u.id}`, { full_name: u.full_name, role: u.role, active })
+      toast(active ? 'Вход включён' : 'Вход отключён')
+      list.reload()
+    })
 
   const notFilled = missingWithFocus(
     [Boolean(form.login.trim()), 'логин', '#user-login'],
@@ -99,48 +110,24 @@ export default function Users() {
 
   return (
     <div>
-      <PageHeader title="Пользователи" />
-      {/* Чего не хватает для создания — рядом с кнопкой (docs/tier-3/ui-rules.md). */}
-
-      <Card className="mb-4">
-        <form onSubmit={create} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1.5fr_1fr_1fr_auto] lg:items-end">
-          <Field label="Логин" required>
-            <input id="user-login" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
-          </Field>
-          <Field label="Имя" required>
-            <input id="user-name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
-          </Field>
-          <Field label="Пароль" required>
-            <input
-              id="user-password"
-              type="password"
-              autoComplete="new-password"
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-            />
-          </Field>
-          <Field label="Роль">
-            <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
-          </Field>
-          <Button type="submit" disabled={busy || notFilled.length > 0}>
-            Добавить
+      <PageHeader
+        title="Пользователи"
+        subtitle="Кто входит в программу: владельцы и администраторы"
+        actions={
+          <Button onClick={() => setAdding(true)}>
+            <Icon name="plus" /> Добавить
           </Button>
-        </form>
-        <p className="mt-2 text-xs text-slate-500">Пароль — не короче {MIN_PASSWORD} символов.</p>
-        <div className="mt-2 flex flex-col gap-2">
-          <Missing items={notFilled} />
-          <ErrorBox error={error} />
-        </div>
-      </Card>
+        }
+      />
 
       <Card>
-        <ErrorBox error={list.error} />
+        <ErrorBox error={list.error ?? toggle.error} />
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
           <Empty>Пользователей нет</Empty>
         ) : (
-          <Table head={['Логин', 'Имя', 'Роль', 'Статус']}>
+          <Table head={['Логин', 'Имя', 'Роль', 'Статус', '']}>
             {list.data.map((u) => (
               <tr
                 key={u.id}
@@ -149,13 +136,61 @@ export default function Users() {
               >
                 <td className="px-2 py-2 font-medium">{u.login}</td>
                 <td className="px-2 py-2">{u.full_name}</td>
-                <td className="px-2 py-2">{ROLE_LABELS[u.role]}</td>
+                <td className="px-2 py-2">
+                  <Badge tone={u.role === 'owner' ? 'amber' : 'sky'}>{ROLE_LABELS[u.role].toLowerCase()}</Badge>
+                </td>
                 <td className="px-2 py-2">{u.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
+                <td className="overflow-visible! px-2 py-1 text-right" onClick={(ev) => ev.stopPropagation()}>
+                  <RowMenu
+                    items={[
+                      { label: 'Изменить или сменить пароль', onClick: () => setEditing(u) },
+                      u.active
+                        ? { label: 'Отключить вход', danger: true, onClick: () => setActive(u, false) }
+                        : { label: 'Включить вход', onClick: () => setActive(u, true) },
+                    ]}
+                  />
+                </td>
               </tr>
             ))}
           </Table>
         )}
       </Card>
+
+      {adding && (
+        <Modal title="Новый пользователь" onClose={() => setAdding(false)}>
+          {/* Чего не хватает для создания — рядом с кнопкой (docs/tier-3/ui-rules.md). */}
+          <form onSubmit={create} className="flex flex-col gap-3">
+            <Field label="Логин" required>
+              <input id="user-login" autoFocus autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
+            </Field>
+            <Field label="Имя" required>
+              <input id="user-name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+            </Field>
+            <Field label="Пароль" required hint={`Не короче ${MIN_PASSWORD} символов`}>
+              <input
+                id="user-password"
+                type="password"
+                autoComplete="new-password"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+              />
+            </Field>
+            <Field label="Роль">
+              <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
+            </Field>
+            <ErrorBox error={error} />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Missing items={notFilled} className="mr-auto" />
+              <Button variant="secondary" onClick={() => setAdding(false)}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={busy || notFilled.length > 0}>
+                Добавить
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {editing && (
         <EditModal

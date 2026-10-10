@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select r.id, r.number, s.name as \"supplier_name?\", r.supplier_doc, r.total_tyiyn, r.reversal_of,\n                  exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\",\n                  u.full_name as user_name, r.created_at\n           from receipts r\n           join users u on u.id = r.user_id\n           left join suppliers s on s.id = r.supplier_id\n           where r.branch_id = $1\n             and ($2::date is null or r.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::uuid is null or r.supplier_id = $4)\n           order by r.created_at desc\n           limit 500",
+  "query": "select r.id, r.number, s.name as \"supplier_name?\", r.supplier_doc, r.total_tyiyn, r.reversal_of,\n                  exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\",\n                  u.full_name as user_name, r.created_at,\n                  abs(coalesce((select sum(l.amount_tyiyn) from party_ledger l\n                                where l.doc_type = 'receipt' and l.doc_id = r.id), 0))::bigint as \"on_debt_tyiyn!\"\n           from receipts r\n           join users u on u.id = r.user_id\n           left join suppliers s on s.id = r.supplier_id\n           where r.branch_id = $1\n             and ($2::date is null or r.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::uuid is null or r.supplier_id = $4)\n           order by r.created_at desc\n           limit 500",
   "describe": {
     "columns": [
       {
@@ -47,6 +47,11 @@
         "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "on_debt_tyiyn!",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -66,8 +71,9 @@
       true,
       null,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "d7442def66e2a5c70b148dfa6163714368b5db95e47fea013a2e94e36b306643"
+  "hash": "d69c92e5be4b450be91f563e720ab55e76c785d83297e806ce3123186af7c1d3"
 }

@@ -3,10 +3,10 @@ import { useMemo, useState } from 'react'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu, Table } from '../components/ui'
 import { get, patch, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatSom } from '../lib/format'
+import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Category, Product } from '../lib/types'
 
@@ -216,7 +216,7 @@ export default function Products() {
                       onChange={(e) => toggle(p, e.target.checked)}
                     />
                   </td>
-                  <td className="px-2 py-2">
+                  <td className="px-2 py-2 md:min-w-[18rem]">
                     <div className="font-medium">{p.name}</div>
                     <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
                       {p.brand}
@@ -225,10 +225,12 @@ export default function Products() {
                     </div>
                   </td>
                   <td className="px-2 py-2 whitespace-nowrap">{p.article || '—'}</td>
-                  <td className="px-2 py-2">{categoryName(p.category_id)}</td>
+                  <td className="px-2 py-2 text-slate-600 md:max-w-[10rem] md:truncate" title={categoryName(p.category_id)}>
+                    {categoryName(p.category_id)}
+                  </td>
                   <td className="px-2 py-2 whitespace-nowrap">
                     {formatSom(p.sale_price_tyiyn)}
-                    {oil && <span className="text-xs text-slate-500"> за канистру</span>}
+                    {oil && p.container_ml != null && <span className="text-xs text-slate-500"> за {formatLiters(p.container_ml)}</span>}
                     {oil && p.pour_price_per_l_tyiyn != null && (
                       <div className="text-xs text-slate-500">розлив {formatSom(p.pour_price_per_l_tyiyn)} за л</div>
                     )}
@@ -237,22 +239,30 @@ export default function Products() {
                   {owner && (
                     <td className="px-2 py-2 whitespace-nowrap">
                       {p.avg_cost_tyiyn != null ? formatSom(p.avg_cost_tyiyn) : '—'}
-                      {oil && p.avg_cost_tyiyn != null && <span className="text-xs text-slate-500"> за канистру</span>}
+                      {oil && p.container_ml != null && p.avg_cost_tyiyn != null && (
+                        <span className="text-xs text-slate-500"> за {formatLiters(p.container_ml)}</span>
+                      )}
                     </td>
                   )}
                   <td className="px-2 py-2 text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button
-                      variant="ghost"
-                      className="px-2 py-1 text-xs"
-                      disabled={busy}
-                      onClick={() => {
-                        if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
-                          void setArchivedFlag(p, !p.archived)
-                        }
-                      }}
-                    >
-                      {p.archived ? 'Вернуть' : 'В архив'}
-                    </Button>
+                    <RowMenu
+                      items={[
+                        { label: 'Открыть карточку', onClick: () => setEditing(p) },
+                        {
+                          label: selected[p.id] ? 'Убрать из этикеток' : 'Печать этикетки',
+                          onClick: () => toggle(p, !selected[p.id]),
+                        },
+                        {
+                          label: p.archived ? 'Вернуть из архива' : 'В архив',
+                          danger: !p.archived,
+                          onClick: () => {
+                            if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
+                              void setArchivedFlag(p, !p.archived)
+                            }
+                          },
+                        },
+                      ]}
+                    />
                   </td>
                 </tr>
               )

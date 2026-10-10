@@ -163,7 +163,7 @@ export default function ReceiptNew() {
   const activeSuppliers = (suppliers.data ?? []).filter((s) => s.active)
 
   return (
-    <div>
+    <div className={lines.length > 0 ? 'pb-20 md:pb-0' : ''}>
       <PageHeader
         title="Новый приход"
         actions={
@@ -308,23 +308,40 @@ export default function ReceiptNew() {
               })}
             </Table>
           )}
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-3">
-            <div className="flex flex-wrap items-center gap-4">
-              <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
-              <Checkbox label="Остались должны поставщику" checked={onDebt} onChange={setOnDebt} />
+          <div className="mt-3 flex flex-col gap-3 border-t border-slate-200 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-4">
+                <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
+                <Checkbox label="Остались должны поставщику" checked={onDebt} onChange={setOnDebt} />
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-4">
+                <div className="text-lg font-semibold">
+                  Итого: <span className="tabular-nums">{total === null ? '—' : formatSom(total)}</span>
+                </div>
+                <div className="hidden md:block">
+                  <Button disabled={save.busy || missing.length > 0} onClick={submit}>
+                    Провести приход
+                  </Button>
+                </div>
+              </div>
             </div>
-            <div className="text-lg font-semibold">Итого: {total === null ? '—' : formatSom(total)}</div>
+            <ErrorBox error={save.error ?? labels.error} />
+            <Missing items={missing} className="md:self-end" />
           </div>
         </Card>
+      </div>
 
-        <ErrorBox error={save.error ?? labels.error} />
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <Missing items={missing} />
-          <Button disabled={save.busy || missing.length > 0} onClick={submit}>
+      {lines.length > 0 && (
+        <div className="no-print fixed inset-x-0 bottom-[52px] z-20 flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs text-slate-500">{onDebt ? 'Итого · в долг поставщику' : 'Итого'}</div>
+            <div className="truncate text-xl font-bold tabular-nums">{total === null ? '—' : formatSom(total)}</div>
+          </div>
+          <Button className="shrink-0 px-6 py-3 text-base" disabled={save.busy || missing.length > 0} onClick={submit}>
             Провести приход
           </Button>
         </div>
-      </div>
+      )}
 
       {unknownCode !== null && (
         <UnknownCodeModal

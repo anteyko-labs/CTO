@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { PayrollMonth } from '../components/PayrollMonth'
-import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
+import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
@@ -83,6 +83,15 @@ export default function Payroll() {
       toast('Оклад начислен')
     })
 
+  const openSalary = (r: PayrollRow) => {
+    setSalary(r)
+    setForm({ sum: '', comment: '', advance: false })
+  }
+  const openExtra = (r: PayrollRow, kind: 'bonus' | 'penalty') => {
+    setExtra({ row: r, kind })
+    setForm({ sum: '', comment: '', advance: false })
+  }
+
   const list = rows.data ?? []
   const toPay = list.reduce((acc, r) => acc + Math.max(0, r.balance_tyiyn), 0)
 
@@ -116,7 +125,7 @@ export default function Payroll() {
         </Field>
         <div className="ml-auto text-right">
           <div className="text-xs text-slate-500">К выплате всего</div>
-          <div className="text-2xl font-bold">{formatSom(toPay)}</div>
+          <Money value={toPay} className="text-2xl font-bold" />
         </div>
       </Card>
 
@@ -127,51 +136,61 @@ export default function Payroll() {
         ) : list.length === 0 ? (
           <Empty>За этот день никто ничего не заработал</Empty>
         ) : (
-          <Table head={['Сотрудник', 'Долг на начало', 'За замены', 'Процент', 'Прочее', 'Выплачено', 'К выплате', '']}>
-            {list.map((r) => (
-              <tr key={r.employee_id}>
-                <td className="px-2 py-2 font-medium">{r.full_name}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(r.opening_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(r.service_fee_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">
-                  {formatSom(r.percent_tyiyn)}
-                  {owner && r.base_tyiyn !== null && r.base_tyiyn !== 0 && (
-                    <div className="text-xs text-slate-500">с валовой {formatSom(r.base_tyiyn)}</div>
-                  )}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(r.other_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(r.paid_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2 font-semibold">{formatSom(r.balance_tyiyn)}</td>
-                <td className="px-2 py-2 text-right">
-                  <div className="flex flex-wrap justify-end gap-1">
-                    {owner && (
-                      <>
-                        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => { setSalary(r); setForm({ sum: '', comment: '', advance: false }) }}>
-                          Оклад
-                        </Button>
-                        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => { setExtra({ row: r, kind: 'bonus' }); setForm({ sum: '', comment: '', advance: false }) }}>
-                          Бонус
-                        </Button>
-                        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => { setExtra({ row: r, kind: 'penalty' }); setForm({ sum: '', comment: '', advance: false }) }}>
-                          Удержать
-                        </Button>
-                      </>
+          // Суммы — по правому краю ровными цифрами, ноль — прочерком.
+          <div className="[&_th:not(:first-child)]:text-right">
+            <Table head={['Сотрудник', 'Не выплачено ранее', 'За замены', 'Процент', 'Прочее', 'Выплачено', 'К выплате', '']}>
+              {list.map((r) => (
+                <tr key={r.employee_id}>
+                  <td className="px-2 py-2 font-medium">{r.full_name}</td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.opening_tyiyn} tone="negative" zero="—" />
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.service_fee_tyiyn} zero="—" />
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.percent_tyiyn} zero="—" />
+                    {owner && r.base_tyiyn !== null && r.base_tyiyn !== 0 && (
+                      <div className="text-xs whitespace-nowrap text-slate-500">с валовой {formatSom(r.base_tyiyn)}</div>
                     )}
-                    <Button
-                      className="px-2 py-1 text-xs"
-                      disabled={r.balance_tyiyn <= 0 && !owner}
-                      onClick={() => {
-                        setPaying(r)
-                        setForm({ sum: somInput(Math.max(0, r.balance_tyiyn)), comment: '', advance: false })
-                      }}
-                    >
-                      Выплатить
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </Table>
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.other_tyiyn} tone="negative" zero="—" />
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.paid_tyiyn} zero="—" />
+                  </td>
+                  <td className="px-2 py-2 font-semibold md:text-right">
+                    <Money value={r.balance_tyiyn} tone="negative" zero="—" />
+                  </td>
+                  <td className="overflow-visible! px-2 py-2 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <Button
+                        className="px-3 py-1 text-xs"
+                        disabled={r.balance_tyiyn <= 0 && !owner}
+                        onClick={() => {
+                          setPaying(r)
+                          setForm({ sum: somInput(Math.max(0, r.balance_tyiyn)), comment: '', advance: false })
+                        }}
+                      >
+                        Выплатить
+                      </Button>
+                      {owner && (
+                        <RowMenu
+                          label="Начисления сотруднику"
+                          items={[
+                            { label: 'Оклад', onClick: () => openSalary(r) },
+                            { label: 'Бонус', onClick: () => openExtra(r, 'bonus') },
+                            { label: 'Удержать', onClick: () => openExtra(r, 'penalty'), danger: true },
+                          ]}
+                        />
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          </div>
         )}
       </Card>
 

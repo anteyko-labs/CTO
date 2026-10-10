@@ -1,11 +1,11 @@
 // Карточка клиента: работники, машины, покупки, долг и погашения (SPEC-10).
-import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useRef, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { OilBookList } from '../components/OilBook'
-import { ReconciliationButton } from '../components/ReconciliationButton'
+import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
 import { RepaymentModal } from '../components/RepaymentModal'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatSom, parseSom } from '../lib/format'
@@ -18,6 +18,43 @@ interface CabinetState {
   has_account: boolean
   must_change: boolean
   last_login_at: string | null
+}
+
+/** Адрес кабинета с кнопкой «Копировать»: без доступа к буферу — выделяет текст для ручного копирования. */
+function CopyAddress({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false)
+  const field = useRef<HTMLInputElement>(null)
+  const copy = async () => {
+    const input = field.current
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      toast('Адрес скопирован')
+    } catch {
+      // Без HTTPS буфер обмена недоступен: выделяем адрес и пробуем старый способ копирования.
+      input?.focus()
+      input?.select()
+      if (input && document.execCommand('copy')) {
+        setCopied(true)
+        toast('Адрес скопирован')
+      } else toast('Скопируйте выделенный адрес', 'error')
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <input
+        ref={field}
+        readOnly
+        aria-label="Адрес кабинета"
+        className="w-full max-w-xs bg-slate-50 font-mono text-xs sm:w-72"
+        value={url}
+        onFocus={(e) => e.target.select()}
+      />
+      <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => void copy()}>
+        {copied ? 'Скопировано' : 'Копировать'}
+      </Button>
+    </div>
+  )
 }
 
 /** Кабинет юрлица: логин — ИНН, пароль сбрасывает только владелец (ADR-049). */
@@ -35,10 +72,11 @@ function CabinetBox({ partyId }: { partyId: string }) {
   const url = `${window.location.origin}/cabinet`
   return (
     <Card className="flex flex-wrap items-center justify-between gap-3 text-sm">
-      <div>
+      <div className="flex min-w-0 flex-col gap-1">
         <div className="font-medium">Кабинет клиента</div>
+        <CopyAddress url={url} />
         <div className="text-slate-600">
-          Адрес {url} · логин {d.login} ·{' '}
+          Логин {d.login} ·{' '}
           {!d.has_account
             ? 'ещё не входили, начальный пароль avtodom2026'
             : d.must_change
@@ -64,6 +102,32 @@ function CabinetBox({ partyId }: { partyId: string }) {
       </Button>
     </Card>
   )
+}
+
+interface HistoryRow {
+  item: PartyTimelineItem
+  /** Сколько из покупки взято в долг (запись долга по тому же чеку слита в строку покупки). */
+  debt: number | null
+}
+
+/** «Покупка» и «Взял в долг» по одному чеку — одной строкой с отметкой «в долг». */
+function mergeDebts(timeline: PartyTimelineItem[]): HistoryRow[] {
+  const debtBySale = new Map<string, PartyTimelineItem>()
+  for (const t of timeline) if (t.kind === 'debt' && t.amount_tyiyn > 0 && t.doc_id && !t.reversible) debtBySale.set(t.doc_id, t)
+  const merged = new Set<PartyTimelineItem>()
+  const rows: HistoryRow[] = []
+  for (const t of timeline) {
+    if (t.kind === 'sale' && t.doc_id) {
+      const d = debtBySale.get(t.doc_id)
+      if (d && d.amount_tyiyn <= t.amount_tyiyn) {
+        merged.add(d)
+        rows.push({ item: t, debt: d.amount_tyiyn })
+        continue
+      }
+    }
+    rows.push({ item: t, debt: null })
+  }
+  return rows.filter((r) => !merged.has(r.item))
 }
 
 const KIND_TONE: Record<PartyTimelineItem['kind'], 'slate' | 'green' | 'amber' | 'rose' | 'sky'> = {
@@ -189,7 +253,6 @@ function BonusBox({ partyId }: { partyId: string }) {
 
 export default function ClientCard() {
   const { id = '' } = useParams()
-  const navigate = useNavigate()
   const owner = useUser().role === 'owner'
   const [money, setMoney] = useState<null | 'repay' | 'adjust'>(null)
   const [reversing, setReversing] = useState<{ item: PartyTimelineItem; comment: string; opId: string } | null>(null)
@@ -197,6 +260,7 @@ export default function ClientCard() {
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const [limits, setLimits] = useState<{ limit: string; days: string } | null>(null)
   const [value, setValue] = useState('')
+  const [reconciling, setReconciling] = useState(false)
   const row = useAction()
   const card = useLoad(() => get<PartyCard>(`/parties/${id}/card`), [id])
 
@@ -233,26 +297,49 @@ export default function ClientCard() {
     void row.run(async () => {
       await patch<Party>(`/parties/${party.id}`, { active: !party.active })
       card.reload()
+      toast(party.active ? 'Клиент отключён' : 'Клиент включён')
     })
+
+  // На телефоне в шапке остаётся «Погасить», остальное — в меню «⋯».
+  const toggleItem: MenuItem = party.active
+    ? { label: 'Отключить клиента', danger: true, onClick: toggleActive, disabled: row.busy }
+    : { label: 'Включить клиента', onClick: toggleActive, disabled: row.busy }
+  const phoneItems: MenuItem[] = [
+    { label: 'Акт сверки', onClick: () => setReconciling(true) },
+    { label: 'Правка баланса', onClick: () => setMoney('adjust'), disabled: !owner },
+    toggleItem,
+  ]
+  const history = mergeDebts(timeline)
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
         title={party.name}
+        back={
+          <Link className="text-sky-700 hover:underline" to="/clients">
+            ← Клиенты
+          </Link>
+        }
+        subtitle={!party.active && <Badge tone="rose">клиент отключён</Badge>}
         actions={
           <>
-            <Button variant="secondary" onClick={() => navigate('/clients')}>
-              К списку
-            </Button>
-            <ReconciliationButton partyId={party.id} />
-            {owner && (
-              <Button variant="secondary" onClick={() => setMoney('adjust')}>
-                Правка баланса
-              </Button>
-            )}
+            <span className="hidden gap-2 md:flex">
+              <ReconciliationButton partyId={party.id} />
+              {owner && (
+                <Button variant="secondary" onClick={() => setMoney('adjust')}>
+                  Правка баланса
+                </Button>
+              )}
+            </span>
             <Button disabled={party.balance_tyiyn <= 0} onClick={() => setMoney('repay')}>
               Погасить
             </Button>
+            <span className="md:hidden">
+              <RowMenu items={phoneItems} />
+            </span>
+            <span className="hidden md:inline-block">
+              <RowMenu items={[toggleItem]} />
+            </span>
           </>
         }
       />
@@ -337,84 +424,75 @@ export default function ClientCard() {
               </button>
             ))}
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          {!party.active && <Badge tone="rose">отключён</Badge>}
-          <Button variant="secondary" className="px-2 py-1 text-xs" disabled={row.busy} onClick={toggleActive}>
-            {party.active ? 'Отключить' : 'Включить'}
-          </Button>
-        </div>
         {party.comment && <div className="w-full text-slate-600">{party.comment}</div>}
       </Card>
 
       {party.kind === 'company' && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <Card>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">Работники</h2>
-              <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setAdding('contact')}>
+        <Card>
+          <CardTitle
+            actions={
+              <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('contact')}>
                 + работник
               </Button>
-            </div>
-            {contacts.length === 0 ? (
-              <Empty>Никто не записан. Добавьте того, кто приезжает за товаром.</Empty>
-            ) : (
-              <ul className="flex flex-col gap-1 text-sm">
-                {contacts.map((c) => (
-                  <li key={c.id} className="flex justify-between gap-2 border-b border-slate-100 py-1 last:border-0">
-                    <span className={c.active ? '' : 'text-slate-400'}>{c.full_name}</span>
-                    <span className="text-slate-500">{[c.position, c.phone, c.inn].filter(Boolean).join(' · ') || '—'}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-          <Card>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">Машины</h2>
-              <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setAdding('vehicle')}>
-                + машина
-              </Button>
-            </div>
-            {vehicles.length === 0 ? (
-              <Empty>Машин нет. Их можно добавить и прямо в чеке.</Empty>
-            ) : (
-              <ul className="flex flex-col gap-1 text-sm">
-                {vehicles.map((v) => (
-                  <li key={v.id} className="flex justify-between gap-2 border-b border-slate-100 py-1 last:border-0">
-                    <span className={v.active ? 'font-medium' : 'text-slate-400'}>{v.plate}</span>
-                    <span className="text-slate-500">{[v.brand, v.model].filter(Boolean).join(' ') || '—'}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
+            }
+          >
+            Работники
+          </CardTitle>
+          {contacts.length === 0 ? (
+            <Empty>Никто не записан. Добавьте того, кто приезжает за товаром.</Empty>
+          ) : (
+            <ul className="flex flex-col gap-1 text-sm">
+              {contacts.map((c) => (
+                <li key={c.id} className="flex justify-between gap-2 border-b border-slate-100 py-1 last:border-0">
+                  <span className={c.active ? '' : 'text-slate-400'}>{c.full_name}</span>
+                  <span className="text-slate-500">{[c.position, c.phone, c.inn].filter(Boolean).join(' · ') || '—'}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
       )}
 
       {owner && party.kind === 'company' && party.role === 'customer' && <CabinetBox partyId={party.id} />}
 
       {party.role === 'customer' && <BonusBox partyId={party.id} />}
 
-      <div>
-        <h2 className="mb-2 font-semibold">Масляная книжка</h2>
-        <OilBookList path={`/parties/${party.id}/oil-book`} editable />
-      </div>
+      {/* Машины клиента и их масляная книжка — одним блоком: у каждой машины свои замены. */}
+      <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <CardTitle
+          actions={
+            <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('vehicle')}>
+              + машина
+            </Button>
+          }
+        >
+          Машины и масляная книжка
+        </CardTitle>
+        <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable />
+      </section>
 
       <Card>
-        <h2 className="mb-3 font-semibold">История</h2>
+        <CardTitle>История</CardTitle>
         <ErrorBox error={card.error ?? row.error} />
         {timeline.length === 0 ? (
           <Empty>Пока ничего не было</Empty>
         ) : (
           <Table head={['Когда', 'Что', 'Сумма', 'Комментарий', '']}>
-            {timeline.map((t, i) => (
+            {history.map(({ item: t, debt }, i) => (
               <tr key={`${t.at}-${i}`} className="hover:bg-slate-50">
                 <td className="whitespace-nowrap px-2 py-2">{formatDateTime(t.at)}</td>
                 <td className="px-2 py-2">
                   <Badge tone={KIND_TONE[t.kind]}>{t.title}</Badge>
-                  {t.number !== null && <span className="ml-2 text-slate-500">№ {t.number}</span>}
+                  {debt !== null && (
+                    <span className="ml-1">
+                      <Badge tone="amber">{debt === t.amount_tyiyn ? 'в долг' : `в долг ${formatSom(debt)}`}</Badge>
+                    </span>
+                  )}
+                  {t.number !== null && <span className="ml-2 whitespace-nowrap text-slate-500">№ {t.number}</span>}
                 </td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(t.amount_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">
+                  <Money value={t.amount_tyiyn} />
+                </td>
                 <td className="px-2 py-2 text-slate-600">{t.comment || '—'}</td>
                 <td className="px-2 py-2 text-right">
                   {(t.kind === 'sale' || t.kind === 'sale_return') && t.doc_id && (
@@ -466,6 +544,7 @@ export default function ClientCard() {
           </div>
         </Modal>
       )}
+      {reconciling && <ReconciliationModal partyId={party.id} onClose={() => setReconciling(false)} />}
       {money === 'repay' && (
         <RepaymentModal
           party={party}

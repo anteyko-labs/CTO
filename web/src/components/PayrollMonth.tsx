@@ -4,7 +4,7 @@ import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Table, toast } from './ui'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, Table, toast } from './ui'
 
 interface MonthRow {
   employee_id: string
@@ -41,7 +41,8 @@ function shiftMonth(iso: string, delta: number): string {
   return `${Math.trunc(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}-01`
 }
 
-const cell = (v: number) => (v ? formatSom(v) : '—')
+/** Сумма в ячейке: ровные цифры, ноль — прочерком, минус — красным. */
+const cell = (v: number) => <Money value={v} tone="negative" zero="—" />
 
 export function PayrollMonth() {
   const owner = useUser().role === 'owner'
@@ -78,7 +79,7 @@ export function PayrollMonth() {
           →
         </Button>
         <div className="text-xs text-slate-500">
-          Остаток на конец — сколько ещё должны сотруднику; с минусом — выдано больше заработанного.
+          «На конец» — сколько ещё должны сотруднику; с минусом — выдано больше заработанного.
         </div>
       </Card>
       <ErrorBox error={data.error ?? act.error} />
@@ -87,28 +88,30 @@ export function PayrollMonth() {
       ) : rows.length === 0 ? (
         <Empty>В этом месяце начислений не было</Empty>
       ) : (
-        <Card className="p-0">
+        <Card className="p-0 [&_th:not(:first-child)]:text-right">
           <Table head={['Сотрудник', 'На начало', 'Оклад', '% с прибыли', 'Мастеру', 'За смену', 'Бонус', 'Удержано', 'Начислено', 'Выплачено', 'На конец', '']}>
             {rows.map((r) => (
               <tr key={r.employee_id}>
-                <td className="px-2 py-2 font-medium">
+                <td className="min-w-36 px-2 py-2 font-medium">
                   {r.full_name}
                   <div className="text-xs font-normal text-slate-500">
                     {[r.is_cashier && 'кассир', r.is_master && 'мастер'].filter(Boolean).join(', ')}
                   </div>
                 </td>
-                <td className="whitespace-nowrap px-2 py-2">{cell(r.opening_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">
+                <td className="px-2 py-2 md:text-right">{cell(r.opening_tyiyn)}</td>
+                <td className="px-2 py-2 whitespace-nowrap md:text-right">
                   {r.salary_done ? cell(r.salary_tyiyn) : r.salary_rule_tyiyn ? <Badge tone="amber">не начислен</Badge> : '—'}
                 </td>
-                <td className="whitespace-nowrap px-2 py-2">{cell(r.percent_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{cell(r.service_fee_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{cell(r.shift_fee_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{cell(r.bonus_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2 text-rose-700">{cell(r.penalty_tyiyn + r.shortage_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2 font-medium">{cell(r.accrued_tyiyn)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{cell(r.paid_tyiyn)}</td>
-                <td className={`whitespace-nowrap px-2 py-2 font-semibold ${r.closing_tyiyn < 0 ? 'text-rose-700' : ''}`}>{formatSom(r.closing_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.percent_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.service_fee_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.shift_fee_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.bonus_tyiyn)}</td>
+                <td className="px-2 py-2 text-rose-700 md:text-right">{cell(r.penalty_tyiyn + r.shortage_tyiyn)}</td>
+                <td className="px-2 py-2 font-medium md:text-right">{cell(r.accrued_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.paid_tyiyn)}</td>
+                <td className="px-2 py-2 font-semibold md:text-right">
+                  <Money value={r.closing_tyiyn} tone="negative" />
+                </td>
                 <td className="px-2 py-2 text-right">
                   {owner && !r.salary_done && month <= current && (
                     <Button
@@ -124,16 +127,18 @@ export function PayrollMonth() {
             ))}
             <tr className="bg-slate-50 font-semibold">
               <td className="px-2 py-2">Итого</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('opening_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('salary_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('percent_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('service_fee_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('shift_fee_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('bonus_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('penalty_tyiyn') + total('shortage_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('accrued_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{cell(total('paid_tyiyn'))}</td>
-              <td className="whitespace-nowrap px-2 py-2">{formatSom(total('closing_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('opening_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('salary_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('percent_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('service_fee_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('shift_fee_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('bonus_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('penalty_tyiyn') + total('shortage_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('accrued_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('paid_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">
+                <Money value={total('closing_tyiyn')} tone="negative" />
+              </td>
               <td />
             </tr>
           </Table>

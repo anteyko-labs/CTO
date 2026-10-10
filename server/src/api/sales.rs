@@ -1375,6 +1375,7 @@ struct SaleListItem {
     cashier_name: String,
     master_name: Option<String>,
     party_name: Option<String>,
+    party_phone: Option<String>,
     /// Сколько из этого чека ушло в долг.
     debt_tyiyn: i64,
     total_tyiyn: i64,
@@ -1417,7 +1418,7 @@ async fn list_sales(
     let sales = sqlx::query_as!(
         SaleListItem,
         r#"select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as "master_name?",
-                  pt.name as "party_name?",
+                  pt.name as "party_name?", nullif(pt.phone, '') as "party_phone?",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
                             where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt_tyiyn!",
                   s.total_tyiyn, s.reversal_of, s.created_at

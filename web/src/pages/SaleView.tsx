@@ -169,6 +169,11 @@ export default function SaleView() {
       <ErrorBox error={docAct.error} />
       <PageHeader
         title={`${sale.kind === 'return' ? 'Возврат' : 'Чек'} № ${sale.number}`}
+        back={
+          <Link to="/sales" className="text-sky-700 hover:underline">
+            ← К чекам
+          </Link>
+        }
         actions={
           <>
             <Button variant="secondary" onClick={() => printSale(sale)}>
@@ -180,7 +185,7 @@ export default function SaleView() {
               </Button>
             )}
             {sale.kind === 'sale' && !fullyReturned && (
-              <Button variant="danger" onClick={() => setReturning(true)}>
+              <Button variant="danger-outline" onClick={() => setReturning(true)}>
                 Возврат
               </Button>
             )}
@@ -228,7 +233,12 @@ export default function SaleView() {
             <tr key={l.line_no}>
               <td className="px-2 py-2">
                 {l.name}
-                {l.unit_price_tyiyn !== l.list_price_tyiyn && (
+                {l.gift && (
+                  <span className="ml-2">
+                    <Badge tone="green">подарок</Badge>
+                  </span>
+                )}
+                {!l.gift && l.unit_price_tyiyn !== l.list_price_tyiyn && (
                   <span className="ml-2">
                     <Badge tone="amber">прайс {formatSom(l.list_price_tyiyn)}</Badge>
                   </span>
@@ -239,8 +249,8 @@ export default function SaleView() {
                 {formatSom(l.unit_price_tyiyn)}
                 {l.kind === 'pour' && '/л'}
               </td>
-              <td className="px-2 py-2 text-right">{formatSom(l.amount_tyiyn)}</td>
-              {owner && <td className="px-2 py-2 text-right text-slate-500">{formatSom(l.cost_tyiyn ?? 0)}</td>}
+              <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(l.amount_tyiyn)}</td>
+              {owner && <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-500">{formatSom(l.cost_tyiyn ?? 0)}</td>}
             </tr>
           ))}
         </Table>

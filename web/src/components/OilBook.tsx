@@ -51,6 +51,7 @@ export function OilHint({ vehicleId }: { vehicleId: string }) {
     <div className={`rounded-md px-3 py-2 text-xs ${overdue ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`}>
       Прошлая замена {formatDate(last.change_date)}: {last.oil_text || last.filter_text || '—'}
       {last.mileage_km !== null && `, ${km(last.mileage_km)}`}. Следующая {nextText(b)}.
+      {last.declined?.trim() && <div className="mt-1 font-medium text-amber-800">В прошлый раз рекомендовали: {last.declined}</div>}
     </div>
   )
 }

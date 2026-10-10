@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatSom, parseSom, todayBishkek } from '../lib/format'
@@ -61,7 +61,7 @@ export default function Expenses() {
       <PageHeader title="Расходы" />
 
       <Card className="mb-4 flex flex-col gap-3">
-        <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr_auto] sm:items-end">
+        <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr] sm:items-end">
           <Field label="Статья" required>
             <select id="expense-article" value={form.article} onChange={(e) => setForm({ ...form, article: e.target.value })}>
               <option value="">— выберите —</option>
@@ -76,7 +76,7 @@ export default function Expenses() {
           <Field label="Сумма, с" required>
             <input id="expense-sum" inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
           </Field>
-          <Field label="Откуда">
+          <Field label="Из какой кассы">
             <select
               value={form.outside ? 'outside' : form.account}
               onChange={(e) =>
@@ -94,9 +94,6 @@ export default function Expenses() {
               {owner && <option value="outside">Не из денег точки</option>}
             </select>
           </Field>
-          <Button disabled={act.busy || notFilled.length > 0} onClick={save}>
-            Записать
-          </Button>
         </div>
         {owner && (
           <Field label="Дата" hint="Можно поставить задним числом">
@@ -106,11 +103,17 @@ export default function Expenses() {
         <Field label="Комментарий" hint="По статье «Прочее» обязателен">
           <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </Field>
-        <Missing items={notFilled} />
         <ErrorBox error={act.error ?? articles.error} />
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <Missing items={notFilled} className="mr-auto" />
+          <Button disabled={act.busy || notFilled.length > 0} onClick={save}>
+            Записать
+          </Button>
+        </div>
       </Card>
 
       <Card>
+        <CardTitle>Записанные расходы</CardTitle>
         <div className="mb-4 flex flex-wrap items-end gap-3">
           <Field label="С">
             <input type="date" className="w-40" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -120,7 +123,7 @@ export default function Expenses() {
           </Field>
           <div className="ml-auto text-right">
             <div className="text-xs text-slate-500">Всего за период</div>
-            <div className="text-xl font-bold">{formatSom(total)}</div>
+            <Money value={total} className="text-xl font-bold" />
           </div>
         </div>
         <ErrorBox error={list.error} />
@@ -129,7 +132,7 @@ export default function Expenses() {
         ) : (list.data ?? []).length === 0 ? (
           <Empty>Расходов за период нет</Empty>
         ) : (
-          <Table head={['№', 'День', 'Статья', 'Откуда', 'Сумма', 'Комментарий', '']}>
+          <Table head={['№', 'День', 'Статья', 'Из кассы', 'Сумма', 'Комментарий', '']}>
             {(list.data ?? []).map((e) => (
               <tr key={e.id} className={e.reversal_of ? 'text-slate-400' : ''}>
                 <td className="px-2 py-2 font-medium">{e.number}</td>
@@ -143,7 +146,9 @@ export default function Expenses() {
                   )}
                 </td>
                 <td className="px-2 py-2">{e.source === 'outside' ? 'не из денег точки' : (e.account_name ?? '—')}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(e.amount_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">
+                  <Money value={e.amount_tyiyn} />
+                </td>
                 <td className="px-2 py-2 text-slate-600">
                   {e.comment || '—'}
                   <div className="text-xs text-slate-400">
