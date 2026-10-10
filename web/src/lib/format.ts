@@ -76,6 +76,11 @@ export function todayBishkek(): string {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
 }
 
+/** Текущий час в Бишкеке (0–23) — для графика «сегодня по часам». */
+export function hourBishkek(): number {
+  return Number(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Bishkek', hour: '2-digit', hour12: false })) % 24
+}
+
 /** Сдвиг даты YYYY-MM-DD на `days` дней; часовой пояс устройства не участвует. */
 export function shiftDate(date: string, days: number): string {
   const d = new Date(`${date}T12:00:00Z`)

@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
-import { formatDate, formatSom, shiftDate, todayBishkek } from '../lib/format'
+import { formatDate, formatSom, hourBishkek, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad, usePolling } from '../lib/hooks'
 import { StaffPayList } from '../components/StaffPayList'
-import { ProfitChart, type Bar } from '../components/ProfitChart'
+import { ProfitChart, type Point, type Series } from '../components/ProfitChart'
 import type { Dashboard, ProfitReport } from '../lib/types'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
@@ -30,9 +30,6 @@ function Step({ label, value, strong = false, minus = false }: { label: string; 
 }
 
 /** Сводка владельца: что с точкой прямо сейчас (SPEC-08). */
-/** Подсказка столбца графика: заголовок и суммы по строкам. */
-const barTitle = (head: string, rows: [string, number][]) => [head, ...rows.map(([l, v]) => `${l}: ${formatSom(v)}`)].join('\n')
-
 const PERIODS = [
   ['today', 'Сегодня', 0],
   ['week', '7 дней', 6],
@@ -54,33 +51,45 @@ export function OwnerDashboard() {
   const t = r.data?.totals ?? d.data.totals
   const revenue = t.goods_tyiyn + t.services_tyiyn
   const word = period === 'today' ? 'сегодня' : period === 'week' ? 'за 7 дней' : 'за 30 дней'
-  const bars: Bar[] =
+  // Сегодня — каждый час с открытия (8:00) до текущего, без пропусков: линия идёт вверх и вниз честно.
+  const hours = r.data?.hours ?? []
+  const nowHour = hourBishkek()
+  const firstHour = Math.min(8, ...hours.map((h) => h.hour))
+  const lastHour = Math.max(Number.isFinite(nowHour) ? nowHour : 0, ...hours.map((h) => h.hour))
+  const hourRange = Array.from({ length: Math.max(lastHour - firstHour + 1, 1) }, (_, k) => firstHour + k)
+  const byHour = new Map(hours.map((h) => [h.hour, h]))
+  const days = [...(r.data?.days ?? [])].reverse()
+  const weekday = (d: string) => ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][new Date(`${d}T12:00:00`).getDay()]
+  const chart: { points: Point[]; series: Series[] } =
     period === 'today'
-      ? (r.data?.hours ?? []).map((h) => ({
-          label: `${h.hour}:00`,
-          title: barTitle(`${h.hour}:00–${h.hour + 1}:00, чеков ${h.sales_count}`, [
-            ['Выручка', h.revenue_tyiyn],
-            ['Валовая', h.gross_tyiyn],
-          ]),
-          values: [
-            { value: h.revenue_tyiyn, tone: 'soft' as const },
-            { value: h.gross_tyiyn, tone: 'gross' as const },
+      ? {
+          points: hourRange.map((h) => ({
+            label: `${h}:00`,
+            title: `${h}:00–${h + 1}:00 · чеков ${byHour.get(h)?.sales_count ?? 0}`,
+          })),
+          series: [
+            { name: 'Выручка', color: 'slate', values: hourRange.map((h) => byHour.get(h)?.revenue_tyiyn ?? 0) },
+            { name: 'Валовая прибыль', color: 'sky', values: hourRange.map((h) => byHour.get(h)?.gross_tyiyn ?? 0) },
           ],
-        }))
-      : [...(r.data?.days ?? [])].reverse().map((x) => ({
-          label: x.date.slice(8, 10) + '.' + x.date.slice(5, 7),
-          title: barTitle(formatDate(x.date), [
-            ['Выручка', x.revenue_tyiyn],
-            ['Валовая', x.gross_tyiyn],
-            ['Зарплата', x.payroll_tyiyn],
-            ['Расходы', x.expenses_tyiyn],
-            ['Чистая', x.net_tyiyn],
-          ]),
-          values: [
-            { value: x.gross_tyiyn, tone: 'gross' as const },
-            { value: x.net_tyiyn, tone: 'net' as const },
+        }
+      : {
+          points: days.map((x) => ({
+            label: x.date.slice(8, 10) + '.' + x.date.slice(5, 7),
+            title: `${weekday(x.date)}, ${formatDate(x.date)}`,
+            extra: [
+              ['Выручка', x.revenue_tyiyn],
+              ['Зарплата', x.payroll_tyiyn],
+              ['Расходы', x.expenses_tyiyn],
+            ],
+          })),
+          series: [
+            { name: 'Валовая прибыль', color: 'sky', values: days.map((x) => x.gross_tyiyn) },
+            { name: 'Чистая прибыль', color: 'emerald', values: days.map((x) => x.net_tyiyn) },
           ],
-        }))
+        }
+  // Лучший и худший день периода — словами под графиком.
+  const best = days.length > 1 ? days.reduce((a, b) => (b.net_tyiyn > a.net_tyiyn ? b : a)) : null
+  const worst = days.length > 1 ? days.reduce((a, b) => (b.net_tyiyn < a.net_tyiyn ? b : a)) : null
 
   return (
     <div>
@@ -148,20 +157,17 @@ export function OwnerDashboard() {
           <h2 className="mb-2 font-semibold">
             {period === 'today' ? 'Продажи сегодня по часам' : `Прибыль по дням ${word}`}
           </h2>
-          <ProfitChart
-            bars={bars}
-            legend={
-              period === 'today'
-                ? [
-                    { tone: 'soft', label: 'Выручка' },
-                    { tone: 'gross', label: 'Валовая прибыль' },
-                  ]
-                : [
-                    { tone: 'gross', label: 'Валовая прибыль' },
-                    { tone: 'net', label: 'Чистая прибыль (красным — убыток)' },
-                  ]
-            }
-          />
+          <ProfitChart points={chart.points} series={chart.series} />
+          {period !== 'today' && best && worst && best.date !== worst.date && (
+            <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
+              <span>
+                Лучший день: <b className="text-emerald-700">{formatDate(best.date)}</b> — чистая {formatSom(best.net_tyiyn)}
+              </span>
+              <span>
+                Слабый день: <b className={worst.net_tyiyn < 0 ? 'text-rose-700' : 'text-slate-800'}>{formatDate(worst.date)}</b> — чистая {formatSom(worst.net_tyiyn)}
+              </span>
+            </div>
+          )}
           {period === 'today' && (
             <div className="mt-1 text-xs text-slate-500">Чистая прибыль считается за день целиком (зарплата и расходы — за день), поэтому по часам — выручка и валовая.</div>
           )}
