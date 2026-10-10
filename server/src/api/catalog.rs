@@ -1114,6 +1114,38 @@ async fn merge_product(
     )
     .execute(&mut *tx)
     .await?;
+    // Подарки: правило дубля переходит основной карточке (если у неё своего нет), а сам дубль
+    // в списках подарков заменяется основной — иначе чек с подарком отклонится.
+    sqlx::query!(
+        r#"update gift_rules set trigger_product_id = $2
+           where trigger_product_id = $1
+             and not exists (select 1 from gift_rules x where x.branch_id = gift_rules.branch_id and x.trigger_product_id = $2)"#,
+        id,
+        req.into_product_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "update gift_rules set active = false where trigger_product_id = $1",
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        r#"delete from gift_rule_items i where i.gift_product_id = $1
+             and exists (select 1 from gift_rule_items x where x.rule_id = i.rule_id and x.gift_product_id = $2)"#,
+        id,
+        req.into_product_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "update gift_rule_items set gift_product_id = $2 where gift_product_id = $1",
+        id,
+        req.into_product_id
+    )
+    .execute(&mut *tx)
+    .await?;
     // Остаток дубля ушёл к основному товару: снимаем его отметку «проверить», а последнюю
     // закупочную цену отдаём основному, если своей у него ещё нет.
     sqlx::query!(

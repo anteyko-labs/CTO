@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select balance_tyiyn from parties where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b9fd0ee2f3394b6b1ea844d8e622dfbf0c473eada79993ad6b8f410a1ec1e214"
+}

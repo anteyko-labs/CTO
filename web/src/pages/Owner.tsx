@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
-import { formatSom, shiftDate, todayBishkek } from '../lib/format'
+import { formatDate, formatSom, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad, usePolling } from '../lib/hooks'
 import { StaffPayList } from '../components/StaffPayList'
+import { ProfitChart, type Bar } from '../components/ProfitChart'
 import type { Dashboard, ProfitReport } from '../lib/types'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
@@ -29,19 +30,80 @@ function Step({ label, value, strong = false, minus = false }: { label: string; 
 }
 
 /** Сводка владельца: что с точкой прямо сейчас (SPEC-08). */
+/** Подсказка столбца графика: заголовок и суммы по строкам. */
+const barTitle = (head: string, rows: [string, number][]) => [head, ...rows.map(([l, v]) => `${l}: ${formatSom(v)}`)].join('\n')
+
+const PERIODS = [
+  ['today', 'Сегодня', 0],
+  ['week', '7 дней', 6],
+  ['month', '30 дней', 29],
+] as const
+
 export function OwnerDashboard() {
+  const today = todayBishkek()
+  const [period, setPeriod] = useState<(typeof PERIODS)[number][0]>('today')
+  const back = PERIODS.find((x) => x[0] === period)?.[2] ?? 0
+  const from = shiftDate(today, -back)
   const d = useLoad(() => get<Dashboard>('/owner/dashboard'), [])
+  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to: today })}`), [from, today])
   // Сводка живая: чеки с кассы появляются без перезагрузки страницы.
   usePolling(d.reload)
+  usePolling(r.reload)
   if (d.loading && !d.data) return <Loading />
   if (!d.data) return <ErrorBox error={d.error} />
-  const t = d.data.totals
+  const t = r.data?.totals ?? d.data.totals
   const revenue = t.goods_tyiyn + t.services_tyiyn
+  const word = period === 'today' ? 'сегодня' : period === 'week' ? 'за 7 дней' : 'за 30 дней'
+  const bars: Bar[] =
+    period === 'today'
+      ? (r.data?.hours ?? []).map((h) => ({
+          label: `${h.hour}:00`,
+          title: barTitle(`${h.hour}:00–${h.hour + 1}:00, чеков ${h.sales_count}`, [
+            ['Выручка', h.revenue_tyiyn],
+            ['Валовая', h.gross_tyiyn],
+          ]),
+          values: [
+            { value: h.revenue_tyiyn, tone: 'soft' as const },
+            { value: h.gross_tyiyn, tone: 'gross' as const },
+          ],
+        }))
+      : [...(r.data?.days ?? [])].reverse().map((x) => ({
+          label: x.date.slice(8, 10) + '.' + x.date.slice(5, 7),
+          title: barTitle(formatDate(x.date), [
+            ['Выручка', x.revenue_tyiyn],
+            ['Валовая', x.gross_tyiyn],
+            ['Зарплата', x.payroll_tyiyn],
+            ['Расходы', x.expenses_tyiyn],
+            ['Чистая', x.net_tyiyn],
+          ]),
+          values: [
+            { value: x.gross_tyiyn, tone: 'gross' as const },
+            { value: x.net_tyiyn, tone: 'net' as const },
+          ],
+        }))
 
   return (
     <div>
-      <PageHeader title="Сводка за сегодня" />
+      <PageHeader
+        title={`Сводка ${word}`}
+        actions={
+          <div className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm">
+            {PERIODS.map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={period === key}
+                className={`min-h-[38px] px-3 ${period === key ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                onClick={() => setPeriod(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        }
+      />
       <div className="flex flex-col gap-4">
+        <ErrorBox error={r.error} />
         <Card className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Tile label="Продано" value={formatSom(revenue)} />
           <Tile label="Валовая прибыль" value={formatSom(t.gross_tyiyn)} />
@@ -71,8 +133,8 @@ export function OwnerDashboard() {
           </Card>
 
           <Card>
-            <h2 className="mb-2 font-semibold">Кто сколько заработал сегодня</h2>
-            <StaffPayList staff={d.data.staff ?? []} />
+            <h2 className="mb-2 font-semibold">Кто сколько заработал {word}</h2>
+            <StaffPayList staff={r.data?.staff ?? d.data.staff ?? []} />
             <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-sm">
               <span className="text-slate-600">Всего к выплате (за все дни)</span>
               <Link to="/payroll" className="font-semibold text-sky-700 underline">
@@ -81,6 +143,29 @@ export function OwnerDashboard() {
             </div>
           </Card>
         </div>
+
+        <Card>
+          <h2 className="mb-2 font-semibold">
+            {period === 'today' ? 'Продажи сегодня по часам' : `Прибыль по дням ${word}`}
+          </h2>
+          <ProfitChart
+            bars={bars}
+            legend={
+              period === 'today'
+                ? [
+                    { tone: 'soft', label: 'Выручка' },
+                    { tone: 'gross', label: 'Валовая прибыль' },
+                  ]
+                : [
+                    { tone: 'gross', label: 'Валовая прибыль' },
+                    { tone: 'net', label: 'Чистая прибыль (красным — убыток)' },
+                  ]
+            }
+          />
+          {period === 'today' && (
+            <div className="mt-1 text-xs text-slate-500">Чистая прибыль считается за день целиком (зарплата и расходы — за день), поэтому по часам — выручка и валовая.</div>
+          )}
+        </Card>
 
         <Card>
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
@@ -228,14 +313,16 @@ export default function Profit() {
 
           <Card>
             <h2 className="mb-3 font-semibold">По дням</h2>
-            <Table head={['День', 'Выручка', 'Валовая', 'Оплата труда', 'Расходы', 'Чистая']}>
+            <Table head={['День', 'Выручка', 'Валовая', 'Оплата труда', 'Комиссия', 'Расходы', 'Баллы', 'Чистая']}>
               {(r.data?.days ?? []).map((d) => (
                 <tr key={d.date}>
                   <td className="whitespace-nowrap px-2 py-2">{d.date}</td>
                   <td className="whitespace-nowrap px-2 py-2">{formatSom(d.revenue_tyiyn)}</td>
                   <td className="whitespace-nowrap px-2 py-2">{formatSom(d.gross_tyiyn)}</td>
                   <td className="whitespace-nowrap px-2 py-2">{formatSom(d.payroll_tyiyn)}</td>
+                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.fee_tyiyn ?? 0)}</td>
                   <td className="whitespace-nowrap px-2 py-2">{formatSom(d.expenses_tyiyn)}</td>
+                  <td className="whitespace-nowrap px-2 py-2">{formatSom(d.bonus_tyiyn ?? 0)}</td>
                   <td className={`whitespace-nowrap px-2 py-2 font-medium ${d.net_tyiyn < 0 ? 'text-rose-700' : ''}`}>
                     {formatSom(d.net_tyiyn)}
                   </td>

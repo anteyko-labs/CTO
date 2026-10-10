@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { get, patch, post, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -172,6 +172,8 @@ export function ClientPicker({
   const query = useDebounced(q.trim(), 250)
   // Новый клиент: что набрали в поиске, то и подставим; тип выбирает кассир.
   const [creating, setCreating] = useState<string | null>(null)
+  // Нашли клиента по госномеру — машину ставим сразу, как загрузится карточка.
+  const [platePick, setPlatePick] = useState<string | null>(null)
   const kindAct = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const add = useAction()
@@ -201,6 +203,15 @@ export function ClientPicker({
       setAdding(null)
       card.reload()
     })
+
+  useEffect(() => {
+    if (!party || !platePick || !card.data) return
+    const key = (v: string) => v.replace(/\s/g, '').toUpperCase()
+    const v = card.data.vehicles.find((x) => x.active && key(x.plate).includes(key(platePick)))
+    setPlatePick(null)
+    if (v && !vehicleId) onVehicle(v.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.data, platePick])
 
   if (party) {
     const contacts = card.data?.contacts.filter((c) => c.active) ?? []
@@ -296,7 +307,7 @@ export function ClientPicker({
       <Field label="Клиент" hint="Можно не указывать. Для продажи в долг — обязателен">
         <input
           data-client-input
-          placeholder="ИНН, имя или телефон"
+          placeholder="Госномер, телефон, имя или ИНН"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
@@ -304,6 +315,7 @@ export function ClientPicker({
               e.preventDefault()
               if (list[0]) {
                 onParty(list[0])
+                setPlatePick(query)
                 setQ('')
               } else if (query.length >= 2) {
                 setCreating(query)
@@ -321,6 +333,7 @@ export function ClientPicker({
                 className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
                 onClick={() => {
                   onParty(p)
+                  setPlatePick(query)
                   setQ('')
                 }}
               >

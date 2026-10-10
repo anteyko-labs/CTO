@@ -226,6 +226,7 @@ export interface SalesDay {
     card_tyiyn: number
     transfer_tyiyn: number
     debt_tyiyn: number
+    bonus_tyiyn?: number
   }
 }
 
@@ -356,6 +357,7 @@ export interface Shift {
   account_id: string
   account_name: string
   cashier_name: string
+  cashier_employee_id?: string
   opened_by: string
   opened_at: string
   opening_expected_tyiyn: number
@@ -456,9 +458,20 @@ export interface ProfitReport {
   to: string
   totals: ProfitTotals
   categories: { name: string; revenue_tyiyn: number; cost_tyiyn: number; gross_tyiyn: number }[]
-  days: { date: string; revenue_tyiyn: number; gross_tyiyn: number; payroll_tyiyn: number; expenses_tyiyn: number; net_tyiyn: number }[]
+  days: {
+    date: string
+    revenue_tyiyn: number
+    gross_tyiyn: number
+    payroll_tyiyn: number
+    expenses_tyiyn: number
+    fee_tyiyn?: number
+    bonus_tyiyn?: number
+    net_tyiyn: number
+  }[]
   articles: { name: string; amount_tyiyn: number }[]
   warnings: string[]
+  staff?: StaffPay[]
+  hours?: { hour: number; revenue_tyiyn: number; gross_tyiyn: number; sales_count: number }[]
 }
 
 export interface Dashboard {
@@ -485,4 +498,6 @@ export interface StaffPay {
   name: string
   items: { kind: string; count: number; amount_tyiyn: number }[]
   total_tyiyn: number
+  paid_tyiyn?: number
+  owed_tyiyn?: number
 }

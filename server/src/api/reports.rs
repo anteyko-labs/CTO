@@ -50,7 +50,19 @@ struct DayRow {
     gross_tyiyn: i64,
     payroll_tyiyn: i64,
     expenses_tyiyn: i64,
+    /// Комиссия банка и скидки баллами — чтобы «чистая» сходилась на глаз.
+    fee_tyiyn: i64,
+    bonus_tyiyn: i64,
     net_tyiyn: i64,
+}
+
+/// Часы одного дня — для графика «Сегодня».
+#[derive(Serialize)]
+struct HourRow {
+    hour: i32,
+    revenue_tyiyn: i64,
+    gross_tyiyn: i64,
+    sales_count: i64,
 }
 
 #[derive(Serialize)]
@@ -68,6 +80,10 @@ struct ProfitOut {
     days: Vec<DayRow>,
     articles: Vec<ArticleRow>,
     warnings: Vec<String>,
+    /// Кто сколько заработал за период.
+    staff: Vec<crate::api::payroll::StaffPay>,
+    /// По часам — только когда период один день.
+    hours: Vec<HourRow>,
 }
 
 #[derive(Deserialize)]
@@ -271,6 +287,8 @@ async fn profit(
         gross_tyiyn: r.gross,
         payroll_tyiyn: r.payroll,
         expenses_tyiyn: r.expenses,
+        fee_tyiyn: r.fee,
+        bonus_tyiyn: r.bonus,
         net_tyiyn: r
             .gross
             .saturating_sub(r.payroll)
@@ -323,6 +341,32 @@ async fn profit(
         ));
     }
 
+    let staff = crate::api::payroll::staff_pay(&mut conn, branch_id, from, to).await?;
+    let hours = if from == to {
+        sqlx::query!(
+            r#"select extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as "hour!",
+                      coalesce(sum(l.amount_tyiyn), 0)::bigint as "revenue!",
+                      coalesce(sum(l.amount_tyiyn - l.cost_tyiyn), 0)::bigint as "gross!",
+                      count(distinct s.id) filter (where s.kind = 'sale') as "count!"
+               from sales s join sale_lines l on l.sale_id = s.id
+               where s.branch_id = $1 and s.business_date = $2
+               group by 1 order by 1"#,
+            branch_id,
+            from
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|r| HourRow {
+            hour: r.hour,
+            revenue_tyiyn: r.revenue,
+            gross_tyiyn: r.gross,
+            sales_count: r.count,
+        })
+        .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Json(ProfitOut {
         from,
         to,
@@ -331,6 +375,8 @@ async fn profit(
         days,
         articles,
         warnings,
+        staff,
+        hours,
     }))
 }
 

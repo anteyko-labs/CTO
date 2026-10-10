@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.number, s.total_tyiyn, s.sale_type, c.full_name as cashier,\n                  m.full_name as \"master?\", p.name as \"party?\", v.plate as \"plate?\",\n                  (select count(*) from sale_lines l where l.sale_id = s.id) as \"lines!\"\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties p on p.id = s.party_id\n           left join party_vehicles v on v.id = s.vehicle_id\n           where s.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "sale_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "cashier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "master?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "party?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "plate?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "lines!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "84912ddb8e06494cd9889d5fddac7afa805385ac5c809e568de0e1f4880665d5"
+}

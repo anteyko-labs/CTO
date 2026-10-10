@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"v!\" from sale_payments where sale_id = $1 and method = 'bonus'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e367a71895b21328d11ff8aa23f8ca9b71e6abc9d6345ab80f0bf1bf8376bff2"
+}

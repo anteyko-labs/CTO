@@ -253,7 +253,8 @@ export async function syncOutbox(): Promise<void> {
         const sale = await api<{ number: number }>('POST', '/sales', { ...(item.body as object), offline: true })
         await put({ ...item, status: 'done', server_number: sale.number, last_error: '' })
       } catch (e) {
-        if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 401) {
+        // 409 — гонка (карточку объединили, документ занят): повторим в следующий раз, а не выбросим чек.
+        if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 409) {
           // Сервер отказал по существу: чек не исчезает, о нём узнаёт владелец.
           await api('POST', '/sales/offline-rejected', {
             op_id: item.op_id,

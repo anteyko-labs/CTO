@@ -538,6 +538,7 @@ pub async fn reverse_receipt_tx(
         live.insert(l.product_id, p);
     }
     lock_products(conn, branch_id, live.values().copied()).await?;
+    ops::ensure_not_merged(conn, &live.values().copied().collect::<Vec<_>>()).await?;
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let rid = new_id();
     sqlx::query!(
@@ -571,13 +572,20 @@ pub async fn reverse_receipt_tx(
         // Ошибочная цена не должна остаться «последней закупочной»: берём её из последнего
         // непогашенного прихода, иначе обнуляем (SPEC-03). До движения: если остаток уйдёт
         // в минус по стоимости, переоценка возьмёт уже восстановленную цену (ADR-044).
+        // Ищем по основной карточке и всем, что в неё влиты: цена дубля не должна затереть основную.
+        let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
         let last = sqlx::query!(
-            r#"select l.qty, l.cost_tyiyn from receipt_lines l join receipts r on r.id = l.receipt_id
-               where r.branch_id = $1 and l.product_id = $2 and r.reversal_of is null and r.id <> $3
+            r#"with recursive fam as (
+                 select $2::uuid as id
+                 union select p.id from products p join fam on p.merged_into = fam.id
+               )
+               select l.qty, l.cost_tyiyn from receipt_lines l join receipts r on r.id = l.receipt_id
+               where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
+                 and r.reversal_of is null and r.id <> $3
                  and not exists (select 1 from receipts x where x.reversal_of = r.id)
                order by r.created_at desc, l.line_no desc limit 1"#,
             branch_id,
-            l.product_id,
+            target,
             id
         )
         .fetch_optional(&mut *conn)

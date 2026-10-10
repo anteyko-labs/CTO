@@ -19,8 +19,18 @@ interface Found {
   balance_tyiyn: number
 }
 
-export function BonusRedeem({ total, onApply, onClose }: { total: number; onApply: (b: BonusUse) => void; onClose: () => void }) {
-  const [phone, setPhone] = useState('')
+export function BonusRedeem({
+  total,
+  initialPhone = '',
+  onApply,
+  onClose,
+}: {
+  total: number
+  initialPhone?: string
+  onApply: (b: BonusUse) => void
+  onClose: () => void
+}) {
+  const [phone, setPhone] = useState(initialPhone)
   const [found, setFound] = useState<Found | null>(null)
   const [sum, setSum] = useState('')
   const act = useAction()

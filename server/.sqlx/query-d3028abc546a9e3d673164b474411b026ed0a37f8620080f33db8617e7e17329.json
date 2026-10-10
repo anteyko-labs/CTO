@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select product_id, counted_qty from revision_lines where revision_id = $1",
+  "query": "select product_id, counted_qty, stock_at_count from revision_lines where revision_id = $1",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "counted_qty",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "stock_at_count",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -21,8 +26,9 @@
     },
     "nullable": [
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "486ad8f9b8a27a11c0579ea081e7bc8e1aee88b4aafebdebe98a316eaa0766e7"
+  "hash": "d3028abc546a9e3d673164b474411b026ed0a37f8620080f33db8617e7e17329"
 }

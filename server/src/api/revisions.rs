@@ -51,7 +51,7 @@ pub struct RevisionLine {
     pub barcodes: Vec<String>,
     pub unit: String,
     pub container_ml: Option<i64>,
-    /// Черновик — остаток сейчас; проведённая — остаток на момент проведения.
+    /// Остаток на момент пересчёта строки (не пересчитана — сейчас); проведённая — тот же, из итога.
     pub expected_qty: i64,
     pub counted_qty: Option<i64>,
     /// Стоимость расхождения — только владельцу (инвариант 13).
@@ -135,7 +135,7 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             r#"select p.id, p.name, p.article, p.unit, p.container_ml,
                       coalesce((select array_agg(b.code order by b.code) from product_barcodes b
                                 where b.product_id = p.id), '{}') as "barcodes!",
-                      coalesce(bp.stock_qty, 0) as "expected!", l.counted_qty as "counted?"
+                      coalesce(l.stock_at_count, bp.stock_qty, 0) as "expected!", l.counted_qty as "counted?"
                from products p
                left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
                left join revision_lines l on l.product_id = p.id and l.revision_id = $1
@@ -295,15 +295,26 @@ async fn put_line(
     if archived {
         return Err(invalid("товар в архиве: считайте основную карточку"));
     }
+    // Остаток в момент пересчёта: продажи между пересчётом и проведением не станут «излишком».
+    let stock_now = sqlx::query_scalar!(
+        "select stock_qty from branch_products where branch_id = $1 and product_id = $2",
+        ctx.user.branch_id,
+        req.product_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or(0);
     sqlx::query!(
-        r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id)
-           values ($1, $2, $3, $4)
+        r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
+           values ($1, $2, $3, $4, $5)
            on conflict (revision_id, product_id)
-           do update set counted_qty = excluded.counted_qty, user_id = excluded.user_id, updated_at = now()"#,
+           do update set counted_qty = excluded.counted_qty, user_id = excluded.user_id, updated_at = now(),
+                         stock_at_count = excluded.stock_at_count"#,
         id,
         req.product_id,
         req.counted_qty,
-        ctx.user.id
+        ctx.user.id,
+        stock_now
     )
     .execute(&mut *tx)
     .await?;
@@ -356,7 +367,7 @@ pub async fn post_revision_tx(
     let branch_id = ctx.user.branch_id;
     lock_draft(conn, branch_id, id).await?;
     let lines = sqlx::query!(
-        "select product_id, counted_qty from revision_lines where revision_id = $1",
+        "select product_id, counted_qty, stock_at_count from revision_lines where revision_id = $1",
         id
     )
     .fetch_all(&mut *conn)
@@ -365,10 +376,26 @@ pub async fn post_revision_tx(
         return Err(invalid("ничего не пересчитано"));
     }
     lock_products(conn, branch_id, lines.iter().map(|l| l.product_id)).await?;
+    // Карточку могли объединить или убрать в архив после пересчёта: её остаток уже на основной,
+    // и «излишек» по дублю удвоил бы склад.
+    let gone = sqlx::query_scalar!(
+        r#"select name from products where id = any($1) and archived order by name limit 1"#,
+        &lines.iter().map(|l| l.product_id).collect::<Vec<_>>()[..]
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(name) = gone {
+        return Err(AppError::Conflict(format!(
+            "«{name}» объединили или убрали в архив после пересчёта — удалите строку и пересчитайте основную карточку"
+        )));
+    }
     let (mut shortage, mut surplus) = (0i64, 0i64);
     for l in &lines {
         let pool = ops::lock_pool(conn, branch_id, l.product_id).await?;
-        let delta = l.counted_qty.checked_sub(pool.qty).ok_or_else(overflow)?;
+        let delta = l
+            .counted_qty
+            .checked_sub(l.stock_at_count.unwrap_or(pool.qty))
+            .ok_or_else(overflow)?;
         let value = if delta < 0 {
             // Недостача уходит по средней, как продажа (ADR-011).
             -cost_of(-delta, &pool).ok_or_else(overflow)?
@@ -409,7 +436,7 @@ pub async fn post_revision_tx(
                values ($1, $2, $3, $4, $5, $6)"#,
             id,
             l.product_id,
-            pool.qty,
+            l.stock_at_count.unwrap_or(pool.qty),
             l.counted_qty,
             delta,
             value

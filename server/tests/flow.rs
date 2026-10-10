@@ -1719,6 +1719,287 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
     assert!(book.contains("Баллов: 5,00"), "{book}");
 }
 
+fn pay(list: &[(&str, i64)]) -> Vec<PaymentReq> {
+    list.iter()
+        .map(|(m, a)| PaymentReq {
+            method: (*m).into(),
+            amount_tyiyn: *a,
+        })
+        .collect()
+}
+
+async fn return_one(
+    pool: &PgPool,
+    ctx: &Ctx,
+    sale: Uuid,
+    payments: Vec<PaymentReq>,
+) -> Result<avtodom_server::api::sales::SaleOut, AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = return_sale_tx(
+        &mut tx,
+        ctx,
+        sale,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            comment: String::new(),
+            lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
+            payments,
+        },
+    )
+    .await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn returns_respect_debt_points_and_bank_fee(pool: PgPool) {
+    // Ревью денежных цепочек: возврат не уменьшает погашенный долг, баллы не обналичиваются,
+    // комиссия возвращается только та, что была у исходного чека (ADR-054).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 10_000).await;
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone, inn) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456', '12345678901234')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Долг погасили — вернуть «с долга» нельзя, только деньгами.
+    // Наличные в кассе, чтобы было что выдать при возврате.
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        pay(&[("debt", 50_000)]),
+    );
+    req.party_id = Some(party);
+    let debt_sale = sell(&pool, &w.owner, req).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    avtodom_server::api::parties::add_ledger(
+        &mut tx,
+        &w.owner,
+        avtodom_server::api::parties::LedgerEntry {
+            party_id: party,
+            kind: "repayment",
+            amount: -50_000,
+            doc_type: "repayment",
+            doc_id: Some(Uuid::now_v7()),
+            comment: "",
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        return_one(&pool, &w.owner, debt_sale.id, pay(&[("debt", 50_000)])).await,
+        Err(AppError::Validation(_))
+    ));
+    return_one(&pool, &w.owner, debt_sale.id, cash(50_000))
+        .await
+        .unwrap();
+
+    // Чек баллами: деньгами не вернуть, баллами — можно.
+    sqlx::query(
+        "insert into telegram_customers (chat_id, party_id, phone) values (77, $1, '0555123456')",
+    )
+    .bind(party)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into loyalty_ledger (id, branch_id, party_id, kind, amount_tyiyn, doc_type, doc_id) values ($1, $2, $3, 'accrual', 50000, 'adjust', $1)")
+        .bind(Uuid::now_v7())
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        pay(&[("bonus", 50_000)]),
+    );
+    req.party_id = Some(party);
+    let bonus_sale = sell(&pool, &w.owner, req).await.unwrap();
+    assert!(matches!(
+        return_one(&pool, &w.owner, bonus_sale.id, cash(50_000)).await,
+        Err(AppError::Validation(_))
+    ));
+    return_one(&pool, &w.owner, bonus_sale.id, pay(&[("bonus", 50_000)]))
+        .await
+        .unwrap();
+
+    // Наличный чек, возвращённый на карту, комиссии «назад» не даёт; карточный — даёт свою.
+    let cash_sale = sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+    )
+    .await
+    .unwrap();
+    let card_sale = sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            vec![line("piece", w.filter, 4, 50_000)],
+            pay(&[("card", 200_000)]),
+        ),
+    )
+    .await
+    .unwrap();
+    let back = return_one(&pool, &w.owner, cash_sale.id, pay(&[("card", 50_000)]))
+        .await
+        .unwrap();
+    let fee = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select coalesce(sum(fee_tyiyn), 0)::bigint from sale_payments where sale_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(fee(back.id).await, 0);
+    let back = return_one(&pool, &w.owner, card_sale.id, pay(&[("card", 50_000)]))
+        .await
+        .unwrap();
+    assert_eq!(fee(back.id).await, -250);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn revision_counts_from_stock_at_count_and_skips_merged(pool: PgPool) {
+    // Пересчитали 10, потом продали 2, провели — остаток 8, а не «излишек 2» (ADR-054).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 10_000).await;
+    let rev = Uuid::now_v7();
+    sqlx::query("insert into revisions (id, branch_id, number, user_id, device_id) values ($1, $2, 1, $3, $1)")
+        .bind(rev)
+        .bind(w.owner.user.branch_id)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count) values ($1, $2, 10, $3, 10)")
+        .bind(rev)
+        .bind(w.filter)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let out = post_revision_tx(
+        &mut tx,
+        &w.owner,
+        rev,
+        PostReq {
+            op_id: Uuid::now_v7(),
+            comment: "пересчёт".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(out.lines[0].expected_qty, 10);
+    assert_eq!(pool_of(&pool, w.filter).await.0, 8);
+
+    // Карточку объединили после пересчёта — ревизия не проводится.
+    let rev2 = Uuid::now_v7();
+    sqlx::query("insert into revisions (id, branch_id, number, user_id, device_id) values ($1, $2, 2, $3, $1)")
+        .bind(rev2)
+        .bind(w.owner.user.branch_id)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count) values ($1, $2, 8, $3, 8)")
+        .bind(rev2)
+        .bind(w.filter)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update products set archived = true where id = $1")
+        .bind(w.filter)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    assert!(matches!(
+        post_revision_tx(
+            &mut tx,
+            &w.owner,
+            rev2,
+            PostReq {
+                op_id: Uuid::now_v7(),
+                comment: "пересчёт".into(),
+            },
+        )
+        .await,
+        Err(AppError::Conflict(_))
+    ));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn forgiven_debt_does_not_pay_cashier_later(pool: PgPool) {
+    // Прощённый долг: процент кассира по нему больше не ждёт (ADR-054).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'person', 'Долгов', '12345678901234')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        pay(&[("debt", 50_000)]),
+    );
+    req.party_id = Some(party);
+    let mut tx = pool.begin().await.unwrap();
+    avtodom_server::api::payroll::ensure_cashier_rules(&mut tx, &w.owner, w.cashier)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    sell(&pool, &w.owner, req).await.unwrap();
+    let pending = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("select coalesce(sum(debt_remaining_tyiyn), 0)::bigint from payroll_pending where party_id = $1")
+                .bind(party)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(pending().await, 50_000);
+    let mut tx = pool.begin().await.unwrap();
+    avtodom_server::api::payroll::forgive_pending(&mut tx, &w.owner, party, 50_000)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(pending().await, 0);
+}
+
 /// Текст ответа бота на сообщение из чата `chat`.
 async fn say(conn: &mut sqlx::PgConnection, chat: i64, text: &str) -> String {
     avtodom_server::api::telegram::handle_message(conn, chat, chat, Some(text), None)
@@ -1904,4 +2185,23 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     assert!(msgs[0].text.contains("Сторно прихода") && msgs[0].text.contains("№ 7"));
     save_cursor(&mut conn, next.unwrap()).await.unwrap();
     assert!(pending(&mut conn).await.unwrap().0.is_empty());
+    // Владельцу в бот — и обычный чек: номер, сумма, как платили, кассир.
+    receive(&pool, &w.admin, w.filter, 2, 2_000).await;
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+    )
+    .await
+    .unwrap();
+    let (msgs, _) = pending(&mut conn).await.unwrap();
+    let sale_msg = msgs
+        .iter()
+        .find(|m| m.text.contains("🧾 Чек №"))
+        .expect("сообщение о чеке");
+    assert!(
+        sale_msg.text.contains("наличными 500,00 с") && sale_msg.text.contains("кассир"),
+        "{}",
+        sale_msg.text
+    );
 }

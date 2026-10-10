@@ -150,6 +150,23 @@ pub async fn live_product(conn: &mut PgConnection, id: Uuid) -> AppResult<Uuid> 
     Ok(cur)
 }
 
+/// После блокировки остатков: ни одну карточку не объединили, пока ждали. Иначе движение
+/// легло бы на дубль, остаток которого уже перенесли, — пусть документ проведут ещё раз.
+pub async fn ensure_not_merged(conn: &mut PgConnection, ids: &[Uuid]) -> AppResult<()> {
+    let merged = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from products where id = any($1) and merged_into is not null"#,
+        ids
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if merged > 0 {
+        return Err(AppError::Conflict(
+            "товар только что объединили с другой карточкой — повторите операцию".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Блокирует строку остатка товара (создаёт при отсутствии) и возвращает пул.
 pub async fn lock_pool(
     conn: &mut PgConnection,
@@ -227,7 +244,7 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
     .ok_or_else(|| AppError::Internal("строка остатка не найдена".into()))?;
     // Стоимость остатка должна соответствовать тому, что лежит на складе (ADR-044):
     // - товара 0 — стоимость 0;
-    // - приход закрыл продажи в минус — оставшееся стоит по цене этого прихода;
+    // - приход (закупка) закрыл продажи в минус — оставшееся стоит по цене этого прихода;
     // - товар есть, а стоимость ушла в минус — по последней закупочной цене.
     // Разница списывается переоценкой и входит в себестоимость дня.
     if m.doc_type == "revaluation" {
@@ -240,7 +257,11 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
     };
     let target = if qty == 0 {
         Some(0)
-    } else if m.qty_delta > 0 && before_qty < 0 {
+    } else if m.qty_delta > 0
+        && before_qty < 0
+        && matches!(m.doc_type, "receipt" | "battery_intake")
+    {
+        // Только закупка задаёт цену: возврат по чеку с нулевой себестоимостью не обнуляет минус.
         per_unit(m.value_delta, m.qty_delta)
     } else if qty > 0 && value < 0 {
         Some(if after.last_cost_qty > 0 {

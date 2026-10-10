@@ -366,7 +366,9 @@ test('подарок по порогу: 1 л розлива мало, канис
   await page.getByRole('button', { name: new RegExp(`Ароматизатор ${RUN}`) }).click()
   const giftLine = page.getByRole('listitem').filter({ hasText: `Ароматизатор ${RUN}` })
   await expect(giftLine).toContainText('подарок')
-  await expect(giftLine.getByRole('textbox').nth(1)).toHaveValue('0')
+  // У подарка нет поля цены: «бесплатно», правится только количество.
+  await expect(giftLine).toContainText('бесплатно')
+  await expect(giftLine.getByRole('textbox')).toHaveCount(1)
   await expect(giftLine).toContainText(money('0,00 с'))
 
   await page.locator('#cashier-select').selectOption({ label: cashier })

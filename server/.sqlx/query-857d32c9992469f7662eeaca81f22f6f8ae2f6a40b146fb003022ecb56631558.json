@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select account_id, amount_tyiyn from cash_movements\n               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2",
+  "query": "select id, debt_remaining_tyiyn from payroll_pending\n           where party_id = $1 and branch_id = $2 and debt_remaining_tyiyn > 0\n           order by created_at",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "account_id",
+        "name": "id",
         "type_info": "Uuid"
       },
       {
         "ordinal": 1,
-        "name": "amount_tyiyn",
+        "name": "debt_remaining_tyiyn",
         "type_info": "Int8"
       }
     ],
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "84f85798ad596817f6b058af20a9ee49719b5495d7b4d02a01aa18fe04b622e2"
+  "hash": "857d32c9992469f7662eeaca81f22f6f8ae2f6a40b146fb003022ecb56631558"
 }

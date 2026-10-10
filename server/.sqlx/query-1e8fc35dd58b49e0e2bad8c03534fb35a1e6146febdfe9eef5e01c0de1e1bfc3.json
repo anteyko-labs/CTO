@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, role, kind, name, phone, inn, comment,\n                  credit_limit_tyiyn as \"credit_limit_tyiyn?\", due_days as \"due_days?\",\n                  active, balance_tyiyn,\n                  case when parties.balance_tyiyn > 0 and parties.due_days is not null then\n                    greatest(0, parties.balance_tyiyn - coalesce((\n                      select sum(l.amount_tyiyn) from party_ledger l\n                      where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0\n                        and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))\n                  else 0 end::bigint as \"overdue_tyiyn!\"\n           from parties\n           where branch_id = $1\n             and ($2::text is null or role = $2)\n             and ($3::text is null or kind = $3)\n             and ($4::text is null\n                  or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'\n                  -- Госномер машины: на замене кассир видит машину, а не паспорт (SPEC-16).\n                  or exists (select 1 from party_vehicles v\n                             where v.party_id = parties.id and v.active\n                               and upper(replace(v.plate, ' ', '')) like '%' || upper(replace($4, ' ', '')) || '%'))\n             and (not $5 or balance_tyiyn <> 0)\n           order by (balance_tyiyn <> 0) desc, name\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "credit_limit_tyiyn?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "due_days?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "overdue_tyiyn!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "1e8fc35dd58b49e0e2bad8c03534fb35a1e6146febdfe9eef5e01c0de1e1bfc3"
+}

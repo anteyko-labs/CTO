@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n                 coalesce((select sum(amount_tyiyn) from payouts\n                           where employee_id = $1\n                             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as \"paid!\",\n                 (coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)\n                  - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0))::bigint as \"owed!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "paid!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "owed!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "44657d41647869c46409e5a1367925376a31a90eed27e4aa0babfed49fa64198"
+}

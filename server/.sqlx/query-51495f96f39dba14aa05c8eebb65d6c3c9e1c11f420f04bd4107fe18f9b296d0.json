@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.action, a.data, a.created_at, a.entity_id, a.branch_id,\n                  u.full_name as \"who?\", t.chat_id,\n                  e.full_name as \"employee?\"\n           from audit_log a\n           join telegram_links t on t.branch_id = a.branch_id\n           left join users u on u.id = a.user_id\n           left join employees e on e.id = a.entity_id\n           where a.created_at > $1 and a.action = any($2)\n           order by a.created_at\n           limit 100",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "entity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "who?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "employee?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "51495f96f39dba14aa05c8eebb65d6c3c9e1c11f420f04bd4107fe18f9b296d0"
+}

@@ -39,7 +39,10 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   const navigate = useNavigate()
   const returned = useLoad(() => loadReturned(sale), [sale.id])
   const [qty, setQty] = useState<Record<number, string>>({})
-  const [method, setMethod] = useState<PaymentMethod>('cash')
+  // Возврат — тем же способом, каким платили: долговой чек списывается с долга, а не выдаётся наличными.
+  const paidBy = [...sale.payments].sort((a, b) => b.amount_tyiyn - a.amount_tyiyn).map((p) => p.method)
+  const methods: PaymentMethod[] = [...new Set<PaymentMethod>([...paidBy, 'cash', 'card', 'transfer'])]
+  const [method, setMethod] = useState<PaymentMethod>(paidBy[0] ?? 'cash')
   const [comment, setComment] = useState('')
   const [opId] = useState(newOpId)
   const { busy, error, run } = useAction()
@@ -94,11 +97,23 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
             ))}
           </Table>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Вернуть деньги">
+            <Field
+              label="Как вернуть"
+              hint={
+                method === 'debt'
+                  ? 'Деньги не выдаются: сумма снимается с долга клиента'
+                  : method === 'bonus'
+                    ? 'Баллы вернутся клиенту'
+                    : method === 'cash'
+                      ? 'Наличные из кассы'
+                      : 'Возврат на карту / QR через терминал'
+              }
+            >
               <select value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
-                {(sale.payments.some((p) => p.method === 'bonus') ? (['cash', 'card', 'transfer', 'bonus'] as const) : (['cash', 'card', 'transfer'] as const)).map((m) => (
+                {methods.map((m) => (
                   <option key={m} value={m}>
-                    {PAYMENT_LABELS[m]}
+                    {m === 'debt' ? 'С долга по чеку' : PAYMENT_LABELS[m]}
+                    {paidBy.includes(m) ? ' (как платили)' : ''}
                   </option>
                 ))}
               </select>

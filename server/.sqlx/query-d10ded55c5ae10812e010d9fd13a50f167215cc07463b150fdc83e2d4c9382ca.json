@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.number, s.business_date, s.account_id, a.name as account_name,\n                  e.full_name as cashier_name, u.full_name as opened_by, s.opened_at,\n                  s.opening_expected_tyiyn, a.balance_tyiyn\n           from shifts s\n           join cash_accounts a on a.id = s.account_id\n           join employees e on e.id = s.cashier_employee_id\n           join users u on u.id = s.opened_by\n           where s.id = $1 and s.branch_id = $2",
+  "query": "select s.id, s.number, s.business_date, s.account_id, a.name as account_name,\n                  e.full_name as cashier_name, s.cashier_employee_id, u.full_name as opened_by, s.opened_at,\n                  s.opening_expected_tyiyn, a.balance_tyiyn\n           from shifts s\n           join cash_accounts a on a.id = s.account_id\n           join employees e on e.id = s.cashier_employee_id\n           join users u on u.id = s.opened_by\n           where s.id = $1 and s.branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -35,21 +35,26 @@
       },
       {
         "ordinal": 6,
+        "name": "cashier_employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
         "name": "opened_by",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "opened_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "opening_expected_tyiyn",
         "type_info": "Int8"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "balance_tyiyn",
         "type_info": "Int8"
       }
@@ -70,8 +75,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "5611a15b4439ac298be021cf1350c6e87477e38478439900e65d33762252c175"
+  "hash": "d10ded55c5ae10812e010d9fd13a50f167215cc07463b150fdc83e2d4c9382ca"
 }

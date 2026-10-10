@@ -281,3 +281,17 @@ test('новый клиент в кассе: физлицо или юрлицо 
   await expect(page.getByRole('button', { name: 'это физлицо' })).toBeVisible()
   await expect(page.getByText(`ИНН ${pin}`)).toBeVisible()
 })
+
+test('сводка владельца: периоды и график валовой и чистой', async ({ page }) => {
+  await login(page)
+  await page.goto('/summary')
+  await expect(page.getByRole('heading', { name: 'Сводка сегодня' })).toBeVisible()
+  await expect(page.getByText('Продажи сегодня по часам')).toBeVisible()
+  await page.getByRole('button', { name: '7 дней' }).click()
+  await expect(page.getByRole('heading', { name: 'Сводка за 7 дней' })).toBeVisible()
+  await expect(page.getByText('Прибыль по дням за 7 дней')).toBeVisible()
+  await expect(page.getByRole('img', { name: 'График прибыли' })).toBeVisible()
+  await expect(page.getByText('Кто сколько заработал за 7 дней')).toBeVisible()
+  await page.getByRole('button', { name: '30 дней' }).click()
+  await expect(page.getByText('Прибыль по дням за 30 дней')).toBeVisible()
+})

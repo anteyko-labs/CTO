@@ -62,6 +62,7 @@ export default function SalesDay() {
           <Stat label="Карта" value={formatSom(data.totals.card_tyiyn)} />
           <Stat label="QR" value={formatSom(data.totals.transfer_tyiyn)} />
           <Stat label="В долг" value={formatSom(data.totals.debt_tyiyn)} />
+          {(data.totals.bonus_tyiyn ?? 0) !== 0 && <Stat label="Баллами" value={formatSom(data.totals.bonus_tyiyn ?? 0)} />}
         </div>
       )}
       <Card>

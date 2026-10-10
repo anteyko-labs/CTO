@@ -268,6 +268,7 @@ pub async fn reverse_transfer_tx(
         ));
     }
     lock_products(conn, branch_id, [from_id, to_id]).await?;
+    ops::ensure_not_merged(conn, &[from_id, to_id]).await?;
     let target = ops::lock_pool(conn, branch_id, to_id).await?;
     if target.qty < t.qty_ml {
         return Err(invalid(format!(

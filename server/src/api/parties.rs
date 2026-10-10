@@ -112,7 +112,11 @@ async fn list_parties(
              and ($2::text is null or role = $2)
              and ($3::text is null or kind = $3)
              and ($4::text is null
-                  or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%')
+                  or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'
+                  -- Госномер машины: на замене кассир видит машину, а не паспорт (SPEC-16).
+                  or exists (select 1 from party_vehicles v
+                             where v.party_id = parties.id and v.active
+                               and upper(replace(v.plate, ' ', '')) like '%' || upper(replace($4, ' ', '')) || '%'))
              and (not $5 or balance_tyiyn <> 0)
            order by (balance_tyiyn <> 0) desc, name
            limit 500"#,
@@ -1028,6 +1032,11 @@ async fn post_adjust(
         },
     )
     .await?;
+    // Прощённый долг не будет погашен: процент кассира по нему не ждём.
+    if req.amount_tyiyn < 0 {
+        crate::api::payroll::forgive_pending(&mut tx, &ctx, req.party_id, -req.amount_tyiyn)
+            .await?;
+    }
     ops::audit(
         &mut tx,
         &ctx,
@@ -1309,8 +1318,9 @@ async fn reverse_ledger(
     // Деньги погашения уходят из той же кассы; для кассы смены нужна открытая смена.
     if l.kind == "repayment" && l.doc_type == "repayment" {
         let moves = sqlx::query!(
+            // Комиссию банк не возвращает: она остаётся расходом дня погашения (ADR-022).
             r#"select account_id, amount_tyiyn from cash_movements
-               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2"#,
+               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2 and kind <> 'bank_fee'"#,
             branch_id,
             l.doc_id
         )

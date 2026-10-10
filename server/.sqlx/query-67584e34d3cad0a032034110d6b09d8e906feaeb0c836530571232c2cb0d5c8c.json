@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.id, p.name, p.article, p.unit, p.container_ml,\n                      coalesce((select array_agg(b.code order by b.code) from product_barcodes b\n                                where b.product_id = p.id), '{}') as \"barcodes!\",\n                      coalesce(bp.stock_qty, 0) as \"expected!\", l.counted_qty as \"counted?\"\n               from products p\n               left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n               left join revision_lines l on l.product_id = p.id and l.revision_id = $1\n               where not p.archived\n                 and ($3::uuid is null or p.category_id = $3)\n                 and (l.product_id is not null or coalesce(bp.stock_qty, 0) <> 0 or $3::uuid is not null)\n               order by (l.product_id is null), p.name\n               limit 3000",
+  "query": "select p.id, p.name, p.article, p.unit, p.container_ml,\n                      coalesce((select array_agg(b.code order by b.code) from product_barcodes b\n                                where b.product_id = p.id), '{}') as \"barcodes!\",\n                      coalesce(l.stock_at_count, bp.stock_qty, 0) as \"expected!\", l.counted_qty as \"counted?\"\n               from products p\n               left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n               left join revision_lines l on l.product_id = p.id and l.revision_id = $1\n               where not p.archived\n                 and ($3::uuid is null or p.category_id = $3)\n                 and (l.product_id is not null or coalesce(bp.stock_qty, 0) <> 0 or $3::uuid is not null)\n               order by (l.product_id is null), p.name\n               limit 3000",
   "describe": {
     "columns": [
       {
@@ -62,5 +62,5 @@
       false
     ]
   },
-  "hash": "560aafb1692e9d323aba2279ecb51956b5d85e6eefc4a23ce0eb12892d9a2d5f"
+  "hash": "67584e34d3cad0a032034110d6b09d8e906feaeb0c836530571232c2cb0d5c8c"
 }

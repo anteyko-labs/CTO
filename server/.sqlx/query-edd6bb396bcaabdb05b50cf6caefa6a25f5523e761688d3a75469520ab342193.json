@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from gift_rule_items i where i.gift_product_id = $1\n             and exists (select 1 from gift_rule_items x where x.rule_id = i.rule_id and x.gift_product_id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "edd6bb396bcaabdb05b50cf6caefa6a25f5523e761688d3a75469520ab342193"
+}

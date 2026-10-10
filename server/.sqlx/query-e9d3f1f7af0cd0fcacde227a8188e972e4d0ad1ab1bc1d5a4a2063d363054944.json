@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update gift_rules set active = false where trigger_product_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e9d3f1f7af0cd0fcacde227a8188e972e4d0ad1ab1bc1d5a4a2063d363054944"
+}

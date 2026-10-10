@@ -698,7 +698,16 @@ fn staff_lines(staff: &[crate::api::payroll::StaffPay]) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("  {} — {} ({parts})", p.name, format_som(p.total_tyiyn))
+            let owed = match p.owed_tyiyn {
+                0 => "всё выдано".to_string(),
+                o if o > 0 => format!("к выдаче {}", format_som(o)),
+                o => format!("аванс {}", format_som(-o)),
+            };
+            format!(
+                "  {} — {} ({parts}); {owed}",
+                p.name,
+                format_som(p.total_tyiyn)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -884,12 +893,20 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<(Vec<Outgoing>, Optio
     let Some(cursor) = cursor else {
         return Ok((Vec::new(), Some(Utc::now())));
     };
-    let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
+    // Владельцу в бот — всё: важные события экрана «Уведомления» и вся текущая работа точки.
+    let watched: Vec<String> = WATCHED
+        .iter()
+        .chain(FEED.iter())
+        .map(|s| (*s).to_string())
+        .collect();
     let rows = sqlx::query!(
-        r#"select a.action, a.data, a.created_at, u.full_name as "who?", t.chat_id
+        r#"select a.action, a.data, a.created_at, a.entity_id, a.branch_id,
+                  u.full_name as "who?", t.chat_id,
+                  e.full_name as "employee?"
            from audit_log a
            join telegram_links t on t.branch_id = a.branch_id
            left join users u on u.id = a.user_id
+           left join employees e on e.id = a.entity_id
            where a.created_at > $1 and a.action = any($2)
            order by a.created_at
            limit 100"#,
@@ -899,24 +916,239 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<(Vec<Outgoing>, Optio
     .fetch_all(&mut *conn)
     .await?;
     let next = rows.last().map(|r| r.created_at);
-    let out = rows
-        .into_iter()
-        .map(|r| {
-            let (title, details) = describe(&r.action, &r.data);
-            let who = r.who.map(|w| format!("\n— {w}")).unwrap_or_default();
-            let text = if details.is_empty() {
-                format!("{title}{who}")
-            } else {
-                format!("{title}\n{details}{who}")
-            };
-            Outgoing {
-                at: r.created_at,
-                chat_id: r.chat_id,
-                text,
-            }
-        })
-        .collect();
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let (title, details) = match r.action.as_str() {
+            "sale.post" => match r.entity_id {
+                Some(id) => sale_text(conn, id).await?,
+                None => describe(&r.action, &r.data),
+            },
+            a if FEED.contains(&a) => feed_text(a, &r.data, r.employee.as_deref()),
+            _ => describe(&r.action, &r.data),
+        };
+        let who = r.who.map(|w| format!("\n— {w}")).unwrap_or_default();
+        let mut text = if details.is_empty() {
+            format!("{title}{who}")
+        } else {
+            format!("{title}\n{details}{who}")
+        };
+        // Смену закрыли — следом итог дня, чтобы не нажимать «Сегодня».
+        if r.action == "shift.close" {
+            text = format!("{text}\n\n{}", today(conn, r.branch_id).await?);
+        }
+        out.push(Outgoing {
+            at: r.created_at,
+            chat_id: r.chat_id,
+            text,
+        });
+    }
     Ok((out, next))
+}
+
+/// Текущая работа точки, которая идёт владельцу в бот сверх экрана «Уведомления».
+const FEED: [&str; 15] = [
+    "sale.post",
+    "shift.open",
+    "shift.close",
+    "receipt.post",
+    "expense.post",
+    "expense.reverse",
+    "debt.repayment",
+    "payout.post",
+    "payroll.salary",
+    "payroll.accrual",
+    "cash.movement",
+    "cash.transfer",
+    "battery.intake",
+    "oil.transfer",
+    "product.merge",
+];
+
+fn money_of(data: &Value, key: &str) -> String {
+    format_som(data.get(key).and_then(Value::as_i64).unwrap_or(0))
+}
+
+fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, String) {
+    let num = |k: &str| data.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let txt = |k: &str| {
+        data.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let emp = employee.unwrap_or("сотрудник");
+    match action {
+        "shift.open" => (
+            format!("🟢 Смена № {} открыта", num("number")),
+            format!(
+                "Размен в кассе: {} (по учёту {})",
+                money_of(data, "counted"),
+                money_of(data, "expected")
+            ),
+        ),
+        "shift.close" => {
+            let diff = num("diff");
+            let result = match diff {
+                0 => "сошлось".to_string(),
+                d if d < 0 => format!("недостача {}", format_som(-d)),
+                d => format!("излишек {}", format_som(d)),
+            };
+            (
+                "🔴 Смена закрыта".into(),
+                format!(
+                    "Должно быть {}, посчитали {} — {result}",
+                    money_of(data, "expected"),
+                    money_of(data, "counted")
+                ),
+            )
+        }
+        "receipt.post" => (
+            format!("📦 Приход № {}", num("number")),
+            format!("Товара на {}", money_of(data, "total")),
+        ),
+        "expense.post" => (
+            format!("💸 Расход: {}", txt("article")),
+            format!(
+                "{}{}",
+                money_of(data, "amount_tyiyn"),
+                match txt("source").as_str() {
+                    "outside" => " · не из денег точки",
+                    "bank" => " · со счёта",
+                    _ => " · из кассы",
+                }
+            ),
+        ),
+        "expense.reverse" => ("↩️ Расход отменён".into(), money_of(data, "amount_tyiyn")),
+        "debt.repayment" => (
+            "💰 Погашение долга".into(),
+            format!(
+                "Заплатили {} · осталось {}",
+                money_of(data, "amount_tyiyn"),
+                money_of(data, "balance_tyiyn")
+            ),
+        ),
+        "payout.post" => (
+            format!("👛 Выплата: {emp}"),
+            format!(
+                "{}{}",
+                money_of(data, "amount_tyiyn"),
+                if data.get("advance").and_then(Value::as_bool) == Some(true) {
+                    " · аванс сверх заработанного"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        "payroll.salary" => (
+            format!("🗓 Оклад: {emp}"),
+            format!("{} за {}", money_of(data, "amount_tyiyn"), txt("month")),
+        ),
+        "payroll.accrual" => (
+            format!(
+                "{}: {emp}",
+                if txt("kind") == "bonus" {
+                    "🎁 Премия"
+                } else {
+                    "➖ Удержание"
+                }
+            ),
+            format!("{} · {}", money_of(data, "amount_tyiyn"), txt("comment")),
+        ),
+        "cash.movement" => (
+            if txt("kind") == "cash_in" {
+                "➕ Внесли в кассу".into()
+            } else {
+                "➖ Изъяли из кассы".into()
+            },
+            format!("{} · {}", money_of(data, "amount_tyiyn"), txt("comment")),
+        ),
+        "cash.transfer" => (
+            format!("🔁 Перевод денег № {}", num("number")),
+            money_of(data, "amount_tyiyn"),
+        ),
+        "battery.intake" => (
+            format!("🔋 Приём аккумуляторов № {}", num("number")),
+            format!(
+                "{},{:03} кг · выдали {}",
+                num("grams") / 1000,
+                num("grams") % 1000,
+                money_of(data, "amount")
+            ),
+        ),
+        "oil.transfer" => (
+            format!("🛢 Перелив № {}", num("number")),
+            format!(
+                "{} → {}, {} мл",
+                txt("from_name"),
+                txt("to_name"),
+                num("qty_ml")
+            ),
+        ),
+        "product.merge" => ("🗂 Объединены карточки товара".into(), String::new()),
+        _ => describe(action, data),
+    }
+}
+
+/// Чек для владельца: номер, сумма, как платили, кто продал, клиент и машина.
+async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, String)> {
+    let s = sqlx::query!(
+        r#"select s.number, s.total_tyiyn, s.sale_type, c.full_name as cashier,
+                  m.full_name as "master?", p.name as "party?", v.plate as "plate?",
+                  (select count(*) from sale_lines l where l.sale_id = s.id) as "lines!"
+           from sales s
+           join employees c on c.id = s.cashier_id
+           left join employees m on m.id = s.master_id
+           left join parties p on p.id = s.party_id
+           left join party_vehicles v on v.id = s.vehicle_id
+           where s.id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let pays = sqlx::query!(
+        "select method, amount_tyiyn from sale_payments where sale_id = $1 order by amount_tyiyn desc",
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|p| {
+        let how = match p.method.as_str() {
+            "cash" => "наличными",
+            "card" => "картой",
+            "transfer" => "QR",
+            "debt" => "в долг",
+            "bonus" => "баллами",
+            other => other,
+        };
+        format!("{how} {}", format_som(p.amount_tyiyn))
+    })
+    .collect::<Vec<_>>()
+    .join(", ");
+    let mut details = vec![pays];
+    let mut who = format!("кассир {}", s.cashier);
+    if s.sale_type == "service" {
+        who.push_str(&format!(
+            ", в сервис, мастер {}",
+            s.master.unwrap_or_default()
+        ));
+    }
+    details.push(who);
+    if let Some(p) = s.party {
+        details.push(match s.plate {
+            Some(plate) => format!("клиент {p}, {plate}"),
+            None => format!("клиент {p}"),
+        });
+    }
+    Ok((
+        format!(
+            "🧾 Чек № {} — {} ({} поз.)",
+            s.number,
+            format_som(s.total_tyiyn),
+            s.lines
+        ),
+        details.join("\n"),
+    ))
 }
 
 pub async fn save_cursor(conn: &mut PgConnection, at: DateTime<Utc>) -> AppResult<()> {

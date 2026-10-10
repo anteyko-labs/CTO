@@ -100,6 +100,8 @@ interface Parked {
   party: Party | null
   contactId: string
   vehicleId: string
+  mileage?: string
+  delivery?: string | null
 }
 
 function loadParked(): Parked[] {
@@ -126,6 +128,12 @@ interface Draft {
   masterId: string
   lines: CartLine[]
   comment: string
+  // Ушли по ссылке и вернулись — клиент, машина и пробег не теряются.
+  party?: Party | null
+  contactId?: string
+  vehicleId?: string
+  mileage?: string
+  delivery?: string | null
 }
 
 function loadDraft(): Draft | null {
@@ -174,13 +182,14 @@ export default function Cashier() {
   // Скидка баллами: часть чека оплачивается баллами клиента из бота (SPEC-19).
   const [bonus, setBonus] = useState<BonusUse | null>(null)
   const [bonusOpen, setBonusOpen] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
   const attempt = useRef<{ key: string; opId: string } | null>(null)
   const [done, setDone] = useState<{ sale: Sale; change: number | null; book?: VehicleBook | null } | null>(null)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
   const [newProductName, setNewProductName] = useState<string | null>(null)
-  const [party, setParty] = useState<Party | null>(null)
+  const [party, setParty] = useState<Party | null>(draft?.party ?? null)
   const [parked, setParked] = useState<Parked[]>(loadParked)
   const [parkedId, setParkedId] = useState<string | null>(null)
   const [giftRule, setGiftRule] = useState<GiftRule | null>(null)
@@ -198,10 +207,10 @@ export default function Cashier() {
   const limitAsk = useAction()
   const innSave = useAction()
   const [innText, setInnText] = useState('')
-  const [contactId, setContactId] = useState('')
-  const [vehicleId, setVehicleId] = useState('')
-  const [mileage, setMileage] = useState('')
-  const [delivery, setDelivery] = useState<string | null>(null)
+  const [contactId, setContactId] = useState(draft?.contactId ?? '')
+  const [vehicleId, setVehicleId] = useState(draft?.vehicleId ?? '')
+  const [mileage, setMileage] = useState(draft?.mileage ?? '')
+  const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
   // Аналоги фильтров по кросс-номерам: подсказка в строке, особенно когда товара нет (SPEC-17).
   const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
   const { busy, error, setError, run } = useAction()
@@ -209,7 +218,17 @@ export default function Cashier() {
   const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
   const masters = employees.data?.filter((e) => e.active && e.is_master) ?? []
 
-  useEffect(() => saveDraft({ saleType, masterId, lines, comment }), [saleType, masterId, lines, comment])
+  useEffect(
+    () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery }),
+    [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery],
+  )
+
+  // Открыта смена — кассир чека тот, кто на смене: 2 % не уйдут кассиру с прошлого раза.
+  const shiftCashier = shift.data?.cashier_employee_id ?? null
+  useEffect(() => {
+    if (shiftCashier && cashiers.some((c) => c.id === shiftCashier)) setCashierId(shiftCashier)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftCashier, employees.data])
 
   // Единственный кассир или мастер выбирается сам; выбор несуществующего сбрасывается.
   useEffect(() => {
@@ -251,6 +270,8 @@ export default function Cashier() {
   const payments =
     moneyPayments && bonusAmount > 0 ? [...moneyPayments, { method: 'bonus' as const, amount_tyiyn: bonusAmount }] : moneyPayments
   const paid = payments?.reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? null
+  // Смешанная оплата: сколько ещё не разнесено по способам (баллы уже вычтены из «к оплате»).
+  const mixedLeft = payMode === 'mixed' && paid !== null ? due - (paid - bonusAmount) : null
   const receivedValue = payMode === 'cash' && received.trim() ? parseSom(received) : null
   const change = receivedValue !== null ? receivedValue - due : null
 
@@ -382,6 +403,17 @@ export default function Cashier() {
     attempt.current = null
   }
 
+  // Прошлый пробег машины: лишний ноль уйдёт в книжку, на печать и клиенту в бот.
+  const book = useLoad(() => (vehicleId ? get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`) : Promise.resolve(null)), [vehicleId])
+  const lastKm = book.data?.records.find((r) => r.mileage_km !== null)?.mileage_km ?? null
+  const mileageWarning = (() => {
+    const m = mileage ? Number(mileage) : null
+    if (m === null || lastKm === null) return null
+    if (m < lastKm) return `Меньше, чем в прошлый раз (${lastKm.toLocaleString('ru-RU')} км) — проверьте.`
+    if (m > lastKm + 50_000) return `В прошлый раз было ${lastKm.toLocaleString('ru-RU')} км — точно ${m.toLocaleString('ru-RU')}?`
+    return null
+  })()
+
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
   const overLimit =
@@ -403,6 +435,8 @@ export default function Cashier() {
       party,
       contactId,
       vehicleId,
+      mileage,
+      delivery,
     }
     return [...list.filter((p) => p.id !== id), item]
   }
@@ -421,6 +455,8 @@ export default function Cashier() {
     const next = parkCurrent(parked).filter((x) => x.id !== p.id)
     setParked(next)
     saveParked(next)
+    // Сначала всё от текущего чека (оплата, баллы, получено), потом поля отложенного.
+    reset()
     setSaleType(p.saleType)
     setMasterId(p.masterId)
     setLines(p.lines)
@@ -428,6 +464,8 @@ export default function Cashier() {
     setParty(p.party)
     setContactId(p.contactId)
     setVehicleId(p.vehicleId)
+    setMileage(p.mileage ?? '')
+    setDelivery(p.delivery ?? null)
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -447,7 +485,7 @@ export default function Cashier() {
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select'],
     [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»'],
     [payments !== null, 'сумму оплаты', '[data-pay]'],
-    [payments === null || paid === total, `оплату: ${formatSom(paid ?? 0)} вместо ${formatSom(total)}`, '[data-pay]'],
+    [payments === null || paid === total, `оплату: разнесено ${formatSom((paid ?? 0) - bonusAmount)} из ${formatSom(due)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
     [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента'],
@@ -562,7 +600,9 @@ export default function Cashier() {
   const canSubmit = !busy && blockers.length === 0
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmit) {
+      // Открыто окно (подарок, баллы, клиент, услуги…) — сочетание относится к нему, не к чеку.
+      const dialog = Boolean(document.querySelector('[role="dialog"]'))
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmit && !dialog) {
         e.preventDefault()
         void submit()
       }
@@ -769,16 +809,20 @@ export default function Cashier() {
                         </button>
                       </span>
                     </label>
-                    <label className="flex flex-col text-xs text-slate-500">
-                      {l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'}
-                      <input
-                        className={`w-28 ${changed ? 'border-amber-400 bg-amber-50' : ''}`}
-                        inputMode="decimal"
-                        value={l.priceText}
-                        onChange={(e) => update(l.key, { priceText: e.target.value })}
-                        title={changed ? `Прайс: ${formatSom(listPrice(l))}` : undefined}
-                      />
-                    </label>
+                    {l.gift ? (
+                      <div className="w-28 text-xs text-emerald-700">бесплатно</div>
+                    ) : (
+                      <label className="flex flex-col text-xs text-slate-500">
+                        {l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'}
+                        <input
+                          className={`w-28 ${changed ? 'border-amber-400 bg-amber-50' : ''}`}
+                          inputMode="decimal"
+                          value={l.priceText}
+                          onChange={(e) => update(l.key, { priceText: e.target.value })}
+                          title={changed ? `Прайс: ${formatSom(listPrice(l))}` : undefined}
+                        />
+                      </label>
+                    )}
                     <div className="w-28 text-right font-medium">{amount === null ? '—' : formatSom(amount)}</div>
                     <button
                       type="button"
@@ -827,6 +871,9 @@ export default function Cashier() {
               ))}
             </select>
           </Field>
+          {shiftCashier && cashierId && cashierId !== shiftCashier && (
+            <div className="text-xs text-amber-700">На смене {shift.data?.cashier_name}: процент с этого чека получит выбранный кассир.</div>
+          )}
           {saleType === 'service' && (
             <>
               <Field label="Мастер" required>
@@ -840,7 +887,7 @@ export default function Cashier() {
                 </select>
               </Field>
               <div className="text-xs text-slate-500">
-                Замена в чеке строкой не печатается, цена масла та же. Мастеру начисляется ставка за этот чек.
+                Мастеру начислится ставка за этот чек.
               </div>
             </>
           )}
@@ -867,6 +914,7 @@ export default function Cashier() {
             (party && vehicleId ? (
               <Field label="Пробег сейчас, км" required hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку">
                 <input id="mileage" inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
+                {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
               </Field>
             ) : (
               <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900">
@@ -914,7 +962,7 @@ export default function Cashier() {
               </Button>
             </div>
           )}
-          <div data-pay tabIndex={-1} className="grid grid-cols-5 overflow-hidden rounded-md border border-slate-300 text-xs">
+          <div data-pay tabIndex={-1} className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-xs sm:grid-cols-5">
             {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m) => (
               <button
                 key={m}
@@ -970,13 +1018,13 @@ export default function Cashier() {
               )}
             </div>
           )}
-          {payMode === 'debt' && (
+          {(payMode === 'debt' || debtAmount > 0) && (
             <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
               {party ? (
                 <>
-                  {bonus ? "Остаток" : "Весь чек"} в долг: {party.name}, {balanceText(party.balance_tyiyn)}
+                  В долг {formatSom(debtAmount || due)}: {party.name}, сейчас {balanceText(party.balance_tyiyn)}
                   {party.credit_limit_tyiyn !== null && (
-                    <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - due)}</>
+                    <> · осталось по лимиту {formatSom(party.credit_limit_tyiyn - party.balance_tyiyn - (debtAmount || due))}</>
                   )}
                   {overLimit > 0 && (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1035,12 +1083,37 @@ export default function Cashier() {
             </div>
           )}
           {payMode === 'mixed' && (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
-                <Field key={m} label={PAYMENT_LABELS[m]}>
-                  <input inputMode="decimal" value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
-                </Field>
-              ))}
+            <div className="flex flex-col gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
+                  <Field key={m} label={PAYMENT_LABELS[m]}>
+                    <input inputMode="decimal" value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
+                  </Field>
+                ))}
+              </div>
+              {mixedLeft !== null && (
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-2 rounded-md px-3 py-2 text-sm ${mixedLeft === 0 ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-700'}`}
+                >
+                  <span>
+                    {mixedLeft === 0 ? 'Разнесено полностью' : mixedLeft > 0 ? `Осталось разнести: ${formatSom(mixedLeft)}` : `Лишнее: ${formatSom(-mixedLeft)}`}
+                  </span>
+                  {mixedLeft > 0 && (
+                    <span className="flex flex-wrap gap-1">
+                      {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs hover:border-sky-500"
+                          onClick={() => setSplit({ ...split, [m]: somInput((parseSom(split[m]) ?? 0) + mixedLeft) })}
+                        >
+                          остаток → {PAYMENT_LABELS[m]}
+                        </button>
+                      ))}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
           <Field label="Комментарий">
@@ -1057,9 +1130,24 @@ export default function Cashier() {
               <Button variant="secondary" className="flex-1" onClick={park}>
                 Отложить
               </Button>
-              <Button variant="ghost" className="flex-1" onClick={reset}>
-                Очистить
-              </Button>
+              {confirmClear ? (
+                <Button
+                  variant="ghost"
+                  className="flex-1 text-rose-700"
+                  onClick={() => {
+                    setConfirmClear(false)
+                    setParkedId(null)
+                    setGiftRule(null)
+                    reset()
+                  }}
+                >
+                  Точно очистить?
+                </Button>
+              ) : (
+                <Button variant="ghost" className="flex-1" onClick={() => setConfirmClear(true)}>
+                  Очистить
+                </Button>
+              )}
             </div>
           )}
         </Card>
@@ -1070,9 +1158,9 @@ export default function Cashier() {
             {blockers.length > 0 ? (
               <div className="truncate text-xs text-amber-700">Заполните: {blockers.map((x) => x.label).join(', ')}</div>
             ) : (
-              <div className="text-xs text-slate-500">Итого</div>
+              <div className="text-xs text-slate-500">{bonusAmount > 0 ? 'К оплате (с баллами)' : 'Итого'}</div>
             )}
-            <div className="truncate text-xl font-bold">{formatSom(total)}</div>
+            <div className="truncate text-xl font-bold">{formatSom(due)}</div>
           </div>
           <Button className="shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
             Провести чек
@@ -1085,10 +1173,13 @@ export default function Cashier() {
         <BonusRedeem
           total={total}
           onClose={() => setBonusOpen(false)}
+          initialPhone={party?.phone ?? ''}
           onApply={(b) => {
             setBonus(b)
             setBonusOpen(false)
-            toast(`Списано ${formatSom(b.amount_tyiyn)} баллами`)
+            // Клиента ещё не выбрали — ставим того, чьи баллы.
+            if (!party) void get<Party>(`/parties/${b.party_id}`).then(setParty).catch(() => undefined)
+            toast(`Скидка баллами ${formatSom(b.amount_tyiyn)} добавлена в чек`)
           }}
         />
       )}

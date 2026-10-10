@@ -268,6 +268,8 @@ pub struct ShiftOut {
     pub account_id: Uuid,
     pub account_name: String,
     pub cashier_name: String,
+    #[serde(default)]
+    pub cashier_employee_id: Option<Uuid>,
     pub opened_by: String,
     pub opened_at: DateTime<Utc>,
     pub opening_expected_tyiyn: i64,
@@ -311,7 +313,7 @@ pub(crate) async fn load_shift(
 ) -> AppResult<ShiftOut> {
     let h = sqlx::query!(
         r#"select s.id, s.number, s.business_date, s.account_id, a.name as account_name,
-                  e.full_name as cashier_name, u.full_name as opened_by, s.opened_at,
+                  e.full_name as cashier_name, s.cashier_employee_id, u.full_name as opened_by, s.opened_at,
                   s.opening_expected_tyiyn, a.balance_tyiyn
            from shifts s
            join cash_accounts a on a.id = s.account_id
@@ -402,6 +404,7 @@ pub(crate) async fn load_shift(
         account_id: h.account_id,
         account_name: h.account_name,
         cashier_name: h.cashier_name,
+        cashier_employee_id: Some(h.cashier_employee_id),
         opened_by: h.opened_by,
         opened_at: h.opened_at,
         opening_expected_tyiyn: h.opening_expected_tyiyn,

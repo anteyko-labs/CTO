@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select account_id, amount_tyiyn from cash_movements\n               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2 and kind <> 'bank_fee'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2376b4c6586188ff76f73935263345a0fed783633a3375c78b9fc195cf6e7e02"
+}

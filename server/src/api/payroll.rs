@@ -826,6 +826,40 @@ pub async fn accrue_on_repayment(
     Ok(())
 }
 
+/// Владелец простил долг — по этим чекам денег не будет, и процент ждать не нужно.
+/// Ожидание гасится по тем же правилам очереди, что и погашение, но без начисления.
+pub async fn forgive_pending(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    party_id: Uuid,
+    mut amount: i64,
+) -> AppResult<()> {
+    let rows = sqlx::query!(
+        r#"select id, debt_remaining_tyiyn from payroll_pending
+           where party_id = $1 and branch_id = $2 and debt_remaining_tyiyn > 0
+           order by created_at"#,
+        party_id,
+        ctx.user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for r in rows {
+        if amount <= 0 {
+            break;
+        }
+        let take = amount.min(r.debt_remaining_tyiyn);
+        sqlx::query!(
+            "update payroll_pending set debt_remaining_tyiyn = debt_remaining_tyiyn - $2 where id = $1",
+            r.id,
+            take
+        )
+        .execute(&mut *conn)
+        .await?;
+        amount -= take;
+    }
+    Ok(())
+}
+
 /// Блокирует сотрудника филиала: выплаты и оклады по нему идут по очереди,
 /// и остаток не уходит в минус от двух одновременных выплат.
 async fn lock_employee(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<()> {
@@ -1437,6 +1471,12 @@ pub struct StaffPay {
     pub name: String,
     pub items: Vec<PayItem>,
     pub total_tyiyn: i64,
+    /// Выдано за те же дни.
+    #[serde(default)]
+    pub paid_tyiyn: i64,
+    /// Сколько ему должны сейчас: всё начисленное минус всё выданное.
+    #[serde(default)]
+    pub owed_tyiyn: i64,
 }
 
 /// Начисления сотрудникам за дни учёта — для сводки владельца и отчёта смены.
@@ -1478,8 +1518,27 @@ pub async fn staff_pay(
                 name: r.full_name,
                 total_tyiyn: item.amount_tyiyn,
                 items: vec![item],
+                paid_tyiyn: 0,
+                owed_tyiyn: 0,
             }),
         }
+    }
+    for p in &mut out {
+        let r = sqlx::query!(
+            r#"select
+                 coalesce((select sum(amount_tyiyn) from payouts
+                           where employee_id = $1
+                             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "paid!",
+                 (coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)
+                  - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0))::bigint as "owed!""#,
+            p.employee_id,
+            from,
+            to
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        p.paid_tyiyn = r.paid;
+        p.owed_tyiyn = r.owed;
     }
     Ok(out)
 }

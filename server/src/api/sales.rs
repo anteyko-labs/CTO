@@ -463,6 +463,9 @@ async fn insert_payments(
     sale_id: Uuid,
     payments: &[PaymentReq],
     sign: i64,
+    // Возврат: сколько комиссии исходного чека ещё не вернули. Больше банк не вернёт —
+    // чек наличными, возвращённый на карту, комиссии «назад» не даёт (ADR-022).
+    mut fee_left: i64,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let register = cash::default_account(conn, branch_id).await?;
@@ -480,7 +483,14 @@ async fn insert_payments(
                 .fetch_optional(&mut *conn)
                 .await?
                 .unwrap_or(0);
-                div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0)
+                let fee = div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0);
+                if sign < 0 {
+                    let back = (-fee).min(fee_left.max(0));
+                    fee_left -= back;
+                    -back
+                } else {
+                    fee
+                }
             }
             _ => 0,
         };
@@ -704,9 +714,10 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     )
     .await?;
     // Пока ждали блокировку, карточку могли объединить: остаток не должен застрять в архиве.
+    // Просто архивная карточка (остаток 0) чек без сети не отклоняет — товар уже выдан.
     let ids: Vec<Uuid> = prepared.iter().filter_map(|p| p.product_id).collect();
     let archived = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from products where id = any($1) and archived"#,
+        r#"select count(*) as "n!" from products where id = any($1) and archived and merged_into is not null"#,
         &ids
     )
     .fetch_one(&mut *conn)
@@ -812,7 +823,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             stale.push(json!({ "line_no": line_no, "seen": seen, "list": p.list_price }));
         }
     }
-    insert_payments(conn, ctx, id, &req.payments, 1).await?;
+    insert_payments(conn, ctx, id, &req.payments, 1, 0).await?;
     // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
     crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments, offline).await?;
     if debt_total > 0 {
@@ -1125,6 +1136,38 @@ pub async fn return_sale_tx(
             crate::domain::money::format_som(left.debt.max(0))
         )));
     }
+    // Долг уже погасили — списывать с долга нечего: иначе клиент окажется с авансом,
+    // а процент кассира за возвращённый товар останется (возврат — деньгами).
+    if debt_req > 0 {
+        let owes = match orig.party_id {
+            Some(pid) => {
+                sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", pid)
+                    .fetch_one(&mut *conn)
+                    .await?
+                    .max(0)
+            }
+            None => 0,
+        };
+        if debt_req > owes {
+            return Err(invalid(format!(
+                "клиент сейчас должен {}: с долга можно снять не больше, остальное верните деньгами",
+                crate::domain::money::format_som(owes)
+            )));
+        }
+    }
+    // Чек оплачен баллами — деньгами больше, чем платили деньгами, не вернуть: баллы не обналичиваются.
+    let bonus_paid = sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from sale_payments where sale_id = $1 and method = 'bonus'"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if bonus_paid > 0 && money_req > left.money.max(0) {
+        return Err(invalid(format!(
+            "деньгами по этому чеку можно вернуть не больше {}, остальное — баллами",
+            crate::domain::money::format_som(left.money.max(0))
+        )));
+    }
     // Работу мастер уже сделал: ставка снимается только если вернули чек целиком (ADR-027).
     let sold_qty = sqlx::query_scalar!(
         r#"select coalesce(sum(qty), 0)::bigint as "v!" from sale_lines where sale_id = $1"#,
@@ -1151,7 +1194,9 @@ pub async fn return_sale_tx(
     };
 
     let products: BTreeSet<Uuid> = planned.iter().filter_map(|x| x.p.product_id).collect();
+    let ids: Vec<Uuid> = products.iter().copied().collect();
     lock_products(conn, branch_id, products).await?;
+    ops::ensure_not_merged(conn, &ids).await?;
     let number = ops::next_counter(conn, branch_id, "sale").await?;
     let rid = new_id();
     sqlx::query!(
@@ -1199,7 +1244,15 @@ pub async fn return_sale_tx(
         )
         .await?;
     }
-    insert_payments(conn, ctx, rid, &req.payments, -1).await?;
+    let fee_left = sqlx::query_scalar!(
+        r#"select coalesce(sum(p.fee_tyiyn), 0)::bigint as "v!"
+           from sale_payments p join sales s on s.id = p.sale_id
+           where s.id = $1 or s.reversal_of = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    insert_payments(conn, ctx, rid, &req.payments, -1, fee_left).await?;
     crate::api::loyalty::on_return(conn, ctx, id, rid, orig.party_id, &req.payments).await?;
     let debt_back: i64 = req
         .payments
@@ -1330,6 +1383,7 @@ struct DayTotals {
     card_tyiyn: i64,
     transfer_tyiyn: i64,
     debt_tyiyn: i64,
+    bonus_tyiyn: i64,
 }
 
 #[derive(Serialize)]
@@ -1377,7 +1431,8 @@ async fn list_sales(
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'cash'), 0)::bigint as "cash!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as "card!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
-             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!"
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'bonus'), 0)::bigint as "bonus!"
            from sale_payments p join sales s on s.id = p.sale_id
            where s.branch_id = $1
              and s.business_date = $2"#,
@@ -1395,6 +1450,7 @@ async fn list_sales(
         card_tyiyn: t.card,
         transfer_tyiyn: t.transfer,
         debt_tyiyn: t.debt,
+        bonus_tyiyn: t.bonus,
     };
     Ok(Json(DayOut {
         date,
