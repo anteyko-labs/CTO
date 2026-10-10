@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { StaffPayList } from '../components/StaffPayList'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
@@ -21,6 +22,35 @@ const KIND_LABELS: Record<string, string> = {
   debt_repayment: 'Погашения долгов',
   count_diff: 'Пересчёт',
   reversal: 'Сторно',
+}
+
+/** Движения наличных словами: «+ продажи наличными». */
+const CASH_LABELS: Record<string, string> = {
+  sale: 'Продажи наличными',
+  sale_return: 'Возвраты наличными',
+  cash_in: 'Внесли',
+  cash_out: 'Изъяли',
+  transfer_in: 'Переведено в кассу',
+  transfer_out: 'Переведено из кассы',
+  expense: 'Расходы из кассы',
+  payout: 'Выплаты сотрудникам',
+  supplier_payment: 'Оплата поставщикам',
+  debt_repayment: 'Погашения долгов',
+  battery_intake: 'Приём аккумуляторов',
+  count_diff: 'Пересчёт',
+  reversal: 'Сторно',
+}
+
+/** Строка отчёта: подпись и сумма, со знаком для движений. */
+function Row({ label, value, signed = false, strong = false }: { label: string; value: number; signed?: boolean; strong?: boolean }) {
+  return (
+    <div className={`flex items-baseline justify-between gap-3 py-0.5 ${strong ? 'mt-1 border-t border-slate-200 pt-1 font-semibold' : 'text-slate-700'}`}>
+      <span>{label}</span>
+      <span className={signed && value < 0 ? 'text-rose-700' : ''}>
+        {signed ? `${value < 0 ? '−' : '+'} ${formatSom(Math.abs(value))}` : formatSom(value)}
+      </span>
+    </div>
+  )
 }
 
 type MoneyForm = { kind: 'cash_in' | 'cash_out' | 'transfer'; sum: string; comment: string; from: string; to: string; opId: string }
@@ -238,23 +268,34 @@ export default function Shift() {
               <div className="text-3xl font-bold">{formatSom(shift.expected_tyiyn)}</div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-4 text-sm">
-            <span>Наличными: {formatSom(shift.cash_sales_tyiyn)}</span>
-            <span>Картой: {formatSom(shift.card_tyiyn)}</span>
-            <span>QR: {formatSom(shift.transfer_tyiyn)}</span>
-            {shift.bank_fee_tyiyn > 0 && <span>Комиссия банка: {formatSom(shift.bank_fee_tyiyn)}</span>}
-            <span>В долг: {formatSom(shift.debt_tyiyn)}</span>
-            {(shift.bonus_tyiyn ?? 0) !== 0 && <span>Баллами: {formatSom(shift.bonus_tyiyn ?? 0)}</span>}
-          </div>
-          {shift.breakdown.length > 0 && (
-            <div className="flex flex-wrap gap-x-6 gap-y-1 border-t border-slate-200 pt-2 text-sm">
-              {shift.breakdown.map((b) => (
-                <span key={b.kind}>
-                  {KIND_LABELS[b.kind] ?? b.kind}: {formatSom(b.sum_tyiyn)}
-                </span>
-              ))}
+          <div className="grid gap-4 text-sm lg:grid-cols-3">
+            <div>
+              <div className="mb-1 font-medium">Наличные в кассе</div>
+              <Row label="На начало (размен)" value={shift.opening_expected_tyiyn} />
+              {shift.breakdown
+                .filter((b) => b.sum_tyiyn !== 0)
+                .map((b) => (
+                  <Row key={b.kind} label={CASH_LABELS[b.kind] ?? KIND_LABELS[b.kind] ?? b.kind} value={b.sum_tyiyn} signed />
+                ))}
+              <Row label="Должно быть в кассе" value={shift.expected_tyiyn} strong />
             </div>
-          )}
+            <div>
+              <div className="mb-1 font-medium">
+                Продано: {shift.sales_count ?? 0} чек. на {formatSom(shift.sales_total_tyiyn ?? 0)}
+              </div>
+              <Row label="Наличными" value={shift.cash_sales_tyiyn} />
+              <Row label="Картой" value={shift.card_tyiyn} />
+              <Row label="QR" value={shift.transfer_tyiyn} />
+              {shift.debt_tyiyn !== 0 && <Row label="В долг" value={shift.debt_tyiyn} />}
+              {(shift.bonus_tyiyn ?? 0) !== 0 && <Row label="Баллами" value={shift.bonus_tyiyn ?? 0} />}
+              {shift.bank_fee_tyiyn > 0 && <Row label="Комиссия банка" value={-shift.bank_fee_tyiyn} signed />}
+              {(shift.returns_tyiyn ?? 0) !== 0 && <Row label="Возвраты" value={-(shift.returns_tyiyn ?? 0)} signed />}
+            </div>
+            <div>
+              <div className="mb-1 font-medium">Заработали в этот день</div>
+              <StaffPayList staff={shift.pay ?? []} />
+            </div>
+          </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => startMoney('cash_in')}>
               Внести

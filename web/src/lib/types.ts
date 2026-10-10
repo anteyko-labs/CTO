@@ -371,6 +371,10 @@ export interface Shift {
   debt_tyiyn: number
   bonus_tyiyn?: number
   bank_fee_tyiyn: number
+  sales_count?: number
+  sales_total_tyiyn?: number
+  returns_tyiyn?: number
+  pay?: StaffPay[]
   /** Смена закрыта, а что сделали с деньгами (сейф или размен) ещё не отмечено. */
   handover_pending: boolean
   to_safe_tyiyn: number | null
@@ -472,4 +476,13 @@ export interface Dashboard {
   low_stock: number
   needs_review: number
   stale_stock: number
+  staff: StaffPay[]
+}
+
+/** Кто сколько заработал: виды начислений с количеством. */
+export interface StaffPay {
+  employee_id: string
+  name: string
+  items: { kind: string; count: number; amount_tyiyn: number }[]
+  total_tyiyn: number
 }

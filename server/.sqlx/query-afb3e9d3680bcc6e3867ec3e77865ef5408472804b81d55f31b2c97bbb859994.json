@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.name from sale_lines l join services s on s.id = l.service_id\n               where l.sale_id = $1 and s.name ilike '%масл%' order by l.line_no limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "afb3e9d3680bcc6e3867ec3e77865ef5408472804b81d55f31b2c97bbb859994"
+}

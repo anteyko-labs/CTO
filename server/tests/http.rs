@@ -1145,6 +1145,17 @@ async fn shift_close_handover_and_cash_reversals(pool: PgPool) {
     assert_eq!(closed["diff_tyiyn"], -100_000);
     assert_eq!(closed["expected_tyiyn"], 500_000);
     assert_eq!(closed["handover_pending"], json!(true));
+    // Отчёт смены сходится: на начало + движения наличных = должно быть (пересчёт при закрытии не входит).
+    let ladder = |v: &Value| {
+        v["opening_expected_tyiyn"].as_i64().unwrap()
+            + v["breakdown"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["sum_tyiyn"].as_i64().unwrap())
+                .sum::<i64>()
+    };
+    assert_eq!(ladder(&closed), 500_000);
     let shortage: i64 = sqlx::query_scalar(
         "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where employee_id = $1 and kind = 'shortage'",
     )
@@ -1165,6 +1176,8 @@ async fn shift_close_handover_and_cash_reversals(pool: PgPool) {
     assert_eq!(handed["handover_pending"], json!(false));
     assert_eq!(handed["to_safe_tyiyn"], 350_000);
     assert_eq!(handed["left_tyiyn"], 50_000);
+    // Сдача кассы — после закрытия, в отчёт смены не попадает.
+    assert_eq!(ladder(&handed), 500_000);
     let (s, _, _) = post(
         &admin,
         format!("/api/v1/shifts/{sid}/handover"),

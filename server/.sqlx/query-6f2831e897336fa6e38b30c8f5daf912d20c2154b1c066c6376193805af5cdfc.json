@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from bot_state where key = 'username'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6f2831e897336fa6e38b30c8f5daf912d20c2154b1c066c6376193805af5cdfc"
+}

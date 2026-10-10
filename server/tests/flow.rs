@@ -1526,6 +1526,73 @@ async fn oil_book_records_service_change(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
+    // Масло клиента: в чеке только услуга, но это замена — запись в книжке с пробегом (SPEC-16);
+    // сводка «кто сколько заработал» видит ставку мастера.
+    let w = seed(&pool).await;
+    let (party, vehicle) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into parties (id, branch_id, role, kind, name) values ($1, $2, 'customer', 'person', 'Нурлан')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate) values ($1, $2, $3, '01KG777AAA')")
+        .bind(vehicle)
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = takeaway(
+        &w,
+        vec![SaleLineReq {
+            kind: "service".into(),
+            gift: false,
+            product_id: None,
+            service_id: Some(w.service),
+            qty: 1,
+            unit_price_tyiyn: 20_000,
+            seen_list_price_tyiyn: None,
+        }],
+        cash(20_000),
+    );
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.party_id = Some(party);
+    req.vehicle_id = Some(vehicle);
+    req.mileage_km = Some(120_500);
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let books =
+        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(party), None)
+            .await
+            .unwrap();
+    let r = &books[0].records[0];
+    assert_eq!(r.sale_id, Some(sale.id));
+    assert_eq!(r.oil_text, "Замена масла");
+    assert_eq!(r.mileage_km, Some(120_500));
+    let day: chrono::NaiveDate =
+        sqlx::query_scalar("select business_date from sales where id = $1")
+            .bind(sale.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let staff =
+        avtodom_server::api::payroll::staff_pay(&mut conn, w.owner.user.branch_id, day, day)
+            .await
+            .unwrap();
+    let master = staff.iter().find(|p| p.employee_id == w.master).unwrap();
+    assert!(master.total_tyiyn > 0);
+    assert!(
+        master
+            .items
+            .iter()
+            .any(|i| i.kind == "service_fee" && i.count == 1)
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn delivery_address_stays_on_check(pool: PgPool) {
     // Доставка бесплатная: в чеке только адрес (BLUEPRINT §6, вопросы 16 и 21).
     let w = seed(&pool).await;
@@ -1807,7 +1874,11 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     assert!(say(&mut conn, 1, "123456").await.contains("не подошёл"));
     // Кнопка «📊 Сегодня» — то же, что команда.
     let today = say(&mut conn, chat, "📊 Сегодня").await;
-    assert!(today.contains("Выручка") && today.contains("Чистая прибыль"));
+    assert!(
+        today.contains("Выручка")
+            && today.contains("ЧИСТАЯ ПРИБЫЛЬ")
+            && today.contains("Заработали")
+    );
     assert!(
         say(&mut conn, chat, "/долги")
             .await

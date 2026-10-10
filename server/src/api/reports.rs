@@ -357,6 +357,8 @@ struct Dashboard {
     needs_review: i64,
     /// Залежалые: остаток есть, продаж нет дольше срока (ADR-039).
     stale_stock: i64,
+    /// Кто сколько заработал сегодня.
+    staff: Vec<crate::api::payroll::StaffPay>,
 }
 
 async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Dashboard>> {
@@ -430,7 +432,9 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
     .await?;
     let (_, stale) = crate::api::receipts::stale_list(&mut conn, branch_id).await?;
     let revenue = totals.goods_tyiyn + totals.services_tyiyn;
+    let staff = crate::api::payroll::staff_pay(&mut conn, branch_id, date, date).await?;
     Ok(Json(Dashboard {
+        staff,
         date,
         average_check_tyiyn: if totals.sales_count > 0 {
             div_round(i128::from(revenue), i128::from(totals.sales_count)).unwrap_or(0)

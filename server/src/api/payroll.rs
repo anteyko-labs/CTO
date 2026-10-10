@@ -1422,3 +1422,64 @@ pub struct HistoryRow {
     pub amount_tyiyn: i64,
     pub comment: String,
 }
+
+/// Строка «кто сколько заработал»: вид начисления, сколько раз и на какую сумму.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PayItem {
+    pub kind: String,
+    pub count: i64,
+    pub amount_tyiyn: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StaffPay {
+    pub employee_id: Uuid,
+    pub name: String,
+    pub items: Vec<PayItem>,
+    pub total_tyiyn: i64,
+}
+
+/// Начисления сотрудникам за дни учёта — для сводки владельца и отчёта смены.
+pub async fn staff_pay(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<StaffPay>> {
+    let rows = sqlx::query!(
+        r#"select e.id, e.full_name, a.kind,
+                  (count(*) filter (where a.amount_tyiyn > 0) - count(*) filter (where a.amount_tyiyn < 0)) as "count!",
+                  sum(a.amount_tyiyn)::bigint as "sum!"
+           from payroll_accruals a join employees e on e.id = a.employee_id
+           where a.branch_id = $1 and a.business_date between $2 and $3
+           group by e.id, e.full_name, a.kind
+           having sum(a.amount_tyiyn) <> 0
+           order by e.full_name, a.kind"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out: Vec<StaffPay> = Vec::new();
+    for r in rows {
+        let item = PayItem {
+            kind: r.kind,
+            count: r.count,
+            amount_tyiyn: r.sum,
+        };
+        match out.iter_mut().find(|x| x.employee_id == r.id) {
+            Some(x) => {
+                x.total_tyiyn = x.total_tyiyn.saturating_add(item.amount_tyiyn);
+                x.items.push(item);
+            }
+            None => out.push(StaffPay {
+                employee_id: r.id,
+                name: r.full_name,
+                total_tyiyn: item.amount_tyiyn,
+                items: vec![item],
+            }),
+        }
+    }
+    Ok(out)
+}

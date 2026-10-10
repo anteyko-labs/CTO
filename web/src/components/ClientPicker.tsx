@@ -184,9 +184,7 @@ export function ClientPicker({
   )
   const card = useLoad(
     () =>
-      party && party.kind === 'company'
-        ? get<{ contacts: PartyContact[]; vehicles: PartyVehicle[] }>(`/parties/${party.id}/card`)
-        : Promise.resolve(null),
+      party ? get<{ contacts: PartyContact[]; vehicles: PartyVehicle[] }>(`/parties/${party.id}/card`) : Promise.resolve(null),
     [party?.id],
   )
 
@@ -255,26 +253,26 @@ export function ClientPicker({
                 ))}
               </select>
             </Field>
-            <Field
-              label="Машина"
-              hint={
-                <button type="button" className="text-sky-700 underline" onClick={() => setAdding('vehicle')}>
-                  + новая машина
-                </button>
-              }
-            >
-              <select value={vehicleId} onChange={(e) => onVehicle(e.target.value)}>
-                <option value="">— не указана —</option>
-                {vehicles.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.plate}
-                    {v.brand && ` · ${v.brand} ${v.model}`}
-                  </option>
-                ))}
-              </select>
-            </Field>
           </>
         )}
+        <Field
+          label="Машина"
+          hint={
+            <button type="button" className="text-sky-700 underline" onClick={() => setAdding('vehicle')}>
+              + новая машина
+            </button>
+          }
+        >
+          <select value={vehicleId} onChange={(e) => onVehicle(e.target.value)}>
+            <option value="">— не указана —</option>
+            {vehicles.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.plate}
+                {v.brand && ` · ${v.brand} ${v.model}`}
+              </option>
+            ))}
+          </select>
+        </Field>
         <ErrorBox error={add.error ?? card.error ?? kindAct.error} />
         {adding && (
           <NewRowModal

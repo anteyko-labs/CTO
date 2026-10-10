@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id, e.full_name, a.kind,\n                  (count(*) filter (where a.amount_tyiyn > 0) - count(*) filter (where a.amount_tyiyn < 0)) as \"count!\",\n                  sum(a.amount_tyiyn)::bigint as \"sum!\"\n           from payroll_accruals a join employees e on e.id = a.employee_id\n           where a.branch_id = $1 and a.business_date between $2 and $3\n           group by e.id, e.full_name, a.kind\n           having sum(a.amount_tyiyn) <> 0\n           order by e.full_name, a.kind",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "bc48c2cdbb7651d89396e0163b2fbf8d67cf13a219311d5e37c9179baed535d3"
+}

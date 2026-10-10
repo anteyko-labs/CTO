@@ -21,6 +21,25 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/telegram", routing::get(status).delete(unlink))
         .route("/settings/telegram/code", routing::post(new_code))
+        .route("/telegram/bot", routing::get(bot_info))
+}
+
+#[derive(Serialize)]
+struct BotInfo {
+    /// Имя бота для ссылки и QR-кода: t.me/<username>. Пусто — бот ещё ни разу не запускался.
+    username: Option<String>,
+}
+
+/// Ссылка на бота — для QR-кода на чеке и в масляной книжке, видна любому вошедшему.
+async fn bot_info(
+    State(state): State<AppState>,
+    _user: crate::auth::CurrentUser,
+) -> AppResult<Json<BotInfo>> {
+    let username = sqlx::query_scalar!("select value from bot_state where key = 'username'")
+        .fetch_optional(&state.pool)
+        .await?
+        .and_then(|v| v.as_str().map(str::to_string));
+    Ok(Json(BotInfo { username }))
 }
 
 // ---------- Владелец: привязка ----------
@@ -653,11 +672,44 @@ async fn link(conn: &mut PgConnection, chat_id: i64, code: &str) -> AppResult<St
     ))
 }
 
+/// «Айгуль — 308,00 с (2 % с чеков 308,00 с)» по строкам начислений.
+fn staff_lines(staff: &[crate::api::payroll::StaffPay]) -> String {
+    if staff.is_empty() {
+        return "  пока никому не начислено".into();
+    }
+    staff
+        .iter()
+        .map(|p| {
+            let parts = p
+                .items
+                .iter()
+                .map(|i| {
+                    let what = match i.kind.as_str() {
+                        "service_fee" => format!("замены ×{}", i.count),
+                        "revenue_percent" => "% с чеков".into(),
+                        "shift_fee" => "за смену".into(),
+                        "monthly_salary" => "оклад".into(),
+                        "bonus" => "премия".into(),
+                        "penalty" => "удержание".into(),
+                        "shortage" => "недостача".into(),
+                        other => other.to_string(),
+                    };
+                    format!("{what} — {}", format_som(i.amount_tyiyn))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("  {} — {} ({parts})", p.name, format_som(p.total_tyiyn))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 async fn today(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
     let day = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
         .fetch_one(&mut *conn)
         .await?;
     let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
+    let staff = crate::api::payroll::staff_pay(conn, branch_id, day, day).await?;
     crate::api::cash::ensure_accounts(conn, branch_id).await?;
     let accounts = sqlx::query!(
         r#"select name, balance_tyiyn from cash_accounts where branch_id = $1 and active
@@ -671,36 +723,118 @@ async fn today(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
         .map(|a| format!("  {}: {}", a.name, format_som(a.balance_tyiyn)))
         .collect::<Vec<_>>()
         .join("\n");
+    let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
+    let mut minus = vec![format!("  − зарплата: {}", format_som(t.payroll_tyiyn))];
+    if t.bank_fee_tyiyn != 0 {
+        minus.push(format!(
+            "  − комиссия банка: {}",
+            format_som(t.bank_fee_tyiyn)
+        ));
+    }
+    if t.expenses_tyiyn != 0 {
+        minus.push(format!("  − расходы: {}", format_som(t.expenses_tyiyn)));
+    }
+    if t.bonus_tyiyn != 0 {
+        minus.push(format!("  − скидки баллами: {}", format_som(t.bonus_tyiyn)));
+    }
     Ok(format!(
-        "Сегодня, {}\nЧеков: {}\nВыручка: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nЧистая прибыль: {}\n\nДеньги:\n{money}",
+        "📊 Сегодня, {}\n\n🧾 Продано: {} на {}\n  товары {} · работы {}\n\n💰 Прибыль\n  Выручка: {}\n  − закупка проданного: {}\n  = валовая: {}\n{}\n  = ЧИСТАЯ ПРИБЫЛЬ: {}\n\n👥 Заработали сегодня\n{}\n\n💵 Деньги сейчас\n{money}",
         day.format("%d.%m.%Y"),
-        t.sales_count,
-        format_som(t.goods_tyiyn.saturating_add(t.services_tyiyn)),
+        checks_word(t.sales_count),
+        format_som(revenue),
+        format_som(t.goods_tyiyn),
+        format_som(t.services_tyiyn),
+        format_som(revenue),
+        format_som(t.cost_tyiyn),
         format_som(t.gross_tyiyn),
-        format_som(t.payroll_tyiyn),
-        format_som(t.bank_fee_tyiyn),
-        format_som(t.expenses_tyiyn),
+        minus.join("\n"),
         format_som(t.net_tyiyn),
+        staff_lines(&staff),
     ))
+}
+
+/// «1 чек», «3 чека», «12 чеков».
+fn checks_word(n: i64) -> String {
+    let word = match (n % 10, n % 100) {
+        (1, x) if x != 11 => "чек",
+        (2..=4, x) if !(12..=14).contains(&x) => "чека",
+        _ => "чеков",
+    };
+    format!("{n} {word}")
 }
 
 async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
     let till = crate::api::cash::default_account(conn, branch_id).await?;
     let Some(id) = crate::api::cash::open_shift_id(conn, branch_id, till).await? else {
-        return Ok("Смена не открыта.".into());
+        return Ok("💵 Смена не открыта.".into());
     };
     let s = crate::api::cash::load_shift(conn, branch_id, id).await?;
+    // Наличные в кассе: с чего начали и что двигало деньги.
+    let mut cash = vec![format!(
+        "  на начало (размен): {}",
+        format_som(s.opening_expected_tyiyn)
+    )];
+    if let Some(rows) = s.breakdown.as_array() {
+        for r in rows {
+            let kind = r.get("kind").and_then(Value::as_str).unwrap_or("");
+            let sum = r.get("sum_tyiyn").and_then(Value::as_i64).unwrap_or(0);
+            if sum == 0 {
+                continue;
+            }
+            let what = match kind {
+                "sale" => "продажи наличными",
+                "sale_return" => "возвраты",
+                "cash_in" => "внесли",
+                "cash_out" => "изъяли",
+                "transfer_in" => "переведено в кассу",
+                "transfer_out" => "переведено из кассы",
+                "expense" => "расходы из кассы",
+                "payout" => "выплаты сотрудникам",
+                "supplier_payment" => "оплата поставщикам",
+                "debt_repayment" => "погашения долгов",
+                "battery_intake" => "приём аккумуляторов",
+                "count_diff" => "пересчёт",
+                "reversal" => "сторно",
+                other => other,
+            };
+            let sign = if sum > 0 { "+" } else { "−" };
+            cash.push(format!("  {sign} {what}: {}", format_som(sum.abs())));
+        }
+    }
+    let mut pays = vec![
+        format!("  наличными: {}", format_som(s.cash_sales_tyiyn)),
+        format!("  картой: {}", format_som(s.card_tyiyn)),
+        format!("  QR: {}", format_som(s.transfer_tyiyn)),
+    ];
+    if s.debt_tyiyn != 0 {
+        pays.push(format!("  в долг: {}", format_som(s.debt_tyiyn)));
+    }
+    if s.bonus_tyiyn != 0 {
+        pays.push(format!("  баллами: {}", format_som(s.bonus_tyiyn)));
+    }
+    if s.bank_fee_tyiyn != 0 {
+        pays.push(format!(
+            "  (комиссия банка {})",
+            format_som(s.bank_fee_tyiyn)
+        ));
+    }
+    let returns = if s.returns_tyiyn != 0 {
+        format!(", возвраты {}", format_som(s.returns_tyiyn))
+    } else {
+        String::new()
+    };
     Ok(format!(
-        "Смена № {} с {}, кассир {}\nДолжно быть в кассе: {}\nНаличными: {}\nКартой: {}\nQR: {}\nВ долг: {}",
+        "💵 Смена № {} с {}, кассир {}\n\n💵 В кассе должно быть: {}\n{}\n\n🧾 Продано: {} на {}{returns}\n{}\n\n👥 Заработали\n{}",
         s.number,
         // Бишкек — всегда UTC+6, без перехода на летнее время.
         (s.opened_at + chrono::Duration::hours(6)).format("%d.%m %H:%M"),
         s.cashier_name,
         format_som(s.expected_tyiyn),
-        format_som(s.cash_sales_tyiyn),
-        format_som(s.card_tyiyn),
-        format_som(s.transfer_tyiyn),
-        format_som(s.debt_tyiyn),
+        cash.join("\n"),
+        checks_word(s.sales_count),
+        format_som(s.sales_total_tyiyn),
+        pays.join("\n"),
+        staff_lines(&s.pay),
     ))
 }
 
@@ -886,6 +1020,43 @@ impl Api {
             .ok()?;
         r.ok.then_some(r.result.unwrap_or_default())
     }
+
+    async fn username(&self) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Me {
+            username: Option<String>,
+        }
+        let r = self
+            .http
+            .get(format!("{}/getMe", self.base))
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+            .ok()?
+            .json::<TgResponse<Me>>()
+            .await
+            .ok()?;
+        r.result.and_then(|m| m.username)
+    }
+}
+
+/// Имя бота запоминаем в базе: по нему касса рисует QR-код на бота.
+async fn remember_username(pool: PgPool, api: Api) {
+    loop {
+        if let Some(name) = api.username().await {
+            let saved = sqlx::query!(
+                r#"insert into bot_state (key, value) values ('username', $1)
+                   on conflict (key) do update set value = excluded.value"#,
+                json!(name)
+            )
+            .execute(&pool)
+            .await;
+            if saved.is_ok() {
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
 }
 
 /// Запуск бота: если ключ задан — два фоновых цикла. Без интернета они ждут и пробуют снова.
@@ -896,6 +1067,7 @@ pub fn spawn(pool: PgPool, token: String) {
         http: reqwest::Client::new(),
         base: format!("{base}/bot{token}"),
     };
+    tokio::spawn(remember_username(pool.clone(), api.clone()));
     tokio::spawn(commands_loop(pool.clone(), api.clone()));
     tokio::spawn(notify_loop(pool, api));
     tracing::info!("телеграм-бот запущен");

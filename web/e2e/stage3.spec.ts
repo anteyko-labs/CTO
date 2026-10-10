@@ -318,7 +318,8 @@ test('оплата долга из кассы попадает в смену', a
 
   await expect.poll(async () => (await apiGet<Party>(page.request, `/parties/${party.id}`)).balance_tyiyn).toBe(60_000)
   await page.goto('/shift')
-  await expect(page.getByText(/Погашения долгов: [\d\s ]+,\d\d/)).toBeVisible()
+  // Строка наличных смены: «Погашения долгов   + 400,00 с».
+  await expect(page.locator('div').filter({ hasText: /^Погашения долгов\+\s[\d\s]+,\d\d\sс$/ }).first()).toBeVisible()
 })
 
 test('подарок по порогу: 1 л розлива мало, канистра 4 л — спрашивает', async ({ page }) => {
@@ -471,4 +472,48 @@ test('цена ниже закупочной: касса показывает о
   // Чек остался в кассе для исправления и не ушёл в очередь без сети.
   await expect(line).toBeVisible()
   expect((await apiGet<{ sales: Sale[] }>(page.request, '/sales')).sales.length).toBe(before)
+})
+
+test('замена в сервисе у физлица: машина, обязательный пробег, книжка с QR на печать', async ({ page }) => {
+  await login(page)
+  const cashier = `Кассир книжки ${RUN}`
+  const master = `Мастер книжки ${RUN}`
+  await employee(page.request, cashier, { is_cashier: true })
+  await employee(page.request, master, { is_master: true })
+  const client = `Частник ${RUN}`
+  await apiSend(page.request, 'POST', '/parties', { name: client, kind: 'person', phone: `0555${RUN.slice(-6)}` })
+  const plate = `01KG${RUN.slice(-3)}BBB`
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Услуги' }).click()
+  await page.getByRole('button', { name: '+ Новая услуга' }).click()
+  await page.locator('#service-name').fill(`Замена масла (масло клиента) книжка ${RUN}`)
+  await page.locator('#service-price').fill('400')
+  await page.locator('#service-fee').fill('200')
+  await page.getByRole('button', { name: 'Создать и добавить в чек' }).click()
+  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await page.locator('#master-select').selectOption({ label: master })
+  await expect(page.getByText(/Масляная книжка: выберите клиента и машину/)).toBeVisible()
+
+  // У физлица тоже выбирается машина; новая заводится не выходя из чека.
+  await page.locator('[data-client-input]').fill(client)
+  await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
+  await page.getByRole('button', { name: '+ новая машина' }).click()
+  await page.getByLabel('Госномер').fill(plate)
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const submit = page.getByRole('button', { name: 'Провести чек' })
+  await expect(page.getByRole('status').filter({ hasText: 'пробег машины — спросите у клиента' })).toBeVisible()
+  await expect(submit).toBeDisabled()
+  await page.locator('#mileage').fill('120500')
+  await page.getByRole('button', { name: 'Без сдачи' }).click()
+  await submit.click()
+  await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+  await expect(page.getByText(`Записано в масляную книжку · ${plate}`)).toBeVisible()
+  await expect(page.getByText(/пробег 120\s500 км/)).toBeVisible()
+
+  await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка')), { message: 'книжка ушла на печать' }).toBe(true)
+  const html = (await prints(page)).find((h) => h.includes('Масляная книжка')) ?? ''
+  expect(html).toContain(plate)
+  expect(html).toContain('Замена масла (масло клиента) книжка')
+  expect(html).toMatch(/120\s500 км/)
 })

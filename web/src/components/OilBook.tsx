@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { get, patch, post } from '../lib/api'
 import { formatDate, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { printOilBook } from '../lib/oilBookPrint'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
 
 export interface OilRecord {
@@ -108,16 +109,21 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
         </ul>
       )}
       <ErrorBox error={act.error} />
-      {editable && (
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setInterval({ km: String(b.interval_km), days: String(b.interval_days) })}>
-            Интервал
-          </Button>
-          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setManual({ date: todayBishkek(), mileage: '', oil: '', filter: '' })}>
-            Запись из тетради
-          </Button>
-        </div>
-      )}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => void printOilBook(b)}>
+          Печать книжки
+        </Button>
+        {editable && (
+          <>
+            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setInterval({ km: String(b.interval_km), days: String(b.interval_days) })}>
+              Интервал
+            </Button>
+            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setManual({ date: todayBishkek(), mileage: '', oil: '', filter: '' })}>
+              Запись из тетради
+            </Button>
+          </>
+        )}
+      </div>
       {interval && (
         <Modal title={`Интервал замены · ${b.plate}`} onClose={() => setInterval(null)}>
           <div className="flex flex-col gap-3">

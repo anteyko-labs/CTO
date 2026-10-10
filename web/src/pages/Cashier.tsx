@@ -10,7 +10,8 @@ import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
-import { OilHint } from '../components/OilBook'
+import { nextText, OilHint, type VehicleBook } from '../components/OilBook'
+import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
@@ -175,7 +176,7 @@ export default function Cashier() {
   const [bonusOpen, setBonusOpen] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
   const attempt = useRef<{ key: string; opId: string } | null>(null)
-  const [done, setDone] = useState<{ sale: Sale; change: number | null } | null>(null)
+  const [done, setDone] = useState<{ sale: Sale; change: number | null; book?: VehicleBook | null } | null>(null)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
   const [newProductName, setNewProductName] = useState<string | null>(null)
@@ -453,6 +454,7 @@ export default function Cashier() {
     [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново'],
     [!bonus || navigator.onLine, 'баллы списываются только при связи с сервером'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
+    [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
   )
 
@@ -529,6 +531,17 @@ export default function Cashier() {
       }
       await markSent(opId, sale.number).catch(() => undefined)
       setDone({ sale, change: payMode === 'cash' ? change : null })
+      // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
+      const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
+      if (bookVehicle) {
+        const client = party?.name ?? null
+        void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
+          .then((book) => {
+            setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
+            if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name })
+          })
+          .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
+      }
       // Долг сразу оформляется бумагой: расписка физлица в двух экземплярах или накладная фирмы (SPEC-10).
       if (sale.party_id && sale.payments.some((p) => p.method === 'debt')) {
         const partyId = sale.party_id
@@ -625,6 +638,11 @@ export default function Cashier() {
                 <Button variant="secondary" onClick={() => printSale(done.sale, done.change)}>
                   Печать чека
                 </Button>
+                {done.book && (
+                  <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name })}>
+                    Печать книжки
+                  </Button>
+                )}
                 {done.sale.id ? (
                   <Link className="self-center text-sm text-sky-700 hover:underline" to={`/sales/${done.sale.id}`}>
                     Открыть
@@ -634,6 +652,23 @@ export default function Cashier() {
                 )}
               </div>
             </div>
+            {done.book && done.book.records[0]?.sale_id === done.sale.id && (
+              <div className="mt-3 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm">
+                <div className="font-medium">Записано в масляную книжку · {done.book.plate}</div>
+                <div className="text-slate-700">
+                  {[
+                    done.book.records[0].mileage_km !== null && `пробег ${done.book.records[0].mileage_km.toLocaleString('ru-RU')} км`,
+                    done.book.records[0].oil_text,
+                    done.book.records[0].filter_text,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+                <div className="text-slate-700">
+                  Следующая замена: <b>{nextText(done.book)}</b>
+                </div>
+              </div>
+            )}
           </Card>
         )}
 
@@ -828,6 +863,17 @@ export default function Cashier() {
             />
           </div>
           {party && vehicleId && <OilHint vehicleId={vehicleId} />}
+          {saleType === 'service' &&
+            (party && vehicleId ? (
+              <Field label="Пробег сейчас, км" required hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку">
+                <input id="mileage" inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
+              </Field>
+            ) : (
+              <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900">
+                Масляная книжка: {party ? 'выберите машину клиента (или «+ новая машина»)' : 'выберите клиента и машину'} — замена, масло, фильтр и пробег
+                запишутся сами, клиенту распечатается книжка.
+              </div>
+            ))}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={delivery !== null} onChange={(e) => setDelivery(e.target.checked ? '' : null)} />
             Доставка (бесплатно)
@@ -835,11 +881,6 @@ export default function Cashier() {
           {delivery !== null && (
             <Field label="Адрес доставки" required>
               <input id="delivery-address" value={delivery} onChange={(e) => setDelivery(e.target.value)} placeholder="Улица, дом, ориентир" />
-            </Field>
-          )}
-          {party && vehicleId && saleType === 'service' && (
-            <Field label="Пробег, км" hint="Для масляной книжки — можно не заполнять">
-              <input inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
             </Field>
           )}
           <div className="flex flex-wrap gap-x-4 gap-y-1">

@@ -87,7 +87,19 @@ pub async fn record_from_sale(
     )
     .fetch_all(&mut *conn)
     .await?;
-    if lines.is_empty() {
+    // Масло клиента: товара-масла в чеке нет, но услуга замены масла — это замена (SPEC-16).
+    let own_oil = if lines.iter().any(|l| l.cat == "oil") {
+        None
+    } else {
+        sqlx::query_scalar!(
+            r#"select s.name from sale_lines l join services s on s.id = l.service_id
+               where l.sale_id = $1 and s.name ilike '%масл%' order by l.line_no limit 1"#,
+            sale_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+    };
+    if lines.is_empty() && own_oil.is_none() {
         return Ok(());
     }
     let join = |cat: &str| {
@@ -110,7 +122,7 @@ pub async fn record_from_sale(
         sale_id,
         change_date,
         mileage_km,
-        join("oil"),
+        own_oil.unwrap_or_else(|| join("oil")),
         join("filter"),
         ctx.user.id
     )

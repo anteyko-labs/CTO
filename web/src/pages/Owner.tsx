@@ -4,6 +4,7 @@ import { Badge, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from 
 import { get, qs } from '../lib/api'
 import { formatSom, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad, usePolling } from '../lib/hooks'
+import { StaffPayList } from '../components/StaffPayList'
 import type { Dashboard, ProfitReport } from '../lib/types'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
@@ -17,6 +18,16 @@ function Tile({ label, value, tone = '' }: { label: string; value: string; tone?
   )
 }
 
+/** Строка «лесенки» прибыли: подпись слева, сумма справа. */
+function Step({ label, value, strong = false, minus = false }: { label: string; value: number; strong?: boolean; minus?: boolean }) {
+  return (
+    <div className={`flex items-baseline justify-between gap-4 py-1 ${strong ? 'border-t border-slate-200 font-semibold' : 'text-slate-700'}`}>
+      <span>{label}</span>
+      <span className={strong && value < 0 ? 'text-rose-700' : ''}>{minus && value !== 0 ? `− ${formatSom(value)}` : formatSom(value)}</span>
+    </div>
+  )
+}
+
 /** Сводка владельца: что с точкой прямо сейчас (SPEC-08). */
 export function OwnerDashboard() {
   const d = useLoad(() => get<Dashboard>('/owner/dashboard'), [])
@@ -25,64 +36,77 @@ export function OwnerDashboard() {
   if (d.loading && !d.data) return <Loading />
   if (!d.data) return <ErrorBox error={d.error} />
   const t = d.data.totals
+  const revenue = t.goods_tyiyn + t.services_tyiyn
 
   return (
     <div>
-      <PageHeader title="Сводка" />
+      <PageHeader title="Сводка за сегодня" />
       <div className="flex flex-col gap-4">
         <Card className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Tile label="Продано сегодня" value={formatSom(t.goods_tyiyn + t.services_tyiyn)} />
+          <Tile label="Продано" value={formatSom(revenue)} />
+          <Tile label="Валовая прибыль" value={formatSom(t.gross_tyiyn)} />
           <Tile label="Чистая прибыль" value={formatSom(t.net_tyiyn)} tone={t.net_tyiyn < 0 ? 'text-rose-700' : 'text-emerald-700'} />
-          <Tile label="Денег всего" value={formatSom(d.data.money_total_tyiyn)} />
-          <Tile label="К выплате" value={formatSom(d.data.to_pay_tyiyn)} />
+          <Tile label="Чеков" value={String(t.sales_count)} />
         </Card>
 
-        <Card className="flex flex-wrap gap-x-8 gap-y-3 text-sm">
-          <div>
-            <div className="text-xs text-slate-500">Чеков</div>
-            <div className="font-medium">
-              {t.sales_count}, средний {formatSom(d.data.average_check_tyiyn)}
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <h2 className="mb-2 font-semibold">Откуда прибыль</h2>
+            <div className="text-sm">
+              <Step label="Товары" value={t.goods_tyiyn} />
+              <Step label="Работы (услуги)" value={t.services_tyiyn} />
+              <Step label="Выручка" value={revenue} strong />
+              <Step label="Закупка проданного товара" value={t.cost_tyiyn} minus />
+              <Step label="Валовая прибыль" value={t.gross_tyiyn} strong />
+              <Step label="Зарплата сотрудникам" value={t.payroll_tyiyn} minus />
+              {t.bank_fee_tyiyn !== 0 && <Step label="Комиссия банка (карта, QR)" value={t.bank_fee_tyiyn} minus />}
+              {t.expenses_tyiyn !== 0 && <Step label="Расходы" value={t.expenses_tyiyn} minus />}
+              {t.bonus_tyiyn !== 0 && <Step label="Скидки баллами" value={t.bonus_tyiyn} minus />}
+              <Step label="Чистая прибыль" value={t.net_tyiyn} strong />
             </div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-500">Возвраты</div>
-            <div className="font-medium">{formatSom(d.data.returns_tyiyn)}</div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-500">Валовая</div>
-            <div className="font-medium">
-              {formatSom(t.gross_tyiyn)} · маржа {percent(t.margin_bp)}
+            <div className="mt-2 text-xs text-slate-500">
+              Средний чек {formatSom(d.data.average_check_tyiyn)} · маржа {percent(t.margin_bp)}
+              {d.data.returns_tyiyn !== 0 && ` · возвраты ${formatSom(d.data.returns_tyiyn)}`}
             </div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-500">Оплата труда</div>
-            <div className="font-medium">{formatSom(t.payroll_tyiyn)}</div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-500">Расходы</div>
-            <div className="font-medium">{formatSom(t.expenses_tyiyn)}</div>
-          </div>
-          <div>
-            <div className="text-xs text-slate-500">Смена</div>
-            <div className="font-medium">
-              {d.data.shift_open ? `открыта, ${d.data.shift_cashier}` : 'не открыта'}
+          </Card>
+
+          <Card>
+            <h2 className="mb-2 font-semibold">Кто сколько заработал сегодня</h2>
+            <StaffPayList staff={d.data.staff ?? []} />
+            <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-sm">
+              <span className="text-slate-600">Всего к выплате (за все дни)</span>
+              <Link to="/payroll" className="font-semibold text-sky-700 underline">
+                {formatSom(d.data.to_pay_tyiyn)}
+              </Link>
             </div>
-          </div>
-        </Card>
+          </Card>
+        </div>
 
         <Card>
-          <h2 className="mb-3 font-semibold">Деньги</h2>
-          <div className="flex flex-wrap gap-6">
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="font-semibold">Деньги сейчас</h2>
+            <span className="text-sm text-slate-500">
+              Смена: {d.data.shift_open ? `открыта, кассир ${d.data.shift_cashier}` : 'не открыта'} ·{' '}
+              <Link to="/shift" className="text-sky-700 underline">
+                подробно
+              </Link>
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             {d.data.accounts.map((a) => (
               <Tile key={a.name} label={a.name} value={formatSom(a.balance_tyiyn)} />
             ))}
-            <Tile label="Должны нам" value={formatSom(d.data.debts_in_tyiyn)} />
-            <Tile label="Должны мы" value={formatSom(d.data.debts_out_tyiyn)} />
+            <Tile label="Всего денег" value={formatSom(d.data.money_total_tyiyn)} />
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-4">
+            <Tile label="Нам должны" value={formatSom(d.data.debts_in_tyiyn)} tone="text-amber-700" />
+            <Tile label="Мы должны поставщикам" value={formatSom(d.data.debts_out_tyiyn)} />
           </div>
         </Card>
 
         {(d.data.low_stock > 0 || d.data.needs_review > 0 || d.data.stale_stock > 0) && (
           <Card className="flex flex-wrap items-center gap-3 text-sm">
+            <span className="font-medium">Склад:</span>
             {d.data.low_stock > 0 && (
               <Link to="/stock" className="underline">
                 <Badge tone="amber">заканчивается: {d.data.low_stock}</Badge>

@@ -292,6 +292,16 @@ pub struct ShiftOut {
     pub to_safe_tyiyn: Option<i64>,
     #[serde(default)]
     pub left_tyiyn: Option<i64>,
+    /// Чеки смены: сколько, на какую сумму, возвраты.
+    #[serde(default)]
+    pub sales_count: i64,
+    #[serde(default)]
+    pub sales_total_tyiyn: i64,
+    #[serde(default)]
+    pub returns_tyiyn: i64,
+    /// Кто сколько заработал в день смены.
+    #[serde(default)]
+    pub pay: Vec<crate::api::payroll::StaffPay>,
 }
 
 pub(crate) async fn load_shift(
@@ -326,13 +336,19 @@ pub(crate) async fn load_shift(
     )
     .fetch_optional(&mut *conn)
     .await?;
-    // Разбивка наличных: только касса смены, без счёта и сейфов.
+    // Разбивка наличных: касса смены за время смены, без счёта и сейфов. По времени, а не по
+    // отметке смены: перевод владельца или чек без сети тоже двигают деньги в этой кассе,
+    // и «на начало + движения» должно сходиться с «должно быть». Пересчёт при закрытии
+    // (то же время, что закрытие) не входит: «должно быть» считали до него.
     let breakdown: Vec<BreakdownRow> = sqlx::query!(
         r#"select kind as "kind!", sum(amount_tyiyn)::bigint as "sum!"
-           from cash_movements where shift_id = $1 and account_id = $2
+           from cash_movements
+           where account_id = $1 and created_at >= $2
+             and created_at < coalesce($3, 'infinity'::timestamptz)
            group by kind order by kind"#,
-        id,
-        h.account_id
+        h.account_id,
+        h.opened_at,
+        close.as_ref().map(|c| c.closed_at)
     )
     .fetch_all(&mut *conn)
     .await?
@@ -361,7 +377,25 @@ pub(crate) async fn load_shift(
     )
     .fetch_one(&mut *conn)
     .await?;
+    let checks = sqlx::query!(
+        r#"select count(*) filter (where kind = 'sale') as "count!",
+                  coalesce(sum(total_tyiyn) filter (where kind = 'sale'), 0)::bigint as "total!",
+                  coalesce(-sum(total_tyiyn) filter (where kind = 'return'), 0)::bigint as "returns!"
+           from sales
+           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        h.opened_at,
+        close.as_ref().map(|c| c.closed_at)
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let pay =
+        crate::api::payroll::staff_pay(conn, branch_id, h.business_date, h.business_date).await?;
     Ok(ShiftOut {
+        sales_count: checks.count,
+        sales_total_tyiyn: checks.total,
+        returns_tyiyn: checks.returns,
+        pay,
         id: h.id,
         number: h.number,
         business_date: h.business_date,
