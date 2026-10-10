@@ -82,7 +82,7 @@ export default function TelegramSettings() {
             <div className="font-medium">Телеграм привязан</div>
             <div className="text-slate-600">
               С {s.linked_at ? formatDateTime(s.linked_at) : '—'} сюда приходят важные события: закрытие смены и сдача кассы, недостача, возвраты,
-              сторно, смена цен, долги. Команды бота: /сегодня, /смена, /долги.
+              сторно, смена цен, долги. Кнопки внизу чата: «Сегодня», «Смена», «Долги».
             </div>
           </div>
           <Button

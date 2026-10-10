@@ -102,7 +102,54 @@ async fn unlink(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Value
 
 // ---------- Логика бота ----------
 
-const HELP: &str = "Команды владельца:\n/сегодня — выручка и прибыль за день, деньги в кассах\n/смена — открытая смена и сколько должно быть в кассе\n/долги — кто сколько должен";
+const HELP: &str = "Нажмите кнопку внизу:\n📊 Сегодня — выручка и прибыль за день, деньги в кассах\n💵 Смена — открытая смена и сколько должно быть в кассе\n📒 Долги — кто сколько должен";
+
+// Кнопки внизу чата: нажатие отправляет их текст, как команду.
+const BTN_TODAY: &str = "📊 Сегодня";
+const BTN_SHIFT: &str = "💵 Смена";
+const BTN_DEBTS: &str = "📒 Долги";
+const BTN_CARS: &str = "🚗 Мои машины";
+const BTN_BONUS: &str = "⭐ Баллы";
+const BTN_LEAVE: &str = "🚪 Отключиться";
+const BTN_LEAVE_YES: &str = "Да, отключиться";
+const BTN_BACK: &str = "Назад";
+const BTN_CONTACT: &str = "📱 Поделиться номером";
+
+/// Какие кнопки показать под ответом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keys {
+    /// Не подключён: одна кнопка «Поделиться номером».
+    Contact,
+    Owner,
+    Customer,
+    ConfirmLeave,
+}
+
+impl Keys {
+    fn markup(self) -> Value {
+        let rows: Vec<Vec<Value>> = match self {
+            Keys::Contact => vec![vec![
+                json!({ "text": BTN_CONTACT, "request_contact": true }),
+            ]],
+            Keys::Owner => vec![vec![json!(BTN_TODAY), json!(BTN_SHIFT), json!(BTN_DEBTS)]],
+            Keys::Customer => vec![
+                vec![json!(BTN_CARS), json!(BTN_BONUS)],
+                vec![json!(BTN_LEAVE)],
+            ],
+            Keys::ConfirmLeave => vec![vec![json!(BTN_LEAVE_YES), json!(BTN_BACK)]],
+        };
+        json!({ "keyboard": rows, "resize_keyboard": true, "is_persistent": true })
+    }
+}
+
+/// Команда из текста: первое слово без значков и знаков — «📊 Сегодня» → «сегодня», «/долги» → «долги».
+fn command(text: &str) -> String {
+    text.split_whitespace()
+        .find(|w| w.chars().any(char::is_alphanumeric))
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
 
 /// Владелец, к которому привязан чат (только активный владелец).
 async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(Uuid, Uuid)>> {
@@ -116,17 +163,17 @@ async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(
     .map(|r| (r.id, r.branch_id)))
 }
 
-/// Ответ бота; `ask_contact` — показать кнопку «Поделиться номером».
+/// Ответ бота и кнопки под ним.
 pub struct Reply {
     pub text: String,
-    pub ask_contact: bool,
+    pub keys: Keys,
 }
 
 impl Reply {
-    fn text(t: impl Into<String>) -> Self {
+    fn new(text: impl Into<String>, keys: Keys) -> Self {
         Self {
-            text: t.into(),
-            ask_contact: false,
+            text: text.into(),
+            keys,
         }
     }
 }
@@ -156,35 +203,53 @@ pub async fn handle_message(
     }
     let text = text.unwrap_or("");
     let owner = handle_text(conn, chat_id, text).await?;
-    if let Some(r) = owner {
-        return Ok(Reply::text(r));
-    }
-    // Не владелец: подключившийся клиент видит свои машины, остальным — кнопка номера.
     let customer = sqlx::query_scalar!(
         "select party_id from telegram_customers where chat_id = $1",
         chat_id
     )
     .fetch_optional(&mut *conn)
     .await?;
+    if let Some(r) = owner {
+        // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
+        let keys = if chat_owner(conn, chat_id).await?.is_some() {
+            Keys::Owner
+        } else if customer.is_some() {
+            Keys::Customer
+        } else {
+            Keys::Contact
+        };
+        return Ok(Reply::new(r, keys));
+    }
+    // Не владелец: подключившийся клиент видит свои машины, остальным — кнопка номера.
     let Some(party_id) = customer else {
-        return Ok(Reply {
-            text: "Здравствуйте! Это бот Avtodom. Чтобы видеть замены масла по своей машине и получать напоминания, поделитесь номером телефона — тем, что записан у нас.".into(),
-            ask_contact: true,
-        });
-    };
-    let word = text.split_whitespace().next().unwrap_or("").to_lowercase();
-    if matches!(word.as_str(), "/стоп" | "/stop") {
-        sqlx::query!("delete from telegram_customers where chat_id = $1", chat_id)
-            .execute(&mut *conn)
-            .await?;
-        return Ok(Reply::text(
-            "Готово: напоминаний больше не будет, баллы не начисляются, накопленные сохранятся. Чтобы вернуться, поделитесь номером ещё раз.",
+        return Ok(Reply::new(
+            "Здравствуйте! Это бот Avtodom.\n\nЗдесь вы увидите, когда меняли масло, какое залили, когда следующая замена, и свои бонусные баллы.\n\nНажмите кнопку «📱 Поделиться номером» внизу — нужен тот номер, что записан у нас на кассе.",
+            Keys::Contact,
         ));
+    };
+    match command(text).as_str() {
+        "отключиться" => Ok(Reply::new(
+            "Отключиться от бота?\n\nНапоминаний о замене больше не будет и новые баллы не начислятся. Накопленные баллы сохранятся.",
+            Keys::ConfirmLeave,
+        )),
+        "да" | "стоп" | "stop" => {
+            sqlx::query!("delete from telegram_customers where chat_id = $1", chat_id)
+                .execute(&mut *conn)
+                .await?;
+            Ok(Reply::new(
+                "Готово, вы отключены. Накопленные баллы сохранились.\n\nЧтобы вернуться, нажмите «📱 Поделиться номером».",
+                Keys::Contact,
+            ))
+        }
+        "баллы" | "bonus" => Ok(Reply::new(
+            bonus_history(conn, party_id).await?,
+            Keys::Customer,
+        )),
+        _ => Ok(Reply::new(
+            customer_book(conn, party_id).await?,
+            Keys::Customer,
+        )),
     }
-    if matches!(word.as_str(), "/баллы" | "/bonus" | "баллы") {
-        return Ok(Reply::text(bonus_history(conn, party_id).await?));
-    }
-    Ok(Reply::text(customer_book(conn, party_id).await?))
 }
 
 async fn link_customer(
@@ -195,13 +260,13 @@ async fn link_customer(
 ) -> AppResult<Reply> {
     // Только свой номер: чужую карточку контакта переслать можно, но книжку она не откроет.
     if c.user_id != Some(from_id) {
-        return Ok(Reply {
-            text: "Поделитесь своим номером кнопкой ниже.".into(),
-            ask_contact: true,
-        });
+        return Ok(Reply::new(
+            "Нужен ваш собственный номер: нажмите кнопку «📱 Поделиться номером» внизу.",
+            Keys::Contact,
+        ));
     }
     let Some(key) = phone_key(&c.phone) else {
-        return Ok(Reply::text("Номер не распознан."));
+        return Ok(Reply::new("Номер не распознан.", Keys::Contact));
     };
     let party = sqlx::query!(
         r#"select id, name from parties
@@ -213,8 +278,9 @@ async fn link_customer(
     .fetch_optional(&mut *conn)
     .await?;
     let Some(p) = party else {
-        return Ok(Reply::text(
-            "Этого номера нет среди наших клиентов. Назовите его кассиру при следующей замене — и книжка появится здесь.",
+        return Ok(Reply::new(
+            "Этого номера нет среди наших клиентов. Назовите его кассиру при следующей покупке или замене — и потом снова нажмите «📱 Поделиться номером».",
+            Keys::Contact,
         ));
     };
     sqlx::query!(
@@ -227,10 +293,13 @@ async fn link_customer(
     .execute(&mut *conn)
     .await?;
     let book = customer_book(conn, p.id).await?;
-    Ok(Reply::text(format!(
-        "{}, вы подключены. Напомним о замене за неделю и за день до срока. С каждой покупки начисляем баллы: 1 балл = 1 сом, списать — назовите номер на кассе. История баллов — /баллы, отключить — /стоп.\n\n{book}",
-        p.name
-    )))
+    Ok(Reply::new(
+        format!(
+            "{}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы».\n\n{book}",
+            p.name
+        ),
+        Keys::Customer,
+    ))
 }
 
 fn km(v: i32) -> String {
@@ -371,7 +440,7 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
         .fetch_one(&mut *conn)
         .await?;
     let bonus = format!(
-        "Баллов: {} — подробнее /баллы",
+        "⭐ Баллов: {} — подробнее кнопкой «⭐ Баллы»",
         points(crate::api::loyalty::balance(conn, party_id).await?)
     );
     let books = crate::api::oil_book::books(conn, branch_id, Some(party_id), None).await?;
@@ -532,8 +601,7 @@ pub async fn handle_text(
     let Some((_, branch_id)) = chat_owner(conn, chat_id).await? else {
         return Ok(None);
     };
-    let cmd = word.trim_start_matches('/');
-    match cmd {
+    match command(text).as_str() {
         "сегодня" | "today" => today(conn, branch_id).await.map(Some),
         "смена" | "shift" => shift(conn, branch_id).await.map(Some),
         "долги" | "debts" => debts(conn, branch_id).await.map(Some),
@@ -856,14 +924,8 @@ async fn commands_loop(pool: PgPool, api: Api) {
             };
             match reply {
                 Ok(r) => {
-                    // Кнопка «Поделиться номером» — пока клиент не подключился; потом убираем.
-                    let markup = if r.ask_contact {
-                        json!({ "keyboard": [[{ "text": "Поделиться номером", "request_contact": true }]],
-                                "resize_keyboard": true, "one_time_keyboard": true })
-                    } else {
-                        json!({ "remove_keyboard": true })
-                    };
-                    api.send_with(m.chat.id, &r.text, Some(markup)).await;
+                    api.send_with(m.chat.id, &r.text, Some(r.keys.markup()))
+                        .await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "телеграм: команда не обработана");

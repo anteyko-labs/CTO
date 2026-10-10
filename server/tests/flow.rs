@@ -1664,7 +1664,7 @@ async fn say(conn: &mut sqlx::PgConnection, chat: i64, text: &str) -> String {
 async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     // Клиент подключается своим номером, видит книжку, напоминания уходят один раз (SPEC-18, ADR-051).
     use avtodom_server::api::telegram::{
-        SharedContact, due_reminders, handle_message, mark_reminded,
+        Keys, SharedContact, due_reminders, handle_message, mark_reminded,
     };
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
@@ -1699,7 +1699,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     let first = handle_message(&mut conn, chat, chat, Some("/start"), None)
         .await
         .unwrap();
-    assert!(first.ask_contact);
+    assert_eq!(first.keys, Keys::Contact);
     // Чужой контакт не подключает.
     let foreign = SharedContact {
         phone: "+996555123456".into(),
@@ -1709,7 +1709,8 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
         handle_message(&mut conn, chat, chat, None, Some(foreign))
             .await
             .unwrap()
-            .ask_contact
+            .keys
+            == Keys::Contact
     );
     let unknown = SharedContact {
         phone: "+996700000000".into(),
@@ -1729,7 +1730,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     let linked = handle_message(&mut conn, chat, chat, None, Some(own))
         .await
         .unwrap();
-    assert!(!linked.ask_contact);
+    assert_eq!(linked.keys, Keys::Customer);
     assert!(
         linked.text.contains("01KG123ABC (Toyota)"),
         "{}",
@@ -1762,12 +1763,19 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     assert_eq!(due.len(), 1);
     assert!(due[0].text.contains("завтра"));
 
-    // Отписка — напоминаний больше нет.
+    // Кнопки клиента: «Баллы», «Отключиться» с подтверждением, «Назад» — к книжке.
+    assert!(say(&mut conn, chat, "⭐ Баллы").await.contains("Баллов:"));
     assert!(
-        say(&mut conn, chat, "/стоп")
+        say(&mut conn, chat, "🚪 Отключиться")
             .await
-            .contains("больше не будет")
+            .contains("Отключиться от бота?")
     );
+    assert!(say(&mut conn, chat, "Назад").await.contains("01KG123ABC"));
+    let left = handle_message(&mut conn, chat, chat, Some("Да, отключиться"), None)
+        .await
+        .unwrap();
+    assert!(left.text.contains("вы отключены"));
+    assert_eq!(left.keys, Keys::Contact);
     assert!(due_reminders(&mut conn).await.unwrap().is_empty());
 }
 
@@ -1779,7 +1787,7 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let chat = 777_000_111i64;
     let reply = say(&mut conn, chat, "/сегодня").await;
-    assert!(reply.contains("поделитесь номером"));
+    assert!(reply.contains("Поделиться номером"));
     assert!(
         say(&mut conn, chat, "/start 000000")
             .await
@@ -1797,7 +1805,8 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     );
     // Код одноразовый.
     assert!(say(&mut conn, 1, "123456").await.contains("не подошёл"));
-    let today = say(&mut conn, chat, "/сегодня").await;
+    // Кнопка «📊 Сегодня» — то же, что команда.
+    let today = say(&mut conn, chat, "📊 Сегодня").await;
     assert!(today.contains("Выручка") && today.contains("Чистая прибыль"));
     assert!(
         say(&mut conn, chat, "/долги")
