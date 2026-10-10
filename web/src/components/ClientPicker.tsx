@@ -1,18 +1,19 @@
 import { useState } from 'react'
-import { get, post, qs } from '../lib/api'
+import { get, patch, post, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Party, PartyContact, PartyVehicle } from '../lib/types'
 import { Badge, Button, ErrorBox, Field, Missing, Modal } from './ui'
 import { missingWithFocus } from '../lib/forms'
 
-/** Что набрали в поиске: ИНН, телефон или имя. Нужно, чтобы завести клиента одним нажатием. */
-export function guessField(text: string): { field: 'inn' | 'phone' | 'name'; kind: 'person' | 'company' } {
+/** Что набрали в поиске: ПИН/ИНН, телефон или имя — в какое поле подставить при создании.
+ *  Физлицо это или фирма, по цифрам не понять (ПИН и ИНН оба по 14 цифр): выбирает кассир. */
+function guessField(text: string): 'inn' | 'phone' | 'name' {
   const digits = text.replace(/[^\d]/g, '')
   const onlyDigits = /^[\d\s+()-]+$/.test(text)
-  if (onlyDigits && digits.length >= 12) return { field: 'inn', kind: 'company' }
-  if (onlyDigits && digits.length >= 9) return { field: 'phone', kind: 'person' }
-  return { field: 'name', kind: 'person' }
+  if (onlyDigits && digits.length >= 12) return 'inn'
+  if (onlyDigits && digits.length >= 9) return 'phone'
+  return 'name'
 }
 
 /** Долг клиента словами: кто кому должен. */
@@ -22,17 +23,25 @@ export function balanceText(balance: number): string {
 }
 
 /** Новый клиент прямо из кассы: минимум полей, остальное потом в карточке. */
-function NewClientModal({ onClose, onCreated }: { onClose: () => void; onCreated: (p: Party) => void }) {
-  const [form, setForm] = useState({ kind: 'person' as Party['kind'], name: '', phone: '', inn: '' })
+function NewClientModal({ initial, onClose, onCreated }: { initial: string; onClose: () => void; onCreated: (p: Party) => void }) {
+  const field = guessField(initial)
+  const [form, setForm] = useState({
+    kind: null as Party['kind'] | null,
+    name: field === 'name' ? initial : '',
+    phone: field === 'phone' ? initial : '',
+    inn: field === 'inn' ? initial : '',
+  })
   const { busy, error, run } = useAction()
   const company = form.kind === 'company'
   const notFilled = missingWithFocus(
+    [form.kind !== null, 'физлицо или юрлицо', '[data-kind]'],
     [Boolean(form.name.trim()), company ? 'название фирмы' : 'ФИО', '#client-name'],
     [!company || Boolean(form.inn.trim()), 'ИНН фирмы', '#client-inn'],
   )
 
   const save = () =>
     run(async () => {
+      if (!form.kind) return
       const p = await post<Party>('/parties', {
         role: 'customer',
         kind: form.kind,
@@ -46,25 +55,34 @@ function NewClientModal({ onClose, onCreated }: { onClose: () => void; onCreated
   return (
     <Modal title="Новый клиент" onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-sm">
+        <div className="text-sm font-medium">Кто клиент?</div>
+        <div data-kind tabIndex={-1} className="grid grid-cols-2 gap-2 text-sm">
           {(['person', 'company'] as const).map((k) => (
             <button
               key={k}
               type="button"
-              className={`min-h-[42px] py-2 ${form.kind === k ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+              aria-pressed={form.kind === k}
+              className={`flex min-h-[56px] flex-col items-start justify-center rounded-md border px-3 py-2 text-left ${form.kind === k ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
               onClick={() => setForm({ ...form, kind: k })}
             >
-              {k === 'person' ? 'Физлицо' : 'Юрлицо'}
+              <span className="font-medium">{k === 'person' ? 'Физлицо' : 'Юрлицо'}</span>
+              <span className={`text-xs ${form.kind === k ? 'text-sky-100' : 'text-slate-500'}`}>
+                {k === 'person' ? 'человек, документ с ПИН' : 'фирма, ИП, документ с ИНН'}
+              </span>
             </button>
           ))}
         </div>
         <Field label={company ? 'Название фирмы' : 'ФИО'} required>
-          <input id="client-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <input id="client-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </Field>
         <Field label="Телефон">
           <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
         </Field>
-        <Field label="ИНН" required={company} hint={company ? 'Нужен для документа о долге' : 'Если есть'}>
+        <Field
+          label={company ? 'ИНН фирмы' : 'ПИН (14 цифр с паспорта)'}
+          required={company}
+          hint={company ? 'Нужен для документа о долге' : 'Нужен, если берёт в долг'}
+        >
           <input id="client-inn" inputMode="numeric" value={form.inn} onChange={(e) => setForm({ ...form, inn: e.target.value })} />
         </Field>
         <Missing items={notFilled} />
@@ -152,8 +170,9 @@ export function ClientPicker({
 }) {
   const [q, setQ] = useState('')
   const query = useDebounced(q.trim(), 250)
-  const [creating, setCreating] = useState(false)
-  const quick = useAction()
+  // Новый клиент: что набрали в поиске, то и подставим; тип выбирает кассир.
+  const [creating, setCreating] = useState<string | null>(null)
+  const kindAct = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const add = useAction()
   const found = useLoad(
@@ -170,22 +189,6 @@ export function ClientPicker({
         : Promise.resolve(null),
     [party?.id],
   )
-
-  /** Завести клиента прямо из списка: что набрали, то и записываем в нужное поле. */
-  const quickAdd = () =>
-    void quick.run(async () => {
-      const text = query
-      const { field, kind } = guessField(text)
-      const p = await post<Party>('/parties', {
-        role: 'customer',
-        kind,
-        name: text,
-        phone: field === 'phone' ? text : '',
-        inn: field === 'inn' ? text : '',
-      })
-      setQ('')
-      onParty(p)
-    })
 
   const addRow = (value: string) =>
     void add.run(async () => {
@@ -210,8 +213,22 @@ export function ClientPicker({
           <div className="min-w-0">
             <div className="truncate font-medium">{party.name}</div>
             <div className="text-xs text-slate-600">
-              {party.kind === 'company' ? 'Юрлицо' : 'Физлицо'}
-              {party.inn && ` · ИНН ${party.inn}`} · {balanceText(party.balance_tyiyn)}
+              <span className="font-medium">{party.kind === 'company' ? 'Юрлицо' : 'Физлицо'}</span>{' '}
+              <button
+                type="button"
+                className="text-sky-700 underline"
+                disabled={kindAct.busy}
+                onClick={() =>
+                  void kindAct.run(async () => {
+                    const kind = party.kind === 'company' ? 'person' : 'company'
+                    const saved = await patch<Party>(`/parties/${party.id}`, { kind })
+                    onParty({ ...party, kind: saved.kind })
+                  })
+                }
+              >
+                {party.kind === 'company' ? 'это физлицо' : 'это юрлицо'}
+              </button>
+              {party.inn && ` · ${party.kind === 'company' ? 'ИНН' : 'ПИН'} ${party.inn}`} · {balanceText(party.balance_tyiyn)}
             </div>
           </div>
           <button type="button" className="shrink-0 text-slate-400 hover:text-rose-600" aria-label="Убрать клиента" onClick={() => onParty(null)}>
@@ -258,7 +275,7 @@ export function ClientPicker({
             </Field>
           </>
         )}
-        <ErrorBox error={add.error ?? card.error} />
+        <ErrorBox error={add.error ?? card.error ?? kindAct.error} />
         {adding && (
           <NewRowModal
             title={adding === 'contact' ? 'Новый работник' : 'Новая машина'}
@@ -291,7 +308,7 @@ export function ClientPicker({
                 onParty(list[0])
                 setQ('')
               } else if (query.length >= 2) {
-                quickAdd()
+                setCreating(query)
               }
             }
           }}
@@ -326,26 +343,18 @@ export function ClientPicker({
             <li className="px-3 py-2 text-sm text-slate-500">Никого не нашли по «{query}»</li>
           )}
           <li className="flex items-center justify-between gap-2 border-t border-slate-200 px-3 py-2">
-            <button
-              type="button"
-              className="text-left text-sm font-medium text-sky-700 hover:underline"
-              disabled={quick.busy}
-              onClick={quickAdd}
-            >
-              + Добавить «{query}»
-            </button>
-            <button type="button" className="text-xs text-slate-500 hover:underline" onClick={() => setCreating(true)}>
-              подробнее
+            <button type="button" className="text-left text-sm font-medium text-sky-700 hover:underline" onClick={() => setCreating(query)}>
+              + Новый клиент «{query}»
             </button>
           </li>
         </ul>
       )}
-      <ErrorBox error={quick.error} />
-      {creating && (
+      {creating !== null && (
         <NewClientModal
-          onClose={() => setCreating(false)}
+          initial={creating}
+          onClose={() => setCreating(null)}
           onCreated={(p) => {
-            setCreating(false)
+            setCreating(null)
             setQ('')
             onParty(p)
           }}

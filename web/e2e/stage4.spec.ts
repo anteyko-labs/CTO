@@ -259,3 +259,25 @@ test('аналог фильтра вместо отсутствующего и �
   await page.getByRole('link', { name: 'Открыть', exact: true }).click()
   await expect(page.getByText('Доставка: г. Бишкек, ул. Ахунбаева 98')).toBeVisible()
 })
+
+test('новый клиент в кассе: физлицо или юрлицо выбирают явно', async ({ page }) => {
+  await login(page)
+  await page.goto('/')
+  const pin = `2${RUN}12345`.slice(0, 14).padEnd(14, '0')
+  // 14 цифр — это и ПИН физлица, и ИНН фирмы: касса не угадывает, а спрашивает.
+  await page.locator('[data-client-input]').fill(pin)
+  await page.getByRole('button', { name: `+ Новый клиент «${pin}»` }).click()
+  await expect(page.getByLabel('ПИН (14 цифр с паспорта)')).toHaveValue(pin)
+  const create = page.getByRole('button', { name: 'Создать' })
+  await expect(page.getByRole('status').filter({ hasText: 'физлицо или юрлицо' })).toBeVisible()
+  await expect(create).toBeDisabled()
+  await page.getByRole('button', { name: /^Физлицо/ }).click()
+  await page.locator('#client-name').fill(`Физлицов ${RUN}`)
+  await create.click()
+  await expect(page.getByText(`Физлицов ${RUN}`)).toBeVisible()
+  await expect(page.getByText(`ПИН ${pin}`)).toBeVisible()
+  // Ошиблись — тип меняется прямо в чеке.
+  await page.getByRole('button', { name: 'это юрлицо' }).click()
+  await expect(page.getByRole('button', { name: 'это физлицо' })).toBeVisible()
+  await expect(page.getByText(`ИНН ${pin}`)).toBeVisible()
+})

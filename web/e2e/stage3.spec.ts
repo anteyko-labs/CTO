@@ -238,7 +238,7 @@ test('продажа в долг: ПИН из кассы и печать рас�
   await expect(submit).toBeDisabled()
   await page.locator('#debt-inn').fill(pin)
   await page.getByRole('button', { name: 'Записать' }).click()
-  await expect(page.getByText(`ИНН ${pin}`)).toBeVisible()
+  await expect(page.getByText(`ПИН ${pin}`)).toBeVisible()
   await expect(page.getByText('ПИН / ИНН клиента для документа о долге')).toHaveCount(0)
   await submit.click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
