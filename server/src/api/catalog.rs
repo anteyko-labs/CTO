@@ -582,6 +582,9 @@ struct CreateProductReq {
     pour_price_per_l_tyiyn: Option<i64>,
     #[serde(default)]
     min_stock: i64,
+    /// Закупка за штуку или канистру, если товар заводят без прихода (из списка старой программы):
+    /// по ней ревизия оценит найденный на полке остаток (SPEC-20).
+    initial_cost_tyiyn: Option<i64>,
 }
 
 pub(crate) async fn insert_barcode(
@@ -688,6 +691,18 @@ async fn create_product(
     )
     .execute(&mut *tx)
     .await?;
+    if let Some(cost) = req.initial_cost_tyiyn.filter(|c| *c > 0) {
+        ops::check_amount(cost)?;
+        sqlx::query!(
+            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+            ctx.user.branch_id,
+            id,
+            container_ml.unwrap_or(1),
+            cost
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     let mut codes = 0usize;
     for code in &req.barcodes {
         let code = code.trim();

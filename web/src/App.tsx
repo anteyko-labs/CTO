@@ -23,6 +23,7 @@ import Notifications from './pages/Notifications'
 import Profit, { OwnerDashboard } from './pages/Owner'
 import Payroll from './pages/Payroll'
 import Products from './pages/Products'
+import ProductIntake from './pages/ProductIntake'
 import ReceiptNew from './pages/ReceiptNew'
 import ReceiptView from './pages/ReceiptView'
 import Receipts from './pages/Receipts'
@@ -74,6 +75,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/receipts', label: 'Приход', icon: 'incoming' },
       { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/products', label: 'Товары', icon: 'products' },
+      { to: '/intake', label: 'Работа с товарами', icon: 'scan' },
       { to: '/revision', label: 'Ревизия', icon: 'revision' },
       { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', ownerOnly: true },
     ],
@@ -244,6 +246,7 @@ function Shell() {
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
+          <Route path="/intake" element={<ProductIntake />} />
           <Route path="/shift" element={<Shift />} />
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/payroll" element={<Payroll />} />

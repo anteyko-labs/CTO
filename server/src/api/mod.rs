@@ -14,6 +14,7 @@ pub mod notifications;
 pub mod offline;
 pub mod oil;
 pub mod oil_book;
+pub mod old_catalog;
 pub mod parties;
 pub mod payroll;
 pub mod receipts;
@@ -43,6 +44,7 @@ pub fn routes() -> Router<AppState> {
         .merge(offline::routes())
         .merge(oil::routes())
         .merge(oil_book::routes())
+        .merge(old_catalog::routes())
         .merge(parties::routes())
         .merge(payroll::routes())
         .merge(refs::routes())

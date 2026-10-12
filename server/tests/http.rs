@@ -2012,3 +2012,77 @@ async fn favorites_heatmap_and_compare(pool: PgPool) {
     assert!(dash["compare"]["yesterday"]["revenue_tyiyn"].is_i64());
     assert!(dash["compare"]["week_ago"]["sales_count"].is_i64());
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn old_catalog_import_search_and_initial_cost(pool: PgPool) {
+    // Список старой программы — только подсказка; товар заводится с закупкой для оценки ревизии (SPEC-20).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let rows = json!([
+        { "name": "ГАЗПРОМ ЛИТОЛ 24", "barcode": "4670026845129", "cost_tyiyn": 13000, "price_tyiyn": 17000, "unit": "шт" },
+        { "name": "Новый продукт", "barcode": "6942687231640" },
+        { "name": "  ", "barcode": "1" }
+    ]);
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/old-catalog",
+        Some(&admin),
+        Some(rows.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, r) = call(&app, "PUT", "/api/v1/old-catalog", Some(&owner), Some(rows)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(r["rows"], 1);
+    let (_, _, hits) = call(
+        &app,
+        "GET",
+        "/api/v1/old-catalog/search?barcode=4670026845129",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(hits[0]["exact"], json!(true));
+    assert_eq!(hits[0]["price_tyiyn"], 17000);
+    let (_, _, hits) = call(
+        &app,
+        "GET",
+        "/api/v1/old-catalog/search?q=литол",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(hits.as_array().unwrap().len(), 1);
+
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Смазки", "kind": "other" })),
+    )
+    .await;
+    let (s, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "ГАЗПРОМ ЛИТОЛ 24",
+                     "barcodes": ["4670026845129"], "sale_price_tyiyn": 17000, "initial_cost_tyiyn": 13000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(p["last_purchase_price_tyiyn"], 13000);
+    // Позиция теперь отмечена как заведённая.
+    let (_, _, hits) = call(
+        &app,
+        "GET",
+        "/api/v1/old-catalog/search?barcode=4670026845129",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(hits[0]["linked_product_id"], p["id"]);
+}

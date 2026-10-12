@@ -139,6 +139,12 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />,
+  scan: (
+    <>
+      <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+      <path d="M7 8v8M10 8v8M13 8v8M16 8v8" />
+    </>
+  ),
   plus: <path d="M12 5v14M5 12h14" />,
   star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9z" />,
   edit: (

@@ -313,3 +313,28 @@ test('плитки «ходовое»: товар в чек одним каса�
   // Плитки убираем, чтобы не мешать другим проверкам кассы.
   await page.request.put('/api/v1/settings/favorites', { data: [], headers: DEVICE })
 })
+
+test('работа с товарами: скан находит позицию старой программы и заводит товар без Enter', async ({ page }) => {
+  await login(page)
+  await apiPost(page.request, '/categories', { name: `Смазки ${RUN}`, kind: 'other' })
+  const code = `46${RUN}777`
+  const res = await page.request.put('/api/v1/old-catalog', {
+    data: [
+      { name: `ЛИТОЛ-24 ${RUN}`, barcode: code, cost_tyiyn: 13_000, price_tyiyn: 17_000, unit: 'шт', category: 'СМАЗКИ' },
+      { name: 'Новый продукт', barcode: '1' },
+    ],
+    headers: DEVICE,
+  })
+  expect(res.ok()).toBeTruthy()
+  expect((await res.json()).rows).toBe(1)
+  await page.goto('/intake')
+  await page.locator('[data-intake-scan]').pressSequentially(code, { delay: 5 })
+  await expect(page.locator('#intake-name')).toHaveValue(`ЛИТОЛ-24 ${RUN}`)
+  await expect(page.locator('#intake-price')).toHaveValue('170')
+  await page.locator('#intake-category').selectOption({ label: `Смазки ${RUN}` })
+  await page.getByRole('button', { name: 'Завести товар' }).click()
+  await expect(page.getByText(`Заведён: ЛИТОЛ-24 ${RUN}`)).toBeVisible()
+  // Повторный скан — товар уже есть, дубля не будет.
+  await page.locator('[data-intake-scan]').pressSequentially(code, { delay: 5 })
+  await expect(page.getByText('Уже заведён')).toBeVisible()
+})

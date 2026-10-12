@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"rows!\", max(imported_at) as imported_at from old_catalog where branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "imported_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "3c4915d2e872fee1fccd069818753aab8125010166d6600bc5d29e1c8b67bdd1"
+}
