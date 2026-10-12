@@ -1,0 +1,11 @@
+# HTTPS для кассы в сети магазина своим сертификатом (Caddy сам ведёт удостоверяющий центр).
+{
+	storage file_system C:\Avtodom\caddy-data
+	admin off
+}
+
+https://SERVER_IP, https://avtodom.local {
+	tls internal
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

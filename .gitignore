@@ -27,3 +27,6 @@ Thumbs.db
 .idea/
 .vscode/
 /deploy/backups/
+
+# Настройки точки с паролями (Windows)
+/deploy/windows/config.ps1
