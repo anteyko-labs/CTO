@@ -10,20 +10,36 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 if (-not (Test-Path "$Here\config.ps1")) { throw 'Нет config.ps1: скопируйте config.example.ps1 в config.ps1 и заполните' }
 . "$Here\config.ps1"
 if (-not (Test-Path "$PgBin\psql.exe")) { throw "Не найден PostgreSQL в $PgBin — установите PostgreSQL 16" }
+foreach ($p in @(@{ N = 'PgSuperPassword'; V = $PgSuperPassword }, @{ N = 'DbPassword'; V = $DbPassword }, @{ N = 'OwnerPassword'; V = $OwnerPassword })) {
+  # Только печатные латинские символы: русские буквы и пробелы ломают строку подключения.
+  if ($p.V -notmatch '^[\x21-\x7E]{10,}$') { throw "Пароль $($p.N): латиница, цифры и знаки, без пробелов, не короче 10 символов" }
+}
+
+function Invoke-Pg([string[]]$PgArgs) {
+  & "$PgBin\psql.exe" @PgArgs
+  if ($LASTEXITCODE -ne 0) { throw "psql завершился с ошибкой ($LASTEXITCODE): $($PgArgs -join ' ')" }
+}
 
 Write-Host '1/6 Файлы программы' -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $Root, "$Root\logs", "$Root\backups", "$Root\caddy-data" | Out-Null
 Copy-Item -Force "$Here\avtodom-server.exe", "$Here\caddy.exe" $Root
 Copy-Item -Force -Recurse "$Here\web" $Root
-Copy-Item -Force "$Here\config.ps1", "$Here\start-server.ps1", "$Here\start-caddy.ps1", "$Here\backup.ps1", "$Here\restore.ps1" $Root
+Copy-Item -Force "$Here\config.ps1", "$Here\start-server.ps1", "$Here\start-caddy.ps1", "$Here\backup.ps1", "$Here\restore.ps1", "$Here\update.ps1" $Root
+# Пароли и копии базы — только системе и администраторам (SID — имена групп зависят от языка Windows).
+& icacls $Root /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не удалось ограничить доступ к C:\Avtodom' }
+# Папку копий читает Google Drive от имени пользователя — ему чтение (только этой папки).
+& icacls "$Root\backups" /grant "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)RX" | Out-Null
 (Get-Content "$Here\Caddyfile" -Raw).Replace('SERVER_IP', $ServerIp) | Set-Content -Encoding UTF8 "$Root\Caddyfile"
 
 Write-Host '2/6 База данных' -ForegroundColor Cyan
 $env:PGPASSWORD = $PgSuperPassword
 $exists = & "$PgBin\psql.exe" -U postgres -h 127.0.0.1 -tAc "select 1 from pg_roles where rolname = 'avtodom'"
+if ($LASTEXITCODE -ne 0) { throw 'Не удалось подключиться к PostgreSQL: проверьте пароль postgres в config.ps1' }
+$sqlPass = $DbPassword.Replace("'", "''")
 if ($exists -ne '1') {
-  & "$PgBin\psql.exe" -U postgres -h 127.0.0.1 -c "create role avtodom login password '$DbPassword'"
-  & "$PgBin\psql.exe" -U postgres -h 127.0.0.1 -c "create database avtodom owner avtodom"
+  Invoke-Pg @('-U', 'postgres', '-h', '127.0.0.1', '-c', "create role avtodom login password '$sqlPass'")
+  Invoke-Pg @('-U', 'postgres', '-h', '127.0.0.1', '-c', 'create database avtodom owner avtodom')
 } else {
   Write-Host '   база уже есть — оставляем как есть'
 }
@@ -44,9 +60,9 @@ $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -Ex
 Register-ScheduledTask -TaskName 'Avtodom копия базы' -Action $a -Trigger $night -Principal $sys -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable) -Force | Out-Null
 
 Write-Host '5/6 Брандмауэр: HTTPS для кассы в сети магазина' -ForegroundColor Cyan
-if (-not (Get-NetFirewallRule -DisplayName 'Avtodom HTTPS' -ErrorAction SilentlyContinue)) {
-  New-NetFirewallRule -DisplayName 'Avtodom HTTPS' -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Private, Domain | Out-Null
-}
+# Любой профиль сети (новую сеть Windows считает общественной), но только адреса этой же сети.
+Get-NetFirewallRule -DisplayName 'Avtodom HTTPS' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName 'Avtodom HTTPS' -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Any -RemoteAddress LocalSubnet | Out-Null
 
 Write-Host '6/6 Запуск' -ForegroundColor Cyan
 Start-ScheduledTask -TaskName 'Avtodom сервер'
@@ -58,8 +74,21 @@ try {
 } catch {
   Write-Host "   сервер пока не отвечает — смотрите $Root\logs\server.log" -ForegroundColor Yellow
 }
+# Корневой сертификат Caddy создаёт при первом запуске — ждём и кладём копию туда, где её
+# можно взять на флешку без прав администратора.
 $cert = "$Root\caddy-data\pki\authorities\local\root.crt"
+for ($i = 0; $i -lt 30 -and -not (Test-Path $cert); $i++) { Start-Sleep -Seconds 2 }
+$certOut = 'C:\Avtodom-сертификат'
+if (Test-Path $cert) {
+  New-Item -ItemType Directory -Force -Path $certOut | Out-Null
+  Copy-Item -Force $cert "$certOut\root.crt"
+  Copy-Item -Force "$Here\install-cert.ps1" $certOut
+}
 Write-Host ''
 Write-Host "Готово. Касса: https://$ServerIp" -ForegroundColor Green
-Write-Host "Сертификат для моноблока появится здесь через минуту: $cert"
-Write-Host 'Перенесите его на моноблок и запустите там install-cert.ps1 (см. README).'
+if (Test-Path "$certOut\root.crt") {
+  Write-Host "Для моноблока: скопируйте папку $certOut на флешку и запустите там install-cert.ps1 (см. README)."
+} else {
+  Write-Host "Сертификат ещё не создан — смотрите $Root\logs\caddy.log и запустите install.ps1 ещё раз" -ForegroundColor Yellow
+}
+Write-Host "Копии базы: $Root\backups — добавьте эту папку в Google Drive (см. README, шаг 1.9)."

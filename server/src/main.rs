@@ -14,6 +14,8 @@ async fn main() {
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info")),
         )
+        // В файл журнала (служба на точке) — без цветовых кодов терминала.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
     if let Err(e) = run().await {
         tracing::error!("{e}");

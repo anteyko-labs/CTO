@@ -9,7 +9,9 @@ export default defineConfig({
     tailwindcss(),
     // Оболочка приложения кэшируется, чтобы касса открывалась без сети (SPEC-09, ADR-038).
     VitePWA({
+      // Регистрация — из UpdateBanner: обновление применяется само при пустом чеке.
       registerType: 'prompt',
+      injectRegister: false,
       manifest: {
         name: 'Avtodom',
         short_name: 'Avtodom',

@@ -113,13 +113,16 @@ export default function Shift() {
       toast('Смена открыта')
     })
 
-  const startClosing = () => {
-    closeDialogs()
-    if (!shift) return
-    // Сумму «должно быть» берём свежую: за время на экране могли пройти чеки с другого устройства.
-    current.reload()
-    setClosing({ counted: somInput(shift.expected_tyiyn), comment: '', opId: newOpId() })
-  }
+  const startClosing = () =>
+    void act.run(async () => {
+      closeDialogs()
+      if (!shift) return
+      // Сумму «должно быть» берём свежую с сервера: за время на экране могли пройти чеки с другого
+      // устройства, и старая сумма дала бы недостачу, которой нет.
+      const fresh = await get<ShiftRow | null>('/shifts/current')
+      current.reload()
+      setClosing({ counted: somInput(fresh?.expected_tyiyn ?? shift.expected_tyiyn), comment: '', opId: newOpId() })
+    })
 
   const closeShift = () =>
     void act.run(async () => {

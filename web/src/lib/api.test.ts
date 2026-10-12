@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api } from './api'
+import { ApiError, api, noServerAnswer } from './api'
 
 const reply = (body: string, status: number) => vi.fn(async () => new Response(body, { status }))
 
@@ -49,5 +49,16 @@ describe('ответы сервера', () => {
       }),
     )
     expect((await failure()).status).toBe(0)
+  })
+})
+
+describe('нет ответа сервера', () => {
+  it('обрыв, таймаут и прокси без сервера — чек не отклонён', () => {
+    expect(noServerAnswer(new ApiError(0, 'network', ''))).toBe(true)
+    expect(noServerAnswer(new ApiError(502, 'error', ''))).toBe(true)
+    expect(noServerAnswer(new ApiError(504, 'error', ''))).toBe(true)
+    expect(noServerAnswer(new ApiError(200, 'bad_response', ''))).toBe(true)
+    expect(noServerAnswer(new ApiError(400, 'validation', ''))).toBe(false)
+    expect(noServerAnswer(new ApiError(409, 'conflict', ''))).toBe(false)
   })
 })

@@ -625,17 +625,21 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     }
     // Долг оформляется документом с ПИН или ИНН покупателя (SPEC-10): без него расписка
     // недействительна. Чек без сети уже состоялся — его принимаем, ПИН допишут в карточке.
+    let mut debt_without_inn = false;
     if debt_total > 0
-        && !offline
         && let Some(pid) = req.party_id
     {
         let inn = sqlx::query_scalar!("select inn from parties where id = $1", pid)
             .fetch_one(&mut *conn)
             .await?;
         if inn.trim().is_empty() {
-            return Err(invalid(
-                "для продажи в долг укажите ПИН (физлицо) или ИНН (фирма) клиента",
-            ));
+            if !offline {
+                return Err(invalid(
+                    "для продажи в долг укажите ПИН (физлицо) или ИНН (фирма) клиента",
+                ));
+            }
+            // Поблажка офлайн-чека — владельцу на проверку (ADR-058).
+            debt_without_inn = true;
         }
     }
 
@@ -862,6 +866,17 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             )
             .await?;
         }
+    }
+    if debt_without_inn {
+        ops::audit(
+            conn,
+            ctx,
+            "sale.debt_without_inn",
+            "sale",
+            Some(id),
+            json!({ "number": number, "debt": debt_total }),
+        )
+        .await?;
     }
     if !stale.is_empty() {
         ops::audit(

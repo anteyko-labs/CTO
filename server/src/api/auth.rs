@@ -42,12 +42,37 @@ fn session_cookie(state: &AppState, value: &str, max_age: i64) -> String {
 /// Неудачных попыток до блокировки и её длительность в минутах.
 const MAX_FAILURES: i32 = 5;
 const LOCK_MINUTES: i32 = 15;
+/// Общий предел на логин со всех адресов: адрес можно подменять, логин — нет.
+const MAX_FAILURES_ANY_ADDR: i32 = 20;
+
+/// Попытка входа: предел на «логин + адрес» и общий на логин со всех адресов (ADR-016, ADR-058).
+pub(crate) async fn reserve_login(
+    state: &AppState,
+    login: &str,
+    addr: &str,
+) -> AppResult<Option<i64>> {
+    let by_addr = reserve_with_limit(state, &format!("{login}|{addr}"), MAX_FAILURES).await?;
+    let any = reserve_with_limit(state, &format!("{login}|*"), MAX_FAILURES_ANY_ADDR).await?;
+    Ok(by_addr.or(any))
+}
+
+/// Успешный вход снимает оба счётчика.
+pub(crate) async fn clear_login(state: &AppState, login: &str, addr: &str) -> AppResult<()> {
+    sqlx::query!(
+        "delete from login_attempts where login = $1 or login = $2",
+        format!("{login}|{addr}"),
+        format!("{login}|*")
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
 
 /// Учитывает попытку входа до проверки пароля, одной строкой под блокировкой: параллельные
 /// запросы не проскочат лимит (ADR-016). Возвращает минуты до снятия блокировки, если вход закрыт.
 /// Неизвестные логины учитываются так же, чтобы блокировка не выдавала их наличие.
 /// Успешный вход удаляет строку, поэтому счётчик считает только неудачи.
-pub(crate) async fn reserve_attempt(state: &AppState, key: &str) -> AppResult<Option<i64>> {
+async fn reserve_with_limit(state: &AppState, key: &str, max: i32) -> AppResult<Option<i64>> {
     let mut tx = state.pool.begin().await?;
     let row = sqlx::query!(
         r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
@@ -64,7 +89,7 @@ pub(crate) async fn reserve_attempt(state: &AppState, key: &str) -> AppResult<Op
     .await?;
     let left = match row.left_min {
         Some(m) if m > 0 => Some(m),
-        _ if row.failures > MAX_FAILURES => {
+        _ if row.failures > max => {
             sqlx::query!(
                 r#"update login_attempts set failures = 0, locked_until = now() + make_interval(mins => $2)
                    where login = $1"#,
@@ -94,8 +119,8 @@ async fn login(
     // Ключ блокировки — логин и адрес: подбор с чужого адреса закрывает вход только ему,
     // а владелец со своего устройства по-прежнему входит (ADR-016, ADR-049).
     let login = req.login.trim().to_lowercase();
-    let key = format!("{login}|{}", auth::client_addr(&parts));
-    if let Some(minutes) = reserve_attempt(&state, &key).await? {
+    let addr = auth::client_addr(&parts);
+    if let Some(minutes) = reserve_login(&state, &login, &addr).await? {
         return Err(AppError::TooManyRequests(format!(
             "слишком много неудачных попыток, повторите через {minutes} мин"
         )));
@@ -116,9 +141,7 @@ async fn login(
         Some(r) if ok => r,
         _ => return Err(AppError::Unauthorized),
     };
-    sqlx::query!("delete from login_attempts where login = $1", key)
-        .execute(&state.pool)
-        .await?;
+    clear_login(&state, &login, &addr).await?;
     let user = CurrentUser {
         id: row.id,
         branch_id: row.branch_id,

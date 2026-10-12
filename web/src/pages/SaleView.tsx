@@ -5,7 +5,7 @@ import { lineQtyText, printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatLiters, formatSom, parseLiters } from '../lib/format'
+import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { divRound } from '../lib/money'
@@ -51,7 +51,8 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
     const done = returned.data?.get(l.line_no) ?? { qty: 0, amount: 0 }
     const left = l.qty - done.qty
     const text = qty[l.line_no]?.trim() ?? ''
-    const n = !text ? 0 : l.kind === 'pour' ? parseLiters(text) : /^\d+$/.test(text) ? Number(text) : null
+    // Розлив — в литрах, вес — в килограммах (тысячные: мл и граммы), остальное — штуками.
+    const n = !text ? 0 : l.kind === 'pour' || l.kind === 'weight' ? parseLiters(text) : /^\d+$/.test(text) ? Number(text) : null
     const ok = n !== null && n >= 0 && n <= left
     return { l, left, n, ok, refund: ok && n ? refundOf(l, done, n) : 0 }
   })
@@ -81,12 +82,12 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
               <tr key={l.line_no}>
                 <td className="px-2 py-2">{l.name}</td>
                 <td className="px-2 py-2">{lineQtyText(l)}</td>
-                <td className="px-2 py-2">{l.kind === 'pour' ? formatLiters(left) : left}</td>
+                <td className="px-2 py-2">{l.kind === 'pour' ? formatLiters(left) : l.kind === 'weight' ? formatKg(left) : left}</td>
                 <td className="px-2 py-2">
                   <input
                     className={`w-24 ${ok ? '' : 'border-rose-400'}`}
-                    inputMode={l.kind === 'pour' ? 'decimal' : 'numeric'}
-                    placeholder={l.kind === 'pour' ? 'литры' : '0'}
+                    inputMode={l.kind === 'pour' || l.kind === 'weight' ? 'decimal' : 'numeric'}
+                    placeholder={l.kind === 'pour' ? 'литры' : l.kind === 'weight' ? 'кг' : '0'}
                     disabled={left <= 0}
                     value={qty[l.line_no] ?? ''}
                     onChange={(e) => setQty({ ...qty, [l.line_no]: e.target.value })}

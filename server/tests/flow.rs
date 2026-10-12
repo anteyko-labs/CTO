@@ -2004,6 +2004,64 @@ async fn forgiven_debt_does_not_pay_cashier_later(pool: PgPool) {
     assert_eq!(pending().await, 0);
 }
 
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn loss_making_check_does_not_charge_cashier(pool: PgPool) {
+    // Чек в минус (подарок без покупки) процента не даёт и с кассира не вычитается (ADR-058).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 50_000).await;
+    let mut tx = pool.begin().await.unwrap();
+    avtodom_server::api::payroll::ensure_cashier_rules(&mut tx, &w.owner, w.cashier)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Продаём дешевле закупки «без сети» — валовая отрицательная.
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 5_000)], cash(5_000));
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    sell(&pool, &w.owner, req).await.unwrap();
+    let percent: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where employee_id = $1 and kind = 'revenue_percent'",
+    )
+    .bind(w.cashier)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(percent, 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn fake_offline_check_cannot_spend_points(pool: PgPool) {
+    // Касса без сети баллы не списывает: «офлайн-чек» с баллами — подделка, отказ (ADR-058).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Баллов', '0555000111')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into telegram_customers (chat_id, party_id, phone) values (91, $1, '0555000111')",
+    )
+    .bind(party)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        pay(&[("bonus", 10_000), ("cash", 40_000)]),
+    );
+    req.party_id = Some(party);
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    assert!(matches!(
+        sell(&pool, &w.owner, req).await,
+        Err(AppError::Validation(_))
+    ));
+}
+
 /// Текст ответа бота на сообщение из чата `chat`.
 async fn say(conn: &mut sqlx::PgConnection, chat: i64, text: &str) -> String {
     avtodom_server::api::telegram::handle_message(conn, chat, chat, Some(text), None)

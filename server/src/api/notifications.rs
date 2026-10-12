@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 20] = [
+pub(crate) const WATCHED: [&str; 21] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -40,6 +40,7 @@ pub(crate) const WATCHED: [&str; 20] = [
     "sale.stale_price",
     "revision.post",
     "oil.transfer_reverse",
+    "sale.debt_without_inn",
 ];
 
 #[derive(Serialize)]
@@ -220,6 +221,13 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 Some(n) if n > 0 => format!("; масло сверх нормы: {n}"),
                 _ => String::new(),
             },
+        ),
+        "sale.debt_without_inn" => (
+            format!("Долг без ПИН/ИНН: чек № {}", num("number").unwrap_or(0)),
+            format!(
+                "проведён без связи на {} — допишите ПИН или ИНН в карточке клиента для документа",
+                money(num("debt"))
+            ),
         ),
         "oil.transfer_reverse" => (
             format!("Отменён перелив № {}", num("number").unwrap_or(0)),

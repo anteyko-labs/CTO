@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::api::auth::reserve_attempt;
 use crate::api::parties::{load_party, reconciliation_data};
 use crate::auth::{self, Ctx, Owner, hash_password, new_token, token_hash, verify_password};
 use crate::error::{AppError, AppResult, invalid};
@@ -128,8 +127,9 @@ async fn login(
         return Err(AppError::Unauthorized);
     }
     // Подбор пароля ограничен так же, как у сотрудников (ADR-016).
-    let key = format!("client:{inn}|{}", auth::client_addr(&parts));
-    if let Some(minutes) = reserve_attempt(&state, &key).await? {
+    let addr = auth::client_addr(&parts);
+    let who = format!("client:{inn}");
+    if let Some(minutes) = crate::api::auth::reserve_login(&state, &who, &addr).await? {
         return Err(AppError::TooManyRequests(format!(
             "слишком много неудачных попыток, повторите через {minutes} мин"
         )));
@@ -171,9 +171,13 @@ async fn login(
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query!("delete from login_attempts where login = $1", key)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "delete from login_attempts where login = $1 or login = $2",
+        format!("{who}|{addr}"),
+        format!("{who}|*")
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query!(
         "update party_accounts set last_login_at = now() where party_id = $1",
         p.id

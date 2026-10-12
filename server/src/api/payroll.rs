@@ -550,7 +550,8 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         return Ok(());
     };
     let rate = i64::from(rate.unwrap_or(0));
-    if rate <= 0 || gross == 0 || total == 0 {
+    // Убыточный чек (подарок, распродажа) процента не даёт и с кассира не вычитается.
+    if rate <= 0 || gross <= 0 || total == 0 {
         return Ok(());
     }
     let paid = total - debt;

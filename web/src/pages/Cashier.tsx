@@ -18,7 +18,7 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } from '../components/ui'
-import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
+import { ApiError, get, newOpId, noServerAnswer, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, markPending, markSent, removeSale } from '../lib/offline'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
@@ -568,8 +568,9 @@ export default function Cashier() {
       try {
         sale = await post<Sale>('/sales', body)
       } catch (e) {
-        // Ответа нет — это обрыв связи, даже если браузер считает себя в сети.
-        const noAnswer = e instanceof ApiError ? e.status === 0 : !navigator.onLine
+        // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504): чек остаётся
+        // в очереди и уйдёт сам; повтор с тем же op_id второй продажи не создаст (ADR-013).
+        const noAnswer = e instanceof ApiError ? noServerAnswer(e) : !navigator.onLine
         if (!noAnswer) {
           // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
           await removeSale(opId).catch(() => undefined)

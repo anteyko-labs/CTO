@@ -42,12 +42,24 @@ function statusMessage(status: number): string {
   return `Ошибка ${status}`
 }
 
+/** Ответа сервера нет: обрыв, таймаут или прокси без сервера (502/503/504). Такой отказ
+ *  ничего не говорит о чеке — его нельзя считать отклонённым, он остаётся в очереди. */
+export function noServerAnswer(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 0 || [502, 503, 504, 530].includes(e.status) || e.code === 'bad_response')
+}
+
+/** Сколько ждём ответа: дольше — считаем, что связи нет (касса уходит в офлайн). */
+const TIMEOUT_MS = 20_000
+
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
   let res: Response
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS)
   try {
     res = await fetch(`/api/v1${path}`, {
       method,
       credentials: 'same-origin',
+      signal: abort.signal,
       headers: {
         'X-Device-Id': deviceId,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -55,6 +67,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
   } catch {
+    clearTimeout(timer)
     throw new ApiError(0, 'network', 'Нет связи с сервером')
   }
   let text: string
@@ -62,6 +75,8 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
     text = await res.text()
   } catch {
     throw new ApiError(0, 'network', 'Нет связи с сервером')
+  } finally {
+    clearTimeout(timer)
   }
   // Не JSON приходит, когда отвечает не наш сервер: страница ошибки туннеля или прокси.
   let data: unknown = null

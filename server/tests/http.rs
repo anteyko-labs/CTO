@@ -1830,8 +1830,9 @@ async fn stranger_cannot_lock_out_owner(pool: PgPool) {
                 .method("POST")
                 .uri("/api/v1/auth/login")
                 .header(header::CONTENT_TYPE, "application/json");
+            // Адрес клиента ставит наш прокси (Caddy) в X-Forwarded-For (ADR-058).
             if let Some(a) = addr {
-                req = req.header("cf-connecting-ip", a);
+                req = req.header("x-forwarded-for", a);
             }
             let body = json!({ "login": "owner", "password": password }).to_string();
             app.oneshot(req.body(Body::from(body)).unwrap())
@@ -2085,4 +2086,44 @@ async fn old_catalog_import_search_and_initial_cost(pool: PgPool) {
     )
     .await;
     assert_eq!(hits[0]["linked_product_id"], p["id"]);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn login_lockout_survives_spoofed_addresses(pool: PgPool) {
+    // Подмена адреса в заголовках не обходит блокировку: общий предел на логин (ADR-058).
+    let app = setup(pool.clone()).await;
+    let attempt = |n: usize, password: &str| {
+        let app = app.clone();
+        let body = json!({ "login": "owner", "password": password }).to_string();
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("x-device-id", Uuid::now_v7().to_string())
+                .header("cf-connecting-ip", format!("10.0.{}.{}", n / 250, n % 250))
+                .header("x-forwarded-for", format!("10.1.{}.{}", n / 250, n % 250))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    let mut locked_at = None;
+    for n in 0..40 {
+        let s = attempt(n, "wrong-password").await;
+        if s == StatusCode::TOO_MANY_REQUESTS {
+            locked_at = Some(n);
+            break;
+        }
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    assert!(
+        locked_at.is_some_and(|n| n <= 21),
+        "блокировка не сработала: {locked_at:?}"
+    );
+    // Даже верный пароль с нового «адреса» — подождать.
+    assert_eq!(
+        attempt(99, "owner-pass-1").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }

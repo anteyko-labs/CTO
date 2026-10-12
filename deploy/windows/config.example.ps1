@@ -1,23 +1,21 @@
 ﻿# Настройки Avtodom на компьютере точки. Скопируйте в config.ps1 и заполните.
 # config.ps1 хранит пароли и ключ бота — его не отправляют никому и не кладут в git.
+# Пароли — латиницей, цифрами и знаками (без русских букв и пробелов), не короче 10 символов.
 
 # Пароль пользователя postgres, заданный при установке PostgreSQL.
-$PgSuperPassword = 'пароль-postgres'
+$PgSuperPassword = 'Postgres-Pass-123'
 # Пароль базы Avtodom (придумайте длинный).
-$DbPassword = 'длинный-пароль-базы'
+$DbPassword = 'Avtodom-Db-2026-xyz'
 
 # Первый вход владельца (действует, пока в базе нет пользователей).
 $OwnerLogin = 'owner'
-$OwnerPassword = 'смените-после-входа'
+$OwnerPassword = 'Change-Me-Now-1'
 
 # Ключ Телеграм-бота от @BotFather; пусто — бот выключен.
 $TelegramToken = ''
 
 # Адрес сервера в сети магазина (закрепите его за компьютером в роутере).
 $ServerIp = '192.168.1.10'
-
-# Папка Google Drive на этом компьютере — туда уходит копия базы каждую ночь.
-$CloudBackupDir = 'G:\Мой диск\Avtodom-копии'
 
 # Где лежат программы PostgreSQL (psql, pg_dump).
 $PgBin = 'C:\Program Files\PostgreSQL\16\bin'

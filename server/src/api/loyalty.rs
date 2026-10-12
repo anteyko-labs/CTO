@@ -139,10 +139,14 @@ pub async fn on_sale(
         if !member {
             return Err(invalid("клиент не подключён к боту — баллов у него нет"));
         }
+        // Касса без сети баллы не списывает (остаток не проверить): такой «офлайн-чек» —
+        // подделка признака, отклоняем.
+        if offline {
+            return Err(invalid("баллы списываются только при связи с сервером"));
+        }
         lock_party(conn, party_id).await?;
         let have = balance(conn, party_id).await?;
-        // Без сети чек уже состоялся: принимаем, владелец увидит минус.
-        if redeem > have && !offline {
+        if redeem > have {
             return Err(invalid(format!(
                 "у клиента {} баллов, списать {} нельзя",
                 format_som(have.max(0)),

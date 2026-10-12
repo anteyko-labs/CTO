@@ -3,7 +3,7 @@
 // кода и для онлайна, и для офлайна, поэтому обрыв связи ничего не теряет.
 
 import { openDB, type IDBPDatabase } from 'idb'
-import { ApiError, api, deviceId } from './api'
+import { ApiError, api, deviceId, noServerAnswer } from './api'
 import type { Product } from './types'
 
 export interface SnapshotProduct extends Product {
@@ -27,6 +27,8 @@ export interface OutboxItem {
   created_at: string
   status: OutboxStatus
   attempts: number
+  /** Сколько раз сервер ответил «конфликт» (409) — отдельно от обрывов связи. */
+  conflicts?: number
   last_error: string
   body: unknown
   server_number?: number
@@ -240,6 +242,9 @@ let syncing = false
  * Отправляет накопившиеся чеки по одному. Повтор с тем же `op_id` безопасен:
  * сервер вернёт уже проведённый чек (ADR-013).
  */
+/** Сколько раз повторяем чек, на который сервер отвечает «конфликт» (409). */
+const MAX_CONFLICTS = 5
+
 export async function syncOutbox(): Promise<void> {
   if (syncing || !navigator.onLine) return
   syncing = true
@@ -253,8 +258,14 @@ export async function syncOutbox(): Promise<void> {
         const sale = await api<{ number: number }>('POST', '/sales', { ...(item.body as object), offline: true })
         await put({ ...item, status: 'done', server_number: sale.number, last_error: '' })
       } catch (e) {
-        // 409 — гонка (карточку объединили, документ занят): повторим в следующий раз, а не выбросим чек.
-        if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 409) {
+        // 409 — обычно гонка (карточку только что объединили): повторяем, но не вечно —
+        // после MAX_CONFLICTS чек уходит владельцу как отклонённый, очередь не встаёт.
+        const conflict = e instanceof ApiError && e.status === 409
+        if (conflict && (item.conflicts ?? 0) + 1 < MAX_CONFLICTS) {
+          await put({ ...item, status: 'pending', conflicts: (item.conflicts ?? 0) + 1, last_error: e instanceof Error ? e.message : '' })
+          continue
+        }
+        if (e instanceof ApiError && !noServerAnswer(e) && e.status >= 400 && e.status !== 401) {
           // Сервер отказал по существу: чек не исчезает, о нём узнаёт владелец.
           await api('POST', '/sales/offline-rejected', {
             op_id: item.op_id,

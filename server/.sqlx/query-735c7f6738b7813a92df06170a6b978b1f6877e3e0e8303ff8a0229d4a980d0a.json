@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from login_attempts where login = $1 or login = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "735c7f6738b7813a92df06170a6b978b1f6877e3e0e8303ff8a0229d4a980d0a"
+}

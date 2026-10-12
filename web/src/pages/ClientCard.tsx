@@ -8,7 +8,7 @@ import { RepaymentModal } from '../components/RepaymentModal'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatSom, parseSom } from '../lib/format'
+import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Party, PartyCard, PartyTimelineItem } from '../lib/types'
 
@@ -415,7 +415,7 @@ export default function ClientCard() {
                 className="mt-1 text-xs text-sky-700 underline"
                 onClick={() =>
                   setLimits({
-                    limit: party.credit_limit_tyiyn !== null ? String(Math.trunc(party.credit_limit_tyiyn / 100)) : '',
+                    limit: party.credit_limit_tyiyn !== null ? somInput(party.credit_limit_tyiyn) : '',
                     days: party.due_days !== null ? String(party.due_days) : '',
                   })
                 }

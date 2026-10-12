@@ -132,7 +132,12 @@ pub fn client_addr(parts: &Parts) -> String {
             .map(|v| v.split(',').next().unwrap_or("").trim().to_string())
             .filter(|v| !v.is_empty() && v.len() <= 64)
     };
-    header("cf-connecting-ip")
+    // Адрес ставит наш прокси (Caddy в магазине, tailscale serve у владельца): входящий
+    // X-Forwarded-For от браузера они заменяют. Заголовок Cloudflare принимаем, только если
+    // сервер и правда за туннелем Cloudflare (TRUST_CF_HEADER=1) — иначе его подставит кто угодно.
+    let cf = std::env::var("TRUST_CF_HEADER").is_ok_and(|v| v == "1");
+    cf.then(|| header("cf-connecting-ip"))
+        .flatten()
         .or_else(|| header("x-forwarded-for"))
         .or_else(|| header("x-real-ip"))
         .unwrap_or_else(|| "local".into())

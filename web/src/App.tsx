@@ -5,6 +5,8 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'reac
 import { AuthProvider, useAuth } from './lib/auth'
 import { startOfflineLoop } from './lib/offline'
 import { OfflineBar } from './components/OfflineBar'
+import { UpdateBanner } from './components/UpdateBanner'
+import { startUpdates } from './lib/updates'
 import { Loading, Toaster } from './components/ui'
 import { Icon, type IconName } from './components/icons'
 import { get } from './lib/api'
@@ -164,6 +166,7 @@ function Shell() {
   const unseen = useUnseen(user?.role === 'owner')
   // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
   useEffect(() => (user ? startOfflineLoop() : undefined), [user])
+  useEffect(() => startUpdates(), [])
   if (!user) return <Navigate to="/login" replace />
   const owner = user.role === 'owner'
   const roleLabel = owner ? 'Владелец' : 'Администратор'
@@ -235,6 +238,7 @@ function Shell() {
         <span className="text-xs text-slate-300">{user.full_name}</span>
       </div>
       <main className="min-w-0 flex-1 pb-24">
+        <UpdateBanner />
         <OfflineBar />
         <div className="p-4 md:p-6">
         <Routes>
