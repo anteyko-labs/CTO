@@ -42,29 +42,91 @@ fn session_cookie(state: &AppState, value: &str, max_age: i64) -> String {
 /// Неудачных попыток до блокировки и её длительность в минутах.
 const MAX_FAILURES: i32 = 5;
 const LOCK_MINUTES: i32 = 15;
-/// Общий предел на логин со всех адресов: адрес можно подменять, логин — нет.
-const MAX_FAILURES_ANY_ADDR: i32 = 20;
+/// Сколько неудач по одному логину со всех адресов за окно — повод сказать владельцу.
+const ALERT_FAILURES_ANY_ADDR: i32 = 20;
 
-/// Попытка входа: предел на «логин + адрес» и общий на логин со всех адресов (ADR-016, ADR-058).
+/// Попытка входа: жёсткий предел — только на «логин + адрес» (ADR-016, ADR-049). Общий счётчик
+/// на логин вход не закрывает: иначе любой мог бы неверными паролями запереть владельца
+/// (ADR-059). Он лишь сообщает владельцу о подборе, см. `note_failure`.
 pub(crate) async fn reserve_login(
     state: &AppState,
     login: &str,
     addr: &str,
 ) -> AppResult<Option<i64>> {
-    let by_addr = reserve_with_limit(state, &format!("{login}|{addr}"), MAX_FAILURES).await?;
-    let any = reserve_with_limit(state, &format!("{login}|*"), MAX_FAILURES_ANY_ADDR).await?;
-    Ok(by_addr.or(any))
+    reserve_with_limit(state, &format!("{login}|{addr}"), MAX_FAILURES).await
 }
 
-/// Успешный вход снимает оба счётчика.
+/// Успешный вход снимает счётчик своего адреса. Общий счётчик остаётся: он только для
+/// уведомления, и вход владельца не должен прятать подбор с других адресов.
 pub(crate) async fn clear_login(state: &AppState, login: &str, addr: &str) -> AppResult<()> {
     sqlx::query!(
-        "delete from login_attempts where login = $1 or login = $2",
-        format!("{login}|{addr}"),
-        format!("{login}|*")
+        "delete from login_attempts where login = $1",
+        format!("{login}|{addr}")
     )
     .execute(&state.pool)
     .await?;
+    Ok(())
+}
+
+/// Кому принадлежит логин, под который подбирают пароль: филиал и запись для журнала.
+pub(crate) struct LoginTarget<'a> {
+    pub branch_id: Uuid,
+    pub entity: &'a str,
+    pub entity_id: Uuid,
+}
+
+/// Неверный пароль к существующему логину: считаем неудачи со всех адресов. Набралось
+/// `ALERT_FAILURES_ANY_ADDR` за окно — одно уведомление владельцу `auth.login_flood` (ADR-059),
+/// следующее — не раньше, чем через окно. Вход при этом не закрывается.
+/// Неизвестный логин (`target = None`) считается так же, чтобы время ответа не выдавало его
+/// наличие, но сообщать о нём некому.
+pub(crate) async fn note_failure(
+    state: &AppState,
+    login: &str,
+    target: Option<LoginTarget<'_>>,
+) -> AppResult<()> {
+    let key = format!("{login}|*");
+    let mut tx = state.pool.begin().await?;
+    // `locked_until` в общей строке — «уведомили до»: в окне повторно не пишем.
+    let row = sqlx::query!(
+        r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
+           on conflict (login) do update set
+             failures = case when login_attempts.last_failed_at < now() - make_interval(mins => $2)
+                             then 1 else login_attempts.failures + 1 end,
+             last_failed_at = now()
+           returning failures, coalesce(locked_until > now(), false) as "notified!""#,
+        key,
+        LOCK_MINUTES
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(target) = target
+        && row.failures >= ALERT_FAILURES_ANY_ADDR
+        && !row.notified
+    {
+        sqlx::query!(
+            r#"update login_attempts set failures = 0, locked_until = now() + make_interval(mins => $2)
+               where login = $1"#,
+            key,
+            LOCK_MINUTES
+        )
+        .execute(&mut *tx)
+        .await?;
+        // Пользователя у события нет: это не действие сотрудника, а попытки входа извне.
+        sqlx::query!(
+            r#"insert into audit_log (id, branch_id, user_id, device_id, action, entity, entity_id, data)
+               values ($1, $2, null, null, 'auth.login_flood', $3, $4, $5)"#,
+            new_id(),
+            target.branch_id,
+            target.entity,
+            target.entity_id,
+            json!({ "login": login, "failures": row.failures, "minutes": LOCK_MINUTES })
+        )
+        .execute(&mut *tx)
+        .await?;
+        tracing::warn!(login = %login, "много неверных паролей с разных адресов");
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -72,14 +134,21 @@ pub(crate) async fn clear_login(state: &AppState, login: &str, addr: &str) -> Ap
 /// запросы не проскочат лимит (ADR-016). Возвращает минуты до снятия блокировки, если вход закрыт.
 /// Неизвестные логины учитываются так же, чтобы блокировка не выдавала их наличие.
 /// Успешный вход удаляет строку, поэтому счётчик считает только неудачи.
+/// Попытки во время блокировки строку не меняют: блокировку нельзя продлевать бесконечно,
+/// через `LOCK_MINUTES` она снимается и счёт начинается заново (ADR-059).
 async fn reserve_with_limit(state: &AppState, key: &str, max: i32) -> AppResult<Option<i64>> {
     let mut tx = state.pool.begin().await?;
     let row = sqlx::query!(
         r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
            on conflict (login) do update set
-             failures = case when login_attempts.last_failed_at < now() - make_interval(mins => $2)
+             failures = case when login_attempts.locked_until > now() then login_attempts.failures
+                             when login_attempts.last_failed_at < now() - make_interval(mins => $2)
+                               or login_attempts.locked_until <= now()
                              then 1 else login_attempts.failures + 1 end,
-             last_failed_at = now()
+             last_failed_at = case when login_attempts.locked_until > now()
+                                   then login_attempts.last_failed_at else now() end,
+             locked_until = case when login_attempts.locked_until > now()
+                                 then login_attempts.locked_until end
            returning failures,
                      ceil(extract(epoch from locked_until - now()) / 60)::bigint as "left_min?""#,
         key,
@@ -117,7 +186,7 @@ async fn login(
         return Err(AppError::Unauthorized);
     }
     // Ключ блокировки — логин и адрес: подбор с чужого адреса закрывает вход только ему,
-    // а владелец со своего устройства по-прежнему входит (ADR-016, ADR-049).
+    // а владелец со своего устройства по-прежнему входит (ADR-016, ADR-049, ADR-059).
     let login = req.login.trim().to_lowercase();
     let addr = auth::client_addr(&parts);
     if let Some(minutes) = reserve_login(&state, &login, &addr).await? {
@@ -139,7 +208,15 @@ async fn login(
     let ok = verify_password(req.password, hash).await;
     let row = match row {
         Some(r) if ok => r,
-        _ => return Err(AppError::Unauthorized),
+        r => {
+            let target = r.map(|r| LoginTarget {
+                branch_id: r.branch_id,
+                entity: "user",
+                entity_id: r.id,
+            });
+            note_failure(&state, &login, target).await?;
+            return Err(AppError::Unauthorized);
+        }
     };
     clear_login(&state, &login, &addr).await?;
     let user = CurrentUser {

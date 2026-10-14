@@ -2030,8 +2030,10 @@ async fn loss_making_check_does_not_charge_cashier(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn fake_offline_check_cannot_spend_points(pool: PgPool) {
-    // Касса без сети баллы не списывает: «офлайн-чек» с баллами — подделка, отказ (ADR-058).
+async fn offline_check_spends_points_only_if_balance_allows(pool: PgPool) {
+    // Чек с баллами из очереди (онлайн-отправка оборвалась без ответа) проводится, если остатка
+    // хватает на момент проведения; не хватает — отказ (ADR-059).
+    use avtodom_server::api::loyalty::balance;
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let party = Uuid::now_v7();
@@ -2048,18 +2050,54 @@ async fn fake_offline_check_cannot_spend_points(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    let mut req = takeaway(
-        &w,
-        vec![line("piece", w.filter, 1, 50_000)],
-        pay(&[("bonus", 10_000), ("cash", 40_000)]),
-    );
-    req.party_id = Some(party);
-    req.offline = true;
-    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    let offline_sale = |payments: Vec<PaymentReq>| {
+        let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], payments);
+        req.party_id = Some(party);
+        req.offline = true;
+        req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+        req
+    };
+    // Баллов нет — офлайн-чек с баллами отклоняется.
     assert!(matches!(
-        sell(&pool, &w.owner, req).await,
+        sell(
+            &pool,
+            &w.owner,
+            offline_sale(pay(&[("bonus", 10_000), ("cash", 40_000)]))
+        )
+        .await,
         Err(AppError::Validation(_))
     ));
+    // 20 000 с наличными → 100 баллов.
+    let mut big = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 2_000_000)],
+        cash(2_000_000),
+    );
+    big.party_id = Some(party);
+    sell(&pool, &w.owner, big).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 10_000);
+    // Хватает — чек из очереди проводится, баллы списаны, с денег начислено 0,5 %.
+    let posted = sell(
+        &pool,
+        &w.owner,
+        offline_sale(pay(&[("bonus", 10_000), ("cash", 40_000)])),
+    )
+    .await
+    .unwrap();
+    assert!(posted.number > 0);
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 200);
+    // Остатка уже мало — следующий такой чек отклоняется, в минус баллы не уходят.
+    assert!(matches!(
+        sell(
+            &pool,
+            &w.owner,
+            offline_sale(pay(&[("bonus", 10_000), ("cash", 40_000)]))
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 200);
 }
 
 /// Текст ответа бота на сообщение из чата `chat`.
@@ -2266,4 +2304,72 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
         "{}",
         sale_msg.text
     );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_sale_after_shift_close_notifies_owner(pool: PgPool) {
+    // Чек без сети с наличными пришёл, когда смена его дня уже закрыта: деньги легли в кассу
+    // после пересчёта — владелец получает уведомление с суммой (ADR-059).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let branch = w.owner.user.branch_id;
+    let mut conn = pool.acquire().await.unwrap();
+    let till = avtodom_server::api::cash::default_account(&mut conn, branch)
+        .await
+        .unwrap();
+    drop(conn);
+    let shift = Uuid::now_v7();
+    sqlx::query(
+        "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id, opened_by, opened_device, opening_expected_tyiyn)
+         values ($1, $2, 7, (now() at time zone 'Asia/Bishkek')::date, $3, $4, $5, $1, 0)",
+    )
+    .bind(shift)
+    .bind(branch)
+    .bind(till)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let events = || {
+        sqlx::query_as::<_, (serde_json::Value,)>(
+            "select data from audit_log where action = 'sale.offline_after_close' order by created_at",
+        )
+        .fetch_all(&pool)
+    };
+    let offline = |amount: i64| {
+        let mut req = takeaway(&w, vec![line("piece", w.filter, 1, amount)], cash(amount));
+        req.offline = true;
+        req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+        req
+    };
+    // Смена открыта — чек без сети уведомления не даёт.
+    sell(&pool, &w.admin, offline(20_000)).await.unwrap();
+    assert!(events().await.unwrap().is_empty());
+    sqlx::query(
+        "insert into shift_closes (id, shift_id, seq, expected_tyiyn, counted_tyiyn, diff_tyiyn, user_id, device_id)
+         values ($1, $2, 1, 20000, 20000, 0, $3, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(shift)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Смена закрыта: онлайн-чек — обычная продажа без смены, уведомления нет.
+    sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![line("piece", w.filter, 1, 15_000)], cash(15_000)),
+    )
+    .await
+    .unwrap();
+    assert!(events().await.unwrap().is_empty());
+    // Чек без сети того же дня после закрытия — уведомление с суммой наличных.
+    let late = sell(&pool, &w.admin, offline(30_000)).await.unwrap();
+    let got = events().await.unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0["cash"], 30_000);
+    assert_eq!(got[0].0["shift_number"], 7);
+    assert_eq!(got[0].0["number"], late.number);
 }

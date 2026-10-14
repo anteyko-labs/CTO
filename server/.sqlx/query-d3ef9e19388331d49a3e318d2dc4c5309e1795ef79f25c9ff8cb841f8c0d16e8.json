@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.number from shifts s\n           where s.branch_id = $1 and s.account_id = $2 and s.business_date = $3\n             and exists (\n               select 1 from shift_closes c\n               where c.shift_id = s.id\n                 and not exists (select 1 from shift_reopens r where r.close_id = c.id))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d3ef9e19388331d49a3e318d2dc4c5309e1795ef79f25c9ff8cb841f8c0d16e8"
+}

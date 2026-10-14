@@ -98,6 +98,10 @@ async fn create_employee(
     Json(req): Json<EmployeeReq>,
 ) -> AppResult<Json<EmployeeOut>> {
     let full_name = required(&req.full_name, "ФИО")?;
+    // Кассир сразу получает оплату (2 % и оклад) — ставки назначает только владелец (SPEC-07, ADR-059).
+    if req.is_cashier && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
@@ -116,7 +120,12 @@ async fn create_employee(
         "employee.create",
         "employee",
         Some(id),
-        json!({ "full_name": full_name }),
+        json!({
+            "full_name": full_name,
+            "is_cashier": req.is_cashier,
+            "is_master": req.is_master,
+            "pay_rules_added": req.is_cashier,
+        }),
     )
     .await?;
     if req.is_cashier {
@@ -148,6 +157,20 @@ async fn update_employee(
 ) -> AppResult<Json<EmployeeOut>> {
     let full_name = optional_required(req.full_name, "ФИО")?;
     let mut tx = state.pool.begin().await?;
+    let was_cashier = sqlx::query_scalar!(
+        "select is_cashier from employees where id = $1 and branch_id = $2 for update",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    // Признак «кассир» меняет оплату (процент с чеков, оклад) — только владелец (SPEC-07, ADR-059).
+    // Клиент шлёт признак и без изменения — это не правка.
+    let becomes_cashier = req.is_cashier == Some(true) && !was_cashier;
+    if req.is_cashier.is_some_and(|c| c != was_cashier) && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     let out = sqlx::query_as!(
         EmployeeOut,
         r#"update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),
@@ -170,10 +193,18 @@ async fn update_employee(
         "employee.update",
         "employee",
         Some(id),
-        json!({ "active": out.active }),
+        json!({
+            "full_name": out.full_name,
+            "is_cashier": out.is_cashier,
+            "is_master": out.is_master,
+            "active": out.active,
+            "pay_rules_added": becomes_cashier,
+        }),
     )
     .await?;
-    if req.is_cashier == Some(true) {
+    // Правила по умолчанию — только когда сотрудник становится кассиром: правка имени не
+    // должна возвращать оклад, который владелец закрыл.
+    if becomes_cashier {
         crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?;
     }
     tx.commit().await?;

@@ -108,6 +108,8 @@ export default function ProductIntake() {
   const [text, setText] = useState('')
   const [hits, setHits] = useState<Hit[]>([])
   const [found, setFound] = useState<Product | null>(null)
+  /** Сколько этого товара уже посчитано в черновике (вторая полка): null — ещё не считали. */
+  const [already, setAlready] = useState<number | null>(null)
   const [form, setForm] = useState<Form | null>(null)
   const [similar, setSimilar] = useState<Product[]>([])
   const [recent, setRecent] = useState<{ name: string; at: string; count: string; isNew: boolean }[]>([])
@@ -128,6 +130,7 @@ export default function ProductIntake() {
     setText('')
     setHits([])
     setFound(null)
+    setAlready(null)
     setForm(null)
     setSimilar([])
     setOpId(newOpId())
@@ -172,6 +175,8 @@ export default function ProductIntake() {
       setSimilar([])
       try {
         const p = await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+        // Товар мог лежать на другой полке и уже быть посчитан — покажем и спросим, прибавить ли.
+        setAlready(revision ? await countedBefore(p.id) : null)
         setFound({ ...p })
         setHits([])
         setTimeout(() => document.getElementById('intake-count')?.focus(), 50)
@@ -226,14 +231,29 @@ export default function ProductIntake() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form?.name, form?.from])
 
-  /** Черновик ревизии «весь склад»: открытый — продолжаем, нет — заводим. */
-  const ensureRevision = async (): Promise<string> => {
+  /** Открытый черновик ревизии «весь склад», если он есть. */
+  const findRevision = async (): Promise<string | null> => {
     if (revisionId.current) return revisionId.current
     const list = await get<{ id: string; status: string; category_id: string | null }[]>('/revisions')
     const draft = list.find((r) => r.status === 'draft' && r.category_id === null)
-    const id = draft ? draft.id : (await post<{ head: { id: string } }>('/revisions', { category_id: null })).head.id
+    if (draft) revisionId.current = draft.id
+    return draft?.id ?? null
+  }
+
+  /** Черновик ревизии «весь склад»: открытый — продолжаем, нет — заводим. */
+  const ensureRevision = async (): Promise<string> => {
+    const found = await findRevision()
+    if (found) return found
+    const id = (await post<{ head: { id: string } }>('/revisions', { category_id: null })).head.id
     revisionId.current = id
     return id
+  }
+
+  /** Уже посчитанное по товару в черновике; черновика нет — не считали. */
+  const countedBefore = async (productId: string): Promise<number | null> => {
+    const id = await findRevision()
+    if (!id) return null
+    return (await get<{ counted_qty: number | null }>(`/revisions/${id}/lines/${productId}`)).counted_qty
   }
 
   const countValue = (unit: string, s: string): number | null => {
@@ -241,12 +261,19 @@ export default function ProductIntake() {
     return unit === 'ml' ? parseLiters(s) : /^\d+$/.test(s.trim()) ? Number(s.trim()) : null
   }
 
-  const saveCount = async (productId: string, unit: string, s: string) => {
+  /**
+   * Записывает пересчёт в ревизию. По умолчанию прибавляет: товар на двух полках — 5 и 3 — это 8,
+   * а не 3 (ADR-059). «Заменить» — только явным выбором. Возвращает итог строки.
+   */
+  const saveCount = async (productId: string, unit: string, s: string, mode: 'add' | 'set' = 'add'): Promise<number | null> => {
     const qty = countValue(unit, s)
-    if (qty === null) return
+    if (qty === null) return null
     const id = await ensureRevision()
-    await put(`/revisions/${id}/lines`, { product_id: productId, counted_qty: qty })
+    const r = await put<{ counted_qty: number }>(`/revisions/${id}/lines`, { product_id: productId, counted_qty: qty, mode })
+    return r.counted_qty
   }
+
+  const qtyText = (unit: string, q: number) => (unit === 'ml' ? formatLiters(q) : `${q} шт`)
 
   const ml = isOil && form ? parseLiters(form.liters) : null
   const formBlockers = form
@@ -287,18 +314,20 @@ export default function ProductIntake() {
     void act.run(async () => {
       if (!form) return
       await post(`/products/${p.id}/barcodes`, { code: form.barcode.trim() })
-      if (revision) await saveCount(p.id, p.unit, form.count)
+      // Карточка уже была — её могли посчитать под другим кодом: прибавляем и показываем итог.
+      const total = revision ? await saveCount(p.id, p.unit, form.count) : null
+      if (total !== null) toast(`В ревизии теперь ${qtyText(p.unit, total)}`)
       setRecent((r) => [{ name: `${p.name} (+ код)`, at: new Date().toISOString(), count: form.count, isNew: false }, ...r].slice(0, 15))
       toast(`Код привязан к «${p.name}»`)
       reset()
     })
 
-  const saveFoundCount = (s: string) =>
+  const saveFoundCount = (s: string, mode: 'add' | 'set') =>
     void act.run(async () => {
       if (!found) return
-      await saveCount(found.id, found.unit, s)
+      const total = await saveCount(found.id, found.unit, s, mode)
       setRecent((r) => [{ name: found.name, at: new Date().toISOString(), count: s, isNew: false }, ...r].slice(0, 15))
-      toast('Записано в ревизию')
+      toast(total === null ? 'Записано в ревизию' : `Записано в ревизию: всего ${qtyText(found.unit, total)}`)
       reset()
     })
 
@@ -435,7 +464,7 @@ export default function ProductIntake() {
                 </div>
               </div>
               {revision ? (
-                <FoundCount product={found} busy={act.busy} onSave={saveFoundCount} onSkip={reset} />
+                <FoundCount product={found} already={already} busy={act.busy} onSave={saveFoundCount} onSkip={reset} />
               ) : (
                 <div>
                   <Button variant="secondary" onClick={reset}>
@@ -560,28 +589,57 @@ export default function ProductIntake() {
   )
 }
 
-/** Пересчёт уже заведённого товара: сколько на полке. */
-function FoundCount({ product, busy, onSave, onSkip }: { product: Product; busy: boolean; onSave: (s: string) => void; onSkip: () => void }) {
+/**
+ * Пересчёт уже заведённого товара: сколько на полке. Уже считали (товар на второй полке) —
+ * показываем, сколько, и спрашиваем: прибавить (по умолчанию, Enter) или заменить (ADR-059).
+ */
+function FoundCount({
+  product,
+  already,
+  busy,
+  onSave,
+  onSkip,
+}: {
+  product: Product
+  already: number | null
+  busy: boolean
+  onSave: (s: string, mode: 'add' | 'set') => void
+  onSkip: () => void
+}) {
   const [s, setS] = useState('')
   const ok = product.unit === 'ml' ? parseLiters(s) !== null : /^\d+$/.test(s.trim())
+  const ml = product.unit === 'ml'
+  const before = already !== null && already > 0 ? (ml ? formatLiters(already) : `${already} шт`) : null
   return (
-    <div className="flex flex-wrap items-end gap-2">
-      <Field label={product.unit === 'ml' ? 'На полке, л' : 'На полке, шт'}>
-        <input
-          id="intake-count"
-          className="w-32"
-          inputMode={product.unit === 'ml' ? 'decimal' : 'numeric'}
-          value={s}
-          onChange={(e) => setS(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && ok && onSave(s)}
-        />
-      </Field>
-      <Button disabled={busy || !ok} onClick={() => onSave(s)}>
-        Записать
-      </Button>
-      <Button variant="ghost" onClick={onSkip}>
-        Пропустить
-      </Button>
+    <div className="flex flex-col gap-2">
+      {before && (
+        <Notice tone="sky">
+          В этой ревизии уже посчитано <b>{before}</b> — если товар лежит ещё и здесь, прибавьте.
+        </Notice>
+      )}
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label={ml ? 'На полке, л' : 'На полке, шт'}>
+          <input
+            id="intake-count"
+            className="w-32"
+            inputMode={ml ? 'decimal' : 'numeric'}
+            value={s}
+            onChange={(e) => setS(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && ok && onSave(s, 'add')}
+          />
+        </Field>
+        <Button disabled={busy || !ok} onClick={() => onSave(s, 'add')}>
+          {before ? `Прибавить к ${before}` : 'Записать'}
+        </Button>
+        {before && (
+          <Button variant="secondary" disabled={busy || !ok} onClick={() => onSave(s, 'set')}>
+            Заменить
+          </Button>
+        )}
+        <Button variant="ghost" onClick={onSkip}>
+          Пропустить
+        </Button>
+      </div>
     </div>
   )
 }

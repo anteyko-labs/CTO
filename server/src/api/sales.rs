@@ -835,7 +835,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     }
     insert_payments(conn, ctx, id, &req.payments, 1, 0).await?;
     // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
-    crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments, offline).await?;
+    crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments).await?;
     if debt_total > 0 {
         let party_id = req
             .party_id
@@ -918,6 +918,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     )
     .fetch_one(&mut *conn)
     .await?;
+    if offline {
+        offline_after_close(conn, ctx, id, number, business_date, &req.payments).await?;
+    }
     if let Some(master_id) = req.master_id
         && master_fee != 0
     {
@@ -986,6 +989,53 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let out = load_sale(conn, &ctx.user, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+/// Наличные чека без сети, чья смена (по учётному дню) уже закрыта: деньги легли в кассу после
+/// пересчёта и дадут расхождение следующей смены. Расчёт недостачи не меняем — владелец получает
+/// уведомление с суммой и понимает, откуда разница (ADR-059).
+async fn offline_after_close(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    sale_id: Uuid,
+    number: i64,
+    business_date: NaiveDate,
+    payments: &[PaymentReq],
+) -> AppResult<()> {
+    let cash: i64 = payments
+        .iter()
+        .filter(|p| p.method == "cash")
+        .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
+        .ok_or_else(overflow)?;
+    if cash == 0 {
+        return Ok(());
+    }
+    let register = cash::default_account(conn, ctx.user.branch_id).await?;
+    let closed = sqlx::query_scalar!(
+        r#"select s.number from shifts s
+           where s.branch_id = $1 and s.account_id = $2 and s.business_date = $3
+             and exists (
+               select 1 from shift_closes c
+               where c.shift_id = s.id
+                 and not exists (select 1 from shift_reopens r where r.close_id = c.id))"#,
+        ctx.user.branch_id,
+        register,
+        business_date
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(shift_number) = closed {
+        ops::audit(
+            conn,
+            ctx,
+            "sale.offline_after_close",
+            "sale",
+            Some(sale_id),
+            json!({ "number": number, "cash": cash, "shift_number": shift_number, "business_date": business_date }),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn post_sale(

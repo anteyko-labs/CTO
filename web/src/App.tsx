@@ -166,7 +166,6 @@ function Shell() {
   const unseen = useUnseen(user?.role === 'owner')
   // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
   useEffect(() => (user ? startOfflineLoop() : undefined), [user])
-  useEffect(() => startUpdates(), [])
   if (!user) return <Navigate to="/login" replace />
   const owner = user.role === 'owner'
   const roleLabel = owner ? 'Владелец' : 'Администратор'
@@ -364,6 +363,9 @@ function Shell() {
 
 function Root() {
   const { user, loading } = useAuth()
+  // Service Worker — с первого экрана, и до входа: касса, открытая на экране входа без сети,
+  // иначе не получит оболочку для офлайна и новую версию (ADR-059).
+  useEffect(() => startUpdates(), [])
   if (loading) return <Loading />
   return (
     <Routes>

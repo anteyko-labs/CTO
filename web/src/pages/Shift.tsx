@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
+import { useEffect, useState } from 'react'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, Notice, PageHeader, Table, toast } from '../components/ui'
 import { Icon } from '../components/icons'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -7,6 +7,7 @@ import { StaffPayList } from '../components/StaffPayList'
 import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
+import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
 import type { CashAccount, CashMovement, Employee, Shift as ShiftRow } from '../lib/types'
 
 const KIND_LABELS: Record<string, string> = {
@@ -68,7 +69,11 @@ export default function Shift() {
   usePolling(accounts.reload)
   const [open, setOpen] = useState<{ cashier: string; counted: string; opId: string } | null>(null)
   const [money, setMoney] = useState<MoneyForm | null>(null)
-  const [closing, setClosing] = useState<{ counted: string; comment: string; opId: string } | null>(null)
+  const [closing, setClosing] = useState<{ counted: string; comment: string; opId: string; force: boolean } | null>(null)
+  // Чеки этого устройства, ещё не ушедшие на сервер: их наличные уже в кассе, а в «должно быть» —
+  // ещё нет. Закрыть смену до их отправки — ложная недостача (ADR-059).
+  const [unsent, setUnsent] = useState(0)
+  useEffect(() => watchOutbox((items) => setUnsent(pendingCount(items))), [])
   const [handover, setHandover] = useState<{ shift: ShiftRow; sum: string; opId: string } | null>(null)
   const [reopen, setReopen] = useState<{ shift: ShiftRow; reason: string; opId: string } | null>(null)
   const [history, setHistory] = useState<string>('')
@@ -117,11 +122,14 @@ export default function Shift() {
     void act.run(async () => {
       closeDialogs()
       if (!shift) return
+      // Заодно толкаем отправку очереди: связь могла вернуться. Не ждём — без ответа сервера это
+      // до 20 с, а число неотправленных в окне обновится само.
+      void syncOutbox()
       // Сумму «должно быть» берём свежую с сервера: за время на экране могли пройти чеки с другого
       // устройства, и старая сумма дала бы недостачу, которой нет.
       const fresh = await get<ShiftRow | null>('/shifts/current')
       current.reload()
-      setClosing({ counted: somInput(fresh?.expected_tyiyn ?? shift.expected_tyiyn), comment: '', opId: newOpId() })
+      setClosing({ counted: somInput(fresh?.expected_tyiyn ?? shift.expected_tyiyn), comment: '', opId: newOpId(), force: false })
     })
 
   const closeShift = () =>
@@ -219,6 +227,7 @@ export default function Shift() {
   const closeMissing = missingWithFocus(
     [parseSom(closing?.counted ?? '') !== null, 'сколько денег в кассе', '#close-counted'],
     [!closeDiff || Boolean(closing?.comment.trim()), 'комментарий к расхождению', '#close-comment'],
+    [unsent === 0 || Boolean(closing?.force), 'отметку «закрыть всё равно»', '#close-force input'],
   )
   const moneyMissing = money
     ? missingWithFocus(
@@ -478,6 +487,20 @@ export default function Shift() {
       {closing && shift && (
         <Modal title="Закрыть смену" onClose={closeDialogs}>
           <div className="flex flex-col gap-3">
+            {unsent > 0 && (
+              <Notice tone="rose">
+                <div className="font-medium">
+                  {unsent} {unsent === 1 ? 'чек ещё не отправлен' : unsent < 5 ? 'чека ещё не отправлены' : 'чеков ещё не отправлены'} — дождитесь связи
+                </div>
+                <div className="mt-1">
+                  Их деньги уже в кассе, но в «должно быть» их ещё нет: закрытие сейчас покажет недостачу, которой нет. Когда чеки уйдут,
+                  предупреждение исчезнет само.
+                </div>
+                <div id="close-force" className="mt-2">
+                  <Checkbox label="Закрыть всё равно" checked={closing.force} onChange={(v) => setClosing({ ...closing, force: v })} />
+                </div>
+              </Notice>
+            )}
             <div className="text-sm text-slate-600">Должно быть в кассе: {formatSom(shift.expected_tyiyn)}</div>
             <Field label="Факт в кассе, с" required>
               <input

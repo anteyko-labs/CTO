@@ -124,7 +124,6 @@ pub async fn on_sale(
     sale_id: Uuid,
     party_id: Option<Uuid>,
     payments: &[PaymentReq],
-    offline: bool,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let redeem = sum_of(payments, |m| m == "bonus")?;
@@ -139,11 +138,10 @@ pub async fn on_sale(
         if !member {
             return Err(invalid("клиент не подключён к боту — баллов у него нет"));
         }
-        // Касса без сети баллы не списывает (остаток не проверить): такой «офлайн-чек» —
-        // подделка признака, отклоняем.
-        if offline {
-            return Err(invalid("баллы списываются только при связи с сервером"));
-        }
+        // Касса без сети баллы не предлагает, но чек с баллами может прийти из очереди: онлайн-
+        // отправка оборвалась без ответа, и чек ушёл повторно с признаком «без сети». Продажа
+        // уже состоялась — проверяем остаток сейчас, под блокировкой, как у онлайн-чека: хватает —
+        // проводим, нет — отказ, и чек уходит владельцу как отклонённый (ADR-059).
         lock_party(conn, party_id).await?;
         let have = balance(conn, party_id).await?;
         if redeem > have {

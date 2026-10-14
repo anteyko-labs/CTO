@@ -11,13 +11,20 @@ if (-not (Test-Path "$Here\config.ps1")) { throw 'Нет config.ps1: скопи�
 . "$Here\config.ps1"
 if (-not (Test-Path "$PgBin\psql.exe")) { throw "Не найден PostgreSQL в $PgBin — установите PostgreSQL 16" }
 foreach ($p in @(@{ N = 'PgSuperPassword'; V = $PgSuperPassword }, @{ N = 'DbPassword'; V = $DbPassword }, @{ N = 'OwnerPassword'; V = $OwnerPassword })) {
-  # Только печатные латинские символы: русские буквы и пробелы ломают строку подключения.
-  if ($p.V -notmatch '^[\x21-\x7E]{10,}$') { throw "Пароль $($p.N): латиница, цифры и знаки, без пробелов, не короче 10 символов" }
+  # Только печатные латинские символы: русские буквы и пробелы ломают строку подключения,
+  # а кавычка " и обратная косая \ — передачу аргументов psql в PowerShell 5.1.
+  if ($p.V -notmatch '^[\x21-\x7E]{10,}$' -or $p.V -match '["\\]') {
+    throw "Пароль $($p.N): латиница, цифры и знаки, без пробелов, кавычки `" и обратной косой \, не короче 10 символов"
+  }
 }
 
 function Invoke-Pg([string[]]$PgArgs) {
   & "$PgBin\psql.exe" @PgArgs
-  if ($LASTEXITCODE -ne 0) { throw "psql завершился с ошибкой ($LASTEXITCODE): $($PgArgs -join ' ')" }
+  if ($LASTEXITCODE -ne 0) {
+    # Пароль в команде (create role … password '…') в текст ошибки не попадает.
+    $shown = ($PgArgs -join ' ') -replace "password\s+'(?:[^']|'')*'", "password '***'"
+    throw "psql завершился с ошибкой ($LASTEXITCODE): $shown"
+  }
 }
 
 Write-Host '1/6 Файлы программы' -ForegroundColor Cyan

@@ -795,7 +795,8 @@ async fn expenses_take_money_from_the_till(pool: PgPool) {
         &app,
         "POST",
         "/api/v1/employees",
-        Some(&admin),
+        // Кассира заводит владелец: вместе с ним назначается оплата (ADR-059).
+        Some(&owner),
         Some(json!({ "full_name": "Кассир", "is_cashier": true, "is_master": false })),
     )
     .await;
@@ -1253,7 +1254,7 @@ async fn debt_repayment_goes_through_the_till(pool: PgPool) {
         async move { call(&app, "POST", &uri, Some(&cookie), Some(body)).await }
     };
     let (_, _, emp) = post(
-        &admin,
+        &owner,
         "/api/v1/employees",
         json!({ "full_name": "Кассир", "is_cashier": true }),
     )
@@ -1395,7 +1396,7 @@ async fn hostile_inputs_and_payroll_reversals(pool: PgPool) {
         async move { call(&app, "POST", &uri, Some(&cookie), Some(body)).await }
     };
     let (_, _, emp) = post(
-        &admin,
+        &owner,
         "/api/v1/employees",
         json!({ "full_name": "Кассир", "is_cashier": true }),
     )
@@ -2089,10 +2090,11 @@ async fn old_catalog_import_search_and_initial_cost(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn login_lockout_survives_spoofed_addresses(pool: PgPool) {
-    // Подмена адреса в заголовках не обходит блокировку: общий предел на логин (ADR-058).
+async fn many_addresses_cannot_lock_out_owner(pool: PgPool) {
+    // Подбор с многих адресов не закрывает вход владельцу: общий счётчик только уведомляет
+    // (ADR-059). Предел на свой адрес остаётся, и попытки во время блокировки её не продлевают.
     let app = setup(pool.clone()).await;
-    let attempt = |n: usize, password: &str| {
+    let attempt = |addr: String, password: &str| {
         let app = app.clone();
         let body = json!({ "login": "owner", "password": password }).to_string();
         async move {
@@ -2100,30 +2102,223 @@ async fn login_lockout_survives_spoofed_addresses(pool: PgPool) {
                 .method("POST")
                 .uri("/api/v1/auth/login")
                 .header("x-device-id", Uuid::now_v7().to_string())
-                .header("cf-connecting-ip", format!("10.0.{}.{}", n / 250, n % 250))
-                .header("x-forwarded-for", format!("10.1.{}.{}", n / 250, n % 250))
+                .header("x-forwarded-for", addr)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body))
                 .unwrap();
             app.oneshot(req).await.unwrap().status()
         }
     };
-    let mut locked_at = None;
-    for n in 0..40 {
-        let s = attempt(n, "wrong-password").await;
-        if s == StatusCode::TOO_MANY_REQUESTS {
-            locked_at = Some(n);
-            break;
-        }
-        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // 60 неверных паролей с 30 разных адресов (по два с каждого): каждый — просто «неверно».
+    for n in 0..60 {
+        let s = attempt(format!("10.1.0.{}", n % 30), "wrong-password").await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "попытка {n}");
     }
-    assert!(
-        locked_at.is_some_and(|n| n <= 21),
-        "блокировка не сработала: {locked_at:?}"
-    );
-    // Даже верный пароль с нового «адреса» — подождать.
+    // Владелец со своего адреса входит верным паролем.
     assert_eq!(
-        attempt(99, "owner-pass-1").await,
+        attempt("198.51.100.20".into(), "owner-pass-1").await,
+        StatusCode::OK
+    );
+    // Владельцу пришло одно уведомление о подборе (в окне — не чаще одного).
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let floods: Vec<&Value> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["action"] == "auth.login_flood")
+        .collect();
+    assert_eq!(floods.len(), 1);
+    assert!(floods[0]["title"].as_str().unwrap().contains("owner"));
+
+    // Предел на адрес работает: пять неверных — и с этого адреса даже верный пароль ждёт.
+    let bad = "203.0.113.9".to_string();
+    for _ in 0..5 {
+        assert_eq!(
+            attempt(bad.clone(), "wrong-password").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    for _ in 0..10 {
+        assert_eq!(
+            attempt(bad.clone(), "wrong-password").await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        attempt(bad.clone(), "owner-pass-1").await,
         StatusCode::TOO_MANY_REQUESTS
     );
+    // Попытки во время блокировки счётчик не копят: когда она истечёт, счёт начнётся заново.
+    let failures: i32 =
+        sqlx::query_scalar("select failures from login_attempts where login = 'owner|203.0.113.9'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(failures, 0);
+    sqlx::query("update login_attempts set locked_until = now() - interval '1 second', last_failed_at = now() - interval '16 minutes' where login = 'owner|203.0.113.9'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        attempt(bad.clone(), "wrong-password").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(attempt(bad, "owner-pass-1").await, StatusCode::OK);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn only_owner_makes_a_cashier(pool: PgPool) {
+    // Кассир сразу получает 2 % и оклад — назначает это только владелец (SPEC-07, ADR-059).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&admin),
+        Some(json!({ "full_name": "Сам себе кассир", "is_cashier": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Мастера администратор заводит, но кассиром его не сделает.
+    let (s, _, m) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&admin),
+        Some(json!({ "full_name": "Мастер", "is_master": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let mid = m["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/employees/{mid}"),
+        Some(&admin),
+        Some(json!({ "is_cashier": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let rules: i64 = sqlx::query_scalar("select count(*) from employee_pay_rules")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rules, 0);
+    // Владелец — можно, оплата по умолчанию назначена.
+    let (s, _, c) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&owner),
+        Some(json!({ "full_name": "Кассир", "is_cashier": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let cid = c["id"].as_str().unwrap().to_string();
+    // Администратор правит имя кассира, признак шлёт без изменения — это можно.
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/employees/{cid}"),
+        Some(&admin),
+        Some(json!({ "full_name": "Кассир Айбек", "is_cashier": true, "is_master": false, "active": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let rules: i64 = sqlx::query_scalar("select count(*) from employee_pay_rules")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rules, 2);
+    // Владелец узнаёт о новых сотрудниках и правках.
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let actions: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["action"].as_str())
+        .collect();
+    assert_eq!(
+        actions.iter().filter(|a| **a == "employee.create").count(),
+        2
+    );
+    assert!(actions.contains(&"employee.update"));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn revision_count_adds_or_replaces(pool: PgPool) {
+    // Товар на двух полках: 5 и 3 — в ревизии 8, а не 3; «заменить» записывает как есть (ADR-059).
+    let app = setup(pool.clone()).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let body = json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр на двух полках" });
+    let (_, _, p) = call(&app, "POST", "/api/v1/products", Some(&admin), Some(body)).await;
+    let pid = p["id"].as_str().unwrap().to_string();
+    let (s, _, rev) = call(
+        &app,
+        "POST",
+        "/api/v1/revisions",
+        Some(&admin),
+        Some(json!({ "category_id": null })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    let lines = format!("/api/v1/revisions/{rid}/lines");
+    let one = format!("/api/v1/revisions/{rid}/lines/{pid}");
+    let (_, _, got) = call(&app, "GET", &one, Some(&admin), None).await;
+    assert_eq!(got["counted_qty"], Value::Null);
+    let put_count = |qty: i64, mode: Option<&'static str>| {
+        let (app, admin, lines, pid) = (app.clone(), admin.clone(), lines.clone(), pid.clone());
+        async move {
+            let mut body = json!({ "product_id": pid, "counted_qty": qty });
+            if let Some(m) = mode {
+                body["mode"] = json!(m);
+            }
+            call(&app, "PUT", &lines, Some(&admin), Some(body)).await
+        }
+    };
+    let (s, _, r) = put_count(5, Some("add")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(r["counted_qty"], 5);
+    // Между полками остаток изменился — «должно быть» остаётся с первого пересчёта.
+    sqlx::query("update branch_products set stock_qty = stock_qty - 1 where product_id = $1")
+        .bind(Uuid::parse_str(&pid).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let first: Option<i64> =
+        sqlx::query_scalar("select stock_at_count from revision_lines where product_id = $1")
+            .bind(Uuid::parse_str(&pid).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let (_, _, r) = put_count(3, Some("add")).await;
+    assert_eq!(r["counted_qty"], 8);
+    let (_, _, got) = call(&app, "GET", &one, Some(&admin), None).await;
+    assert_eq!(got["counted_qty"], 8);
+    let kept: Option<i64> =
+        sqlx::query_scalar("select stock_at_count from revision_lines where product_id = $1")
+            .bind(Uuid::parse_str(&pid).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(kept, first);
+    // «Заменить» и запрос без режима (экран «Ревизия») записывают число как есть.
+    let (_, _, r) = put_count(4, Some("set")).await;
+    assert_eq!(r["counted_qty"], 4);
+    let (_, _, r) = put_count(6, None).await;
+    assert_eq!(r["counted_qty"], 6);
+    let (s, _, _) = put_count(1, Some("plus")).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }

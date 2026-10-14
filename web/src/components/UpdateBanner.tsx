@@ -1,7 +1,8 @@
 // Новая версия интерфейса: касса на моноблоке открыта всегда, поэтому обновление не ждёт закрытия
-// вкладок — при пустом чеке применяется само, иначе — плашка «Обновить».
+// вкладок — на кассе с пустым чеком применяется само, на остальных экранах — плашка «Обновить».
 import { useEffect, useState } from 'react'
 import { apply, cartIsEmpty, listeners, ready } from '../lib/updates'
+import { canAutoApply } from '../lib/updateRules'
 
 export function UpdateBanner() {
   const [shown, setShown] = useState(ready)
@@ -12,11 +13,18 @@ export function UpdateBanner() {
       listeners.delete(on)
     }
   }, [])
-  // Чек пуст минуту подряд — обновляемся сами: кассир ничего не потеряет.
+  // Раз в минуту: касса, чек пуст, окон нет — обновляемся сами, кассир ничего не потеряет.
+  // Формы других экранов живут только в памяти — там ждём кнопку (ADR-059).
   useEffect(() => {
     if (!shown) return
     const t = setInterval(() => {
-      if (cartIsEmpty() && document.visibilityState === 'visible') void apply?.(true)
+      const now = {
+        path: window.location.pathname,
+        cartEmpty: cartIsEmpty(),
+        modalOpen: document.querySelector('[role="dialog"]') !== null,
+        visible: document.visibilityState === 'visible',
+      }
+      if (canAutoApply(now)) void apply?.(true)
     }, 60_000)
     return () => clearInterval(t)
   }, [shown])

@@ -23,7 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/revisions/{id}/lines", routing::put(put_line))
         .route(
             "/revisions/{id}/lines/{product_id}",
-            routing::delete(delete_line),
+            routing::get(get_line).delete(delete_line),
         )
         .route("/revisions/{id}/post", routing::post(post_revision))
         .route("/revisions/{id}/cancel", routing::post(cancel))
@@ -272,6 +272,38 @@ async fn lock_draft(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppRe
 struct LineReq {
     product_id: Uuid,
     counted_qty: i64,
+    /// `set` — записать пересчитанное (по умолчанию, экран «Ревизия» шлёт итог строки);
+    /// `add` — прибавить к уже посчитанному: товар лежит в нескольких местах (SPEC-20, ADR-059).
+    #[serde(default)]
+    mode: CountMode,
+}
+
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum CountMode {
+    #[default]
+    Set,
+    Add,
+}
+
+/// Сколько уже пересчитано по товару в черновике: экран «Работа с товарами» показывает это
+/// перед вводом и спрашивает, прибавить или заменить.
+async fn get_line(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, product_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<serde_json::Value>> {
+    let counted = sqlx::query_scalar!(
+        r#"select l.counted_qty from revision_lines l
+           join revisions r on r.id = l.revision_id
+           where l.revision_id = $1 and l.product_id = $2 and r.branch_id = $3"#,
+        id,
+        product_id,
+        user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(Json(json!({ "counted_qty": counted })))
 }
 
 async fn put_line(
@@ -304,22 +336,40 @@ async fn put_line(
     .fetch_optional(&mut *tx)
     .await?
     .unwrap_or(0);
-    sqlx::query!(
+    // `set` — пересчёт строки целиком: остаток берём на этот момент.
+    // `add` — дочитали другую полку: прибавляем в одном запросе (два устройства не потеряют
+    // друг друга) и оставляем остаток первого пересчёта. Расхождение = пересчитано − остаток
+    // «на момент пересчёта», а пересчёт по частям растянут во времени, и точного момента нет.
+    // Первый остаток верен, когда проданное между пересчётами взяли с уже посчитанной полки —
+    // так обычно и бывает: считают с витрины, продают с витрины. Если бы брали остаток второго
+    // пересчёта, такая продажа вычлась бы дважды (её нет на полке и нет в остатке) — ложная
+    // недостача. Продажа с ещё не посчитанной полки, наоборот, даст недостачу на проданное;
+    // поэтому одну позицию лучше пересчитывать подряд (SPEC-15, ADR-059).
+    let add = req.mode == CountMode::Add;
+    let counted = sqlx::query_scalar!(
         r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
            values ($1, $2, $3, $4, $5)
            on conflict (revision_id, product_id)
-           do update set counted_qty = excluded.counted_qty, user_id = excluded.user_id, updated_at = now(),
-                         stock_at_count = excluded.stock_at_count"#,
+           do update set counted_qty = case when $6 then revision_lines.counted_qty + excluded.counted_qty
+                                            else excluded.counted_qty end,
+                         user_id = excluded.user_id, updated_at = now(),
+                         stock_at_count = case when $6 then coalesce(revision_lines.stock_at_count, excluded.stock_at_count)
+                                               else excluded.stock_at_count end
+           returning counted_qty"#,
         id,
         req.product_id,
         req.counted_qty,
         ctx.user.id,
-        stock_now
+        stock_now,
+        add
     )
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
+    if counted > 1_000_000_000 {
+        return Err(invalid("пересчитано слишком много"));
+    }
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(json!({ "ok": true, "counted_qty": counted })))
 }
 
 async fn delete_line(

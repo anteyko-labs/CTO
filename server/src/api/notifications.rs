@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 21] = [
+pub(crate) const WATCHED: [&str; 25] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -41,6 +41,10 @@ pub(crate) const WATCHED: [&str; 21] = [
     "revision.post",
     "oil.transfer_reverse",
     "sale.debt_without_inn",
+    "auth.login_flood",
+    "employee.create",
+    "employee.update",
+    "sale.offline_after_close",
 ];
 
 #[derive(Serialize)]
@@ -190,6 +194,58 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             .flatten()
             .collect::<Vec<_>>()
             .join(", "),
+        ),
+        "auth.login_flood" => (
+            format!("Подбирают пароль: {}", text("login")),
+            format!(
+                "{} неверных паролей с разных адресов за {} мин. Вход не закрыт; если это не вы — смените пароль",
+                num("failures").unwrap_or(0),
+                num("minutes").unwrap_or(0)
+            ),
+        ),
+        "employee.create" | "employee.update" => {
+            let flag = |key: &str, label: &str| {
+                data.get(key)
+                    .and_then(Value::as_bool)
+                    .filter(|v| *v)
+                    .map(|_| label.to_string())
+            };
+            let details = [
+                flag("is_cashier", "кассир"),
+                flag("is_master", "мастер"),
+                data.get("active")
+                    .and_then(Value::as_bool)
+                    .filter(|a| !a)
+                    .map(|_| "отключён".to_string()),
+                flag("pay_rules_added", "назначена оплата кассира по умолчанию"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+            (
+                format!(
+                    "{}: {}",
+                    if action == "employee.create" {
+                        "Добавлен сотрудник"
+                    } else {
+                        "Изменён сотрудник"
+                    },
+                    text("full_name")
+                ),
+                details,
+            )
+        }
+        "sale.offline_after_close" => (
+            format!(
+                "Чек без сети пришёл после закрытия смены № {}",
+                num("shift_number").unwrap_or(0)
+            ),
+            format!(
+                "чек № {}, наличными {} — эти деньги легли в кассу позже и дадут расхождение следующей смены",
+                num("number").unwrap_or(0),
+                money(num("cash"))
+            ),
         ),
         "shift.handover" => {
             let diff = num("diff").unwrap_or(0);

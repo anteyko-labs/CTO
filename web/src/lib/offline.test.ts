@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatTempNumber, staleSending, type OutboxItem } from './offline'
+import { formatTempNumber, pendingCount, staleSending, type OutboxItem } from './offline'
 
 const item = (op_id: string, status: OutboxItem['status']): OutboxItem => ({
   op_id,
@@ -15,6 +15,10 @@ describe('очередь чеков', () => {
   it('после перезапуска «отправляется» снова ждёт отправки, остальное не трогается', () => {
     const back = staleSending([item('a', 'sending'), item('b', 'pending'), item('c', 'done'), item('d', 'rejected')])
     expect(back).toEqual([{ ...item('a', 'sending'), status: 'pending' }])
+  })
+
+  it('неотправленные перед закрытием смены — ждущие и отправляемые, но не принятые и не отклонённые', () => {
+    expect(pendingCount([item('a', 'sending'), item('b', 'pending'), item('c', 'done'), item('d', 'rejected')])).toBe(2)
   })
 
   it('временный номер: хвост устройства и порядковый номер', () => {

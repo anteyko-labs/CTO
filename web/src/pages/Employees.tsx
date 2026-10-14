@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
+import { useUser } from '../lib/auth'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Employee } from '../lib/types'
@@ -18,7 +19,9 @@ function Roles({ e }: { e: Employee }) {
   )
 }
 
+/** Признак «кассир» назначает оплату (2 % и оклад) — ставит только владелец; сервер проверяет сам (ADR-059). */
 function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose: () => void; onSaved: () => void }) {
+  const owner = useUser().role === 'owner'
   const [form, setForm] = useState(employee)
   const { busy, error, run } = useAction()
 
@@ -40,7 +43,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
           <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
         </Field>
         <div className="flex flex-wrap gap-4">
-          <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />
+          {owner && <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />}
           <Checkbox label="Мастер" checked={form.is_master} onChange={(v) => setForm({ ...form, is_master: v })} />
           <Checkbox label="Активен" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         </div>
@@ -59,6 +62,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
 }
 
 export default function Employees() {
+  const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Employee[]>('/employees'), [])
   const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true })
   const [adding, setAdding] = useState(false)
@@ -70,7 +74,7 @@ export default function Employees() {
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
-      await post<Employee>('/employees', form)
+      await post<Employee>('/employees', { ...form, is_cashier: owner && form.is_cashier })
       setForm({ ...form, full_name: '' })
       setAdding(false)
       list.reload()
@@ -86,7 +90,7 @@ export default function Employees() {
 
   const notFilled = missingWithFocus(
     [Boolean(form.full_name.trim()), 'ФИО', '#employee-name'],
-    [form.is_cashier || form.is_master, 'роль: кассир или мастер'],
+    [form.is_cashier || form.is_master, owner ? 'роль: кассир или мастер' : 'роль: мастер'],
   )
   const needle = q.trim().toLowerCase()
   const rows = (list.data ?? []).filter((e) => !needle || e.full_name.toLowerCase().includes(needle))
@@ -160,9 +164,10 @@ export default function Employees() {
               <input id="employee-name" autoFocus value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
             </Field>
             <div className="flex flex-wrap gap-4">
-              <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />
+              {owner && <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />}
               <Checkbox label="Мастер" checked={form.is_master} onChange={(v) => setForm({ ...form, is_master: v })} />
             </div>
+            {!owner && <p className="text-xs text-slate-500">Кассира заводит владелец: вместе с ним назначается оплата.</p>}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Missing items={notFilled} className="mr-auto" />

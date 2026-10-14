@@ -126,7 +126,7 @@ async fn login(
     if inn.is_empty() || inn.len() > 20 || req.password.len() > 200 || inn.contains('\0') {
         return Err(AppError::Unauthorized);
     }
-    // Подбор пароля ограничен так же, как у сотрудников (ADR-016).
+    // Подбор пароля ограничен так же, как у сотрудников (ADR-016, ADR-059).
     let addr = auth::client_addr(&parts);
     let who = format!("client:{inn}");
     if let Some(minutes) = crate::api::auth::reserve_login(&state, &who, &addr).await? {
@@ -156,7 +156,16 @@ async fn login(
     };
     let p = match party {
         Some(p) if ok => p,
-        _ => return Err(AppError::Unauthorized),
+        p => {
+            // Подбор пароля фирмы со многих адресов — уведомление владельцу, не блокировка (ADR-059).
+            let target = p.map(|p| crate::api::auth::LoginTarget {
+                branch_id: p.branch_id,
+                entity: "party",
+                entity_id: p.id,
+            });
+            crate::api::auth::note_failure(&state, &who, target).await?;
+            return Err(AppError::Unauthorized);
+        }
     };
     let mut tx = state.pool.begin().await?;
     if p.hash.is_none() {
@@ -172,9 +181,8 @@ async fn login(
         .await?;
     }
     sqlx::query!(
-        "delete from login_attempts where login = $1 or login = $2",
-        format!("{who}|{addr}"),
-        format!("{who}|*")
+        "delete from login_attempts where login = $1",
+        format!("{who}|{addr}")
     )
     .execute(&mut *tx)
     .await?;
