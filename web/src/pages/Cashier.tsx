@@ -18,9 +18,9 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } from '../components/ui'
-import { ApiError, get, newOpId, noServerAnswer, patch, post, qs } from '../lib/api'
+import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
-import { enqueueSale, markPending, markSent, removeSale } from '../lib/offline'
+import { enqueueSale, keepInQueue, markPending, markSent, removeSale, requestPersistentStorage } from '../lib/offline'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -231,6 +231,18 @@ export default function Cashier() {
     () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined }),
     [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined],
   )
+
+  // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
+  const [storageAtRisk, setStorageAtRisk] = useState(false)
+  useEffect(() => {
+    let alive = true
+    void requestPersistentStorage().then((ok) => {
+      if (alive) setStorageAtRisk(ok === false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // Открыта смена — кассир чека тот, кто на смене: 2 % не уйдут кассиру с прошлого раза.
   const shiftCashier = shift.data?.cashier_employee_id ?? null
@@ -568,9 +580,10 @@ export default function Cashier() {
       try {
         sale = await post<Sale>('/sales', body)
       } catch (e) {
-        // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504): чек остаётся
-        // в очереди и уйдёт сам; повтор с тем же op_id второй продажи не создаст (ADR-013).
-        const noAnswer = e instanceof ApiError ? noServerAnswer(e) : !navigator.onLine
+        // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504), сервер упал (500)
+        // или истёк вход (401): чек остаётся в очереди и уйдёт сам; повтор с тем же op_id второй
+        // продажи не создаст (ADR-013, ADR-062).
+        const noAnswer = e instanceof ApiError ? keepInQueue(e) : !navigator.onLine
         if (!noAnswer) {
           // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
           await removeSale(opId).catch(() => undefined)
@@ -675,6 +688,12 @@ export default function Cashier() {
               </span>
             ))}
           </Card>
+        )}
+        {storageAtRisk && (
+          <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900" role="alert">
+            Браузер может стереть неотправленные чеки — разрешите хранение данных для этого сайта в настройках браузера
+            (или установите программу на рабочий стол).
+          </div>
         )}
         {shift.data === null && (
           <div

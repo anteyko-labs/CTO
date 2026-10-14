@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 26] = [
+pub(crate) const WATCHED: [&str; 30] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -46,6 +46,10 @@ pub(crate) const WATCHED: [&str; 26] = [
     "employee.update",
     "sale.offline_after_close",
     "vehicle.plate_conflict",
+    "receipt.supplier_payment",
+    "sale.offline_bypass",
+    "sale.cost_unknown",
+    "party.limit_change",
 ];
 
 #[derive(Serialize)]
@@ -299,12 +303,83 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "vehicle.plate_conflict" => (
             format!("Номер {} записан на другого клиента", text("plate")),
             format!(
-                "клиент {} добавил в боте машину {}, записанную на {} — разберитесь, чья машина",
-                text("client"),
+                "{} машину {} клиенту {}, а номер записан на {} — разберитесь, чья машина",
+                if text("source") == "staff" {
+                    "в карточке добавили"
+                } else {
+                    "в боте добавили"
+                },
                 text("plate"),
+                text("client"),
                 text("other")
             ),
         ),
+        "receipt.supplier_payment" => (
+            format!(
+                "Оплата поставщику: накладная № {}",
+                num("number").unwrap_or(0)
+            ),
+            if data.get("outside").and_then(Value::as_bool) == Some(true) {
+                format!("{} — из своих, мимо касс", money(num("amount")))
+            } else {
+                format!("{} из «{}»", money(num("amount")), text("account"))
+            },
+        ),
+        "sale.offline_bypass" => (
+            format!(
+                "Чек без сети прошёл в обход проверок: № {}",
+                num("number").unwrap_or(0)
+            ),
+            data.get("reasons")
+                .and_then(Value::as_array)
+                .map(|r| {
+                    r.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default(),
+        ),
+        "sale.cost_unknown" => (
+            format!(
+                "Продажа без цены закупки: чек № {}",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} — укажите цену закупки на складе, иначе 2 % кассиру с этих строк не начислятся",
+                data.get("names")
+                    .and_then(Value::as_array)
+                    .map(|n| n
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default()
+            ),
+        ),
+        "party.limit_change" => {
+            let limit = |key: &str| {
+                data.get(key).and_then(Value::as_i64).map_or_else(
+                    || "без лимита".to_string(),
+                    crate::domain::money::format_som,
+                )
+            };
+            let days = |key: &str| {
+                data.get(key)
+                    .and_then(Value::as_i64)
+                    .map_or_else(|| "без срока".to_string(), |d| format!("{d} дн."))
+            };
+            (
+                format!("Изменён лимит долга: {}", text("name")),
+                format!(
+                    "лимит: было {}, стало {}; срок оплаты: было {}, стало {}",
+                    limit("old_limit"),
+                    limit("new_limit"),
+                    days("old_days"),
+                    days("new_days")
+                ),
+            )
+        }
         "sale.stale_price" => (
             "Чек без сети продан по старой цене".into(),
             format!(

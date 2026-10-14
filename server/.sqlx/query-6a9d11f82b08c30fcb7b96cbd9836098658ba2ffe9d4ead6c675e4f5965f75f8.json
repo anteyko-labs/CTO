@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update payroll_cost_pending\n               set resolved_cost_tyiyn = $2, resolved_at = now(), resolved_by = $3\n               where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a9d11f82b08c30fcb7b96cbd9836098658ba2ffe9d4ead6c675e4f5965f75f8"
+}

@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.plate, v.brand, v.model, v.comment, v.active from party_vehicles v\n           where v.id = $1 and v.party_id = $2 and v.branch_id = $3\n           for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6775792b02b6ab60b279bc8304048d409ca49ce1fb13284d5044c3729d140097"
+}

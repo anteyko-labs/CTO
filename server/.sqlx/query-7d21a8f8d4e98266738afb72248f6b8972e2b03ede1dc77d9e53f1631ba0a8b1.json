@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, owner_only, active from expense_articles where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7d21a8f8d4e98266738afb72248f6b8972e2b03ede1dc77d9e53f1631ba0a8b1"
+}

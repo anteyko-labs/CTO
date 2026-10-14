@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, is_cashier, is_master, active from employees where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_master",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2e2d8f1a6ebdec499764e1d38cabcc9193a57977e23a938205dea49639920188"
+}

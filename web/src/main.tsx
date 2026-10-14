@@ -3,6 +3,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import CabinetApp from './pages/cabinet/CabinetApp'
+import { requestPersistentStorage } from './lib/offline'
 import './index.css'
 
 // Числовое поле при фокусе выделяется целиком: ввод заменяет значение, а не дописывается к нему.
@@ -14,11 +15,8 @@ document.addEventListener('focusin', (e) => {
 })
 
 // Просим браузер не вычищать хранилище: в нём очередь чеков, ещё не ушедших на сервер (SPEC-09).
-try {
-  void navigator.storage?.persist?.().catch(() => undefined)
-} catch {
-  // Браузер без Storage API — очередь живёт по общим правилам.
-}
+// Отказ браузера касса показывает предупреждением (ADR-062).
+void requestPersistentStorage()
 
 const root = document.getElementById('root')
 if (root) {

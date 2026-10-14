@@ -468,7 +468,7 @@ export default function ClientCard() {
         >
           Машины и масляная книжка
         </CardTitle>
-        <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable />
+        <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable partyId={party.id} />
       </section>
 
       <Card>

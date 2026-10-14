@@ -276,6 +276,10 @@ struct LineReq {
     /// `add` — прибавить к уже посчитанному: товар лежит в нескольких местах (SPEC-20, ADR-059).
     #[serde(default)]
     mode: CountMode,
+    /// Повтор того же ввода (обрыв связи, двойное нажатие) не прибавит полку дважды:
+    /// сервер вернёт прежний ответ (ADR-013, ADR-062). Без `op_id` — как раньше.
+    #[serde(default)]
+    op_id: Option<Uuid>,
 }
 
 #[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
@@ -315,7 +319,13 @@ async fn put_line(
     if !(0..=1_000_000_000).contains(&req.counted_qty) {
         return Err(invalid("пересчитано: от 0"));
     }
+    const KIND: &str = "revision.line";
     let mut tx = state.pool.begin().await?;
+    if let Some(op_id) = req.op_id
+        && let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await?
+    {
+        return Ok(Json(done));
+    }
     lock_draft(&mut tx, ctx.user.branch_id, id).await?;
     let archived = sqlx::query_scalar!(
         "select archived from products where id = $1",
@@ -368,8 +378,12 @@ async fn put_line(
     if counted > 1_000_000_000 {
         return Err(invalid("пересчитано слишком много"));
     }
+    let out = json!({ "ok": true, "counted_qty": counted });
+    if let Some(op_id) = req.op_id {
+        ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
+    }
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true, "counted_qty": counted })))
+    Ok(Json(out))
 }
 
 async fn delete_line(
@@ -379,13 +393,25 @@ async fn delete_line(
 ) -> AppResult<Json<serde_json::Value>> {
     let mut tx = state.pool.begin().await?;
     lock_draft(&mut tx, ctx.user.branch_id, id).await?;
-    sqlx::query!(
-        "delete from revision_lines where revision_id = $1 and product_id = $2",
+    let removed = sqlx::query_scalar!(
+        "delete from revision_lines where revision_id = $1 and product_id = $2 returning counted_qty",
         id,
         product_id
     )
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+    // Черновик правится, но кто и что убрал из пересчёта — в журнал (инвариант 5).
+    if let Some(counted) = removed {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "revision.line_delete",
+            "revision",
+            Some(id),
+            json!({ "product_id": product_id, "counted_qty": counted }),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }

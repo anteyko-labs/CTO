@@ -27,6 +27,8 @@ export interface VehicleBook {
   plate: string
   brand: string
   model: string
+  /** Машина в списке клиента; убранная клиентом в боте — false (ADR-062). */
+  active?: boolean
   interval_km: number
   interval_days: number
   next_km: number | null
@@ -90,16 +92,38 @@ function ClientNotes({ notes }: { notes: ClientNote[] }) {
   )
 }
 
-function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boolean; onChanged: () => void }) {
+function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; editable: boolean; partyId?: string; onChanged: () => void }) {
   const [interval, setInterval] = useState<{ km: string; days: string } | null>(null)
   const [manual, setManual] = useState<{ date: string; mileage: string; oil: string; filter: string } | null>(null)
   const act = useAction()
+  const removed = b.active === false
   return (
-    <Card className="flex flex-col gap-2">
+    <Card className={`flex flex-col gap-2 ${removed ? 'opacity-75' : ''}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <span className="font-semibold">{b.plate}</span>
           {(b.brand || b.model) && <span className="ml-2 text-slate-500">{[b.brand, b.model].filter(Boolean).join(' ')}</span>}
+          {removed && (
+            <span className="ml-2">
+              <Badge tone="slate">убрана из списка</Badge>
+            </span>
+          )}
+          {removed && editable && partyId && (
+            <Button
+              variant="secondary"
+              className="ml-2 px-2 py-1 text-xs"
+              disabled={act.busy}
+              onClick={() =>
+                void act.run(async () => {
+                  await post(`/parties/${partyId}/vehicles/${b.vehicle_id}/restore`)
+                  onChanged()
+                  toast(`Машина ${b.plate} снова в списке клиента`)
+                })
+              }
+            >
+              Вернуть
+            </Button>
+          )}
         </div>
         <div className="text-sm">
           Следующая замена: <b>{nextText(b)}</b>
@@ -152,7 +176,7 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
         <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => void printOilBook(b)}>
           Печать книжки
         </Button>
-        {editable && (
+        {editable && !removed && (
           <>
             <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setInterval({ km: String(b.interval_km), days: String(b.interval_days) })}>
               Интервал
@@ -243,18 +267,38 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
   )
 }
 
-/** Книжка всех машин: карточка клиента (с правкой) или кабинет фирмы (только просмотр). */
-export function OilBookList({ path, editable }: { path: string; editable: boolean }) {
-  const books = useLoad(() => get<VehicleBook[]>(path), [path])
+/**
+ * Книжка всех машин: карточка клиента (с правкой) или кабинет фирмы (только просмотр).
+ * В карточке клиента (`partyId`) можно показать и машины, которые клиент убрал в боте,
+ * с их историей, и вернуть их (ADR-062).
+ */
+export function OilBookList({ path, editable, partyId }: { path: string; editable: boolean; partyId?: string }) {
+  const [showRemoved, setShowRemoved] = useState(false)
+  const url = partyId && showRemoved ? `${path}?removed=true` : path
+  const books = useLoad(() => get<VehicleBook[]>(url), [url])
+  const toggle = partyId && (
+    <div>
+      <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setShowRemoved(!showRemoved)}>
+        {showRemoved ? 'Скрыть убранные' : 'Показать убранные'}
+      </Button>
+    </div>
+  )
   if (books.loading && !books.data) return <Loading />
   if (books.error) return <ErrorBox error={books.error} />
   const list = books.data ?? []
-  if (list.length === 0) return <Empty>Машин нет — их добавляют в карточке клиента или прямо в кассе</Empty>
+  if (list.length === 0)
+    return (
+      <div className="flex flex-col gap-2">
+        <Empty>{showRemoved ? 'Машин нет, убранных тоже' : 'Машин нет — их добавляют в карточке клиента или прямо в кассе'}</Empty>
+        {toggle}
+      </div>
+    )
   return (
     <div className="flex flex-col gap-3">
       {list.map((b) => (
-        <VehicleCard key={b.vehicle_id} b={b} editable={editable} onChanged={books.reload} />
+        <VehicleCard key={b.vehicle_id} b={b} editable={editable} partyId={partyId} onChanged={books.reload} />
       ))}
+      {toggle}
     </div>
   )
 }

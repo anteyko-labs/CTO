@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, plate, brand, model, comment, active from party_vehicles\n           where party_id = $1 and branch_id = $2 and plate_norm = $3\n           order by active desc, created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3c454ca61eaf0ddaff44c8c80ebfab4acbfede97f58b9065d7ce954a060e6866"
+}

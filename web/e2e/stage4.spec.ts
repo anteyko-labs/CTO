@@ -52,7 +52,7 @@ async function product(request: APIRequestContext, name: string, code: string, p
     barcodes: [code],
     sale_price_tyiyn: price,
   })
-  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
+  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
   return { ...p, category: `Кат ${name}` }
 }
 
@@ -187,7 +187,7 @@ test('масляная книжка: замена с пробегом, след�
     container_ml: 4000,
     sale_price_tyiyn: 700_000,
   })
-  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: oil.id, qty: 8000, cost_tyiyn: 1_040_000 }] })
+  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: oil.id, qty: 8000, cost_tyiyn: 1_040_000 }] })
   const party = await apiPost<{ id: string }>(page.request, '/parties', { name: `Книжкин ${RUN}`, kind: 'person' })
   const plate = `01KG${RUN.slice(-3)}AAA`
   const vehicle = await apiPost<{ id: string }>(page.request, `/parties/${party.id}/vehicles`, { plate })
@@ -236,7 +236,7 @@ test('аналог фильтра вместо отсутствующего и �
     name: `Mann аналог ${RUN}`,
     sale_price_tyiyn: 60_000,
   })
-  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: mann.id, qty: 5, cost_tyiyn: 175_000 }] })
+  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: mann.id, qty: 5, cost_tyiyn: 175_000 }] })
   const res = await page.request.put(`/api/v1/products/${mann.id}/cross`, { data: { codes: [`ty ${RUN}`] }, headers: DEVICE })
   expect(res.ok()).toBeTruthy()
   expect(original.id).toBeTruthy()

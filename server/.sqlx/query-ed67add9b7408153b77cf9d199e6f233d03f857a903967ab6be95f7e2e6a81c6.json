@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select mileage_km, comment, declined from oil_changes where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mileage_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "declined",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ed67add9b7408153b77cf9d199e6f233d03f857a903967ab6be95f7e2e6a81c6"
+}

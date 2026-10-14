@@ -277,6 +277,9 @@ pub struct ProductOut {
     pub min_stock: i64,
     pub stock_qty: i64,
     pub needs_review: bool,
+    /// Товар продан без цены закупки: процент кассира ждёт, пока владелец её укажет (ADR-062).
+    #[serde(default)]
+    pub cost_pending: bool,
     /// Цена последнего прихода за штуку или канистру (ADR-008: закупочные цены видны обеим ролям).
     pub last_purchase_price_tyiyn: Option<i64>,
     /// Средняя себестоимость за штуку или канистру — только владельцу.
@@ -322,6 +325,8 @@ pub async fn query_products(
                   coalesce(bp.stock_qty, 0) as "stock_qty!",
                   coalesce(bp.stock_value_tyiyn, 0) as "stock_value_tyiyn!",
                   coalesce(bp.needs_review, false) as "needs_review!",
+                  exists (select 1 from payroll_cost_pending k
+                          where k.branch_id = $1 and k.product_id = p.id and k.resolved_at is null) as "cost_pending!",
                   coalesce(bp.last_cost_qty, 0) as "last_cost_qty!",
                   coalesce(bp.last_cost_tyiyn, 0) as "last_cost_tyiyn!",
                   coalesce((select array_agg(b.code order by b.created_at) from product_barcodes b
@@ -382,6 +387,7 @@ pub async fn query_products(
                 min_stock: r.min_stock,
                 stock_qty: r.stock_qty,
                 needs_review: r.needs_review,
+                cost_pending: r.cost_pending,
                 last_purchase_price_tyiyn: (r.last_cost_qty > 0)
                     .then(|| {
                         div_round(
@@ -735,6 +741,18 @@ async fn create_product(
     Ok(Json(out))
 }
 
+/// Поля карточки, которые правятся запросом `PATCH /products/{id}`, — для журнала.
+async fn product_fields(conn: &mut PgConnection, id: Uuid) -> AppResult<Value> {
+    Ok(sqlx::query_scalar!(
+        r#"select jsonb_build_object('name', name, 'brand', brand, 'article', article,
+                                     'category_id', category_id, 'attrs', attrs, 'archived', archived) as "v!"
+           from products where id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 #[derive(Deserialize)]
 struct UpdateProductReq {
     name: Option<String>,
@@ -799,6 +817,7 @@ async fn update_product(
     if name.as_deref() == Some("") {
         return Err(invalid("название обязательно"));
     }
+    let before = product_fields(&mut tx, id).await?;
     sqlx::query!(
         r#"update products set name = coalesce($2, name), brand = coalesce($3, brand),
              article = coalesce($4, article), category_id = $5, attrs = coalesce($6, attrs),
@@ -814,13 +833,15 @@ async fn update_product(
     )
     .execute(&mut *tx)
     .await?;
+    let after = product_fields(&mut tx, id).await?;
+    // В журнале — что было и что стало, только изменённые поля (инвариант 5).
     ops::audit(
         &mut tx,
         &ctx,
         "product.update",
         "product",
         Some(id),
-        json!({}),
+        json!({ "name": after.get("name"), "changes": ops::changes(&before, &after) }),
     )
     .await?;
     let out = product_by_id(&mut tx, &ctx.user, id).await?;
@@ -1115,10 +1136,27 @@ async fn merge_product(
         )
         .await?;
     }
-    sqlx::query!(
-        "update product_barcodes set product_id = $2 where product_id = $1",
+    let barcodes = sqlx::query_scalar!(
+        "update product_barcodes set product_id = $2 where product_id = $1 returning code",
         id,
         req.into_product_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    // Кросс-номера дубля тоже переходят основной карточке: поиск по ним должен найти её (SPEC-17).
+    let cross = sqlx::query_scalar!(
+        r#"insert into product_cross_numbers (product_id, code, code_norm)
+           select $2, code, code_norm from product_cross_numbers where product_id = $1
+           on conflict do nothing
+           returning code"#,
+        id,
+        req.into_product_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "delete from product_cross_numbers where product_id = $1",
+        id
     )
     .execute(&mut *tx)
     .await?;
@@ -1188,7 +1226,15 @@ async fn merge_product(
         KIND,
         "product",
         Some(req.into_product_id),
-        json!({ "from": id, "from_name": dup.name, "into_name": main.name, "qty": qty, "value": value }),
+        json!({
+            "from": id,
+            "from_name": dup.name,
+            "into_name": main.name,
+            "qty": qty,
+            "value": value,
+            "barcodes": barcodes,
+            "cross_numbers": cross,
+        }),
     )
     .await?;
     let out = product_by_id(&mut tx, &ctx.user, req.into_product_id).await?;

@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update employee_pay_rules\n           set active_to = (now() at time zone 'Asia/Bishkek')::date\n           where branch_id = $1 and employee_id = $2 and kind = $3 and active_to is null\n           returning id, amount_tyiyn, rate_bp",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "rate_bp",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "cc496595a5981c6c4bd0203bda9b41795ba96be60a2dd52125761d8ac0b4aca4"
+}

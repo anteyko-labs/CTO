@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from sale_lines l join sales s on s.id = l.sale_id\n           where s.branch_id = $1 and s.kind = 'sale' and l.cost_unknown\n             and s.business_date between $2 and $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2c8e1f984fe516db3146baf4554de664a33745f9fb74afbff92b354faac8799e"
+}

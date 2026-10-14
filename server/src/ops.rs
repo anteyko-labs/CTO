@@ -120,6 +120,21 @@ pub async fn audit(
     Ok(())
 }
 
+/// Что поменялось в записи: поля, у которых значение до и после разное, — `{поле: {old, new}}`.
+/// Для журнала правок карточек (инвариант 5): видно, что было и что стало.
+pub fn changes(before: &Value, after: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    if let (Some(b), Some(a)) = (before.as_object(), after.as_object()) {
+        for (key, new) in a {
+            let old = b.get(key).unwrap_or(&Value::Null);
+            if old != new {
+                out.insert(key.clone(), serde_json::json!({ "old": old, "new": new }));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
 /// Следующее значение счётчика филиала, начиная с 1.
 pub async fn next_counter(conn: &mut PgConnection, branch_id: Uuid, name: &str) -> AppResult<i64> {
     let v = sqlx::query_scalar!(
@@ -297,4 +312,21 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::changes;
+    use serde_json::json;
+
+    #[test]
+    fn changes_keep_only_changed_fields() {
+        let before = json!({ "name": "А", "phone": "1", "limit": null });
+        let after = json!({ "name": "А", "phone": "2", "limit": 500 });
+        assert_eq!(
+            changes(&before, &after),
+            json!({ "phone": { "old": "1", "new": "2" }, "limit": { "old": null, "new": 500 } })
+        );
+        assert_eq!(changes(&after, &after), json!({}));
+    }
 }

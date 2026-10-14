@@ -118,7 +118,7 @@ async function pieceProduct(request: APIRequestContext, name: string, code: stri
     barcodes: [code],
     sale_price_tyiyn: price,
   })
-  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
+  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
   return p
 }
 
@@ -140,6 +140,8 @@ async function oilProduct(
   })
   await apiPost(request, '/receipts', {
     op_id: crypto.randomUUID(),
+    // Владелец платит «из своих, мимо касс» — кассы в проверке не участвуют (ADR-062).
+    paid_from: 'outside',
     lines: [{ product_id: p.id, qty: opts.ml, cost_tyiyn: (opts.cost_per_l * opts.ml) / 1000 }],
   })
   return p

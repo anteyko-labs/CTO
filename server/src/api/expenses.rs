@@ -137,7 +137,17 @@ async fn update_article(
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    sqlx::query_as!(
+    // Правка и запись в журнал — одна транзакция (инвариант 7).
+    let mut tx = state.pool.begin().await?;
+    let before = sqlx::query!(
+        "select name, owner_only, active from expense_articles where id = $1 and branch_id = $2 for update",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    let out = sqlx::query_as!(
         ArticleOut,
         r#"update expense_articles
            set name = coalesce(nullif(trim($3), ''), name),
@@ -151,10 +161,23 @@ async fn update_article(
         req.owner_only,
         req.active
     )
-    .fetch_optional(&state.pool)
-    .await?
-    .map(Json)
-    .ok_or(AppError::NotFound)
+    .fetch_one(&mut *tx)
+    .await?;
+    let changes = ops::changes(
+        &json!({ "name": before.name, "owner_only": before.owner_only, "active": before.active }),
+        &json!({ "name": out.name, "owner_only": out.owner_only, "active": out.active }),
+    );
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "expense.article_update",
+        "expense_article",
+        Some(id),
+        json!({ "name": out.name, "changes": changes }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 #[derive(Serialize, Deserialize, Clone)]

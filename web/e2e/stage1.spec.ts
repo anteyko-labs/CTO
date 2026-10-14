@@ -57,6 +57,8 @@ test('товар, приход, продажа, возврат и остаток
   await page.getByLabel('Цена за шт, с').fill('300')
   const print = page.getByLabel('Печатать этикетки')
   if (await print.isChecked()) await print.uncheck()
+  // Оплачена сразу: владелец выбирает, откуда деньги (ADR-062).
+  await page.locator('#receipt-paid-from').selectOption('outside')
   await page.getByRole('button', { name: 'Провести приход' }).click()
   await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
   await expect(page.getByText(money('3 000 с')).first()).toBeVisible()
@@ -126,6 +128,8 @@ test('касса работает без сети, чек уходит при е
   })
   await apiPost(page.request, '/receipts', {
     op_id: crypto.randomUUID(),
+    // Владелец платит «из своих, мимо касс» — кассы в проверке не участвуют (ADR-062).
+    paid_from: 'outside',
     lines: [{ product_id: prod.id, qty: 5, cost_tyiyn: 150000 }],
   })
   await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true })

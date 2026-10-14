@@ -59,8 +59,11 @@ updated: 2026-10-06
      cost = cost_of(units, bp...)
      apply_movement(product, −units, −cost, 'sale', sale.id)
      line.cost_tyiyn = cost
+     часть units без остатка и без прошлой закупки → line.cost_unknown, 2 % кассира ждут цены (SPEC-07)
   insert lines, payments
   если unit_price ≠ list_price → журнал sale.price_override по строке
+     (прайс, который видела касса, — только у чека без сети, SPEC-09; онлайн — прайс сервера)
+  машина клиента убрана (active = false) → 409 «верните её в карточке клиента» (SPEC-16)
   audit sale.post
   ответ: чек (cost_tyiyn — только владельцу)
 ```

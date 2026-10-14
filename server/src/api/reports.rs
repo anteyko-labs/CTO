@@ -340,6 +340,20 @@ async fn profit(
             "у {review} товаров себестоимость оценена по последней закупке: проверьте остатки"
         ));
     }
+    // Строки, проданные без цены закупки: в прибыли их себестоимость — ноль (ADR-062).
+    let no_cost = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from sale_lines l join sales s on s.id = l.sale_id
+           where s.branch_id = $1 and s.kind = 'sale' and l.cost_unknown
+             and s.business_date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if no_cost > 0 {
+        warnings.push(format!("есть продажи без себестоимости: {no_cost}"));
+    }
     let pending = sqlx::query_scalar!(
         r#"select count(*) as "n!" from payroll_pending
            where branch_id = $1 and debt_remaining_tyiyn > 0"#,
@@ -570,10 +584,13 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
     .fetch_one(&mut *conn)
     .await?;
     let stock = sqlx::query!(
+        // «Заканчивается» — как на складе: архивные и влитые карточки не считаем (они не
+        // продаются и в списке не видны), иначе число на сводке не сходится со складом.
         r#"select
-             coalesce(count(*) filter (where stock_qty < min_stock), 0)::bigint as "low!",
-             coalesce(count(*) filter (where needs_review), 0)::bigint as "review!"
-           from branch_products where branch_id = $1"#,
+             coalesce(count(*) filter (where bp.stock_qty < bp.min_stock and not p.archived), 0)::bigint as "low!",
+             coalesce(count(*) filter (where bp.needs_review), 0)::bigint as "review!"
+           from branch_products bp join products p on p.id = bp.product_id
+           where bp.branch_id = $1"#,
         branch_id
     )
     .fetch_one(&mut *conn)

@@ -125,13 +125,18 @@ async fn receive(
     qty: i64,
     cost: i64,
 ) -> avtodom_server::api::receipts::ReceiptOut {
+    // Приход для проверок склада: оплачен «из своих, мимо касс», кассы не трогает (ADR-062).
+    // Так платит только владелец, поэтому документ проводится от того же пользователя с ролью владельца.
+    let mut payer = ctx.clone();
+    payer.user.role = Role::Owner;
     let mut tx = pool.begin().await.unwrap();
     let r = post_receipt_tx(
         &mut tx,
-        ctx,
+        &payer,
         ReceiptReq {
             op_id: Uuid::now_v7(),
             payment: None,
+            paid_from: Some("outside".into()),
             supplier_id: None,
             supplier_doc: String::new(),
             comment: String::new(),
@@ -2535,8 +2540,14 @@ async fn bot_customer_adds_finds_and_removes_cars(pool: PgPool) {
     assert_eq!(alerts[0].0["client"], "Эрлан");
 
     // Своя убранная машина по номеру возвращается с историей, дубля нет.
-    let old = staff_car(&pool, &w, me, "A 555 BB", false).await;
+    // Замену пишут на машину в списке; потом клиент её убирает (на убранную чек не пробить, ADR-062).
+    let old = staff_car(&pool, &w, me, "A 555 BB", true).await;
     service_change(&pool, &w, me, old).await;
+    sqlx::query("update party_vehicles set active = false where id = $1")
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
     press(&mut conn, chat, "add").await;
     let found = say(&mut conn, chat, "a555bb").await;
     assert!(found.starts_with("Нашли вашу машину"), "{found}");
@@ -3450,4 +3461,100 @@ async fn bot_question_limit_makes_no_call(pool: PgPool) {
             .await
             .contains("ЧИСТАЯ ПРИБЫЛЬ")
     );
+}
+
+async fn audit_data(pool: &PgPool, action: &str) -> Vec<serde_json::Value> {
+    sqlx::query_scalar("select data from audit_log where action = $1 order by created_at")
+        .bind(action)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
+    // Чек без сети принимается, но всё, что онлайн отклонили бы, уходит владельцу (ADR-062).
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    receive(&pool, &w.admin, w.filter, 10, 100_000).await;
+    let client = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, inn, active) values ($1, $2, 'customer', 'person', 'Отключённый', '123', false)")
+        .bind(client)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update employees set active = false where id = $1")
+        .bind(w.cashier)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Онлайн такой чек не проходит.
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        vec![PaymentReq {
+            method: "debt".into(),
+            amount_tyiyn: 50_000,
+        }],
+    );
+    req.party_id = Some(client);
+    assert!(sell(&pool, &w.admin, req).await.is_err());
+
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        vec![PaymentReq {
+            method: "debt".into(),
+            amount_tyiyn: 50_000,
+        }],
+    );
+    req.party_id = Some(client);
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::days(1));
+    sell(&pool, &w.admin, req).await.unwrap();
+    let alerts = audit_data(&pool, "sale.offline_bypass").await;
+    assert_eq!(alerts.len(), 1);
+    let reasons: Vec<String> = alerts[0]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(reasons.len(), 3, "{reasons:?}");
+    assert!(reasons[0].starts_with("кассир «Кассир» отключён"));
+    assert!(reasons[1].contains("в долг отключённому клиенту"));
+    assert!(reasons[2].starts_with("проведён задним числом"));
+
+    // Обычный чек без сети, без обходов — без уведомления.
+    sqlx::query("update employees set active = true where id = $1")
+        .bind(w.cashier)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    sell(&pool, &w.admin, req).await.unwrap();
+    assert_eq!(audit_data(&pool, "sale.offline_bypass").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn seen_price_is_trusted_only_offline(pool: PgPool) {
+    // Прайс «который видела касса» онлайн не принимается: правка цены видна по прайсу сервера.
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 100_000).await;
+    let mut l = line("piece", w.filter, 1, 40_000);
+    l.seen_list_price_tyiyn = Some(40_000);
+    sell(&pool, &w.admin, takeaway(&w, vec![l.clone()], cash(40_000)))
+        .await
+        .unwrap();
+    assert_eq!(audit_data(&pool, "sale.price_override").await.len(), 1);
+    // Без сети прайс мог смениться, пока чек лежал: это не правка кассира.
+    let mut req = takeaway(&w, vec![l], cash(40_000));
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    sell(&pool, &w.admin, req).await.unwrap();
+    assert_eq!(audit_data(&pool, "sale.price_override").await.len(), 1);
+    assert_eq!(audit_data(&pool, "sale.stale_price").await.len(), 1);
 }

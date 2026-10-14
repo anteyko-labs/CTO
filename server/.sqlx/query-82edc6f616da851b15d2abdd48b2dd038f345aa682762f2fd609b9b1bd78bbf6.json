@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.account_id, a.kind, a.owner_only, coalesce(sum(m.amount_tyiyn), 0)::bigint as \"sum!\"\n           from cash_movements m join cash_accounts a on a.id = m.account_id\n           where m.branch_id = $1 and m.doc_type = 'receipt' and m.doc_id = $2\n             and m.kind = 'supplier_payment'\n           group by m.account_id, a.kind, a.owner_only\n           order by m.account_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "82edc6f616da851b15d2abdd48b2dd038f345aa682762f2fd609b9b1bd78bbf6"
+}

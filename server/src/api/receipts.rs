@@ -32,6 +32,10 @@ pub fn routes() -> Router<AppState> {
             "/stock/{product_id}/review-done",
             routing::post(review_done),
         )
+        .route(
+            "/stock/{product_id}/purchase-price",
+            routing::post(purchase_price),
+        )
 }
 
 #[derive(Deserialize)]
@@ -52,6 +56,11 @@ pub struct ReceiptReq {
     #[serde(default)]
     pub comment: String,
     pub lines: Vec<ReceiptLineReq>,
+    /// Откуда оплачена накладная `paid` (ADR-062): id кассы («Касса», «Счёт», «Сейф владельца»)
+    /// или `outside` — из своих, мимо касс. Без поля (старый клиент): администратор платит
+    /// из «Кассы» — другого ему нельзя, владельцу нужно выбрать явно.
+    #[serde(default)]
+    pub paid_from: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -79,14 +88,19 @@ pub struct ReceiptOut {
     pub user_name: String,
     pub created_at: DateTime<Utc>,
     pub lines: Vec<ReceiptLineOut>,
+    /// Откуда оплачена: название кассы или `outside`; пусто — в долг или накладная до ADR-062.
+    #[serde(default)]
+    pub paid_from: Option<String>,
 }
 
 async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<ReceiptOut> {
     let h = sqlx::query!(
         r#"select r.id, r.number, r.supplier_id, s.name as "supplier_name?", r.supplier_doc, r.comment,
                   r.total_tyiyn, r.reversal_of, u.full_name as user_name, r.created_at,
-                  (select x.id from receipts x where x.reversal_of = r.id) as reversed_by
+                  (select x.id from receipts x where x.reversal_of = r.id) as reversed_by,
+                  case when r.paid_from = 'outside' then 'outside' else a.name end as "paid_from?"
            from receipts r
+           left join cash_accounts a on a.id = r.paid_account_id
            join users u on u.id = r.user_id
            left join suppliers s on s.id = r.supplier_id
            where r.id = $1 and r.branch_id = $2"#,
@@ -118,6 +132,7 @@ async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> App
         user_name: h.user_name,
         created_at: h.created_at,
         lines,
+        paid_from: h.paid_from,
     })
 }
 
@@ -302,6 +317,52 @@ pub async fn lock_products(
     Ok(())
 }
 
+/// Откуда платим за накладную (ADR-062).
+#[derive(Clone, Copy)]
+enum PaidFrom {
+    Account(Uuid),
+    Outside,
+}
+
+/// Источник оплаты накладной: касса филиала или «из своих, мимо касс». Администратор платит
+/// только из «Кассы» (как и выдаёт из неё деньги, SPEC-05); счёт, сейфы и свои деньги — владелец.
+async fn resolve_paid_from(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    paid_from: Option<&str>,
+) -> AppResult<PaidFrom> {
+    let branch_id = ctx.user.branch_id;
+    let owner = ctx.user.is_owner();
+    let id = match paid_from.map(str::trim) {
+        // Старый клиент поле не шлёт. Администратору выбирать не из чего — «Касса»; владелец
+        // мог платить откуда угодно, и угадывать нельзя: остаток кассы разошёлся бы с деньгами.
+        None | Some("") if owner => {
+            return Err(invalid(
+                "укажите, откуда оплачена накладная: касса, счёт, сейф или из своих",
+            ));
+        }
+        None | Some("") => crate::api::cash::default_account(conn, branch_id).await?,
+        Some("outside") if owner => return Ok(PaidFrom::Outside),
+        Some("outside") => return Err(AppError::Forbidden),
+        Some(s) => Uuid::parse_str(s).map_err(|_| invalid("неизвестная касса"))?,
+    };
+    let acc = sqlx::query!(
+        "select kind, owner_only, active from cash_accounts where id = $1 and branch_id = $2",
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("касса не найдена"))?;
+    if !acc.active {
+        return Err(invalid("касса отключена"));
+    }
+    if !owner && (acc.kind != "register" || acc.owner_only) {
+        return Err(AppError::Forbidden);
+    }
+    Ok(PaidFrom::Account(id))
+}
+
 pub async fn post_receipt_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -352,6 +413,14 @@ pub async fn post_receipt_tx(
     if on_debt && req.supplier_id.is_none() {
         return Err(invalid("для накладной в долг укажите поставщика"));
     }
+    let paid_from = if on_debt {
+        if req.paid_from.is_some() {
+            return Err(invalid("накладная в долг ничем не оплачивается"));
+        }
+        None
+    } else {
+        Some(resolve_paid_from(conn, ctx, req.paid_from.as_deref()).await?)
+    };
     let branch_id = ctx.user.branch_id;
     lock_products(conn, branch_id, distinct).await?;
     // Пока ждали блокировку, карточку могли объединить с другой.
@@ -368,9 +437,15 @@ pub async fn post_receipt_tx(
     }
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let id = new_id();
+    let (paid_kind, paid_account) = match paid_from {
+        Some(PaidFrom::Account(a)) => (Some("account"), Some(a)),
+        Some(PaidFrom::Outside) => (Some("outside"), None),
+        None => (None, None),
+    };
     sqlx::query!(
-        r#"insert into receipts (id, branch_id, number, supplier_id, supplier_doc, comment, total_tyiyn, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+        r#"insert into receipts (id, branch_id, number, supplier_id, supplier_doc, comment, total_tyiyn, user_id, device_id,
+                                 paid_from, paid_account_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
         id,
         branch_id,
         number,
@@ -379,7 +454,9 @@ pub async fn post_receipt_tx(
         req.comment.trim(),
         total,
         ctx.user.id,
-        ctx.device_id
+        ctx.device_id,
+        paid_kind,
+        paid_account
     )
     .execute(&mut *conn)
     .await?;
@@ -483,9 +560,77 @@ pub async fn post_receipt_tx(
         )
         .await?;
     }
+    // Оплачена сразу: деньги уходят из выбранной кассы в той же транзакции (SPEC-10). Это не
+    // расход в прибыли — товар лёг в стоимость остатка и уйдёт в себестоимость при продаже.
+    if let Some(source) = paid_from {
+        pay_supplier(conn, ctx, id, number, total, source).await?;
+    }
     let out = load_receipt(conn, branch_id, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+/// Оплата накладной: `supplier_payment` из кассы или отметка «из своих» в журнале (ADR-062).
+async fn pay_supplier(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    receipt_id: Uuid,
+    number: i64,
+    total: i64,
+    source: PaidFrom,
+) -> AppResult<()> {
+    let branch_id = ctx.user.branch_id;
+    let account = match source {
+        PaidFrom::Outside => None,
+        PaidFrom::Account(account_id) => {
+            // Касса с наличными — только в открытой смене: иначе расход не с чем сверить (SPEC-10).
+            crate::api::cash::require_open_shift(conn, branch_id, account_id).await?;
+            let acc = sqlx::query!(
+                "select name, balance_tyiyn from cash_accounts where id = $1 and branch_id = $2 for update",
+                account_id,
+                branch_id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if acc.balance_tyiyn < total {
+                return Err(AppError::Conflict(format!(
+                    "в «{}» не хватает денег на оплату накладной: оформите её в долг или выберите другую кассу",
+                    acc.name
+                )));
+            }
+            if total > 0 {
+                crate::api::cash::add_movement(
+                    conn,
+                    ctx,
+                    crate::api::cash::CashEntry {
+                        account_id,
+                        kind: "supplier_payment",
+                        amount: -total,
+                        doc_type: "receipt",
+                        doc_id: Some(receipt_id),
+                        comment: &format!("накладная № {number}"),
+                    },
+                )
+                .await?;
+            }
+            Some(acc.name)
+        }
+    };
+    ops::audit(
+        conn,
+        ctx,
+        "receipt.supplier_payment",
+        "receipt",
+        Some(receipt_id),
+        json!({
+            "number": number,
+            "amount": total,
+            "account": account,
+            "outside": account.is_none(),
+        }),
+    )
+    .await?;
+    Ok(())
 }
 
 async fn post_receipt(
@@ -634,6 +779,38 @@ pub async fn reverse_receipt_tx(
                 doc_type: "receipt_reversal",
                 doc_id: Some(rid),
                 comment: "сторно прихода",
+            },
+        )
+        .await?;
+    }
+    // Накладную оплатили из кассы: деньги возвращаются в ту же кассу (ADR-062).
+    let paid = sqlx::query!(
+        r#"select m.account_id, a.kind, a.owner_only, coalesce(sum(m.amount_tyiyn), 0)::bigint as "sum!"
+           from cash_movements m join cash_accounts a on a.id = m.account_id
+           where m.branch_id = $1 and m.doc_type = 'receipt' and m.doc_id = $2
+             and m.kind = 'supplier_payment'
+           group by m.account_id, a.kind, a.owner_only
+           order by m.account_id"#,
+        branch_id,
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for p in paid.into_iter().filter(|p| p.sum != 0) {
+        // Счёт и сейфы трогает владелец (SPEC-05): сторно такой накладной — тоже он.
+        if !ctx.user.is_owner() && (p.kind != "register" || p.owner_only) {
+            return Err(AppError::Forbidden);
+        }
+        crate::api::cash::add_movement(
+            conn,
+            ctx,
+            crate::api::cash::CashEntry {
+                account_id: p.account_id,
+                kind: "reversal",
+                amount: -p.sum,
+                doc_type: "receipt_reversal",
+                doc_id: Some(rid),
+                comment: &format!("сторно накладной № {}", orig.number),
             },
         )
         .await?;
@@ -799,6 +976,21 @@ async fn review_done(
 ) -> AppResult<Json<serde_json::Value>> {
     ctx.user.require_owner()?;
     let mut tx = state.pool.begin().await?;
+    // Продажи без цены закупки ждут её: отметку не снять, пока владелец цену не указал —
+    // иначе процент кассира по ним не начислится никогда (ADR-062).
+    let waiting = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from payroll_cost_pending
+           where branch_id = $1 and product_id = $2 and resolved_at is null"#,
+        ctx.user.branch_id,
+        product_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if waiting > 0 {
+        return Err(AppError::Conflict(
+            "товар продан без цены закупки: сначала укажите цену закупки".into(),
+        ));
+    }
     let n = sqlx::query!(
         "update branch_products set needs_review = false where branch_id = $1 and product_id = $2",
         ctx.user.branch_id,
@@ -821,4 +1013,83 @@ async fn review_done(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+struct PurchasePriceReq {
+    op_id: Uuid,
+    /// Цена закупки за штуку, за канистру (масло) или за килограмм (на вес).
+    price_tyiyn: i64,
+}
+
+/// Владелец указывает цену закупки товара, проданного без неё (ADR-062): строки чеков получают
+/// себестоимость для процента кассира, процент начисляется сегодня. Проведённые строки чеков не
+/// меняются (инвариант 3), прибыль прошлых дней — тоже; отчёт прибыли о них предупреждает.
+async fn purchase_price(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(product_id): Path<Uuid>,
+    Json(req): Json<PurchasePriceReq>,
+) -> AppResult<Json<crate::api::payroll::CostResolved>> {
+    const KIND: &str = "stock.purchase_price";
+    ctx.user.require_owner()?;
+    if req.price_tyiyn <= 0 {
+        return Err(invalid("цена закупки больше нуля"));
+    }
+    ops::check_amount(req.price_tyiyn)?;
+    let branch_id = ctx.user.branch_id;
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let p = sqlx::query!(
+        "select name, unit, container_ml, archived from products where id = $1",
+        product_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if p.archived {
+        return Err(invalid("товар в архиве: укажите цену у основной карточки"));
+    }
+    // Те же единицы, что у цены последнего прихода в карточке: штука, канистра; на вес — килограмм.
+    let per = match (p.unit.as_str(), p.container_ml) {
+        ("g", _) => 1000,
+        (_, Some(c)) => c,
+        _ => 1,
+    };
+    ops::lock_pool(&mut tx, branch_id, product_id).await?;
+    // Закупок не было — цена владельца становится «последней закупочной»: следующие продажи
+    // при нехватке остатка возьмут себестоимость по ней (SPEC-03). Цену прихода не перебиваем.
+    sqlx::query!(
+        r#"update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4
+           where branch_id = $1 and product_id = $2 and last_cost_qty = 0"#,
+        branch_id,
+        product_id,
+        per,
+        req.price_tyiyn
+    )
+    .execute(&mut *tx)
+    .await?;
+    let out =
+        crate::api::payroll::resolve_cost_pending(&mut tx, &ctx, product_id, req.price_tyiyn, per)
+            .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "product",
+        Some(product_id),
+        json!({
+            "name": p.name,
+            "price_tyiyn": req.price_tyiyn,
+            "per": per,
+            "lines": out.lines,
+            "accrued_tyiyn": out.accrued_tyiyn,
+        }),
+    )
+    .await?;
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }

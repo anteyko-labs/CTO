@@ -409,7 +409,8 @@ async fn supplier_card_shows_what_was_delivered(pool: PgPool) {
             "/api/v1/receipts",
             Some(&admin),
             Some(
-                json!({ "op_id": Uuid::now_v7(), "supplier_id": who, "lines": [line(qty, cost)] }),
+                // В долг: оплата из кассы проверяется отдельно (ADR-062).
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": who, "payment": "debt", "lines": [line(qty, cost)] }),
             ),
         )
         .await;
@@ -420,7 +421,7 @@ async fn supplier_card_shows_what_was_delivered(pool: PgPool) {
         "POST",
         "/api/v1/receipts",
         Some(&admin),
-        Some(json!({ "op_id": Uuid::now_v7(), "supplier_id": other["id"], "lines": [line(1, 1000)] })),
+        Some(json!({ "op_id": Uuid::now_v7(), "supplier_id": other["id"], "payment": "debt", "lines": [line(1, 1000)] })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -684,7 +685,7 @@ async fn price_changes_are_owner_only_and_notify(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn duplicate_products_can_be_merged(pool: PgPool) {
     // Дубль сливается в основной товар: коды и остаток переходят, дубль в архив (SPEC-02).
-    let app = setup(pool).await;
+    let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
     let (_, _, cat) = call(
         &app,
@@ -720,10 +721,16 @@ async fn duplicate_products_can_be_merged(pool: PgPool) {
         "POST",
         "/api/v1/receipts",
         Some(&owner),
-        Some(json!({ "op_id": Uuid::now_v7(), "lines": [{ "product_id": dup, "qty": 4, "cost_tyiyn": 20_000 }] })),
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside", "lines": [{ "product_id": dup, "qty": 4, "cost_tyiyn": 20_000 }] })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // Кросс-номер дубля должен перейти основной карточке (SPEC-17).
+    sqlx::query("insert into product_cross_numbers (product_id, code, code_norm) values ($1::uuid, 'W 712/75', 'W71275')")
+        .bind(&dup)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let (status, _, merged) = call(
         &app,
@@ -759,6 +766,20 @@ async fn duplicate_products_can_be_merged(pool: PgPool) {
     .await;
     assert_eq!(old["archived"], json!(true));
     assert_eq!(old["stock_qty"], 0);
+    let cross: Vec<(String,)> = sqlx::query_as(
+        "select product_id::text from product_cross_numbers where code_norm = 'W71275'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cross, vec![(main.clone(),)]);
+    let (data,): (Value,) =
+        sqlx::query_as("select data from audit_log where action = 'product.merge'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(data["barcodes"], json!(["4600000000024"]));
+    assert_eq!(data["cross_numbers"], json!(["W 712/75"]));
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -2368,4 +2389,733 @@ async fn bot_questions_usage_is_owner_only(pool: PgPool) {
     assert_eq!(body["today"]["questions"], 1);
     assert_eq!(body["today"]["input_tokens"], 1000);
     assert_eq!(body["month"]["output_tokens"], 200);
+}
+
+// ---------- Исправления по ревью (ADR-062) ----------
+
+/// Счета филиала по виду: касса, счёт, сейф владельца.
+async fn accounts_of(app: &Router, owner: &str) -> (String, String, String) {
+    let (_, _, accounts) = call(app, "GET", "/api/v1/cash/accounts", Some(owner), None).await;
+    let find = |pred: &dyn Fn(&Value) -> bool| {
+        accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| pred(a))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    (
+        find(&|a| a["kind"] == json!("register")),
+        find(&|a| a["kind"] == json!("bank")),
+        find(&|a| a["owner_only"] == json!(true)),
+    )
+}
+
+async fn balance_of(pool: &PgPool, account: &str) -> i64 {
+    sqlx::query_scalar("select balance_tyiyn from cash_accounts where id = $1::uuid")
+        .bind(account)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Категория и товар; возвращает id товара.
+async fn product(app: &Router, owner: &str, name: &str, price: i64, min_stock: i64) -> String {
+    let (_, _, cat) = call(
+        app,
+        "POST",
+        "/api/v1/categories",
+        Some(owner),
+        Some(json!({ "name": format!("Кат {name}"), "kind": "filter" })),
+    )
+    .await;
+    let (status, _, p) = call(
+        app,
+        "POST",
+        "/api/v1/products",
+        Some(owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": name,
+            "sale_price_tyiyn": price, "min_stock": min_stock
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{p}");
+    p["id"].as_str().unwrap().to_string()
+}
+
+async fn cashier_employee(app: &Router, owner: &str) -> String {
+    let (status, _, e) = call(
+        app,
+        "POST",
+        "/api/v1/employees",
+        Some(owner),
+        Some(json!({ "full_name": "Айбек", "is_cashier": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{e}");
+    e["id"].as_str().unwrap().to_string()
+}
+
+async fn actions(pool: &PgPool, action: &str) -> Vec<Value> {
+    sqlx::query_scalar("select data from audit_log where action = $1 order by created_at")
+        .bind(action)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn paid_receipt_takes_money_from_chosen_register(pool: PgPool) {
+    // Оплаченная накладная списывает деньги из выбранной кассы; сторно их возвращает (ADR-062).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (till, _bank, safe) = accounts_of(&app, &owner).await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let receipt = |who: &str, total: i64, paid_from: Option<&str>| {
+        let app = app.clone();
+        let who = who.to_string();
+        let mut body = json!({
+            "op_id": Uuid::now_v7(), "payment": "paid",
+            "lines": [{ "product_id": item, "qty": 1, "cost_tyiyn": total }]
+        });
+        if let Some(p) = paid_from {
+            body["paid_from"] = json!(p);
+        }
+        async move { call(&app, "POST", "/api/v1/receipts", Some(&who), Some(body)).await }
+    };
+
+    // Из кассы — только в открытой смене.
+    let (s, _, _) = receipt(&admin, 10_000, None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/movements",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 500_000, "comment": "размен" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Старый клиент без поля: администратор платит из «Кассы».
+    let (s, _, paid) = receipt(&admin, 100_000, None).await;
+    assert_eq!(s, StatusCode::OK, "{paid}");
+    assert_eq!(paid["paid_from"], "Касса");
+    assert_eq!(balance_of(&pool, &till).await, 400_000);
+    // Сейф, счёт и «из своих» администратору недоступны.
+    let (s, _, _) = receipt(&admin, 1_000, Some(&safe)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = receipt(&admin, 1_000, Some("outside")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // В минус касса не уходит.
+    let (s, _, _) = receipt(&admin, 1_000_000, Some(&till)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(balance_of(&pool, &till).await, 400_000);
+
+    // Владелец обязан выбрать источник; «из своих» кассы не трогает.
+    let (s, _, _) = receipt(&owner, 1_000, None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, outside) = receipt(&owner, 70_000, Some("outside")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(outside["paid_from"], "outside");
+    assert_eq!(balance_of(&pool, &till).await, 400_000);
+    assert_eq!(balance_of(&pool, &safe).await, 0);
+
+    // Сторно возвращает деньги в ту же кассу.
+    let rid = paid["id"].as_str().unwrap();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/receipts/{rid}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(balance_of(&pool, &till).await, 500_000);
+
+    // Из сейфа владельца: деньги туда переводит владелец, платит из сейфа он же.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/transfers",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "from_account_id": till, "to_account_id": safe, "amount_tyiyn": 200_000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, from_safe) = receipt(&owner, 50_000, Some(&safe)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(from_safe["paid_from"], "Сейф владельца");
+    assert_eq!(balance_of(&pool, &safe).await, 150_000);
+    let sid = from_safe["id"].as_str().unwrap();
+    let rev = |who: &str| {
+        let app = app.clone();
+        let who = who.to_string();
+        let uri = format!("/api/v1/receipts/{sid}/reverse");
+        async move {
+            call(
+                &app,
+                "POST",
+                &uri,
+                Some(&who),
+                Some(json!({ "op_id": Uuid::now_v7(), "comment": "возврат поставщику" })),
+            )
+            .await
+        }
+    };
+    let (s, _, _) = rev(&admin).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = rev(&owner).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(balance_of(&pool, &safe).await, 200_000);
+
+    // Владелец видит оплату в уведомлениях; прибыль оплата поставщику не трогает.
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let titles: Vec<String> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["action"] == "receipt.supplier_payment")
+        .map(|i| i["details"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(titles.len(), 3);
+    assert!(titles.iter().any(|t| t.contains("мимо касс")), "{titles:?}");
+    let (_, _, profit) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
+    assert_eq!(profit["totals"]["expenses_tyiyn"], 0);
+    assert_eq!(profit["totals"]["net_tyiyn"], 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn sale_without_purchase_price_waits_for_owner(pool: PgPool) {
+    // Товар без цены закупки продаётся, но 2 % кассира с этой строки ждут цены от владельца (ADR-062).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let fresh = product(&app, &owner, "Новый фильтр", 50_000, 0).await;
+    let known = product(&app, &owner, "Старый фильтр", 50_000, 0).await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "lines": [{ "product_id": known, "qty": 10, "cost_tyiyn": 200_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, sale) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+            "lines": [
+                { "kind": "piece", "product_id": fresh, "qty": 2, "unit_price_tyiyn": 50_000 },
+                { "kind": "piece", "product_id": known, "qty": 1, "unit_price_tyiyn": 50_000 }
+            ],
+            "payments": [{ "method": "cash", "amount_tyiyn": 150_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sale}");
+    let percent = || async {
+        let v: i64 = sqlx::query_scalar(
+            "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where kind = 'revenue_percent'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        v
+    };
+    // Только с известной строки: 2 % от (500 − 200) с.
+    assert_eq!(percent().await, 600);
+    let flags: Vec<bool> = sqlx::query_scalar(
+        "select cost_unknown from sale_lines where sale_id = $1::uuid order by line_no",
+    )
+    .bind(sale["id"].as_str().unwrap())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(flags, vec![true, false]);
+    let (_, _, profit) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
+    assert!(
+        profit["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w == "есть продажи без себестоимости: 1"),
+        "{profit}"
+    );
+    let (_, _, stock) = call(&app, "GET", "/api/v1/stock?q=Новый", Some(&owner), None).await;
+    assert_eq!(stock[0]["cost_pending"], true);
+    assert_eq!(actions(&pool, "sale.cost_unknown").await.len(), 1);
+
+    // Отметку «проверить» без цены не снять; цену указывает только владелец.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/stock/{fresh}/review-done"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let op = Uuid::now_v7();
+    let price = json!({ "op_id": op, "price_tyiyn": 30_000 });
+    let uri = format!("/api/v1/stock/{fresh}/purchase-price");
+    let (s, _, _) = call(&app, "POST", &uri, Some(&admin), Some(price.clone())).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, done) = call(&app, "POST", &uri, Some(&owner), Some(price.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    // 2 % от (1000 − 2 × 300) с = 8 с; повтор того же op_id второй раз не начисляет.
+    assert_eq!(done, json!({ "lines": 1, "accrued_tyiyn": 800 }));
+    let (_, _, again) = call(&app, "POST", &uri, Some(&owner), Some(price)).await;
+    assert_eq!(again, done);
+    assert_eq!(percent().await, 1_400);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/stock/{fresh}/review-done"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, stock) = call(&app, "GET", "/api/v1/stock?q=Новый", Some(&owner), None).await;
+    assert_eq!(stock[0]["cost_pending"], false);
+    assert!(stock[0]["last_purchase_price_tyiyn"] == 30_000);
+
+    // Возврат одной штуки после цены снимает ровно её процент: 2 % от (500 − 300) с.
+    let sid = sale["id"].as_str().unwrap();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/sales/{sid}/return"),
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+            "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(percent().await, 1_000);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cashier_rules_are_not_recreated_and_rule_close_is_logged(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let id = cashier_employee(&app, &owner).await;
+    let (_, _, rules) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/employees/{id}/pay-rules"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(rules.as_array().unwrap().len(), 2);
+    for r in rules.as_array().unwrap() {
+        let (s, _, _) = call(
+            &app,
+            "DELETE",
+            &format!(
+                "/api/v1/employees/{id}/pay-rules/{}",
+                r["id"].as_str().unwrap()
+            ),
+            Some(&owner),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    assert_eq!(actions(&pool, "payroll.rule_close").await.len(), 2);
+    for flag in [false, true] {
+        let (s, _, _) = call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/employees/{id}"),
+            Some(&owner),
+            Some(json!({ "is_cashier": flag })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    // Снова кассир — но закрытые владельцем ставки не возвращаются.
+    let open: i64 = sqlx::query_scalar(
+        "select count(*) from employee_pay_rules where employee_id = $1::uuid and active_to is null",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(open, 0);
+    let updates = actions(&pool, "employee.update").await;
+    assert_eq!(updates.last().unwrap()["pay_rules_added"], false);
+    // Ставка мастера — настройка продаж, правилом сотрудника не задаётся.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/employees/{id}/pay-rules"),
+        Some(&owner),
+        Some(json!({ "kind": "per_service", "role": "master", "amount_tyiyn": 3000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn vehicles_are_not_duplicated_and_removed_ones_come_back(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let party = |name: &str| {
+        let app = app.clone();
+        let admin = admin.clone();
+        let body = json!({ "name": name });
+        async move {
+            let (_, _, p) = call(&app, "POST", "/api/v1/parties", Some(&admin), Some(body)).await;
+            p["id"].as_str().unwrap().to_string()
+        }
+    };
+    let me = party("Эрлан").await;
+    let other = party("Бакыт").await;
+    let add = |pid: &str, plate: &str| {
+        let app = app.clone();
+        let admin = admin.clone();
+        let uri = format!("/api/v1/parties/{pid}/vehicles");
+        let body = json!({ "plate": plate });
+        async move { call(&app, "POST", &uri, Some(&admin), Some(body)).await }
+    };
+    let (s, _, car) = add(&me, "01 kg 777 abc").await;
+    assert_eq!(s, StatusCode::OK);
+    let car_id = car["id"].as_str().unwrap().to_string();
+    // Тот же номер в другом написании — та же машина.
+    let (_, _, same) = add(&me, "01KG-777 АВС").await;
+    assert_eq!(same["id"], car["id"]);
+    // Клиент убрал машину — повторное добавление возвращает её с историей.
+    sqlx::query("update party_vehicles set active = false where id = $1::uuid")
+        .bind(&car_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let book = |removed: bool| {
+        let app = app.clone();
+        let admin = admin.clone();
+        let uri = format!("/api/v1/parties/{me}/oil-book?removed={removed}");
+        async move { call(&app, "GET", &uri, Some(&admin), None).await.2 }
+    };
+    assert_eq!(book(false).await.as_array().unwrap().len(), 0);
+    let all = book(true).await;
+    assert_eq!(all[0]["active"], false);
+    let (_, _, back) = add(&me, "01KG777ABC").await;
+    assert_eq!(
+        (back["id"].clone(), back["active"].clone()),
+        (car["id"].clone(), json!(true))
+    );
+    assert_eq!(actions(&pool, "vehicle.restore").await.len(), 1);
+    // Номер другого клиента: новая машина и уведомление владельцу.
+    let (_, _, foreign) = add(&other, "01KG777ABC").await;
+    assert_ne!(foreign["id"], car["id"]);
+    let conflicts = actions(&pool, "vehicle.plate_conflict").await;
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0]["source"], "staff");
+
+    // Продажа на убранную машину: онлайн — 409, кнопка «Вернуть» — машина снова в списке.
+    sqlx::query("update party_vehicles set active = false where id = $1::uuid")
+        .bind(&car_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+            "party_id": me, "vehicle_id": car_id,
+            "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+            "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _, restored) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/parties/{me}/vehicles/{car_id}/restore"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(restored["active"], true);
+    assert_eq!(book(false).await.as_array().unwrap().len(), 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn edits_keep_old_and_new_values(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&owner),
+        Some(json!({ "name": "ОсОО Ромашка", "kind": "company", "phone": "0700" })),
+    )
+    .await;
+    let pid = p["id"].as_str().unwrap();
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/parties/{pid}"),
+        Some(&owner),
+        Some(json!({ "credit_limit_tyiyn": 1_000_000, "phone": "0555" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let upd = actions(&pool, "party.update").await;
+    assert_eq!(
+        upd[0]["changes"]["phone"],
+        json!({ "old": "0700", "new": "0555" })
+    );
+    assert_eq!(
+        upd[0]["changes"]["credit_limit_tyiyn"],
+        json!({ "old": null, "new": 1_000_000 })
+    );
+    // Правка лимита — отдельным уведомлением, правка телефона — нет.
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/parties/{pid}"),
+        Some(&owner),
+        Some(json!({ "phone": "0777" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let limits: Vec<&Value> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["action"] == "party.limit_change")
+        .collect();
+    assert_eq!(limits.len(), 1);
+    assert!(
+        limits[0]["details"]
+            .as_str()
+            .unwrap()
+            .contains("было без лимита, стало 10 000"),
+        "{}",
+        limits[0]["details"]
+    );
+
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/products/{item}"),
+        Some(&owner),
+        Some(json!({ "name": "Фильтр W712", "brand": "Mann" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let upd = actions(&pool, "product.update").await;
+    assert_eq!(
+        upd[0]["changes"],
+        json!({
+            "name": { "old": "Фильтр", "new": "Фильтр W712" },
+            "brand": { "old": "", "new": "Mann" }
+        })
+    );
+
+    let (_, _, art) = call(
+        &app,
+        "POST",
+        "/api/v1/expense-articles",
+        Some(&owner),
+        Some(json!({ "name": "Хозтовары" })),
+    )
+    .await;
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/expense-articles/{}", art["id"].as_str().unwrap()),
+        Some(&owner),
+        Some(json!({ "name": "Хозяйственные товары" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let upd = actions(&pool, "expense.article_update").await;
+    assert_eq!(
+        upd[0]["changes"]["name"],
+        json!({ "old": "Хозтовары", "new": "Хозяйственные товары" })
+    );
+
+    let (_, _, sup) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&owner),
+        Some(json!({ "name": "Поставщик", "phone": "1" })),
+    )
+    .await;
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/suppliers/{}", sup["id"].as_str().unwrap()),
+        Some(&owner),
+        Some(json!({ "phone": "2" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let upd = actions(&pool, "supplier.update").await;
+    assert_eq!(
+        upd[0]["changes"],
+        json!({ "phone": { "old": "1", "new": "2" } })
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn dashboard_low_stock_skips_archived(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 5).await;
+    let low = || async {
+        call(&app, "GET", "/api/v1/owner/dashboard", Some(&owner), None)
+            .await
+            .2["low_stock"]
+            .clone()
+    };
+    assert_eq!(low().await, 1);
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/products/{item}"),
+        Some(&owner),
+        Some(json!({ "archived": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(low().await, 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn posted_sale_is_found_by_op_id(pool: PgPool) {
+    // Касса узнаёт, что чек уже проведён, даже если его отправил другой пользователь (ADR-062).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let op = Uuid::now_v7();
+    let body = json!({
+        "op_id": op, "sale_type": "takeaway", "cashier_id": cashier,
+        "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+        "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }]
+    });
+    let (s, _, sale) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // Тот же op_id от другого пользователя — конфликт, но чек находится по op_id.
+    let (s, _, _) = call(&app, "POST", "/api/v1/sales", Some(&owner), Some(body)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _, found) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/sales/by-op/{op}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(found["number"], sale["number"]);
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/sales/by-op/{}", Uuid::now_v7()),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn revision_add_is_idempotent_and_delete_is_logged(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let (s, _, rev) = call(
+        &app,
+        "POST",
+        "/api/v1/revisions",
+        Some(&owner),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{rev}");
+    let id = rev["head"]["id"].as_str().unwrap();
+    let uri = format!("/api/v1/revisions/{id}/lines");
+    let op = Uuid::now_v7();
+    let body = json!({ "product_id": item, "counted_qty": 5, "mode": "add", "op_id": op });
+    for _ in 0..2 {
+        let (s, _, r) = call(&app, "PUT", &uri, Some(&owner), Some(body.clone())).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(r["counted_qty"], 5);
+    }
+    let (_, _, r) = call(
+        &app,
+        "PUT",
+        &uri,
+        Some(&owner),
+        Some(
+            json!({ "product_id": item, "counted_qty": 2, "mode": "add", "op_id": Uuid::now_v7() }),
+        ),
+    )
+    .await;
+    assert_eq!(r["counted_qty"], 7);
+    let (s, _, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/revisions/{id}/lines/{item}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let del = actions(&pool, "revision.line_delete").await;
+    assert_eq!(del.len(), 1);
+    assert_eq!(del[0]["counted_qty"], 7);
 }

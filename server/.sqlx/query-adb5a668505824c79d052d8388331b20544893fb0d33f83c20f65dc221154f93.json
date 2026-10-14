@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into product_cross_numbers (product_id, code, code_norm)\n           select $2, code, code_norm from product_cross_numbers where product_id = $1\n           on conflict do nothing\n           returning code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "adb5a668505824c79d052d8388331b20544893fb0d33f83c20f65dc221154f93"
+}

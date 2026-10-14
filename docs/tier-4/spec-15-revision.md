@@ -46,7 +46,7 @@ revision_results (revision_id, product_id, expected_qty, counted_qty,
 
 - `POST /revisions {category_id?, comment?}` — новый черновик (владелец и администратор).
 - `GET /revisions` — список. `GET /revisions/{id}` — товары категории с ожидаемым остатком, пересчитанным и разницей; администратору без стоимости (инвариант 13).
-- `PUT /revisions/{id}/lines {product_id, counted_qty, mode?}` — записать пересчёт (штуки или мл) → `{counted_qty}` итог строки. `mode`: `set` (по умолчанию) — записать как есть, остаток «на момент пересчёта» берётся сейчас; `add` — прибавить к уже посчитанному (товар в нескольких местах), атомарно, остаток остаётся от первого пересчёта (ADR-059). `GET /revisions/{id}/lines/{product_id}` → `{counted_qty}` (null — ещё не считали). `DELETE /revisions/{id}/lines/{product_id}` — убрать.
+- `PUT /revisions/{id}/lines {product_id, counted_qty, mode?}` — записать пересчёт (штуки или мл) → `{counted_qty}` итог строки. `mode`: `set` (по умолчанию) — записать как есть, остаток «на момент пересчёта» берётся сейчас; `add` — прибавить к уже посчитанному (товар в нескольких местах), атомарно, остаток остаётся от первого пересчёта (ADR-059). `GET /revisions/{id}/lines/{product_id}` → `{counted_qty}` (null — ещё не считали). `DELETE /revisions/{id}/lines/{product_id}` — убрать (в журнал `revision.line_delete` с посчитанным). `PUT` принимает необязательный `op_id`: повтор того же ввода (обрыв связи) возвращает прежний ответ и не прибавляет `add` дважды (ADR-062).
 - `POST /revisions/{id}/post`, `POST /revisions/{id}/cancel`.
 
 ## Клиент

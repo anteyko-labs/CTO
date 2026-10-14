@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select resolved_cost_tyiyn from payroll_cost_pending\n           where sale_id = $1 and line_no = $2 and resolved_at is not null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "resolved_cost_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "833eea52281fe205def9c1efbfa53e2a9766a4883a5f2511edd8f370fa378d4a"
+}

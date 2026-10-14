@@ -9,8 +9,10 @@ import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Ta
 import { get, newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
+import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Product, Receipt, Supplier } from '../lib/types'
+import { defaultPaySource, notEnough, paySources } from '../lib/receiptPay'
+import type { CashAccount, Product, Receipt, Supplier } from '../lib/types'
 
 interface Line {
   key: string
@@ -49,6 +51,12 @@ export default function ReceiptNew() {
   const [supplierDoc, setSupplierDoc] = useState('')
   const [comment, setComment] = useState('')
   const [onDebt, setOnDebt] = useState(false)
+  // Оплачена сразу — деньги уходят из выбранной кассы (ADR-062); администратору — только «Касса».
+  const owner = useUser().role === 'owner'
+  const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
+  const sources = paySources(accounts.data ?? [], owner)
+  const [paidFrom, setPaidFrom] = useState('')
+  const source = paidFrom || defaultPaySource(sources, owner)
   const [lines, setLines] = useState<Line[]>([])
   const [print, setPrint] = useState(false)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
@@ -117,6 +125,8 @@ export default function ReceiptNew() {
   const missing = missingWithFocus(
     [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
     [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
+    [onDebt || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
+    [onDebt || !notEnough(sources, source, total), 'денег в выбранной кассе меньше суммы накладной', '#receipt-paid-from'],
     [badLine < 0, `количество и цену в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
   )
 
@@ -145,6 +155,7 @@ export default function ReceiptNew() {
         op_id: opId,
         supplier_id: supplierId || null,
         payment: onDebt ? 'debt' : 'paid',
+        paid_from: onDebt ? null : source,
         supplier_doc: supplierDoc.trim(),
         comment: comment.trim(),
         lines: body,
@@ -313,6 +324,19 @@ export default function ReceiptNew() {
               <div className="flex flex-wrap items-center gap-4">
                 <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
                 <Checkbox label="Остались должны поставщику" checked={onDebt} onChange={setOnDebt} />
+                {!onDebt && (
+                  <label className="flex items-center gap-2 text-sm">
+                    Оплачено
+                    <select id="receipt-paid-from" value={source} onChange={(e) => setPaidFrom(e.target.value)}>
+                      {owner && <option value="">— откуда —</option>}
+                      {sources.map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.balance_tyiyn === null ? s.label : `${s.label} (${formatSom(s.balance_tyiyn)})`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-4">
                 <div className="text-lg font-semibold">
@@ -325,7 +349,7 @@ export default function ReceiptNew() {
                 </div>
               </div>
             </div>
-            <ErrorBox error={save.error ?? labels.error} />
+            <ErrorBox error={save.error ?? labels.error ?? accounts.error} />
             <Missing items={missing} className="md:self-end" />
           </div>
         </Card>

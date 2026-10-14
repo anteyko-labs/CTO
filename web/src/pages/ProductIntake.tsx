@@ -261,6 +261,8 @@ export default function ProductIntake() {
     return unit === 'ml' ? parseLiters(s) : /^\d+$/.test(s.trim()) ? Number(s.trim()) : null
   }
 
+  const countAttempt = useRef<{ key: string; opId: string } | null>(null)
+
   /**
    * Записывает пересчёт в ревизию. По умолчанию прибавляет: товар на двух полках — 5 и 3 — это 8,
    * а не 3 (ADR-059). «Заменить» — только явным выбором. Возвращает итог строки.
@@ -269,7 +271,16 @@ export default function ProductIntake() {
     const qty = countValue(unit, s)
     if (qty === null) return null
     const id = await ensureRevision()
-    const r = await put<{ counted_qty: number }>(`/revisions/${id}/lines`, { product_id: productId, counted_qty: qty, mode })
+    // Повтор того же ввода после обрыва связи идёт с тем же op_id: сервер не прибавит полку дважды (ADR-062).
+    const key = `${id}:${productId}:${qty}:${mode}`
+    if (countAttempt.current?.key !== key) countAttempt.current = { key, opId: newOpId() }
+    const r = await put<{ counted_qty: number }>(`/revisions/${id}/lines`, {
+      product_id: productId,
+      counted_qty: qty,
+      mode,
+      op_id: countAttempt.current.opId,
+    })
+    countAttempt.current = null
     return r.counted_qty
   }
 

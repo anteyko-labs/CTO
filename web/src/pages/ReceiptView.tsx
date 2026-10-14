@@ -6,6 +6,7 @@ import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table
 import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { paidFromText } from '../lib/receiptPay'
 import type { Product, Receipt, ReceiptLine } from '../lib/types'
 
 /** Количество строки: канистры для масла, штуки для штучного товара. */
@@ -112,6 +113,12 @@ export default function ReceiptView() {
             <dt className="text-slate-500">Документ поставщика</dt>
             <dd>{r.supplier_doc || '—'}</dd>
           </div>
+          {r.paid_from && (
+            <div>
+              <dt className="text-slate-500">Оплачено</dt>
+              <dd>{paidFromText(r.paid_from)}</dd>
+            </div>
+          )}
           {r.comment && (
             <div className="sm:col-span-2">
               <dt className="text-slate-500">Комментарий</dt>

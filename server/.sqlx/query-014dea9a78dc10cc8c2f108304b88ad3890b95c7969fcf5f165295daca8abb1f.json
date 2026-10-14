@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from employee_pay_rules\n                          where branch_id = $1 and employee_id = $2 and role = 'cashier') as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "014dea9a78dc10cc8c2f108304b88ad3890b95c7969fcf5f165295daca8abb1f"
+}

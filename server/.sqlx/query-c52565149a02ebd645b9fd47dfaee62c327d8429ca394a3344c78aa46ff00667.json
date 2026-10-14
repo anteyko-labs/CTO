@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update product_barcodes set product_id = $2 where product_id = $1 returning code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c52565149a02ebd645b9fd47dfaee62c327d8429ca394a3344c78aa46ff00667"
+}

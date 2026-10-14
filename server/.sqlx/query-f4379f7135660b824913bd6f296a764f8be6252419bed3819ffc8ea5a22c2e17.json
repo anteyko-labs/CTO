@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from revision_lines where revision_id = $1 and product_id = $2 returning counted_qty",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "counted_qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f4379f7135660b824913bd6f296a764f8be6252419bed3819ffc8ea5a22c2e17"
+}

@@ -281,9 +281,16 @@ async fn create_rule(
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    // Ставка мастера за замену — настройка филиала, зафиксированная в чеке (ADR-027). Правило
+    // `per_service` нигде не считалось бы и только вводило бы в заблуждение (ADR-062).
+    if req.kind == "per_service" {
+        return Err(invalid(
+            "ставка мастера за замену задаётся в настройках продаж, а не правилом сотрудника",
+        ));
+    }
     if !matches!(
         req.kind.as_str(),
-        "per_service" | "revenue_percent" | "per_shift" | "monthly_salary"
+        "revenue_percent" | "per_shift" | "monthly_salary"
     ) {
         return Err(invalid("неизвестный вид оплаты"));
     }
@@ -316,16 +323,21 @@ async fn create_rule(
     // Под блокировкой сотрудника два одновременных правила не останутся открытыми оба.
     lock_employee(&mut tx, ctx.user.branch_id, id).await?;
     // Прежнее правило того же вида закрывается сегодняшним днём: история начислений не меняется.
-    sqlx::query!(
+    let closed = sqlx::query!(
         r#"update employee_pay_rules
            set active_to = (now() at time zone 'Asia/Bishkek')::date
-           where branch_id = $1 and employee_id = $2 and kind = $3 and active_to is null"#,
+           where branch_id = $1 and employee_id = $2 and kind = $3 and active_to is null
+           returning id, amount_tyiyn, rate_bp"#,
         ctx.user.branch_id,
         id,
         req.kind
     )
-    .execute(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
+    let replaced: Vec<serde_json::Value> = closed
+        .iter()
+        .map(|r| json!({ "rule_id": r.id, "amount_tyiyn": r.amount_tyiyn, "rate_bp": r.rate_bp }))
+        .collect();
     sqlx::query!(
         r#"insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base,
                                            amount_tyiyn, rate_bp, user_id)
@@ -348,7 +360,12 @@ async fn create_rule(
         "payroll.rule",
         "employee",
         Some(id),
-        json!({ "kind": req.kind, "amount_tyiyn": req.amount_tyiyn, "rate_bp": req.rate_bp }),
+        json!({
+            "kind": req.kind,
+            "amount_tyiyn": req.amount_tyiyn,
+            "rate_bp": req.rate_bp,
+            "replaced": replaced,
+        }),
     )
     .await?;
     tx.commit().await?;
@@ -368,20 +385,37 @@ async fn close_rule(
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    let mut tx = state.pool.begin().await?;
     let done = sqlx::query!(
         r#"update employee_pay_rules
            set active_to = (now() at time zone 'Asia/Bishkek')::date
            where id = $1 and employee_id = $2 and branch_id = $3 and active_to is null
-           returning id"#,
+           returning kind, role, amount_tyiyn, rate_bp, active_to"#,
         rule_id,
         id,
         ctx.user.branch_id
     )
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    // Кто и когда закрыл ставку — в журнал (инвариант 5): закрытие меняет оплату сотрудника.
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "payroll.rule_close",
+        "employee",
+        Some(id),
+        json!({
+            "rule_id": rule_id,
+            "kind": done.kind,
+            "role": done.role,
+            "amount_tyiyn": done.amount_tyiyn,
+            "rate_bp": done.rate_bp,
+            "active_to": done.active_to,
+        }),
+    )
     .await?;
-    if done.is_none() {
-        return Err(AppError::NotFound);
-    }
+    tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -434,8 +468,9 @@ pub async fn add_accrual(
 }
 
 /// Оплата кассира по умолчанию (SPEC-07, ADR-019, ADR-036): 2 % с валовой прибыли чека
-/// и оклад 30 000 сом в месяц. Заводится, только если таких правил у него ещё нет;
-/// дальше владелец правит их в карточке сотрудника.
+/// и оклад 30 000 сом в месяц. Заводится, только если у сотрудника никогда не было правил
+/// кассира: снятый и снова назначенный кассир не получает обратно ставки, которые владелец
+/// закрыл (ADR-062). Дальше владелец правит их в карточке сотрудника. `true` — правила заведены.
 pub const DEFAULT_CASHIER_PERCENT_BP: i32 = 200;
 pub const DEFAULT_CASHIER_SALARY_TYIYN: i64 = 3_000_000;
 
@@ -443,7 +478,19 @@ pub async fn ensure_cashier_rules(
     conn: &mut PgConnection,
     ctx: &Ctx,
     employee_id: Uuid,
-) -> AppResult<()> {
+) -> AppResult<bool> {
+    let had = sqlx::query_scalar!(
+        r#"select exists (select 1 from employee_pay_rules
+                          where branch_id = $1 and employee_id = $2 and role = 'cashier') as "e!""#,
+        ctx.user.branch_id,
+        employee_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if had {
+        return Ok(false);
+    }
+    let mut any = false;
     for (kind, base, amount, rate) in [
         (
             "revenue_percent",
@@ -478,6 +525,7 @@ pub async fn ensure_cashier_rules(
         .await?
         .rows_affected();
         if added > 0 {
+            any = true;
             ops::audit(
                 conn,
                 ctx,
@@ -489,7 +537,7 @@ pub async fn ensure_cashier_rules(
             .await?;
         }
     }
-    Ok(())
+    Ok(any)
 }
 
 /// Правило сотрудника нужного вида, действовавшее в день документа (SPEC-07): офлайн-чек
@@ -526,6 +574,15 @@ pub struct SaleAccrual {
     pub gross: i64,
     pub total: i64,
     pub debt: i64,
+    /// Строки без цены закупки: в `gross` не входят, процент по ним ждёт цены (ADR-062).
+    pub unknown: Vec<UnknownCost>,
+}
+
+/// Строка чека, себестоимость которой неизвестна: сколько единиц не покрыто ценой.
+pub struct UnknownCost {
+    pub line_no: i32,
+    pub product_id: Uuid,
+    pub units: i64,
 }
 
 pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual) -> AppResult<()> {
@@ -537,21 +594,53 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         gross,
         total,
         debt,
+        unknown,
     } = s;
-    let Some((rule_id, _, rate)) = active_rule(
+    let rule = active_rule(
         conn,
         ctx.user.branch_id,
         cashier_id,
         "revenue_percent",
         business_date,
     )
-    .await?
-    else {
+    .await?;
+    // Ожидание цены заводится всегда, даже без правила процента: по нему владелец видит, у каких
+    // товаров нет цены закупки, и не снимет отметку «проверить», пока её не укажет (ADR-062).
+    for u in &unknown {
+        sqlx::query!(
+            r#"insert into payroll_cost_pending (id, branch_id, sale_id, line_no, product_id, employee_id,
+                                                 rule_id, rate_bp, unknown_units)
+               values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+            new_id(),
+            ctx.user.branch_id,
+            sale_id,
+            u.line_no,
+            u.product_id,
+            cashier_id,
+            rule.map(|r| r.0),
+            rule.and_then(|r| r.2).unwrap_or(0),
+            u.units
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    let Some((rule_id, _, rate)) = rule else {
         return Ok(());
     };
     let rate = i64::from(rate.unwrap_or(0));
+    if rate <= 0 || total == 0 {
+        return Ok(());
+    }
     // Убыточный чек (подарок, распродажа) процента не даёт и с кассира не вычитается.
-    if rate <= 0 || gross <= 0 || total == 0 {
+    // Ожидание долга всё же нужно, если в чеке есть строки без цены: их процент придёт позже.
+    if gross <= 0 {
+        if debt > 0
+            && !unknown.is_empty()
+            && let Some(pid) = party_id
+        {
+            insert_debt_pending(conn, ctx, pid, sale_id, cashier_id, rule_id, rate, 0, debt)
+                .await?;
+        }
         return Ok(());
     }
     let paid = total - debt;
@@ -573,28 +662,236 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         },
     )
     .await?;
-    if debt > 0 {
-        let pending_base = gross - now_base;
-        if let Some(pid) = party_id {
-            sqlx::query!(
-                r#"insert into payroll_pending (id, branch_id, party_id, sale_id, employee_id, rule_id,
-                                                rate_bp, gross_tyiyn, debt_total_tyiyn, debt_remaining_tyiyn)
-                   values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)"#,
-                new_id(),
-                ctx.user.branch_id,
-                pid,
-                sale_id,
-                cashier_id,
-                rule_id,
-                i32::try_from(rate).unwrap_or(0),
-                pending_base,
-                debt
-            )
-            .execute(&mut *conn)
-            .await?;
-        }
+    if debt > 0
+        && let Some(pid) = party_id
+    {
+        insert_debt_pending(
+            conn,
+            ctx,
+            pid,
+            sale_id,
+            cashier_id,
+            rule_id,
+            rate,
+            gross - now_base,
+            debt,
+        )
+        .await?;
     }
     Ok(())
+}
+
+/// Долговая часть процента ждёт погашения (ADR-035).
+#[allow(clippy::too_many_arguments)]
+async fn insert_debt_pending(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    party_id: Uuid,
+    sale_id: Uuid,
+    cashier_id: Uuid,
+    rule_id: Uuid,
+    rate: i64,
+    base: i64,
+    debt: i64,
+) -> AppResult<()> {
+    sqlx::query!(
+        r#"insert into payroll_pending (id, branch_id, party_id, sale_id, employee_id, rule_id,
+                                        rate_bp, gross_tyiyn, debt_total_tyiyn, debt_remaining_tyiyn)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)"#,
+        new_id(),
+        ctx.user.branch_id,
+        party_id,
+        sale_id,
+        cashier_id,
+        rule_id,
+        i32::try_from(rate).unwrap_or(0),
+        base,
+        debt
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Валовая прибыль возвращаемой части строки без цены закупки (ADR-062): пока владелец цену не
+/// указал, процент по строке не начислялся — снимать нечего (0); после — по его цене.
+pub async fn unknown_line_gross_back(
+    conn: &mut PgConnection,
+    sale_id: Uuid,
+    line_no: i32,
+    amount_back: i64,
+    qty_back: i64,
+    line_qty: i64,
+) -> AppResult<i64> {
+    let resolved = sqlx::query_scalar!(
+        r#"select resolved_cost_tyiyn from payroll_cost_pending
+           where sale_id = $1 and line_no = $2 and resolved_at is not null"#,
+        sale_id,
+        line_no
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .flatten();
+    let Some(cost) = resolved else {
+        return Ok(0);
+    };
+    if line_qty <= 0 {
+        return Ok(0);
+    }
+    let cost_back = div_round(
+        i128::from(cost) * i128::from(qty_back),
+        i128::from(line_qty),
+    )
+    .unwrap_or(0);
+    Ok(amount_back.saturating_sub(cost_back))
+}
+
+/// Итог указания цены закупки: сколько строк закрыто и сколько начислено кассирам.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CostResolved {
+    pub lines: i64,
+    pub accrued_tyiyn: i64,
+}
+
+/// Владелец указал цену закупки товара: строки чеков без себестоимости получают цену, и кассиру
+/// начисляется его процент с них — в сегодняшний день, прошлые дни не меняются (ADR-062).
+/// `price` — за `per` единиц учёта (за штуку, канистру или килограмм). Вызывается в транзакции.
+pub async fn resolve_cost_pending(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    product_id: Uuid,
+    price: i64,
+    per: i64,
+) -> AppResult<CostResolved> {
+    let branch_id = ctx.user.branch_id;
+    // Ожидания этой карточки и всех, что в неё влиты: продажа дубля тоже ждёт цены.
+    let rows = sqlx::query!(
+        r#"with recursive fam as (
+             select $2::uuid as id
+             union select p.id from products p join fam on p.merged_into = fam.id
+           )
+           select k.id, k.sale_id, k.line_no, k.employee_id, k.rule_id, k.rate_bp, k.unknown_units,
+                  s.number, s.party_id as "party_id?",
+                  l.qty, l.amount_tyiyn, l.cost_tyiyn, l.gift,
+                  coalesce((select sum(-r.qty) from sale_lines r join sales x on x.id = r.sale_id
+                            where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as "ret_qty!",
+                  coalesce((select sum(-r.amount_tyiyn) from sale_lines r join sales x on x.id = r.sale_id
+                            where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as "ret_amount!",
+                  s.total_tyiyn,
+                  coalesce((select sum(p.amount_tyiyn) from sale_payments p
+                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!"
+           from payroll_cost_pending k
+           join sales s on s.id = k.sale_id
+           join sale_lines l on l.sale_id = k.sale_id and l.line_no = k.line_no
+           where k.branch_id = $1 and k.resolved_at is null and k.product_id in (select id from fam)
+           order by k.created_at
+           for update of k"#,
+        branch_id,
+        product_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out = CostResolved {
+        lines: 0,
+        accrued_tyiyn: 0,
+    };
+    for r in rows {
+        let unknown_cost = div_round(
+            i128::from(r.unknown_units) * i128::from(price),
+            i128::from(per.max(1)),
+        )
+        .ok_or_else(crate::error::overflow)?;
+        let line_cost = r
+            .cost_tyiyn
+            .checked_add(unknown_cost)
+            .ok_or_else(crate::error::overflow)?;
+        sqlx::query!(
+            r#"update payroll_cost_pending
+               set resolved_cost_tyiyn = $2, resolved_at = now(), resolved_by = $3
+               where id = $1"#,
+            r.id,
+            line_cost,
+            ctx.user.id
+        )
+        .execute(&mut *conn)
+        .await?;
+        out.lines += 1;
+        // Что от строки осталось после возвратов — с того и процент.
+        let left_qty = r.qty - r.ret_qty;
+        if r.gift || r.rate_bp <= 0 || left_qty <= 0 || r.qty <= 0 || r.total_tyiyn <= 0 {
+            continue;
+        }
+        let left_cost = div_round(
+            i128::from(line_cost) * i128::from(left_qty),
+            i128::from(r.qty),
+        )
+        .unwrap_or(0);
+        let gross = (r.amount_tyiyn - r.ret_amount).saturating_sub(left_cost);
+        if gross <= 0 {
+            continue;
+        }
+        let rate = i128::from(r.rate_bp);
+        // Оплаченная часть чека — процент сейчас; долговая — по мере погашения, как у всего чека.
+        let paid = r.total_tyiyn - r.debt;
+        let now_base = div_round(
+            i128::from(gross) * i128::from(paid),
+            i128::from(r.total_tyiyn),
+        )
+        .unwrap_or(0);
+        let debt_base = gross - now_base;
+        let mut base = now_base;
+        if debt_base > 0 {
+            let pending = sqlx::query!(
+                r#"select id, debt_total_tyiyn, debt_remaining_tyiyn from payroll_pending
+                   where sale_id = $1 and employee_id = $2 and branch_id = $3
+                   order by created_at limit 1
+                   for update"#,
+                r.sale_id,
+                r.employee_id,
+                branch_id
+            )
+            .fetch_optional(&mut *conn)
+            .await?;
+            // Ожидания нет (долг уже прощён или списан возвратом) — денег по долговой части
+            // не будет, процента с неё тоже.
+            if let Some(p) = pending {
+                // Погашенная часть долга уже дала деньги — её процент сейчас; на остаток
+                // долга база ложится в ожидание, погашения возьмут её пропорционально.
+                let repaid = p.debt_total_tyiyn - p.debt_remaining_tyiyn;
+                base += div_round(
+                    i128::from(debt_base) * i128::from(repaid.max(0)),
+                    i128::from(p.debt_total_tyiyn.max(1)),
+                )
+                .unwrap_or(0);
+                sqlx::query!(
+                    "update payroll_pending set gross_tyiyn = gross_tyiyn + $2 where id = $1",
+                    p.id,
+                    debt_base
+                )
+                .execute(&mut *conn)
+                .await?;
+            }
+        }
+        let amount = div_round(i128::from(base) * rate, 10_000).unwrap_or(0);
+        add_accrual(
+            conn,
+            ctx,
+            None,
+            Accrual {
+                employee_id: r.employee_id,
+                kind: "revenue_percent",
+                amount,
+                base: Some(base),
+                rule_id: r.rule_id,
+                doc_type: "sale",
+                doc_id: Some(r.sale_id),
+                comment: &format!("цена закупки указана: чек № {}", r.number),
+            },
+        )
+        .await?;
+        out.accrued_tyiyn = out.accrued_tyiyn.saturating_add(amount);
+    }
+    Ok(out)
 }
 
 /// Возврат по чеку: обратные начисления в день возврата (SPEC-07: «такие же строки с минусом»).

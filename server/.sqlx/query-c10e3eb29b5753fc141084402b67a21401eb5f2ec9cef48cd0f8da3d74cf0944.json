@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.supplier_id, s.name as \"supplier_name?\", r.supplier_doc, r.comment,\n                  r.total_tyiyn, r.reversal_of, u.full_name as user_name, r.created_at,\n                  (select x.id from receipts x where x.reversal_of = r.id) as reversed_by,\n                  case when r.paid_from = 'outside' then 'outside' else a.name end as \"paid_from?\"\n           from receipts r\n           left join cash_accounts a on a.id = r.paid_account_id\n           join users u on u.id = r.user_id\n           left join suppliers s on s.id = r.supplier_id\n           where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversed_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "paid_from?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "c10e3eb29b5753fc141084402b67a21401eb5f2ec9cef48cd0f8da3d74cf0944"
+}

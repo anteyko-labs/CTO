@@ -52,6 +52,8 @@ export interface Product {
   min_stock: number
   stock_qty: number
   needs_review: boolean
+  /** Продан без цены закупки: 2 % кассира ждут, пока владелец укажет цену (ADR-062). */
+  cost_pending?: boolean
   /** Цена последнего прихода за штуку или канистру. */
   last_purchase_price_tyiyn: number | null
   avg_cost_tyiyn?: number
@@ -126,6 +128,8 @@ export interface Receipt {
   user_name: string
   created_at: string
   lines: ReceiptLine[]
+  /** Откуда оплачена: название кассы или `outside`; null — в долг или старая накладная (ADR-062). */
+  paid_from?: string | null
 }
 
 export interface ReceiptListItem {

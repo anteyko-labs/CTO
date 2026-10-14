@@ -281,6 +281,7 @@ async fn prepare_line(
     branch_id: Uuid,
     l: &SaleLineReq,
     offline: bool,
+    bypass: &mut Vec<String>,
 ) -> AppResult<Prepared> {
     if l.qty <= 0 || l.unit_price_tyiyn < 0 {
         return Err(invalid("количество больше нуля, цена не отрицательна"));
@@ -293,7 +294,7 @@ async fn prepare_line(
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
         // Чек без сети принимаем и с услугой, которую успели отключить: работа уже сделана.
         let s = sqlx::query!(
-            "select price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2 and (active or $3)",
+            "select name, active, price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2 and (active or $3)",
             sid,
             branch_id,
             offline
@@ -301,6 +302,9 @@ async fn prepare_line(
         .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| invalid("услуга не найдена"))?;
+        if !s.active {
+            bypass.push(format!("услуга «{}» отключена", s.name));
+        }
         return Ok(Prepared {
             gift: false,
             kind: l.kind.clone(),
@@ -313,7 +317,7 @@ async fn prepare_line(
             amount: mul(l.qty, l.unit_price_tyiyn).ok_or_else(overflow)?,
             // Ставка мастера за работу фиксируется в строке, как себестоимость (ADR-043).
             master_fee: mul(l.qty, s.master_fee_tyiyn).ok_or_else(overflow)?,
-            seen_list: l.seen_list_price_tyiyn,
+            seen_list: seen_list(l, offline),
         });
     }
     // Карточку могли влить в другую, пока чек лежал на устройстве: продаём основную.
@@ -323,7 +327,7 @@ async fn prepare_line(
     )
     .await?;
     let p = sqlx::query!(
-        r#"select p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!",
+        r#"select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!",
                   bp.pour_price_per_l_tyiyn as "pour_price?"
            from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
            where p.id = $1"#,
@@ -334,8 +338,11 @@ async fn prepare_line(
     .await?
     .ok_or_else(|| invalid("товар не найден"))?;
     // Карточка в архиве (дубль после объединения) не продаётся; чек без сети уже состоялся.
-    if p.archived && !offline {
-        return Err(invalid("товар в архиве: найдите основную карточку"));
+    if p.archived {
+        if !offline {
+            return Err(invalid("товар в архиве: найдите основную карточку"));
+        }
+        bypass.push(format!("товар «{}» в архиве", p.name));
     }
     let (units, amount, list_price) = match (l.kind.as_str(), p.unit.as_str(), p.container_ml) {
         ("piece", "piece", _) => (l.qty, mul(l.qty, l.unit_price_tyiyn), p.sale_price),
@@ -371,8 +378,19 @@ async fn prepare_line(
         list_price,
         amount: amount.ok_or_else(overflow)?,
         master_fee: 0,
-        seen_list: l.seen_list_price_tyiyn,
+        seen_list: seen_list(l, offline),
     })
+}
+
+/// Прайс, который видела касса, учитывается только у чека без сети: прайс мог смениться, пока
+/// чек лежал на устройстве. Онлайн-чек сверяется с прайсом сервера — иначе касса сама решала бы,
+/// была ли правка цены (ADR-062).
+fn seen_list(l: &SaleLineReq, offline: bool) -> Option<i64> {
+    if offline {
+        l.seen_list_price_tyiyn
+    } else {
+        None
+    }
 }
 
 fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
@@ -397,28 +415,41 @@ fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// Сотрудник чека. Чек без сети принимаем и с сотрудником, которого отключили, пока чек лежал
+/// на устройстве, — причина уходит владельцу (ADR-062).
 async fn check_employee(
     conn: &mut PgConnection,
     branch_id: Uuid,
     id: Uuid,
     master: bool,
     offline: bool,
+    bypass: &mut Vec<String>,
 ) -> AppResult<()> {
-    // Чек без сети принимаем и с сотрудником, которого отключили, пока чек лежал на устройстве.
     let r = sqlx::query!(
-        "select is_cashier, is_master from employees where id = $1 and branch_id = $2 and (active or $3)",
+        "select full_name, active, is_cashier, is_master from employees where id = $1 and branch_id = $2 and (active or $3)",
         id,
         branch_id,
         offline
     )
     .fetch_optional(&mut *conn)
     .await?;
-    match r {
-        Some(r) if master && r.is_master => Ok(()),
-        Some(r) if !master && r.is_cashier => Ok(()),
-        _ if master => Err(invalid("мастер не найден")),
-        _ => Err(invalid("кассир не найден")),
+    let r = match r {
+        Some(r) if (master && r.is_master) || (!master && r.is_cashier) => r,
+        _ if master => return Err(invalid("мастер не найден")),
+        _ => return Err(invalid("кассир не найден")),
+    };
+    if !r.active {
+        bypass.push(format!(
+            "{} «{}» отключён",
+            if master {
+                "мастер"
+            } else {
+                "кассир"
+            },
+            r.full_name
+        ));
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -432,12 +463,13 @@ async fn insert_line(
     fee: i64,
     units: i64,
     qty: i64,
+    cost_unknown: bool,
 ) -> AppResult<()> {
     sqlx::query!(
         r#"insert into sale_lines (id, sale_id, line_no, kind, product_id, service_id, qty, units,
                                    unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn, master_fee_tyiyn,
-                                   gift)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
+                                   gift, cost_unknown)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
         new_id(),
         sale_id,
         line_no,
@@ -451,7 +483,8 @@ async fn insert_line(
         amount,
         cost,
         fee,
-        p.gift
+        p.gift,
+        cost_unknown
     )
     .execute(&mut *conn)
     .await?;
@@ -582,6 +615,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         && req
             .client_time
             .is_some_and(|t| t < Utc::now() - chrono::Duration::seconds(30));
+    // Что чек без сети обошёл из проверок онлайн-продажи — владельцу одним уведомлением (ADR-062).
+    let mut bypass: Vec<String> = Vec::new();
     let has_service = req.lines.iter().any(|l| l.kind == "service");
     match req.sale_type.as_str() {
         "takeaway" if has_service => return Err(invalid("услуги только в продаже «в сервис»")),
@@ -593,11 +628,11 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             let master = req
                 .master_id
                 .ok_or_else(|| invalid("в сервисе нужен мастер"))?;
-            check_employee(conn, branch_id, master, true, offline).await?;
+            check_employee(conn, branch_id, master, true, offline, &mut bypass).await?;
         }
         _ => return Err(invalid("тип продажи: takeaway или service")),
     }
-    check_employee(conn, branch_id, req.cashier_id, false, offline).await?;
+    check_employee(conn, branch_id, req.cashier_id, false, offline, &mut bypass).await?;
 
     let debt_total: i64 = req
         .payments
@@ -607,15 +642,17 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         .ok_or_else(overflow)?;
     match req.party_id {
         Some(pid) => {
-            parties::check_sale_party(
+            let reasons = parties::check_sale_party(
                 conn,
-                branch_id,
+                ctx,
                 pid,
                 req.contact_id,
                 req.vehicle_id,
                 offline,
+                debt_total > 0,
             )
-            .await?
+            .await?;
+            bypass.extend(reasons);
         }
         None if debt_total > 0 => return Err(invalid("для продажи в долг укажите клиента")),
         None if req.contact_id.is_some() || req.vehicle_id.is_some() => {
@@ -646,7 +683,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let mut prepared = Vec::with_capacity(req.lines.len());
     let mut total: i64 = 0;
     for l in &req.lines {
-        let p = prepare_line(conn, branch_id, l, offline).await?;
+        let p = prepare_line(conn, branch_id, l, offline, &mut bypass).await?;
         total = total.checked_add(p.amount).ok_or_else(overflow)?;
         prepared.push(p);
     }
@@ -669,7 +706,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
         let in_cart: Vec<Uuid> = bought.keys().copied().collect();
         let rules = sqlx::query!(
-            r#"select r.trigger_product_id, r.min_units, i.gift_product_id, i.gift_qty
+            r#"select r.trigger_product_id, r.min_units, i.gift_product_id, i.gift_qty, r.active
                from gift_rules r join gift_rule_items i on i.rule_id = r.id
                where r.branch_id = $1 and (r.active or $4)
                  and r.trigger_product_id = any($2) and i.gift_product_id = any($3)"#,
@@ -699,6 +736,17 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
                 .fold(0i64, |acc, p| acc.saturating_add(p.qty));
             if given > allowed {
                 return Err(invalid(format!("подарка можно дать не больше {allowed}")));
+            }
+            // Чек без сети принят по правилу, которое уже отключили: владелец должен знать.
+            let by_active = rules
+                .iter()
+                .filter(|r| r.gift_product_id == gift && r.active)
+                .filter(|r| bought.get(&r.trigger_product_id).copied().unwrap_or(0) >= r.min_units)
+                .map(|r| r.gift_qty)
+                .max()
+                .unwrap_or(0);
+            if given > by_active {
+                bypass.push("подарок по отключённому правилу".into());
             }
         }
     }
@@ -774,14 +822,18 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let mut overrides = Vec::new();
     let mut below_cost = Vec::new();
     let mut stale = Vec::new();
-    // Валовая прибыль чека: с неё считается процент кассира (ADR-036).
+    // Валовая прибыль чека: с неё считается процент кассира (ADR-036). Строки без цены закупки
+    // в неё не входят: их процент ждёт, пока владелец не укажет цену (ADR-062).
     let mut gross: i64 = 0;
+    let mut unknown: Vec<payroll::UnknownCost> = Vec::new();
     for (i, p) in prepared.iter().enumerate() {
         let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
         let mut cost = 0;
+        let mut unknown_units = 0;
         if let Some(pid) = p.product_id {
             let pool = ops::lock_pool(conn, branch_id, pid).await?;
             cost = cost_of(p.units, &pool).ok_or_else(overflow)?;
+            unknown_units = crate::domain::costing::unknown_units(p.units, &pool);
             ops::apply_movement(
                 conn,
                 Movement {
@@ -820,9 +872,17 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             p.master_fee,
             p.units,
             p.qty,
+            unknown_units > 0,
         )
         .await?;
-        gross = gross.checked_add(p.amount - cost).ok_or_else(overflow)?;
+        match p.product_id {
+            Some(product_id) if unknown_units > 0 => unknown.push(payroll::UnknownCost {
+                line_no,
+                product_id,
+                units: unknown_units,
+            }),
+            _ => gross = gross.checked_add(p.amount - cost).ok_or_else(overflow)?,
+        }
         // Цену меняли на кассе — если она отличается от прайса, который видела касса; прайс
         // мог смениться, пока чек лежал без сети: это не правка кассира, а старая цена (SPEC-09).
         let seen = p.seen_list.unwrap_or(p.list_price);
@@ -920,6 +980,46 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     .await?;
     if offline {
         offline_after_close(conn, ctx, id, number, business_date, &req.payments).await?;
+        // Задним числом: учётный день чека раньше сегодняшнего дня сервера (SPEC-08).
+        let today =
+            sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+                .fetch_one(&mut *conn)
+                .await?;
+        if business_date < today {
+            bypass.push(format!(
+                "проведён задним числом: {}",
+                business_date.format("%d.%m.%Y")
+            ));
+        }
+        if !bypass.is_empty() {
+            ops::audit(
+                conn,
+                ctx,
+                "sale.offline_bypass",
+                "sale",
+                Some(id),
+                json!({ "number": number, "reasons": bypass }),
+            )
+            .await?;
+        }
+    }
+    if !unknown.is_empty() {
+        let ids: Vec<Uuid> = unknown.iter().map(|u| u.product_id).collect();
+        let names = sqlx::query_scalar!(
+            "select name from products where id = any($1) order by name",
+            &ids
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        ops::audit(
+            conn,
+            ctx,
+            "sale.cost_unknown",
+            "sale",
+            Some(id),
+            json!({ "number": number, "names": names }),
+        )
+        .await?;
     }
     if let Some(master_id) = req.master_id
         && master_fee != 0
@@ -974,6 +1074,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             gross,
             total,
             debt: debt_total,
+            unknown,
         },
     )
     .await?;
@@ -1116,13 +1217,16 @@ pub async fn return_sale_tx(
         amount: i64,
         cost: i64,
         fee: i64,
+        /// Себестоимость строки чека была неизвестна (ADR-062) и сколько в строке было всего.
+        cost_unknown: bool,
+        orig_qty: i64,
     }
     let mut planned = Vec::new();
     let mut total: i64 = 0;
     for rl in &req.lines {
         let o = sqlx::query!(
             r#"select kind, product_id, service_id, qty, units, unit_price_tyiyn, list_price_tyiyn,
-                      amount_tyiyn, cost_tyiyn, master_fee_tyiyn, gift
+                      amount_tyiyn, cost_tyiyn, master_fee_tyiyn, gift, cost_unknown
                from sale_lines where sale_id = $1 and line_no = $2"#,
             id,
             rl.line_no
@@ -1175,6 +1279,8 @@ pub async fn return_sale_tx(
             amount,
             cost,
             fee,
+            cost_unknown: o.cost_unknown,
+            orig_qty: o.qty,
         });
     }
     check_payments(&req.payments, total)?;
@@ -1312,7 +1418,16 @@ pub async fn return_sale_tx(
             .await?;
         }
         insert_line(
-            conn, rid, x.line_no, &x.p, -x.amount, -x.cost, -x.fee, x.p.units, x.p.qty,
+            conn,
+            rid,
+            x.line_no,
+            &x.p,
+            -x.amount,
+            -x.cost,
+            -x.fee,
+            x.p.units,
+            x.p.qty,
+            x.cost_unknown,
         )
         .await?;
     }
@@ -1350,14 +1465,18 @@ pub async fn return_sale_tx(
         )
         .await?;
     }
-    let gross_back = planned
-        .iter()
-        .try_fold(0i64, |acc, x| {
-            x.amount
-                .checked_sub(x.cost)
-                .and_then(|g| acc.checked_add(g))
-        })
-        .ok_or_else(overflow)?;
+    // Строка без цены закупки в процент кассира не входила, пока владелец не дал цену; после —
+    // входит по его цене (ADR-062). Так возврат снимает ровно то, что начислили.
+    let mut gross_back: i64 = 0;
+    for x in &planned {
+        let g = if x.cost_unknown {
+            payroll::unknown_line_gross_back(conn, id, x.line_no, x.amount, x.p.qty, x.orig_qty)
+                .await?
+        } else {
+            x.amount.checked_sub(x.cost).ok_or_else(overflow)?
+        };
+        gross_back = gross_back.checked_add(g).ok_or_else(overflow)?;
+    }
     let return_date = sqlx::query_scalar!(
         r#"select business_date as "d!" from sales where id = $1"#,
         rid

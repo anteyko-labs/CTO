@@ -33,6 +33,15 @@ pub fn cost_of(q: i64, p: &Pool) -> Option<i64> {
     part1.checked_add(part2)
 }
 
+/// Сколько из `q` списываемых единиц не имеют цены: их не покрывает остаток, а закупок ещё
+/// не было (ADR-062). Себестоимость таких единиц `cost_of` считает нулём — она неизвестна.
+pub fn unknown_units(q: i64, p: &Pool) -> i64 {
+    if q <= 0 || p.last_qty > 0 {
+        return 0;
+    }
+    (q - p.qty.max(0)).max(0)
+}
+
 /// Средняя цена за `per` единиц для показа (например, за канистру).
 pub fn average(p: &Pool, per: i64) -> Option<i64> {
     if p.qty <= 0 {
@@ -102,5 +111,23 @@ mod tests {
     fn no_history_costs_zero() {
         assert_eq!(cost_of(3, &pool(0, 0)), Some(0));
         assert_eq!(cost_of(0, &pool(5, 5)), None);
+    }
+
+    #[test]
+    fn unknown_units_only_without_any_price() {
+        // Закупок не было: всё, что не покрыто остатком, — без цены.
+        assert_eq!(unknown_units(3, &pool(0, 0)), 3);
+        assert_eq!(unknown_units(5, &pool(2, 200)), 3);
+        assert_eq!(unknown_units(2, &pool(-4, 0)), 2);
+        // Остатка хватает или есть цена последней закупки — цена известна.
+        assert_eq!(unknown_units(2, &pool(2, 200)), 0);
+        let p = Pool {
+            qty: 0,
+            value: 0,
+            last_qty: 1,
+            last_cost: 100,
+        };
+        assert_eq!(unknown_units(5, &p), 0);
+        assert_eq!(unknown_units(0, &pool(0, 0)), 0);
     }
 }

@@ -114,6 +114,11 @@ async fn create_employee(
     )
     .execute(&mut *tx)
     .await?;
+    let rules_added = if req.is_cashier {
+        crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?
+    } else {
+        false
+    };
     ops::audit(
         &mut tx,
         &ctx,
@@ -124,13 +129,10 @@ async fn create_employee(
             "full_name": full_name,
             "is_cashier": req.is_cashier,
             "is_master": req.is_master,
-            "pay_rules_added": req.is_cashier,
+            "pay_rules_added": rules_added,
         }),
     )
     .await?;
-    if req.is_cashier {
-        crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?;
-    }
     tx.commit().await?;
     Ok(Json(EmployeeOut {
         id,
@@ -157,14 +159,21 @@ async fn update_employee(
 ) -> AppResult<Json<EmployeeOut>> {
     let full_name = optional_required(req.full_name, "ФИО")?;
     let mut tx = state.pool.begin().await?;
-    let was_cashier = sqlx::query_scalar!(
-        "select is_cashier from employees where id = $1 and branch_id = $2 for update",
+    let prev = sqlx::query!(
+        "select full_name, is_cashier, is_master, active from employees where id = $1 and branch_id = $2 for update",
         id,
         ctx.user.branch_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let was_cashier = prev.is_cashier;
+    let before = json!({
+        "full_name": prev.full_name,
+        "is_cashier": prev.is_cashier,
+        "is_master": prev.is_master,
+        "active": prev.active,
+    });
     // Признак «кассир» меняет оплату (процент с чеков, оклад) — только владелец (SPEC-07, ADR-059).
     // Клиент шлёт признак и без изменения — это не правка.
     let becomes_cashier = req.is_cashier == Some(true) && !was_cashier;
@@ -187,6 +196,13 @@ async fn update_employee(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Правила по умолчанию — только когда сотрудник становится кассиром и правил кассира у него
+    // никогда не было: правка имени и повторное назначение не возвращают закрытый оклад (ADR-062).
+    let rules_added = if becomes_cashier {
+        crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?
+    } else {
+        false
+    };
     ops::audit(
         &mut tx,
         &ctx,
@@ -198,15 +214,11 @@ async fn update_employee(
             "is_cashier": out.is_cashier,
             "is_master": out.is_master,
             "active": out.active,
-            "pay_rules_added": becomes_cashier,
+            "pay_rules_added": rules_added,
+            "before": before,
         }),
     )
     .await?;
-    // Правила по умолчанию — только когда сотрудник становится кассиром: правка имени не
-    // должна возвращать оклад, который владелец закрыл.
-    if becomes_cashier {
-        crate::api::payroll::ensure_cashier_rules(&mut tx, &ctx, id).await?;
-    }
     tx.commit().await?;
     Ok(Json(out))
 }
@@ -464,6 +476,15 @@ async fn update_supplier(
 ) -> AppResult<Json<SupplierOut>> {
     let name = optional_required(req.name, "название")?;
     let mut tx = state.pool.begin().await?;
+    // Поставщик общий для филиалов, без branch_id (отступление записано в ADR-062): журнал
+    // правки пишется в филиал того, кто правил.
+    let before = sqlx::query!(
+        "select name, phone, comment, active from suppliers where id = $1 for update",
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let out = sqlx::query_as!(
         SupplierOut,
         r#"update suppliers set name = coalesce($2, name), phone = coalesce($3, phone),
@@ -494,7 +515,14 @@ async fn update_supplier(
         "supplier.update",
         "supplier",
         Some(id),
-        json!({ "active": out.active }),
+        json!({
+            "name": out.name,
+            "active": out.active,
+            "changes": ops::changes(
+                &json!({ "name": before.name, "phone": before.phone, "comment": before.comment, "active": before.active }),
+                &json!({ "name": out.name, "phone": out.phone, "comment": out.comment, "active": out.active }),
+            ),
+        }),
     )
     .await?;
     tx.commit().await?;

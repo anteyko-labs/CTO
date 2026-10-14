@@ -30,6 +30,10 @@ pub fn routes() -> Router<AppState> {
             "/parties/{id}/vehicles/{vehicle_id}",
             routing::patch(update_vehicle),
         )
+        .route(
+            "/parties/{id}/vehicles/{vehicle_id}/restore",
+            routing::post(restore_vehicle),
+        )
         .route("/parties/{id}/limit-request", routing::post(limit_request))
         .route("/debts/repayments", routing::post(post_repayment))
         .route("/debts/adjust", routing::post(post_adjust))
@@ -251,6 +255,25 @@ async fn get_party(
     Ok(Json(load_party(&mut conn, user.branch_id, id).await?))
 }
 
+/// Поля карточки контрагента, которые правятся запросом, — для журнала «было/стало».
+async fn party_fields(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<serde_json::Value> {
+    sqlx::query_scalar!(
+        r#"select jsonb_build_object('name', name, 'phone', phone, 'inn', inn, 'comment', comment,
+                                     'kind', kind, 'credit_limit_tyiyn', credit_limit_tyiyn,
+                                     'due_days', due_days, 'active', active) as "v!"
+           from parties where id = $1 and branch_id = $2 for update"#,
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)
+}
+
 #[derive(Deserialize)]
 struct PartyPatch {
     name: Option<String>,
@@ -284,6 +307,7 @@ async fn update_party(
         return Err(invalid("вид клиента: физлицо или юрлицо"));
     }
     let mut tx = state.pool.begin().await?;
+    let before = party_fields(&mut tx, ctx.user.branch_id, id).await?;
     let found = sqlx::query!(
         r#"update parties
            set name = coalesce(nullif(trim($3), ''), name),
@@ -312,7 +336,39 @@ async fn update_party(
     if found.is_none() {
         return Err(AppError::NotFound);
     }
-    ops::audit(&mut tx, &ctx, "party.update", "party", Some(id), json!({})).await?;
+    let after = party_fields(&mut tx, ctx.user.branch_id, id).await?;
+    let changes = ops::changes(&before, &after);
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "party.update",
+        "party",
+        Some(id),
+        json!({ "name": after.get("name"), "changes": changes }),
+    )
+    .await?;
+    // Лимит долга и срок оплаты — деньги, которые точка отдаёт в долг: владелец видит правку
+    // отдельным уведомлением, остальные правки карточки — только в журнале (ADR-062).
+    let limit_changed = ["credit_limit_tyiyn", "due_days"]
+        .iter()
+        .any(|k| changes.get(*k).is_some());
+    if limit_changed {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "party.limit_change",
+            "party",
+            Some(id),
+            json!({
+                "name": after.get("name"),
+                "old_limit": before.get("credit_limit_tyiyn"),
+                "new_limit": after.get("credit_limit_tyiyn"),
+                "old_days": before.get("due_days"),
+                "new_days": after.get("due_days"),
+            }),
+        )
+        .await?;
+    }
     let out = load_party(&mut tx, ctx.user.branch_id, id).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -385,6 +441,18 @@ async fn update_contact(
     Json(req): Json<ContactReq>,
 ) -> AppResult<Json<ContactOut>> {
     let mut tx = state.pool.begin().await?;
+    let before = sqlx::query!(
+        r#"select c.full_name, c.phone, c.position, c.inn, c.active from party_contacts c
+           join parties p on p.id = c.party_id
+           where c.id = $1 and c.party_id = $2 and p.branch_id = $3
+           for update of c"#,
+        contact_id,
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let row = sqlx::query_as!(
         ContactOut,
         r#"update party_contacts
@@ -412,7 +480,15 @@ async fn update_contact(
         "party.contact_update",
         "party",
         Some(id),
-        json!({ "contact_id": contact_id }),
+        json!({
+            "contact_id": contact_id,
+            "changes": ops::changes(
+                &json!({ "full_name": before.full_name, "phone": before.phone, "position": before.position,
+                         "inn": before.inn, "active": before.active }),
+                &json!({ "full_name": row.full_name, "phone": row.phone, "position": row.position,
+                         "inn": row.inn, "active": row.active }),
+            ),
+        }),
     )
     .await?;
     tx.commit().await?;
@@ -441,30 +517,91 @@ async fn create_vehicle(
     if plate.is_empty() {
         return Err(invalid("укажите госномер"));
     }
+    // Номер в одном виде (SPEC-22): «01 kg-123 АВС» и «01KG123ABC» — одна машина.
+    let norm = crate::domain::plate::normalize(&plate);
+    let branch_id = ctx.user.branch_id;
     let mut tx = state.pool.begin().await?;
-    load_party(&mut tx, ctx.user.branch_id, id).await?;
+    // Блокировка клиента: два одновременных добавления одного номера не заведут две машины.
+    let party_name = sqlx::query_scalar!(
+        "select name from parties where id = $1 and branch_id = $2 for update",
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    // Этот номер у клиента уже есть — возвращаем его машину с историей, а не заводим дубль.
+    // Убранную (клиентом в боте или точкой) — возвращаем в список (ADR-062).
+    let own = sqlx::query_as!(
+        VehicleOut,
+        r#"select id, plate, brand, model, comment, active from party_vehicles
+           where party_id = $1 and branch_id = $2 and plate_norm = $3
+           order by active desc, created_at limit 1"#,
+        id,
+        branch_id,
+        norm
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(mut v) = own {
+        if !v.active {
+            restore_vehicle_tx(&mut tx, &ctx, id, v.id, "add").await?;
+            v.active = true;
+        }
+        tx.commit().await?;
+        return Ok(Json(v));
+    }
     let vid = new_id();
     sqlx::query!(
         r#"insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment, plate_norm)
            values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
         vid,
-        ctx.user.branch_id,
+        branch_id,
         id,
         plate,
         req.brand.trim(),
         req.model.trim(),
         req.comment.trim(),
-        crate::domain::plate::normalize(&plate)
+        norm
     )
     .execute(&mut *tx)
     .await?;
+    // Номер записан на другого клиента точки: новая машина без чужой истории, разбирается
+    // владелец — так же, как при добавлении в боте (ADR-061).
+    let others = sqlx::query_scalar!(
+        r#"select distinct p.name from party_vehicles v join parties p on p.id = v.party_id
+           where v.branch_id = $1 and v.plate_norm = $2 and v.party_id <> $3
+           order by p.name"#,
+        branch_id,
+        norm,
+        id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    if !others.is_empty() {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "vehicle.plate_conflict",
+            "vehicle",
+            Some(vid),
+            json!({
+                "plate": norm,
+                "client": party_name,
+                "other": others.join(", "),
+                "party_id": id,
+                "source": "staff",
+            }),
+        )
+        .await?;
+    }
     ops::audit(
         &mut tx,
         &ctx,
         "party.vehicle",
         "party",
         Some(id),
-        json!({ "plate": plate }),
+        json!({ "plate": plate, "vehicle_id": vid }),
     )
     .await?;
     tx.commit().await?;
@@ -478,6 +615,62 @@ async fn create_vehicle(
     }))
 }
 
+/// Вернуть машину, которую убрали (клиент в боте или точка): история замен и чеки при ней
+/// остались, машина снова в списке клиента и в кассе (ADR-062). `via` — откуда вернули.
+pub(crate) async fn restore_vehicle_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    party_id: Uuid,
+    vehicle_id: Uuid,
+    via: &str,
+) -> AppResult<()> {
+    let plate = sqlx::query_scalar!(
+        r#"update party_vehicles set active = true
+           where id = $1 and party_id = $2 and branch_id = $3 and not active
+           returning plate"#,
+        vehicle_id,
+        party_id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(plate) = plate {
+        ops::audit(
+            conn,
+            ctx,
+            "vehicle.restore",
+            "vehicle",
+            Some(vehicle_id),
+            json!({ "plate": plate, "party_id": party_id, "via": via }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// «Вернуть» в карточке клиента: машину, убранную клиентом, видит и возвращает точка.
+async fn restore_vehicle(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((id, vehicle_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<VehicleOut>> {
+    let mut tx = state.pool.begin().await?;
+    restore_vehicle_tx(&mut tx, &ctx, id, vehicle_id, "card").await?;
+    let row = sqlx::query_as!(
+        VehicleOut,
+        r#"select id, plate, brand, model, comment, active from party_vehicles
+           where id = $1 and party_id = $2 and branch_id = $3"#,
+        vehicle_id,
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(row))
+}
+
 async fn update_vehicle(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -489,6 +682,17 @@ async fn update_vehicle(
         .filter(|p| !p.is_empty())
         .map(crate::domain::plate::normalize);
     let mut tx = state.pool.begin().await?;
+    let before = sqlx::query!(
+        r#"select v.plate, v.brand, v.model, v.comment, v.active from party_vehicles v
+           where v.id = $1 and v.party_id = $2 and v.branch_id = $3
+           for update"#,
+        vehicle_id,
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let row = sqlx::query_as!(
         VehicleOut,
         r#"update party_vehicles
@@ -518,7 +722,16 @@ async fn update_vehicle(
         "party.vehicle_update",
         "party",
         Some(id),
-        json!({ "vehicle_id": vehicle_id }),
+        json!({
+            "vehicle_id": vehicle_id,
+            "plate": row.plate,
+            "changes": ops::changes(
+                &json!({ "plate": before.plate, "brand": before.brand, "model": before.model,
+                         "comment": before.comment, "active": before.active }),
+                &json!({ "plate": row.plate, "brand": row.brand, "model": row.model,
+                         "comment": row.comment, "active": row.active }),
+            ),
+        }),
     )
     .await?;
     tx.commit().await?;
@@ -593,25 +806,36 @@ pub async fn add_ledger(conn: &mut PgConnection, ctx: &Ctx, e: LedgerEntry<'_>) 
 }
 
 /// Проверяет, что клиент может брать в долг, и что работник с машиной — его.
+/// Чек без сети уже состоялся: отключённого клиента и убранную машину он не отклоняет —
+/// машина возвращается в список, а причины уходят владельцу (ADR-062). Возвращает эти причины.
 pub async fn check_sale_party(
     conn: &mut PgConnection,
-    branch_id: Uuid,
+    ctx: &Ctx,
     party_id: Uuid,
     contact_id: Option<Uuid>,
     vehicle_id: Option<Uuid>,
     offline: bool,
-) -> AppResult<()> {
+    on_debt: bool,
+) -> AppResult<Vec<String>> {
+    let branch_id = ctx.user.branch_id;
+    let mut bypass = Vec::new();
     let p = sqlx::query!(
-        "select role, active from parties where id = $1 and branch_id = $2",
+        "select role, active, name from parties where id = $1 and branch_id = $2",
         party_id,
         branch_id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("клиент не найден"))?;
-    // Чек без сети принимаем и для клиента, которого отключили, пока чек лежал на устройстве.
-    if !p.active && !offline {
-        return Err(invalid("клиент отключён"));
+    if !p.active {
+        if !offline {
+            return Err(invalid("клиент отключён"));
+        }
+        bypass.push(if on_debt {
+            format!("в долг отключённому клиенту «{}»", p.name)
+        } else {
+            format!("клиент «{}» отключён", p.name)
+        });
     }
     if p.role != "customer" {
         return Err(invalid("это поставщик, а не клиент"));
@@ -629,18 +853,31 @@ pub async fn check_sale_party(
         }
     }
     if let Some(vid) = vehicle_id {
-        let ok = sqlx::query_scalar!(
-            "select count(*) as \"n!\" from party_vehicles where id = $1 and party_id = $2",
+        let v = sqlx::query!(
+            "select plate, active from party_vehicles where id = $1 and party_id = $2",
             vid,
             party_id
         )
-        .fetch_one(&mut *conn)
-        .await?;
-        if ok == 0 {
-            return Err(invalid("машина не из этой фирмы"));
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| invalid("машина не из этой фирмы"))?;
+        if !v.active {
+            // Клиент убрал машину в боте (или её убрали в карточке): замена на ней — повод
+            // вернуть её осознанно, а не молча (ADR-062).
+            if !offline {
+                return Err(AppError::Conflict(format!(
+                    "машина {} убрана клиентом — верните её в карточке клиента",
+                    v.plate
+                )));
+            }
+            restore_vehicle_tx(conn, ctx, party_id, vid, "offline_sale").await?;
+            bypass.push(format!(
+                "машина {} была убрана клиентом — возвращена",
+                v.plate
+            ));
         }
     }
-    Ok(())
+    Ok(bypass)
 }
 
 /// Остаток лимита: сколько ещё можно отдать в долг. `None` — лимит не задан.

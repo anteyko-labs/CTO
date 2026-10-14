@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n             coalesce(count(*) filter (where bp.stock_qty < bp.min_stock and not p.archived), 0)::bigint as \"low!\",\n             coalesce(count(*) filter (where bp.needs_review), 0)::bigint as \"review!\"\n           from branch_products bp join products p on p.id = bp.product_id\n           where bp.branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "low!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "review!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "4a1d38189ef4e469d66a0ad6e210a3aa89beab7c78947da75af86a145e9e5ab4"
+}

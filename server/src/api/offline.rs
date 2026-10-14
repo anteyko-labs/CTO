@@ -1,6 +1,6 @@
 //! Снимок каталога для работы кассы без сети (SPEC-09).
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, routing};
@@ -10,7 +10,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::{Ctx, CurrentUser};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::ops;
 use crate::state::AppState;
 
@@ -18,6 +18,37 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/offline/snapshot", routing::get(snapshot))
         .route("/sales/offline-rejected", routing::post(rejected))
+        .route("/sales/by-op/{op_id}", routing::get(sale_by_op))
+}
+
+#[derive(Serialize)]
+struct PostedSale {
+    id: Uuid,
+    number: i64,
+}
+
+/// Проведён ли уже чек с этим `op_id` (ADR-062). Касса спрашивает, когда сервер ответил
+/// «op_id уже использован»: чек мог уйти от имени другого пользователя той же кассы (вход
+/// сменился, пока чек лежал в очереди). Чек этого филиала видит любой его пользователь.
+async fn sale_by_op(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(op_id): Path<Uuid>,
+) -> AppResult<Json<PostedSale>> {
+    let row = sqlx::query!(
+        r#"select s.id, s.number from operations o
+           join sales s on s.id = (o.response ->> 'id')::uuid
+           where o.op_id = $1 and o.kind = 'sale.post' and s.branch_id = $2"#,
+        op_id,
+        user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(Json(PostedSale {
+        id: row.id,
+        number: row.number,
+    }))
 }
 
 #[derive(Serialize)]

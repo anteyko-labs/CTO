@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number from operations o\n           join sales s on s.id = (o.response ->> 'id')::uuid\n           where o.op_id = $1 and o.kind = 'sale.post' and s.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "328b5abe46874bdd0f9bc44a14cedc2cfe8162af3404112c294e6eaeb357279a"
+}

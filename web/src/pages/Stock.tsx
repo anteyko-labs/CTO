@@ -2,10 +2,10 @@
 import { useState } from 'react'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
-import { get, post, put, qs } from '../lib/api'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
+import { get, newOpId, post, put, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatLiters, formatSom, formatKg } from '../lib/format'
+import { formatLiters, formatSom, formatKg, parseSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Category, Product, StockMismatch } from '../lib/types'
 
@@ -41,6 +41,9 @@ export default function Stock() {
   const [mismatches, setMismatches] = useState<Mismatch[] | null>(null)
   const verify = useAction()
   const review = useAction()
+  // Цена закупки товара, проданного без неё: 2 % кассира начислятся после неё (ADR-062).
+  const [pricing, setPricing] = useState<{ product: Product; text: string; opId: string } | null>(null)
+  const priceAct = useAction()
 
   const all = stock.data ?? []
   // «Нет» — остаток ноль или минус; «мало» — есть, но меньше минимума.
@@ -83,6 +86,52 @@ export default function Stock() {
     })
   }
 
+  const savePrice = () => {
+    if (!pricing) return
+    const price = parseSom(pricing.text)
+    if (price === null || price <= 0) {
+      priceAct.setError('Укажите цену закупки')
+      return
+    }
+    void priceAct.run(async () => {
+      const r = await post<{ lines: number; accrued_tyiyn: number }>(`/stock/${pricing.product.id}/purchase-price`, {
+        op_id: pricing.opId,
+        price_tyiyn: price,
+      })
+      setPricing(null)
+      stock.reload()
+      toast(`Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}`)
+    })
+  }
+  const priceUnit = (p: Product) => (p.unit === 'g' ? 'за кг' : p.container_ml ? 'за канистру' : 'за штуку')
+  /** Владелец: без цены закупки отметку «проверить» не снять — сначала цена. */
+  const ownerAction = (p: Product, cls: string) =>
+    !owner ? null : p.cost_pending ? (
+      <Button
+        variant="secondary"
+        className={cls}
+        onClick={(e) => {
+          e.stopPropagation()
+          priceAct.setError(null)
+          setPricing({ product: p, text: '', opId: newOpId() })
+        }}
+      >
+        Цена закупки
+      </Button>
+    ) : p.needs_review ? (
+      <Button
+        variant="secondary"
+        className={cls}
+        disabled={review.busy}
+        onClick={(e) => {
+          e.stopPropagation()
+          markReviewed(p)
+        }}
+      >
+        Проверено
+      </Button>
+    ) : null
+
   const rowTone = (p: Product) => (isOut(p) ? 'bg-rose-50 hover:bg-rose-100' : isLow(p) ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50')
   const qtyTone = (p: Product) => (isOut(p) ? 'text-rose-700' : isLow(p) ? 'text-amber-800' : '')
   const badges = (p: Product) => (
@@ -90,6 +139,7 @@ export default function Stock() {
       {isOut(p) && <Badge tone="rose">нет</Badge>}
       {isLow(p) && <Badge tone="amber">мало</Badge>}
       {p.needs_review && <Badge tone="rose">проверить</Badge>}
+      {p.cost_pending && <Badge tone="amber">без цены закупки</Badge>}
       {stale.has(p.id) && (
         <Badge tone="slate">
           {stale.get(p.id)?.sold_ever ? 'не продавался' : 'ни разу не продан'} {stale.get(p.id)?.days} дн.
@@ -210,12 +260,8 @@ export default function Stock() {
                     </div>
                     <div className={`shrink-0 text-right text-lg font-bold tabular-nums ${qtyTone(p)}`}>{stockShort(p)}</div>
                   </button>
-                  {owner && p.needs_review && (
-                    <div className="px-4 pb-2.5">
-                      <Button variant="secondary" className="min-h-[36px] py-1 text-xs" disabled={review.busy} onClick={() => markReviewed(p)}>
-                        Проверено
-                      </Button>
-                    </div>
+                  {owner && (p.needs_review || p.cost_pending) && (
+                    <div className="px-4 pb-2.5">{ownerAction(p, 'min-h-[36px] py-1 text-xs')}</div>
                   )}
                 </li>
               ))}
@@ -249,20 +295,7 @@ export default function Stock() {
                         {p.stock_value_tyiyn != null ? formatSom(p.stock_value_tyiyn) : '—'}
                       </td>
                     )}
-                    <td className="px-2 py-2 text-right">
-                      {owner && p.needs_review && (
-                        <Button
-                          variant="secondary"
-                          disabled={review.busy}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            markReviewed(p)
-                          }}
-                        >
-                          Проверено
-                        </Button>
-                      )}
-                    </td>
+                    <td className="px-2 py-2 text-right">{ownerAction(p, '')}</td>
                   </tr>
                 ))}
               </Table>
@@ -288,6 +321,37 @@ export default function Stock() {
             stock.reload()
           }}
         />
+      )}
+
+      {pricing && (
+        <Modal title={`Цена закупки · ${pricing.product.name}`} onClose={() => setPricing(null)}>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-slate-600">
+              Товар продали без цены закупки: себестоимость этих строк неизвестна, и 2 % кассиру с них ещё не начислены. Укажите, почём товар
+              закупается, — процент начислится сегодня, прошлые дни не изменятся.
+            </p>
+            <Field label={`Цена закупки ${priceUnit(pricing.product)}, с`} required>
+              <input
+                autoFocus
+                inputMode="decimal"
+                value={pricing.text}
+                onChange={(e) => setPricing({ ...pricing, text: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') savePrice()
+                }}
+              />
+            </Field>
+            <ErrorBox error={priceAct.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setPricing(null)}>
+                Отмена
+              </Button>
+              <Button disabled={priceAct.busy || !pricing.text.trim()} onClick={savePrice}>
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {mismatches && (
