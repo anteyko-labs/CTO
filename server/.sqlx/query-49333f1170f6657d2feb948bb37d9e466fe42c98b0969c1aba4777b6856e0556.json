@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "delete from telegram_customers where chat_id = $1",
+  "query": "insert into telegram_code_failures (chat_id) values ($1)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -10,5 +10,5 @@
     },
     "nullable": []
   },
-  "hash": "a4356286c222f05b17db98deb37bd9e668133af7db0ed55dead9d4ce32bab19b"
+  "hash": "49333f1170f6657d2feb948bb37d9e466fe42c98b0969c1aba4777b6856e0556"
 }

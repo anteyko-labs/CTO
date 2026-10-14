@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_state (key, value) values ($1, $2)\n           on conflict (key) do update set value = excluded.value",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "628ce2ec4d0e6505fa40816fddfc6161b6bddeebc3eae15a1e8e0a98ae0f9b15"
+}

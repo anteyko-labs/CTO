@@ -2235,7 +2235,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     // Бот: привязка по коду, команды владельца, события журнала в чат (SPEC-18).
-    use avtodom_server::api::telegram::{pending, save_cursor};
+    use avtodom_server::api::telegram::{advance_cursor, mark_sent, pending};
     let w = seed(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
     let chat = 777_000_111i64;
@@ -2272,9 +2272,8 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     );
 
     // Первый проход ставит курсор на «сейчас» и ничего не шлёт.
-    let (first, at) = pending(&mut conn).await.unwrap();
+    let first = pending(&mut conn).await.unwrap();
     assert!(first.is_empty());
-    save_cursor(&mut conn, at.unwrap()).await.unwrap();
     sqlx::query(
         "insert into audit_log (id, branch_id, user_id, action, entity, data) values ($1, $2, $3, 'receipt.reverse', 'receipt', '{\"number\": 7}')",
     )
@@ -2284,12 +2283,13 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    let (msgs, next) = pending(&mut conn).await.unwrap();
+    let msgs = pending(&mut conn).await.unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].chat_id, chat);
     assert!(msgs[0].text.contains("Сторно прихода") && msgs[0].text.contains("№ 7"));
-    save_cursor(&mut conn, next.unwrap()).await.unwrap();
-    assert!(pending(&mut conn).await.unwrap().0.is_empty());
+    mark_sent(&mut conn, &msgs[0]).await.unwrap();
+    advance_cursor(&mut conn).await.unwrap();
+    assert!(pending(&mut conn).await.unwrap().is_empty());
     // Владельцу в бот — и обычный чек: номер, сумма, как платили, кассир.
     receive(&pool, &w.admin, w.filter, 2, 2_000).await;
     sell(
@@ -2299,7 +2299,7 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     )
     .await
     .unwrap();
-    let (msgs, _) = pending(&mut conn).await.unwrap();
+    let msgs = pending(&mut conn).await.unwrap();
     let sale_msg = msgs
         .iter()
         .find(|m| m.text.contains("🧾 Чек №"))
@@ -3315,13 +3315,17 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
             serde_json::json!({ "type": "error", "error": { "type": "authentication_error", "message": format!("invalid x-api-key {SERVICE_KEY}") } }),
         ),
     ]);
-    for q in ["сколько в кассе?", "что кончается?"] {
-        assert!(
-            ask(&mut conn, &a, chat, q)
-                .await
-                .starts_with("Нет связи с сервисом разбора вопросов")
-        );
-    }
+    assert!(
+        ask(&mut conn, &a, chat, "сколько в кассе?")
+            .await
+            .starts_with("Нет связи с сервисом разбора вопросов")
+    );
+    // Отказ по ключу — не «нет связи», а подсказка проверить настройки (ADR-063).
+    assert!(
+        ask(&mut conn, &a, chat, "что кончается?")
+            .await
+            .starts_with("Ключ сервиса разбора вопросов не подходит")
+    );
     let offline = Assistant::new(
         SERVICE_KEY.into(),
         Some("http://127.0.0.1:1".into()),
@@ -3557,4 +3561,999 @@ async fn seen_price_is_trusted_only_offline(pool: PgPool) {
     sell(&pool, &w.admin, req).await.unwrap();
     assert_eq!(audit_data(&pool, "sale.price_override").await.len(), 1);
     assert_eq!(audit_data(&pool, "sale.stale_price").await.len(), 1);
+}
+
+// ---------- Доставка в Телеграм, привязка и рассылки (ADR-063) ----------
+
+/// Заготовленные ответы по чатам: код и тело.
+type Queued = std::collections::HashMap<i64, std::collections::VecDeque<(u16, serde_json::Value)>>;
+
+/// Поддельный Телеграм на 127.0.0.1: принимает sendMessage, отвечает по заготовкам для чата и
+/// запоминает доставленное.
+#[derive(Clone, Default)]
+struct FakeTelegram {
+    /// Ответы по очереди для чата; кончились — 200.
+    queued: std::sync::Arc<std::sync::Mutex<Queued>>,
+    /// Чаты, которым всегда отвечаем этим кодом.
+    always: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, u16>>>,
+    got: std::sync::Arc<std::sync::Mutex<Vec<(i64, String)>>>,
+}
+
+impl FakeTelegram {
+    fn queue(&self, chat: i64, code: u16, body: serde_json::Value) {
+        self.queued
+            .lock()
+            .unwrap()
+            .entry(chat)
+            .or_default()
+            .push_back((code, body));
+    }
+    fn fail(&self, chat: i64, code: Option<u16>) {
+        let mut a = self.always.lock().unwrap();
+        match code {
+            Some(c) => a.insert(chat, c),
+            None => a.remove(&chat),
+        };
+    }
+    fn texts(&self, chat: i64) -> Vec<String> {
+        self.got
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(c, _)| *c == chat)
+            .map(|(_, t)| t.clone())
+            .collect()
+    }
+}
+
+async fn fake_send(
+    axum::extract::State(f): axum::extract::State<FakeTelegram>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    let chat = body["chat_id"].as_i64().unwrap();
+    let fail = f.always.lock().unwrap().get(&chat).copied();
+    let queued = f
+        .queued
+        .lock()
+        .unwrap()
+        .get_mut(&chat)
+        .and_then(|q| q.pop_front());
+    let (code, reply) = match (fail, queued) {
+        (Some(c), _) => (c, serde_json::json!({ "ok": false, "description": "fail" })),
+        (None, Some(r)) => r,
+        (None, None) => {
+            f.got
+                .lock()
+                .unwrap()
+                .push((chat, body["text"].as_str().unwrap().to_string()));
+            (200, serde_json::json!({ "ok": true, "result": {} }))
+        }
+    };
+    (
+        axum::http::StatusCode::from_u16(code).unwrap(),
+        axum::Json(reply),
+    )
+}
+
+const TG_TOKEN: &str = "123456:tg-secret-token-q9z";
+
+async fn fake_telegram() -> (avtodom_server::api::telegram::Api, FakeTelegram) {
+    let fake = FakeTelegram::default();
+    let app = axum::Router::new()
+        .route("/{bot}/sendMessage", axum::routing::post(fake_send))
+        .with_state(fake.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let api = avtodom_server::api::telegram::Api::new(&format!("http://{addr}"), TG_TOKEN)
+        .with_pace(std::time::Duration::ZERO, std::time::Duration::ZERO);
+    (api, fake)
+}
+
+/// Привязать чат к пользователю: `linked_at` на час назад, чтобы видеть события «из прошлого».
+async fn link_user_chat(pool: &PgPool, user: Uuid, branch: Uuid, chat: i64, hours_ago: i32) {
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, linked_at) values ($1, $2, $3, now() - make_interval(hours => $4))")
+        .bind(chat)
+        .bind(user)
+        .bind(branch)
+        .bind(hours_ago)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Рассылка уже идёт час: курсор и начало — час назад.
+async fn feed_started_hour_ago(pool: &PgPool) {
+    sqlx::query(
+        "insert into bot_state (key, value) values
+           ('cursor', to_jsonb(to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'))),
+           ('feed_since', to_jsonb(to_char((now() - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')))
+         on conflict (key) do update set value = excluded.value",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn journal_event(
+    pool: &PgPool,
+    branch: Uuid,
+    action: &str,
+    data: serde_json::Value,
+    minutes_ago: i32,
+) {
+    sqlx::query("insert into audit_log (id, branch_id, action, entity, data, created_at) values ($1, $2, $3, 'test', $4, now() - make_interval(mins => $5))")
+        .bind(Uuid::now_v7())
+        .bind(branch)
+        .bind(action)
+        .bind(data)
+        .bind(minutes_ago)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_feed_reaches_each_owner_chat_exactly_once(pool: PgPool) {
+    // События — только чатам активных владельцев; одинаковое время у 150 событий, запись старше
+    // уже отправленной, сбой одного из двух чатов — ничего не теряется и не повторяется (ADR-063).
+    use avtodom_server::api::telegram::feed_pass;
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    let (owner_chat, admin_chat, second_chat) = (900_001i64, 900_002i64, 900_003i64);
+    link_user_chat(&pool, w.owner.user.id, branch, owner_chat, 1).await;
+    // Чат администратора (например, бывшего владельца) событий не получает.
+    link_user_chat(&pool, w.admin.user.id, branch, admin_chat, 1).await;
+    feed_started_hour_ago(&pool).await;
+    sqlx::query(
+        "insert into audit_log (id, branch_id, action, entity, data, created_at)
+         select gen_random_uuid(), $1, 'receipt.reverse', 'receipt', jsonb_build_object('number', n),
+                date_trunc('second', now()) - interval '10 minutes'
+         from generate_series(1, 150) n",
+    )
+    .bind(branch)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (api, fake) = fake_telegram().await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    // 429: проход остановлен, ничего не отмечено, пауза — сколько попросил Телеграм.
+    fake.queue(
+        owner_chat,
+        429,
+        serde_json::json!({ "ok": false, "parameters": { "retry_after": 3 } }),
+    );
+    let first = feed_pass(&mut conn, &api).await.unwrap();
+    assert!(first.stopped);
+    assert_eq!(first.pause, Some(std::time::Duration::from_secs(3)));
+    assert!(fake.texts(owner_chat).is_empty());
+    // Дальше — по 100 за проход, все 150 по одному разу.
+    feed_pass(&mut conn, &api).await.unwrap();
+    assert_eq!(fake.texts(owner_chat).len(), 100);
+    feed_pass(&mut conn, &api).await.unwrap();
+    feed_pass(&mut conn, &api).await.unwrap();
+    let mut numbers: Vec<i64> = fake
+        .texts(owner_chat)
+        .iter()
+        .map(|t| {
+            t.split("№ ")
+                .nth(1)
+                .unwrap()
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, (1..=150).collect::<Vec<_>>());
+    assert!(fake.texts(admin_chat).is_empty());
+
+    // Запись журнала стала видна позже уже отправленных, хотя её время раньше.
+    journal_event(
+        &pool,
+        branch,
+        "receipt.reverse",
+        serde_json::json!({ "number": 777 }),
+        12,
+    )
+    .await;
+    feed_pass(&mut conn, &api).await.unwrap();
+    let texts = fake.texts(owner_chat);
+    assert_eq!(texts.len(), 151);
+    assert!(texts[150].contains("№ 777"));
+
+    // Второй владелец, его чат сбоит: первый получает всё сразу, второй — после починки, один раз.
+    let second = Uuid::now_v7();
+    sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'owner2', 'x', 'owner', 'Второй')")
+        .bind(second)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    link_user_chat(&pool, second, branch, second_chat, 0).await;
+    for n in 801..=803 {
+        journal_event(
+            &pool,
+            branch,
+            "receipt.reverse",
+            serde_json::json!({ "number": n }),
+            0,
+        )
+        .await;
+    }
+    fake.fail(second_chat, Some(500));
+    let failing = feed_pass(&mut conn, &api).await.unwrap();
+    assert!(!failing.stopped && failing.pause.is_some());
+    feed_pass(&mut conn, &api).await.unwrap();
+    assert_eq!(fake.texts(owner_chat).len(), 154);
+    assert!(fake.texts(second_chat).is_empty());
+    fake.fail(second_chat, None);
+    feed_pass(&mut conn, &api).await.unwrap();
+    feed_pass(&mut conn, &api).await.unwrap();
+    let got = fake.texts(second_chat);
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(fake.texts(owner_chat).len(), 154);
+
+    // Отключённый владелец больше ничего не получает.
+    sqlx::query("update users set active = false where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    journal_event(
+        &pool,
+        branch,
+        "receipt.reverse",
+        serde_json::json!({ "number": 900 }),
+        0,
+    )
+    .await;
+    feed_pass(&mut conn, &api).await.unwrap();
+    assert_eq!(fake.texts(second_chat).len(), 3);
+    assert_eq!(fake.texts(owner_chat).len(), 155);
+}
+
+#[tokio::test]
+async fn bot_api_splits_long_text_and_keeps_token_out_of_logs() {
+    use avtodom_server::api::telegram::{Api, Delivery, MAX_MESSAGE};
+    let logs = LogBuf::default();
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(logs.clone())
+            .finish(),
+    );
+    let (api, fake) = fake_telegram().await;
+    // Длинный текст — частями по строкам, каждая не длиннее предела.
+    let text = (1..=300)
+        .map(|i| format!("строка {i}: {}", "масло ".repeat(5)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(api.send(1, &text).await, Delivery::Sent);
+    let parts = fake.texts(1);
+    assert!(parts.len() > 1);
+    assert!(parts.iter().all(|p| p.chars().count() <= MAX_MESSAGE));
+    assert_eq!(parts.join("\n"), text);
+    // Бот заблокирован, чат не найден — пропуск, а не повтор.
+    fake.queue(
+        2,
+        403,
+        serde_json::json!({ "ok": false, "description": "Forbidden: bot was blocked by the user" }),
+    );
+    fake.queue(
+        2,
+        400,
+        serde_json::json!({ "ok": false, "description": "Bad Request: chat not found" }),
+    );
+    assert_eq!(api.send(2, "a").await, Delivery::Skip);
+    assert_eq!(api.send(2, "b").await, Delivery::Skip);
+    // Нет связи: повтор всей пачкой, в журнале сервера ни ключа бота, ни адреса с ним.
+    let offline = Api::new("http://127.0.0.1:1", TG_TOKEN);
+    assert!(matches!(
+        offline.send(3, "c").await,
+        Delivery::Retry { all: true, .. }
+    ));
+    let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        logged.contains("телеграм: сообщение не отправлено"),
+        "{logged}"
+    );
+    assert!(
+        !logged.contains(TG_TOKEN) && !logged.contains("tg-secret"),
+        "{logged}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_shift_close_reports_its_own_day_once(pool: PgPool) {
+    // Закрытие смены — одно сообщение «закрыта» с номером и итог её учётного дня, а не
+    // календарного; сдача кассы — отдельным сообщением без «закрыта» (ADR-063).
+    use avtodom_server::api::telegram::pending;
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    link_user_chat(&pool, w.owner.user.id, branch, 910_001, 1).await;
+    feed_started_hour_ago(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let till = avtodom_server::api::cash::default_account(&mut conn, branch)
+        .await
+        .unwrap();
+    let shift = Uuid::now_v7();
+    sqlx::query(
+        "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id, opened_by, opened_device, opening_expected_tyiyn)
+         values ($1, $2, 7, (now() at time zone 'Asia/Bishkek')::date - 1, $3, $4, $5, $1, 0)",
+    )
+    .bind(shift)
+    .bind(branch)
+    .bind(till)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (action, data) in [
+        (
+            "shift.close",
+            serde_json::json!({ "expected": 100_000, "counted": 90_000, "diff": -10_000 }),
+        ),
+        (
+            "shift.handover",
+            serde_json::json!({ "number": 7, "expected": 100_000, "counted": 90_000, "diff": -10_000, "to_safe": 80_000, "left": 10_000 }),
+        ),
+    ] {
+        sqlx::query("insert into audit_log (id, branch_id, user_id, action, entity, entity_id, data) values ($1, $2, $3, $4, 'shift', $5, $6)")
+            .bind(Uuid::now_v7())
+            .bind(branch)
+            .bind(w.admin.user.id)
+            .bind(action)
+            .bind(shift)
+            .bind(data)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let yesterday: String = sqlx::query_scalar(
+        "select to_char((now() at time zone 'Asia/Bishkek')::date - 1, 'DD.MM.YYYY')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let msgs = pending(&mut conn).await.unwrap();
+    assert_eq!(msgs.len(), 2);
+    let closed: Vec<_> = msgs.iter().filter(|m| m.text.contains("закрыта")).collect();
+    assert_eq!(closed.len(), 1);
+    assert!(
+        closed[0].text.starts_with("🔴 Смена № 7 закрыта"),
+        "{}",
+        closed[0].text
+    );
+    assert!(closed[0].text.contains("недостача 100 с"));
+    assert!(
+        closed[0]
+            .text
+            .contains(&format!("📊 Итог дня, {yesterday}")),
+        "{}",
+        closed[0].text
+    );
+    let handover = msgs.iter().find(|m| !m.text.contains("закрыта")).unwrap();
+    assert!(
+        handover.text.starts_with("📥 Касса смены № 7 сдана")
+            && handover.text.contains("в сейф 800 с"),
+        "{}",
+        handover.text
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_feed_names_parties_registers_and_new_events(pool: PgPool) {
+    // Погашение: кто платил и кому; касса по названию; новые события — понятным текстом.
+    use avtodom_server::api::telegram::pending;
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    link_user_chat(&pool, w.owner.user.id, branch, 920_001, 1).await;
+    feed_started_hour_ago(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let till = avtodom_server::api::cash::default_account(&mut conn, branch)
+        .await
+        .unwrap();
+    let (supplier, client) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, role, kind, name) in [
+        (supplier, "supplier", "company", "ОсОО Масла"),
+        (client, "customer", "person", "Бакыт"),
+    ] {
+        sqlx::query(
+            "insert into parties (id, branch_id, role, kind, name) values ($1, $2, $3, $4, $5)",
+        )
+        .bind(id)
+        .bind(branch)
+        .bind(role)
+        .bind(kind)
+        .bind(name)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let event = |action: &'static str, entity: Option<Uuid>, data: serde_json::Value| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query("insert into audit_log (id, branch_id, action, entity, entity_id, data) values ($1, $2, $3, 'test', $4, $5)")
+                .bind(Uuid::now_v7())
+                .bind(branch)
+                .bind(action)
+                .bind(entity)
+                .bind(data)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    event("debt.repayment", Some(supplier), serde_json::json!({ "amount_tyiyn": 500_000, "method": "outside", "balance_tyiyn": -100_000 })).await;
+    event(
+        "debt.repayment",
+        Some(client),
+        serde_json::json!({ "amount_tyiyn": 30_000, "method": "card", "balance_tyiyn": 0 }),
+    )
+    .await;
+    event("cash.movement", Some(till), serde_json::json!({ "kind": "cash_out", "amount_tyiyn": -20_000, "comment": "на хозтовары" })).await;
+    event(
+        "backup.failed",
+        None,
+        serde_json::json!({ "reason": "нет места на диске" }),
+    )
+    .await;
+    event(
+        "product.merge",
+        None,
+        serde_json::json!({ "from_name": "Фильтр дубль", "into_name": "Фильтр W712" }),
+    )
+    .await;
+    event(
+        "payout.reverse",
+        Some(w.cashier),
+        serde_json::json!({ "amount_tyiyn": 10_000, "comment": "ошибся" }),
+    )
+    .await;
+    event(
+        "settings.loyalty",
+        None,
+        serde_json::json!({ "rate_bp": 75 }),
+    )
+    .await;
+    event(
+        "sale.credit_limit_exceeded",
+        None,
+        serde_json::json!({ "party_id": client, "debt": 5_000 }),
+    )
+    .await;
+    let texts: Vec<String> = pending(&mut conn)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.text)
+        .collect();
+    let has = |needle: &str| texts.iter().any(|t| t.contains(needle));
+    assert!(
+        has("💸 Оплатили поставщику ОсОО Масла: 5 000 с"),
+        "{texts:?}"
+    );
+    assert!(
+        has("мимо касс (из своих) · ещё должны 1 000 с"),
+        "{texts:?}"
+    );
+    assert!(has("💰 Клиент Бакыт погасил 300 с"), "{texts:?}");
+    assert!(has("➖ Изъяли из «Касса»"), "{texts:?}");
+    assert!(
+        has("⚠️ Копия базы не создана\nнет места на диске"),
+        "{texts:?}"
+    );
+    assert!(has("«Фильтр дубль» влита в «Фильтр W712»"), "{texts:?}");
+    assert!(has("↩️ Сторно выплаты: Кассир"), "{texts:?}");
+    assert!(has("начисление 0,75 %"), "{texts:?}");
+    assert!(has("Долг клиента вышел за лимит: Бакыт"), "{texts:?}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_debts_match_the_program(pool: PgPool) {
+    // «📒 Долги»: те же контрагенты, что «Нам должны» в программе (не только покупатели), раздел
+    // «Мы должны» и «… и ещё N» при длинном списке.
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    for i in 0..16 {
+        sqlx::query("insert into parties (id, branch_id, role, kind, name, balance_tyiyn, active) values ($1, $2, 'customer', 'person', $3, $4, $5)")
+            .bind(Uuid::now_v7())
+            .bind(branch)
+            .bind(format!("Клиент {i:02}"))
+            .bind(10_000 + i64::from(i) * 100)
+            .bind(i != 3)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for (name, balance) in [
+        ("Поставщик с переплатой", 70_000i64),
+        ("ОсОО Масла", -250_000),
+    ] {
+        sqlx::query("insert into parties (id, branch_id, role, kind, name, balance_tyiyn) values ($1, $2, 'supplier', 'company', $3, $4)")
+            .bind(Uuid::now_v7())
+            .bind(branch)
+            .bind(name)
+            .bind(balance)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let chat = 930_001i64;
+    link_user_chat(&pool, w.owner.user.id, branch, chat, 1).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let text = say(&mut conn, chat, "📒 Долги").await;
+    // Как сводка программы: сумма всех положительных и всех отрицательных балансов.
+    let (owe_us, we_owe): (i64, i64) = sqlx::query_as(
+        "select coalesce(sum(balance_tyiyn) filter (where balance_tyiyn > 0), 0)::bigint,
+                coalesce(sum(-balance_tyiyn) filter (where balance_tyiyn < 0), 0)::bigint
+         from parties where branch_id = $1",
+    )
+    .bind(branch)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    use avtodom_server::domain::money::format_som;
+    assert!(
+        text.starts_with(&format!("Должны нам всего: {}", format_som(owe_us))),
+        "{text}"
+    );
+    assert_eq!(
+        text.lines().nth(1).unwrap().trim(),
+        "Поставщик с переплатой — 700 с"
+    );
+    assert!(text.contains("  … и ещё 2"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "Мы должны всего: {}\n  ОсОО Масла — 2 500 с",
+            format_som(we_owe)
+        )),
+        "{text}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_customer_link_is_unambiguous_and_rechecked(pool: PgPool) {
+    // Номер в двух карточках — не угадываем; карточку отключили или сменили номер — чат
+    // отвязывается; «да…» и «стоп…» в начале фразы — обычный текст; владелец не клиент (ADR-063).
+    use avtodom_server::api::telegram::{
+        Keys, RESHARE, SharedContact, drop_stale_customers, handle_message,
+    };
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    let (first, second) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, name) in [(first, "Эрлан"), (second, "Эрлан старая карточка")]
+    {
+        sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', $3, '0555 12-34-56')")
+            .bind(id)
+            .bind(branch)
+            .bind(name)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let chat = 940_001i64;
+    let share = |phone: &str| SharedContact {
+        phone: phone.into(),
+        user_id: Some(chat),
+    };
+    let mut conn = pool.acquire().await.unwrap();
+    let r = handle_message(&mut conn, chat, chat, None, Some(share("+996555123456")))
+        .await
+        .unwrap();
+    assert!(
+        r.text.contains("несколько карточек") && r.keys == Keys::Contact,
+        "{}",
+        r.text
+    );
+    handle_message(&mut conn, chat, chat, None, Some(share("+996555123456")))
+        .await
+        .unwrap();
+    let ambiguous = audit_data(&pool, "telegram.customer_ambiguous").await;
+    assert_eq!(ambiguous.len(), 1);
+    assert_eq!(ambiguous[0]["phone"], "…3456");
+    let linked: i64 = sqlx::query_scalar("select count(*) from telegram_customers")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(linked, 0);
+
+    // Вторую карточку отключили — подключается к единственной.
+    sqlx::query("update parties set active = false where id = $1")
+        .bind(second)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = handle_message(&mut conn, chat, chat, None, Some(share("+996555123456")))
+        .await
+        .unwrap();
+    assert_eq!(r.keys, Keys::Customer);
+    assert_eq!(audit_data(&pool, "telegram.customer_link").await.len(), 1);
+    // Фразы на «да» и «стоп» — обычный текст, клиент остаётся подключён.
+    for t in ["да, спасибо", "Стоп, а когда замена?", "стоп"] {
+        assert!(say(&mut conn, chat, t).await.contains("Баллов"), "{t}");
+    }
+    // Номер в карточке сменили — следующий же ответ просит поделиться номером снова.
+    sqlx::query("update parties set phone = '0700 99 88 77' where id = $1")
+        .bind(first)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = handle_message(&mut conn, chat, chat, Some("⭐ Баллы"), None)
+        .await
+        .unwrap();
+    assert_eq!((r.text.as_str(), r.keys), (RESHARE, Keys::Contact));
+    assert_eq!(audit_data(&pool, "telegram.customer_unlink").await.len(), 1);
+    // С новым номером — снова подключён; «/стоп» отключает.
+    let r = handle_message(&mut conn, chat, chat, None, Some(share("+996700998877")))
+        .await
+        .unwrap();
+    assert_eq!(r.keys, Keys::Customer);
+    assert!(say(&mut conn, chat, "/стоп").await.contains("вы отключены"));
+    // Рассылка перед напоминаниями отвязывает отключённые карточки и называет их чаты.
+    handle_message(&mut conn, chat, chat, None, Some(share("+996700998877")))
+        .await
+        .unwrap();
+    sqlx::query("update parties set active = false where id = $1")
+        .bind(first)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(drop_stale_customers(&mut conn).await.unwrap(), vec![chat]);
+    assert_eq!(audit_data(&pool, "telegram.customer_unlink").await.len(), 3);
+
+    // Владелец делится контактом — не становится клиентом; кнопки клиента не вопрос.
+    let owner_chat = 940_009i64;
+    link_owner(&pool, &w, owner_chat).await;
+    sqlx::query("update parties set active = true, phone = '0555 77 77 77' where id = $1")
+        .bind(first)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = handle_message(
+        &mut conn,
+        owner_chat,
+        owner_chat,
+        None,
+        Some(SharedContact {
+            phone: "+996555777777".into(),
+            user_id: Some(owner_chat),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.keys, Keys::Owner);
+    let n: i64 = sqlx::query_scalar("select count(*) from telegram_customers where chat_id = $1")
+        .bind(owner_chat)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    let (url, service) = fake_service().await;
+    let a =
+        avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    for t in ["🚗 Мои машины", "⭐ Баллы", "Да, отключиться"] {
+        assert!(
+            ask(&mut conn, &a, owner_chat, t)
+                .await
+                .starts_with("Нажмите кнопку внизу")
+        );
+    }
+    assert_eq!(service.requests().len(), 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_waits_for_brand_text_not_sticker(pool: PgPool) {
+    // Наклейка или фото, пока бот ждёт марку, машину молча не заводит (ADR-063).
+    use avtodom_server::api::telegram::handle_message;
+    let w = seed(&pool).await;
+    let chat = 950_001i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+    say(&mut conn, chat, "🚗 Мои машины").await;
+    assert!(
+        say(&mut conn, chat, "01KG555AAA")
+            .await
+            .contains("Марка и модель")
+    );
+    let r = handle_message(&mut conn, chat, chat, None, None)
+        .await
+        .unwrap();
+    assert!(r.text.contains("марку и модель текстом"), "{}", r.text);
+    assert!(car_of(&pool, me, "01KG555AAA").await.is_none());
+    say(&mut conn, chat, "Honda Fit").await;
+    let (_, active, _, brand, _) = car_of(&pool, me, "01KG555AAA").await.unwrap();
+    assert!(active && brand == "Honda");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_owner_code_attempts_are_limited(pool: PgPool) {
+    // 5 неверных кодов с чата и 20 всего за 15 минут; на пределе — одно уведомление владельцу;
+    // шесть цифр от подключённого клиента — не попытка кода (ADR-063).
+    let w = seed(&pool).await;
+    sqlx::query("insert into telegram_codes (code, user_id, expires_at) values ('424242', $1, now() + interval '15 minutes')")
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let chat = 960_001i64;
+    for _ in 0..5 {
+        assert!(
+            say(&mut conn, chat, "/start 000000")
+                .await
+                .contains("не подошёл")
+        );
+    }
+    assert!(
+        say(&mut conn, chat, "/start 424242")
+            .await
+            .contains("Слишком много неверных кодов")
+    );
+    // Клиент пишет шесть цифр — это не код.
+    let customer_chat = 960_100i64;
+    bot_customer(&pool, &w, "Клиент", "person", customer_chat).await;
+    assert!(
+        say(&mut conn, customer_chat, "123456")
+            .await
+            .contains("Баллов")
+    );
+    let failures = || async {
+        sqlx::query_scalar::<_, i64>("select count(*) from telegram_code_failures")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(failures().await, 5);
+    // Ещё 15 неверных с разных чатов — привязка закрыта для всех, владельцу одно уведомление.
+    for i in 0..15 {
+        say(&mut conn, 960_010 + i, "000001").await;
+    }
+    assert!(
+        say(&mut conn, 960_050, "/start 424242")
+            .await
+            .contains("временно закрыта")
+    );
+    say(&mut conn, 960_051, "000002").await;
+    assert_eq!(audit_data(&pool, "telegram.code_flood").await.len(), 1);
+    // Через 15 минут верный код снова работает, привязка — в журнале.
+    sqlx::query("update telegram_code_failures set at = at - interval '16 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        say(&mut conn, chat, "/start 424242")
+            .await
+            .starts_with("Готово")
+    );
+    assert_eq!(audit_data(&pool, "telegram.link").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_reminders_catch_up_inside_the_window(pool: PgPool) {
+    // Пропущенное «за неделю» догоняется, «за день» отменяет неотправленное «за неделю»; ночью
+    // напоминания и баллы не уходят (ADR-063).
+    use avtodom_server::api::telegram::{due_reminders, mark_reminded, notify_pass};
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let chat = 970_001i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let car = staff_car(&pool, &w, me, "01KG123ABC", true).await;
+    service_change(&pool, &w, me, car).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let interval = |days: i32| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query("update party_vehicles set interval_days = $1 where id = $2")
+                .bind(days)
+                .bind(car)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    // До срока 5 дней — «за неделю» ещё нужно.
+    interval(5).await;
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].days_before, 7);
+    assert!(due[0].text.contains("через 5 дней"), "{}", due[0].text);
+    // До срока день, «за неделю» не уходило — уходит одно «за день», «за неделю» уже не нужно.
+    interval(1).await;
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].days_before, 1);
+    assert!(due[0].text.contains("завтра"));
+    // Ночью ничего не уходит, днём — одно сообщение.
+    let (api, fake) = fake_telegram().await;
+    notify_pass(&mut conn, &api, 22, true).await.unwrap();
+    assert!(fake.texts(chat).is_empty());
+    notify_pass(&mut conn, &api, 10, true).await.unwrap();
+    let texts = fake.texts(chat);
+    assert!(texts.iter().any(|t| t.contains("завтра")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.starts_with("Баллы")), "{texts:?}");
+    let marks: Vec<i32> = sqlx::query_scalar(
+        "select days_before from oil_reminders where vehicle_id = $1 order by days_before",
+    )
+    .bind(car)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(marks, vec![1, 7]);
+    // В сам день срока «за день» ещё уходит, если не ушло.
+    sqlx::query("delete from oil_reminders")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update oil_changes set change_date = change_date - 1 where vehicle_id = $1")
+        .bind(car)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert!(
+        due.len() == 1 && due[0].text.contains("сегодня"),
+        "{}",
+        due.len()
+    );
+    mark_reminded(&mut conn, &due[0]).await.unwrap();
+    assert!(due_reminders(&mut conn).await.unwrap().is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_long_car_lists_are_capped(pool: PgPool) {
+    // 40 машин фирмы: книжка — 20 машин и «… и ещё 20», каждая часть сообщения в пределе;
+    // список — 20 кнопок, остальные открываются номером (ADR-063).
+    use avtodom_server::api::telegram::{MAX_MESSAGE, customer_book, split_message};
+    let w = seed(&pool).await;
+    let chat = 980_001i64;
+    let firm = bot_customer(&pool, &w, "ОсОО Таксопарк", "company", chat).await;
+    for i in 0..40 {
+        let id = staff_car(&pool, &w, firm, &format!("01KG{i:03}AAA"), true).await;
+        sqlx::query("insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, mileage_km, oil_text, filter_text, user_id) values ($1, $2, $3, $4, current_date, 100000, $5, 'Фильтр Sakura C-1821', $6)")
+            .bind(Uuid::now_v7())
+            .bind(w.owner.user.branch_id)
+            .bind(id)
+            .bind(firm)
+            .bind("Масло Totachi Niro LV 0W-20, 4 литра, синтетика ".repeat(2))
+            .bind(w.owner.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    let book = customer_book(&mut conn, firm).await.unwrap();
+    assert!(book.contains("… и ещё 20"), "{book}");
+    assert_eq!(book.matches("Последняя замена").count(), 20);
+    assert!(
+        split_message(&book)
+            .iter()
+            .all(|p| p.chars().count() <= MAX_MESSAGE)
+    );
+    let list = avtodom_server::api::telegram::handle_message(
+        &mut conn,
+        chat,
+        chat,
+        Some("🚗 Мои машины"),
+        None,
+    )
+    .await
+    .unwrap();
+    let cars = list
+        .inline
+        .iter()
+        .flatten()
+        .filter(|b| b.data.starts_with("car:"))
+        .count();
+    assert_eq!(cars, 20);
+    assert!(list.text.contains("… и ещё 20"), "{}", list.text);
+    let card = say(&mut conn, chat, "01kg035aaa").await;
+    assert!(card.starts_with("🚗 01KG035AAA"), "{card}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_plate_conflicts_and_car_count_are_capped(pool: PgPool) {
+    // Не больше трёх уведомлений «номер у другого клиента» от клиента за сутки и не больше
+    // 50 машин в истории клиента (ADR-063).
+    let w = seed(&pool).await;
+    let chat = 990_001i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let other = bot_customer(&pool, &w, "Бакыт", "person", 990_002).await;
+    for i in 0..5 {
+        staff_car(&pool, &w, other, &format!("B{i}00XY"), true).await;
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    for i in 0..5 {
+        press(&mut conn, chat, "add").await;
+        say(&mut conn, chat, &format!("B{i}00XY")).await;
+        press(&mut conn, chat, "skip").await;
+    }
+    assert_eq!(audit_data(&pool, "vehicle.plate_conflict").await.len(), 3);
+    assert_eq!(
+        audit_data(&pool, "vehicle.plate_conflict_quiet")
+            .await
+            .len(),
+        2
+    );
+    for i in 0..45 {
+        staff_car(&pool, &w, me, &format!("Z{i:02}OLD"), false).await;
+    }
+    press(&mut conn, chat, "add").await;
+    let r = say(&mut conn, chat, "01KG999NEW").await;
+    assert!(r.contains("Обратитесь на точку"), "{r}");
+    assert!(car_of(&pool, me, "01KG999NEW").await.is_none());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_question_counts_report_calls_and_hourly_limit(pool: PgPool) {
+    // Не больше 4 вызовов отчётов на вопрос (вызовов, а не запросов); 21-й вопрос за час —
+    // «лимит на этот час» (ADR-063).
+    use avtodom_server::api::assistant::Assistant;
+    let w = seed(&pool).await;
+    let chat = 995_001i64;
+    link_owner(&pool, &w, chat).await;
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+    let calls = |n: usize| {
+        let content: Vec<serde_json::Value> = (0..n)
+            .map(|i| serde_json::json!({ "type": "tool_use", "id": format!("tu_{i}"), "name": "money_balances", "input": {} }))
+            .collect();
+        serde_json::json!({
+            "id": "msg", "type": "message", "role": "assistant", "content": content,
+            "stop_reason": "tool_use", "usage": { "input_tokens": 10, "output_tokens": 5 }
+        })
+    };
+    fake.push(vec![Step::Reply(200, calls(5))]);
+    assert!(
+        ask(&mut conn, &a, chat, "сколько денег во всех кассах?")
+            .await
+            .starts_with("Не получилось разобрать вопрос")
+    );
+    assert_eq!(fake.requests().len(), 1);
+    // Два запроса по два вызова — четыре, это можно.
+    fake.push(vec![
+        Step::Reply(200, calls(2)),
+        Step::Reply(200, calls(2)),
+        Step::Reply(200, final_text("Готово.")),
+    ]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "а теперь ещё раз деньги?").await,
+        "Готово."
+    );
+    sqlx::query(
+        "insert into bot_questions (id, chat_id, user_id, branch_id, asked_at, question, answer)
+         select gen_random_uuid(), $1, $2, $3, now() - interval '5 minutes', 'вопрос ' || n, 'ответ'
+         from generate_series(1, 20) n",
+    )
+    .bind(chat)
+    .bind(w.owner.user.id)
+    .bind(w.owner.user.branch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = fake.requests().len();
+    assert!(
+        ask(&mut conn, &a, chat, "сколько заработали сегодня?")
+            .await
+            .starts_with("Лимит вопросов на этот час исчерпан")
+    );
+    assert_eq!(fake.requests().len(), before);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_update_offset_survives_restart(pool: PgPool) {
+    use avtodom_server::api::telegram::{load_offset, save_offset};
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(load_offset(&mut conn).await.unwrap(), 0);
+    save_offset(&mut conn, 912_345_678).await.unwrap();
+    assert_eq!(load_offset(&mut conn).await.unwrap(), 912_345_678);
 }

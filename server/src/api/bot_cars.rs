@@ -27,6 +27,12 @@ pub const RATE_PER_MIN: i64 = 30;
 const PAGE: usize = 10;
 /// Предел текста сообщения: у Телеграма 4096, оставляем запас.
 const MAX_TEXT: usize = 3900;
+/// Машин кнопками в списке; остальные открываются по номеру (ADR-063).
+pub const LIST_CARS: usize = 20;
+/// Машин у клиента всего, вместе с убранными: дальше добавляет только точка (ADR-063).
+pub const MAX_CARS_EVER: i64 = 50;
+/// Уведомлений владельцу «номер у другого клиента» от одного клиента за сутки (ADR-063).
+pub const CONFLICTS_PER_DAY: i64 = 3;
 
 /// Действия клиента в журнале — по ним же считается частота.
 const CLIENT_ACTIONS: [&str; 4] = [
@@ -44,6 +50,8 @@ const TOO_OFTEN: &str = "Слишком часто — подождите мин
 const NOT_FOUND: &str = "Машина не найдена. Откройте «🚗 Мои машины».";
 const COMPANY: &str =
     "Машины фирмы ведёт точка: добавить, убрать машину или записать пометку можно у кассира.";
+const TOO_MANY_EVER: &str =
+    "Новую машину в боте добавить нельзя: у вас уже много машин в истории. Обратитесь на точку.";
 
 /// Клиент, к которому привязан чат.
 struct Customer {
@@ -205,19 +213,31 @@ pub async fn clear_input(conn: &mut PgConnection, chat_id: i64) -> AppResult<()>
     Ok(())
 }
 
-/// Текст от клиента, когда бот ждёт номер, марку или пометку. `None` — ничего не ждём.
+/// Сообщение от клиента, когда бот ждёт номер, марку или пометку. `None` в ответе — ничего не
+/// ждём. `text = None` — не текст (наклейка, фото): ожидание остаётся, бот просит написать текстом.
 pub async fn on_input(
     conn: &mut PgConnection,
     party_id: Uuid,
     chat_id: i64,
-    text: &str,
+    text: Option<&str>,
 ) -> AppResult<Option<Reply>> {
     let Some(p) = pending(conn, chat_id).await? else {
         return Ok(None);
     };
+    let Some(text) = text else {
+        return Ok(Some(match p.kind.as_str() {
+            "brand" => Reply::with_buttons(
+                "Напишите марку и модель текстом (например, Toyota Camry) или нажмите «Пропустить».",
+                vec![vec![button("Пропустить", "skip")]],
+            ),
+            "note" => Reply::new("Напишите текст пометки.", Keys::Customer),
+            _ => Reply::new(PLATE_HINT, Keys::Customer),
+        }));
+    };
     let c = customer(conn, party_id).await?;
     let reply = match p.kind.as_str() {
         "plate" => plate_entered(conn, &c, chat_id, text).await?,
+        "find" => find_entered(conn, &c, chat_id, text).await?,
         "brand" => {
             let plate = p
                 .data
@@ -307,8 +327,10 @@ async fn cars(
             Keys::Customer,
         ));
     }
+    let more = list.len().saturating_sub(LIST_CARS);
     let mut rows: Vec<Vec<Button>> = list
         .iter()
+        .take(LIST_CARS)
         .map(|v| {
             vec![button(
                 car_name(&v.plate, &v.brand, &v.model),
@@ -316,12 +338,19 @@ async fn cars(
             )]
         })
         .collect();
-    let text = if c.company {
+    let mut text = if c.company {
         format!("Машины фирмы — нажмите, чтобы открыть историю.\n{COMPANY}")
     } else {
         rows.push(vec![button("➕ Добавить машину", "add")]);
         "Ваши машины — нажмите, чтобы открыть историю замен и пометки.".to_string()
     };
+    if more > 0 {
+        // Длинный список не помещается в сообщение: остальные — по номеру.
+        wait_for(conn, c.branch_id, chat_id, "find", None, json!({})).await?;
+        text.push_str(&format!(
+            "\n\n… и ещё {more}. Чтобы открыть другую машину, напишите её номер."
+        ));
+    }
     Ok(Reply::with_buttons(with_header(header, text), rows))
 }
 
@@ -585,6 +614,49 @@ async fn reactivate(
 
 const FOUND: &str = "Нашли вашу машину, история замен ниже.";
 
+/// Машин клиента всего, вместе с убранными.
+async fn cars_ever(conn: &mut PgConnection, c: &Customer) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select count(*) as "n!" from party_vehicles where party_id = $1 and branch_id = $2"#,
+        c.party_id,
+        c.branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Номер машины из длинного списка: открывается только своя активная машина.
+async fn find_entered(
+    conn: &mut PgConnection,
+    c: &Customer,
+    chat_id: i64,
+    text: &str,
+) -> AppResult<Reply> {
+    let Some(norm) = plate::parse(text) else {
+        return Ok(Reply::new(PLATE_BAD, Keys::Customer));
+    };
+    let found = sqlx::query_scalar!(
+        r#"select id from party_vehicles
+           where party_id = $1 and branch_id = $2 and plate_norm = $3 and active
+           order by created_at desc limit 1"#,
+        c.party_id,
+        c.branch_id,
+        norm
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match found {
+        Some(id) => {
+            clear_input(conn, chat_id).await?;
+            card(conn, c, id, 0, None).await
+        }
+        None => Ok(Reply::new(
+            "Среди ваших машин такого номера нет. Напишите другой номер или нажмите кнопку меню.",
+            Keys::Customer,
+        )),
+    }
+}
+
 async fn plate_entered(
     conn: &mut PgConnection,
     c: &Customer,
@@ -611,6 +683,11 @@ async fn plate_entered(
         clear_input(&mut tx, chat_id).await?;
         tx.commit().await?;
         return Ok(Reply::new(TOO_MANY_CARS, Keys::Customer));
+    }
+    if cars_ever(&mut tx, c).await? >= MAX_CARS_EVER {
+        clear_input(&mut tx, chat_id).await?;
+        tx.commit().await?;
+        return Ok(Reply::new(TOO_MANY_EVER, Keys::Customer));
     }
     wait_for(
         &mut tx,
@@ -672,6 +749,11 @@ async fn brand_entered(
         tx.commit().await?;
         return Ok(Reply::new(TOO_MANY_CARS, Keys::Customer));
     }
+    if cars_ever(&mut tx, c).await? >= MAX_CARS_EVER {
+        clear_input(&mut tx, chat_id).await?;
+        tx.commit().await?;
+        return Ok(Reply::new(TOO_MANY_EVER, Keys::Customer));
+    }
     let id = new_id();
     sqlx::query!(
         r#"insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, brand, model, added_by)
@@ -697,10 +779,26 @@ async fn brand_entered(
     .fetch_all(&mut *tx)
     .await?;
     if !others.is_empty() {
+        // Владельцу — не больше трёх таких уведомлений от клиента за сутки; остальные только
+        // в журнал, без уведомления.
+        let told = sqlx::query_scalar!(
+            r#"select count(*) as "n!" from audit_log
+               where branch_id = $1 and action = 'vehicle.plate_conflict'
+                 and data->>'party_id' = $2 and created_at > now() - interval '1 day'"#,
+            c.branch_id,
+            c.party_id.to_string()
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let action = if told < CONFLICTS_PER_DAY {
+            "vehicle.plate_conflict"
+        } else {
+            "vehicle.plate_conflict_quiet"
+        };
         journal(
             &mut tx,
             c.branch_id,
-            "vehicle.plate_conflict",
+            action,
             id,
             json!({ "plate": norm, "client": c.name, "other": others.join(", "), "party_id": c.party_id }),
         )

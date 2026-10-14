@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select business_date from shifts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8f523ba24b33998f0d1f32eba55e9564687ab435742da819a6cddddb182376e2"
+}

@@ -27,8 +27,8 @@ pub const DEFAULT_URL: &str = "https://api.anthropic.com";
 pub const DEFAULT_MODEL: &str = "claude-haiku-5-5";
 const API_VERSION: &str = "2023-06-01";
 const MAX_TOKENS: u32 = 4096;
-/// Не больше 4 обращений к отчётам на один вопрос.
-const MAX_TOOL_ROUNDS: usize = 4;
+/// Не больше 4 вызовов отчётов на один вопрос — считаются вызовы, а не запросы к модели.
+const MAX_TOOL_CALLS: usize = 4;
 /// Ответ ждём не дольше 30 секунд на весь вопрос.
 const DEADLINE: Duration = Duration::from_secs(30);
 const HOURLY_LIMIT: i64 = 20;
@@ -44,6 +44,9 @@ const MAX_ARG_CHARS: usize = 100;
 pub const LIMIT_ERROR: &str = "лимит вопросов";
 
 const LIMIT_TEXT: &str = "Лимит вопросов на сегодня исчерпан. Кнопки внизу работают как обычно.";
+const HOUR_LIMIT_TEXT: &str =
+    "Лимит вопросов на этот час исчерпан. Кнопки внизу работают как обычно.";
+const KEY_TEXT: &str = "Ключ сервиса разбора вопросов не подходит — проверьте настройки сервера. Кнопки внизу работают как обычно.";
 const NO_LINK_TEXT: &str =
     "Нет связи с сервисом разбора вопросов, попробуйте позже или нажмите кнопку внизу.";
 const UNUSABLE_TEXT: &str =
@@ -117,7 +120,7 @@ impl Assistant {
 enum Failure {
     /// Нет связи, таймаут, перегрузка или сбой сервиса (429, 5xx).
     Offline(String),
-    /// Сервис отказал в запросе (400, 401, 403 и прочие 4xx): неверный ключ, модель, формат.
+    /// Сервис отказал в запросе (400, 401, 403): неверный ключ, модель, формат.
     Rejected(String),
     /// Ответ получен, но им нельзя пользоваться: отказ модели, обрыв по длине, много отчётов.
     Unusable(String),
@@ -126,7 +129,8 @@ enum Failure {
 impl Failure {
     fn reply(&self) -> &'static str {
         match self {
-            Failure::Offline(_) | Failure::Rejected(_) => NO_LINK_TEXT,
+            Failure::Offline(_) => NO_LINK_TEXT,
+            Failure::Rejected(_) => KEY_TEXT,
             Failure::Unusable(_) => UNUSABLE_TEXT,
         }
     }
@@ -198,7 +202,14 @@ pub async fn answer(
     )
     .fetch_one(&mut *conn)
     .await?;
-    if used.day >= a.daily_limit || used.hour >= HOURLY_LIMIT {
+    let limit_text = if used.day >= a.daily_limit {
+        Some(LIMIT_TEXT)
+    } else if used.hour >= HOURLY_LIMIT {
+        Some(HOUR_LIMIT_TEXT)
+    } else {
+        None
+    };
+    if let Some(limit_text) = limit_text {
         record(
             conn,
             chat_id,
@@ -211,7 +222,7 @@ pub async fn answer(
             Some(LIMIT_ERROR),
         )
         .await?;
-        return Ok(LIMIT_TEXT.into());
+        return Ok(limit_text.into());
     }
 
     sqlx::query!("delete from bot_dialog where at < now() - interval '30 minutes'")
@@ -346,7 +357,7 @@ async fn converse(
         input_tokens: 0,
         output_tokens: 0,
     };
-    let mut rounds = 0usize;
+    let mut calls_made = 0usize;
     loop {
         let Some(left) = DEADLINE
             .checked_sub(started.elapsed())
@@ -370,13 +381,6 @@ async fn converse(
         out.output_tokens = out.output_tokens.saturating_add(resp.usage.output_tokens);
         match resp.stop_reason.as_deref() {
             Some("tool_use") => {
-                if rounds >= MAX_TOOL_ROUNDS {
-                    out.answer = Err(Failure::Unusable(format!(
-                        "больше {MAX_TOOL_ROUNDS} обращений к отчётам"
-                    )));
-                    return out;
-                }
-                rounds += 1;
                 // Блоки читаем по типу, не по месту: перед вызовом могут идти размышления и текст.
                 let calls: Vec<(String, String, Value)> = resp
                     .content
@@ -398,6 +402,13 @@ async fn converse(
                     .collect();
                 if calls.is_empty() {
                     out.answer = Err(Failure::Unusable("вызов отчёта без отчёта".into()));
+                    return out;
+                }
+                calls_made = calls_made.saturating_add(calls.len());
+                if calls_made > MAX_TOOL_CALLS {
+                    out.answer = Err(Failure::Unusable(format!(
+                        "больше {MAX_TOOL_CALLS} обращений к отчётам"
+                    )));
                     return out;
                 }
                 // Ответ модели возвращаем целиком и без изменений, вместе с блоками размышлений.
@@ -523,14 +534,13 @@ async fn call(
             })
             .unwrap_or_default();
         let note = a.redact(&format!("сервис ответил {} {kind}", status.as_u16()));
-        tracing::warn!(status = status.as_u16(), kind = %kind, "разбор вопросов: ошибка сервиса");
-        return Err(
-            if status.as_u16() == 429 || status.as_u16() == 529 || status.is_server_error() {
-                Failure::Offline(note)
-            } else {
-                Failure::Rejected(note)
-            },
-        );
+        // В журнал сервера — только код ответа.
+        tracing::warn!(status = status.as_u16(), "разбор вопросов: ошибка сервиса");
+        return Err(if matches!(status.as_u16(), 400 | 401 | 403) {
+            Failure::Rejected(note)
+        } else {
+            Failure::Offline(note)
+        });
     }
     resp.json::<ApiResponse>().await.map_err(|_| {
         tracing::warn!("разбор вопросов: непонятный ответ сервиса");
@@ -581,7 +591,7 @@ fn tools() -> Value {
         },
         {
             "name": "debtors",
-            "description": "Кто должен точке сейчас: общий долг клиентов и список должников по убыванию долга с просрочкой.",
+            "description": "Долги сейчас, как экран «Долги»: кто должен точке (общая сумма и список по убыванию долга с просрочкой) и кому должна точка (поставщики и переплаты клиентов).",
             "input_schema": none
         },
         {
@@ -817,46 +827,60 @@ async fn by_day_text(
     Ok(lines.join("\n"))
 }
 
-/// Должники — как «📒 Долги»: клиенты с долгом по убыванию, плюс просрочка.
+/// Долги — как «📒 Долги» и экран «Долги»: кто должен нам (с просрочкой) и кому должны мы.
 async fn debtors_text(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
-    let mut rows = search_parties(
-        conn,
-        branch_id,
-        ListQuery {
-            role: Some("customer".into()),
-            only_debtors: true,
-            ..Default::default()
-        },
-    )
-    .await?;
-    rows.retain(|p| p.balance_tyiyn > 0);
-    if rows.is_empty() {
-        return Ok("Нам никто не должен.".into());
-    }
-    rows.sort_by_key(|p| std::cmp::Reverse(p.balance_tyiyn));
-    let total = rows
-        .iter()
-        .fold(0i64, |acc, p| acc.saturating_add(p.balance_tyiyn));
-    let mut lines = vec![format!(
-        "Должны нам всего на сейчас: {} ({} клиентов)",
-        format_som(total),
-        rows.len()
-    )];
-    for (i, p) in rows.iter().take(15).enumerate() {
-        let overdue = if p.overdue_tyiyn > 0 {
-            format!(", просрочено {}", format_som(p.overdue_tyiyn))
-        } else {
-            String::new()
-        };
+    let (to_us, from_us) = crate::api::telegram::debt_lists(conn, branch_id).await?;
+    let mut lines = Vec::new();
+    if to_us.is_empty() {
+        lines.push("Нам никто не должен.".to_string());
+    } else {
+        let total = to_us
+            .iter()
+            .fold(0i64, |acc, p| acc.saturating_add(p.balance_tyiyn));
         lines.push(format!(
-            "{}. {} — {}{overdue}",
-            i + 1,
-            p.name,
-            format_som(p.balance_tyiyn)
+            "Должны нам всего на сейчас: {} ({})",
+            format_som(total),
+            to_us.len()
         ));
+        for (i, p) in to_us.iter().take(15).enumerate() {
+            let overdue = if p.overdue_tyiyn > 0 {
+                format!(", просрочено {}", format_som(p.overdue_tyiyn))
+            } else {
+                String::new()
+            };
+            lines.push(format!(
+                "{}. {} — {}{overdue}",
+                i + 1,
+                p.name,
+                format_som(p.balance_tyiyn)
+            ));
+        }
+        if to_us.len() > 15 {
+            lines.push(format!("и ещё {}", to_us.len() - 15));
+        }
     }
-    if rows.len() > 15 {
-        lines.push(format!("и ещё {} клиентов", rows.len() - 15));
+    if from_us.is_empty() {
+        lines.push("Мы никому не должны.".to_string());
+    } else {
+        let total = from_us.iter().fold(0i64, |acc, p| {
+            acc.saturating_add(p.balance_tyiyn.saturating_abs())
+        });
+        lines.push(format!(
+            "Мы должны всего на сейчас: {} ({})",
+            format_som(total),
+            from_us.len()
+        ));
+        for (i, p) in from_us.iter().take(15).enumerate() {
+            lines.push(format!(
+                "{}. {} — {}",
+                i + 1,
+                p.name,
+                format_som(p.balance_tyiyn.saturating_abs())
+            ));
+        }
+        if from_us.len() > 15 {
+            lines.push(format!("и ещё {}", from_us.len() - 15));
+        }
     }
     Ok(lines.join("\n"))
 }

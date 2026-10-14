@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from audit_log\n                                      where branch_id = $1 and action = 'telegram.customer_ambiguous'\n                                        and data->>'chat' = $2 and created_at > now() - interval '1 day') as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3d19d8ef52949c9442b8b34b1c7bf0b5e0888e1c68a440029093ff6751bc3ed1"
+}

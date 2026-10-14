@@ -426,6 +426,10 @@ async fn update_user(
             .execute(&mut *tx)
             .await?;
     }
+    // Отключённый или больше не владелец — его чат в Телеграме отвязывается (ADR-063).
+    if !still_owner {
+        crate::api::telegram::drop_owner_link(&mut tx, &ctx, id).await?;
+    }
     ops::audit(
         &mut tx,
         &ctx,

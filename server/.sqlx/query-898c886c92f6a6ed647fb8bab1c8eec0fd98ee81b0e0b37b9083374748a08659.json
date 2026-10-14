@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from audit_log\n               where branch_id = $1 and action = 'vehicle.plate_conflict'\n                 and data->>'party_id' = $2 and created_at > now() - interval '1 day'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "898c886c92f6a6ed647fb8bab1c8eec0fd98ee81b0e0b37b9083374748a08659"
+}

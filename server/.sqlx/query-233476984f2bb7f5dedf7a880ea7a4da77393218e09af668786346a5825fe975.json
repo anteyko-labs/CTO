@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.source, a.name as \"account?\" from expenses e\n                       left join cash_accounts a on a.id = e.account_id where e.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "account?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "233476984f2bb7f5dedf7a880ea7a4da77393218e09af668786346a5825fe975"
+}

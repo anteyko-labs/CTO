@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select chat_id, party_id from telegram_customers",
+  "query": "select t.chat_id, t.party_id, p.branch_id from telegram_customers t\n           join parties p on p.id = t.party_id where p.active and p.role = 'customer'",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "party_id",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "branch_id",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -19,8 +24,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "c3044c8e238e520fe6bb65609ac3d1133d413bfde74768a826363752af441d29"
+  "hash": "8de3ea86edbc9d6662dfcba76437e608b680a5595dd56beedbd6f078a8bc531a"
 }

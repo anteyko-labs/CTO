@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select value from bot_state where key = 'cursor'",
+  "query": "select value from bot_state where key = $1",
   "describe": {
     "columns": [
       {
@@ -10,11 +10,13 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "7d94309994b9cb4d2452d734d115f2d38527c23d460e1f607a45920896fbdbbb"
+  "hash": "dd003b63a33e6291a9ce7b884ca3ebf135dbc6c7fe1b57aaa1b1e1408e1b7e59"
 }

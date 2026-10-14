@@ -3119,3 +3119,111 @@ async fn revision_add_is_idempotent_and_delete_is_logged(pool: PgPool) {
     assert_eq!(del.len(), 1);
     assert_eq!(del[0]["counted_qty"], 7);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn disabled_owner_loses_telegram_chat(pool: PgPool) {
+    // Владельца отключили или сделали администратором — его чат отвязывается, в журнале запись
+    // (ADR-063).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let mut ids = Vec::new();
+    for login_name in ["owner2", "owner3"] {
+        let (status, _, user) = call(
+            &app,
+            "POST",
+            "/api/v1/users",
+            Some(&owner),
+            Some(json!({ "login": login_name, "password": "owner-pass-2", "full_name": login_name, "role": "owner" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{user}");
+        let id: Uuid = user["id"].as_str().unwrap().parse().unwrap();
+        sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) select $1, $2, branch_id from users where id = $2")
+            .bind(i64::try_from(ids.len()).unwrap() + 501)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let links = || async {
+        sqlx::query_scalar::<_, i64>("select count(*) from telegram_links")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(links().await, 2);
+    for (id, body) in [
+        (ids[0], json!({ "active": false })),
+        (ids[1], json!({ "role": "admin" })),
+    ] {
+        let (status, _, _) = call(
+            &app,
+            "PATCH",
+            &format!("/api/v1/users/{id}"),
+            Some(&owner),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(links().await, 0);
+    let unlinks: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'telegram.unlink'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(unlinks, 2);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn loyalty_lookup_is_per_branch_and_unambiguous(pool: PgPool) {
+    // Поиск клиента для баллов — только в своём филиале и ровно одна карточка (ADR-063).
+    let app = setup(pool.clone()).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let branch: Uuid = sqlx::query_scalar("select id from branches")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let other = Uuid::now_v7();
+    sqlx::query("insert into branches (id, name) values ($1, 'Другая точка')")
+        .bind(other)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let client = |b: Uuid, name: &'static str, chat: i64| {
+        let pool = pool.clone();
+        async move {
+            let id = Uuid::now_v7();
+            sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', $3, '0555 12 34 56')")
+                .bind(id)
+                .bind(b)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, '0555123456')")
+                .bind(chat)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    let uri = "/api/v1/loyalty/lookup?phone=%2B996555123456";
+    // Клиент другого филиала не находится.
+    client(other, "Чужой", 1).await;
+    assert_eq!(
+        call(&app, "GET", uri, Some(&admin), None).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    client(branch, "Эрлан", 2).await;
+    let (status, _, found) = call(&app, "GET", uri, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(found["name"], "Эрлан");
+    // Две карточки с номером — не угадываем.
+    client(branch, "Эрлан дубль", 3).await;
+    let (status, _, err) = call(&app, "GET", uri, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(err.to_string().contains("несколько карточек"), "{err}");
+}

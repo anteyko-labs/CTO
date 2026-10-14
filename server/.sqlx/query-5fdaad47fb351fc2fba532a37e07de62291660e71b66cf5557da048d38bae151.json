@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.name as from_name, t.name as to_name from cash_transfers x\n                       join cash_accounts f on f.id = x.from_account_id\n                       join cash_accounts t on t.id = x.to_account_id\n                       where x.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "from_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "to_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5fdaad47fb351fc2fba532a37e07de62291660e71b66cf5557da048d38bae151"
+}

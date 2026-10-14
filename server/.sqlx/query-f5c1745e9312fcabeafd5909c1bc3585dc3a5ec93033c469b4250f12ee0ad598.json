@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, balance_tyiyn from parties\n           where branch_id = $1 and role = 'customer' and balance_tyiyn > 0\n           order by balance_tyiyn desc limit 15",
+  "query": "select name, role from parties where id = $1",
   "describe": {
     "columns": [
       {
@@ -10,8 +10,8 @@
       },
       {
         "ordinal": 1,
-        "name": "balance_tyiyn",
-        "type_info": "Int8"
+        "name": "role",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "8967ffb7490bda4f5b931631c9802e85e035ecb88b4584ac72e93923a6e428d1"
+  "hash": "f5c1745e9312fcabeafd5909c1bc3585dc3a5ec93033c469b4250f12ee0ad598"
 }

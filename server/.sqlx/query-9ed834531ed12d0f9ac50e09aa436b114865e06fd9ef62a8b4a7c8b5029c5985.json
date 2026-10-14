@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) filter (where chat_id = $1) as \"chat!\", count(*) as \"all!\"\n           from telegram_code_failures where at > now() - interval '15 minutes'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "all!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "9ed834531ed12d0f9ac50e09aa436b114865e06fd9ef62a8b4a7c8b5029c5985"
+}

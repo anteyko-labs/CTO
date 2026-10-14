@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.name from cash_movements m join cash_accounts a on a.id = m.account_id\n               where m.doc_type = 'repayment' and m.doc_id = $1 and m.kind <> 'bank_fee'\n               order by m.created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cc62a29372fa8f8d1f6a809800e38b0a0cf6c9133c2a3aaf3cfddee6f21766f0"
+}

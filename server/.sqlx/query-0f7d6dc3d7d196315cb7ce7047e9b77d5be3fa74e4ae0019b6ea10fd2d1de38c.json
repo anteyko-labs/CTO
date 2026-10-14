@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from telegram_code_failures where at < now() - interval '1 day'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "0f7d6dc3d7d196315cb7ce7047e9b77d5be3fa74e4ae0019b6ea10fd2d1de38c"
+}

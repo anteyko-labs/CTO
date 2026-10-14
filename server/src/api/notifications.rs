@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 30] = [
+pub(crate) const WATCHED: [&str; 41] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -50,6 +50,17 @@ pub(crate) const WATCHED: [&str; 30] = [
     "sale.offline_bypass",
     "sale.cost_unknown",
     "party.limit_change",
+    "shift.reopen",
+    "debt.reverse",
+    "payout.reverse",
+    "payroll.accrual_reverse",
+    "payroll.rule",
+    "payroll.rule_close",
+    "settings.loyalty",
+    "gift.rule_toggle",
+    "backup.failed",
+    "telegram.code_flood",
+    "telegram.customer_ambiguous",
 ];
 
 #[derive(Serialize)]
@@ -77,6 +88,46 @@ struct ListQuery {
 
 fn money(v: Option<i64>) -> String {
     v.map_or_else(|| "—".into(), crate::domain::money::format_som)
+}
+
+/// Процент из сотых долей: 200 → «2,00 %». Только показ, без дробных чисел.
+fn percent(bp: i64) -> String {
+    format!("{},{:02} %", bp / 100, (bp % 100).abs())
+}
+
+/// Ставка оплаты сотрудника словами: вид и сумма или процент.
+fn pay_rule(data: &Value) -> String {
+    let kind = match data.get("kind").and_then(Value::as_str).unwrap_or("") {
+        "monthly_salary" => "оклад",
+        "revenue_percent" => "% с чеков",
+        "service_fee" => "за замену",
+        "shift_fee" => "за смену",
+        "per_service" => "за услугу",
+        other => other,
+    };
+    let value = match (
+        data.get("amount_tyiyn").and_then(Value::as_i64),
+        data.get("rate_bp").and_then(Value::as_i64),
+    ) {
+        (_, Some(bp)) if bp != 0 => percent(bp),
+        (Some(a), _) => crate::domain::money::format_som(a),
+        _ => String::new(),
+    };
+    [kind.to_string(), value]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// « — комментарий» или ничего.
+fn comment(data: &Value) -> String {
+    data.get("comment")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(|c| format!(" — {c}"))
+        .unwrap_or_default()
 }
 
 pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
@@ -446,6 +497,81 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 num("number").unwrap_or(0),
                 money(num("amount_tyiyn")),
                 data.get("comment").and_then(Value::as_str).unwrap_or("")
+            ),
+        ),
+        "shift.reopen" => (
+            "Смена переоткрыта".into(),
+            format!("причина: {}", text("reason")),
+        ),
+        "debt.reverse" => (
+            "Сторно записи долга".into(),
+            format!("{}{}", money(num("amount_tyiyn")), comment(data)),
+        ),
+        "payout.reverse" => (
+            "Сторно выплаты сотруднику".into(),
+            format!("{}{}", money(num("amount_tyiyn")), comment(data)),
+        ),
+        "payroll.accrual_reverse" => (
+            "Сторно начисления сотруднику".into(),
+            format!(
+                "{}{}",
+                money(num("amount_tyiyn").map(i64::saturating_abs)),
+                comment(data)
+            ),
+        ),
+        "payroll.rule" => (
+            "Изменена оплата сотрудника".into(),
+            format!(
+                "{}{}",
+                pay_rule(data),
+                if data.get("default").and_then(Value::as_bool) == Some(true) {
+                    " (по умолчанию)"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        "payroll.rule_close" => (
+            "Закрыта ставка сотрудника".into(),
+            format!("{}, действует по {}", pay_rule(data), text("active_to")),
+        ),
+        "settings.loyalty" => (
+            "Изменён процент баллов".into(),
+            format!(
+                "начисление {} от оплаченного деньгами",
+                percent(num("rate_bp").unwrap_or(0))
+            ),
+        ),
+        "gift.rule_toggle" => (
+            if data.get("active").and_then(Value::as_bool) == Some(true) {
+                "Правило подарка включено".into()
+            } else {
+                "Правило подарка отключено".into()
+            },
+            String::new(),
+        ),
+        "backup.failed" => ("⚠️ Копия базы не создана".into(), text("reason")),
+        "telegram.code_flood" => (
+            "Подбирают код привязки Телеграма".into(),
+            format!(
+                "{} неверных кодов за {} мин — привязка к боту закрыта на 15 минут",
+                num("failures").unwrap_or(0),
+                num("minutes").unwrap_or(0)
+            ),
+        ),
+        "telegram.customer_ambiguous" => (
+            "Клиент не смог подключиться к боту".into(),
+            format!(
+                "номер {} записан в нескольких карточках: {} — оставьте номер в одной",
+                text("phone"),
+                data.get("names")
+                    .and_then(Value::as_array)
+                    .map(|n| n
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default()
             ),
         ),
         _ => (action.into(), String::new()),

@@ -276,31 +276,43 @@ struct LookupOut {
 
 async fn lookup(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Query(q): Query<LookupQuery>,
 ) -> AppResult<Json<LookupOut>> {
     let key = crate::api::telegram::phone_key(&q.phone)
         .ok_or_else(|| invalid("номер — не меньше 9 цифр"))?;
     let mut conn = state.pool.acquire().await?;
-    let r = sqlx::query!(
+    // Только клиенты своего филиала и ровно одна карточка: по общему номеру не угадываем (ADR-063).
+    let found = sqlx::query!(
         r#"select p.id, p.name, p.phone from parties p
-           where p.role = 'customer' and p.active
+           where p.branch_id = $2 and p.role = 'customer' and p.active
              and length(regexp_replace(p.phone, '[^0-9]', '', 'g')) >= 9
              and right(regexp_replace(p.phone, '[^0-9]', '', 'g'), 9) = $1
              and exists (select 1 from telegram_customers t where t.party_id = p.id)
-           order by p.created_at desc limit 1"#,
-        key
+           order by p.created_at desc limit 2"#,
+        key,
+        user.branch_id
     )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or_else(|| {
-        invalid("клиент с этим номером не подключён к боту: пусть напишет боту и поделится номером")
-    })?;
+    .fetch_all(&mut *conn)
+    .await?;
+    let r = match found.as_slice() {
+        [one] => one,
+        [] => {
+            return Err(invalid(
+                "клиент с этим номером не подключён к боту: пусть напишет боту и поделится номером",
+            ));
+        }
+        _ => {
+            return Err(invalid(
+                "по этому номеру несколько карточек клиентов — оставьте номер в одной",
+            ));
+        }
+    };
     let balance_tyiyn = balance(&mut conn, r.id).await?;
     Ok(Json(LookupOut {
         party_id: r.id,
-        name: r.name,
-        phone: r.phone,
+        name: r.name.clone(),
+        phone: r.phone.clone(),
         balance_tyiyn,
     }))
 }

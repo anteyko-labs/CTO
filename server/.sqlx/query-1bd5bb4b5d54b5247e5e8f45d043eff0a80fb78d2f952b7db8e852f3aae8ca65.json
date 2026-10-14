@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from bot_state where key = 'offset'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1bd5bb4b5d54b5247e5e8f45d043eff0a80fb78d2f952b7db8e852f3aae8ca65"
+}
