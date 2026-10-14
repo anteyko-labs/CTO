@@ -1,7 +1,8 @@
 // Масляная книжка: замены по машинам, следующая замена, правка пробега и интервала (SPEC-16).
 import { useState } from 'react'
 import { get, patch, post } from '../lib/api'
-import { formatDate, todayBishkek } from '../lib/format'
+import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNotes'
+import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { printOilBook } from '../lib/oilBookPrint'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
@@ -17,6 +18,8 @@ export interface OilRecord {
   declined?: string
   sale_id: string | null
   sale_number: number | null
+  /** Итог чека за вычетом возвратов по нему; у записи из тетради — null (SPEC-22). */
+  sale_total_tyiyn?: number | null
 }
 
 export interface VehicleBook {
@@ -29,6 +32,8 @@ export interface VehicleBook {
   next_km: number | null
   next_date: string | null
   records: OilRecord[]
+  /** Пометки клиента из бота (SPEC-22). */
+  client_notes?: ClientNote[]
 }
 
 const km = (v: number) => `${v.toLocaleString('ru-RU').replace(/ /g, ' ')} км`
@@ -45,13 +50,42 @@ export function OilHint({ vehicleId }: { vehicleId: string }) {
   const b = book.data
   if (!b) return null
   const last = b.records[0]
-  if (!last) return <div className="text-xs text-slate-500">В масляной книжке этой машины пока пусто.</div>
+  const notes = cashierNotesText(b.client_notes)
+  const notesLine = notes && <div className="mt-1 font-medium text-sky-800">{notes}</div>
+  if (!last)
+    return (
+      <div className="text-xs text-slate-500">
+        В масляной книжке этой машины пока пусто.
+        {notesLine}
+      </div>
+    )
   const overdue = b.next_date !== null && b.next_date < todayBishkek()
   return (
     <div className={`rounded-md px-3 py-2 text-xs ${overdue ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`}>
       Прошлая замена {formatDate(last.change_date)}: {last.oil_text || last.filter_text || '—'}
       {last.mileage_km !== null && `, ${km(last.mileage_km)}`}. Следующая {nextText(b)}.
       {last.declined?.trim() && <div className="mt-1 font-medium text-amber-800">В прошлый раз рекомендовали: {last.declined}</div>}
+      {notesLine}
+    </div>
+  )
+}
+
+/** Пометки клиента из бота: текстом, без правки; удалённые (их видит только владелец) — зачёркнуты. */
+function ClientNotes({ notes }: { notes: ClientNote[] }) {
+  if (notes.length === 0) return null
+  const active = activeNotes(notes).length
+  return (
+    <div className="rounded-md bg-sky-50 px-3 py-2 text-sm">
+      <div className="mb-1 text-xs font-medium text-sky-900">Пометки клиента из бота{active ? '' : ' — все удалены'}</div>
+      <ul className="flex flex-col gap-0.5">
+        {notes.map((n) => (
+          <li key={n.id} className={n.deleted ? 'text-slate-400 line-through' : 'text-slate-800'}>
+            <span className="mr-2 text-xs text-slate-500">{formatDateTime(n.created_at)}</span>
+            {n.text}
+            {n.deleted && <span className="ml-2 text-xs no-underline">(удалена клиентом)</span>}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -83,6 +117,7 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
               <span>
                 <span className="font-medium">{formatDate(r.change_date)}</span>
                 {r.mileage_km !== null && <span className="ml-2">{km(r.mileage_km)}</span>}
+                <span className="ml-2 text-slate-600">{r.sale_total_tyiyn != null ? formatSom(r.sale_total_tyiyn) : '—'}</span>
                 <span className="ml-2 text-slate-600">{[r.oil_text, r.filter_text].filter(Boolean).join(' · ')}</span>
                 {r.comment && <span className="ml-2 text-slate-500">— {r.comment}</span>}
                 {r.sale_number === null && (
@@ -111,6 +146,7 @@ function VehicleCard({ b, editable, onChanged }: { b: VehicleBook; editable: boo
           ))}
         </ul>
       )}
+      <ClientNotes notes={b.client_notes ?? []} />
       <ErrorBox error={act.error} />
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => void printOilBook(b)}>

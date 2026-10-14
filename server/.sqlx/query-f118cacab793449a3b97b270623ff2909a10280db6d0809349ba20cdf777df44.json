@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update vehicle_notes set deleted_at = now() where id = $1 and party_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f118cacab793449a3b97b270623ff2909a10280db6d0809349ba20cdf777df44"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct p.name from party_vehicles v join parties p on p.id = v.party_id\n           where v.branch_id = $1 and v.plate_norm = $2 and v.party_id <> $3\n           order by p.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9682bd4cdbaece31def7c95da1be1eca8816cde25ec791f8ed89bd2b438750ab"
+}

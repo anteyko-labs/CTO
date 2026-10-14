@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 25] = [
+pub(crate) const WATCHED: [&str; 26] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -45,6 +45,7 @@ pub(crate) const WATCHED: [&str; 25] = [
     "employee.create",
     "employee.update",
     "sale.offline_after_close",
+    "vehicle.plate_conflict",
 ];
 
 #[derive(Serialize)]
@@ -293,6 +294,15 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 text("to_name"),
                 num("qty_ml").unwrap_or(0),
                 text("comment")
+            ),
+        ),
+        "vehicle.plate_conflict" => (
+            format!("Номер {} записан на другого клиента", text("plate")),
+            format!(
+                "клиент {} добавил в боте машину {}, записанную на {} — разберитесь, чья машина",
+                text("client"),
+                text("plate"),
+                text("other")
             ),
         ),
         "sale.stale_price" => (

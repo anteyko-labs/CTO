@@ -3,3 +3,4 @@
 pub mod barcode;
 pub mod costing;
 pub mod money;
+pub mod plate;

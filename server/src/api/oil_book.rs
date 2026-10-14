@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
@@ -35,6 +35,17 @@ pub struct OilRecord {
     pub declined: String,
     pub sale_id: Option<Uuid>,
     pub sale_number: Option<i64>,
+    /// Итог чека за вычетом возвратов по нему; у записи из тетради — пусто (SPEC-22).
+    pub sale_total_tyiyn: Option<i64>,
+}
+
+/// Пометка клиента к машине из бота (SPEC-22): точка видит, но не правит.
+#[derive(Serialize)]
+pub struct ClientNote {
+    pub id: Uuid,
+    pub text: String,
+    pub created_at: DateTime<Utc>,
+    pub deleted: bool,
 }
 
 #[derive(Serialize)]
@@ -49,6 +60,8 @@ pub struct VehicleBook {
     pub next_km: Option<i32>,
     pub next_date: Option<NaiveDate>,
     pub records: Vec<OilRecord>,
+    /// Пометки клиента, свежие сверху; удалённые клиентом видит только владелец.
+    pub client_notes: Vec<ClientNote>,
 }
 
 /// Количество строки для книжки: «1 кан. × 4 л», «1,5 л», «2 шт».
@@ -159,12 +172,22 @@ pub async fn books(
     let ids: Vec<Uuid> = vehicles.iter().map(|v| v.id).collect();
     let records = sqlx::query!(
         r#"select o.id, o.vehicle_id, o.change_date, o.mileage_km, o.oil_text, o.filter_text, o.comment,
-                  o.declined, o.sale_id, s.number as "sale_number?"
+                  o.declined, o.sale_id, s.number as "sale_number?",
+                  -- Возврат — чек с минусом и ссылкой на исходный: как в фильтре ниже.
+                  (s.total_tyiyn + coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0))::bigint
+                    as "sale_total_tyiyn?"
            from oil_changes o
            left join sales s on s.id = o.sale_id
            where o.vehicle_id = any($1)
              and (s.id is null or coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0) <> -s.total_tyiyn)
            order by o.change_date desc, o.created_at desc"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let notes = sqlx::query!(
+        r#"select id, vehicle_id, text, created_at, deleted_at from vehicle_notes
+           where vehicle_id = any($1) order by created_at desc"#,
         &ids
     )
     .fetch_all(&mut *conn)
@@ -184,6 +207,17 @@ pub async fn books(
                 declined: r.declined.clone(),
                 sale_id: r.sale_id,
                 sale_number: r.sale_number,
+                sale_total_tyiyn: r.sale_id.and(r.sale_total_tyiyn),
+            })
+            .collect();
+        let client_notes = notes
+            .iter()
+            .filter(|n| n.vehicle_id == v.id)
+            .map(|n| ClientNote {
+                id: n.id,
+                text: n.text.clone(),
+                created_at: n.created_at,
+                deleted: n.deleted_at.is_some(),
             })
             .collect();
         let next_km = recs
@@ -205,9 +239,17 @@ pub async fn books(
             next_km,
             next_date,
             records: recs,
+            client_notes,
         });
     }
     Ok(out)
+}
+
+/// Удалённые клиентом пометки остаются только владельцу (SPEC-22).
+pub fn hide_deleted_notes(list: &mut [VehicleBook]) {
+    for b in list {
+        b.client_notes.retain(|n| !n.deleted);
+    }
 }
 
 async fn vehicle_book(
@@ -216,11 +258,11 @@ async fn vehicle_book(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<VehicleBook>> {
     let mut conn = state.pool.acquire().await?;
-    books(&mut conn, user.branch_id, None, Some(id))
-        .await?
-        .pop()
-        .map(Json)
-        .ok_or(AppError::NotFound)
+    let mut list = books(&mut conn, user.branch_id, None, Some(id)).await?;
+    if !user.is_owner() {
+        hide_deleted_notes(&mut list);
+    }
+    list.pop().map(Json).ok_or(AppError::NotFound)
 }
 
 async fn party_book(
@@ -229,9 +271,11 @@ async fn party_book(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<Vec<VehicleBook>>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(
-        books(&mut conn, user.branch_id, Some(id), None).await?,
-    ))
+    let mut list = books(&mut conn, user.branch_id, Some(id), None).await?;
+    if !user.is_owner() {
+        hide_deleted_notes(&mut list);
+    }
+    Ok(Json(list))
 }
 
 #[derive(Deserialize)]

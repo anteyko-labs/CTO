@@ -3,6 +3,7 @@
 pub mod analogs;
 pub mod auth;
 pub mod batteries;
+pub mod bot_cars;
 pub mod cabinet;
 pub mod cash;
 pub mod catalog;

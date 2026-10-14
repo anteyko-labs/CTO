@@ -435,15 +435,16 @@ async fn create_vehicle(
     load_party(&mut tx, ctx.user.branch_id, id).await?;
     let vid = new_id();
     sqlx::query!(
-        r#"insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment)
-           values ($1, $2, $3, $4, $5, $6, $7)"#,
+        r#"insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment, plate_norm)
+           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
         vid,
         ctx.user.branch_id,
         id,
         plate,
         req.brand.trim(),
         req.model.trim(),
-        req.comment.trim()
+        req.comment.trim(),
+        crate::domain::plate::normalize(&plate)
     )
     .execute(&mut *tx)
     .await?;
@@ -473,11 +474,16 @@ async fn update_vehicle(
     Path((id, vehicle_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<VehicleReq>,
 ) -> AppResult<Json<VehicleOut>> {
+    // Номер в одном виде (SPEC-22) — по тому же правилу, что в боте.
+    let plate_norm = Some(req.plate.trim())
+        .filter(|p| !p.is_empty())
+        .map(crate::domain::plate::normalize);
     let mut tx = state.pool.begin().await?;
     let row = sqlx::query_as!(
         VehicleOut,
         r#"update party_vehicles
            set plate = coalesce(nullif(upper(trim($3)), ''), plate),
+               plate_norm = coalesce($9, plate_norm),
                brand = $4, model = $5, comment = $6,
                active = coalesce($7, active)
            where id = $1 and party_id = $2
@@ -490,7 +496,8 @@ async fn update_vehicle(
         req.model.trim(),
         req.comment.trim(),
         req.active,
-        ctx.user.branch_id
+        ctx.user.branch_id,
+        plate_norm
     )
     .fetch_optional(&mut *tx)
     .await?

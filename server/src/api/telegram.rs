@@ -182,19 +182,61 @@ async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(
     .map(|r| (r.id, r.branch_id)))
 }
 
+/// Кнопка под сообщением: текст и данные, которые Телеграм вернёт при нажатии.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Button {
+    pub text: String,
+    pub data: String,
+}
+
 /// Ответ бота и кнопки под ним.
 pub struct Reply {
     pub text: String,
     pub keys: Keys,
+    /// Кнопки под самим сообщением (SPEC-22); пусто — только кнопки внизу чата.
+    pub inline: Vec<Vec<Button>>,
 }
 
 impl Reply {
-    fn new(text: impl Into<String>, keys: Keys) -> Self {
+    pub(crate) fn new(text: impl Into<String>, keys: Keys) -> Self {
         Self {
             text: text.into(),
             keys,
+            inline: Vec::new(),
         }
     }
+
+    /// Ответ клиенту с кнопками под сообщением.
+    pub(crate) fn with_buttons(text: impl Into<String>, rows: Vec<Vec<Button>>) -> Self {
+        Self {
+            text: text.into(),
+            keys: Keys::Customer,
+            inline: rows,
+        }
+    }
+
+    /// Разметка кнопок для Телеграма: под сообщением, если они есть, иначе внизу чата.
+    fn markup(&self) -> Value {
+        if self.inline.is_empty() {
+            return self.keys.markup();
+        }
+        let rows: Vec<Vec<Value>> = self
+            .inline
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|b| json!({ "text": b.text, "callback_data": b.data }))
+                    .collect()
+            })
+            .collect();
+        json!({ "inline_keyboard": rows })
+    }
+}
+
+/// Кнопка меню клиента или команда: отменяет ожидание ввода, а не становится номером или пометкой.
+fn is_menu(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with('/') || [BTN_CARS, BTN_BONUS, BTN_LEAVE, BTN_LEAVE_YES, BTN_BACK].contains(&t)
 }
 
 /// Номер для сравнения: последние 9 цифр — так совпадут «+996 555 12 34 56» и «0555123456».
@@ -221,13 +263,25 @@ pub async fn handle_message(
         return link_customer(conn, chat_id, from_id, c).await;
     }
     let text = text.unwrap_or("");
-    let owner = handle_text(conn, chat_id, text).await?;
     let customer = sqlx::query_scalar!(
         "select party_id from telegram_customers where chat_id = $1",
         chat_id
     )
     .fetch_optional(&mut *conn)
     .await?;
+    // Клиент пишет номер, марку или пометку: это не команда и не код привязки (SPEC-22).
+    if let Some(party_id) = customer
+        && chat_owner(conn, chat_id).await?.is_none()
+    {
+        if is_menu(text) {
+            crate::api::bot_cars::clear_input(conn, chat_id).await?;
+        } else if let Some(r) =
+            crate::api::bot_cars::on_input(conn, party_id, chat_id, text).await?
+        {
+            return Ok(r);
+        }
+    }
+    let owner = handle_text(conn, chat_id, text).await?;
     if let Some(r) = owner {
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
@@ -264,11 +318,38 @@ pub async fn handle_message(
             bonus_history(conn, party_id).await?,
             Keys::Customer,
         )),
+        "мои" | "машины" | "cars" => {
+            crate::api::bot_cars::cars_for(conn, party_id, chat_id).await
+        }
         _ => Ok(Reply::new(
             customer_book(conn, party_id).await?,
             Keys::Customer,
         )),
     }
+}
+
+/// Нажатие кнопки под сообщением. Только подключённому клиенту: владелец и чужой чат их не получают.
+pub async fn handle_callback(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    data: &str,
+) -> AppResult<Reply> {
+    if chat_owner(conn, chat_id).await?.is_some() {
+        return Ok(Reply::new(HELP, Keys::Owner));
+    }
+    let customer = sqlx::query_scalar!(
+        "select party_id from telegram_customers where chat_id = $1",
+        chat_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(party_id) = customer else {
+        return Ok(Reply::new(
+            "Сначала подключитесь: нажмите «📱 Поделиться номером» внизу.",
+            Keys::Contact,
+        ));
+    };
+    crate::api::bot_cars::callback(conn, party_id, chat_id, data).await
 }
 
 async fn link_customer(
@@ -321,7 +402,7 @@ async fn link_customer(
     ))
 }
 
-fn km(v: i32) -> String {
+pub(crate) fn km(v: i32) -> String {
     let s = v.to_string();
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
@@ -1177,6 +1258,21 @@ struct TgResponse<T> {
 struct Update {
     update_id: i64,
     message: Option<Message>,
+    callback_query: Option<CallbackQuery>,
+}
+
+/// Нажатие кнопки под сообщением.
+#[derive(Deserialize)]
+struct CallbackQuery {
+    id: String,
+    from: From,
+    message: Option<CallbackMessage>,
+    data: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CallbackMessage {
+    chat: Chat,
 }
 
 #[derive(Deserialize)]
@@ -1238,6 +1334,20 @@ impl Api {
                 tracing::warn!(error = %e, "телеграм: сообщение не отправлено");
                 false
             }
+        }
+    }
+
+    /// Снять «часики» с нажатой кнопки; ответ идёт отдельным сообщением.
+    async fn answer_callback(&self, id: &str) {
+        let r = self
+            .http
+            .post(format!("{}/answerCallbackQuery", self.base))
+            .json(&json!({ "callback_query_id": id }))
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await;
+        if let Err(e) = r {
+            tracing::warn!(error = %e, "телеграм: нажатие не подтверждено");
         }
     }
 
@@ -1317,6 +1427,26 @@ async fn commands_loop(pool: PgPool, api: Api) {
         };
         for u in updates {
             offset = offset.max(u.update_id + 1);
+            if let Some(q) = u.callback_query {
+                api.answer_callback(&q.id).await;
+                let chat_id = q.message.map_or(q.from.id, |m| m.chat.id);
+                let reply = match pool.acquire().await {
+                    Ok(mut conn) => {
+                        handle_callback(&mut conn, chat_id, q.data.as_deref().unwrap_or("")).await
+                    }
+                    Err(e) => Err(AppError::from(e)),
+                };
+                match reply {
+                    Ok(r) => {
+                        api.send_with(chat_id, &r.text, Some(r.markup())).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "телеграм: кнопка не обработана");
+                        api.send(chat_id, "Не получилось, попробуйте позже.").await;
+                    }
+                }
+                continue;
+            }
             let Some(m) = u.message else { continue };
             let from_id = m.from.as_ref().map_or(m.chat.id, |f| f.id);
             let contact = m.contact.map(|c| SharedContact {
@@ -1331,8 +1461,7 @@ async fn commands_loop(pool: PgPool, api: Api) {
             };
             match reply {
                 Ok(r) => {
-                    api.send_with(m.chat.id, &r.text, Some(r.keys.markup()))
-                        .await;
+                    api.send_with(m.chat.id, &r.text, Some(r.markup())).await;
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "телеграм: команда не обработана");

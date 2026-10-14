@@ -477,9 +477,10 @@ async fn reconciliation(
 async fn oil_book(State(state): State<AppState>, client: Client) -> AppResult<Json<Value>> {
     client.ready()?;
     let mut conn = state.pool.acquire().await?;
-    let books =
+    let mut books =
         crate::api::oil_book::books(&mut conn, client.branch_id, Some(client.party_id), None)
             .await?;
+    crate::api::oil_book::hide_deleted_notes(&mut books);
     Ok(Json(json!(books)))
 }
 

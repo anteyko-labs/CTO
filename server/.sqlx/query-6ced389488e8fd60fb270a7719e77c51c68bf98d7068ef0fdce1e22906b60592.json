@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from audit_log\n           where branch_id = $1 and created_at > now() - interval '1 minute'\n             and action = any($2) and data->>'chat' = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6ced389488e8fd60fb270a7719e77c51c68bf98d7068ef0fdce1e22906b60592"
+}

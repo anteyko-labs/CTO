@@ -1448,7 +1448,7 @@ async fn oil_book_records_service_change(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate) values ($1, $2, $3, '01KG123ABC')")
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG123ABC', '01KG123ABC')")
         .bind(vehicle)
         .bind(w.owner.user.branch_id)
         .bind(party)
@@ -1538,7 +1538,7 @@ async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate) values ($1, $2, $3, '01KG777AAA')")
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG777AAA', '01KG777AAA')")
         .bind(vehicle)
         .bind(w.owner.user.branch_id)
         .bind(party)
@@ -2123,7 +2123,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, brand) values ($1, $2, $3, '01KG123ABC', 'Toyota')")
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, brand) values ($1, $2, $3, '01KG123ABC', '01KG123ABC', 'Toyota')")
         .bind(vehicle)
         .bind(w.owner.user.branch_id)
         .bind(party)
@@ -2372,4 +2372,480 @@ async fn offline_sale_after_shift_close_notifies_owner(pool: PgPool) {
     assert_eq!(got[0].0["cash"], 30_000);
     assert_eq!(got[0].0["shift_number"], 7);
     assert_eq!(got[0].0["number"], late.number);
+}
+
+// ---------- Машины клиента в боте (SPEC-22) ----------
+
+/// Нажатие кнопки под сообщением в чате `chat`.
+async fn press(
+    conn: &mut sqlx::PgConnection,
+    chat: i64,
+    data: &str,
+) -> avtodom_server::api::telegram::Reply {
+    avtodom_server::api::telegram::handle_callback(conn, chat, data)
+        .await
+        .unwrap()
+}
+
+/// Клиент-физлицо (или фирма), подключённый к боту из чата `chat`.
+async fn bot_customer(pool: &PgPool, w: &World, name: &str, kind: &str, chat: i64) -> Uuid {
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', $3, $4, '')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .bind(kind)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, '')")
+        .bind(chat)
+        .bind(party)
+        .execute(pool)
+        .await
+        .unwrap();
+    party
+}
+
+async fn staff_car(pool: &PgPool, w: &World, party: Uuid, plate: &str, active: bool) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, active) values ($1, $2, $3, $4, plate_norm($4), $5)")
+        .bind(id)
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .bind(plate)
+        .bind(active)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+/// Замена в сервисе: канистра масла и фильтр на 2 500 с, пробег 85 000.
+async fn service_change(pool: &PgPool, w: &World, party: Uuid, vehicle: Uuid) -> Uuid {
+    let mut req = takeaway(
+        w,
+        vec![
+            line("container", w.oil, 1, 200_000),
+            line("piece", w.filter, 1, 50_000),
+        ],
+        cash(250_000),
+    );
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.party_id = Some(party);
+    req.vehicle_id = Some(vehicle);
+    req.mileage_km = Some(85_000);
+    sell(pool, &w.owner, req).await.unwrap().id
+}
+
+async fn car_of(
+    pool: &PgPool,
+    party: Uuid,
+    plate: &str,
+) -> Option<(Uuid, bool, String, String, String)> {
+    sqlx::query_as("select id, active, plate, brand, added_by from party_vehicles where party_id = $1 and plate_norm = $2")
+        .bind(party)
+        .bind(plate)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn plate_norm_in_database_matches_rust(pool: PgPool) {
+    // Миграция заполнила номера функцией базы — правило то же, что в боте.
+    use avtodom_server::domain::plate::{SAMPLES, normalize};
+    for s in SAMPLES {
+        let db: String = sqlx::query_scalar("select plate_norm($1)")
+            .bind(s)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(db, normalize(s), "{s:?}");
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_customer_adds_finds_and_removes_cars(pool: PgPool) {
+    use avtodom_server::api::bot_cars::added_text;
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let chat = 700_001i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let other = bot_customer(&pool, &w, "Чужой Бакыт", "person", 700_002).await;
+    // У другого клиента — машина с историей.
+    let foreign = staff_car(&pool, &w, other, "01KG123ABC", true).await;
+    service_change(&pool, &w, other, foreign).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    // Нет машин — бот сразу просит номер; кривой номер — подсказка, ожидание остаётся.
+    let r = say(&mut conn, chat, "🚗 Мои машины").await;
+    assert!(r.contains("Напишите госномер"), "{r}");
+    assert!(
+        say(&mut conn, chat, "01-k")
+            .await
+            .contains("Не похоже на госномер")
+    );
+    // «01 kg 777 аВс»: пробелы убраны, кириллица стала латиницей; затем марка и модель.
+    let r = say(&mut conn, chat, "01 kg 777 аВс").await;
+    assert!(r.contains("Марка и модель"), "{r}");
+    let added = say(&mut conn, chat, "Toyota Camry").await;
+    assert!(added.starts_with(&added_text("01KG777ABC")), "{added}");
+    let (_, active, plate, brand, by) = car_of(&pool, me, "01KG777ABC").await.unwrap();
+    assert!(active);
+    assert_eq!(
+        (plate.as_str(), brand.as_str(), by.as_str()),
+        ("01KG777ABC", "Toyota", "client")
+    );
+
+    // Номер другого клиента: новая пустая машина, ответ как у нового номера, владельцу уведомление.
+    press(&mut conn, chat, "add").await;
+    say(&mut conn, chat, "01 КG 123 АВС").await;
+    let conflict = press(&mut conn, chat, "skip").await;
+    press(&mut conn, chat, "add").await;
+    say(&mut conn, chat, "B 555 XY").await;
+    let fresh = press(&mut conn, chat, "skip").await;
+    assert_eq!(
+        conflict.text.replace("01KG123ABC", "#"),
+        fresh.text.replace("B555XY", "#")
+    );
+    let labels = |r: &avtodom_server::api::telegram::Reply| -> Vec<String> {
+        r.inline.iter().flatten().map(|b| b.text.clone()).collect()
+    };
+    assert_eq!(labels(&conflict), labels(&fresh));
+    assert!(!conflict.text.contains("85 000") && !conflict.text.contains("Бакыт"));
+    let (mine, ..) = car_of(&pool, me, "01KG123ABC").await.unwrap();
+    assert_ne!(mine, foreign);
+    let mut c2 = pool.acquire().await.unwrap();
+    let book =
+        avtodom_server::api::oil_book::books(&mut c2, w.owner.user.branch_id, Some(me), Some(mine))
+            .await
+            .unwrap();
+    assert!(book[0].records.is_empty());
+    let alerts: Vec<(serde_json::Value,)> =
+        sqlx::query_as("select data from audit_log where action = 'vehicle.plate_conflict'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].0["plate"], "01KG123ABC");
+    assert_eq!(alerts[0].0["other"], "Чужой Бакыт");
+    assert_eq!(alerts[0].0["client"], "Эрлан");
+
+    // Своя убранная машина по номеру возвращается с историей, дубля нет.
+    let old = staff_car(&pool, &w, me, "A 555 BB", false).await;
+    service_change(&pool, &w, me, old).await;
+    press(&mut conn, chat, "add").await;
+    let found = say(&mut conn, chat, "a555bb").await;
+    assert!(found.starts_with("Нашли вашу машину"), "{found}");
+    assert!(
+        found.contains("85 000 км") && found.contains("Замены:"),
+        "{found}"
+    );
+    let (id, active, ..) = car_of(&pool, me, "A555BB").await.unwrap();
+    assert!(active && id == old);
+    let n: i64 = sqlx::query_scalar(
+        "select count(*) from party_vehicles where party_id = $1 and plate_norm = 'A555BB'",
+    )
+    .bind(me)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+
+    // Убрать: подтверждение, машина пропала из списка, история и чек на месте.
+    let ask = press(&mut conn, chat, &format!("rm:{old}")).await;
+    assert!(ask.text.contains("Убрать A 555 BB"), "{}", ask.text);
+    let list = press(&mut conn, chat, &format!("rmy:{old}")).await;
+    assert!(list.text.contains("убрана"));
+    assert!(!labels(&list).iter().any(|l| l.contains("A 555 BB")));
+    assert!(!car_of(&pool, me, "A555BB").await.unwrap().1);
+    let kept: i64 = sqlx::query_scalar("select count(*) from oil_changes where vehicle_id = $1")
+        .bind(old)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
+    let removed: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'vehicle.client_removed' and entity_id = $1",
+    )
+    .bind(old)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+    // Снова тот же номер — машина с историей.
+    press(&mut conn, chat, "add").await;
+    let back = say(&mut conn, chat, "A-555-BB").await;
+    assert!(
+        back.starts_with("Нашли вашу машину") && back.contains("85 000 км"),
+        "{back}"
+    );
+
+    // Кнопка меню отменяет ожидание: текст после неё — не номер.
+    press(&mut conn, chat, "add").await;
+    say(&mut conn, chat, "🚗 Мои машины").await;
+    assert!(say(&mut conn, chat, "X 999 ZZ").await.contains("Баллов"));
+    assert!(car_of(&pool, me, "X999ZZ").await.is_none());
+
+    // 11-я машина не добавляется (сейчас 4 активные).
+    for i in 0..6 {
+        staff_car(&pool, &w, me, &format!("Z{i}000ZZ"), true).await;
+    }
+    assert!(
+        press(&mut conn, chat, "add")
+            .await
+            .text
+            .contains("уже 10 машин")
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_notes_limits_and_foreign_chat(pool: PgPool) {
+    let w = seed(&pool).await;
+    let chat = 710_001i64;
+    let stranger_chat = 710_002i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    bot_customer(&pool, &w, "Другой", "person", stranger_chat).await;
+    let car = staff_car(&pool, &w, me, "01KG123ABC", true).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    // Пометка: длинная не принимается, обычная сохраняется и видна в карточке и в программе.
+    assert!(
+        press(&mut conn, chat, &format!("note:{car}"))
+            .await
+            .text
+            .contains("до 500")
+    );
+    assert!(
+        say(&mut conn, chat, &"а".repeat(501))
+            .await
+            .contains("Слишком длинно")
+    );
+    let saved = say(&mut conn, chat, "стук справа при повороте").await;
+    assert!(
+        saved.starts_with("Сохранено") && saved.contains("— стук справа"),
+        "{saved}"
+    );
+    let note: Uuid = sqlx::query_scalar("select id from vehicle_notes where vehicle_id = $1")
+        .bind(car)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut c2 = pool.acquire().await.unwrap();
+    let books =
+        avtodom_server::api::oil_book::books(&mut c2, w.owner.user.branch_id, Some(me), None)
+            .await
+            .unwrap();
+    assert_eq!(books[0].client_notes.len(), 1);
+    assert_eq!(books[0].client_notes[0].text, "стук справа при повороте");
+
+    // Чужой чат: кнопки с номером чужой машины и пометки ничего не открывают и не меняют.
+    for data in [
+        format!("car:{car}"),
+        format!("more:{car}:10"),
+        format!("note:{car}"),
+        format!("rm:{car}"),
+        format!("rmy:{car}"),
+        format!("dn:{note}"),
+    ] {
+        let r = press(&mut conn, stranger_chat, &data).await;
+        assert!(r.text.contains("не найдена"), "{data}: {}", r.text);
+        assert!(!r.text.contains("стук"));
+    }
+    assert!(car_of(&pool, me, "01KG123ABC").await.unwrap().1);
+    let pending: i64 = sqlx::query_scalar("select count(*) from bot_input where chat_id = $1")
+        .bind(stranger_chat)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pending, 0);
+    let deleted: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("select deleted_at from vehicle_notes where id = $1")
+            .bind(note)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(deleted.is_none());
+
+    // Владелец и неподключённый чат кнопок не получают.
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) values (710009, $1, $2)")
+        .bind(w.owner.user.id)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let owner = press(&mut conn, 710_009, &format!("car:{car}")).await;
+    assert_eq!(owner.keys, avtodom_server::api::telegram::Keys::Owner);
+    assert!(owner.inline.is_empty() && !owner.text.contains("01KG123ABC"));
+    assert!(
+        !say(&mut conn, 710_009, "🚗 Мои машины")
+            .await
+            .contains("01KG123ABC")
+    );
+    let nobody = press(&mut conn, 710_010, &format!("car:{car}")).await;
+    assert_eq!(nobody.keys, avtodom_server::api::telegram::Keys::Contact);
+    assert!(nobody.inline.is_empty());
+
+    // Клиент удаляет свою пометку: из бота и с кассы пропадает, владельцу видна удалённой.
+    let r = press(&mut conn, chat, &format!("dn:{note}")).await;
+    assert!(
+        r.text.starts_with("Пометка удалена") && !r.text.contains("стук"),
+        "{}",
+        r.text
+    );
+    let mut books =
+        avtodom_server::api::oil_book::books(&mut c2, w.owner.user.branch_id, Some(me), None)
+            .await
+            .unwrap();
+    assert!(books[0].client_notes[0].deleted);
+    avtodom_server::api::oil_book::hide_deleted_notes(&mut books);
+    assert!(books[0].client_notes.is_empty());
+
+    // 31-я пометка не добавляется.
+    for i in 0..30 {
+        sqlx::query("insert into vehicle_notes (id, branch_id, vehicle_id, party_id, text) values ($1, $2, $3, $4, $5)")
+            .bind(Uuid::now_v7())
+            .bind(w.owner.user.branch_id)
+            .bind(car)
+            .bind(me)
+            .bind(format!("пометка {i}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    assert!(
+        press(&mut conn, chat, &format!("note:{car}"))
+            .await
+            .text
+            .contains("уже 30 пометок")
+    );
+
+    // Не больше 30 действий в минуту.
+    for _ in 0..30 {
+        sqlx::query("insert into audit_log (id, branch_id, action, entity, data) values ($1, $2, 'vehicle.client_note', 'vehicle', $3)")
+            .bind(Uuid::now_v7())
+            .bind(w.owner.user.branch_id)
+            .bind(serde_json::json!({ "chat": chat }))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    assert!(
+        press(&mut conn, chat, &format!("rmy:{car}"))
+            .await
+            .text
+            .contains("Слишком часто")
+    );
+    assert!(car_of(&pool, me, "01KG123ABC").await.unwrap().1);
+
+    // Фирма: машины смотрят, но не правят.
+    let firm_chat = 710_003i64;
+    let firm = bot_customer(&pool, &w, "ОсОО Фирма", "company", firm_chat).await;
+    let firm_car = staff_car(&pool, &w, firm, "B777CC", true).await;
+    assert!(
+        press(&mut conn, firm_chat, "add")
+            .await
+            .text
+            .contains("Машины фирмы ведёт точка")
+    );
+    assert!(
+        press(&mut conn, firm_chat, &format!("rmy:{firm_car}"))
+            .await
+            .text
+            .contains("ведёт точка")
+    );
+    let card = press(&mut conn, firm_chat, &format!("car:{firm_car}")).await;
+    assert!(card.text.contains("B777CC"));
+    assert!(
+        !card
+            .inline
+            .iter()
+            .flatten()
+            .any(|b| b.data.starts_with("rm:"))
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
+    use avtodom_server::domain::money::format_som;
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let chat = 720_001i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let car = staff_car(&pool, &w, me, "01KG123ABC", true).await;
+    let sale = service_change(&pool, &w, me, car).await;
+    // Фильтр вернули: в карточке итог чека минус возврат.
+    let mut tx = pool.begin().await.unwrap();
+    return_sale_tx(
+        &mut tx,
+        &w.owner,
+        sale,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            comment: String::new(),
+            lines: vec![ReturnLineReq { line_no: 2, qty: 1 }],
+            payments: cash(50_000),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // Запись из тетради — без суммы.
+    sqlx::query("insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, mileage_km, oil_text, user_id) values ($1, $2, $3, $4, '2026-01-10', 70000, 'Тетрадное масло', $5)")
+        .bind(Uuid::now_v7())
+        .bind(w.owner.user.branch_id)
+        .bind(car)
+        .bind(me)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let books =
+        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(me), None)
+            .await
+            .unwrap();
+    assert_eq!(books[0].records[0].sale_total_tyiyn, Some(200_000));
+    assert_eq!(books[0].records[1].sale_total_tyiyn, None);
+    let card = press(&mut conn, chat, &format!("car:{car}")).await.text;
+    assert!(
+        card.contains(&format!("85 000 км · {}", format_som(200_000))),
+        "{card}"
+    );
+    assert!(card.contains("10.01.2026 · 70 000 км · —"), "{card}");
+    assert!(card.contains("Масло: Масло 5W-30 4л") && card.contains("Фильтр: Фильтр W712"));
+    assert!(card.contains("Следующая замена: на 93 000 км или до") && card.contains("что раньше"));
+    assert!(!card.contains(&format_som(250_000)));
+
+    // Больше 10 замен — кнопка «Ещё» со следующими.
+    for d in 1..=10 {
+        sqlx::query("insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, oil_text, user_id) values ($1, $2, $3, $4, $5, 'старое', $6)")
+            .bind(Uuid::now_v7())
+            .bind(w.owner.user.branch_id)
+            .bind(car)
+            .bind(me)
+            .bind(chrono::NaiveDate::from_ymd_opt(2025, 1, d).unwrap())
+            .bind(w.owner.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let card = press(&mut conn, chat, &format!("car:{car}")).await;
+    let more = card
+        .inline
+        .iter()
+        .flatten()
+        .find(|b| b.text == "Ещё")
+        .unwrap()
+        .data
+        .clone();
+    let next = press(&mut conn, chat, &more).await.text;
+    assert!(
+        next.contains("продолжение") && next.contains("01.01.2025"),
+        "{next}"
+    );
 }
