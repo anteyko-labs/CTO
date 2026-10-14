@@ -21,19 +21,19 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Serialize, Default)]
-pub(crate) struct Totals {
-    pub(crate) goods_tyiyn: i64,
-    pub(crate) services_tyiyn: i64,
-    pub(crate) cost_tyiyn: i64,
-    pub(crate) gross_tyiyn: i64,
-    pub(crate) payroll_tyiyn: i64,
-    pub(crate) bank_fee_tyiyn: i64,
-    pub(crate) expenses_tyiyn: i64,
+pub struct Totals {
+    pub goods_tyiyn: i64,
+    pub services_tyiyn: i64,
+    pub cost_tyiyn: i64,
+    pub gross_tyiyn: i64,
+    pub payroll_tyiyn: i64,
+    pub bank_fee_tyiyn: i64,
+    pub expenses_tyiyn: i64,
     /// Оплачено баллами за вычетом возвращённых — скидка клиентам (SPEC-19).
-    pub(crate) bonus_tyiyn: i64,
-    pub(crate) net_tyiyn: i64,
-    pub(crate) margin_bp: Option<i64>,
-    pub(crate) sales_count: i64,
+    pub bonus_tyiyn: i64,
+    pub net_tyiyn: i64,
+    pub margin_bp: Option<i64>,
+    pub sales_count: i64,
 }
 
 #[derive(Serialize)]
@@ -67,9 +67,9 @@ struct HourRow {
 }
 
 #[derive(Serialize)]
-struct ArticleRow {
-    name: String,
-    amount_tyiyn: i64,
+pub(crate) struct ArticleRow {
+    pub(crate) name: String,
+    pub(crate) amount_tyiyn: i64,
 }
 
 #[derive(Serialize)]
@@ -102,7 +102,8 @@ async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
 }
 
 /// Деньги за период: выручка, себестоимость, оплата труда, комиссия и расходы.
-pub(crate) async fn totals_for(
+/// Открыт для проверок: ответ бота на вопрос сверяется с этим расчётом (SPEC-21).
+pub async fn totals_for(
     conn: &mut PgConnection,
     branch_id: Uuid,
     from: NaiveDate,
@@ -207,6 +208,32 @@ pub(crate) async fn totals_for(
     })
 }
 
+/// Расходы по статьям за период, с личными: для отчёта и для вопросов боту (SPEC-21).
+pub(crate) async fn articles_for(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<ArticleRow>> {
+    Ok(sqlx::query!(
+        r#"select a.name as "name!", coalesce(sum(e.amount_tyiyn), 0)::bigint as "amount!"
+           from expenses e join expense_articles a on a.id = e.article_id
+           where e.branch_id = $1 and e.expense_date between $2 and $3
+           group by a.name having coalesce(sum(e.amount_tyiyn), 0) <> 0 order by 2 desc"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| ArticleRow {
+        name: r.name,
+        amount_tyiyn: r.amount,
+    })
+    .collect())
+}
+
 async fn profit(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -299,23 +326,7 @@ async fn profit(
     })
     .collect();
 
-    let articles = sqlx::query!(
-        r#"select a.name as "name!", coalesce(sum(e.amount_tyiyn), 0)::bigint as "amount!"
-           from expenses e join expense_articles a on a.id = e.article_id
-           where e.branch_id = $1 and e.expense_date between $2 and $3
-           group by a.name having coalesce(sum(e.amount_tyiyn), 0) <> 0 order by 2 desc"#,
-        branch_id,
-        from,
-        to
-    )
-    .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(|r| ArticleRow {
-        name: r.name,
-        amount_tyiyn: r.amount,
-    })
-    .collect();
+    let articles = articles_for(&mut conn, branch_id, from, to).await?;
 
     let mut warnings = Vec::new();
     let review = sqlx::query_scalar!(

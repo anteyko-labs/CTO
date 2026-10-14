@@ -1,6 +1,7 @@
 //! Все маршруты API `/api/v1`. Каждый модуль отвечает за свою спецификацию — см. заголовок модуля.
 
 pub mod analogs;
+pub mod assistant;
 pub mod auth;
 pub mod batteries;
 pub mod bot_cars;

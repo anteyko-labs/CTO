@@ -12,4 +12,6 @@ pub struct AppState {
     pub dummy_hash: Arc<String>,
     /// Телеграм-бот включён: на сервере задан TELEGRAM_BOT_TOKEN (ADR-050).
     pub telegram_bot: bool,
+    /// Вопросы боту текстом включены (SPEC-21): дневной предел; `None` — выключены.
+    pub assistant_daily_limit: Option<i64>,
 }

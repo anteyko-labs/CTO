@@ -1027,33 +1027,33 @@ struct MonthQuery {
 }
 
 #[derive(Serialize)]
-struct MonthRow {
-    employee_id: Uuid,
-    full_name: String,
-    is_cashier: bool,
-    is_master: bool,
-    opening_tyiyn: i64,
-    salary_tyiyn: i64,
-    percent_tyiyn: i64,
-    service_fee_tyiyn: i64,
-    shift_fee_tyiyn: i64,
-    bonus_tyiyn: i64,
-    penalty_tyiyn: i64,
-    shortage_tyiyn: i64,
-    accrued_tyiyn: i64,
-    paid_tyiyn: i64,
-    closing_tyiyn: i64,
+pub(crate) struct MonthRow {
+    pub(crate) employee_id: Uuid,
+    pub(crate) full_name: String,
+    pub(crate) is_cashier: bool,
+    pub(crate) is_master: bool,
+    pub(crate) opening_tyiyn: i64,
+    pub(crate) salary_tyiyn: i64,
+    pub(crate) percent_tyiyn: i64,
+    pub(crate) service_fee_tyiyn: i64,
+    pub(crate) shift_fee_tyiyn: i64,
+    pub(crate) bonus_tyiyn: i64,
+    pub(crate) penalty_tyiyn: i64,
+    pub(crate) shortage_tyiyn: i64,
+    pub(crate) accrued_tyiyn: i64,
+    pub(crate) paid_tyiyn: i64,
+    pub(crate) closing_tyiyn: i64,
     /// Оклад за этот месяц уже начислен (повторно — 409).
-    salary_done: bool,
+    pub(crate) salary_done: bool,
     /// Ставка оклада по действующему правилу — подставляется в форму начисления.
-    salary_rule_tyiyn: Option<i64>,
+    pub(crate) salary_rule_tyiyn: Option<i64>,
 }
 
 #[derive(Serialize)]
-struct MonthOut {
-    from: NaiveDate,
-    to: NaiveDate,
-    rows: Vec<MonthRow>,
+pub(crate) struct MonthOut {
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
+    pub(crate) rows: Vec<MonthRow>,
 }
 
 /// Расчёт за месяц: остаток на начало, начисления по видам, выплаты, остаток на конец (SPEC-07).
@@ -1063,11 +1063,20 @@ async fn month(
     Query(q): Query<MonthQuery>,
 ) -> AppResult<Json<MonthOut>> {
     let mut conn = state.pool.acquire().await?;
+    Ok(Json(month_data(&mut conn, user.branch_id, q.month).await?))
+}
+
+/// Расчёт за месяц, где `month` — любой день месяца: для экрана и для вопросов боту (SPEC-21).
+pub(crate) async fn month_data(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    month: Option<NaiveDate>,
+) -> AppResult<MonthOut> {
     let b = sqlx::query!(
         r#"select date_trunc('month', coalesce($1::date, (now() at time zone 'Asia/Bishkek')::date))::date as "from!",
                   (date_trunc('month', coalesce($1::date, (now() at time zone 'Asia/Bishkek')::date))
                    + interval '1 month - 1 day')::date as "to!""#,
-        q.month
+        month
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -1104,7 +1113,7 @@ async fn month(
            group by e.id, e.full_name, e.is_cashier, e.is_master, e.active
            having e.active or coalesce(sum(a.amount_tyiyn), 0) <> 0
            order by e.full_name"#,
-        user.branch_id,
+        branch_id,
         b.from,
         b.to
     )
@@ -1132,11 +1141,11 @@ async fn month(
             salary_rule_tyiyn: r.salary_rule,
         })
         .collect();
-    Ok(Json(MonthOut {
+    Ok(MonthOut {
         from: b.from,
         to: b.to,
         rows,
-    }))
+    })
 }
 
 #[derive(Deserialize)]

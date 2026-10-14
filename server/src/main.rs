@@ -43,7 +43,17 @@ async fn run() -> Result<(), String> {
     // Телеграм-бот владельца — только если задан ключ (ADR-050).
     if let Some(token) = config.telegram_token.clone() {
         state.telegram_bot = true;
-        avtodom_server::api::telegram::spawn(pool, token);
+        // Вопросы владельца текстом — только если задан и ключ сервиса разбора (SPEC-21).
+        let assistant = config.assistant_key.clone().map(|k| {
+            avtodom_server::api::assistant::Assistant::new(
+                k.0,
+                config.assistant_url.clone(),
+                config.assistant_model.clone(),
+                config.assistant_daily_limit,
+            )
+        });
+        state.assistant_daily_limit = assistant.as_ref().map(|a| a.daily_limit());
+        avtodom_server::api::telegram::spawn(pool, token, assistant);
     }
     let web_dir = PathBuf::from(&config.web_dir);
     let web = web_dir

@@ -28,6 +28,8 @@ services:
       BOOTSTRAP_OWNER_PASSWORD: ${OWNER_PASSWORD:-}
       # Ключ Телеграм-бота владельца от @BotFather; пусто — бот выключен (ADR-050).
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Ключ сервиса разбора вопросов боту текстом (SPEC-21); пусто — выключено.
+      ASSISTANT_API_KEY: ${ASSISTANT_API_KEY:-}
       RUST_LOG: info
 
   proxy:

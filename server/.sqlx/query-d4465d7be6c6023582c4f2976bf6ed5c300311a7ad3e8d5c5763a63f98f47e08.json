@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_dialog (id, chat_id, branch_id, at, role, content)\n               values ($1, $3, $4, now(), 'user', $5), ($2, $3, $4, now() + interval '1 microsecond', 'assistant', $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d4465d7be6c6023582c4f2976bf6ed5c300311a7ad3e8d5c5763a63f98f47e08"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from bot_dialog where at < now() - interval '30 minutes'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "9aa33065160accb9350f4872e521aef443b93c7a713239aee2a073f245d2746d"
+}

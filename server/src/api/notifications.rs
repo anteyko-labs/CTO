@@ -49,13 +49,13 @@ pub(crate) const WATCHED: [&str; 26] = [
 ];
 
 #[derive(Serialize)]
-struct NotificationOut {
+pub(crate) struct NotificationOut {
     id: Uuid,
     action: String,
-    title: String,
-    details: String,
-    user_name: Option<String>,
-    at: DateTime<Utc>,
+    pub(crate) title: String,
+    pub(crate) details: String,
+    pub(crate) user_name: Option<String>,
+    pub(crate) at: DateTime<Utc>,
     entity_id: Option<Uuid>,
     new: bool,
 }
@@ -403,8 +403,21 @@ async fn list(
         return Err(AppError::Forbidden);
     }
     let seen = seen_at(&state, &user).await?;
-    let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let mut conn = state.pool.acquire().await?;
+    let items = latest(&mut conn, user.branch_id, limit, seen).await?;
+    let unseen = i64::try_from(items.iter().filter(|i| i.new).count()).unwrap_or(i64::MAX);
+    Ok(Json(NotificationsOut { unseen, items }))
+}
+
+/// Последние важные события филиала: для экрана и для вопросов боту (SPEC-21).
+pub(crate) async fn latest(
+    conn: &mut sqlx::PgConnection,
+    branch_id: Uuid,
+    limit: i64,
+    seen: Option<DateTime<Utc>>,
+) -> AppResult<Vec<NotificationOut>> {
+    let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as "user_name?"
            from audit_log a
@@ -412,13 +425,13 @@ async fn list(
            where a.branch_id = $1 and a.action = any($2)
            order by a.created_at desc
            limit $3"#,
-        user.branch_id,
+        branch_id,
         &watched,
         limit
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    let items: Vec<NotificationOut> = rows
+    Ok(rows
         .into_iter()
         .map(|r| {
             let (title, details) = describe(&r.action, &r.data);
@@ -433,9 +446,7 @@ async fn list(
                 new: seen.is_none_or(|s| r.created_at > s),
             }
         })
-        .collect();
-    let unseen = i64::try_from(items.iter().filter(|i| i.new).count()).unwrap_or(i64::MAX);
-    Ok(Json(NotificationsOut { unseen, items }))
+        .collect())
 }
 
 async fn mark_seen(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Value>> {

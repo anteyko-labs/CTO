@@ -59,6 +59,60 @@ function LoyaltyRate() {
   )
 }
 
+interface Usage {
+  questions: number
+  input_tokens: number
+  output_tokens: number
+}
+
+interface QuestionsUsage {
+  enabled: boolean
+  daily_limit: number | null
+  today: Usage
+  month: Usage
+}
+
+const count = (n: number) => n.toLocaleString('ru-RU')
+
+/** Вопросы владельца боту обычным текстом: включены ли и расход (SPEC-21). */
+function BotQuestions() {
+  const st = useLoad(() => get<QuestionsUsage>('/settings/telegram/questions'), [])
+  const u = st.data
+  if (!u) return <ErrorBox error={st.error} />
+  return (
+    <Card className="flex flex-col gap-2 text-sm text-slate-700">
+      <CardTitle>Вопросы боту текстом</CardTitle>
+      {u.enabled ? (
+        <div className="-mt-2">
+          Включены: в привязанном чате можно спросить обычным текстом — «сколько заработали за неделю», «кто больше всех должен», «что
+          кончается». Цифры берутся из тех же отчётов, что в программе. Не больше {u.daily_limit ?? '—'} вопросов в сутки.
+        </div>
+      ) : (
+        <div className="-mt-2">
+          Выключены: на сервере не задан ключ сервиса разбора вопросов
+          <code className="mx-1 rounded bg-slate-100 px-1">ASSISTANT_API_KEY</code>. Кнопки и команды бота работают и без него.
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2 sm:max-w-md">
+        {(
+          [
+            ['Сегодня', u.today],
+            ['За месяц', u.month],
+          ] as const
+        ).map(([title, x]) => (
+          <div key={title} className="rounded border border-slate-200 p-2">
+            <div className="font-medium">{title}</div>
+            <div>вопросов: {count(x.questions)}</div>
+            <div className="text-slate-500">
+              токенов: {count(x.input_tokens)} на вход, {count(x.output_tokens)} на выход
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
 export default function TelegramSettings() {
   const st = useLoad(() => get<Status>('/settings/telegram'), [])
   const [code, setCode] = useState<{ code: string; expires_at: string } | null>(null)
@@ -135,6 +189,7 @@ export default function TelegramSettings() {
           )}
         </Card>
       )}
+      {s?.enabled && <BotQuestions />}
       {s?.enabled && <LoyaltyRate />}
     </div>
   )

@@ -11,6 +11,34 @@ pub struct Config {
     pub bootstrap_owner: Option<(String, String)>,
     /// Ключ бота от @BotFather; без него бот выключен (ADR-050).
     pub telegram_token: Option<String>,
+    /// Вопросы владельца боту текстом (SPEC-21): ключ сервиса разбора вопросов; без него выключено.
+    pub assistant_key: Option<SecretKey>,
+    /// Модель и адрес сервиса; пусто — значения по умолчанию из `api::assistant`.
+    pub assistant_model: Option<String>,
+    pub assistant_url: Option<String>,
+    /// Сколько вопросов в сутки на филиал.
+    pub assistant_daily_limit: i64,
+}
+
+/// Ключ, который не печатается в журнал даже через `{:?}`.
+#[derive(Clone)]
+pub struct SecretKey(pub String);
+
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretKey(***)")
+    }
+}
+
+/// Вопросов боту в сутки по умолчанию (SPEC-21).
+pub const DEFAULT_ASSISTANT_DAILY_LIMIT: i64 = 100;
+
+/// Непустое значение переменной окружения без пробелов по краям.
+fn non_empty(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
 }
 
 impl Config {
@@ -24,6 +52,14 @@ impl Config {
             (Ok(l), Ok(p)) if !l.is_empty() && !p.is_empty() => Some((l, p)),
             _ => None,
         };
+        let assistant_daily_limit = match non_empty("ASSISTANT_DAILY_LIMIT") {
+            None => DEFAULT_ASSISTANT_DAILY_LIMIT,
+            Some(v) => v
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n >= 0)
+                .ok_or_else(|| "ASSISTANT_DAILY_LIMIT: нужно целое число от 0".to_string())?,
+        };
         Ok(Self {
             database_url,
             bind_addr: env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into()),
@@ -32,10 +68,11 @@ impl Config {
                 .map(|v| v == "true")
                 .unwrap_or(false),
             bootstrap_owner,
-            telegram_token: env::var("TELEGRAM_BOT_TOKEN")
-                .ok()
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty()),
+            telegram_token: non_empty("TELEGRAM_BOT_TOKEN"),
+            assistant_key: non_empty("ASSISTANT_API_KEY").map(SecretKey),
+            assistant_model: non_empty("ASSISTANT_MODEL"),
+            assistant_url: non_empty("ASSISTANT_API_URL"),
+            assistant_daily_limit,
         })
     }
 }

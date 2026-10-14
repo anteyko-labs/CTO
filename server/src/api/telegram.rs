@@ -1,6 +1,7 @@
 //! Телеграм-бот владельца: уведомления из журнала и сводка по командам (SPEC-18, ADR-050).
 //! Логика (привязка, команды, отбор уведомлений) отделена от сети и проверяется тестами;
 //! сетевая часть — два фоновых цикла с исходящими запросами к Телеграму.
+//! Вопросы владельца обычным текстом разбирает `api::assistant` (SPEC-21, ADR-060).
 
 use axum::extract::State;
 use axum::{Json, Router, routing};
@@ -10,6 +11,7 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+use crate::api::assistant::{self, Assistant};
 use crate::api::notifications::{WATCHED, describe};
 use crate::auth::{Ctx, Owner};
 use crate::domain::money::format_som;
@@ -21,6 +23,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/telegram", routing::get(status).delete(unlink))
         .route("/settings/telegram/code", routing::post(new_code))
+        .route(
+            "/settings/telegram/questions",
+            routing::get(questions_usage),
+        )
         .route("/telegram/bot", routing::get(bot_info))
 }
 
@@ -63,6 +69,60 @@ async fn status(State(state): State<AppState>, Owner(user): Owner) -> AppResult<
         enabled: state.telegram_bot,
         linked: linked_at.is_some(),
         linked_at,
+    }))
+}
+
+#[derive(Serialize)]
+struct UsageOut {
+    questions: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+}
+
+#[derive(Serialize)]
+struct QuestionsOut {
+    /// Вопросы текстом включены: на сервере заданы ключи бота и сервиса разбора вопросов.
+    enabled: bool,
+    daily_limit: Option<i64>,
+    today: UsageOut,
+    month: UsageOut,
+}
+
+/// Расход на вопросы боту текстом за сегодня и за месяц по Бишкеку (SPEC-21).
+async fn questions_usage(
+    State(state): State<AppState>,
+    Owner(user): Owner,
+) -> AppResult<Json<QuestionsOut>> {
+    let r = sqlx::query!(
+        r#"with b as (
+             select ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek' as day,
+                    date_trunc('month', now() at time zone 'Asia/Bishkek') at time zone 'Asia/Bishkek' as month)
+           select count(*) filter (where q.asked_at >= b.day) as "day_n!",
+                  coalesce(sum(q.input_tokens) filter (where q.asked_at >= b.day), 0)::bigint as "day_in!",
+                  coalesce(sum(q.output_tokens) filter (where q.asked_at >= b.day), 0)::bigint as "day_out!",
+                  count(q.id) as "month_n!",
+                  coalesce(sum(q.input_tokens), 0)::bigint as "month_in!",
+                  coalesce(sum(q.output_tokens), 0)::bigint as "month_out!"
+           from b left join bot_questions q
+             on q.branch_id = $1 and q.asked_at >= b.month and q.error is distinct from $2"#,
+        user.branch_id,
+        assistant::LIMIT_ERROR
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(QuestionsOut {
+        enabled: state.telegram_bot && state.assistant_daily_limit.is_some(),
+        daily_limit: state.assistant_daily_limit,
+        today: UsageOut {
+            questions: r.day_n,
+            input_tokens: r.day_in,
+            output_tokens: r.day_out,
+        },
+        month: UsageOut {
+            questions: r.month_n,
+            input_tokens: r.month_in,
+            output_tokens: r.month_out,
+        },
     }))
 }
 
@@ -251,9 +311,22 @@ pub struct SharedContact {
     pub user_id: Option<i64>,
 }
 
-/// Сообщение в бот: владелец — команды и привязка кодом; клиент — своя масляная книжка.
+/// Сообщение в бот без вопросов текстом — ровно SPEC-18.
 pub async fn handle_message(
     conn: &mut PgConnection,
+    chat_id: i64,
+    from_id: i64,
+    text: Option<&str>,
+    contact: Option<SharedContact>,
+) -> AppResult<Reply> {
+    handle_message_with(conn, None, chat_id, from_id, text, contact).await
+}
+
+/// Сообщение в бот: владелец — команды, привязка кодом и вопросы текстом (если сервис разбора
+/// задан, SPEC-21); клиент — своя масляная книжка.
+pub async fn handle_message_with(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
     chat_id: i64,
     from_id: i64,
     text: Option<&str>,
@@ -281,7 +354,7 @@ pub async fn handle_message(
             return Ok(r);
         }
     }
-    let owner = handle_text(conn, chat_id, text).await?;
+    let owner = handle_text(conn, assistant, chat_id, text).await?;
     if let Some(r) = owner {
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
@@ -681,9 +754,11 @@ pub async fn mark_reminded(conn: &mut PgConnection, r: &Reminder) -> AppResult<(
     Ok(())
 }
 
-/// Команды владельца и привязка кодом. `None` — чат не владельца и это не код: дальше решает клиентская часть.
+/// Команды владельца, привязка кодом и вопросы текстом. `None` — чат не владельца и это не код:
+/// дальше решает клиентская часть.
 pub async fn handle_text(
     conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
     chat_id: i64,
     text: &str,
 ) -> AppResult<Option<String>> {
@@ -701,10 +776,29 @@ pub async fn handle_text(
     if !code.is_empty() {
         return link(conn, chat_id, code).await.map(Some);
     }
-    let Some((_, branch_id)) = chat_owner(conn, chat_id).await? else {
+    let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? else {
         return Ok(None);
     };
-    match command(text).as_str() {
+    // Кнопка, «/команда» или одно слово команды — как в SPEC-18. Остальной текст при включённом
+    // сервисе разбора — вопрос (SPEC-21): «сегодня сколько масла продали» — уже не команда «Сегодня».
+    let words = text
+        .split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphanumeric))
+        .count();
+    let question = assistant.filter(|_| !text.starts_with('/') && words > 0);
+    let cmd = command(text);
+    let known = matches!(
+        cmd.as_str(),
+        "сегодня" | "today" | "смена" | "shift" | "долги" | "debts"
+    );
+    if let Some(a) = question
+        && (!known || words > 1)
+    {
+        return assistant::answer(conn, a, chat_id, user_id, branch_id, text)
+            .await
+            .map(Some);
+    }
+    match cmd.as_str() {
         "сегодня" | "today" => today(conn, branch_id).await.map(Some),
         "смена" | "shift" => shift(conn, branch_id).await.map(Some),
         "долги" | "debts" => debts(conn, branch_id).await.map(Some),
@@ -803,19 +897,7 @@ async fn today(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
         .await?;
     let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
     let staff = crate::api::payroll::staff_pay(conn, branch_id, day, day).await?;
-    crate::api::cash::ensure_accounts(conn, branch_id).await?;
-    let accounts = sqlx::query!(
-        r#"select name, balance_tyiyn from cash_accounts where branch_id = $1 and active
-           order by is_default desc, kind, name"#,
-        branch_id
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let money = accounts
-        .iter()
-        .map(|a| format!("  {}: {}", a.name, format_som(a.balance_tyiyn)))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let money = money_now(conn, branch_id).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
     let mut minus = vec![format!("  − зарплата: {}", format_som(t.payroll_tyiyn))];
     if t.bank_fee_tyiyn != 0 {
@@ -846,6 +928,23 @@ async fn today(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
     ))
 }
 
+/// Деньги сейчас по кассам: «Касса», «Счёт», «Сейф владельца» — строка на кассу.
+pub(crate) async fn money_now(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
+    crate::api::cash::ensure_accounts(conn, branch_id).await?;
+    let accounts = sqlx::query!(
+        r#"select name, balance_tyiyn from cash_accounts where branch_id = $1 and active
+           order by is_default desc, kind, name"#,
+        branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(accounts
+        .iter()
+        .map(|a| format!("  {}: {}", a.name, format_som(a.balance_tyiyn)))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 /// «1 чек», «3 чека», «12 чеков».
 fn checks_word(n: i64) -> String {
     let word = match (n % 10, n % 100) {
@@ -856,7 +955,7 @@ fn checks_word(n: i64) -> String {
     format!("{n} {word}")
 }
 
-async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
+pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
     let till = crate::api::cash::default_account(conn, branch_id).await?;
     let Some(id) = crate::api::cash::open_shift_id(conn, branch_id, till).await? else {
         return Ok("💵 Смена не открыта.".into());
@@ -1405,7 +1504,8 @@ async fn remember_username(pool: PgPool, api: Api) {
 }
 
 /// Запуск бота: если ключ задан — два фоновых цикла. Без интернета они ждут и пробуют снова.
-pub fn spawn(pool: PgPool, token: String) {
+/// `assistant` — вопросы владельца текстом (SPEC-21); `None` — бот ровно по SPEC-18.
+pub fn spawn(pool: PgPool, token: String, assistant: Option<Assistant>) {
     let base =
         std::env::var("TELEGRAM_API_BASE").unwrap_or_else(|_| "https://api.telegram.org".into());
     let api = Api {
@@ -1413,12 +1513,21 @@ pub fn spawn(pool: PgPool, token: String) {
         base: format!("{base}/bot{token}"),
     };
     tokio::spawn(remember_username(pool.clone(), api.clone()));
-    tokio::spawn(commands_loop(pool.clone(), api.clone()));
+    tokio::spawn(commands_loop(pool.clone(), api.clone(), assistant));
     tokio::spawn(notify_loop(pool, api));
     tracing::info!("телеграм-бот запущен");
 }
 
-async fn commands_loop(pool: PgPool, api: Api) {
+/// Чат привязан к владельцу. Ошибка базы — «нет»: сообщение обработается обычным путём.
+async fn is_owner_chat(pool: &PgPool, chat_id: i64) -> bool {
+    match pool.acquire().await {
+        Ok(mut conn) => matches!(chat_owner(&mut conn, chat_id).await, Ok(Some(_))),
+        Err(_) => false,
+    }
+}
+
+async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
+    let owner_turn = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let mut offset = 0i64;
     loop {
         let Some(updates) = api.updates(offset).await else {
@@ -1453,9 +1562,54 @@ async fn commands_loop(pool: PgPool, api: Api) {
                 phone: c.phone_number,
                 user_id: c.user_id,
             });
+            // Вопрос владельца ждёт сервис разбора до 30 с — отдельной задачей, чтобы клиенты
+            // и кнопки в это время не стояли. Сообщения владельца идут по очереди (owner_turn).
+            if let Some(a) = assistant.as_ref()
+                && m.text.is_some()
+                && is_owner_chat(&pool, m.chat.id).await
+            {
+                let (pool, api, a, turn) =
+                    (pool.clone(), api.clone(), a.clone(), owner_turn.clone());
+                let (chat_id, text) = (m.chat.id, m.text.clone());
+                tokio::spawn(async move {
+                    let _turn = turn.lock().await;
+                    let reply = match pool.acquire().await {
+                        Ok(mut conn) => {
+                            handle_message_with(
+                                &mut conn,
+                                Some(&a),
+                                chat_id,
+                                from_id,
+                                text.as_deref(),
+                                None,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(AppError::from(e)),
+                    };
+                    match reply {
+                        Ok(r) => {
+                            api.send_with(chat_id, &r.text, Some(r.markup())).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "телеграм: вопрос владельца не обработан");
+                            api.send(chat_id, "Не получилось, попробуйте позже.").await;
+                        }
+                    }
+                });
+                continue;
+            }
             let reply = match pool.acquire().await {
                 Ok(mut conn) => {
-                    handle_message(&mut conn, m.chat.id, from_id, m.text.as_deref(), contact).await
+                    handle_message_with(
+                        &mut conn,
+                        assistant.as_ref(),
+                        m.chat.id,
+                        from_id,
+                        m.text.as_deref(),
+                        contact,
+                    )
+                    .await
                 }
                 Err(e) => Err(AppError::from(e)),
             };

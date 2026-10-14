@@ -2849,3 +2849,605 @@ async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
         "{next}"
     );
 }
+
+// ---------- Вопросы владельца боту текстом (SPEC-21) ----------
+
+/// Шаг поддельного сервиса разбора вопросов.
+#[derive(Clone)]
+enum Step {
+    /// Ответить этим кодом и телом.
+    Reply(u16, serde_json::Value),
+    /// Вернуть текстом то, что пришло в результатах отчётов последнего сообщения.
+    Echo,
+}
+
+/// Поддельный сервис разбора вопросов на 127.0.0.1: отдаёт заготовленные ответы по очереди
+/// и запоминает каждый запрос (заголовки и тело).
+#[derive(Clone, Default)]
+struct FakeService {
+    steps: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Step>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, serde_json::Value)>>>,
+}
+
+impl FakeService {
+    fn push(&self, steps: Vec<Step>) {
+        self.steps.lock().unwrap().extend(steps);
+    }
+    fn requests(&self) -> Vec<serde_json::Value> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+    fn header(&self, i: usize, name: &str) -> String {
+        self.seen.lock().unwrap()[i]
+            .0
+            .get(name)
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default()
+    }
+}
+
+async fn fake_messages(
+    axum::extract::State(f): axum::extract::State<FakeService>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    f.seen.lock().unwrap().push((headers, body.clone()));
+    let step = f.steps.lock().unwrap().pop_front();
+    match step {
+        Some(Step::Reply(code, v)) => (
+            axum::http::StatusCode::from_u16(code).unwrap(),
+            axum::Json(v),
+        ),
+        Some(Step::Echo) => {
+            let last = body["messages"].as_array().unwrap().last().unwrap().clone();
+            let text = last["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["content"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (axum::http::StatusCode::OK, axum::Json(final_text(&text)))
+        }
+        None => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "type": "error", "error": { "type": "api_error" } })),
+        ),
+    }
+}
+
+async fn fake_service() -> (String, FakeService) {
+    let fake = FakeService::default();
+    let app = axum::Router::new()
+        .route("/v1/messages", axum::routing::post(fake_messages))
+        .with_state(fake.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), fake)
+}
+
+const SERVICE_KEY: &str = "test-secret-key-7f3a9c";
+
+/// Ответ модели: размышление (пустое, с подписью), текст и вызов отчёта.
+fn tool_use(name: &str, input: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            { "type": "thinking", "thinking": "", "signature": "sig-abc-123" },
+            { "type": "text", "text": "Смотрю отчёт." },
+            { "type": "tool_use", "id": "tu_1", "name": name, "input": input }
+        ],
+        "stop_reason": "tool_use",
+        "usage": { "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 50 }
+    })
+}
+
+fn final_text(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "msg_2",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            { "type": "thinking", "thinking": "", "signature": "sig-final" },
+            { "type": "text", "text": text }
+        ],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 150, "output_tokens": 30 }
+    })
+}
+
+async fn ask(
+    conn: &mut sqlx::PgConnection,
+    a: &avtodom_server::api::assistant::Assistant,
+    chat: i64,
+    text: &str,
+) -> String {
+    avtodom_server::api::telegram::handle_message_with(conn, Some(a), chat, chat, Some(text), None)
+        .await
+        .unwrap()
+        .text
+}
+
+async fn link_owner(pool: &PgPool, w: &World, chat: i64) {
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)")
+        .bind(chat)
+        .bind(w.owner.user.id)
+        .bind(w.owner.user.branch_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn bishkek_today(pool: &PgPool) -> String {
+    sqlx::query_scalar::<_, String>(
+        "select to_char((now() at time zone 'Asia/Bishkek')::date, 'YYYY-MM-DD')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Ни в журнале вопросов, ни в памяти разговора нет ключа сервиса.
+async fn assert_no_key_stored(pool: &PgPool) {
+    let n: i64 = sqlx::query_scalar(
+        "select (select count(*) from bot_questions where bot_questions::text like '%' || $1 || '%')
+              + (select count(*) from bot_dialog where bot_dialog::text like '%' || $1 || '%')",
+    )
+    .bind(SERVICE_KEY)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 0, "ключ попал в базу");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_question_answers_from_profit_report(pool: PgPool) {
+    // Вопрос → вызов отчёта → результат → ответ с теми же цифрами, что «📊 Сегодня» (SPEC-21).
+    use avtodom_server::api::assistant::Assistant;
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 30_000).await;
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+    )
+    .await
+    .unwrap();
+    let chat = 880_001i64;
+    link_owner(&pool, &w, chat).await;
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let today = bishkek_today(&pool).await;
+    fake.push(vec![
+        Step::Reply(
+            200,
+            tool_use(
+                "profit_totals",
+                serde_json::json!({ "from": today, "to": today }),
+            ),
+        ),
+        Step::Echo,
+    ]);
+    let mut conn = pool.acquire().await.unwrap();
+    let reply = ask(&mut conn, &a, chat, "сколько заработали сегодня?").await;
+
+    // Чистая прибыль до тыйына — как в отчёте «📊 Сегодня».
+    let button = say(&mut conn, chat, "📊 Сегодня").await;
+    let net = button
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("= ЧИСТАЯ ПРИБЫЛЬ: "))
+        .unwrap()
+        .to_string();
+    assert_ne!(net, "0 с");
+    assert!(reply.contains(&format!("Чистая прибыль: {net}")), "{reply}");
+    // Кнопки отвечают сами, без обращения к сервису.
+    assert_eq!(fake.requests().len(), 2);
+
+    let reqs = fake.requests();
+    // Ключ — в заголовке; без temperature; инструкция кешируется и без даты.
+    assert_eq!(fake.header(0, "x-api-key"), SERVICE_KEY);
+    assert!(reqs[0].get("temperature").is_none());
+    assert_eq!(reqs[0]["max_tokens"], 4096);
+    assert_eq!(reqs[0]["tools"].as_array().unwrap().len(), 11);
+    let system = reqs[0]["system"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(system["cache_control"]["type"], "ephemeral");
+    let dmy = format!("{}.{}.{}", &today[8..10], &today[5..7], &today[0..4]);
+    assert!(!system["text"].as_str().unwrap().contains(&dmy));
+    let first = reqs[0]["messages"].as_array().unwrap();
+    assert_eq!(first.len(), 1);
+    let q = first[0]["content"].as_str().unwrap();
+    assert!(q.contains(&dmy) && q.contains("сколько заработали сегодня?"));
+    // Второй запрос: ответ модели целиком, с размышлением и подписью, затем только результаты.
+    let second = reqs[1]["messages"].as_array().unwrap();
+    assert_eq!(second.len(), 3);
+    assert_eq!(second[1]["role"], "assistant");
+    assert_eq!(
+        second[1]["content"],
+        tool_use(
+            "profit_totals",
+            serde_json::json!({ "from": today, "to": today })
+        )["content"]
+    );
+    assert_eq!(second[2]["role"], "user");
+    let results = second[2]["content"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["type"], "tool_result");
+    assert_eq!(results[0]["tool_use_id"], "tu_1");
+    assert!(results[0].get("is_error").is_none());
+
+    // Журнал: отчёт, токены, ответ.
+    let (tools, input, output, answer, error): (
+        serde_json::Value,
+        i64,
+        i64,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "select tools, input_tokens, output_tokens, answer, error from bot_questions where chat_id = $1",
+    )
+    .bind(chat)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(tools[0]["name"], "profit_totals");
+    assert_eq!((input, output), (300, 50));
+    assert_eq!(answer.as_deref(), Some(reply.as_str()));
+    assert!(error.is_none());
+
+    // Уточнение: прошлый вопрос и ответ уходят простым текстом, без размышлений.
+    fake.push(vec![Step::Reply(200, final_text("Пожалуйста."))]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "а спасибо за ответ").await,
+        "Пожалуйста."
+    );
+    let third = fake.requests()[2]["messages"].as_array().unwrap().clone();
+    assert_eq!(third.len(), 3);
+    assert_eq!(third[0]["content"], "сколько заработали сегодня?");
+    assert_eq!(third[1]["role"], "assistant");
+    assert_eq!(third[1]["content"].as_str(), Some(reply.as_str()));
+    assert!(third[2]["content"].as_str().unwrap().contains("а спасибо"));
+    assert_no_key_stored(&pool).await;
+
+    // «Сколько заработали вчера» — та же чистая прибыль, что отчёт о прибыли за вчера.
+    let mut late = takeaway(&w, vec![line("piece", w.filter, 2, 47_550)], cash(95_100));
+    late.offline = true;
+    late.client_time = Some(chrono::Utc::now() - chrono::Duration::hours(24));
+    sell(&pool, &w.owner, late).await.unwrap();
+    let yesterday: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date - 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let report = avtodom_server::api::reports::totals_for(
+        &mut conn,
+        w.owner.user.branch_id,
+        yesterday,
+        yesterday,
+    )
+    .await
+    .unwrap();
+    assert!(report.sales_count == 1 && report.net_tyiyn != 0);
+    let day = yesterday.format("%Y-%m-%d").to_string();
+    fake.push(vec![
+        Step::Reply(
+            200,
+            tool_use(
+                "profit_totals",
+                serde_json::json!({ "from": day, "to": day }),
+            ),
+        ),
+        Step::Echo,
+    ]);
+    let reply = ask(&mut conn, &a, chat, "сколько заработали вчера?").await;
+    assert!(
+        reply.contains(&format!(
+            "Чистая прибыль: {}",
+            avtodom_server::domain::money::format_som(report.net_tyiyn)
+        )) && reply.contains(&yesterday.format("за %d.%m.%Y").to_string()),
+        "{reply}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_question_debts_match_buttons(pool: PgPool) {
+    // «Кто должен больше всех» — первая строка «📒 Долги»; два клиента «Ромашка» — список и
+    // просьба уточнить (SPEC-21).
+    use avtodom_server::api::assistant::Assistant;
+    let w = seed(&pool).await;
+    for (name, debt) in [
+        ("ООО Ромашка", 1_500_050i64),
+        ("Ромашка Плюс", 300_000),
+        ("Иванов", 2_000_000),
+    ] {
+        sqlx::query("insert into parties (id, branch_id, role, kind, name, balance_tyiyn) values ($1, $2, 'customer', 'company', $3, $4)")
+            .bind(Uuid::now_v7())
+            .bind(w.owner.user.branch_id)
+            .bind(name)
+            .bind(debt)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let chat = 880_002i64;
+    link_owner(&pool, &w, chat).await;
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+    fake.push(vec![
+        Step::Reply(200, tool_use("debtors", serde_json::json!({}))),
+        Step::Echo,
+    ]);
+    let reply = ask(&mut conn, &a, chat, "кто должен больше всех?").await;
+    let button = say(&mut conn, chat, "📒 Долги").await;
+    let top = button.lines().nth(1).unwrap().trim().to_string();
+    assert_eq!(top, "Иванов — 20 000 с");
+    let first = reply.lines().nth(1).unwrap();
+    assert!(first.starts_with("1. ") && first.contains(&top), "{reply}");
+
+    fake.push(vec![
+        Step::Reply(
+            200,
+            tool_use("client_debt", serde_json::json!({ "query": "Ромашка" })),
+        ),
+        Step::Echo,
+    ]);
+    let reply = ask(&mut conn, &a, chat, "долг Ромашка").await;
+    assert!(
+        reply.contains("ООО Ромашка: долг 15 000,50 с")
+            && reply.contains("Ромашка Плюс: долг 3 000 с")
+            && reply.contains("Уточните"),
+        "{reply}"
+    );
+    // Неверные параметры — результат с пометкой ошибки, а не сбой.
+    fake.push(vec![
+        Step::Reply(
+            200,
+            tool_use(
+                "profit_by_day",
+                serde_json::json!({ "from": "2026-01-01", "to": "2026-10-01" }),
+            ),
+        ),
+        Step::Reply(200, final_text("Период слишком длинный, уточните.")),
+    ]);
+    ask(&mut conn, &a, chat, "прибыль по дням за год").await;
+    let reqs = fake.requests();
+    let last = reqs.last().unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["content"][0]["is_error"], true);
+    assert!(
+        last["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("не больше 62 дней")
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_question_guards_errors_and_customers(pool: PgPool) {
+    // Без ключа — как SPEC-18; сумма без отчёта не проходит; ошибки сервиса — понятный ответ и
+    // запись с ошибкой; клиентский чат сервис не вызывает; журнал не правится (SPEC-21).
+    use avtodom_server::api::assistant::Assistant;
+    // Журнал сервера этого теста — в память: ключа в нём быть не должно.
+    let logs = LogBuf::default();
+    let _logs = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(logs.clone())
+            .finish(),
+    );
+    let w = seed(&pool).await;
+    let chat = 880_003i64;
+    link_owner(&pool, &w, chat).await;
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+
+    // Без ключа — подсказка с кнопками, как раньше.
+    let old = say(&mut conn, chat, "сколько заработали вчера?").await;
+    assert!(old.starts_with("Нажмите кнопку внизу"), "{old}");
+    // С ключом кнопки и команды работают сами.
+    assert!(
+        ask(&mut conn, &a, chat, "📊 Сегодня")
+            .await
+            .contains("ЧИСТАЯ ПРИБЫЛЬ")
+    );
+    assert!(!ask(&mut conn, &a, chat, "/долги").await.is_empty());
+    assert!(
+        ask(&mut conn, &a, chat, "/непонятно что")
+            .await
+            .starts_with("Нажмите кнопку внизу")
+    );
+    assert_eq!(fake.requests().len(), 0);
+
+    // Сумма в ответе без вызова отчёта — заменяется.
+    fake.push(vec![Step::Reply(
+        200,
+        final_text("Выручка за вчера 5 000 с."),
+    )]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "сколько выручки вчера?").await,
+        "Не нашёл данных, уточните вопрос."
+    );
+    // Отказ без цифр проходит как есть.
+    fake.push(vec![Step::Reply(
+        200,
+        final_text("Этого я посмотреть не могу."),
+    )]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "какая погода завтра?").await,
+        "Этого я посмотреть не могу."
+    );
+
+    // Сбой сервиса, отказ по ключу, нет соединения — понятный ответ.
+    fake.push(vec![
+        Step::Reply(500, serde_json::json!({ "type": "error", "error": { "type": "api_error" } })),
+        Step::Reply(
+            401,
+            serde_json::json!({ "type": "error", "error": { "type": "authentication_error", "message": format!("invalid x-api-key {SERVICE_KEY}") } }),
+        ),
+    ]);
+    for q in ["сколько в кассе?", "что кончается?"] {
+        assert!(
+            ask(&mut conn, &a, chat, q)
+                .await
+                .starts_with("Нет связи с сервисом разбора вопросов")
+        );
+    }
+    let offline = Assistant::new(
+        SERVICE_KEY.into(),
+        Some("http://127.0.0.1:1".into()),
+        None,
+        100,
+    );
+    assert!(
+        ask(&mut conn, &offline, chat, "кто должен?")
+            .await
+            .starts_with("Нет связи с сервисом разбора вопросов")
+    );
+    let errors: Vec<Option<String>> = sqlx::query_scalar(
+        "select error from bot_questions where chat_id = $1 order by asked_at, id",
+    )
+    .bind(chat)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(errors.len(), 5);
+    assert_eq!(errors[0].as_deref(), Some("сумма в ответе без отчёта"));
+    assert!(errors[1].is_none());
+    assert_eq!(errors[2].as_deref(), Some("сервис ответил 500 api_error"));
+    assert_eq!(
+        errors[3].as_deref(),
+        Some("сервис ответил 401 authentication_error")
+    );
+    assert_eq!(errors[4].as_deref(), Some("нет связи: нет соединения"));
+
+    // Клиентский чат на тот же вопрос получает свою книжку; сервис не вызывается.
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Клиент', '0555000222')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values (880004, $1, '0555000222')")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = fake.requests().len();
+    let book = ask(&mut conn, &a, 880_004, "сколько заработали сегодня?").await;
+    assert!(
+        book.contains("Баллов") && !book.contains("ПРИБЫЛЬ"),
+        "{book}"
+    );
+    // Непривязанный чат — кнопка номера.
+    assert!(
+        ask(&mut conn, &a, 880_005, "сколько заработали сегодня?")
+            .await
+            .contains("Поделиться номером")
+    );
+    assert_eq!(fake.requests().len(), before);
+
+    // Журнал вопросов не правится и не удаляется.
+    assert!(
+        sqlx::query("update bot_questions set answer = 'x'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("delete from bot_questions")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert_no_key_stored(&pool).await;
+    let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(logged.contains("разбор вопросов"), "{logged}");
+    assert!(!logged.contains(SERVICE_KEY));
+}
+
+/// Журнал сервера в память — для проверки, что ключ туда не пишется.
+#[derive(Clone, Default)]
+struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+    type Writer = LogBuf;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_question_limit_makes_no_call(pool: PgPool) {
+    // 101-й вопрос за сутки — сообщение о лимите, обращения к сервису нет (SPEC-21).
+    use avtodom_server::api::assistant::Assistant;
+    let w = seed(&pool).await;
+    let chat = 880_006i64;
+    link_owner(&pool, &w, chat).await;
+    sqlx::query(
+        "insert into bot_questions (id, chat_id, user_id, branch_id, asked_at, question, answer)
+         select gen_random_uuid(), $1, $2, $3,
+                greatest(((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek',
+                         now() - interval '2 hours'),
+                'вопрос ' || n, 'ответ'
+         from generate_series(1, 100) n",
+    )
+    .bind(chat)
+    .bind(w.owner.user.id)
+    .bind(w.owner.user.branch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+    fake.push(vec![Step::Reply(200, final_text("не должно прийти"))]);
+    let reply = ask(&mut conn, &a, chat, "сколько заработали сегодня?").await;
+    assert!(
+        reply.starts_with("Лимит вопросов на сегодня исчерпан"),
+        "{reply}"
+    );
+    assert_eq!(fake.requests().len(), 0);
+    // Вопрос сверх предела тоже в журнале.
+    let n: i64 =
+        sqlx::query_scalar("select count(*) from bot_questions where error = 'лимит вопросов'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+    // Кнопки работают.
+    assert!(
+        ask(&mut conn, &a, chat, "📊 Сегодня")
+            .await
+            .contains("ЧИСТАЯ ПРИБЫЛЬ")
+    );
+}

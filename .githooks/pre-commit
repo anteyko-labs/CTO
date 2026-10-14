@@ -14,8 +14,16 @@ if [ -n "$blocked" ]; then
 fi
 
 # 2. Запрещённые слова в добавленных строках (хуки и генерируемые lock-файлы не проверяем).
+# Файлы из .githooks/forbidden-allow — исключение по решению заказчика (ADR-060): там названы
+# поставщик и модель разбора вопросов бота. Сами файлы проверяются на секреты (п. 3).
+allow=""
+if [ -f "$(git rev-parse --show-toplevel)/.githooks/forbidden-allow" ]; then
+  allow=$(grep -vE '^[[:space:]]*(#|$)' "$(git rev-parse --show-toplevel)/.githooks/forbidden-allow" | sed 's/^/:(exclude)/')
+fi
+# shellcheck disable=SC2086
+checked=$(git diff --cached -U0 -- . ':(exclude).githooks' ':(exclude)**/package-lock.json' ':(exclude)**/Cargo.lock' ':(exclude)**/.sqlx/**' $allow | grep -E '^\+[^+]' )
 added=$(git diff --cached -U0 -- . ':(exclude).githooks' ':(exclude)**/package-lock.json' ':(exclude)**/Cargo.lock' ':(exclude)**/.sqlx/**' | grep -E '^\+[^+]' )
-if [ -n "$added" ] && ! printf '%s\n' "$added" | check_forbidden >&2; then
+if [ -n "$checked" ] && ! printf '%s\n' "$checked" | check_forbidden >&2; then
   echo "pre-commit: добавленные строки содержат запрещённые слова." >&2
   fail=1
 fi

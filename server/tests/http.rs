@@ -2322,3 +2322,50 @@ async fn revision_count_adds_or_replaces(pool: PgPool) {
     let (s, _, _) = put_count(1, Some("plus")).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_questions_usage_is_owner_only(pool: PgPool) {
+    // Расход на вопросы боту текстом: только владельцу, за сегодня и за месяц (SPEC-21).
+    let app = setup(pool.clone()).await;
+    let (owner_id, branch): (Uuid, Uuid) =
+        sqlx::query_as("select id, branch_id from users where login = 'owner'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "insert into bot_questions (id, chat_id, user_id, branch_id, question, input_tokens, output_tokens, answer, error)
+         values ($1, 1, $3, $4, 'а', 1000, 200, 'б', null),
+                ($2, 1, $3, $4, 'в', 0, 0, null, 'лимит вопросов')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(owner_id)
+    .bind(branch)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (status, _, _) = call(
+        &app,
+        "GET",
+        "/api/v1/settings/telegram/questions",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (status, _, body) = call(
+        &app,
+        "GET",
+        "/api/v1/settings/telegram/questions",
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["today"]["questions"], 1);
+    assert_eq!(body["today"]["input_tokens"], 1000);
+    assert_eq!(body["month"]["output_tokens"], 200);
+}

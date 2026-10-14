@@ -74,13 +74,13 @@ struct VehicleOut {
     active: bool,
 }
 
-#[derive(Deserialize)]
-struct ListQuery {
-    role: Option<String>,
-    kind: Option<String>,
-    q: Option<String>,
+#[derive(Deserialize, Default)]
+pub(crate) struct ListQuery {
+    pub(crate) role: Option<String>,
+    pub(crate) kind: Option<String>,
+    pub(crate) q: Option<String>,
     #[serde(default)]
-    only_debtors: bool,
+    pub(crate) only_debtors: bool,
 }
 
 async fn list_parties(
@@ -88,6 +88,16 @@ async fn list_parties(
     user: CurrentUser,
     Query(f): Query<ListQuery>,
 ) -> AppResult<Json<Vec<PartyOut>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(search_parties(&mut conn, user.branch_id, f).await?))
+}
+
+/// Поиск контрагентов филиала с долгом и просрочкой — для экрана и для вопросов боту (SPEC-21).
+pub(crate) async fn search_parties(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    f: ListQuery,
+) -> AppResult<Vec<PartyOut>> {
     let q =
         f.q.map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -120,15 +130,15 @@ async fn list_parties(
              and (not $5 or balance_tyiyn <> 0)
            order by (balance_tyiyn <> 0) desc, name
            limit 500"#,
-        user.branch_id,
+        branch_id,
         f.role,
         f.kind,
         q,
         f.only_debtors
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 #[derive(Deserialize)]
@@ -1238,13 +1248,7 @@ async fn party_card(
             ledger_id: Some(l.id),
             reversible: l.kind != "debt" && l.reversal_of.is_none() && !l.reversed,
             kind: l.kind.clone(),
-            title: match (l.kind.as_str(), l.reversal_of.is_some()) {
-                (_, true) => "Сторно".into(),
-                ("debt", _) if l.amount_tyiyn > 0 => "Взял в долг".into(),
-                ("debt", _) => "Долг уменьшен возвратом".into(),
-                ("repayment", _) => "Погашение".into(),
-                _ => "Правка баланса".into(),
-            },
+            title: ledger_title(&l.kind, l.amount_tyiyn, l.reversal_of.is_some()).into(),
             amount_tyiyn: l.amount_tyiyn,
             number: None,
             doc_id: l.doc_id,
@@ -1265,6 +1269,17 @@ async fn party_card(
         last_at,
         timeline,
     }))
+}
+
+/// Название записи долга для людей: в карточке клиента и в ответе бота.
+pub(crate) fn ledger_title(kind: &str, amount: i64, reversal: bool) -> &'static str {
+    match (kind, reversal) {
+        (_, true) => "Сторно",
+        ("debt", _) if amount > 0 => "Взял в долг",
+        ("debt", _) => "Долг уменьшен возвратом",
+        ("repayment", _) => "Погашение",
+        _ => "Правка баланса",
+    }
 }
 
 #[derive(Deserialize)]

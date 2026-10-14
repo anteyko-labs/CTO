@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role, content from bot_dialog where chat_id = $1 and branch_id = $2\n           order by at desc, id desc limit $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "content",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1201e81627b37a6b1e00e81fa86177dac930a4c4a593f6d0c5fd2126599edb07"
+}

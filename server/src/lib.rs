@@ -30,6 +30,7 @@ pub async fn build_state(pool: PgPool, cookie_secure: bool) -> Result<AppState, 
         cookie_secure,
         dummy_hash: Arc::new(dummy_hash),
         telegram_bot: false,
+        assistant_daily_limit: None,
     })
 }
 

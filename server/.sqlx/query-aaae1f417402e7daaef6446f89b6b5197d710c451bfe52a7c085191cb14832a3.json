@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with b as (\n             select ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek' as day,\n                    date_trunc('month', now() at time zone 'Asia/Bishkek') at time zone 'Asia/Bishkek' as month)\n           select count(*) filter (where q.asked_at >= b.day) as \"day_n!\",\n                  coalesce(sum(q.input_tokens) filter (where q.asked_at >= b.day), 0)::bigint as \"day_in!\",\n                  coalesce(sum(q.output_tokens) filter (where q.asked_at >= b.day), 0)::bigint as \"day_out!\",\n                  count(q.id) as \"month_n!\",\n                  coalesce(sum(q.input_tokens), 0)::bigint as \"month_in!\",\n                  coalesce(sum(q.output_tokens), 0)::bigint as \"month_out!\"\n           from b left join bot_questions q\n             on q.branch_id = $1 and q.asked_at >= b.month and q.error is distinct from $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day_n!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "day_in!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "day_out!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "month_n!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "month_in!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "month_out!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "aaae1f417402e7daaef6446f89b6b5197d710c451bfe52a7c085191cb14832a3"
+}
