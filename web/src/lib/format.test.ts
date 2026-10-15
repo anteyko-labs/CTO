@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLiters, formatOilStock, formatSom, formatSomExact, parseLiters, parseSom, shiftDate, somInput } from './format'
+import { formatLiters, formatOilStock, formatPercentBp, formatSom, formatSomExact, parseLiters, parsePercentBp, parseSom, shiftDate, somInput } from './format'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
 
@@ -40,5 +40,15 @@ describe('формат', () => {
     expect(shiftDate('2026-03-01', -1)).toBe('2026-02-28')
     expect(shiftDate('2026-10-08', -7)).toBe('2026-10-01')
     expect(shiftDate('2026-12-31', 1)).toBe('2027-01-01')
+  })
+
+  it('ставка в процентах хранится целыми базисными пунктами', () => {
+    expect(parsePercentBp('0,5')).toBe(50)
+    expect(parsePercentBp('2')).toBe(200)
+    expect(parsePercentBp('1,25 %')).toBe(125)
+    expect(parsePercentBp('0,125')).toBeNull()
+    expect(parsePercentBp('-1')).toBeNull()
+    expect(nb(formatPercentBp(50))).toBe('0,50 %')
+    expect(nb(formatPercentBp(200))).toBe('2,00 %')
   })
 })

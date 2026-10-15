@@ -98,17 +98,7 @@ pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
         .execute(&mut *conn)
         .await?;
     }
-    for method in ["card", "transfer"] {
-        sqlx::query!(
-            r#"insert into payment_method_fees (branch_id, method, rate_bp) values ($1, $2, 50)
-               on conflict do nothing"#,
-            branch_id,
-            method
-        )
-        .execute(&mut *conn)
-        .await?;
-    }
-    Ok(())
+    crate::api::fees::ensure_fees(conn, branch_id).await
 }
 
 /// Касса по умолчанию: в неё идут наличные чека.

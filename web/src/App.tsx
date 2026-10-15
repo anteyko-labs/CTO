@@ -38,6 +38,8 @@ import OilTransfer from './pages/OilTransfer'
 import Revision from './pages/Revision'
 import Stock from './pages/Stock'
 import TelegramSettings from './pages/TelegramSettings'
+import PaymentFees from './pages/PaymentFees'
+import ExpenseArticles from './pages/ExpenseArticles'
 import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
 import Users from './pages/Users'
@@ -267,6 +269,8 @@ function Shell() {
           {owner && <Route path="/oil-transfer" element={<OilTransfer />} />}
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
+          {owner && <Route path="/settings/payment-fees" element={<PaymentFees />} />}
+          {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />
           <Route path="/settings" element={<SettingsHub />} />

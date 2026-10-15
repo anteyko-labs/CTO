@@ -1,7 +1,7 @@
 // Приём старых аккумуляторов по весу: деньги из кассы смены, на склад — граммы (ADR-048).
 import { useState } from 'react'
 import { get, newOpId, post } from '../lib/api'
-import { formatKg, formatSom, parseLiters, somInput } from '../lib/format'
+import { formatDateTime, formatKg, formatSom, parseLiters, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { divRound } from '../lib/money'
@@ -14,6 +14,59 @@ export interface BatteryInfo {
   avg_per_kg_tyiyn: number | null
   intake_per_kg_tyiyn: number
   sale_per_kg_tyiyn: number
+}
+
+interface IntakeRow {
+  id: string
+  number: number
+  grams: number
+  price_per_kg_tyiyn: number
+  amount_tyiyn: number
+  comment: string
+  user_name: string
+  created_at: string
+  reversed: boolean
+}
+
+/** Приёмы, которые можно отменить: администратору — своей открытой смены, владельцу — последние.
+ *  Отмена снимает вес со склада и возвращает деньги в кассу (ADR-065). */
+function IntakeList({ onChanged }: { onChanged: () => void }) {
+  const list = useLoad(() => get<IntakeRow[]>('/batteries/intakes'), [])
+  const act = useAction()
+  const reverse = (r: IntakeRow) =>
+    void act.run(async () => {
+      const reason = window.prompt(`Отменить приём № ${r.number}: ${formatKg(r.grams)}, ${formatSom(r.amount_tyiyn)} вернутся в кассу. Причина:`)
+      if (reason === null) return
+      await post(`/batteries/intakes/${r.id}/reverse`, { op_id: newOpId(), comment: reason })
+      toast(`Приём № ${r.number} отменён: ${formatSom(r.amount_tyiyn)} вернулись в кассу`)
+      list.reload()
+      onChanged()
+    })
+  const rows = list.data ?? []
+  if (rows.length === 0) return <ErrorBox error={list.error} />
+  return (
+    <div className="border-t border-slate-200 pt-3">
+      <div className="mb-2 text-sm font-semibold">Приёмы этой смены</div>
+      <ErrorBox error={act.error ?? list.error} />
+      <ul className="flex flex-col gap-1 text-sm">
+        {rows.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center justify-between gap-2">
+            <span className={r.reversed ? 'text-slate-400 line-through' : ''}>
+              № {r.number} · {formatDateTime(r.created_at)} · {formatKg(r.grams)} · {formatSom(r.amount_tyiyn)}
+              {r.comment && ` · ${r.comment}`}
+            </span>
+            {r.reversed ? (
+              <span className="text-xs text-slate-500">отменён</span>
+            ) : (
+              <Button variant="secondary" className="px-2 py-1 text-xs" disabled={act.busy} onClick={() => reverse(r)}>
+                Отменить приём
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 export function BatteryIntake({ onClose }: { onClose: () => void }) {
@@ -88,6 +141,7 @@ export function BatteryIntake({ onClose }: { onClose: () => void }) {
               Принять и выдать деньги
             </Button>
           </div>
+          <IntakeList onChanged={info.reload} />
         </div>
       )}
     </Modal>

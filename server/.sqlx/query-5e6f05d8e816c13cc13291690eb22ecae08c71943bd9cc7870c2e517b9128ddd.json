@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.id, f.method, f.rate_bp, f.active_from, f.active_to as \"active_to?\",\n                  u.full_name as \"user_name?\", f.created_at\n           from payment_method_fees f left join users u on u.id = f.user_id\n           where f.branch_id = $1\n           order by f.method, f.active_from desc, f.created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "rate_bp",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "active_from",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 4,
+        "name": "active_to?",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "5e6f05d8e816c13cc13291690eb22ecae08c71943bd9cc7870c2e517b9128ddd"
+}

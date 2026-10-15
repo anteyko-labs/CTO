@@ -1173,14 +1173,13 @@ async fn post_repayment(
             .await?;
             // Банк берёт комиссию с поступления по карте и переводу, как с чека (ADR-022).
             if !supplier {
-                let rate = sqlx::query_scalar!(
-                    "select rate_bp from payment_method_fees where branch_id = $1 and method = $2",
-                    branch_id,
-                    method
+                // Ставка, действующая в день погашения (SPEC-08).
+                let today = sqlx::query_scalar!(
+                    r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#
                 )
-                .fetch_optional(&mut *tx)
-                .await?
-                .unwrap_or(0);
+                .fetch_one(&mut *tx)
+                .await?;
+                let rate = crate::api::fees::rate_on(&mut tx, branch_id, &method, today).await?;
                 let fee = crate::domain::money::div_round(
                     i128::from(req.amount_tyiyn) * i128::from(rate),
                     10_000,

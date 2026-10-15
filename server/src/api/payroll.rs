@@ -19,6 +19,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payroll/day", routing::get(day))
         .route("/payroll/month", routing::get(month))
+        .route("/payroll/entries", routing::get(entries))
         .route("/payroll/accruals", routing::post(post_accrual))
         .route("/payroll/salary", routing::post(post_salary))
         .route("/payouts", routing::post(post_payout))
@@ -223,6 +224,106 @@ async fn reverse_payout(
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+// ---------- Начисления и выплаты сотрудника ----------
+
+#[derive(Deserialize)]
+struct EntriesQuery {
+    employee_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+}
+
+#[derive(Serialize)]
+struct AccrualRow {
+    id: Uuid,
+    business_date: NaiveDate,
+    kind: String,
+    amount_tyiyn: i64,
+    comment: String,
+    doc_type: String,
+    reversal_of: Option<Uuid>,
+    reversed: bool,
+    user_name: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PayoutRow {
+    id: Uuid,
+    number: i64,
+    amount_tyiyn: i64,
+    source: String,
+    account_name: Option<String>,
+    comment: String,
+    reversal_of: Option<Uuid>,
+    reversed: bool,
+    user_name: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct EntriesOut {
+    /// Начисления не из чеков: оклад, за смену, бонус, удержание, недостача и их сторно.
+    /// Начисления из чеков снимаются только возвратом чека — здесь их нет.
+    accruals: Vec<AccrualRow>,
+    payouts: Vec<PayoutRow>,
+}
+
+/// Что владелец может отменить у сотрудника за период (SPEC-07): начисления и выплаты
+/// с отметкой, какие уже сторнированы.
+async fn entries(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<EntriesQuery>,
+) -> AppResult<Json<EntriesOut>> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if q.from > q.to {
+        return Err(invalid("начало периода позже конца"));
+    }
+    if (q.to - q.from).num_days() > 366 {
+        return Err(invalid("период не больше года"));
+    }
+    let mut conn = state.pool.acquire().await?;
+    let accruals = sqlx::query_as!(
+        AccrualRow,
+        r#"select a.id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,
+                  a.reversal_of as "reversal_of?",
+                  exists (select 1 from payroll_accruals r where r.reversal_of = a.id) as "reversed!",
+                  u.full_name as "user_name!", a.created_at
+           from payroll_accruals a join users u on u.id = a.user_id
+           where a.branch_id = $1 and a.employee_id = $2 and a.business_date between $3 and $4
+             and a.doc_type not in ('sale', 'sale_return')
+           order by a.business_date desc, a.created_at desc"#,
+        user.branch_id,
+        q.employee_id,
+        q.from,
+        q.to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let payouts = sqlx::query_as!(
+        PayoutRow,
+        r#"select p.id, p.number, p.amount_tyiyn, p.source, c.name as "account_name?", p.comment,
+                  p.reversal_of as "reversal_of?",
+                  exists (select 1 from payouts r where r.reversal_of = p.id) as "reversed!",
+                  u.full_name as "user_name!", p.created_at
+           from payouts p join users u on u.id = p.user_id
+           left join cash_accounts c on c.id = p.account_id
+           where p.branch_id = $1 and p.employee_id = $2
+             and (p.created_at at time zone 'Asia/Bishkek')::date between $3 and $4
+           order by p.created_at desc"#,
+        user.branch_id,
+        q.employee_id,
+        q.from,
+        q.to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(Json(EntriesOut { accruals, payouts }))
 }
 
 // ---------- Правила оплаты ----------
@@ -574,8 +675,30 @@ pub struct SaleAccrual {
     pub gross: i64,
     pub total: i64,
     pub debt: i64,
+    /// Оплачено баллами: скидка точки, процент с неё не платится (ADR-065).
+    pub bonus: i64,
+    /// Сумма строк без цены закупки: на них приходится своя доля скидки баллами.
+    pub unknown_amount: i64,
     /// Строки без цены закупки: в `gross` не входят, процент по ним ждёт цены (ADR-062).
     pub unknown: Vec<UnknownCost>,
+}
+
+/// Скидка баллами, приходящаяся на часть чека суммой `part` из `total` (ADR-065).
+fn bonus_share(bonus: i64, part: i64, total: i64) -> i64 {
+    if bonus <= 0 || total <= 0 || part <= 0 {
+        return 0;
+    }
+    div_round(i128::from(bonus) * i128::from(part), i128::from(total)).unwrap_or(0)
+}
+
+/// Часть базы процента, за которую деньги пришли сразу: деньги чека — сумма без баллов,
+/// долговая часть ждёт погашения (ADR-035).
+fn paid_share(base: i64, money: i64, debt: i64) -> i64 {
+    if base <= 0 || money <= 0 {
+        return 0;
+    }
+    let paid = money.saturating_sub(debt).max(0);
+    div_round(i128::from(base) * i128::from(paid), i128::from(money)).unwrap_or(0)
 }
 
 /// Строка чека, себестоимость которой неизвестна: сколько единиц не покрыто ценой.
@@ -594,6 +717,8 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         gross,
         total,
         debt,
+        bonus,
+        unknown_amount,
         unknown,
     } = s;
     let rule = active_rule(
@@ -631,6 +756,14 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
     if rate <= 0 || total == 0 {
         return Ok(());
     }
+    // 2 % — только с денег: часть, оплаченная баллами, — скидка точки и из базы вычитается
+    // (ADR-065). Скидка делится между строками по сумме: доля строк без цены вычтется, когда
+    // владелец укажет цену.
+    let gross = gross.saturating_sub(bonus_share(
+        bonus,
+        total.saturating_sub(unknown_amount),
+        total,
+    ));
     // Убыточный чек (подарок, распродажа) процента не даёт и с кассира не вычитается.
     // Ожидание долга всё же нужно, если в чеке есть строки без цены: их процент придёт позже.
     if gross <= 0 {
@@ -643,8 +776,7 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
         }
         return Ok(());
     }
-    let paid = total - debt;
-    let now_base = div_round(i128::from(gross) * i128::from(paid), i128::from(total)).unwrap_or(0);
+    let now_base = paid_share(gross, total.saturating_sub(bonus), debt);
     let amount = div_round(i128::from(now_base) * i128::from(rate), 10_000).unwrap_or(0);
     add_accrual(
         conn,
@@ -714,7 +846,7 @@ async fn insert_debt_pending(
 }
 
 /// Валовая прибыль возвращаемой части строки без цены закупки (ADR-062): пока владелец цену не
-/// указал, процент по строке не начислялся — снимать нечего (0); после — по его цене.
+/// указал, процент по строке не начислялся — снимать нечего (`None`); после — по его цене.
 pub async fn unknown_line_gross_back(
     conn: &mut PgConnection,
     sale_id: Uuid,
@@ -722,7 +854,7 @@ pub async fn unknown_line_gross_back(
     amount_back: i64,
     qty_back: i64,
     line_qty: i64,
-) -> AppResult<i64> {
+) -> AppResult<Option<i64>> {
     let resolved = sqlx::query_scalar!(
         r#"select resolved_cost_tyiyn from payroll_cost_pending
            where sale_id = $1 and line_no = $2 and resolved_at is not null"#,
@@ -733,17 +865,17 @@ pub async fn unknown_line_gross_back(
     .await?
     .flatten();
     let Some(cost) = resolved else {
-        return Ok(0);
+        return Ok(None);
     };
     if line_qty <= 0 {
-        return Ok(0);
+        return Ok(Some(0));
     }
     let cost_back = div_round(
         i128::from(cost) * i128::from(qty_back),
         i128::from(line_qty),
     )
     .unwrap_or(0);
-    Ok(amount_back.saturating_sub(cost_back))
+    Ok(Some(amount_back.saturating_sub(cost_back)))
 }
 
 /// Итог указания цены закупки: сколько строк закрыто и сколько начислено кассирам.
@@ -779,7 +911,9 @@ pub async fn resolve_cost_pending(
                             where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as "ret_amount!",
                   s.total_tyiyn,
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
-                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!"
+                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!",
+                  coalesce((select sum(p.amount_tyiyn) from sale_payments p
+                            where p.sale_id = s.id and p.method = 'bonus'), 0)::bigint as "bonus!"
            from payroll_cost_pending k
            join sales s on s.id = k.sale_id
            join sale_lines l on l.sale_id = k.sale_id and l.line_no = k.line_no
@@ -826,18 +960,17 @@ pub async fn resolve_cost_pending(
             i128::from(r.qty),
         )
         .unwrap_or(0);
-        let gross = (r.amount_tyiyn - r.ret_amount).saturating_sub(left_cost);
+        // Доля скидки баллами на эту строку — как у остального чека (ADR-065).
+        let left_amount = r.amount_tyiyn - r.ret_amount;
+        let gross = left_amount
+            .saturating_sub(left_cost)
+            .saturating_sub(bonus_share(r.bonus, left_amount, r.total_tyiyn));
         if gross <= 0 {
             continue;
         }
         let rate = i128::from(r.rate_bp);
         // Оплаченная часть чека — процент сейчас; долговая — по мере погашения, как у всего чека.
-        let paid = r.total_tyiyn - r.debt;
-        let now_base = div_round(
-            i128::from(gross) * i128::from(paid),
-            i128::from(r.total_tyiyn),
-        )
-        .unwrap_or(0);
+        let now_base = paid_share(gross, r.total_tyiyn.saturating_sub(r.bonus), r.debt);
         let debt_base = gross - now_base;
         let mut base = now_base;
         if debt_base > 0 {
@@ -903,6 +1036,10 @@ pub struct ReturnAccrual {
     pub gross_back: i64,
     pub total_back: i64,
     pub debt_back: i64,
+    /// Сколько вернули баллами и на какую сумму строк, вошедших в процент (без строк,
+    /// ждущих цену закупки): база снимается так же, как считалась при продаже (ADR-065).
+    pub bonus_back: i64,
+    pub counted_back: i64,
     pub full_return: bool,
 }
 
@@ -929,17 +1066,16 @@ pub async fn reverse_for_return(
     .fetch_all(&mut *conn)
     .await?;
     // Процент снимается с той части возврата, что отдана деньгами; долговую часть
-    // процент ещё не получил — она снимается с ожидания ниже.
-    let paid_back = r.total_back.saturating_sub(r.debt_back).max(0);
-    let base_back = if r.total_back > 0 && r.gross_back > 0 {
-        div_round(
-            i128::from(r.gross_back) * i128::from(paid_back),
-            i128::from(r.total_back),
-        )
-        .unwrap_or(0)
-    } else {
-        0
-    };
+    // процент ещё не получил — она снимается с ожидания ниже. Баллы — скидка: их доля
+    // вычитается из базы, как при продаже (ADR-065).
+    let gross_back =
+        r.gross_back
+            .saturating_sub(bonus_share(r.bonus_back, r.counted_back, r.total_back));
+    let base_back = paid_share(
+        gross_back,
+        r.total_back.saturating_sub(r.bonus_back),
+        r.debt_back,
+    );
     for row in rows {
         if row.net <= 0 {
             continue;

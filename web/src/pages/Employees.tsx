@@ -1,12 +1,153 @@
 // Справочник сотрудников: кассиры и мастера без входа в систему (SPEC-02, инвариант 15).
+// Карточка сотрудника у владельца — ещё и правила оплаты с историей (SPEC-07).
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { get, patch, post } from '../lib/api'
+import { del, get, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { formatDate, formatPercentBp, formatSom, parsePercentBp, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { Employee } from '../lib/types'
+
+type RuleKind = 'revenue_percent' | 'monthly_salary' | 'per_shift'
+
+interface PayRule {
+  id: string
+  kind: RuleKind | 'per_service'
+  role: string
+  base: string | null
+  amount_tyiyn: number | null
+  rate_bp: number | null
+  active_from: string
+  active_to: string | null
+}
+
+const RULE_LABELS: Record<PayRule['kind'], string> = {
+  revenue_percent: '% с валовой прибыли чеков',
+  monthly_salary: 'Оклад в месяц',
+  per_shift: 'За смену',
+  per_service: 'За замену (старое правило)',
+}
+
+const ruleValue = (r: PayRule) => (r.kind === 'revenue_percent' ? formatPercentBp(r.rate_bp ?? 0) : formatSom(r.amount_tyiyn ?? 0))
+
+/** Правила оплаты сотрудника: действующие, история и новое правило (SPEC-07). Только владелец.
+ *  Новое правило того же вида закрывает прежнее сегодняшним днём; начисленное не меняется. */
+function PayRules({ employee }: { employee: Employee }) {
+  const rules = useLoad(() => get<PayRule[]>(`/employees/${employee.id}/pay-rules`), [employee.id])
+  const [form, setForm] = useState<{ kind: RuleKind; value: string } | null>(null)
+  const act = useAction()
+  const active = (rules.data ?? []).filter((r) => r.active_to === null)
+  const closed = (rules.data ?? []).filter((r) => r.active_to !== null)
+  const parsed = form ? (form.kind === 'revenue_percent' ? parsePercentBp(form.value) : parseSom(form.value)) : null
+
+  const add = () =>
+    void act.run(async () => {
+      if (!form || parsed === null || parsed <= 0) throw new Error('Неверное значение')
+      await post(`/employees/${employee.id}/pay-rules`, {
+        kind: form.kind,
+        role: 'cashier',
+        ...(form.kind === 'revenue_percent' ? { rate_bp: parsed, base: 'gross' } : { amount_tyiyn: parsed }),
+      })
+      setForm(null)
+      rules.reload()
+      toast('Правило оплаты сохранено')
+    })
+
+  const close = (r: PayRule) =>
+    void act.run(async () => {
+      if (!window.confirm(`Закрыть правило «${RULE_LABELS[r.kind]} ${ruleValue(r)}» с сегодняшнего дня? Начисленное раньше не изменится.`)) return
+      await del(`/employees/${employee.id}/pay-rules/${r.id}`)
+      rules.reload()
+      toast('Правило закрыто')
+    })
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-slate-200 pt-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold">Оплата</h3>
+        {!form && (
+          <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setForm({ kind: 'revenue_percent', value: '' })}>
+            Новое правило
+          </Button>
+        )}
+      </div>
+      <ErrorBox error={rules.error ?? act.error} />
+      {rules.loading && !rules.data ? (
+        <Loading />
+      ) : active.length === 0 ? (
+        <div className="text-sm text-slate-500">Действующих правил нет — сотрудник получает только то, что начислено вручную.</div>
+      ) : (
+        <ul className="flex flex-col gap-1 text-sm">
+          {active.map((r) => (
+            <li key={r.id} className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {RULE_LABELS[r.kind]}: <b className="tabular-nums">{ruleValue(r)}</b>
+                <span className="text-xs text-slate-500"> · с {formatDate(r.active_from)}</span>
+              </span>
+              <Button variant="secondary" className="px-2 py-1 text-xs" disabled={act.busy} onClick={() => close(r)}>
+                Закрыть
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {employee.is_master && (
+        <div className="text-xs text-slate-500">
+          Мастеру за замену платится ставка из чека — она общая для точки и меняется на экране{' '}
+          <Link to="/services" className="underline">
+            «Услуги»
+          </Link>
+          .
+        </div>
+      )}
+      {form && (
+        <div className="grid gap-2 rounded-md border border-slate-200 p-3 sm:grid-cols-[1fr_10rem_auto] sm:items-end">
+          <Field label="Вид">
+            <select value={form.kind} onChange={(e) => setForm({ kind: e.target.value as RuleKind, value: '' })}>
+              <option value="revenue_percent">{RULE_LABELS.revenue_percent}</option>
+              <option value="monthly_salary">{RULE_LABELS.monthly_salary}</option>
+              <option value="per_shift">{RULE_LABELS.per_shift}</option>
+            </select>
+          </Field>
+          <Field label={form.kind === 'revenue_percent' ? 'Процент, %' : 'Сумма, с'} required>
+            <input autoFocus inputMode="decimal" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
+          </Field>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setForm(null)}>
+              Отмена
+            </Button>
+            <Button disabled={act.busy || parsed === null || parsed <= 0} onClick={add}>
+              Сохранить
+            </Button>
+          </div>
+          <div className="text-xs text-slate-500 sm:col-span-3">
+            {form.kind === 'revenue_percent'
+              ? 'Каждый день с валовой прибыли чеков кассира за вычетом скидки баллами.'
+              : form.kind === 'monthly_salary'
+                ? 'Начисляется кнопкой «Оклад» в расчёте за месяц; сумму можно поправить.'
+                : 'Начисляется кассиру смены при её закрытии.'}{' '}
+            Прежнее правило того же вида закроется сегодняшним днём.
+          </div>
+        </div>
+      )}
+      {closed.length > 0 && (
+        <details className="text-sm">
+          <summary className="cursor-pointer text-slate-600">История правил ({closed.length})</summary>
+          <ul className="mt-1 flex flex-col gap-1 text-slate-500">
+            {closed.map((r) => (
+              <li key={r.id}>
+                {RULE_LABELS[r.kind]}: {ruleValue(r)} · с {formatDate(r.active_from)} по {r.active_to ? formatDate(r.active_to) : '—'}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
+}
 
 /** Роли сотрудника значками: «кассир», «мастер». */
 function Roles({ e }: { e: Employee }) {
@@ -56,6 +197,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
             Сохранить
           </Button>
         </div>
+        {owner && <PayRules employee={employee} />}
       </div>
     </Modal>
   )

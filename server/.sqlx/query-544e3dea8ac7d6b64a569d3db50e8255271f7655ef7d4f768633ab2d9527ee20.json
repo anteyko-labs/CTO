@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, rate_bp, active_from from payment_method_fees\n           where branch_id = $1 and method = $2 and active_to is null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "rate_bp",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "active_from",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "544e3dea8ac7d6b64a569d3db50e8255271f7655ef7d4f768633ab2d9527ee20"
+}

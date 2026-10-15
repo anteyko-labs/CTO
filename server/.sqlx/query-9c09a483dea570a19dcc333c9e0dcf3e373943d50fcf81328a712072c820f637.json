@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "with recursive fam as (\n             select $2::uuid as id\n             union select p.id from products p join fam on p.merged_into = fam.id\n           )\n           select k.id, k.sale_id, k.line_no, k.employee_id, k.rule_id, k.rate_bp, k.unknown_units,\n                  s.number, s.party_id as \"party_id?\",\n                  l.qty, l.amount_tyiyn, l.cost_tyiyn, l.gift,\n                  coalesce((select sum(-r.qty) from sale_lines r join sales x on x.id = r.sale_id\n                            where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as \"ret_qty!\",\n                  coalesce((select sum(-r.amount_tyiyn) from sale_lines r join sales x on x.id = r.sale_id\n                            where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as \"ret_amount!\",\n                  s.total_tyiyn,\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as \"debt!\"\n           from payroll_cost_pending k\n           join sales s on s.id = k.sale_id\n           join sale_lines l on l.sale_id = k.sale_id and l.line_no = k.line_no\n           where k.branch_id = $1 and k.resolved_at is null and k.product_id in (select id from fam)\n           order by k.created_at\n           for update of k",
+  "query": "with recursive fam as (\n             select $2::uuid as id\n             union select p.id from products p join fam on p.merged_into = fam.id\n           )\n           select k.id, k.sale_id, k.line_no, k.employee_id, k.rule_id, k.rate_bp, k.unknown_units,\n                  s.number, s.party_id as \"party_id?\",\n                  l.qty, l.amount_tyiyn, l.cost_tyiyn, l.gift,\n                  coalesce((select sum(-r.qty) from sale_lines r join sales x on x.id = r.sale_id\n                            where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as \"ret_qty!\",\n                  coalesce((select sum(-r.amount_tyiyn) from sale_lines r join sales x on x.id = r.sale_id\n                            where x.reversal_of = s.id and r.line_no = l.line_no), 0)::bigint as \"ret_amount!\",\n                  s.total_tyiyn,\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as \"debt!\",\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'bonus'), 0)::bigint as \"bonus!\"\n           from payroll_cost_pending k\n           join sales s on s.id = k.sale_id\n           join sale_lines l on l.sale_id = k.sale_id and l.line_no = k.line_no\n           where k.branch_id = $1 and k.resolved_at is null and k.product_id in (select id from fam)\n           order by k.created_at\n           for update of k",
   "describe": {
     "columns": [
       {
@@ -87,6 +87,11 @@
         "ordinal": 16,
         "name": "debt!",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 17,
+        "name": "bonus!",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -112,8 +117,9 @@
       null,
       null,
       false,
+      null,
       null
     ]
   },
-  "hash": "3d7c2e1ba2016d1a3739454773b008491c0925954a68bcbc6d8ff1c2a45ca2e0"
+  "hash": "9c09a483dea570a19dcc333c9e0dcf3e373943d50fcf81328a712072c820f637"
 }

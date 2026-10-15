@@ -1,4 +1,5 @@
-// Настройки одним экраном: этикетки, документы, Телеграм и баллы, пользователи, категории и поставщики.
+// Настройки одним экраном: этикетки, документы, Телеграм и баллы, комиссия банка, статьи расходов,
+// пользователи, категории и поставщики.
 import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
 import { PageHeader } from '../components/ui'
@@ -8,6 +9,8 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },
   { to: '/settings/telegram', title: 'Телеграм и баллы', text: 'Бот владельца, процент баллов клиентам', icon: 'bell', ownerOnly: true },
+  { to: '/settings/payment-fees', title: 'Комиссия банка', text: 'Ставка банка за карту и перевод, история ставок', icon: 'profit', ownerOnly: true },
+  { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },
   { to: '/users', title: 'Пользователи', text: 'Кто входит в систему: владелец и администраторы', icon: 'employees', ownerOnly: true },
   { to: '/categories', title: 'Категории товаров', text: 'Масла, фильтры, аккумуляторы и их характеристики', icon: 'stock' },
   { to: '/suppliers', title: 'Поставщики', text: 'У кого покупаем, долги поставщикам', icon: 'incoming' },

@@ -100,3 +100,13 @@ export function shiftDate(date: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days)
   return d.toISOString().slice(0, 10)
 }
+
+/** Ставка в базисных пунктах для показа: 50 → «0,50 %», 200 → «2,00 %». */
+export function formatPercentBp(bp: number): string {
+  const sign = bp < 0 ? '−' : ''
+  const abs = Math.abs(bp)
+  return `${sign}${Math.trunc(abs / 100)},${String(abs % 100).padStart(2, '0')} %`
+}
+
+/** «0,5» процента → 50 базисных пунктов; не больше двух знаков после запятой, иначе null. */
+export const parsePercentBp = (input: string): number | null => parseFixed(input.replace('%', ''), 2)

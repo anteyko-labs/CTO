@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { lineQtyText, printSale } from '../components/salePrint'
-import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
@@ -38,6 +38,8 @@ function refundOf(l: SaleLine, done: Returned, qty: number): number {
 function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   const navigate = useNavigate()
   const returned = useLoad(() => loadReturned(sale), [sale.id])
+  // Наличные из кассы возвращаются только при открытой смене (ADR-065): предупреждаем заранее.
+  const shift = useLoad(() => get<{ id: string } | null>('/shifts/current'), [])
   const [qty, setQty] = useState<Record<number, string>>({})
   // Возврат — тем же способом, каким платили: долговой чек списывается с долга, а не выдаётся наличными.
   const paidBy = [...sale.payments].sort((a, b) => b.amount_tyiyn - a.amount_tyiyn).map((p) => p.method)
@@ -59,6 +61,7 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   const chosen = rows.filter((r) => r.ok && r.n)
   const total = chosen.reduce((acc, r) => acc + r.refund, 0)
   const invalid = rows.some((r) => !r.ok)
+  const noShift = method === 'cash' && total > 0 && shift.data === null
 
   const submit = () =>
     run(async () => {
@@ -124,12 +127,21 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
             </Field>
           </div>
           <div className="text-right text-lg font-semibold">К возврату: {formatSom(total)}</div>
+          {noShift && (
+            <Notice tone="rose">
+              <b>Смена не открыта.</b> Наличными вернуть нельзя: откройте смену на экране{' '}
+              <Link to="/shift" className="font-semibold underline">
+                «Смена»
+              </Link>{' '}
+              или верните на карту.
+            </Notice>
+          )}
           <ErrorBox error={error ?? returned.error} />
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={onClose}>
               Отмена
             </Button>
-            <Button variant="danger" disabled={busy || invalid || chosen.length === 0 || !comment.trim()} onClick={() => void submit()}>
+            <Button variant="danger" disabled={busy || invalid || noShift || chosen.length === 0 || !comment.trim()} onClick={() => void submit()}>
               Оформить возврат
             </Button>
           </div>

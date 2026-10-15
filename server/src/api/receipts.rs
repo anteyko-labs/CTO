@@ -684,6 +684,34 @@ pub async fn reverse_receipt_tx(
     }
     lock_products(conn, branch_id, live.values().copied()).await?;
     ops::ensure_not_merged(conn, &live.values().copied().collect::<Vec<_>>()).await?;
+    // Товар прихода уже продан и остаток уйдёт в минус — так исправляют только ошибку прихода,
+    // и решает это владелец (ADR-065). Строки одного товара складываются.
+    let mut take: std::collections::BTreeMap<Uuid, i64> = std::collections::BTreeMap::new();
+    for l in &orig.lines {
+        let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
+        let e = take.entry(target).or_insert(0);
+        *e = e.checked_add(l.qty).ok_or_else(crate::error::overflow)?;
+    }
+    let mut negative = Vec::new();
+    for (product_id, qty) in &take {
+        let r = sqlx::query!(
+            r#"select p.name, coalesce(bp.stock_qty, 0) as "stock!"
+               from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
+               where p.id = $1"#,
+            product_id,
+            branch_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if *qty > 0 && r.stock < *qty {
+            negative.push(
+                json!({ "name": r.name, "stock": r.stock, "qty": qty, "after": r.stock - qty }),
+            );
+        }
+    }
+    if !negative.is_empty() && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let rid = new_id();
     sqlx::query!(
@@ -824,6 +852,17 @@ pub async fn reverse_receipt_tx(
         json!({ "original": id, "number": number }),
     )
     .await?;
+    if !negative.is_empty() {
+        ops::audit(
+            conn,
+            ctx,
+            "receipt.reverse_negative",
+            "receipt",
+            Some(rid),
+            json!({ "original": id, "number": orig.number, "lines": negative }),
+        )
+        .await?;
+    }
     let out = load_receipt(conn, branch_id, rid).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)

@@ -455,6 +455,8 @@ export interface ProfitTotals {
   bank_fee_tyiyn: number
   expenses_tyiyn: number
   bonus_tyiyn: number
+  /** Недостача (минус) или излишек (плюс) кассы по пересчётам смен (ADR-065). */
+  cash_diff_tyiyn?: number
   net_tyiyn: number
   margin_bp: number | null
   sales_count: number
@@ -473,6 +475,7 @@ export interface ProfitReport {
     expenses_tyiyn: number
     fee_tyiyn?: number
     bonus_tyiyn?: number
+    cash_diff_tyiyn?: number
     net_tyiyn: number
   }[]
   articles: { name: string; amount_tyiyn: number }[]

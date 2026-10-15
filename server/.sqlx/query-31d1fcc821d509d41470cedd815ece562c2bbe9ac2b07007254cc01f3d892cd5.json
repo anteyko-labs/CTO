@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select rate_bp from payment_method_fees\n           where branch_id = $1 and method = $2\n             and active_from <= $3 and (active_to is null or active_to > $3)\n           order by active_from desc, created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rate_bp",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "31d1fcc821d509d41470cedd815ece562c2bbe9ac2b07007254cc01f3d892cd5"
+}

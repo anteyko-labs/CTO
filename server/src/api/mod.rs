@@ -10,6 +10,7 @@ pub mod cash;
 pub mod catalog;
 pub mod expenses;
 pub mod favorites;
+pub mod fees;
 pub mod gifts;
 pub mod loyalty;
 pub mod notifications;
@@ -40,6 +41,7 @@ pub fn routes() -> Router<AppState> {
         .merge(catalog::routes())
         .merge(expenses::routes())
         .merge(favorites::routes())
+        .merge(fees::routes())
         .merge(gifts::routes())
         .merge(loyalty::routes())
         .merge(notifications::routes())

@@ -67,12 +67,30 @@ function Compare({
 }
 
 /** Строка «лесенки» прибыли: подпись слева, сумма справа. */
-function Step({ label, value, strong = false, minus = false }: { label: string; value: number; strong?: boolean; minus?: boolean }) {
+/** Сумма со знаком действия: «− 1 000 с» уменьшает прибыль, «+ 300 с» добавляет. */
+function signedSom(value: number): string {
+  if (value === 0) return formatSom(0)
+  return `${value < 0 ? '−' : '+'} ${formatSom(Math.abs(value))}`
+}
+
+function Step({
+  label,
+  value,
+  strong = false,
+  minus = false,
+  signed = false,
+}: {
+  label: string
+  value: number
+  strong?: boolean
+  minus?: boolean
+  signed?: boolean
+}) {
   return (
     <div className={`flex items-baseline justify-between gap-4 py-1 ${strong ? 'border-t border-slate-200 font-semibold' : 'text-slate-700'}`}>
       <span>{label}</span>
-      <span className={`whitespace-nowrap tabular-nums ${strong && value < 0 ? 'text-rose-700' : ''}`}>
-        {minus && value !== 0 ? `− ${formatSom(value)}` : formatSom(value)}
+      <span className={`whitespace-nowrap tabular-nums ${(strong || signed) && value < 0 ? 'text-rose-700' : ''}`}>
+        {signed ? signedSom(value) : minus && value !== 0 ? `− ${formatSom(value)}` : formatSom(value)}
       </span>
     </div>
   )
@@ -191,6 +209,7 @@ export function OwnerDashboard() {
               {t.bank_fee_tyiyn !== 0 && <Step label="Комиссия банка (карта, QR)" value={t.bank_fee_tyiyn} minus />}
               {t.expenses_tyiyn !== 0 && <Step label="Расходы" value={t.expenses_tyiyn} minus />}
               {t.bonus_tyiyn !== 0 && <Step label="Скидки баллами" value={t.bonus_tyiyn} minus />}
+              {(t.cash_diff_tyiyn ?? 0) !== 0 && <Step label="Недостача / излишек кассы" value={t.cash_diff_tyiyn ?? 0} signed />}
               <Step label="Чистая прибыль" value={t.net_tyiyn} strong />
             </div>
             <div className="mt-2 text-xs text-slate-500">
@@ -346,13 +365,34 @@ function ReportTable({ cols, rows, foot }: { cols: Col[]; rows: { key: string; c
 }
 
 /** Строка расчёта прибыли: вычеты со знаком «−», итог красным при убытке. */
-function CalcRow({ label, value, minus = false, total = false, big = false }: { label: string; value: number; minus?: boolean; total?: boolean; big?: boolean }) {
+function CalcRow({
+  label,
+  value,
+  minus = false,
+  signed = false,
+  total = false,
+  big = false,
+  hint,
+}: {
+  label: string
+  value: number
+  minus?: boolean
+  signed?: boolean
+  total?: boolean
+  big?: boolean
+  hint?: string
+}) {
   return (
     <div
       className={`flex items-baseline justify-between gap-4 py-1 ${total ? 'border-t border-slate-200 font-semibold' : 'text-slate-700'} ${big ? 'text-lg font-bold' : ''}`}
     >
-      <span>{label}</span>
-      {minus ? (
+      <span>
+        {label}
+        {hint && <span className="block text-xs font-normal text-slate-500">{hint}</span>}
+      </span>
+      {signed ? (
+        <span className={`whitespace-nowrap tabular-nums ${value < 0 ? 'text-rose-700' : ''}`}>{signedSom(value)}</span>
+      ) : minus ? (
         <span className="whitespace-nowrap tabular-nums">{value === 0 ? formatSom(0) : `− ${formatSom(value)}`}</span>
       ) : (
         <Money value={value} tone="negative" />
@@ -437,6 +477,12 @@ export default function Profit() {
               <CalcRow label="Комиссия банка" value={t.bank_fee_tyiyn} minus />
               <CalcRow label="Расходы" value={t.expenses_tyiyn} minus />
               <CalcRow label="Скидки баллами" value={t.bonus_tyiyn} minus />
+              <CalcRow
+                label="Недостача / излишек кассы"
+                value={t.cash_diff_tyiyn ?? 0}
+                signed
+                hint="Пересчёт смен; удержание недостачи с кассира уже уменьшило оплату труда"
+              />
               <CalcRow label="Чистая прибыль" value={t.net_tyiyn} total big />
               <div className="mt-2 text-xs text-slate-500">
                 Чеков {t.sales_count}, маржа {percent(t.margin_bp)}
@@ -492,6 +538,7 @@ export default function Profit() {
                   { label: 'Комиссия', right: true },
                   { label: 'Расходы', right: true },
                   { label: 'Баллы', right: true },
+                  { label: 'Касса ±', right: true },
                   { label: 'Чистая', right: true },
                 ]}
                 rows={days.map((x) => ({
@@ -504,6 +551,7 @@ export default function Profit() {
                     money(x.fee_tyiyn ?? 0),
                     money(x.expenses_tyiyn),
                     money(x.bonus_tyiyn ?? 0),
+                    <Money key="cash" value={x.cash_diff_tyiyn ?? 0} tone="negative" zero="—" />,
                     <Money key="net" value={x.net_tyiyn} tone="negative" className="font-semibold" />,
                   ],
                 }))}
@@ -517,6 +565,7 @@ export default function Profit() {
                         money(sum((x) => x.fee_tyiyn ?? 0)),
                         money(sum((x) => x.expenses_tyiyn)),
                         money(sum((x) => x.bonus_tyiyn ?? 0)),
+                        <Money key="cash" value={sum((x) => x.cash_diff_tyiyn ?? 0)} tone="negative" zero="—" />,
                         money(sum((x) => x.net_tyiyn)),
                       ]
                     : undefined

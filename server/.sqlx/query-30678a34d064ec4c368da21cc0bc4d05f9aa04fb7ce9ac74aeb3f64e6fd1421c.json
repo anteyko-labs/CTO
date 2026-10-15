@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,\n                  a.reversal_of as \"reversal_of?\",\n                  exists (select 1 from payroll_accruals r where r.reversal_of = a.id) as \"reversed!\",\n                  u.full_name as \"user_name!\", a.created_at\n           from payroll_accruals a join users u on u.id = a.user_id\n           where a.branch_id = $1 and a.employee_id = $2 and a.business_date between $3 and $4\n             and a.doc_type not in ('sale', 'sale_return')\n           order by a.business_date desc, a.created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversal_of?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "30678a34d064ec4c368da21cc0bc4d05f9aa04fb7ce9ac74aeb3f64e6fd1421c"
+}

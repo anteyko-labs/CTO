@@ -31,6 +31,8 @@ pub struct Totals {
     pub expenses_tyiyn: i64,
     /// Оплачено баллами за вычетом возвращённых — скидка клиентам (SPEC-19).
     pub bonus_tyiyn: i64,
+    /// Недостача (минус) или излишек (плюс) кассы по пересчётам смен (ADR-065).
+    pub cash_diff_tyiyn: i64,
     pub net_tyiyn: i64,
     pub margin_bp: Option<i64>,
     pub sales_count: i64,
@@ -54,6 +56,8 @@ struct DayRow {
     /// Комиссия банка и скидки баллами — чтобы «чистая» сходилась на глаз.
     fee_tyiyn: i64,
     bonus_tyiyn: i64,
+    /// Недостача (минус) или излишек (плюс) кассы.
+    cash_diff_tyiyn: i64,
     net_tyiyn: i64,
 }
 
@@ -183,6 +187,20 @@ pub async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Недостача и излишек кассы — по учётному дню смены: и пересчёт при открытии, и при
+    // закрытии. Удержание с кассира идёт в оплату труда, поэтому удержанная недостача прибыль
+    // не меняет, а прощённая уменьшает её (ADR-065).
+    let cash_diff = sqlx::query_scalar!(
+        r#"select coalesce(sum(m.amount_tyiyn), 0)::bigint as "v!"
+           from cash_movements m join shifts s on s.id = m.doc_id
+           where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
+             and s.business_date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     // Суммы из базы; насыщение вместо паники на заведомо нереальных значениях.
     let revenue = lines.goods.saturating_add(lines.services);
     let cost = lines.cost.saturating_add(revaluation);
@@ -196,11 +214,13 @@ pub async fn totals_for(
         bank_fee_tyiyn: fee,
         expenses_tyiyn: expenses,
         bonus_tyiyn: bonus,
+        cash_diff_tyiyn: cash_diff,
         net_tyiyn: gross
             .saturating_sub(payroll)
             .saturating_sub(fee)
             .saturating_sub(expenses)
-            .saturating_sub(bonus),
+            .saturating_sub(bonus)
+            .saturating_add(cash_diff),
         margin_bp: (revenue != 0)
             .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
             .flatten(),
@@ -300,7 +320,10 @@ async fn profit(
                           where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
                             and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "fee!",
              coalesce((select sum(p.amount_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
-                       where s.branch_id = $1 and s.business_date = d.day and p.method = 'bonus'), 0)::bigint as "bonus!"
+                       where s.branch_id = $1 and s.business_date = d.day and p.method = 'bonus'), 0)::bigint as "bonus!",
+             coalesce((select sum(m.amount_tyiyn) from cash_movements m join shifts s on s.id = m.doc_id
+                       where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
+                         and s.business_date = d.day), 0)::bigint as "cash_diff!"
            from d order by d.day desc"#,
         branch_id,
         from,
@@ -317,12 +340,14 @@ async fn profit(
         expenses_tyiyn: r.expenses,
         fee_tyiyn: r.fee,
         bonus_tyiyn: r.bonus,
+        cash_diff_tyiyn: r.cash_diff,
         net_tyiyn: r
             .gross
             .saturating_sub(r.payroll)
             .saturating_sub(r.expenses)
             .saturating_sub(r.fee)
-            .saturating_sub(r.bonus),
+            .saturating_sub(r.bonus)
+            .saturating_add(r.cash_diff),
     })
     .collect();
 

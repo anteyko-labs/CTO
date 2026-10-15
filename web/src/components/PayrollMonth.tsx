@@ -4,6 +4,7 @@ import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { PayrollEntries } from './PayrollEntries'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, Table, toast } from './ui'
 
 interface MonthRow {
@@ -49,6 +50,7 @@ export function PayrollMonth() {
   const [month, setMonth] = useState(shiftMonth(todayBishkek(), 0))
   const data = useLoad(() => get<MonthOut>(`/payroll/month${qs({ month })}`), [month])
   const [salary, setSalary] = useState<{ row: MonthRow; sum: string; opId: string } | null>(null)
+  const [entries, setEntries] = useState<MonthRow | null>(null)
   const act = useAction()
   const [y, m] = month.split('-').map(Number)
   const current = shiftMonth(todayBishkek(), 0)
@@ -112,7 +114,12 @@ export function PayrollMonth() {
                 <td className="px-2 py-2 font-semibold md:text-right">
                   <Money value={r.closing_tyiyn} tone="negative" />
                 </td>
-                <td className="px-2 py-2 text-right">
+                <td className="px-2 py-2 text-right whitespace-nowrap">
+                  {owner && (
+                    <Button variant="secondary" className="mr-1 px-2 py-1 text-xs" onClick={() => setEntries(r)}>
+                      Подробно
+                    </Button>
+                  )}
                   {owner && !r.salary_done && month <= current && (
                     <Button
                       variant="secondary"
@@ -143,6 +150,18 @@ export function PayrollMonth() {
             </tr>
           </Table>
         </Card>
+      )}
+
+      {entries && data.data && (
+        <PayrollEntries
+          employee={entries}
+          from={data.data.from}
+          to={data.data.to}
+          onClose={(changed) => {
+            setEntries(null)
+            if (changed) data.reload()
+          }}
+        />
       )}
 
       {salary && (

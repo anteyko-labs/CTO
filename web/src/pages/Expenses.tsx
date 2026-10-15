@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -58,7 +59,16 @@ export default function Expenses() {
 
   return (
     <div>
-      <PageHeader title="Расходы" />
+      <PageHeader
+        title="Расходы"
+        actions={
+          owner && (
+            <Link to="/settings/expense-articles" className="text-sm font-medium text-sky-700 underline">
+              Статьи расходов
+            </Link>
+          )
+        }
+      />
 
       <Card className="mb-4 flex flex-col gap-3">
         <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr] sm:items-end">

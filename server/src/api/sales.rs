@@ -502,6 +502,8 @@ async fn insert_payments(
     // Возврат: сколько комиссии исходного чека ещё не вернули. Больше банк не вернёт —
     // чек наличными, возвращённый на карту, комиссии «назад» не даёт (ADR-022).
     mut fee_left: i64,
+    // Учётный день чека (у возврата — исходного): ставка банка берётся действовавшая в него.
+    on: NaiveDate,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let register = cash::default_account(conn, branch_id).await?;
@@ -511,14 +513,7 @@ async fn insert_payments(
         let amount = sign * p.amount_tyiyn;
         let fee = match p.method.as_str() {
             "card" | "transfer" => {
-                let rate = sqlx::query_scalar!(
-                    "select rate_bp from payment_method_fees where branch_id = $1 and method = $2",
-                    branch_id,
-                    p.method
-                )
-                .fetch_optional(&mut *conn)
-                .await?
-                .unwrap_or(0);
+                let rate = crate::api::fees::rate_on(conn, branch_id, &p.method, on).await?;
                 let fee = div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0);
                 if sign < 0 {
                     let back = (-fee).min(fee_left.max(0));
@@ -826,6 +821,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     // в неё не входят: их процент ждёт, пока владелец не укажет цену (ADR-062).
     let mut gross: i64 = 0;
     let mut unknown: Vec<payroll::UnknownCost> = Vec::new();
+    // Сумма строк без цены закупки: на неё приходится часть скидки баллами (ADR-065).
+    let mut unknown_amount: i64 = 0;
     for (i, p) in prepared.iter().enumerate() {
         let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
         let mut cost = 0;
@@ -876,11 +873,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         )
         .await?;
         match p.product_id {
-            Some(product_id) if unknown_units > 0 => unknown.push(payroll::UnknownCost {
-                line_no,
-                product_id,
-                units: unknown_units,
-            }),
+            Some(product_id) if unknown_units > 0 => {
+                unknown_amount = unknown_amount.checked_add(p.amount).ok_or_else(overflow)?;
+                unknown.push(payroll::UnknownCost {
+                    line_no,
+                    product_id,
+                    units: unknown_units,
+                });
+            }
             _ => gross = gross.checked_add(p.amount - cost).ok_or_else(overflow)?,
         }
         // Цену меняли на кассе — если она отличается от прайса, который видела касса; прайс
@@ -893,7 +893,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             stale.push(json!({ "line_no": line_no, "seen": seen, "list": p.list_price }));
         }
     }
-    insert_payments(conn, ctx, id, &req.payments, 1, 0).await?;
+    // Учётный день чека: по нему ставка банка (SPEC-08) и начисления сотрудникам.
+    let business_date = sqlx::query_scalar!(
+        r#"select business_date as "d!" from sales where id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    insert_payments(conn, ctx, id, &req.payments, 1, 0, business_date).await?;
     // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
     crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments).await?;
     if debt_total > 0 {
@@ -971,13 +978,6 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         )
         .await?;
     }
-    // Начисления сотрудникам в той же транзакции, что и чек (инвариант 7).
-    let business_date = sqlx::query_scalar!(
-        r#"select business_date as "d!" from sales where id = $1"#,
-        id
-    )
-    .fetch_one(&mut *conn)
-    .await?;
     if offline {
         offline_after_close(conn, ctx, id, number, business_date, &req.payments).await?;
         // Задним числом: учётный день чека раньше сегодняшнего дня сервера (SPEC-08).
@@ -1074,6 +1074,13 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             gross,
             total,
             debt: debt_total,
+            bonus: req
+                .payments
+                .iter()
+                .filter(|p| p.method == "bonus")
+                .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
+                .ok_or_else(overflow)?,
+            unknown_amount,
             unknown,
         },
     )
@@ -1198,7 +1205,7 @@ pub async fn return_sale_tx(
     .execute(&mut *conn)
     .await?;
     let orig = sqlx::query!(
-        r#"select kind, sale_type, cashier_id, master_id, master_fee_tyiyn,
+        r#"select kind, sale_type, cashier_id, master_id, master_fee_tyiyn, business_date,
                   party_id as "party_id?", contact_id as "contact_id?", vehicle_id as "vehicle_id?"
            from sales where id = $1 and branch_id = $2"#,
         id,
@@ -1346,6 +1353,21 @@ pub async fn return_sale_tx(
             crate::domain::money::format_som(left.money.max(0))
         )));
     }
+    // Наличные из «Кассы» выдаются только в открытую смену (ADR-065): иначе деньги уйдут мимо
+    // пересчёта. Возврат на карту и списанием долга смены не требует, продажа без смены — тоже.
+    if req
+        .payments
+        .iter()
+        .any(|p| p.method == "cash" && p.amount_tyiyn > 0)
+    {
+        let till = cash::default_account(conn, branch_id).await?;
+        if cash::open_shift_id(conn, branch_id, till).await?.is_none() {
+            return Err(AppError::Conflict(
+                "возврат наличными — только при открытой смене: откройте смену на экране «Смена»"
+                    .into(),
+            ));
+        }
+    }
     // Работу мастер уже сделал: ставка снимается только если вернули чек целиком (ADR-027).
     let sold_qty = sqlx::query_scalar!(
         r#"select coalesce(sum(qty), 0)::bigint as "v!" from sale_lines where sale_id = $1"#,
@@ -1439,7 +1461,16 @@ pub async fn return_sale_tx(
     )
     .fetch_one(&mut *conn)
     .await?;
-    insert_payments(conn, ctx, rid, &req.payments, -1, fee_left).await?;
+    insert_payments(
+        conn,
+        ctx,
+        rid,
+        &req.payments,
+        -1,
+        fee_left,
+        orig.business_date,
+    )
+    .await?;
     crate::api::loyalty::on_return(conn, ctx, id, rid, orig.party_id, &req.payments).await?;
     let debt_back: i64 = req
         .payments
@@ -1468,14 +1499,18 @@ pub async fn return_sale_tx(
     // Строка без цены закупки в процент кассира не входила, пока владелец не дал цену; после —
     // входит по его цене (ADR-062). Так возврат снимает ровно то, что начислили.
     let mut gross_back: i64 = 0;
+    let mut counted_back: i64 = 0;
     for x in &planned {
         let g = if x.cost_unknown {
             payroll::unknown_line_gross_back(conn, id, x.line_no, x.amount, x.p.qty, x.orig_qty)
                 .await?
         } else {
-            x.amount.checked_sub(x.cost).ok_or_else(overflow)?
+            Some(x.amount.checked_sub(x.cost).ok_or_else(overflow)?)
         };
-        gross_back = gross_back.checked_add(g).ok_or_else(overflow)?;
+        if let Some(g) = g {
+            gross_back = gross_back.checked_add(g).ok_or_else(overflow)?;
+            counted_back = counted_back.checked_add(x.amount).ok_or_else(overflow)?;
+        }
     }
     let return_date = sqlx::query_scalar!(
         r#"select business_date as "d!" from sales where id = $1"#,
@@ -1493,6 +1528,13 @@ pub async fn return_sale_tx(
             gross_back,
             total_back: total,
             debt_back,
+            counted_back,
+            bonus_back: req
+                .payments
+                .iter()
+                .filter(|p| p.method == "bonus")
+                .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
+                .ok_or_else(overflow)?,
             full_return,
         },
     )

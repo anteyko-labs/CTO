@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.number, p.amount_tyiyn, p.source, c.name as \"account_name?\", p.comment,\n                  p.reversal_of as \"reversal_of?\",\n                  exists (select 1 from payouts r where r.reversal_of = p.id) as \"reversed!\",\n                  u.full_name as \"user_name!\", p.created_at\n           from payouts p join users u on u.id = p.user_id\n           left join cash_accounts c on c.id = p.account_id\n           where p.branch_id = $1 and p.employee_id = $2\n             and (p.created_at at time zone 'Asia/Bishkek')::date between $3 and $4\n           order by p.created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversal_of?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "76c93af3ae14c6ed1896b2f493ae0a35730c9a7b6f53ab366a800ef3dba57735"
+}

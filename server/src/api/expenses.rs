@@ -103,7 +103,14 @@ async fn create_article(
     if name.is_empty() {
         return Err(invalid("укажите название статьи"));
     }
+    if name.chars().count() > 100 {
+        return Err(invalid("название не длиннее 100 знаков"));
+    }
     let id = new_id();
+    // Статья и запись в журнал — одна транзакция (инвариант 7).
+    let mut tx = state.pool.begin().await?;
+    // Начальные статьи заводятся, только пока статей нет: первая своя их не отменяет.
+    ensure_articles(&mut tx, ctx.user.branch_id).await?;
     sqlx::query!(
         "insert into expense_articles (id, branch_id, name, owner_only) values ($1, $2, $3, $4)",
         id,
@@ -111,8 +118,25 @@ async fn create_article(
         name,
         req.owner_only
     )
-    .execute(&state.pool)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        if crate::error::is_unique_violation(&e) {
+            AppError::Conflict("статья с таким названием уже есть".into())
+        } else {
+            AppError::from(e)
+        }
+    })?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "expense.article_create",
+        "expense_article",
+        Some(id),
+        json!({ "name": name, "owner_only": req.owner_only }),
+    )
     .await?;
+    tx.commit().await?;
     Ok(Json(ArticleOut {
         id,
         name,
@@ -162,7 +186,14 @@ async fn update_article(
         req.active
     )
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| {
+        if crate::error::is_unique_violation(&e) {
+            AppError::Conflict("статья с таким названием уже есть".into())
+        } else {
+            AppError::from(e)
+        }
+    })?;
     let changes = ops::changes(
         &json!({ "name": before.name, "owner_only": before.owner_only, "active": before.active }),
         &json!({ "name": out.name, "owner_only": out.owner_only, "active": out.active }),

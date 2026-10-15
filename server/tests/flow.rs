@@ -153,6 +153,28 @@ async fn receive(
     r
 }
 
+/// Открытая смена на «Кассе»: возврат наличными без неё не проводится (ADR-065).
+async fn open_till(pool: &PgPool, w: &World) -> Uuid {
+    let mut conn = pool.acquire().await.unwrap();
+    let till = avtodom_server::api::cash::default_account(&mut conn, w.owner.user.branch_id)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id, opened_by, opened_device, opening_expected_tyiyn)
+         values ($1, $2, (select coalesce(max(number), 0) + 1 from shifts where branch_id = $2),
+                 (now() at time zone 'Asia/Bishkek')::date, $3, $4, $5, $1, 0)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(till)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    till
+}
+
 async fn pool_of(pool: &PgPool, product: Uuid) -> (i64, i64, bool) {
     sqlx::query_as("select stock_qty, stock_value_tyiyn, needs_review from branch_products where product_id = $1")
         .bind(product)
@@ -306,6 +328,8 @@ async fn payments_must_match_total(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn oil_change_is_a_mark_not_a_service_line(pool: PgPool) {
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 10, 100).await;
 
     // «В сервис» без мастера не проводится.
@@ -530,6 +554,8 @@ async fn cash_follows_payments(pool: PgPool) {
 async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
     // 2 % с валовой прибыли: с оплаченной части сразу, с долговой — при погашении (ADR-035, ADR-036).
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 10, 30_000).await;
     sqlx::query(
         "insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base, rate_bp, user_id)
@@ -643,6 +669,8 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
 async fn full_return_takes_back_master_fee(pool: PgPool) {
     // Мастер получил ставку за замену; чек вернули целиком — ставка снимается (ADR-027, SPEC-07).
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 2, 1_000).await;
     let master_total = |pool: PgPool, m: Uuid| async move {
         sqlx::query_scalar::<_, i64>(
@@ -716,6 +744,8 @@ async fn negative_stock_is_flagged(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn partial_returns_restore_exact_cost(pool: PgPool) {
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 3, 100).await;
     let sale = sell(
         &pool,
@@ -1095,6 +1125,8 @@ async fn receipt_after_negative_stock_values_rest_at_its_cost(pool: PgPool) {
 async fn return_after_merge_lands_on_main_card(pool: PgPool) {
     // Возврат по карточке, которую потом влили в основную, ложится на основную (ADR-044).
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     let main = Uuid::now_v7();
     let cat: Uuid = sqlx::query_scalar("select category_id from products where id = $1")
         .bind(w.filter)
@@ -1444,6 +1476,8 @@ async fn batteries_by_weight_average_and_no_loss(pool: PgPool) {
 async fn oil_book_records_service_change(pool: PgPool) {
     // Замена в сервисе на машине клиента пишет книжку; следующая — пробег + интервал (SPEC-16).
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let (party, vehicle) = (Uuid::now_v7(), Uuid::now_v7());
@@ -1622,6 +1656,8 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
     use avtodom_server::api::loyalty::balance;
     use avtodom_server::api::telegram::bonus_notices;
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 10, 10_000).await;
     let party = Uuid::now_v7();
     sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456')")
@@ -1767,6 +1803,8 @@ async fn returns_respect_debt_points_and_bank_fee(pool: PgPool) {
     // Ревью денежных цепочек: возврат не уменьшает погашенный долг, баллы не обналичиваются,
     // комиссия возвращается только та, что была у исходного чека (ADR-054).
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 10, 10_000).await;
     let party = Uuid::now_v7();
     sqlx::query("insert into parties (id, branch_id, role, kind, name, phone, inn) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456', '12345678901234')")
@@ -2783,6 +2821,8 @@ async fn bot_notes_limits_and_foreign_chat(pool: PgPool) {
 async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
     use avtodom_server::domain::money::format_som;
     let w = seed(&pool).await;
+    // Возврат наличными — только в открытую смену (ADR-065).
+    open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let chat = 720_001i64;
@@ -4556,4 +4596,346 @@ async fn bot_update_offset_survives_restart(pool: PgPool) {
     assert_eq!(load_offset(&mut conn).await.unwrap(), 0);
     save_offset(&mut conn, 912_345_678).await.unwrap();
     assert_eq!(load_offset(&mut conn).await.unwrap(), 912_345_678);
+}
+
+/// Наличные в кассе для проверок: внесение мимо смены, остаток сходится с движениями.
+async fn fund_till(pool: &PgPool, w: &World, till: Uuid, amount: i64) {
+    sqlx::query(
+        "insert into cash_movements (id, branch_id, account_id, kind, amount_tyiyn, user_id, device_id) values ($1, $2, $3, 'cash_in', $4, $5, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(till)
+    .bind(amount)
+    .bind(w.owner.user.id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("update cash_accounts set balance_tyiyn = balance_tyiyn + $2 where id = $1")
+        .bind(till)
+        .bind(amount)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn till_balance(pool: &PgPool, till: Uuid) -> i64 {
+    sqlx::query_scalar("select balance_tyiyn from cash_accounts where id = $1")
+        .bind(till)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cashier_percent_is_only_from_money(pool: PgPool) {
+    // 2 % кассира — с валовой за вычетом скидки баллами; возврат снимает ровно начисленное (ADR-065).
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w.admin, w.filter, 10, 30_000).await;
+    sqlx::query(
+        "insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base, rate_bp, user_id)
+         values ($1, $2, $3, 'revenue_percent', 'cashier', 'gross', 200, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values (777, $1, '+996555123456')")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 1 000 баллов на счету клиента.
+    sqlx::query(
+        "insert into loyalty_ledger (id, branch_id, party_id, kind, amount_tyiyn, doc_type, doc_id) values ($1, $2, $3, 'accrual', 100000, 'test', $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(party)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let percent = |sale: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (i64, i64)>(
+                "select coalesce(sum(amount_tyiyn), 0)::bigint, coalesce(sum(base_tyiyn), 0)::bigint
+                 from payroll_accruals where kind = 'revenue_percent'
+                   and (doc_id = $1 or doc_id in (select id from sales where reversal_of = $1))",
+            )
+            .bind(sale)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let ret = |qty: i64, payments: Vec<PaymentReq>| ReturnReq {
+        op_id: Uuid::now_v7(),
+        comment: String::new(),
+        lines: vec![ReturnLineReq { line_no: 1, qty }],
+        payments,
+    };
+
+    // Чек 1 000 с за штуку с закупкой 30 с: валовая 970 с, из них 200 с баллами.
+    // База 770 с, 2 % = 15,40 с.
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 100_000)],
+        pay(&[("bonus", 20_000), ("cash", 80_000)]),
+    );
+    req.party_id = Some(party);
+    let one = sell(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(percent(one.id).await, (1_540, 77_000));
+    // Тот же чек без баллов дал бы 19,40 с: база меньше ровно на 200 с.
+    let plain = sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 1, 100_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(percent(plain.id).await, (1_940, 97_000));
+    // Полный возврат снимает ровно начисленное.
+    let mut tx = pool.begin().await.unwrap();
+    return_sale_tx(
+        &mut tx,
+        &w.owner,
+        one.id,
+        ret(1, pay(&[("bonus", 20_000), ("cash", 80_000)])),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(percent(one.id).await, (0, 0));
+
+    // Две штуки по 500 с, 200 с баллами: база 940 − 200 = 740 с, 2 % = 14,80 с.
+    // Возврат по одной штуке снимает по половине, в сумме — всё.
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 2, 50_000)],
+        pay(&[("bonus", 20_000), ("cash", 80_000)]),
+    );
+    req.party_id = Some(party);
+    let two = sell(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(percent(two.id).await, (1_480, 74_000));
+    for _ in 0..2 {
+        let mut tx = pool.begin().await.unwrap();
+        return_sale_tx(
+            &mut tx,
+            &w.owner,
+            two.id,
+            ret(1, pay(&[("bonus", 10_000), ("cash", 40_000)])),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(percent(two.id).await, (0, 0));
+
+    // Баллы больше валовой (100 − 30 = 70 с, баллами 90 с) — процента нет, база не уходит в минус.
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 10_000)],
+        pay(&[("bonus", 9_000), ("cash", 1_000)]),
+    );
+    req.party_id = Some(party);
+    let cheap = sell(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(percent(cheap.id).await, (0, 0));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn battery_intake_can_be_reversed_once(pool: PgPool) {
+    // Отмена приёма: вес со склада, деньги в ту же кассу; проданный вес не отменить (ADR-065).
+    use avtodom_server::api::batteries::{IntakeReverseReq, reverse_intake_tx};
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 1_000_000).await;
+    let intake = |kg: i64| {
+        let pool = pool.clone();
+        let admin = w.admin.clone();
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let out = intake_tx(
+                &mut tx,
+                &admin,
+                IntakeReq {
+                    op_id: Uuid::now_v7(),
+                    grams: kg * 1000,
+                    price_per_kg_tyiyn: 10_000,
+                    comment: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            out
+        }
+    };
+    let reverse = |ctx: Ctx, id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let r = reverse_intake_tx(
+                &mut tx,
+                &ctx,
+                id,
+                IntakeReverseReq {
+                    op_id: Uuid::now_v7(),
+                    comment: "ошиблись весом".into(),
+                },
+            )
+            .await;
+            if r.is_ok() {
+                tx.commit().await.unwrap();
+            }
+            r
+        }
+    };
+
+    // 10 кг по 100 с: из кассы 1 000 с. Отмена возвращает деньги и снимает вес.
+    let first = intake(10).await;
+    assert_eq!(till_balance(&pool, till).await, 900_000);
+    let back = reverse(w.admin.clone(), first.id).await.unwrap();
+    assert_eq!(back.info.stock_g, 0);
+    assert_eq!(till_balance(&pool, till).await, 1_000_000);
+    // Второй раз — 409.
+    assert!(matches!(
+        reverse(w.owner.clone(), first.id).await,
+        Err(AppError::Conflict(_))
+    ));
+
+    // Приняли 10 кг, продали 5 — отменять нечего: остаток ушёл бы в минус.
+    let second = intake(10).await;
+    let product = second.info.product_id;
+    sell(
+        &pool,
+        &w.admin,
+        takeaway(
+            &w,
+            vec![SaleLineReq {
+                kind: "weight".into(),
+                gift: false,
+                product_id: Some(product),
+                service_id: None,
+                qty: 5_000,
+                unit_price_tyiyn: 15_000,
+                seen_list_price_tyiyn: None,
+            }],
+            cash(75_000),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        reverse(w.owner.clone(), second.id).await,
+        Err(AppError::Conflict(_))
+    ));
+
+    // Смена закрыта: администратор приём не отменяет; владелец — когда смена снова открыта.
+    let third = intake(4).await;
+    let shift: Uuid = sqlx::query_scalar("select id from shifts where account_id = $1")
+        .bind(till)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let close = Uuid::now_v7();
+    sqlx::query(
+        "insert into shift_closes (id, shift_id, seq, expected_tyiyn, counted_tyiyn, diff_tyiyn, user_id, device_id)
+         values ($1, $2, 1, 0, 0, 0, $3, $1)",
+    )
+    .bind(close)
+    .bind(shift)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        reverse(w.admin.clone(), third.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        reverse(w.owner.clone(), third.id).await,
+        Err(AppError::Conflict(_))
+    ));
+    sqlx::query(
+        "insert into shift_reopens (id, shift_id, close_id, reason, user_id, device_id) values ($1, $2, $3, 'продолжаем', $4, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(shift)
+    .bind(close)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = till_balance(&pool, till).await;
+    let out = reverse(w.owner.clone(), third.id).await.unwrap();
+    assert_eq!(out.info.stock_g, 5_000);
+    assert_eq!(till_balance(&pool, till).await, before + 40_000);
+    assert_eq!(audit_data(&pool, "battery.intake_reverse").await.len(), 2);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipt_reversal_of_sold_goods_is_owner_only(pool: PgPool) {
+    // Сторно прихода, товар которого уже продан, — только владелец, и ему уведомление (ADR-065).
+    let w = seed(&pool).await;
+    let sold = receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let intact = receive(&pool, &w.admin, w.oil, 4000, 100_000).await;
+    sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![line("piece", w.filter, 3, 2_000)], cash(6_000)),
+    )
+    .await
+    .unwrap();
+    let reverse = |ctx: Ctx, id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let r = reverse_receipt_tx(
+                &mut tx,
+                &ctx,
+                id,
+                ReverseReq {
+                    op_id: Uuid::now_v7(),
+                    comment: "ошибка".into(),
+                },
+            )
+            .await;
+            if r.is_ok() {
+                tx.commit().await.unwrap();
+            }
+            r
+        }
+    };
+    // Непроданный товар администратор сторнирует, как прежде, без уведомления о минусе.
+    reverse(w.admin.clone(), intact.id).await.unwrap();
+    assert!(
+        audit_data(&pool, "receipt.reverse_negative")
+            .await
+            .is_empty()
+    );
+    // Проданный — 403 администратору.
+    assert!(matches!(
+        reverse(w.admin.clone(), sold.id).await,
+        Err(AppError::Forbidden)
+    ));
+    assert_eq!(pool_of(&pool, w.filter).await.0, 2);
+    // Владелец проводит, остаток −3, уведомление «проведите верный приход».
+    reverse(w.owner.clone(), sold.id).await.unwrap();
+    assert_eq!(pool_of(&pool, w.filter).await.0, -3);
+    let notes = audit_data(&pool, "receipt.reverse_negative").await;
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["lines"][0]["after"], -3);
 }

@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 41] = [
+pub(crate) const WATCHED: [&str; 44] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -61,6 +61,9 @@ pub(crate) const WATCHED: [&str; 41] = [
     "backup.failed",
     "telegram.code_flood",
     "telegram.customer_ambiguous",
+    "receipt.reverse_negative",
+    "battery.intake_reverse",
+    "settings.payment_fee",
 ];
 
 #[derive(Serialize)]
@@ -194,6 +197,66 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "receipt.reverse" => (
             "Сторно прихода".into(),
             format!("накладная № {}", num("number").unwrap_or(0)),
+        ),
+        "receipt.reverse_negative" => (
+            format!(
+                "Сторно накладной № {}: остаток ушёл в минус",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} — товар уже продан, остаток ушёл в минус — проведите верный приход",
+                data.get("lines")
+                    .and_then(Value::as_array)
+                    .map(|l| l
+                        .iter()
+                        .map(|x| format!(
+                            "{}: {}",
+                            x.get("name").and_then(Value::as_str).unwrap_or("товар"),
+                            x.get("after").and_then(Value::as_i64).unwrap_or(0)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default()
+            ),
+        ),
+        "battery.intake_reverse" => (
+            format!(
+                "Отменён приём аккумуляторов № {}",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} г, в кассу вернулось {}{}",
+                num("grams").unwrap_or(0),
+                money(num("amount")),
+                comment(data)
+            ),
+        ),
+        "settings.payment_fee" => (
+            format!(
+                "Комиссия банка: {}",
+                if text("method") == "card" {
+                    "карта"
+                } else {
+                    "перевод"
+                }
+            ),
+            format!(
+                "{}стало {} с {}",
+                data.get("before")
+                    .and_then(|b| b.get("rate_bp"))
+                    .and_then(Value::as_i64)
+                    .map(|b| format!("было {}, ", percent(b)))
+                    .unwrap_or_default(),
+                data.get("after")
+                    .and_then(|a| a.get("rate_bp"))
+                    .and_then(Value::as_i64)
+                    .map(percent)
+                    .unwrap_or_default(),
+                data.get("after")
+                    .and_then(|a| a.get("active_from"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            ),
         ),
         "party.limit_request" => (
             "Просят поднять лимит долга".into(),
@@ -666,4 +729,41 @@ async fn mark_seen(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Va
     .execute(&state.pool)
     .await?;
     Ok(Json(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_events_are_described_in_words() {
+        let (title, text) = describe(
+            "receipt.reverse_negative",
+            &json!({ "number": 7, "lines": [{ "name": "Фильтр", "after": -3 }] }),
+        );
+        assert_eq!(title, "Сторно накладной № 7: остаток ушёл в минус");
+        assert!(text.contains("Фильтр: -3"), "{text}");
+        assert!(text.contains("проведите верный приход"), "{text}");
+        let (title, text) = describe(
+            "battery.intake_reverse",
+            &json!({ "number": 3, "grams": 4000, "amount": 40000, "comment": "ошиблись" }),
+        );
+        assert_eq!(title, "Отменён приём аккумуляторов № 3");
+        assert!(
+            text.contains("4000 г") && text.contains("ошиблись"),
+            "{text}"
+        );
+        let (_, text) = describe(
+            "settings.payment_fee",
+            &json!({ "method": "card", "before": { "rate_bp": 50 }, "after": { "rate_bp": 100, "active_from": "2026-10-20" } }),
+        );
+        assert_eq!(text, "было 0,50 %, стало 1,00 % с 2026-10-20");
+        for action in WATCHED {
+            assert_ne!(
+                describe(action, &json!({})).0,
+                action,
+                "{action} без описания"
+            );
+        }
+    }
 }

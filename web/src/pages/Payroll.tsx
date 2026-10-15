@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PayrollEntries } from '../components/PayrollEntries'
 import { PayrollMonth } from '../components/PayrollMonth'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
@@ -15,6 +16,7 @@ export default function Payroll() {
   const [paying, setPaying] = useState<PayrollRow | null>(null)
   const [extra, setExtra] = useState<{ row: PayrollRow; kind: 'bonus' | 'penalty' } | null>(null)
   const [salary, setSalary] = useState<PayrollRow | null>(null)
+  const [entries, setEntries] = useState<PayrollRow | null>(null)
   const [form, setForm] = useState({ sum: '', comment: '', advance: false })
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
   const [opId, setOpId] = useState(newOpId)
@@ -182,6 +184,7 @@ export default function Payroll() {
                             { label: 'Оклад', onClick: () => openSalary(r) },
                             { label: 'Бонус', onClick: () => openExtra(r, 'bonus') },
                             { label: 'Удержать', onClick: () => openExtra(r, 'penalty'), danger: true },
+                            { label: 'Начисления и выплаты за день', onClick: () => setEntries(r) },
                           ]}
                         />
                       )}
@@ -248,6 +251,18 @@ export default function Payroll() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {entries && (
+        <PayrollEntries
+          employee={entries}
+          from={date}
+          to={date}
+          onClose={(changed) => {
+            setEntries(null)
+            if (changed) rows.reload()
+          }}
+        />
       )}
 
       {salary && (

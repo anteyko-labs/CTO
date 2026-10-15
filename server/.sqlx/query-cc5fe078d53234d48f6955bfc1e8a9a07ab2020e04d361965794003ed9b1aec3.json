@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select grams, amount_tyiyn from battery_intakes i\n           where i.branch_id = $1 and i.id <> $2\n             and not exists (select 1 from battery_intake_reversals r where r.intake_id = i.id)\n           order by i.created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grams",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "cc5fe078d53234d48f6955bfc1e8a9a07ab2020e04d361965794003ed9b1aec3"
+}
