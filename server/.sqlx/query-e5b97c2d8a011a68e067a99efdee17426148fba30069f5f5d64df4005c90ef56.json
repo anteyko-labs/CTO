@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name from products where id = any($1) and archived order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e5b97c2d8a011a68e067a99efdee17426148fba30069f5f5d64df4005c90ef56"
+}

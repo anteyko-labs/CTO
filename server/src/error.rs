@@ -11,6 +11,9 @@ pub enum AppError {
     Unauthorized,
     #[error("недостаточно прав")]
     Forbidden,
+    /// Нет прав, с объяснением, кто это может сделать (403).
+    #[error("{0}")]
+    ForbiddenWith(String),
     #[error("не найдено")]
     NotFound,
     #[error("{0}")]
@@ -39,7 +42,7 @@ impl AppError {
     fn status_and_code(&self) -> (StatusCode, &'static str) {
         match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
+            Self::Forbidden | Self::ForbiddenWith(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),

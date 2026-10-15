@@ -2789,10 +2789,39 @@ async fn cashier_rules_are_not_recreated_and_rule_close_is_logged(pool: PgPool) 
         "POST",
         &format!("/api/v1/employees/{id}/pay-rules"),
         Some(&owner),
-        Some(json!({ "kind": "per_service", "role": "master", "amount_tyiyn": 3000 })),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "per_service", "role": "master", "amount_tyiyn": 3000 })),
     )
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    // Повтор формы с тем же op_id не заводит второе правило (ADR-070).
+    let op = Uuid::now_v7();
+    let body = json!({ "op_id": op, "kind": "monthly_salary", "role": "cashier", "amount_tyiyn": 3_100_000 });
+    let (s1, _, first) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/employees/{id}/pay-rules"),
+        Some(&owner),
+        Some(body.clone()),
+    )
+    .await;
+    let (s2, _, second) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/employees/{id}/pay-rules"),
+        Some(&owner),
+        Some(body),
+    )
+    .await;
+    assert_eq!((s1, s2), (StatusCode::OK, StatusCode::OK));
+    assert_eq!(first["id"], second["id"]);
+    let same: i64 = sqlx::query_scalar(
+        "select count(*) from employee_pay_rules where employee_id = $1::uuid and kind = 'monthly_salary' and amount_tyiyn = 3100000",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(same, 1);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -3351,6 +3380,85 @@ async fn cash_shortage_and_surplus_enter_profit(pool: PgPool) {
     assert_eq!(net(&surplus), net(&forgiven) + 30_000);
     let (_, _, dash) = call(&app, "GET", "/api/v1/owner/dashboard", Some(&owner), None).await;
     assert_eq!(dash["totals"]["net_tyiyn"], net(&surplus));
+    // Удержание уже прощено — напоминать владельцу не о чем.
+    assert!(actions(&pool, "shift.reclose_surplus").await.is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn reclose_surplus_reminds_owner_about_withheld_shortage(pool: PgPool) {
+    // Удержание при повторном закрытии само не снимается (ADR-064), но владелец узнаёт, что
+    // его можно простить (ADR-070).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let post = |cookie: &str, uri: String, body: Value| {
+        let app = app.clone();
+        let cookie = cookie.to_string();
+        async move { call(&app, "POST", &uri, Some(&cookie), Some(body)).await }
+    };
+    let (s, _, shift) = post(
+        &admin,
+        "/api/v1/shifts/open".into(),
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let sid = shift["id"].as_str().unwrap().to_string();
+    let (s, _, _) = post(
+        &admin,
+        "/api/v1/cash/movements".into(),
+        json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 500_000, "comment": "размен" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let close = |counted: i64| {
+        post(
+            &admin,
+            format!("/api/v1/shifts/{sid}/close"),
+            json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": counted, "comment": "пересчёт" }),
+        )
+    };
+    assert_eq!(close(400_000).await.0, StatusCode::OK);
+    assert!(actions(&pool, "shift.reclose_surplus").await.is_empty());
+    let (s, _, _) = post(
+        &owner,
+        format!("/api/v1/shifts/{sid}/reopen"),
+        json!({ "op_id": Uuid::now_v7(), "reason": "нашли деньги" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(close(430_000).await.0, StatusCode::OK);
+    let notes = actions(&pool, "shift.reclose_surplus").await;
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["number"], shift["number"]);
+    assert_eq!(notes[0]["surplus"], 30_000);
+    assert_eq!(notes[0]["withheld"], 100_000);
+    // Само удержание не тронуто.
+    let shortage: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where kind = 'shortage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(shortage, -100_000);
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let title = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["action"] == "shift.reclose_surplus")
+        .unwrap()["title"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        title,
+        format!(
+            "После переоткрытия смены № {} излишек 300 с — удержание 1 000 с можно простить в «Расчёте»",
+            shift["number"]
+        )
+    );
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -3472,6 +3580,16 @@ async fn bank_fee_rate_has_history_by_business_date(pool: PgPool) {
     assert_eq!(
         set(&owner, 10_001, &today).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Задним числом ставку не поставить: комиссия проведённых чеков не меняется (ADR-070).
+    let (s, _, err) = set(&owner, 100, &yesterday).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("задним числом"),
+        "{err}"
     );
     // 1 % с сегодняшнего дня: прежняя ставка закрыта этим днём.
     let (s, _, fees) = set(&owner, 100, &today).await;
@@ -4072,7 +4190,7 @@ async fn bot_operations_and_reports_match_the_screens(pool: PgPool) {
 
     // Тот же расход через бота.
     let chat = 980_001i64;
-    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)")
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, tg_user_id) values ($1, $2, $3, $1)")
         .bind(chat)
         .bind(owner_id)
         .bind(branch)
@@ -4543,4 +4661,198 @@ async fn defects_and_supplier_deliveries(pool: PgPool) {
     assert_eq!(del["pending_defects"], 1);
     let (_, _, verify) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
     assert_eq!(verify, json!([]));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn employee_with_phone_is_reactivated_only_by_owner(pool: PgPool) {
+    // Телефон открывает работнику кабинет в боте: включить такого снова может только владелец
+    // (ADR-070). Без телефона — и администратор.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let id = cashier_employee(&app, &owner).await;
+    let uri = format!("/api/v1/employees/{id}");
+    let patch = |who: &str, body: Value| {
+        let (app, who, uri) = (app.clone(), who.to_string(), uri.clone());
+        async move { call(&app, "PATCH", &uri, Some(&who), Some(body)).await }
+    };
+    assert_eq!(
+        patch(&admin, json!({ "active": false })).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        patch(&admin, json!({ "active": true })).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        patch(&owner, json!({ "phone": "+996 555 12 34 56" }))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        patch(&admin, json!({ "active": false })).await.0,
+        StatusCode::OK
+    );
+    let (s, _, err) = patch(&admin, json!({ "active": true })).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("включает владелец"),
+        "{err}"
+    );
+    let (s, _, e) = patch(&owner, json!({ "active": true })).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(e["active"], true);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn product_with_pending_defect_is_not_archived(pool: PgPool) {
+    // Брак, ждущий решения, вернулся бы на карточку в архиве (ADR-070).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let (_, _, product) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр" })),
+    )
+    .await;
+    let pid = product["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "lines": [{ "product_id": pid, "qty": 1, "cost_tyiyn": 10_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, d) = call(
+        &app,
+        "POST",
+        "/api/v1/defects",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "product_id": pid, "qty": 1, "reason": "течёт", "no_supplier": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    let archive = |v: bool| {
+        let (app, owner, uri) = (
+            app.clone(),
+            owner.clone(),
+            format!("/api/v1/products/{pid}"),
+        );
+        async move {
+            call(
+                &app,
+                "PATCH",
+                &uri,
+                Some(&owner),
+                Some(json!({ "archived": v })),
+            )
+            .await
+        }
+    };
+    let (s, _, err) = archive(true).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("№ {}", d["number"])),
+        "{err}"
+    );
+    // Списали брак — карточку без остатка можно убрать в архив.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/defects/{}/resolve", d["id"].as_str().unwrap()),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "write_off" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(archive(true).await.0, StatusCode::OK);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn supplier_deliveries_follow_merged_cards(pool: PgPool) {
+    // Приход на дубль, потом влитый в основную карточку, — поставка основной (ADR-070).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let main = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let dup = product(&app, &owner, "Фильтр дубль", 50_000, 0).await;
+    let (_, _, s) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(json!({ "name": "Автоснаб" })),
+    )
+    .await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    for (item, qty, cost) in [(&dup, 4, 400_000), (&main, 2, 200_000)] {
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/receipts",
+            Some(&admin),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": sid, "payment": "debt",
+                         "lines": [{ "product_id": item, "qty": qty, "cost_tyiyn": cost }] }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    let (s, _, m) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/products/{dup}/merge"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "into_product_id": main })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    let (s, _, del) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{sid}/deliveries"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{del}");
+    let rows = del["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{del}");
+    assert_eq!(rows[0]["product_id"], json!(main));
+    assert_eq!(rows[0]["delivered_qty"], 6);
+    assert_eq!(rows[0]["stock_qty"], 6);
+    assert_eq!(rows[0]["estimate_qty"], 6);
+    let (_, _, list) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{sid}/deliveries/{main}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().map(Vec::len), Some(2));
 }

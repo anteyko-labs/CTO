@@ -153,15 +153,23 @@ pub(crate) async fn deliveries_data(
             .await?
             .ok_or(AppError::NotFound)?;
     // Строки проведённых накладных без сторнированных: отменённая поставка не считается.
+    // Приход на карточку, влитую потом в другую, считается за основную (ADR-044, ADR-070).
     let lines = sqlx::query!(
-        r#"select l.product_id, p.name, p.unit, p.container_ml, r.id as receipt_id, r.created_at,
+        r#"with recursive fam (id, root, depth) as (
+             select id, id, 0 from products where merged_into is null
+             union all
+             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+             where fam.depth < 8
+           )
+           select fam.root as "product_id!", p.name, p.unit, p.container_ml, r.id as receipt_id, r.created_at,
                   l.line_no, l.qty, l.cost_tyiyn,
                   (($1::date is null or r.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')
                    and ($2::date is null or r.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))
                     as "in_period!"
            from receipt_lines l
            join receipts r on r.id = l.receipt_id
-           join products p on p.id = l.product_id
+           join fam on fam.id = l.product_id
+           join products p on p.id = fam.root
            where r.branch_id = $3 and r.supplier_id = $4 and r.reversal_of is null
              and not exists (select 1 from receipts x where x.reversal_of = r.id)
            order by r.created_at, l.line_no"#,
@@ -174,13 +182,20 @@ pub(crate) async fn deliveries_data(
     .await?;
     // Возвраты брака этому поставщику: решения, которые не отменены.
     let returns = sqlx::query!(
-        r#"select d.product_id, p.name, p.unit, p.container_ml, d.qty, x.replace_qty,
+        r#"with recursive fam (id, root, depth) as (
+             select id, id, 0 from products where merged_into is null
+             union all
+             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+             where fam.depth < 8
+           )
+           select fam.root as "product_id!", p.name, p.unit, p.container_ml, d.qty, x.replace_qty,
                   (($1::date is null or x.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')
                    and ($2::date is null or x.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))
                     as "in_period!"
            from defect_resolutions x
            join defects d on d.id = x.defect_id
-           join products p on p.id = d.product_id
+           join fam on fam.id = d.product_id
+           join products p on p.id = fam.root
            where x.branch_id = $3 and x.supplier_id = $4 and x.reversal_of is null
              and x.kind in ('replace', 'credit', 'cash')
              and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)"#,
@@ -239,17 +254,25 @@ pub(crate) async fn deliveries_data(
     .collect();
     // Все приходы этих товаров от всех поставщиков и товар взамен брака — от новых к старым.
     let inflows = sqlx::query!(
-        r#"select u.product_id as "product_id!", u.supplier_id, u.qty as "qty!"
+        r#"with recursive fam (id, root, depth) as (
+             select id, id, 0 from products where merged_into is null
+             union all
+             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+             where fam.depth < 8
+           )
+           select u.product_id as "product_id!", u.supplier_id, u.qty as "qty!"
            from (
-             select l.product_id, r.supplier_id, l.qty, r.created_at as at, l.line_no as ord
+             select fam.root as product_id, r.supplier_id, l.qty, r.created_at as at, l.line_no as ord
              from receipt_lines l join receipts r on r.id = l.receipt_id
-             where r.branch_id = $1 and l.product_id = any($2) and l.qty > 0
+             join fam on fam.id = l.product_id
+             where r.branch_id = $1 and fam.root = any($2) and l.qty > 0
                and r.reversal_of is null
                and not exists (select 1 from receipts x where x.reversal_of = r.id)
              union all
-             select d.product_id, x.supplier_id, x.replace_qty, x.created_at, 0
+             select fam.root, x.supplier_id, x.replace_qty, x.created_at, 0
              from defect_resolutions x join defects d on d.id = x.defect_id
-             where x.branch_id = $1 and d.product_id = any($2) and x.kind = 'replace'
+             join fam on fam.id = d.product_id
+             where x.branch_id = $1 and fam.root = any($2) and x.kind = 'replace'
                and x.reversal_of is null and x.replace_qty > 0
                and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)
            ) u
@@ -377,11 +400,18 @@ async fn product_receipts(
     .await?
     .ok_or(AppError::NotFound)?;
     let per = price_per(&p.unit, p.container_ml);
+    // С накладными на карточки, влитые в эту (ADR-070).
     let rows = sqlx::query!(
-        r#"select r.id, r.number, r.created_at, r.supplier_doc, l.qty, l.cost_tyiyn,
+        r#"with recursive fam (id, depth) as (
+             select $3::uuid, 0
+             union all
+             select p.id, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+             where fam.depth < 8
+           )
+           select r.id, r.number, r.created_at, r.supplier_doc, l.qty, l.cost_tyiyn,
                   exists (select 1 from receipts x where x.reversal_of = r.id) as "reversed!"
            from receipt_lines l join receipts r on r.id = l.receipt_id
-           where r.branch_id = $1 and r.supplier_id = $2 and l.product_id = $3
+           where r.branch_id = $1 and r.supplier_id = $2 and l.product_id in (select id from fam)
              and r.reversal_of is null
              and ($4::date is null or r.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')
              and ($5::date is null or r.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')

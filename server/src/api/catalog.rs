@@ -800,6 +800,31 @@ async fn update_product(
                     "на складе есть остаток: объедините карточку с основной или спишите его",
                 ));
             }
+            // Брак, ждущий решения, вернулся бы на карточку в архиве (ADR-070) — и брак
+            // карточек, влитых в эту.
+            let pending = sqlx::query_scalar!(
+                r#"with recursive fam (id, depth) as (
+                     select $1::uuid, 0
+                     union all
+                     select p.id, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+                     where fam.depth < 8
+                   )
+                   select number from defects
+                   where product_id in (select id from fam) and status = 'pending' order by number"#,
+                id
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+            if !pending.is_empty() {
+                return Err(AppError::Conflict(format!(
+                    "по товару есть брак, ждущий решения (№ {}): сначала решите его или снимите отметку",
+                    pending
+                        .iter()
+                        .map(i64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
         }
     }
     let category_id = req.category_id.unwrap_or(cur.category_id);

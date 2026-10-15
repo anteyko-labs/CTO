@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bot_drafts\n           set status = 'expired', finished_at = now(),\n               result = jsonb_build_object('reason', 'прошло 10 минут')\n           where status = 'open' and expires_at <= now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6fe770775068cf01f502a55013bb88f15d5ff385c9d82426fbdf4559f7ba97ad"
+}

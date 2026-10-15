@@ -411,8 +411,12 @@ async fn ask_touch(conn: &mut PgConnection, chat_id: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// Причина закрытия режима по времени — в журнале `telegram.ask_off`.
+const ASK_TIMEOUT_REASON: &str = "время";
+
 /// Закрывает режим вопросов (кнопкой или по времени): строка удаляется, память разговора
-/// чистится — следующий режим начинается с чистого листа. Одной транзакцией с журналом.
+/// чистится — следующий режим начинается с чистого листа; открытый черновик чата снимается
+/// (SPEC-24). Одной транзакцией с журналом.
 async fn ask_stop(
     conn: &mut PgConnection,
     chat_id: i64,
@@ -428,6 +432,7 @@ async fn ask_stop(
     sqlx::query!("delete from bot_dialog where chat_id = $1", chat_id)
         .execute(&mut *tx)
         .await?;
+    crate::api::bot_drafts::close_open(&mut tx, chat_id, "режим вопросов закрыт").await?;
     if gone > 0 {
         ask_journal(
             &mut tx,
@@ -858,7 +863,7 @@ async fn message(
         return bot_staff::show(conn, e, s, both).await;
     }
     let linked = customer.is_some() || employee.is_some();
-    let answer = handle_text(conn, assistant, chat_id, text, linked).await?;
+    let answer = handle_text(conn, assistant, chat_id, from_id, text, linked).await?;
     if let Some((r, draft)) = answer {
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
@@ -935,13 +940,13 @@ async fn message(
 const NOT_LINKED: &str = "Сначала подключитесь: нажмите «📱 Поделиться номером» внизу.";
 
 /// Нажатие кнопки под сообщением. Только подключённому клиенту или работнику: владелец и чужой
-/// чат их не получают.
+/// чат их не получают. Нажал тот, чей это личный чат (`from_id = chat_id`).
 pub async fn handle_callback(
     conn: &mut PgConnection,
     chat_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
-    handle_callback_with(conn, None, chat_id, data).await
+    handle_callback_from(conn, None, chat_id, chat_id, data).await
 }
 
 /// Нажатие кнопки под сообщением; `assistant` — только чтобы показать владельцу его кнопки
@@ -952,7 +957,19 @@ pub async fn handle_callback_with(
     chat_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
-    let r = callback(conn, assistant, chat_id, data).await?;
+    handle_callback_from(conn, assistant, chat_id, chat_id, data).await
+}
+
+/// Нажатие кнопки: `from_id` — кто нажал в Телеграме. Кнопки черновика владельца принимаются
+/// только от того, кто привязал чат (ADR-070).
+pub async fn handle_callback_from(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    chat_id: i64,
+    from_id: i64,
+    data: &str,
+) -> AppResult<Reply> {
+    let r = callback(conn, assistant, chat_id, from_id, data).await?;
     fit_keys(conn, chat_id, r).await
 }
 
@@ -960,14 +977,20 @@ async fn callback(
     conn: &mut PgConnection,
     assistant: Option<&Assistant>,
     chat_id: i64,
+    from_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
-    if chat_owner(conn, chat_id).await?.is_some() {
+    if let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? {
+        // Нажатие в открытом режиме вопросов — тоже сообщение владельца: режим продлевается.
+        if assistant.is_some() && ask_mode(conn, chat_id, user_id, branch_id).await? == AskMode::On
+        {
+            ask_touch(conn, chat_id).await?;
+        }
         let keys = owner_keys(conn, assistant, chat_id).await?;
-        // «✅ Провести» и «✖ Отмена» под черновиком операции (SPEC-24): чат, владелец, филиал и
-        // срок черновика сверяет `bot_drafts::press`.
+        // «✅ Провести» и «✖ Отмена» под черновиком операции (SPEC-24): чат, владелец, кто нажал,
+        // филиал и срок черновика сверяет `bot_drafts::press`.
         if data.starts_with("d:") {
-            let text = crate::api::bot_drafts::press(conn, chat_id, data).await?;
+            let text = crate::api::bot_drafts::press(conn, chat_id, from_id, data).await?;
             return Ok(Reply::new(text, keys));
         }
         return Ok(Reply::new(HELP, keys));
@@ -1510,28 +1533,40 @@ type Said = (String, Option<crate::api::bot_drafts::Shown>);
 /// Команды владельца, привязка кодом и вопросы текстом в режиме «💬 Спросить» (ADR-067).
 /// `None` — чат не владельца и это не код: дальше решает клиентская часть. `customer` — чат
 /// подключённого клиента: шесть цифр от него — не код, если не начинаются с `/start`.
+/// `from_id` — кто пишет в Телеграме: при привязке он запоминается как владелец чата (ADR-070).
 async fn handle_text(
     conn: &mut PgConnection,
     assistant: Option<&Assistant>,
     chat_id: i64,
+    from_id: i64,
     text: &str,
     customer: bool,
 ) -> AppResult<Option<Said>> {
     let text = text.trim();
     let word = text.split_whitespace().next().unwrap_or("").to_lowercase();
     let arg = text.split_whitespace().nth(1).unwrap_or("");
-    // «/start 123456» из ссылки или просто код цифрами.
+    let owner = chat_owner(conn, chat_id).await?;
+    let mode = match (owner, assistant) {
+        (Some((user_id, branch_id)), Some(_)) => {
+            ask_mode(conn, chat_id, user_id, branch_id).await?
+        }
+        _ => AskMode::Off,
+    };
+    // «/start 123456» из ссылки или просто код цифрами. В открытом режиме вопросов чат уже
+    // привязан: шесть цифр — вопрос, а не код (ADR-070).
     let code = if word == "/start" {
         arg
-    } else if is_code(text) && !customer {
+    } else if is_code(text) && !customer && mode != AskMode::On {
         text
     } else {
         ""
     };
     if !code.is_empty() {
-        return link(conn, chat_id, code).await.map(|t| Some((t, None)));
+        return link(conn, chat_id, from_id, code)
+            .await
+            .map(|t| Some((t, None)));
     }
-    let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? else {
+    let Some((user_id, branch_id)) = owner else {
         return Ok(None);
     };
     let help = if assistant.is_some() {
@@ -1549,7 +1584,16 @@ async fn handle_text(
         if assistant.is_none() {
             return Ok(Some((help, None)));
         }
-        ask_start(conn, chat_id, user_id, branch_id).await?;
+        match mode {
+            // Уже включён: только продлеваем, второй записи о включении нет.
+            AskMode::On => ask_touch(conn, chat_id).await?,
+            // Прежний режим истёк: сначала закрываем его как положено, потом открываем новый.
+            AskMode::Expired => {
+                ask_stop(conn, chat_id, user_id, branch_id, ASK_TIMEOUT_REASON).await?;
+                ask_start(conn, chat_id, user_id, branch_id).await?;
+            }
+            AskMode::Off => ask_start(conn, chat_id, user_id, branch_id).await?,
+        }
         return Ok(Some((ASK_PROMPT.into(), None)));
     }
     if text == BTN_END || text == "/закончить" {
@@ -1563,8 +1607,7 @@ async fn handle_text(
             None,
         )));
     }
-    let mode = ask_mode(conn, chat_id, user_id, branch_id).await?;
-    let question = is_question(text);
+    let question = is_question(text) || (mode == AskMode::On && is_code(text));
     // В режиме вопрос — свободный текст; кнопка, «/команда» и одно слово команды — команда.
     if let Some(a) = assistant
         && mode == AskMode::On
@@ -1591,7 +1634,7 @@ async fn handle_text(
     // Режим закрылся по времени: первый же текст после — сообщение об этом, без обращения
     // к сервису разбора.
     if assistant.is_some() && mode == AskMode::Expired && question {
-        ask_stop(conn, chat_id, user_id, branch_id, "10 минут без сообщений").await?;
+        ask_stop(conn, chat_id, user_id, branch_id, ASK_TIMEOUT_REASON).await?;
         return Ok(Some((ASK_EXPIRED.into(), None)));
     }
     // Вне режима свободный текст — подсказка с кнопками, как без ключа (SPEC-18).
@@ -1600,7 +1643,12 @@ async fn handle_text(
 
 /// Привязка чата к владельцу по коду — одной транзакцией с журналом. Неверные коды
 /// ограничены: 5 на чат и 20 всего за 15 минут; на 20-м владельцу уходит уведомление (ADR-063).
-async fn link(conn: &mut PgConnection, chat_id: i64, code: &str) -> AppResult<String> {
+async fn link(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    from_id: i64,
+    code: &str,
+) -> AppResult<String> {
     let mut tx = conn.begin().await?;
     let tries = sqlx::query!(
         r#"select count(*) filter (where chat_id = $1) as "chat!", count(*) as "all!"
@@ -1651,11 +1699,13 @@ async fn link(conn: &mut PgConnection, chat_id: i64, code: &str) -> AppResult<St
     )
     .execute(&mut *tx)
     .await?;
+    // Кто привязал чат: кнопки черновиков принимаются только от него (ADR-070).
     sqlx::query!(
-        "insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)",
+        "insert into telegram_links (chat_id, user_id, branch_id, tg_user_id) values ($1, $2, $3, $4)",
         chat_id,
         o.id,
-        o.branch_id
+        o.branch_id,
+        from_id
     )
     .execute(&mut *tx)
     .await?;
@@ -2692,6 +2742,94 @@ struct Contact {
 #[derive(Deserialize)]
 struct Chat {
     id: i64,
+    /// `private`, `group`, `supergroup`, `channel`.
+    #[serde(rename = "type", default)]
+    kind: String,
+}
+
+/// Что пришло от Телеграма и на что бот отвечает: только из личного чата (ADR-070). Группы
+/// и каналы не привязываются, не получают команд владельца, вопросов, черновиков, разделов
+/// клиента и работника — бот в них молчит.
+pub enum Incoming {
+    Message {
+        chat_id: i64,
+        from_id: i64,
+        text: Option<String>,
+        contact: Option<SharedContact>,
+    },
+    Callback {
+        /// Номер нажатия — ответить Телеграму, что кнопка принята.
+        id: String,
+        chat_id: i64,
+        from_id: i64,
+        data: String,
+    },
+}
+
+/// Разбор обновления Телеграма. `None` — не личный чат или нечего обрабатывать.
+fn incoming(u: Update) -> Option<Incoming> {
+    if let Some(q) = u.callback_query {
+        let m = q.message?;
+        if m.chat.kind != "private" {
+            return None;
+        }
+        return Some(Incoming::Callback {
+            id: q.id,
+            chat_id: m.chat.id,
+            from_id: q.from.id,
+            data: q.data.unwrap_or_default(),
+        });
+    }
+    let m = u.message?;
+    if m.chat.kind != "private" {
+        return None;
+    }
+    Some(Incoming::Message {
+        chat_id: m.chat.id,
+        from_id: m.from.as_ref().map_or(m.chat.id, |f| f.id),
+        text: m.text,
+        contact: m.contact.map(|c| SharedContact {
+            phone: c.phone_number,
+            user_id: c.user_id,
+        }),
+    })
+}
+
+/// Обновление Телеграма как оно пришло (JSON): `None` — ответа нет (не личный чат, нечего
+/// обрабатывать). Тот же путь, что у цикла бота, только вопросы владельца — без очереди.
+pub async fn handle_update(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    update: Value,
+) -> AppResult<Option<Reply>> {
+    let Ok(u) = serde_json::from_value::<Update>(update) else {
+        return Ok(None);
+    };
+    let Some(inc) = incoming(u) else {
+        return Ok(None);
+    };
+    handle_incoming(conn, assistant, inc).await.map(Some)
+}
+
+async fn handle_incoming(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    inc: Incoming,
+) -> AppResult<Reply> {
+    match inc {
+        Incoming::Message {
+            chat_id,
+            from_id,
+            text,
+            contact,
+        } => handle_message_with(conn, assistant, chat_id, from_id, text.as_deref(), contact).await,
+        Incoming::Callback {
+            chat_id,
+            from_id,
+            data,
+            ..
+        } => handle_callback_from(conn, assistant, chat_id, from_id, &data).await,
+    }
 }
 
 /// Предел одного сообщения в единицах UTF-16, как считает Телеграм (у него 4096, с запасом).
@@ -3084,65 +3222,37 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
         let before = offset;
         for u in updates {
             offset = offset.max(u.update_id + 1);
-            if let Some(q) = u.callback_query {
-                api.answer_callback(&q.id).await;
-                let chat_id = q.message.map_or(q.from.id, |m| m.chat.id);
-                let reply = match pool.acquire().await {
-                    Ok(mut conn) => {
-                        handle_callback_with(
-                            &mut conn,
-                            assistant.as_ref(),
-                            chat_id,
-                            q.data.as_deref().unwrap_or(""),
-                        )
-                        .await
-                    }
-                    Err(e) => Err(AppError::from(e)),
-                };
-                match reply {
-                    Ok(r) => send_reply(&api, chat_id, &r).await,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "телеграм: кнопка не обработана");
-                        api.send(chat_id, "Не получилось, попробуйте позже.").await;
-                    }
-                }
-                continue;
+            // Группы и каналы бот не слушает (ADR-070).
+            let Some(inc) = incoming(u) else { continue };
+            let chat_id = match &inc {
+                Incoming::Message { chat_id, .. } | Incoming::Callback { chat_id, .. } => *chat_id,
+            };
+            if let Incoming::Callback { id, .. } = &inc {
+                api.answer_callback(id).await;
             }
-            let Some(m) = u.message else { continue };
-            let from_id = m.from.as_ref().map_or(m.chat.id, |f| f.id);
-            let contact = m.contact.map(|c| SharedContact {
-                phone: c.phone_number,
-                user_id: c.user_id,
-            });
             // Вопрос владельца ждёт сервис разбора до 30 с — отдельной задачей, чтобы клиенты
-            // и кнопки в это время не стояли. Вопрос — только свободный текст в режиме
-            // «💬 Спросить» (ADR-067). Вопросы идут по очереди (owner_turn); кнопки и команды
-            // владельца очереди не ждут.
-            if let Some(a) = assistant.as_ref()
-                && m.text.as_deref().is_some_and(is_question)
-                && is_asking_chat(&pool, m.chat.id).await
-            {
+            // и кнопки в это время не стояли. Вопрос — только свободный текст (или шесть цифр)
+            // в режиме «💬 Спросить» (ADR-067, ADR-070). Вопросы идут по очереди (owner_turn);
+            // кнопки и команды владельца очереди не ждут.
+            let asking = match (&inc, assistant.as_ref()) {
+                (Incoming::Message { text: Some(t), .. }, Some(_))
+                    if is_question(t) || is_code(t.trim()) =>
+                {
+                    is_asking_chat(&pool, chat_id).await
+                }
+                _ => false,
+            };
+            if asking && let Some(a) = assistant.as_ref() {
                 // Смещение — до запуска: после перезапуска вопрос не задаётся второй раз
                 // (вопрос, который разбирался в момент остановки, теряется).
                 store_offset(&pool, offset).await;
-                tracing::info!(chat_id = m.chat.id, "телеграм: вопрос владельца принят");
+                tracing::info!(chat_id, "телеграм: вопрос владельца принят");
                 let (pool, api, a, turn) =
                     (pool.clone(), api.clone(), a.clone(), owner_turn.clone());
-                let (chat_id, text) = (m.chat.id, m.text.clone());
                 tokio::spawn(async move {
                     let _turn = turn.lock().await;
                     let reply = match pool.acquire().await {
-                        Ok(mut conn) => {
-                            handle_message_with(
-                                &mut conn,
-                                Some(&a),
-                                chat_id,
-                                from_id,
-                                text.as_deref(),
-                                None,
-                            )
-                            .await
-                        }
+                        Ok(mut conn) => handle_incoming(&mut conn, Some(&a), inc).await,
                         Err(e) => Err(AppError::from(e)),
                     };
                     match reply {
@@ -3156,25 +3266,14 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                 continue;
             }
             let reply = match pool.acquire().await {
-                Ok(mut conn) => {
-                    handle_message_with(
-                        &mut conn,
-                        assistant.as_ref(),
-                        m.chat.id,
-                        from_id,
-                        m.text.as_deref(),
-                        contact,
-                    )
-                    .await
-                }
+                Ok(mut conn) => handle_incoming(&mut conn, assistant.as_ref(), inc).await,
                 Err(e) => Err(AppError::from(e)),
             };
             match reply {
-                Ok(r) => send_reply(&api, m.chat.id, &r).await,
+                Ok(r) => send_reply(&api, chat_id, &r).await,
                 Err(e) => {
-                    tracing::warn!(error = %e, "телеграм: команда не обработана");
-                    api.send(m.chat.id, "Не получилось, попробуйте позже.")
-                        .await;
+                    tracing::warn!(error = %e, "телеграм: сообщение не обработано");
+                    api.send(chat_id, "Не получилось, попробуйте позже.").await;
                 }
             }
         }
@@ -3267,8 +3366,9 @@ pub async fn bonus_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOut
     Ok(out)
 }
 
-/// Один проход рассылки: отвязка устаревших клиентов, напоминания (если `reminders` и окно),
-/// баллы (в окно), события владельцам. `hour` — час по Бишкеку.
+/// Один проход рассылки: просроченные черновики владельца помечаются «истёк» (SPEC-24),
+/// отвязка устаревших клиентов, напоминания (если `reminders` и окно), баллы (в окно), события
+/// владельцам. `hour` — час по Бишкеку.
 pub async fn notify_pass(
     conn: &mut PgConnection,
     api: &Api,
@@ -3276,6 +3376,7 @@ pub async fn notify_pass(
     reminders: bool,
 ) -> AppResult<PassOutcome> {
     let mut out = PassOutcome::default();
+    crate::api::bot_drafts::expire_drafts(conn).await?;
     for chat in drop_stale_customers(conn).await? {
         if let Delivery::Retry { after, all: true } =
             api.push_with(chat, RESHARE, Keys::Contact.markup()).await

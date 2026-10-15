@@ -215,6 +215,18 @@ async fn update_employee(
     if phone_changed && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    // Включённый снова сотрудник с телефоном сразу видит свой заработок в боте (SPEC-23) —
+    // это доступ, его открывает только владелец (ADR-070).
+    let has_phone = !phone
+        .as_deref()
+        .unwrap_or(prev.phone.as_str())
+        .trim()
+        .is_empty();
+    if req.active == Some(true) && !prev.active && has_phone && !ctx.user.is_owner() {
+        return Err(AppError::ForbiddenWith(
+            "сотрудника с телефоном включает владелец: телефон открывает ему кабинет в боте".into(),
+        ));
+    }
     let r = sqlx::query!(
         r#"update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),
              is_master = coalesce($5, is_master), active = coalesce($6, active), phone = coalesce($7, phone)

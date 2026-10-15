@@ -1096,6 +1096,44 @@ async fn post_repayment(
 
 /// Погашение долга клиентом или оплата поставщику.
 /// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+/// Касса погашения по способу оплаты: наличные — касса по умолчанию, карта и перевод — «Счёт»,
+/// мимо касс — никакой (`None`). Одна функция и для проведения, и для черновика бота (ADR-070).
+pub(crate) async fn repayment_account(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    method: &str,
+) -> AppResult<Option<Uuid>> {
+    match method {
+        "cash" => Ok(Some(
+            crate::api::cash::default_account(&mut *conn, branch_id).await?,
+        )),
+        "card" | "transfer" => crate::api::cash::bank_account(&mut *conn, branch_id)
+            .await?
+            .ok_or_else(|| invalid("нет кассы «Счёт»"))
+            .map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// Комиссия банка с погашения клиентом по карте или переводу — по ставке, действующей в день
+/// погашения, как с чека (ADR-022, SPEC-08). Оплата поставщику и наличные — без комиссии.
+pub(crate) async fn repayment_fee(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    method: &str,
+    supplier: bool,
+    amount: i64,
+) -> AppResult<i64> {
+    if supplier || !matches!(method, "card" | "transfer") {
+        return Ok(0);
+    }
+    let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    let rate = crate::api::fees::rate_on(&mut *conn, branch_id, method, today).await?;
+    Ok(crate::domain::money::div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0))
+}
+
 pub async fn post_repayment_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -1151,17 +1189,33 @@ pub async fn post_repayment_tx(
     } else {
         "debt_repayment"
     };
-    match method.as_str() {
-        "cash" => {
-            let till = crate::api::cash::default_account(&mut *conn, branch_id).await?;
-            crate::api::cash::require_open_shift(&mut *conn, branch_id, till).await?;
+    // Касса и комиссия — те же функции, что показывает черновик бота (SPEC-24, ADR-070).
+    if let Some(account_id) = repayment_account(&mut *conn, branch_id, &method).await? {
+        if method == "cash" {
+            crate::api::cash::require_open_shift(&mut *conn, branch_id, account_id).await?;
+        }
+        crate::api::cash::add_movement(
+            &mut *conn,
+            ctx,
+            crate::api::cash::CashEntry {
+                account_id,
+                kind,
+                amount: money,
+                doc_type: "repayment",
+                doc_id: Some(rid),
+                comment: &comment,
+            },
+        )
+        .await?;
+        let fee = repayment_fee(&mut *conn, branch_id, &method, supplier, req.amount_tyiyn).await?;
+        if fee != 0 {
             crate::api::cash::add_movement(
                 &mut *conn,
                 ctx,
                 crate::api::cash::CashEntry {
-                    account_id: till,
-                    kind,
-                    amount: money,
+                    account_id,
+                    kind: "bank_fee",
+                    amount: -fee,
                     doc_type: "repayment",
                     doc_id: Some(rid),
                     comment: &comment,
@@ -1169,55 +1223,6 @@ pub async fn post_repayment_tx(
             )
             .await?;
         }
-        "card" | "transfer" => {
-            let bank = crate::api::cash::bank_account(&mut *conn, branch_id)
-                .await?
-                .ok_or_else(|| invalid("нет кассы «Счёт»"))?;
-            crate::api::cash::add_movement(
-                &mut *conn,
-                ctx,
-                crate::api::cash::CashEntry {
-                    account_id: bank,
-                    kind,
-                    amount: money,
-                    doc_type: "repayment",
-                    doc_id: Some(rid),
-                    comment: &comment,
-                },
-            )
-            .await?;
-            // Банк берёт комиссию с поступления по карте и переводу, как с чека (ADR-022).
-            if !supplier {
-                // Ставка, действующая в день погашения (SPEC-08).
-                let today = sqlx::query_scalar!(
-                    r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#
-                )
-                .fetch_one(&mut *conn)
-                .await?;
-                let rate = crate::api::fees::rate_on(&mut *conn, branch_id, &method, today).await?;
-                let fee = crate::domain::money::div_round(
-                    i128::from(req.amount_tyiyn) * i128::from(rate),
-                    10_000,
-                )
-                .unwrap_or(0);
-                if fee != 0 {
-                    crate::api::cash::add_movement(
-                        &mut *conn,
-                        ctx,
-                        crate::api::cash::CashEntry {
-                            account_id: bank,
-                            kind: "bank_fee",
-                            amount: -fee,
-                            doc_type: "repayment",
-                            doc_id: Some(rid),
-                            comment: &comment,
-                        },
-                    )
-                    .await?;
-                }
-            }
-        }
-        _ => {}
     }
     let balance = add_ledger(
         &mut *conn,

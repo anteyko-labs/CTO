@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.product_id, p.name, p.unit, p.container_ml, r.id as receipt_id, r.created_at,\n                  l.line_no, l.qty, l.cost_tyiyn,\n                  (($1::date is null or r.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')\n                   and ($2::date is null or r.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))\n                    as \"in_period!\"\n           from receipt_lines l\n           join receipts r on r.id = l.receipt_id\n           join products p on p.id = l.product_id\n           where r.branch_id = $3 and r.supplier_id = $4 and r.reversal_of is null\n             and not exists (select 1 from receipts x where x.reversal_of = r.id)\n           order by r.created_at, l.line_no",
+  "query": "with recursive fam (id, root, depth) as (\n             select id, id, 0 from products where merged_into is null\n             union all\n             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id\n             where fam.depth < 8\n           )\n           select fam.root as \"product_id!\", p.name, p.unit, p.container_ml, r.id as receipt_id, r.created_at,\n                  l.line_no, l.qty, l.cost_tyiyn,\n                  (($1::date is null or r.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')\n                   and ($2::date is null or r.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))\n                    as \"in_period!\"\n           from receipt_lines l\n           join receipts r on r.id = l.receipt_id\n           join fam on fam.id = l.product_id\n           join products p on p.id = fam.root\n           where r.branch_id = $3 and r.supplier_id = $4 and r.reversal_of is null\n             and not exists (select 1 from receipts x where x.reversal_of = r.id)\n           order by r.created_at, l.line_no",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "product_id",
+        "name": "product_id!",
         "type_info": "Uuid"
       },
       {
@@ -63,7 +63,7 @@
       ]
     },
     "nullable": [
-      false,
+      null,
       false,
       false,
       true,
@@ -75,5 +75,5 @@
       null
     ]
   },
-  "hash": "d514f92bd639adbffa0cab37812e5b85604481480a848948077079652a24e89f"
+  "hash": "3b853828d3c9e6d707e8ba239fa27fc345707438cb83ea8364df51a036c3a7b9"
 }

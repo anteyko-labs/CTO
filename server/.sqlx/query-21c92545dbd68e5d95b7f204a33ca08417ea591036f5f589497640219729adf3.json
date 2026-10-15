@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with recursive fam (id, depth) as (\n                     select $1::uuid, 0\n                     union all\n                     select p.id, fam.depth + 1 from products p join fam on p.merged_into = fam.id\n                     where fam.depth < 8\n                   )\n                   select number from defects\n                   where product_id in (select id from fam) and status = 'pending' order by number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "21c92545dbd68e5d95b7f204a33ca08417ea591036f5f589497640219729adf3"
+}

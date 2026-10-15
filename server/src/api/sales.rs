@@ -491,6 +491,43 @@ async fn insert_line(
     Ok(())
 }
 
+/// Комиссия банка исходного чека, которую возвращают возвраты (ADR-070): пропорционально
+/// возвращённой на карту или переводом сумме от записанной в чеке комиссии, а не по ставке.
+/// Считается нарастающим итогом, поэтому несколько частичных возвратов всего чека вернут ровно
+/// исходную комиссию; больше неё — никогда (чек наличными, возвращённый на карту, — ноль).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeBack {
+    /// Комиссия исходного чека по карте и переводу.
+    pub fee: i64,
+    /// Сколько исходный чек получил картой и переводом.
+    pub base: i64,
+    /// Сколько уже вернули на карту и переводом прежними возвратами.
+    pub refunded: i64,
+    /// Сколько комиссии уже вернули прежними возвратами.
+    pub fee_back: i64,
+}
+
+impl FeeBack {
+    /// Комиссия, которую возвращает возврат `amount` на карту или переводом.
+    pub fn take(&mut self, amount: i64) -> i64 {
+        if self.base <= 0 || self.fee <= 0 || amount <= 0 {
+            self.refunded = self.refunded.saturating_add(amount.max(0));
+            return 0;
+        }
+        let done = self.refunded.saturating_add(amount).min(self.base);
+        let due = div_round(
+            i128::from(self.fee) * i128::from(done),
+            i128::from(self.base),
+        )
+        .unwrap_or(0)
+        .min(self.fee);
+        let now = due.saturating_sub(self.fee_back).max(0);
+        self.refunded = self.refunded.saturating_add(amount);
+        self.fee_back = self.fee_back.saturating_add(now);
+        now
+    }
+}
+
 /// Платежи чека: деньги попадают в кассу и на счёт, комиссия банка фиксируется в платеже
 /// и уходит со счёта (ADR-022, ADR-024). Долг кассу не трогает.
 async fn insert_payments(
@@ -499,10 +536,9 @@ async fn insert_payments(
     sale_id: Uuid,
     payments: &[PaymentReq],
     sign: i64,
-    // Возврат: сколько комиссии исходного чека ещё не вернули. Больше банк не вернёт —
-    // чек наличными, возвращённый на карту, комиссии «назад» не даёт (ADR-022).
-    mut fee_left: i64,
-    // Учётный день чека (у возврата — исходного): ставка банка берётся действовавшая в него.
+    // Возврат: комиссия исходного чека по карте и переводу (`None` — продажа).
+    mut back: Option<FeeBack>,
+    // Учётный день чека: ставка банка берётся действовавшая в него.
     on: NaiveDate,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
@@ -511,17 +547,11 @@ async fn insert_payments(
     let movement_kind = if sign > 0 { "sale" } else { "sale_return" };
     for p in payments {
         let amount = sign * p.amount_tyiyn;
-        let fee = match p.method.as_str() {
-            "card" | "transfer" => {
+        let fee = match (p.method.as_str(), back.as_mut()) {
+            ("card" | "transfer", Some(b)) => -b.take(p.amount_tyiyn),
+            ("card" | "transfer", None) => {
                 let rate = crate::api::fees::rate_on(conn, branch_id, &p.method, on).await?;
-                let fee = div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0);
-                if sign < 0 {
-                    let back = (-fee).min(fee_left.max(0));
-                    fee_left -= back;
-                    -back
-                } else {
-                    fee
-                }
+                div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0)
             }
             _ => 0,
         };
@@ -900,7 +930,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     )
     .fetch_one(&mut *conn)
     .await?;
-    insert_payments(conn, ctx, id, &req.payments, 1, 0, business_date).await?;
+    insert_payments(conn, ctx, id, &req.payments, 1, None, business_date).await?;
     // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
     crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments).await?;
     if debt_total > 0 {
@@ -1453,10 +1483,14 @@ pub async fn return_sale_tx(
         )
         .await?;
     }
-    let fee_left = sqlx::query_scalar!(
-        r#"select coalesce(sum(p.fee_tyiyn), 0)::bigint as "v!"
+    // Комиссия банка возвращается из записанной в исходном чеке, а не по ставке (ADR-070).
+    let fb = sqlx::query!(
+        r#"select coalesce(sum(p.fee_tyiyn) filter (where s.id = $1), 0)::bigint as "fee!",
+                  coalesce(sum(p.amount_tyiyn) filter (where s.id = $1), 0)::bigint as "base!",
+                  coalesce(sum(-p.amount_tyiyn) filter (where s.id <> $1), 0)::bigint as "refunded!",
+                  coalesce(sum(-p.fee_tyiyn) filter (where s.id <> $1), 0)::bigint as "fee_back!"
            from sale_payments p join sales s on s.id = p.sale_id
-           where s.id = $1 or s.reversal_of = $1"#,
+           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer')"#,
         id
     )
     .fetch_one(&mut *conn)
@@ -1467,7 +1501,12 @@ pub async fn return_sale_tx(
         rid,
         &req.payments,
         -1,
-        fee_left,
+        Some(FeeBack {
+            fee: fb.fee,
+            base: fb.base,
+            refunded: fb.refunded,
+            fee_back: fb.fee_back,
+        }),
         orig.business_date,
     )
     .await?;

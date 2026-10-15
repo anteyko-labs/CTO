@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 49] = [
+pub(crate) const WATCHED: [&str; 51] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -69,6 +69,8 @@ pub(crate) const WATCHED: [&str; 49] = [
     "defect.unmark",
     "defect.resolve",
     "defect.resolve_reverse",
+    "defect.reverse_negative",
+    "shift.reclose_surplus",
 ];
 
 #[derive(Serialize)]
@@ -202,6 +204,37 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "receipt.reverse" => (
             "Сторно прихода".into(),
             format!("накладная № {}", num("number").unwrap_or(0)),
+        ),
+        "shift.reclose_surplus" => (
+            format!(
+                "После переоткрытия смены № {} излишек {} — удержание {} можно простить в «Расчёте»",
+                num("number").unwrap_or(0),
+                money(num("surplus")),
+                money(num("withheld"))
+            ),
+            "удержание недостачи с кассира само не снимается: сторнируйте его, если недостачи не было"
+                .into(),
+        ),
+        "defect.reverse_negative" => (
+            format!(
+                "Отмена решения по браку № {}: остаток ушёл в минус",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} — полученный взамен товар уже продан, остаток ушёл в минус — проверьте склад",
+                data.get("lines")
+                    .and_then(Value::as_array)
+                    .map(|l| l
+                        .iter()
+                        .map(|x| format!(
+                            "{}: {}",
+                            x.get("name").and_then(Value::as_str).unwrap_or("товар"),
+                            x.get("after").and_then(Value::as_i64).unwrap_or(0)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default()
+            ),
         ),
         "receipt.reverse_negative" => (
             format!(

@@ -237,7 +237,10 @@ fn balance_words(b: i64) -> String {
 /// Причина отказа для владельца; сбой базы — ошибкой дальше.
 fn reason(e: AppError) -> AppResult<String> {
     match e {
-        AppError::Validation(m) | AppError::Conflict(m) | AppError::TooManyRequests(m) => Ok(m),
+        AppError::Validation(m)
+        | AppError::Conflict(m)
+        | AppError::TooManyRequests(m)
+        | AppError::ForbiddenWith(m) => Ok(m),
         AppError::Forbidden => Ok("недостаточно прав".into()),
         AppError::NotFound => Ok("не найдено".into()),
         AppError::Unauthorized => Ok("требуется вход".into()),
@@ -247,21 +250,77 @@ fn reason(e: AppError) -> AppResult<String> {
 
 /// Владелец, к которому привязан чат: только активный владелец.
 async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<CurrentUser>> {
+    Ok(linked_owner(conn, chat_id).await?.map(|(u, _)| u))
+}
+
+/// Владелец чата и номер в Телеграме того, кто привязал чат (ADR-070).
+async fn linked_owner(
+    conn: &mut PgConnection,
+    chat_id: i64,
+) -> AppResult<Option<(CurrentUser, Option<i64>)>> {
     Ok(sqlx::query!(
-        r#"select u.id, u.branch_id, u.login, u.full_name
+        r#"select u.id, u.branch_id, u.login, u.full_name, t.tg_user_id
            from telegram_links t join users u on u.id = t.user_id
            where t.chat_id = $1 and u.active and u.role = 'owner'"#,
         chat_id
     )
     .fetch_optional(&mut *conn)
     .await?
-    .map(|r| CurrentUser {
-        id: r.id,
-        branch_id: r.branch_id,
-        login: r.login,
-        full_name: r.full_name,
-        role: Role::Owner,
+    .map(|r| {
+        (
+            CurrentUser {
+                id: r.id,
+                branch_id: r.branch_id,
+                login: r.login,
+                full_name: r.full_name,
+                role: Role::Owner,
+            },
+            r.tg_user_id,
+        )
     }))
+}
+
+/// Закрывает открытый черновик чата (новый черновик, «✖ Закончить», режим закрыт): просроченный —
+/// «истёк», остальной — «отменён». Строка черновика только завершается (SPEC-24).
+pub(crate) async fn close_open(conn: &mut PgConnection, chat_id: i64, why: &str) -> AppResult<()> {
+    sqlx::query!(
+        r#"update bot_drafts
+           set status = case when expires_at <= now() then 'expired' else 'cancelled' end,
+               finished_at = now(),
+               result = jsonb_build_object('reason', $2::text)
+           where chat_id = $1 and status = 'open'"#,
+        chat_id,
+        why
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Черновики, срок которых прошёл, а кнопку так и не нажали, помечаются «истёк» — фоновым
+/// проходом бота (SPEC-24). Возвращает, сколько закрыто.
+pub async fn expire_drafts(conn: &mut PgConnection) -> AppResult<u64> {
+    Ok(sqlx::query!(
+        r#"update bot_drafts
+           set status = 'expired', finished_at = now(),
+               result = jsonb_build_object('reason', 'прошло 10 минут')
+           where status = 'open' and expires_at <= now()"#
+    )
+    .execute(&mut *conn)
+    .await?
+    .rows_affected())
+}
+
+/// Сколько операций через бот проведено сегодня — под блокировкой филиала: два нажатия
+/// одновременно не превысят предел (ADR-070). Блокировка держится до конца транзакции.
+async fn posted_today_locked(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+    sqlx::query!(
+        "select pg_advisory_xact_lock(hashtextextended($1::text, 7))",
+        format!("bot_daily:{branch_id}")
+    )
+    .execute(&mut *conn)
+    .await?;
+    posted_today(conn, branch_id).await
 }
 
 /// Сколько операций проведено через бот сегодня (по Бишкеку) в филиале.
@@ -326,11 +385,7 @@ fn need(input: &Value, key: &str, what: &str) -> Result<String, String> {
 }
 
 fn comment(input: &Value, key: &str) -> String {
-    input
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("")
+    one_line(input.get(key).and_then(Value::as_str).unwrap_or(""))
         .chars()
         .take(MAX_COMMENT)
         .collect()
@@ -349,8 +404,37 @@ fn amount(input: &Value, key: &str) -> Result<i64, String> {
     Ok(v)
 }
 
-fn or_dash(s: &str) -> &str {
-    if s.trim().is_empty() { "—" } else { s }
+/// Текст для черновика одной строкой: переводы строк и прочие управляющие знаки (и знаки,
+/// переворачивающие направление текста) заменяются пробелом — иначе комментарий вида
+/// «—\n\nИтого: 100,00 с» дописал бы в черновик чужие строки (ADR-070).
+pub(crate) fn one_line(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+            {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Свободный текст владельца в черновике — в кавычках «…», пустой — «—».
+fn quoted(s: &str) -> String {
+    let s = one_line(s);
+    if s.is_empty() {
+        "—".into()
+    } else {
+        format!("«{s}»")
+    }
 }
 
 /// Значащие части названия: слова от 3 букв без предлогов, первые 4 буквы — так «кассы»
@@ -403,7 +487,7 @@ fn choose<T>(
     }
     let mut lines = vec![format!("{many} (найдено {total}):")];
     for x in found.iter().take(10) {
-        lines.push(format!("— {}", label(x)));
+        lines.push(format!("— {}", one_line(&label(x))));
     }
     if total > 10 {
         lines.push(format!("и ещё {}", total - 10));
@@ -427,7 +511,7 @@ impl Source {
     fn line(&self) -> String {
         match self {
             Source::Account { name, balance, .. } => {
-                format!("{name} (сейчас {})", format_som(*balance))
+                format!("{} (сейчас {})", one_line(name), format_som(*balance))
             }
             Source::Outside => "из своих, мимо касс".into(),
         }
@@ -491,6 +575,21 @@ async fn account(
         name: a.name,
         balance: a.balance_tyiyn,
     }))
+}
+
+/// Касса по номеру — для показа в черновике.
+async fn account_by_id(conn: &mut PgConnection, id: Uuid) -> AppResult<Source> {
+    let a = sqlx::query!(
+        "select name, balance_tyiyn from cash_accounts where id = $1",
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Source::Account {
+        id,
+        name: a.name,
+        balance: a.balance_tyiyn,
+    })
 }
 
 /// Контрагент по названию, телефону или госномеру — тем же поиском, что экран «Клиенты».
@@ -597,6 +696,29 @@ async fn product(
         ),
         format!("По «{q}» найдено несколько товаров"),
     ))
+}
+
+/// Количество строки прихода: целое число и, по желанию, единица — «10», «10 шт», «3 кан.»,
+/// «3 канистры». Любые другие буквы («10к») — не догадываемся, просим уточнить (ADR-070).
+fn receipt_count(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let digits_end = s
+        .char_indices()
+        .find(|(_, c)| !(c.is_ascii_digit() || c.is_whitespace()))
+        .map_or(s.len(), |(i, _)| i);
+    let (num, unit) = s.split_at(digits_end);
+    let unit = norm(unit);
+    let unit = unit.trim_end_matches('.');
+    if !matches!(
+        unit,
+        "" | "шт" | "штук" | "штуки" | "штука" | "кан" | "канистр" | "канистра" | "канистры"
+    ) {
+        return None;
+    }
+    num.replace(char::is_whitespace, "")
+        .parse::<i64>()
+        .ok()
+        .filter(|v| *v > 0)
 }
 
 pub(crate) fn qty_text(qty: i64, unit: &str) -> String {
@@ -706,16 +828,7 @@ pub async fn prepare(
     let id = ops::new_id();
     let mut tx = conn.begin().await?;
     // У чата один черновик: новый закрывает прежний.
-    sqlx::query!(
-        r#"update bot_drafts
-           set status = case when expires_at <= now() then 'expired' else 'cancelled' end,
-               finished_at = now(),
-               result = jsonb_build_object('reason', 'заменён новым черновиком')
-           where chat_id = $1 and status = 'open'"#,
-        chat_id
-    )
-    .execute(&mut *tx)
-    .await?;
+    close_open(&mut tx, chat_id, "заменён новым черновиком").await?;
     sqlx::query!(
         r#"insert into bot_drafts (id, chat_id, user_id, branch_id, kind, payload, summary, op_id,
                                    expires_at)
@@ -820,11 +933,11 @@ async fn expense(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
     };
     let summary = format!(
         "Расход\nСтатья: {}\nСумма: {}\nОткуда: {}\nДата: {}\nКомментарий: {}",
-        article.name,
+        one_line(&article.name),
         format_som(sum),
         src.line(),
         date.format("%d.%m.%Y"),
-        or_dash(&text)
+        quoted(&text)
     );
     Ok(Ok(Built {
         op: DraftOp::Expense(ExpenseReq {
@@ -863,7 +976,7 @@ async fn money(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             },
             src.line(),
             format_som(sum),
-            or_dash(&text)
+            quoted(&text)
         );
         return Ok(Ok(Built {
             op: DraftOp::CashMovement(MovementReq {
@@ -898,7 +1011,7 @@ async fn money(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             from.line(),
             to.line(),
             format_som(sum),
-            or_dash(&text)
+            quoted(&text)
         );
         return Ok(Ok(Built {
             op: DraftOp::CashTransfer(TransferReq {
@@ -941,7 +1054,7 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
             } else {
                 "Клиент"
             },
-            p.name,
+            one_line(&p.name),
             balance_words(p.balance_tyiyn),
             format_som_signed(signed),
             if supplier {
@@ -949,7 +1062,7 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
             } else {
                 "клиент должен нам"
             },
-            reason_text
+            quoted(&reason_text)
         );
         return Ok(Ok(Built {
             op: DraftOp::DebtAdjust(AdjustReq {
@@ -993,19 +1106,30 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
             "чем платят: «наличные», «карта», «перевод» или «из своих»".into(),
         ));
     };
-    let src = match method {
-        "cash" => take!(account(conn, branch_id, None, false).await?),
-        "outside" => Source::Outside,
-        _ => take!(account(conn, branch_id, Some("Счёт"), false).await?),
+    // Касса — ровно та, которую возьмёт проведение (та же функция), с комиссией банка.
+    let src = match crate::api::parties::repayment_account(conn, branch_id, method).await {
+        Ok(Some(id)) => account_by_id(conn, id).await?,
+        Ok(None) => Source::Outside,
+        Err(e) => return Ok(Err(reason(e)?)),
     };
+    let fee = crate::api::parties::repayment_fee(conn, branch_id, method, supplier, sum).await?;
     let method_word = match method {
         "cash" => "наличные",
         "card" => "карта",
         "transfer" => "перевод",
         _ => "из своих, мимо касс",
     };
+    let fee_line = if fee != 0 {
+        format!(
+            "\nКомиссия банка: {} (на счёт придёт {})",
+            format_som(fee),
+            format_som(sum.saturating_sub(fee))
+        )
+    } else {
+        String::new()
+    };
     let summary = format!(
-        "{}\n{}: {} (сейчас {})\nСумма: {}\nЧем: {}\n{}: {}\nКомментарий: {}",
+        "{}\n{}: {} (сейчас {})\nСумма: {}\nЧем: {}\n{}: {}{fee_line}\nКомментарий: {}",
         if supplier {
             "Оплата поставщику"
         } else {
@@ -1016,13 +1140,13 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
         } else {
             "Клиент"
         },
-        p.name,
+        one_line(&p.name),
         balance_words(p.balance_tyiyn),
         format_som(sum),
         method_word,
         if supplier { "Откуда" } else { "Куда" },
         src.line(),
-        or_dash(&text)
+        quoted(&text)
     );
     Ok(Ok(Built {
         op: DraftOp::Repayment(RepaymentReq {
@@ -1066,9 +1190,9 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             } else {
                 "Удержание"
             },
-            e.name,
+            one_line(&e.name),
             format_som(sum),
-            or_dash(&text)
+            quoted(&text)
         );
         return Ok(Ok(Built {
             op: DraftOp::Accrual(AccrualReq {
@@ -1110,11 +1234,11 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             } else {
                 "Выплата сотруднику"
             },
-            e.name,
+            one_line(&e.name),
             format_som(earned),
             format_som(sum),
             src.line(),
-            or_dash(&text)
+            quoted(&text)
         );
         let hint = if !advance && sum > earned {
             format!(
@@ -1162,9 +1286,11 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
         let rule = crate::api::payroll::active_rule(conn, branch_id, e.id, "monthly_salary", last)
             .await?
             .and_then(|r| r.1);
-        let shown = match (typed, rule) {
-            (Some(v), _) => format!("{} (указана)", format_som(v)),
-            (None, Some(v)) => format!("{} (по ставке)", format_som(v)),
+        // Сумма по ставке пишется в черновик: проводится ровно показанная, даже если ставку
+        // успели поменять до нажатия (ADR-070).
+        let (amount, shown) = match (typed, rule) {
+            (Some(v), _) => (v, format!("{} (указана)", format_som(v))),
+            (None, Some(v)) => (v, format!("{} (по ставке)", format_som(v))),
             (None, None) => {
                 return Ok(Err(format!(
                     "у {} нет ставки оклада — назовите сумму",
@@ -1174,7 +1300,7 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
         };
         let summary = format!(
             "Оклад за месяц\nСотрудник: {}\nМесяц: {}\nСумма: {shown}",
-            e.name,
+            one_line(&e.name),
             month_name(month)
         );
         return Ok(Ok(Built {
@@ -1182,7 +1308,7 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                 op_id,
                 employee_id: e.id,
                 month,
-                amount_tyiyn: typed,
+                amount_tyiyn: Some(amount),
             }),
             kind: "salary",
             summary,
@@ -1199,7 +1325,7 @@ async fn goods(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
     let q = take!(need(input, "product", "товар"));
     let value = take!(need(input, "value", "значение"));
     let p = take!(product(conn, user, &q).await?);
-    let name = p.name.clone();
+    let name = one_line(&p.name);
     if operation.contains("миним") {
         let qty = match p.unit.as_str() {
             "ml" | "g" => take!(
@@ -1336,17 +1462,9 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
                 .await?
                 .map_err(|e| format!("Строка {n}. {e}"))
         );
-        let count = take!(
-            qty_s
-                .trim_end_matches(|c: char| c.is_alphabetic() || c == '.' || c.is_whitespace())
-                .replace(char::is_whitespace, "")
-                .parse::<i64>()
-                .ok()
-                .filter(|v| *v > 0)
-                .ok_or_else(|| format!(
-                    "строка {n}: количество «{qty_s}» — целое число штук или канистр"
-                ))
-        );
+        let count = take!(receipt_count(&qty_s).ok_or_else(|| format!(
+            "строка {n}: количество «{qty_s}» не понять — напишите целым числом штук или канистр, например «10» или «10 шт»"
+        )));
         let price = take!(amount(l, "price").map_err(|e| format!("строка {n}: {e}")));
         // Сумму строки считает сервер: количество × цена за единицу (инвариант 1).
         let (qty, unit_text) = match (p.unit.as_str(), p.container_ml) {
@@ -1379,7 +1497,7 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
         );
         shown.push(format!(
             "{n}. {} — {unit_text} × {} = {}",
-            p.name,
+            one_line(&p.name),
             format_som(price),
             format_som(sum)
         ));
@@ -1400,11 +1518,11 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
         "Приход товара\nПоставщик: {}\n{}\nИтого: {}\nРасчёт: {pay_line}\nДокумент поставщика: {}\nКомментарий: {}",
         supplier
             .as_ref()
-            .map_or_else(|| "без поставщика".to_string(), |s| s.name.clone()),
+            .map_or_else(|| "без поставщика".to_string(), |s| one_line(&s.name)),
         shown.join("\n"),
         format_som(total),
-        or_dash(&doc),
-        or_dash(&text)
+        quoted(&doc),
+        quoted(&text)
     );
     let paid_from = match &src {
         None => None,
@@ -1430,10 +1548,16 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
 
 // ---------- Кнопки под черновиком ----------
 
-/// Нажатие «✅ Провести» (`d:ok:<id>`) или «✖ Отмена» (`d:no:<id>`) в чате `chat_id`. Черновик
-/// принимается только от того же чата, того же владельца и филиала, открытый и не просроченный.
+/// Нажатие «✅ Провести» (`d:ok:<id>`) или «✖ Отмена» (`d:no:<id>`) в чате `chat_id` пользователем
+/// Телеграма `from_id`. Черновик принимается только от того же чата, того же владельца и филиала,
+/// от того, кто привязал чат (ADR-070), открытый и не просроченный.
 /// Ответ — текст для чата; `Err` — только сбой базы.
-pub async fn press(conn: &mut PgConnection, chat_id: i64, data: &str) -> AppResult<String> {
+pub async fn press(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    from_id: i64,
+    data: &str,
+) -> AppResult<String> {
     let mut parts = data.splitn(3, ':');
     let (Some("d"), Some(verb), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
         return Ok("Кнопка устарела.".into());
@@ -1448,9 +1572,15 @@ pub async fn press(conn: &mut PgConnection, chat_id: i64, data: &str) -> AppResu
     ) else {
         return Ok("Кнопка устарела.".into());
     };
-    let Some(owner) = chat_owner(conn, chat_id).await? else {
+    let Some((owner, tg_user)) = linked_owner(conn, chat_id).await? else {
         return Ok(NOT_YOURS.into());
     };
+    if tg_user != Some(from_id) {
+        return Ok(
+            "Провести или отменить черновик может только владелец, который подключил этот чат. Ничего не проведено."
+                .into(),
+        );
+    }
     // Транзакция завершается явно в любом случае: брошенная держала бы блокировку черновика.
     let mut tx = conn.begin().await?;
     let reply = decide(&mut tx, owner, chat_id, id, confirm).await;
@@ -1535,12 +1665,20 @@ async fn decide(
                 .into(),
         );
     }
-    if posted_today(&mut *conn, owner.branch_id).await? >= DAILY_LIMIT {
+    if posted_today_locked(&mut *conn, owner.branch_id).await? >= DAILY_LIMIT {
         finish(&mut *conn, id, "rejected", json!({ "reason": LIMIT_TEXT })).await?;
         return Ok(LIMIT_TEXT.into());
     }
     let op: DraftOp =
         serde_json::from_value(d.payload).map_err(|e| AppError::Internal(e.to_string()))?;
+    // За 10 минут сотрудника или клиента могли отключить, товар — убрать в архив: такой черновик
+    // не проводится (ADR-070).
+    if let Some(why) = stale_refs(&mut *conn, owner.branch_id, &op).await? {
+        finish(&mut *conn, id, "rejected", json!({ "reason": why })).await?;
+        return Ok(format!(
+            "Не проведено: {why}. Черновик закрыт — проверьте данные и опишите операцию заново."
+        ));
+    }
     let ctx = Ctx::bot(owner, chat_id);
     // Проведение — во вложенной транзакции: отказ проверки откатывает только его, а судьба
     // черновика записывается.
@@ -1560,6 +1698,77 @@ async fn decide(
             ))
         }
     }
+}
+
+/// Что из черновика перестало действовать: сотрудник или клиент отключён, товар в архиве.
+async fn stale_refs(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    op: &DraftOp,
+) -> AppResult<Option<String>> {
+    let (employee, party, products): (Option<Uuid>, Option<Uuid>, Vec<Uuid>) = match op {
+        DraftOp::Accrual(r) => (Some(r.employee_id), None, Vec::new()),
+        DraftOp::Payout(r) => (Some(r.employee_id), None, Vec::new()),
+        DraftOp::Salary(r) => (Some(r.employee_id), None, Vec::new()),
+        DraftOp::Repayment(r) => (None, Some(r.party_id), Vec::new()),
+        DraftOp::DebtAdjust(r) => (None, Some(r.party_id), Vec::new()),
+        DraftOp::Prices { product_id, .. } | DraftOp::PurchasePrice { product_id, .. } => {
+            (None, None, vec![*product_id])
+        }
+        DraftOp::Receipt(r) => (
+            None,
+            r.supplier_id,
+            r.lines.iter().map(|l| l.product_id).collect(),
+        ),
+        DraftOp::Expense(_) | DraftOp::CashMovement(_) | DraftOp::CashTransfer(_) => {
+            (None, None, Vec::new())
+        }
+    };
+    if let Some(id) = employee {
+        let e = sqlx::query!(
+            "select full_name, active from employees where id = $1 and branch_id = $2",
+            id,
+            branch_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        match e {
+            Some(e) if e.active => {}
+            Some(e) => {
+                return Ok(Some(format!(
+                    "сотрудник «{}» отключён",
+                    one_line(&e.full_name)
+                )));
+            }
+            None => return Ok(Some("сотрудник не найден".into())),
+        }
+    }
+    if let Some(id) = party {
+        let p = sqlx::query!(
+            "select name, active from parties where id = $1 and branch_id = $2",
+            id,
+            branch_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        match p {
+            Some(p) if p.active => {}
+            Some(p) => return Ok(Some(format!("«{}» отключён", one_line(&p.name)))),
+            None => return Ok(Some("клиент или поставщик не найден".into())),
+        }
+    }
+    if !products.is_empty() {
+        let archived = sqlx::query_scalar!(
+            "select name from products where id = any($1) and archived order by name",
+            &products
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        if let Some(name) = archived.first() {
+            return Ok(Some(format!("товар «{}» убран в архив", one_line(name))));
+        }
+    }
+    Ok(None)
 }
 
 async fn finish(conn: &mut PgConnection, id: Uuid, status: &str, result: Value) -> AppResult<()> {

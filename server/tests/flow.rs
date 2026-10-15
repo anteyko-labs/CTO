@@ -3043,7 +3043,8 @@ async fn start_asking(
 }
 
 async fn link_owner(pool: &PgPool, w: &World, chat: i64) {
-    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)")
+    // Личный чат: номер чата — номер владельца в Телеграме (ADR-070).
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, tg_user_id) values ($1, $2, $3, $1)")
         .bind(chat)
         .bind(w.owner.user.id)
         .bind(w.owner.user.branch_id)
@@ -3881,7 +3882,7 @@ async fn fake_telegram() -> (avtodom_server::api::telegram::Api, FakeTelegram) {
 
 /// Привязать чат к пользователю: `linked_at` на час назад, чтобы видеть события «из прошлого».
 async fn link_user_chat(pool: &PgPool, user: Uuid, branch: Uuid, chat: i64, hours_ago: i32) {
-    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, linked_at) values ($1, $2, $3, now() - make_interval(hours => $4))")
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, linked_at, tg_user_id) values ($1, $2, $3, now() - make_interval(hours => $4), $1)")
         .bind(chat)
         .bind(user)
         .bind(branch)
@@ -5683,7 +5684,7 @@ async fn bot_expense_posts_only_by_button_like_the_program(pool: PgPool) {
     assert_eq!(
         f.text,
         format!(
-            "Расход\nСтатья: Хозтовары\nСумма: 1 500 с\nОткуда: Касса (сейчас 20 000 с)\nДата: {}\nКомментарий: ведро и тряпки",
+            "Расход\nСтатья: Хозтовары\nСумма: 1 500 с\nОткуда: Касса (сейчас 20 000 с)\nДата: {}\nКомментарий: «ведро и тряпки»",
             today.format("%d.%m.%Y")
         )
     );
@@ -5823,7 +5824,7 @@ async fn bot_draft_cancel_expiry_and_foreign_buttons(pool: PgPool) {
     let r = draft_turn(&mut conn, &a, &fake, chat, "draft_money", deposit.clone()).await;
     assert_eq!(
         r.follow.as_ref().unwrap().text,
-        "Внесение денег\nКасса: Касса (сейчас 1 000 с)\nСумма: 500 с\nКомментарий: размен"
+        "Внесение денег\nКасса: Касса (сейчас 1 000 с)\nСумма: 500 с\nКомментарий: «размен»"
     );
     let (ok, no) = draft_buttons(&r);
     // Чат другого владельца того же филиала и непривязанный чат.
@@ -6057,7 +6058,7 @@ async fn bot_receipt_totals_by_server_and_daily_cap(pool: PgPool) {
     let text = r.follow.as_ref().unwrap().text.clone();
     assert_eq!(
         text,
-        "Приход товара\nПоставщик: Автоснаб\n1. Фильтр W712 — 10 шт × 350 с = 3 500 с\n2. Масло 5W-30 4л — 2 кан. по 4 л × 1 800,50 с = 3 601 с\nИтого: 7 101 с\nРасчёт: в долг поставщику\nДокумент поставщика: Н-77\nКомментарий: —"
+        "Приход товара\nПоставщик: Автоснаб\n1. Фильтр W712 — 10 шт × 350 с = 3 500 с\n2. Масло 5W-30 4л — 2 кан. по 4 л × 1 800,50 с = 3 601 с\nИтого: 7 101 с\nРасчёт: в долг поставщику\nДокумент поставщика: «Н-77»\nКомментарий: —"
     );
     assert_eq!(count(&pool, "select count(*) from receipts").await, 0);
     let (ok, _) = draft_buttons(&r);
@@ -6902,4 +6903,648 @@ async fn bot_reports_show_defects_and_deliveries(pool: PgPool) {
         text.contains("на складе 8 шт, из них от него (оценка) 8 шт"),
         "{text}"
     );
+}
+
+// ---------- Исправления по ревью (ADR-070) ----------
+
+async fn audit_count(pool: &PgPool, action: &str) -> i64 {
+    sqlx::query_scalar("select count(*) from audit_log where action = $1")
+        .bind(action)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn storno(pool: &PgPool, ctx: &Ctx, id: Uuid) -> Result<(), AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = reverse_receipt_tx(
+        &mut tx,
+        ctx,
+        id,
+        ReverseReq {
+            op_id: Uuid::now_v7(),
+            comment: String::new(),
+        },
+    )
+    .await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r.map(|_| ())
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defect_blocks_receipt_storno_and_archived_target(pool: PgPool) {
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    let sid = supplier(&pool, &w, "Автоснаб").await;
+    receive_from(&pool, &w, sid, w.filter, 10, 1_000_000, false).await;
+    let receipt: Uuid = sqlx::query_scalar(
+        "select id from receipts where supplier_id = $1 and reversal_of is null",
+    )
+    .bind(sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let d = mark_defect(&pool, &w.admin, w.filter, 2).await.unwrap();
+    assert_eq!(d.supplier_id, Some(sid));
+    // Брак этого поставщика ждёт решения — приход не сторнируется, номер брака назван.
+    let err = storno(&pool, &w.owner, receipt).await.unwrap_err();
+    assert!(
+        matches!(&err, AppError::Conflict(m) if m.contains(&format!("№ {}", d.number))),
+        "{err:?}"
+    );
+    // Взамен привезли новый товар — решение действует, сторно всё так же нельзя.
+    decide(&pool, &w.owner, d.id, resolution("replace"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        storno(&pool, &w.owner, receipt).await,
+        Err(AppError::Conflict(_))
+    ));
+    // Весь товар продан, потом решение отменили: остаток ушёл в минус — владельцу уведомление.
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            vec![line("piece", w.filter, 10, 150_000)],
+            cash(1_500_000),
+        ),
+    )
+    .await
+    .unwrap();
+    let back = undo(&pool, &w.owner, d.id).await;
+    assert_eq!(back.status, "pending");
+    assert_eq!(audit_count(&pool, "defect.reverse_negative").await, 1);
+    let data: serde_json::Value =
+        sqlx::query_scalar("select data from audit_log where action = 'defect.reverse_negative'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(data["lines"][0]["after"], -2);
+    // Карточку убрали в архив в обход проверок: снять отметку на неё нельзя, понятный отказ.
+    sqlx::query("update products set archived = true where id = $1")
+        .bind(w.filter)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let err = unmark_tx(
+        &mut tx,
+        &w.admin,
+        d.id,
+        CommentReq {
+            op_id: Uuid::now_v7(),
+            comment: String::new(),
+        },
+    )
+    .await
+    .unwrap_err();
+    drop(tx);
+    assert!(
+        matches!(&err, AppError::Conflict(m) if m.contains("в архиве")),
+        "{err:?}"
+    );
+    let err = decide(&pool, &w.owner, d.id, resolution("replace"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Conflict(m) if m.contains("в архиве")),
+        "{err:?}"
+    );
+    sqlx::query("update products set archived = false where id = $1")
+        .bind(w.filter)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Отметку сняли — приход сторнируется (остаток уходит в минус — это решает владелец).
+    let mut tx = pool.begin().await.unwrap();
+    unmark_tx(
+        &mut tx,
+        &w.admin,
+        d.id,
+        CommentReq {
+            op_id: Uuid::now_v7(),
+            comment: String::new(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    storno(&pool, &w.owner, receipt).await.unwrap();
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defect_of_stock_without_value_uses_last_purchase_price(pool: PgPool) {
+    let w = seed(&pool).await;
+    // 5 шт по 1 000 с, потом стоимость остатка ушла в ноль: брак — по последней закупке.
+    receive(&pool, &w.owner, w.filter, 5, 500_000).await;
+    sqlx::query("update branch_products set stock_value_tyiyn = 0 where product_id = $1")
+        .bind(w.filter)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let d = mark_defect(&pool, &w.owner, w.filter, 2).await.unwrap();
+    assert_eq!(d.cost_tyiyn, Some(200_000));
+    // Остаток переоценён по последней закупке и стоит на проверке у владельца.
+    assert_eq!(pool_of(&pool, w.filter).await, (3, 300_000, true));
+    // Ни стоимости, ни одной закупки — цену брака не узнать.
+    sqlx::query(
+        "update branch_products set stock_qty = 3, stock_value_tyiyn = 0, last_cost_qty = 0, last_cost_tyiyn = 0 where product_id = $1",
+    )
+    .bind(w.oil)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let err = mark_defect(&pool, &w.owner, w.oil, 1).await.unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("укажите цену закупки")),
+        "{err:?}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn returns_refund_exactly_the_original_bank_fee(pool: PgPool) {
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    let bank = {
+        let mut conn = pool.acquire().await.unwrap();
+        avtodom_server::api::cash::bank_account(&mut conn, w.owner.user.branch_id)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    // На счёте есть из чего вернуть деньги на карту.
+    fund_till(&pool, &w, bank, 1_000_000).await;
+    receive(&pool, &w.admin, w.filter, 10, 100_000).await;
+    let fee = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select coalesce(sum(fee_tyiyn), 0)::bigint from sale_payments where sale_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // Чек 3 × 333,33 с картой: комиссия 0,5 % — 5,00 с.
+    let sale = sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            vec![line("piece", w.filter, 3, 33_333)],
+            pay(&[("card", 99_999)]),
+        ),
+    )
+    .await
+    .unwrap();
+    let orig = fee(sale.id).await;
+    assert_eq!(orig, 500);
+    // Ставку потом подняли — возврат всё равно берёт комиссию исходного чека.
+    sqlx::query("update payment_method_fees set rate_bp = 300 where method = 'card'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Два частичных и последний возврат вместе возвращают ровно исходную комиссию.
+    let mut back = 0;
+    for _ in 0..3 {
+        let r = return_one(&pool, &w.owner, sale.id, pay(&[("card", 33_333)]))
+            .await
+            .unwrap();
+        back += fee(r.id).await;
+    }
+    assert_eq!(back, -orig);
+    // Целиком одним возвратом — тоже ровно исходная.
+    let sale = sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            vec![line("piece", w.filter, 1, 99_999)],
+            pay(&[("card", 99_999)]),
+        ),
+    )
+    .await
+    .unwrap();
+    let orig = fee(sale.id).await;
+    let r = return_one(&pool, &w.owner, sale.id, pay(&[("card", 99_999)]))
+        .await
+        .unwrap();
+    assert_eq!(fee(r.id).await, -orig);
+}
+
+/// Обновление Телеграма: сообщение из чата вида `kind` от `from`.
+fn tg_message(chat: i64, kind: &str, from: i64, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "update_id": 1,
+        "message": { "chat": { "id": chat, "type": kind }, "from": { "id": from }, "text": text }
+    })
+}
+
+/// Обновление Телеграма: нажатие кнопки в чате вида `kind` пользователем `from`.
+fn tg_press(chat: i64, kind: &str, from: i64, data: &str) -> serde_json::Value {
+    serde_json::json!({
+        "update_id": 2,
+        "callback_query": {
+            "id": "cb-1",
+            "from": { "id": from },
+            "message": { "chat": { "id": chat, "type": kind } },
+            "data": data
+        }
+    })
+}
+
+async fn draft_status(pool: &PgPool) -> Vec<String> {
+    sqlx::query_scalar("select status from bot_drafts order by created_at")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_answers_only_private_chats_and_the_linking_owner(pool: PgPool) {
+    // Группа не привязывается и ничего не получает; кнопки черновика принимаются только от
+    // того, кто привязал чат (ADR-070).
+    use avtodom_server::api::telegram::{handle_callback_from, handle_update};
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 100_000).await;
+    sqlx::query("insert into telegram_codes (code, user_id, expires_at) values ('482913', $1, now() + interval '10 minutes')")
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let group = -100_200_300i64;
+    assert!(
+        handle_update(&mut conn, None, tg_message(group, "group", 7001, "482913"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        handle_update(
+            &mut conn,
+            None,
+            tg_message(group, "supergroup", 7001, "/start 482913")
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(count(&pool, "select count(*) from telegram_links").await, 0);
+    assert_eq!(
+        count(&pool, "select count(*) from telegram_code_failures").await,
+        0
+    );
+    // Личный чат — привязка, номер владельца в Телеграме запомнен.
+    let chat = 7001i64;
+    let r = handle_update(&mut conn, None, tg_message(chat, "private", chat, "482913"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(r.text.starts_with("Готово"), "{}", r.text);
+    let tg: Option<i64> =
+        sqlx::query_scalar("select tg_user_id from telegram_links where chat_id = $1")
+            .bind(chat)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(tg, Some(chat));
+    // Команды владельца из группы — молчание.
+    assert!(
+        handle_update(
+            &mut conn,
+            None,
+            tg_message(group, "group", chat, "📊 Сегодня")
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+
+    let (url, fake) = fake_service().await;
+    let a =
+        avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    start_asking(&mut conn, &a, chat).await;
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_money",
+        serde_json::json!({ "operation": "внесение", "amount": "500", "comment": "размен" }),
+    )
+    .await;
+    let (ok, _) = draft_buttons(&r);
+    // Кнопка из группы — молчание; другой пользователь в том же чате — отказ.
+    assert!(
+        handle_update(&mut conn, Some(&a), tg_press(chat, "group", chat, &ok))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let r = handle_callback_from(&mut conn, Some(&a), chat, 7002, &ok)
+        .await
+        .unwrap();
+    assert!(r.text.contains("только владелец"), "{}", r.text);
+    assert_eq!(draft_status(&pool).await, ["open"]);
+    let r = handle_update(&mut conn, Some(&a), tg_press(chat, "private", chat, &ok))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(r.text.starts_with("Проведено: "), "{}", r.text);
+    assert_eq!(draft_status(&pool).await, ["posted"]);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_ask_mode_codes_restart_stop_and_claims(pool: PgPool) {
+    use avtodom_server::api::telegram::handle_callback_with;
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 100_000).await;
+    let chat = 970_801i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+    // Шесть цифр в режиме вопросов — вопрос, а не код привязки.
+    fake.push(vec![Step::Reply(
+        200,
+        final_text("Не понял, уточните вопрос."),
+    )]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "123456").await,
+        "Не понял, уточните вопрос."
+    );
+    assert_eq!(
+        count(&pool, "select count(*) from telegram_code_failures").await,
+        0
+    );
+    assert_eq!(count(&pool, "select count(*) from bot_questions").await, 1);
+    // Повторное «💬 Спросить» в открытом режиме не пишет второе включение.
+    start_asking(&mut conn, &a, chat).await;
+    assert_eq!(audit_data(&pool, "telegram.ask_on").await.len(), 1);
+    // Кнопка под сообщением в режиме продлевает его.
+    sqlx::query("update bot_question_mode set last_at = now() - interval '9 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    handle_callback_with(&mut conn, Some(&a), chat, "x")
+        .await
+        .unwrap();
+    assert_eq!(
+        count(
+            &pool,
+            "select count(*) from bot_question_mode where last_at > now() - interval '1 minute'"
+        )
+        .await,
+        1
+    );
+    // Режим истёк — «💬 Спросить» закрывает прежний как положено и открывает новый.
+    sqlx::query("update bot_question_mode set last_at = now() - interval '11 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(count(&pool, "select count(*) from bot_dialog").await > 0);
+    start_asking(&mut conn, &a, chat).await;
+    let off = audit_data(&pool, "telegram.ask_off").await;
+    assert_eq!(off.len(), 1);
+    assert_eq!(off[0]["reason"], "время");
+    assert_eq!(audit_data(&pool, "telegram.ask_on").await.len(), 2);
+    assert_eq!(count(&pool, "select count(*) from bot_dialog").await, 0);
+
+    // «Записал» после прочитанного отчёта — всё равно «ничего не проведено».
+    fake.push(vec![
+        Step::Reply(200, tool_use("shift_today", serde_json::json!({}))),
+        Step::Reply(200, final_text("Записал расход 500 с.")),
+    ]);
+    assert!(
+        ask(&mut conn, &a, chat, "запиши расход 500")
+            .await
+            .starts_with("Ничего не проведено")
+    );
+    // С черновиком — «черновик готов», черновик показан.
+    fake.push(vec![
+        Step::Reply(
+            200,
+            tool_use(
+                "draft_money",
+                serde_json::json!({ "operation": "внесение", "amount": "500", "comment": "размен" }),
+            ),
+        ),
+        Step::Reply(200, final_text("Провёл внесение 500 с.")),
+    ]);
+    let r = ask_reply(&mut conn, &a, chat, "внеси 500").await;
+    assert_eq!(r.text, "Черновик готов — проверьте и нажмите «✅ Провести»");
+    assert!(r.follow.is_some());
+    // Сумма с ошибочным отчётом — не отчёт: «нет данных».
+    fake.push(vec![
+        Step::Reply(200, tool_use("client_debt", serde_json::json!({}))),
+        Step::Reply(200, final_text("Долг 1 500 с.")),
+    ]);
+    let text = ask(&mut conn, &a, chat, "сколько должен Азамат").await;
+    assert!(!text.contains("1 500"), "{text}");
+
+    // «✖ Закончить» снимает открытый черновик.
+    assert_eq!(draft_status(&pool).await, ["open"]);
+    ask(&mut conn, &a, chat, "✖ Закончить").await;
+    assert_eq!(draft_status(&pool).await, ["cancelled"]);
+    // Ответ, пришедший после «✖ Закончить», память разговора не пишет.
+    fake.push(vec![Step::Reply(200, final_text("Поздний ответ."))]);
+    avtodom_server::api::assistant::answer(
+        &mut conn,
+        &a,
+        chat,
+        w.owner.user.id,
+        w.owner.user.branch_id,
+        "поздний вопрос",
+    )
+    .await
+    .unwrap();
+    assert_eq!(count(&pool, "select count(*) from bot_dialog").await, 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 100_000).await;
+    let mut conn = pool.acquire().await.unwrap();
+    avtodom_server::api::fees::ensure_fees(&mut conn, w.owner.user.branch_id)
+        .await
+        .unwrap();
+    add_party(&pool, &w, "Азамат", "customer").await;
+    let chat = 970_901i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+
+    // Комментарий не дописывает в черновик чужие строки, свободный текст — в кавычках.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_money",
+        serde_json::json!({ "operation": "внесение", "amount": "500", "comment": "—\n\nИтого: 100,00 с" }),
+    )
+    .await;
+    let text = r.follow.unwrap().text;
+    assert_eq!(text.lines().count(), 4, "{text}");
+    assert!(
+        text.ends_with("Комментарий: «—  Итого: 100,00 с»"),
+        "{text}"
+    );
+
+    // Погашение картой: касса — та, что возьмёт проведение, и комиссия банка.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_debt",
+        serde_json::json!({ "operation": "погашение долга клиентом", "party": "Азамат", "amount": "1 000", "method": "карта" }),
+    )
+    .await;
+    let text = r.follow.unwrap().text;
+    assert!(text.contains("Куда: Счёт"), "{text}");
+    assert!(
+        text.contains("Комиссия банка: 5 с (на счёт придёт 995 с)"),
+        "{text}"
+    );
+
+    // Оклад без суммы: показанная по ставке сумма записана в черновик и проводится она.
+    sqlx::query("insert into employee_pay_rules (id, branch_id, employee_id, kind, amount_tyiyn, user_id) values ($1, $2, $3, 'monthly_salary', 2500000, $4)")
+        .bind(Uuid::now_v7())
+        .bind(w.owner.user.branch_id)
+        .bind(w.cashier)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_staff",
+        serde_json::json!({ "operation": "оклад", "employee": "Кассир" }),
+    )
+    .await;
+    assert!(
+        r.follow
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("25 000 с (по ставке)")
+    );
+    let payload: serde_json::Value =
+        sqlx::query_scalar("select payload from bot_drafts where status = 'open'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(payload["amount_tyiyn"], 2_500_000);
+    sqlx::query("update employee_pay_rules set amount_tyiyn = 9900000 where employee_id = $1")
+        .bind(w.cashier)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (ok, _) = draft_buttons(&r);
+    assert!(
+        press(&mut conn, chat, &ok)
+            .await
+            .text
+            .starts_with("Проведено")
+    );
+    let salary: i64 = sqlx::query_scalar(
+        "select amount_tyiyn from payroll_accruals where kind = 'monthly_salary'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(salary, 2_500_000);
+
+    // «10к» — не количество: просим уточнить, черновика нет.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_receipt",
+        serde_json::json!({ "paid_from": "из своих", "lines": [{ "product": "Фильтр W712", "quantity": "10к", "price": "100" }] }),
+    )
+    .await;
+    assert!(r.follow.is_none());
+    assert!(
+        last_tool_result(&fake).contains("«10к» не понять"),
+        "{}",
+        last_tool_result(&fake)
+    );
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_receipt",
+        serde_json::json!({ "paid_from": "из своих", "lines": [{ "product": "Фильтр W712", "quantity": "10 шт", "price": "100" }] }),
+    )
+    .await;
+    assert!(r.follow.is_some(), "{}", last_tool_result(&fake));
+
+    // Сотрудника отключили, пока черновик ждал кнопки, — не проводится.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_staff",
+        serde_json::json!({ "operation": "премия", "employee": "Мастер", "amount": "100", "comment": "за чистоту" }),
+    )
+    .await;
+    assert!(r.follow.is_some(), "{}", last_tool_result(&fake));
+    let (ok, _) = draft_buttons(&r);
+    sqlx::query("update employees set active = false where id = $1")
+        .bind(w.master)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        press(&mut conn, chat, &ok).await.text,
+        "Не проведено: сотрудник «Мастер» отключён. Черновик закрыт — проверьте данные и опишите операцию заново."
+    );
+    assert_eq!(draft_status(&pool).await.last().unwrap(), "rejected");
+
+    // Просроченный черновик закрывается фоновым проходом.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_money",
+        serde_json::json!({ "operation": "внесение", "amount": "500", "comment": "размен" }),
+    )
+    .await;
+    assert!(r.follow.is_some());
+    sqlx::query("alter table bot_drafts disable trigger bot_drafts_immutable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "update bot_drafts set expires_at = now() - interval '1 second' where status = 'open'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("alter table bot_drafts enable trigger bot_drafts_immutable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        avtodom_server::api::bot_drafts::expire_drafts(&mut conn)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(draft_status(&pool).await.last().unwrap(), "expired");
 }

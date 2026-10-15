@@ -734,6 +734,33 @@ async fn close_shift(
         json!({ "expected": expected, "counted": req.counted_tyiyn, "diff": diff }),
     )
     .await?;
+    // Повторное закрытие после переоткрытия с излишком, а с кассира уже удержана недостача:
+    // удержание само не снимается (ADR-064), владельцу — напоминание, что его можно простить.
+    if seq > 1 && diff > 0 {
+        let withheld = sqlx::query_scalar!(
+            r#"select coalesce(-sum(a.amount_tyiyn), 0)::bigint as "v!" from payroll_accruals a
+               where a.doc_type = 'shift' and a.doc_id = $1 and a.kind = 'shortage'
+                 and a.reversal_of is null
+                 and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)"#,
+            id
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if withheld > 0 {
+            let number = sqlx::query_scalar!("select number from shifts where id = $1", id)
+                .fetch_one(&mut *tx)
+                .await?;
+            ops::audit(
+                &mut tx,
+                &ctx,
+                "shift.reclose_surplus",
+                "shift",
+                Some(id),
+                json!({ "number": number, "surplus": diff, "withheld": withheld }),
+            )
+            .await?;
+        }
+    }
     let out = load_shift(&mut tx, branch_id, id).await?;
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;

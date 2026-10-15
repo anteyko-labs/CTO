@@ -314,7 +314,24 @@ pub async fn mark_tx(conn: &mut PgConnection, ctx: &Ctx, req: MarkReq) -> AppRes
             qty_words(pool.qty.max(0), &p.unit)
         )));
     }
-    let cost = cost_of(req.qty, &pool).ok_or_else(overflow)?;
+    // Остаток есть, а стоимости у него нет (ушла в ноль или минус): брак — по последней цене
+    // закупки, как себестоимость продажи в таком случае; товар остаётся на проверке. Закупок
+    // не было вовсе — цену брака не узнать (ADR-070).
+    let cost = if pool.value <= 0 {
+        if pool.last_qty <= 0 {
+            return Err(invalid(format!(
+                "у «{}» нет стоимости остатка и ни одной закупки — укажите цену закупки, потом отметьте брак",
+                p.name
+            )));
+        }
+        div_round(
+            i128::from(req.qty) * i128::from(pool.last_cost),
+            i128::from(pool.last_qty),
+        )
+        .ok_or_else(overflow)?
+    } else {
+        cost_of(req.qty, &pool).ok_or_else(overflow)?
+    };
     let number = ops::next_counter(conn, branch_id, "defect").await?;
     let id = new_id();
     sqlx::query!(
@@ -374,6 +391,23 @@ pub async fn mark_tx(conn: &mut PgConnection, ctx: &Ctx, req: MarkReq) -> AppRes
     let out = load_one(conn, &ctx.user, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+/// Карточка, на которую вернётся товар, не в архиве: иначе остаток лёг бы на невидимую карточку.
+async fn ensure_live_not_archived(conn: &mut PgConnection, product_id: Uuid) -> AppResult<()> {
+    let p = sqlx::query!(
+        "select name, archived from products where id = $1",
+        product_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if p.archived {
+        return Err(AppError::Conflict(format!(
+            "товар «{}» в архиве — верните карточку из архива, потом повторите",
+            p.name
+        )));
+    }
+    Ok(())
 }
 
 // ---------- Снять отметку ----------
@@ -454,6 +488,7 @@ pub async fn unmark_tx(
     }
     // Карточку могли влить в другую: товар возвращается на основную.
     let target = ops::live_product(conn, d.product_id).await?;
+    ensure_live_not_archived(conn, target).await?;
     ops::lock_pool(conn, branch_id, target).await?;
     ops::ensure_not_merged(conn, &[target]).await?;
     ops::apply_movement(
@@ -640,6 +675,7 @@ pub async fn resolve_tx(
     let note = format!("брак № {}: {}", d.number, d.name);
     if let Some(rq) = replace_qty {
         let target = ops::live_product(conn, d.product_id).await?;
+        ensure_live_not_archived(conn, target).await?;
         ops::lock_pool(conn, branch_id, target).await?;
         ops::ensure_not_merged(conn, &[target]).await?;
         ops::apply_movement(
@@ -808,11 +844,25 @@ pub async fn reverse_tx(
         }
     })?;
     let note = format!("отмена решения по браку № {}", d.number);
+    let mut negative = None;
     if let Some(rq) = r.replace_qty {
         // Полученный взамен товар уходит со склада по той же стоимости.
         let target = ops::live_product(conn, d.product_id).await?;
-        ops::lock_pool(conn, branch_id, target).await?;
+        let pool = ops::lock_pool(conn, branch_id, target).await?;
         ops::ensure_not_merged(conn, &[target]).await?;
+        // Товар взамен уже продан: остаток уйдёт в минус — проводим, владельцу уведомление,
+        // как при сторно прихода (ADR-065, ADR-070).
+        if rq > 0 && pool.qty < rq {
+            let name = sqlx::query_scalar!("select name from products where id = $1", target)
+                .fetch_one(&mut *conn)
+                .await?;
+            negative = Some(json!([{
+                "name": name,
+                "stock": pool.qty,
+                "qty": rq,
+                "after": pool.qty - rq,
+            }]));
+        }
         ops::apply_movement(
             conn,
             Movement {
@@ -879,6 +929,17 @@ pub async fn reverse_tx(
         }),
     )
     .await?;
+    if let Some(lines) = negative {
+        ops::audit(
+            conn,
+            ctx,
+            "defect.reverse_negative",
+            "defect",
+            Some(id),
+            json!({ "number": d.number, "reversal": rid, "lines": lines }),
+        )
+        .await?;
+    }
     let out = load_one(conn, &ctx.user, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)

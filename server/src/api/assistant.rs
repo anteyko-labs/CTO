@@ -57,6 +57,8 @@ const NO_LINK_TEXT: &str =
 const UNUSABLE_TEXT: &str =
     "Не получилось разобрать вопрос — уточните его или нажмите кнопку внизу.";
 const NO_DATA_TEXT: &str = "Не нашёл данных, уточните вопрос.";
+/// Модель написала, что провела операцию, а был только черновик (SPEC-24, ADR-070).
+const DRAFT_READY_TEXT: &str = "Черновик готов — проверьте и нажмите «✅ Провести»";
 /// Модель написала, что провела операцию, а черновика не было (SPEC-24): так не бывает.
 const NOT_POSTED_TEXT: &str = "Ничего не проведено: я только готовлю черновики, а проводите вы кнопкой «✅ Провести». Опишите операцию ещё раз.";
 /// Отказ на вопрос не о делах точки (ADR-067); дословно тот же текст стоит в `SYSTEM`.
@@ -298,21 +300,31 @@ pub async fn answer(
     };
     let out = converse(conn, a, &ctx, messages).await;
     let (reply, answer_text, error) = match &out.answer {
-        Ok(text) if out.tools.is_empty() && has_money(text) => {
-            // Сумма без вызова отчёта — выдумка: не пропускаем (SPEC-21).
+        // «Записал», «провёл» — неправда в любом случае: проводит только владелец кнопкой
+        // (SPEC-24, ADR-070). Черновик есть — говорим о нём, нет — что ничего не проведено,
+        // даже если отчёты читались.
+        Ok(text) if claims_done(text) && out.draft.is_some() => (
+            DRAFT_READY_TEXT.to_string(),
+            Some(DRAFT_READY_TEXT.to_string()),
+            Some("ответ о проведении вместо черновика".to_string()),
+        ),
+        Ok(text) if claims_done(text) => (
+            NOT_POSTED_TEXT.to_string(),
+            Some(NOT_POSTED_TEXT.to_string()),
+            Some("ответ о проведении без черновика".to_string()),
+        ),
+        // Сумма без прочитанного отчёта — выдумка: не пропускаем (SPEC-21). Считаются только
+        // отчёты без ошибки; черновик — не отчёт, его суммы владелец видит в самом черновике.
+        Ok(text) if !read_report(&out.tools) && has_money(text) => {
+            let t = if out.draft.is_some() {
+                DRAFT_READY_TEXT
+            } else {
+                NO_DATA_TEXT
+            };
             (
-                NO_DATA_TEXT.to_string(),
-                Some(NO_DATA_TEXT.to_string()),
+                t.to_string(),
+                Some(t.to_string()),
                 Some("сумма в ответе без отчёта".to_string()),
-            )
-        }
-        Ok(text) if out.draft.is_none() && !read_report(&out.tools) && claims_done(text) => {
-            // «Записал», «провёл» без черновика и без отчёта — неправда: проводит только
-            // владелец кнопкой (SPEC-24).
-            (
-                NOT_POSTED_TEXT.to_string(),
-                Some(NOT_POSTED_TEXT.to_string()),
-                Some("ответ о проведении без черновика".to_string()),
             )
         }
         Ok(text) => (text.clone(), Some(text.clone()), None),
@@ -330,7 +342,18 @@ pub async fn answer(
         error.as_deref(),
     )
     .await?;
-    if let Some(ans) = answer_text {
+    // Пока шёл ответ, владелец мог нажать «✖ Закончить»: память разговора закрытого режима
+    // не пишется (ADR-070).
+    let still_asking = sqlx::query_scalar!(
+        r#"select exists (select 1 from bot_question_mode
+                          where chat_id = $1 and user_id = $2 and branch_id = $3) as "e!""#,
+        chat_id,
+        user_id,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if let Some(ans) = answer_text.filter(|_| still_asking) {
         sqlx::query!(
             r#"insert into bot_dialog (id, chat_id, branch_id, at, role, content)
                values ($1, $3, $4, now(), 'user', $5), ($2, $3, $4, now() + interval '1 microsecond', 'assistant', $6)"#,
@@ -890,24 +913,21 @@ fn read_report(tools: &[Value]) -> bool {
     })
 }
 
-/// Пишет ли ответ, что операция уже проведена: «записал», «провёл», «внёс», «оформил».
+/// Пишет ли ответ, что операция уже проведена: «записал», «провёл», «проведено», «внёс»,
+/// «сохранил» (и их формы).
 fn claims_done(text: &str) -> bool {
     let t = text.to_lowercase().replace('ё', "е");
-    [
-        "записал",
-        "провел",
-        "внес ",
-        "внесла",
-        "внесено",
-        "оформил",
-        "сохранил",
-        "добавил",
-        "записано",
-        "проведено",
-        "проведен",
-    ]
-    .iter()
-    .any(|w| t.contains(w))
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
+    words.iter().any(|w| {
+        w.starts_with("записал")
+            || w.starts_with("провел")
+            || *w == "проведено"
+            || *w == "внес"
+            || *w == "внесла"
+            || *w == "внесли"
+            || *w == "внесено"
+            || w.starts_with("сохранил")
+    })
 }
 
 /// Черновик операции: текст для модели и черновик для владельца, если он создан.
@@ -1559,6 +1579,25 @@ mod tests {
         assert!(!has_money("с 7 по 13 октября"));
         assert!(!has_money("3 смены и 5 сотрудников"));
         assert!(!has_money("этого я посмотреть не могу"));
+    }
+
+    #[test]
+    fn done_claims_and_report_reads() {
+        assert!(claims_done("Записал расход 500 с"));
+        assert!(claims_done("Провёл оплату"));
+        assert!(claims_done("Оплата проведено"));
+        assert!(claims_done("Внёс в кассу"));
+        assert!(claims_done("Сохранила изменения"));
+        assert!(!claims_done("Проверьте черновик и нажмите кнопку"));
+        assert!(!claims_done("Внесение денег — в черновике"));
+        // Считается только отчёт без ошибки; черновик — не отчёт.
+        assert!(!read_report(&[
+            json!({ "name": "profit_totals", "error": true }),
+            json!({ "name": "draft_expense", "error": false }),
+        ]));
+        assert!(read_report(&[
+            json!({ "name": "profit_totals", "error": false })
+        ]));
     }
 
     #[test]

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bot_drafts\n           set status = case when expires_at <= now() then 'expired' else 'cancelled' end,\n               finished_at = now(),\n               result = jsonb_build_object('reason', $2::text)\n           where chat_id = $1 and status = 'open'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9ff68564a4d8adac0bb72a7adcc72e7c1b4b324ec918f7a39a0a985914bada53"
+}

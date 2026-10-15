@@ -128,7 +128,8 @@ struct RateReq {
     active_from: NaiveDate,
 }
 
-/// Новая ставка с даты: прежняя закрывается этой датой, прошлые чеки свою комиссию сохраняют.
+/// Новая ставка с даты (не раньше сегодня): прежняя закрывается этой датой, прошлые чеки свою
+/// комиссию сохраняют.
 async fn set_rate(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -160,6 +161,13 @@ async fn set_rate(
     let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
         .fetch_one(&mut *tx)
         .await?;
+    // Задним числом ставку не поставить: комиссия уже проведённых чеков не меняется, а возврат
+    // берёт комиссию исходного чека (ADR-070).
+    if req.active_from < today {
+        return Err(invalid(
+            "ставка действует с сегодняшнего дня или позже: задним числом не меняется",
+        ));
+    }
     if req.active_from > today + chrono::Duration::days(366) {
         return Err(invalid("дата начала — не дальше года вперёд"));
     }

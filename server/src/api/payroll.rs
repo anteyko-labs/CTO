@@ -367,7 +367,7 @@ pub(crate) async fn employee_days(
 
 // ---------- Правила оплаты ----------
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct RuleOut {
     id: Uuid,
     kind: String,
@@ -405,6 +405,8 @@ async fn list_rules(
 
 #[derive(Deserialize)]
 struct RuleReq {
+    /// Повтор формы после потерянного ответа не заводит второе правило (ADR-070).
+    op_id: Uuid,
     kind: String,
     role: Option<String>,
     base: Option<String>,
@@ -458,8 +460,12 @@ async fn create_rule(
     if req.rate_bp.is_some_and(|r| !(0..=10_000).contains(&r)) {
         return Err(invalid("процент от 0 до 100"));
     }
+    const KIND: &str = "payroll.rule";
     let rule_id = new_id();
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     // Под блокировкой сотрудника два одновременных правила не останутся открытыми оба.
     lock_employee(&mut tx, ctx.user.branch_id, id).await?;
     // Прежнее правило того же вида закрывается сегодняшним днём: история начислений не меняется.
@@ -497,7 +503,7 @@ async fn create_rule(
     ops::audit(
         &mut tx,
         &ctx,
-        "payroll.rule",
+        KIND,
         "employee",
         Some(id),
         json!({
@@ -508,13 +514,18 @@ async fn create_rule(
         }),
     )
     .await?;
+    let out = sqlx::query_as!(
+        RuleOut,
+        r#"select id, kind, role, base as "base?", amount_tyiyn as "amount_tyiyn?",
+                  rate_bp as "rate_bp?", active_from, active_to as "active_to?"
+           from employee_pay_rules where id = $1"#,
+        rule_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
-    let rows = list_rules(State(state), ctx.user.clone(), Path(id)).await?;
-    rows.0
-        .into_iter()
-        .find(|r| r.id == rule_id)
-        .map(Json)
-        .ok_or(AppError::NotFound)
+    Ok(Json(out))
 }
 
 async fn close_rule(

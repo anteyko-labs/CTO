@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, active from parties where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "104acfd15f9ef6a767872fbde83d6887c9fe609c74cd80564419105723887343"
+}

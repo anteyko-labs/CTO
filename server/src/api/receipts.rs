@@ -712,6 +712,35 @@ pub async fn reverse_receipt_tx(
     if !negative.is_empty() && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    // Брак этого поставщика по товарам прихода, отмеченный после него, опирается на приход:
+    // пока решение по нему действует или он ждёт решения, приход не сторнируется (ADR-070).
+    if let Some(supplier_id) = orig.supplier_id {
+        let mut ids: Vec<Uuid> = live.values().copied().collect();
+        ids.extend(orig.lines.iter().map(|l| l.product_id));
+        let defects = sqlx::query_scalar!(
+            r#"select d.number from defects d
+               where d.branch_id = $1 and d.supplier_id = $2 and d.product_id = any($3)
+                 and d.status <> 'cancelled'
+                 and d.created_at > (select created_at from receipts where id = $4)
+               order by d.number"#,
+            branch_id,
+            supplier_id,
+            &ids,
+            id
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        if !defects.is_empty() {
+            return Err(AppError::Conflict(format!(
+                "по товарам этого прихода есть брак от поставщика (№ {}): сначала отмените решение по нему или снимите отметку",
+                defects
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let rid = new_id();
     sqlx::query!(

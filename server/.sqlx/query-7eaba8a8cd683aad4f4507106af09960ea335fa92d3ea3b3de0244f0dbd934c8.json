@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.number from defects d\n               where d.branch_id = $1 and d.supplier_id = $2 and d.product_id = any($3)\n                 and d.status <> 'cancelled'\n                 and d.created_at > (select created_at from receipts where id = $4)\n               order by d.number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7eaba8a8cd683aad4f4507106af09960ea335fa92d3ea3b3de0244f0dbd934c8"
+}

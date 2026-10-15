@@ -5,7 +5,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { del, get, patch, post } from '../lib/api'
+import { del, get, newOpId, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDate, formatPercentBp, formatSom, parsePercentBp, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -39,6 +39,8 @@ const ruleValue = (r: PayRule) => (r.kind === 'revenue_percent' ? formatPercentB
 function PayRules({ employee }: { employee: Employee }) {
   const rules = useLoad(() => get<PayRule[]>(`/employees/${employee.id}/pay-rules`), [employee.id])
   const [form, setForm] = useState<{ kind: RuleKind; value: string } | null>(null)
+  // op_id формы: повтор после потерянного ответа не заведёт второе правило, после успеха — новый.
+  const [opId, setOpId] = useState(newOpId)
   const act = useAction()
   const active = (rules.data ?? []).filter((r) => r.active_to === null)
   const closed = (rules.data ?? []).filter((r) => r.active_to !== null)
@@ -48,11 +50,13 @@ function PayRules({ employee }: { employee: Employee }) {
     void act.run(async () => {
       if (!form || parsed === null || parsed <= 0) throw new Error('Неверное значение')
       await post(`/employees/${employee.id}/pay-rules`, {
+        op_id: opId,
         kind: form.kind,
         role: 'cashier',
         ...(form.kind === 'revenue_percent' ? { rate_bp: parsed, base: 'gross' } : { amount_tyiyn: parsed }),
       })
       setForm(null)
+      setOpId(newOpId())
       rules.reload()
       toast('Правило оплаты сохранено')
     })

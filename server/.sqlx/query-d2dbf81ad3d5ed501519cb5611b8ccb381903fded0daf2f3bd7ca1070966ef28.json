@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, active from employees where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d2dbf81ad3d5ed501519cb5611b8ccb381903fded0daf2f3bd7ca1070966ef28"
+}
