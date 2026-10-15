@@ -3028,6 +3028,19 @@ async fn ask(
         .text
 }
 
+/// Владелец нажимает «💬 Спросить»: только после этого текст уходит в разбор (ADR-067).
+async fn start_asking(
+    conn: &mut sqlx::PgConnection,
+    a: &avtodom_server::api::assistant::Assistant,
+    chat: i64,
+) {
+    assert!(
+        ask(conn, a, chat, "💬 Спросить")
+            .await
+            .starts_with("Задайте вопрос о делах точки")
+    );
+}
+
 async fn link_owner(pool: &PgPool, w: &World, chat: i64) {
     sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)")
         .bind(chat)
@@ -3089,6 +3102,7 @@ async fn bot_question_answers_from_profit_report(pool: PgPool) {
         Step::Echo,
     ]);
     let mut conn = pool.acquire().await.unwrap();
+    start_asking(&mut conn, &a, chat).await;
     let reply = ask(&mut conn, &a, chat, "сколько заработали сегодня?").await;
 
     // Чистая прибыль до тыйына — как в отчёте «📊 Сегодня».
@@ -3238,6 +3252,7 @@ async fn bot_question_debts_match_buttons(pool: PgPool) {
     let (url, fake) = fake_service().await;
     let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
     let mut conn = pool.acquire().await.unwrap();
+    start_asking(&mut conn, &a, chat).await;
     fake.push(vec![
         Step::Reply(200, tool_use("debtors", serde_json::json!({}))),
         Step::Echo,
@@ -3327,6 +3342,7 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
             .starts_with("Нажмите кнопку внизу")
     );
     assert_eq!(fake.requests().len(), 0);
+    start_asking(&mut conn, &a, chat).await;
 
     // Сумма в ответе без вызова отчёта — заменяется.
     fake.push(vec![Step::Reply(
@@ -3338,13 +3354,11 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
         "Не нашёл данных, уточните вопрос."
     );
     // Отказ без цифр проходит как есть.
-    fake.push(vec![Step::Reply(
-        200,
-        final_text("Этого я посмотреть не могу."),
-    )]);
+    let off_topic = avtodom_server::api::assistant::OFF_TOPIC;
+    fake.push(vec![Step::Reply(200, final_text(off_topic))]);
     assert_eq!(
         ask(&mut conn, &a, chat, "какая погода завтра?").await,
-        "Этого я посмотреть не могу."
+        off_topic
     );
 
     // Сбой сервиса, отказ по ключу, нет соединения — понятный ответ.
@@ -3408,18 +3422,28 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
         .await
         .unwrap();
     let before = fake.requests().len();
+    // Кнопки «💬 Спросить» у клиента нет, и её текст режим не включает.
+    let book = ask(&mut conn, &a, 880_004, "💬 Спросить").await;
+    assert!(book.contains("Баллов"), "{book}");
     let book = ask(&mut conn, &a, 880_004, "сколько заработали сегодня?").await;
     assert!(
         book.contains("Баллов") && !book.contains("ПРИБЫЛЬ"),
         "{book}"
     );
     // Непривязанный чат — кнопка номера.
-    assert!(
-        ask(&mut conn, &a, 880_005, "сколько заработали сегодня?")
-            .await
-            .contains("Поделиться номером")
-    );
+    for t in ["💬 Спросить", "сколько заработали сегодня?"] {
+        assert!(
+            ask(&mut conn, &a, 880_005, t)
+                .await
+                .contains("Поделиться номером")
+        );
+    }
     assert_eq!(fake.requests().len(), before);
+    let modes: Vec<i64> = sqlx::query_scalar("select chat_id from bot_question_mode")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(modes, vec![chat]);
 
     // Журнал вопросов не правится и не удаляется.
     assert!(
@@ -3485,6 +3509,7 @@ async fn bot_question_limit_makes_no_call(pool: PgPool) {
     let (url, fake) = fake_service().await;
     let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
     let mut conn = pool.acquire().await.unwrap();
+    start_asking(&mut conn, &a, chat).await;
     fake.push(vec![Step::Reply(200, final_text("не должно прийти"))]);
     let reply = ask(&mut conn, &a, chat, "сколько заработали сегодня?").await;
     assert!(
@@ -3505,6 +3530,167 @@ async fn bot_question_limit_makes_no_call(pool: PgPool) {
             .await
             .contains("ЧИСТАЯ ПРИБЫЛЬ")
     );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_questions_only_in_ask_mode(pool: PgPool) {
+    // Вопросы — только после «💬 Спросить»: вне режима текст — подсказка без обращения к
+    // сервису; команды работают в режиме и его не закрывают; «✖ Закончить» и 10 минут без
+    // сообщений закрывают режим; без ключа кнопки и режима нет (ADR-067).
+    use avtodom_server::api::assistant::{Assistant, OFF_TOPIC};
+    use avtodom_server::api::telegram::{Keys, handle_message, handle_message_with};
+    let w = seed(&pool).await;
+    let chat = 880_010i64;
+    link_owner(&pool, &w, chat).await;
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+    let mode_rows = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>("select count(*) from bot_question_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    // Без ключа: кнопки нет, её текст режим не включает.
+    let r = handle_message(&mut conn, chat, chat, Some("💬 Спросить"), None)
+        .await
+        .unwrap();
+    assert!(r.text.starts_with("Нажмите кнопку внизу"), "{}", r.text);
+    assert!(!r.text.contains("Спросить"));
+    assert_eq!(r.keys, Keys::Owner);
+    assert_eq!(mode_rows(pool.clone()).await, 0);
+
+    // С ключом, но без режима: подсказка с кнопкой «💬 Спросить», сервис не вызывается.
+    let r = handle_message_with(
+        &mut conn,
+        Some(&a),
+        chat,
+        chat,
+        Some("сколько заработали сегодня?"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        r.text.starts_with("Нажмите кнопку внизу") && r.text.contains("💬 Спросить"),
+        "{}",
+        r.text
+    );
+    assert_eq!(r.keys, Keys::OwnerAsk);
+    // Несколько слов с командой в начале вне режима — команда, как в SPEC-18.
+    assert!(
+        ask(&mut conn, &a, chat, "сегодня сколько масла продали")
+            .await
+            .contains("ЧИСТАЯ ПРИБЫЛЬ")
+    );
+    assert_eq!(fake.requests().len(), 0);
+
+    // «💬 Спросить» — режим включён, кнопки: «✖ Закончить» и кнопки владельца.
+    let r = handle_message_with(&mut conn, Some(&a), chat, chat, Some("💬 Спросить"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.text,
+        "Задайте вопрос о делах точки. Закончить — «✖ Закончить»"
+    );
+    assert_eq!(r.keys, Keys::OwnerAsking);
+    assert_eq!(audit_data(&pool, "telegram.ask_on").await.len(), 1);
+
+    // Вопрос не о делах точки — отказ из инструкции; сама инструкция содержит отказ дословно.
+    fake.push(vec![Step::Reply(200, final_text(OFF_TOPIC))]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "какая погода завтра?").await,
+        OFF_TOPIC
+    );
+    let reqs = fake.requests();
+    assert_eq!(reqs.len(), 1);
+    let system = reqs[0]["system"][0]["text"].as_str().unwrap();
+    assert!(system.contains(&format!("«{OFF_TOPIC}»")));
+
+    // Кнопки команд в режиме работают сами и режим не закрывают.
+    let r = handle_message_with(&mut conn, Some(&a), chat, chat, Some("📊 Сегодня"), None)
+        .await
+        .unwrap();
+    assert!(r.text.contains("ЧИСТАЯ ПРИБЫЛЬ"));
+    assert_eq!(r.keys, Keys::OwnerAsking);
+    assert!(!ask(&mut conn, &a, chat, "/долги").await.is_empty());
+    assert_eq!(fake.requests().len(), 1);
+    fake.push(vec![Step::Reply(200, final_text("Готово."))]);
+    assert_eq!(
+        ask(&mut conn, &a, chat, "а что кончается?").await,
+        "Готово."
+    );
+    assert_eq!(fake.requests().len(), 2);
+
+    // «✖ Закончить» — режим закрыт, память разговора очищена, текст снова — подсказка.
+    let r = handle_message_with(&mut conn, Some(&a), chat, chat, Some("✖ Закончить"), None)
+        .await
+        .unwrap();
+    assert!(r.text.starts_with("Режим вопросов закрыт"), "{}", r.text);
+    assert_eq!(r.keys, Keys::OwnerAsk);
+    assert_eq!(mode_rows(pool.clone()).await, 0);
+    let dialog: i64 = sqlx::query_scalar("select count(*) from bot_dialog where chat_id = $1")
+        .bind(chat)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(dialog, 0);
+    assert!(
+        ask(&mut conn, &a, chat, "сколько денег в кассе?")
+            .await
+            .starts_with("Нажмите кнопку внизу")
+    );
+    assert_eq!(fake.requests().len(), 2);
+    assert_eq!(audit_data(&pool, "telegram.ask_off").await.len(), 1);
+
+    // 10 минут без сообщений — режим закрыт: кнопки команд работают, первый текст —
+    // сообщение о закрытии без обращения к сервису, следующий — подсказка.
+    start_asking(&mut conn, &a, chat).await;
+    sqlx::query("update bot_question_mode set last_at = now() - interval '11 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = handle_message_with(&mut conn, Some(&a), chat, chat, Some("💵 Смена"), None)
+        .await
+        .unwrap();
+    assert_eq!(r.keys, Keys::OwnerAsk);
+    let r = handle_message_with(
+        &mut conn,
+        Some(&a),
+        chat,
+        chat,
+        Some("сколько заработали сегодня?"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.text, "Режим вопросов закрыт — нажмите «💬 Спросить»");
+    assert_eq!(r.keys, Keys::OwnerAsk);
+    assert!(
+        ask(&mut conn, &a, chat, "сколько заработали сегодня?")
+            .await
+            .starts_with("Нажмите кнопку внизу")
+    );
+    assert_eq!(fake.requests().len(), 2);
+
+    // Сообщение в режиме продлевает его: 9 минут назад + вопрос — режим ещё открыт.
+    start_asking(&mut conn, &a, chat).await;
+    sqlx::query("update bot_question_mode set last_at = now() - interval '9 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    fake.push(vec![Step::Reply(200, final_text("Готово."))]);
+    assert_eq!(ask(&mut conn, &a, chat, "что кончается?").await, "Готово.");
+    let fresh: bool = sqlx::query_scalar(
+        "select last_at > now() - interval '1 minute' from bot_question_mode where chat_id = $1",
+    )
+    .bind(chat)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(fresh);
+    assert_eq!(fake.requests().len(), 3);
 }
 
 async fn audit_data(pool: &PgPool, action: &str) -> Vec<serde_json::Value> {
@@ -4543,6 +4729,7 @@ async fn bot_question_counts_report_calls_and_hourly_limit(pool: PgPool) {
     let (url, fake) = fake_service().await;
     let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
     let mut conn = pool.acquire().await.unwrap();
+    start_asking(&mut conn, &a, chat).await;
     let calls = |n: usize| {
         let content: Vec<serde_json::Value> = (0..n)
             .map(|i| serde_json::json!({ "type": "tool_use", "id": format!("tu_{i}"), "name": "money_balances", "input": {} }))
@@ -5187,8 +5374,12 @@ async fn bot_employee_is_rechecked_limited_and_never_asked(pool: PgPool) {
     );
     let (url, fake) = fake_service().await;
     let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
-    for q in ["сколько я заработал за неделю?", "когда зарплата", "123456"]
-    {
+    for q in [
+        "💬 Спросить",
+        "сколько я заработал за неделю?",
+        "когда зарплата",
+        "123456",
+    ] {
         let r = handle_message_with(&mut conn, Some(&a), chat, chat, Some(q), None)
             .await
             .unwrap();
@@ -5200,6 +5391,11 @@ async fn bot_employee_is_rechecked_limited_and_never_asked(pool: PgPool) {
         assert_eq!(r.keys, Keys::Employee);
     }
     assert_eq!(fake.requests().len(), 0);
+    let modes: i64 = sqlx::query_scalar("select count(*) from bot_question_mode")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(modes, 0);
     let asked: i64 = sqlx::query_scalar("select count(*) from bot_questions")
         .fetch_one(&pool)
         .await
@@ -5329,6 +5525,7 @@ async fn bot_shows_cash_diff_like_profit_report(pool: PgPool) {
         ),
         Step::Echo,
     ]);
+    start_asking(&mut conn, &a, chat).await;
     let reply = ask(&mut conn, &a, chat, "сколько прибыли сегодня?").await;
     assert!(
         reply.contains(&format!("Недостача / излишек кассы: {line}")),

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select last_at > now() - interval '10 minutes' as \"on!\" from bot_question_mode\n           where chat_id = $1 and user_id = $2 and branch_id = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "on!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d1cdd42c4727be991a57faf35fc129b9fb20c3a3cc2ce55625285bce3f0bd0b6"
+}

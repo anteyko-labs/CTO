@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bot_question_mode set last_at = now() where chat_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "045a3ce31e6bf0ac81cc825a82a5b3ce4480bb64ef31f79613f3afb98af63930"
+}

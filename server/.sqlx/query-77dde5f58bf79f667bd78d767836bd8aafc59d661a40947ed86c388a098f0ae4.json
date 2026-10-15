@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_question_mode (chat_id, user_id, branch_id, started_at, last_at)\n           values ($1, $2, $3, now(), now())\n           on conflict (chat_id) do update\n              set user_id = excluded.user_id, branch_id = excluded.branch_id,\n                  started_at = excluded.started_at, last_at = excluded.last_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "77dde5f58bf79f667bd78d767836bd8aafc59d661a40947ed86c388a098f0ae4"
+}

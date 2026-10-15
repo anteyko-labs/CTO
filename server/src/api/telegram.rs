@@ -197,6 +197,10 @@ pub(crate) async fn drop_owner_link(
     sqlx::query!("delete from telegram_codes where user_id = $1", user_id)
         .execute(&mut *conn)
         .await?;
+    // Режим вопросов отключённого владельца закрывается вместе с привязкой (ADR-067).
+    sqlx::query!("delete from bot_question_mode where user_id = $1", user_id)
+        .execute(&mut *conn)
+        .await?;
     let gone = sqlx::query!("delete from telegram_links where user_id = $1", user_id)
         .execute(&mut *conn)
         .await?
@@ -229,6 +233,15 @@ const BTN_LEAVE: &str = "🚪 Отключиться";
 const BTN_LEAVE_YES: &str = "Да, отключиться";
 const BTN_BACK: &str = "Назад";
 const BTN_CONTACT: &str = "📱 Поделиться номером";
+/// Режим вопросов владельца (SPEC-21, ADR-067): только в нём текст уходит в сервис разбора.
+const BTN_ASK: &str = "💬 Спросить";
+const BTN_END: &str = "✖ Закончить";
+
+/// Строка подсказки владельцу, когда сервис разбора вопросов задан.
+const ASK_HELP: &str = "\n💬 Спросить — вопрос о делах точки своими словами";
+const ASK_PROMPT: &str = "Задайте вопрос о делах точки. Закончить — «✖ Закончить»";
+const ASK_ENDED: &str = "Режим вопросов закрыт. Спросить снова — «💬 Спросить».";
+const ASK_EXPIRED: &str = "Режим вопросов закрыт — нажмите «💬 Спросить»";
 
 /// Кнопки клиента: из чата владельца они не вопрос и не команда.
 const CUSTOMER_BUTTONS: [&str; 6] = [
@@ -248,7 +261,12 @@ pub const RESHARE: &str = "Номер в вашей карточке у нас �
 pub enum Keys {
     /// Не подключён: одна кнопка «Поделиться номером».
     Contact,
+    /// Владелец без сервиса разбора вопросов: «Сегодня», «Смена», «Долги».
     Owner,
+    /// Владелец, сервис разбора задан, режим вопросов выключен: плюс «💬 Спросить».
+    OwnerAsk,
+    /// Владелец в режиме вопросов: «✖ Закончить» и кнопки владельца.
+    OwnerAsking,
     Customer,
     /// Работник (SPEC-23): «Сегодня», «Месяц», «Удержания и премии», «Мои работы».
     Employee,
@@ -264,6 +282,14 @@ impl Keys {
                 json!({ "text": BTN_CONTACT, "request_contact": true }),
             ]],
             Keys::Owner => vec![vec![json!(BTN_TODAY), json!(BTN_SHIFT), json!(BTN_DEBTS)]],
+            Keys::OwnerAsk => vec![
+                vec![json!(BTN_TODAY), json!(BTN_SHIFT), json!(BTN_DEBTS)],
+                vec![json!(BTN_ASK)],
+            ],
+            Keys::OwnerAsking => vec![
+                vec![json!(BTN_END)],
+                vec![json!(BTN_TODAY), json!(BTN_SHIFT), json!(BTN_DEBTS)],
+            ],
             Keys::Customer => vec![
                 vec![json!(BTN_CARS), json!(BTN_BONUS)],
                 vec![json!(BTN_LEAVE)],
@@ -303,6 +329,171 @@ async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(
     .fetch_optional(&mut *conn)
     .await?
     .map(|r| (r.id, r.branch_id)))
+}
+
+/// Режим вопросов в чате владельца (SPEC-21, ADR-067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AskMode {
+    /// Не включали или закончили кнопкой.
+    Off,
+    /// Включён, последнее сообщение — меньше 10 минут назад.
+    On,
+    /// Включали, но 10 минут без сообщений прошли.
+    Expired,
+}
+
+/// Режим вопросов этого чата для этого владельца и филиала. Строка другого владельца (чат
+/// перепривязали) — режим выключен.
+async fn ask_mode(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    user_id: Uuid,
+    branch_id: Uuid,
+) -> AppResult<AskMode> {
+    let on = sqlx::query_scalar!(
+        r#"select last_at > now() - interval '10 minutes' as "on!" from bot_question_mode
+           where chat_id = $1 and user_id = $2 and branch_id = $3"#,
+        chat_id,
+        user_id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(match on {
+        None => AskMode::Off,
+        Some(true) => AskMode::On,
+        Some(false) => AskMode::Expired,
+    })
+}
+
+/// Включает режим вопросов — одной транзакцией с журналом.
+async fn ask_start(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    user_id: Uuid,
+    branch_id: Uuid,
+) -> AppResult<()> {
+    let mut tx = conn.begin().await?;
+    sqlx::query!(
+        r#"insert into bot_question_mode (chat_id, user_id, branch_id, started_at, last_at)
+           values ($1, $2, $3, now(), now())
+           on conflict (chat_id) do update
+              set user_id = excluded.user_id, branch_id = excluded.branch_id,
+                  started_at = excluded.started_at, last_at = excluded.last_at"#,
+        chat_id,
+        user_id,
+        branch_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    ask_journal(
+        &mut tx,
+        chat_id,
+        user_id,
+        branch_id,
+        "telegram.ask_on",
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Сообщение владельца в режиме: ещё 10 минут.
+async fn ask_touch(conn: &mut PgConnection, chat_id: i64) -> AppResult<()> {
+    sqlx::query!(
+        "update bot_question_mode set last_at = now() where chat_id = $1",
+        chat_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Закрывает режим вопросов (кнопкой или по времени): строка удаляется, память разговора
+/// чистится — следующий режим начинается с чистого листа. Одной транзакцией с журналом.
+async fn ask_stop(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    user_id: Uuid,
+    branch_id: Uuid,
+    reason: &str,
+) -> AppResult<()> {
+    let mut tx = conn.begin().await?;
+    let gone = sqlx::query!("delete from bot_question_mode where chat_id = $1", chat_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query!("delete from bot_dialog where chat_id = $1", chat_id)
+        .execute(&mut *tx)
+        .await?;
+    if gone > 0 {
+        ask_journal(
+            &mut tx,
+            chat_id,
+            user_id,
+            branch_id,
+            "telegram.ask_off",
+            Some(reason),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn ask_journal(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    user_id: Uuid,
+    branch_id: Uuid,
+    action: &str,
+    reason: Option<&str>,
+) -> AppResult<()> {
+    let mut data = json!({ "chat": chat_id });
+    if let Some(r) = reason {
+        data["reason"] = json!(r);
+    }
+    sqlx::query!(
+        r#"insert into audit_log (id, branch_id, user_id, action, entity, entity_id, data)
+           values ($1, $2, $3, $4, 'user', $3, $5)"#,
+        ops::new_id(),
+        branch_id,
+        user_id,
+        action,
+        data
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Кнопки владельца: без сервиса разбора — три команды; с ним — ещё «💬 Спросить» или, в режиме
+/// вопросов, «✖ Закончить».
+async fn owner_keys(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    chat_id: i64,
+) -> AppResult<Keys> {
+    if assistant.is_none() {
+        return Ok(Keys::Owner);
+    }
+    let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? else {
+        return Ok(Keys::Owner);
+    };
+    Ok(match ask_mode(conn, chat_id, user_id, branch_id).await? {
+        AskMode::On => Keys::OwnerAsking,
+        AskMode::Off | AskMode::Expired => Keys::OwnerAsk,
+    })
+}
+
+/// Чат владельца в режиме вопросов (не истёкшем) — только тогда свободный текст идёт в очередь
+/// вопросов (SPEC-21, ADR-067).
+pub async fn owner_asking(conn: &mut PgConnection, chat_id: i64) -> AppResult<bool> {
+    let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? else {
+        return Ok(false);
+    };
+    Ok(ask_mode(conn, chat_id, user_id, branch_id).await? == AskMode::On)
 }
 
 /// Кнопка под сообщением: текст и данные, которые Телеграм вернёт при нажатии.
@@ -369,15 +560,19 @@ fn is_code(text: &str) -> bool {
     text.len() == 6 && text.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Свободный текст владельца, который уходит в сервис разбора вопросов (SPEC-21): не кнопка,
-/// не `/команда`, не одно слово команды и не код. Только такие сообщения ждут очереди вопросов —
+/// Свободный текст владельца: не кнопка, не `/команда`, не одно слово команды и не код.
+/// В сервис разбора вопросов он уходит только в режиме «💬 Спросить» (SPEC-21, ADR-067); вне
+/// режима на него — подсказка с кнопками. Только такие сообщения ждут очереди вопросов —
 /// кнопки отвечают сразу (ADR-063).
 pub fn is_question(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() || text.starts_with('/') || is_code(text) {
         return false;
     }
-    if CUSTOMER_BUTTONS.contains(&text) || bot_staff::BUTTONS.contains(&text) {
+    if CUSTOMER_BUTTONS.contains(&text)
+        || bot_staff::BUTTONS.contains(&text)
+        || [BTN_ASK, BTN_END].contains(&text)
+    {
         return false;
     }
     let words = text
@@ -579,7 +774,8 @@ async fn message(
     if let Some(c) = contact {
         // Владельцу контакт ни к чему: клавиатуры клиента и работника он не получает.
         if owner {
-            return Ok(Reply::new(HELP, Keys::Owner));
+            let keys = owner_keys(conn, assistant, chat_id).await?;
+            return Ok(Reply::new(HELP, keys));
         }
         return link_contact(conn, chat_id, from_id, c).await;
     }
@@ -631,7 +827,7 @@ async fn message(
     if let Some(r) = answer {
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
-            Keys::Owner
+            owner_keys(conn, assistant, chat_id).await?
         } else {
             section_keys(customer.is_some(), employee.is_some())
         };
@@ -708,13 +904,30 @@ pub async fn handle_callback(
     chat_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
-    let r = callback(conn, chat_id, data).await?;
+    handle_callback_with(conn, None, chat_id, data).await
+}
+
+/// Нажатие кнопки под сообщением; `assistant` — только чтобы показать владельцу его кнопки
+/// («💬 Спросить» или «✖ Закончить»), вопросов здесь нет.
+pub async fn handle_callback_with(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    chat_id: i64,
+    data: &str,
+) -> AppResult<Reply> {
+    let r = callback(conn, assistant, chat_id, data).await?;
     fit_keys(conn, chat_id, r).await
 }
 
-async fn callback(conn: &mut PgConnection, chat_id: i64, data: &str) -> AppResult<Reply> {
+async fn callback(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    chat_id: i64,
+    data: &str,
+) -> AppResult<Reply> {
     if chat_owner(conn, chat_id).await?.is_some() {
-        return Ok(Reply::new(HELP, Keys::Owner));
+        let keys = owner_keys(conn, assistant, chat_id).await?;
+        return Ok(Reply::new(HELP, keys));
     }
     // Кнопки кабинета работника: сотрудник из данных кнопки сверяется с привязкой чата.
     if data.starts_with("e:") {
@@ -1248,9 +1461,9 @@ pub async fn mark_reminded(conn: &mut PgConnection, r: &Reminder) -> AppResult<(
 pub const CODE_TRIES_PER_CHAT: i64 = 5;
 pub const CODE_TRIES_TOTAL: i64 = 20;
 
-/// Команды владельца, привязка кодом и вопросы текстом. `None` — чат не владельца и это не код:
-/// дальше решает клиентская часть. `customer` — чат подключённого клиента: шесть цифр от него —
-/// не код, если не начинаются с `/start`.
+/// Команды владельца, привязка кодом и вопросы текстом в режиме «💬 Спросить» (ADR-067).
+/// `None` — чат не владельца и это не код: дальше решает клиентская часть. `customer` — чат
+/// подключённого клиента: шесть цифр от него — не код, если не начинаются с `/start`.
 pub async fn handle_text(
     conn: &mut PgConnection,
     assistant: Option<&Assistant>,
@@ -1275,25 +1488,65 @@ pub async fn handle_text(
     let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? else {
         return Ok(None);
     };
+    let help = if assistant.is_some() {
+        format!("{HELP}{ASK_HELP}")
+    } else {
+        HELP.to_string()
+    };
     // Кнопки клиента из чата владельца — не вопрос и не команда.
     if CUSTOMER_BUTTONS.contains(&text) {
-        return Ok(Some(HELP.into()));
+        return Ok(Some(help));
     }
-    // Кнопка, «/команда» или одно слово команды — как в SPEC-18. Остальной текст при включённом
-    // сервисе разбора — вопрос (SPEC-21): «сегодня сколько масла продали» — уже не команда «Сегодня».
+    // Вопросы — только в режиме «💬 Спросить», который владелец включает сам (ADR-067).
+    // Без ключа сервиса режим не включается: кнопки нет, на её текст — подсказка.
+    if text == BTN_ASK || text == "/спросить" {
+        if assistant.is_none() {
+            return Ok(Some(help));
+        }
+        ask_start(conn, chat_id, user_id, branch_id).await?;
+        return Ok(Some(ASK_PROMPT.into()));
+    }
+    if text == BTN_END || text == "/закончить" {
+        ask_stop(conn, chat_id, user_id, branch_id, "кнопкой").await?;
+        return Ok(Some(if assistant.is_some() {
+            ASK_ENDED.into()
+        } else {
+            help
+        }));
+    }
+    let mode = ask_mode(conn, chat_id, user_id, branch_id).await?;
+    let question = is_question(text);
+    // В режиме вопрос — свободный текст; кнопка, «/команда» и одно слово команды — команда.
     if let Some(a) = assistant
-        && is_question(text)
+        && mode == AskMode::On
+        && question
     {
+        ask_touch(conn, chat_id).await?;
         return assistant::answer(conn, a, chat_id, user_id, branch_id, text)
             .await
             .map(Some);
     }
-    match command(text).as_str() {
-        "сегодня" | "today" => today(conn, branch_id).await.map(Some),
-        "смена" | "shift" => shift(conn, branch_id).await.map(Some),
-        "долги" | "debts" => debts(conn, branch_id).await.map(Some),
-        _ => Ok(Some(HELP.into())),
+    // Команды работают и в режиме, и без него; режим они не закрывают, а продлевают.
+    let reply = match command(text).as_str() {
+        "сегодня" | "today" => Some(today(conn, branch_id).await?),
+        "смена" | "shift" => Some(shift(conn, branch_id).await?),
+        "долги" | "debts" => Some(debts(conn, branch_id).await?),
+        _ => None,
+    };
+    if let Some(r) = reply {
+        if mode == AskMode::On {
+            ask_touch(conn, chat_id).await?;
+        }
+        return Ok(Some(r));
     }
+    // Режим закрылся по времени: первый же текст после — сообщение об этом, без обращения
+    // к сервису разбора.
+    if assistant.is_some() && mode == AskMode::Expired && question {
+        ask_stop(conn, chat_id, user_id, branch_id, "10 минут без сообщений").await?;
+        return Ok(Some(ASK_EXPIRED.into()));
+    }
+    // Вне режима свободный текст — подсказка с кнопками, как без ключа (SPEC-18).
+    Ok(Some(help))
 }
 
 /// Привязка чата к владельцу по коду — одной транзакцией с журналом. Неверные коды
@@ -2731,10 +2984,10 @@ async fn store_offset(pool: &PgPool, offset: i64) {
     }
 }
 
-/// Чат привязан к владельцу. Ошибка базы — «нет»: сообщение обработается обычным путём.
-async fn is_owner_chat(pool: &PgPool, chat_id: i64) -> bool {
+/// Чат владельца в режиме вопросов. Ошибка базы — «нет»: сообщение обработается обычным путём.
+async fn is_asking_chat(pool: &PgPool, chat_id: i64) -> bool {
     match pool.acquire().await {
-        Ok(mut conn) => matches!(chat_owner(&mut conn, chat_id).await, Ok(Some(_))),
+        Ok(mut conn) => matches!(owner_asking(&mut conn, chat_id).await, Ok(true)),
         Err(_) => false,
     }
 }
@@ -2761,7 +3014,13 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                 let chat_id = q.message.map_or(q.from.id, |m| m.chat.id);
                 let reply = match pool.acquire().await {
                     Ok(mut conn) => {
-                        handle_callback(&mut conn, chat_id, q.data.as_deref().unwrap_or("")).await
+                        handle_callback_with(
+                            &mut conn,
+                            assistant.as_ref(),
+                            chat_id,
+                            q.data.as_deref().unwrap_or(""),
+                        )
+                        .await
                     }
                     Err(e) => Err(AppError::from(e)),
                 };
@@ -2783,11 +3042,12 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                 user_id: c.user_id,
             });
             // Вопрос владельца ждёт сервис разбора до 30 с — отдельной задачей, чтобы клиенты
-            // и кнопки в это время не стояли. Вопросы идут по очереди (owner_turn); кнопки и
-            // команды владельца очереди не ждут.
+            // и кнопки в это время не стояли. Вопрос — только свободный текст в режиме
+            // «💬 Спросить» (ADR-067). Вопросы идут по очереди (owner_turn); кнопки и команды
+            // владельца очереди не ждут.
             if let Some(a) = assistant.as_ref()
                 && m.text.as_deref().is_some_and(is_question)
-                && is_owner_chat(&pool, m.chat.id).await
+                && is_asking_chat(&pool, m.chat.id).await
             {
                 // Смещение — до запуска: после перезапуска вопрос не задаётся второй раз
                 // (вопрос, который разбирался в момент остановки, теряется).
@@ -3068,6 +3328,8 @@ mod tests {
         assert!(is_question("сколько заработали вчера?"));
         assert!(is_question("сегодня сколько масла продали"));
         assert!(!is_question("📊 Сегодня"));
+        assert!(!is_question("💬 Спросить"));
+        assert!(!is_question("✖ Закончить"));
         assert!(!is_question("долги"));
         assert!(!is_question("/смена"));
         assert!(!is_question("123456"));
