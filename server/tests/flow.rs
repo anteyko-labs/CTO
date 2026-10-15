@@ -7464,6 +7464,18 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(salary, 2_500_000);
+    // Сводка расшифровывает оклад внутри оплаты труда, чистую прибыль это не меняет.
+    let day: chrono::NaiveDate = sqlx::query_scalar(
+        "select business_date from payroll_accruals where kind = 'monthly_salary'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let t = avtodom_server::api::reports::totals_for(&mut conn, w.owner.user.branch_id, day, day)
+        .await
+        .unwrap();
+    assert_eq!(t.salary_tyiyn, 2_500_000);
+    assert!(t.payroll_tyiyn >= t.salary_tyiyn);
 
     // «10к» — не количество: просим уточнить, черновика нет.
     let r = draft_turn(

@@ -122,7 +122,7 @@ export function ProfitChart({ points, series, empty = 'Продаж за это�
   // На телефоне не больше 5 подписей по оси X, на большом экране — до 10.
   // Последняя точка подписана всегда, соседняя с ней подпись убирается, чтобы не налезали.
   const every = Math.max(1, Math.ceil((points.length - 1) / (phone ? 4 : 9)))
-  const labeled = (i: number) => i === points.length - 1 || (i % every === 0 && points.length - 1 - i >= every * 0.6)
+  const labeled = (i: number) => i === points.length - 1 || (i % every === 0 && points.length - 1 - i >= every)
   const anchor = (i: number) => (points.length > 1 && i === points.length - 1 ? 'end' : points.length > 1 && i === 0 ? 'start' : 'middle')
 
   return (

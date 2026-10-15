@@ -27,6 +27,9 @@ pub struct Totals {
     pub cost_tyiyn: i64,
     pub gross_tyiyn: i64,
     pub payroll_tyiyn: i64,
+    /// В том числе оклады за месяц (начисления вида `monthly_salary`) — расшифровка строки
+    /// «Зарплата сотрудникам», в чистую прибыль отдельно не входит.
+    pub salary_tyiyn: i64,
     pub bank_fee_tyiyn: i64,
     pub expenses_tyiyn: i64,
     /// Оплачено баллами за вычетом возвращённых — скидка клиентам (SPEC-19).
@@ -154,8 +157,10 @@ pub async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let payroll = sqlx::query_scalar!(
-        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from payroll_accruals
+    let pay = sqlx::query!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "all!",
+                  coalesce(sum(amount_tyiyn) filter (where kind = 'monthly_salary'), 0)::bigint as "salary!"
+           from payroll_accruals
            where branch_id = $1 and business_date between $2 and $3"#,
         branch_id,
         from,
@@ -163,6 +168,7 @@ pub async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    let payroll = pay.all;
     // Комиссия банка: с чеков и с погашений долга картой или переводом (ADR-022).
     let fee = sqlx::query_scalar!(
         r#"select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
@@ -231,6 +237,7 @@ pub async fn totals_for(
         cost_tyiyn: cost,
         gross_tyiyn: gross,
         payroll_tyiyn: payroll,
+        salary_tyiyn: pay.salary,
         bank_fee_tyiyn: fee,
         expenses_tyiyn: expenses,
         bonus_tyiyn: bonus,
@@ -516,6 +523,9 @@ pub(crate) struct Compare {
     pub(crate) today: DayPart,
     pub(crate) yesterday: DayPart,
     pub(crate) week_ago: DayPart,
+    /// Чистая прибыль вчера за весь день: зарплата и расходы считаются по дням,
+    /// поэтому «к этому часу» для чистой честно не посчитать.
+    pub(crate) yesterday_net_tyiyn: i64,
 }
 
 /// Продажи дня до того же времени суток, что сейчас: честное «к вчера на этот час».
@@ -684,10 +694,14 @@ pub(crate) async fn dashboard_data(
     .await?;
     let (_, stale) = crate::api::receipts::stale_list(&mut *conn, branch_id).await?;
     let revenue = totals.goods_tyiyn + totals.services_tyiyn;
+    let yesterday = date - chrono::Duration::days(1);
     let compare = Compare {
         today: day_until_now(&mut *conn, branch_id, date).await?,
-        yesterday: day_until_now(&mut *conn, branch_id, date - chrono::Duration::days(1)).await?,
+        yesterday: day_until_now(&mut *conn, branch_id, yesterday).await?,
         week_ago: day_until_now(&mut *conn, branch_id, date - chrono::Duration::days(7)).await?,
+        yesterday_net_tyiyn: totals_for(&mut *conn, branch_id, yesterday, yesterday)
+            .await?
+            .net_tyiyn,
     };
     let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, date, date).await?;
     Ok(Dashboard {

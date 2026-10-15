@@ -441,6 +441,8 @@ export interface ProfitTotals {
   cost_tyiyn: number
   gross_tyiyn: number
   payroll_tyiyn: number
+  /** В том числе оклады за месяц — расшифровка оплаты труда. */
+  salary_tyiyn?: number
   bank_fee_tyiyn: number
   expenses_tyiyn: number
   bonus_tyiyn: number
@@ -496,7 +498,7 @@ export interface Dashboard {
   stale_stock: number
   staff: StaffPay[]
   /** Продажи к этому же часу: сегодня, вчера, неделю назад. */
-  compare?: { today: DayPart; yesterday: DayPart; week_ago: DayPart }
+  compare?: { today: DayPart; yesterday: DayPart; week_ago: DayPart; /** Чистая прибыль вчера за весь день. */ yesterday_net_tyiyn: number }
 }
 
 export interface DayPart {

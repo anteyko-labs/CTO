@@ -2034,6 +2034,8 @@ async fn favorites_heatmap_and_compare(pool: PgPool) {
     let (_, _, dash) = call(&app, "GET", "/api/v1/owner/dashboard", Some(&owner), None).await;
     assert!(dash["compare"]["yesterday"]["revenue_tyiyn"].is_i64());
     assert!(dash["compare"]["week_ago"]["sales_count"].is_i64());
+    assert!(dash["compare"]["yesterday_net_tyiyn"].is_i64());
+    assert!(dash["totals"]["salary_tyiyn"].is_i64());
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

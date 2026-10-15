@@ -287,6 +287,14 @@ test('сводка владельца: периоды и график валов
   await page.goto('/summary')
   await expect(page.getByRole('heading', { name: 'Сводка сегодня' })).toBeVisible()
   await expect(page.getByText('Продажи сегодня по часам')).toBeVisible()
+  await expect(page.getByText('Кто сколько заработал сегодня')).toBeVisible()
+  // Строка на человека: только сумма за период, без «к выдаче» и «аванса»; долг по зарплате — внизу ссылкой.
+  await expect(page.getByRole('link', { name: /К выплате за все дни:/ })).toHaveAttribute('href', '/payroll')
+  await expect(page.getByText('к выдаче', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('аванс', { exact: true })).toHaveCount(0)
+  // Вычеты в «Откуда прибыль» — минус прямо перед числом.
+  await expect(page.getByText(/^– /)).toHaveCount(0)
+  await expect(page.getByText(/^− \d/)).toHaveCount(0)
   await page.getByRole('button', { name: '7 дней' }).click()
   await expect(page.getByRole('heading', { name: 'Сводка за 7 дней' })).toBeVisible()
   await expect(page.getByText('Прибыль по дням за 7 дней')).toBeVisible()

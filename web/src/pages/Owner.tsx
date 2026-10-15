@@ -6,9 +6,9 @@ import { get, qs } from '../lib/api'
 import { formatDate, formatSom, hourBishkek, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad, usePolling } from '../lib/hooks'
 import { Heatmap } from '../components/Heatmap'
-import { StaffPayList } from '../components/StaffPayList'
 import { ProfitChart, type Point, type Series } from '../components/ProfitChart'
-import type { Dashboard, HeatCell, ProfitReport } from '../lib/types'
+import type { Dashboard, HeatCell, ProfitReport, StaffPay } from '../lib/types'
+import { earnedList, minusSom, payReason, signedSom, vsYesterday, weekAgo } from '../lib/dashboard'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
 
@@ -22,32 +22,12 @@ function Tile({ label, value, tone = '', children }: { label: string; value: str
   )
 }
 
-/** Сравнение с прошлым днём к этому же часу: «▲ +12 % к вчера на этот час». */
-function Delta({ now, base, label, then, money }: { now: number; base: number; label: string; then: string; money: boolean }) {
-  // Не с чем сравнить (в тот день к этому часу продаж не было) — строку не показываем.
-  if (base === 0) return null
-  const pct = Math.round(((now - base) * 100) / base)
-  const tone = pct > 0 ? 'text-emerald-700' : pct < 0 ? 'text-rose-700' : 'text-slate-500'
-  // «+8113 %» ничего не говорит: при большой разнице показываем, сколько было тогда.
-  if (Math.abs(pct) > 200) {
-    return (
-      <div className="text-xs text-slate-500">
-        <span className={`font-medium ${tone}`}>{pct > 0 ? '▲' : '▼'}</span> {then}: {money ? formatSom(base) : base}
-      </div>
-    )
-  }
-  return (
-    <div className="text-xs">
-      <span className={`font-medium tabular-nums ${tone}`}>
-        {pct > 0 ? '▲ +' : pct < 0 ? '▼ −' : '= '}
-        {Math.abs(pct)} %
-      </span>{' '}
-      <span className="text-slate-500">{label}</span>
-    </div>
-  )
-}
+const TONE = { up: 'text-emerald-700', down: 'text-rose-700', flat: 'text-slate-500' } as const
 
-/** Обе строки сравнения под плиткой: со вчера и с тем же днём неделю назад. */
+/**
+ * Две короткие строки под плиткой: «▲ 40 % к вчера» (к этому же часу) и «нед. назад: 9 200 с».
+ * Короткие, чтобы на телефоне не переносились; полная подпись — во всплывающей подсказке.
+ */
 function Compare({
   pick,
   data,
@@ -58,41 +38,84 @@ function Compare({
   money?: boolean
 }) {
   if (!data) return null
+  const fmt = money ? (v: number) => formatSom(v) : String
+  const y = vsYesterday(pick(data.today), pick(data.yesterday), fmt)
+  const w = weekAgo(pick(data.week_ago), fmt)
   return (
-    <div className="mt-1 flex flex-col gap-0.5">
-      <Delta now={pick(data.today)} base={pick(data.yesterday)} label="к вчера на этот час" then="вчера к этому часу" money={money} />
-      <Delta now={pick(data.today)} base={pick(data.week_ago)} label="к неделе назад" then="неделю назад" money={money} />
+    <div className="mt-1 flex flex-col gap-0.5 whitespace-nowrap text-xs">
+      {y && (
+        <span title={y.title} className={`font-medium tabular-nums ${TONE[y.tone]}`}>
+          {y.text}
+        </span>
+      )}
+      {w && (
+        <span title="тот же день неделю назад к этому часу" className="tabular-nums text-slate-500">
+          {w}
+        </span>
+      )}
     </div>
   )
 }
 
-/** Строка «лесенки» прибыли: подпись слева, сумма справа. */
-/** Сумма со знаком действия: «− 1 000 с» уменьшает прибыль, «+ 300 с» добавляет. */
-function signedSom(value: number): string {
-  if (value === 0) return formatSom(0)
-  return `${value < 0 ? '−' : '+'} ${formatSom(Math.abs(value))}`
-}
-
+/** Строка «лесенки» прибыли: подпись слева, сумма справа; вычеты — «−85 400 с». */
 function Step({
   label,
   value,
   strong = false,
   minus = false,
   signed = false,
+  sub = false,
 }: {
   label: string
   value: number
   strong?: boolean
   minus?: boolean
   signed?: boolean
+  /** Расшифровка строки выше: с отступом и мельче. */
+  sub?: boolean
 }) {
+  const text = signed ? signedSom(value) : minus ? minusSom(value) : formatSom(value)
+  const red = (strong || signed) && value < 0
   return (
-    <div className={`flex items-baseline justify-between gap-4 py-1 ${strong ? 'border-t border-slate-200 font-semibold' : 'text-slate-700'}`}>
+    <div
+      className={`flex items-baseline justify-between gap-4 ${sub ? 'py-0.5 pl-4 text-xs text-slate-500' : 'py-1'} ${strong ? 'border-t border-slate-200 font-semibold' : sub ? '' : 'text-slate-700'}`}
+    >
       <span>{label}</span>
-      <span className={`whitespace-nowrap tabular-nums ${(strong || signed) && value < 0 ? 'text-rose-700' : ''}`}>
-        {signed ? signedSom(value) : minus && value !== 0 ? `− ${formatSom(value)}` : formatSom(value)}
-      </span>
+      <span className={`whitespace-nowrap tabular-nums ${red ? 'text-rose-700' : ''}`}>{text}</span>
     </div>
+  )
+}
+
+/** Кто сколько заработал: строка на человека, первые пять, остальные по кнопке. */
+function EarnedList({ staff, empty }: { staff: StaffPay[]; empty: string }) {
+  const [all, setAll] = useState(false)
+  const list = earnedList(staff)
+  if (list.length === 0) return <div className="py-2 text-sm text-slate-500">{empty}</div>
+  const shown = all ? list : list.slice(0, 5)
+  return (
+    <>
+      <ul className="divide-y divide-slate-100">
+        {shown.map((p) => (
+          <li key={p.employee_id} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3 py-1.5">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">{p.name}</div>
+              <div className="truncate text-xs text-slate-500" title={payReason(p.items)}>
+                {payReason(p.items)}
+              </div>
+            </div>
+            <div className={`whitespace-nowrap text-right font-semibold tabular-nums ${p.total_tyiyn < 0 ? 'text-rose-700' : ''}`}>
+              {p.total_tyiyn < 0 && <span className="mr-1 text-xs font-normal text-slate-500">удержание</span>}
+              {formatSom(p.total_tyiyn)}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {list.length > 5 && (
+        <button type="button" className="mt-1 min-h-[42px] text-sm text-sky-700 underline" onClick={() => setAll(!all)}>
+          {all ? 'Свернуть' : `Все (${list.length})`}
+        </button>
+      )}
+    </>
   )
 }
 
@@ -190,10 +213,46 @@ export function OwnerDashboard() {
           <Tile label="Валовая прибыль" value={formatSom(t.gross_tyiyn)}>
             <Compare data={compare} pick={(x) => x.gross_tyiyn} />
           </Tile>
-          <Tile label="Чистая прибыль" value={formatSom(t.net_tyiyn)} tone={t.net_tyiyn < 0 ? 'text-rose-700' : 'text-emerald-700'} />
+          <Tile label="Чистая прибыль" value={formatSom(t.net_tyiyn)} tone={t.net_tyiyn < 0 ? 'text-rose-700' : 'text-emerald-700'}>
+            {/* Зарплата и расходы считаются за день целиком: «к этому часу» для чистой не честно — только вчера за день. */}
+            {compare && (
+              <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500" title="чистая прибыль вчера за весь день">
+                вчера за день: <span className={compare.yesterday_net_tyiyn < 0 ? 'text-rose-700' : ''}>{formatSom(compare.yesterday_net_tyiyn)}</span>
+              </div>
+            )}
+          </Tile>
           <Tile label="Чеков" value={String(t.sales_count)}>
             <Compare data={compare} pick={(x) => x.sales_count} money={false} />
           </Tile>
+        </Card>
+
+        <Card>
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="font-semibold">Деньги сейчас</h2>
+            <span className="text-sm text-slate-500">
+              Смена: {d.data.shift_open ? `открыта, кассир ${d.data.shift_cashier}` : 'не открыта'} ·{' '}
+              <Link to="/shift" className="text-sky-700 underline">
+                подробно
+              </Link>
+            </span>
+          </div>
+          <div className="text-xs text-slate-500">Всего денег</div>
+          <div className="text-3xl font-bold tabular-nums">{formatSom(d.data.money_total_tyiyn)}</div>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+            {d.data.accounts.map((a) => (
+              <span key={a.name}>
+                {a.name} <Money value={a.balance_tyiyn} tone="negative" className="font-medium text-slate-800" />
+              </span>
+            ))}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-4">
+            <Link to="/debts" className="rounded-md hover:bg-slate-50">
+              <Tile label="Нам должны" value={formatSom(d.data.debts_in_tyiyn)} tone="text-amber-700" />
+            </Link>
+            <Link to="/debts" className="rounded-md hover:bg-slate-50">
+              <Tile label="Мы должны поставщикам" value={formatSom(d.data.debts_out_tyiyn)} />
+            </Link>
+          </div>
         </Card>
 
         <div className="grid gap-4 lg:grid-cols-2">
@@ -206,6 +265,7 @@ export function OwnerDashboard() {
               <Step label="Закупка проданного товара" value={t.cost_tyiyn} minus />
               <Step label="Валовая прибыль" value={t.gross_tyiyn} strong />
               <Step label="Зарплата сотрудникам" value={t.payroll_tyiyn} minus />
+              {(t.salary_tyiyn ?? 0) !== 0 && <Step label="в т.ч. оклады за месяц" value={t.salary_tyiyn ?? 0} minus sub />}
               {t.bank_fee_tyiyn !== 0 && <Step label="Комиссия банка (карта, QR)" value={t.bank_fee_tyiyn} minus />}
               {t.expenses_tyiyn !== 0 && <Step label="Расходы" value={t.expenses_tyiyn} minus />}
               {t.bonus_tyiyn !== 0 && <Step label="Скидки баллами" value={t.bonus_tyiyn} minus />}
@@ -222,13 +282,15 @@ export function OwnerDashboard() {
 
           <Card>
             <h2 className="mb-2 font-semibold">Кто сколько заработал {word}</h2>
-            <StaffPayList staff={r.data?.staff ?? d.data.staff ?? []} />
-            <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 text-sm">
-              <span className="text-slate-600">Всего к выплате (за все дни)</span>
-              <Link to="/payroll" className="font-semibold text-sky-700 underline">
-                {formatSom(d.data.to_pay_tyiyn)}
-              </Link>
-            </div>
+            <EarnedList
+              key={period}
+              staff={r.data?.staff ?? (period === 'today' ? d.data.staff : [])}
+              empty={period === 'today' ? 'Сегодня начислений нет' : 'За период начислений нет'}
+            />
+            <Link to="/payroll" className="mt-2 flex min-h-[42px] items-center justify-between gap-3 border-t border-slate-200 pt-2 text-sm hover:text-sky-700">
+              <span className="text-slate-600">К выплате за все дни:</span>
+              <span className="whitespace-nowrap font-semibold tabular-nums text-sky-700">{formatSom(d.data.to_pay_tyiyn)} →</span>
+            </Link>
           </Card>
         </div>
 
@@ -260,35 +322,6 @@ export function OwnerDashboard() {
             {heat.data ? <Heatmap cells={heat.data} /> : <Loading />}
           </Card>
         )}
-
-        <Card>
-          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="font-semibold">Деньги сейчас</h2>
-            <span className="text-sm text-slate-500">
-              Смена: {d.data.shift_open ? `открыта, кассир ${d.data.shift_cashier}` : 'не открыта'} ·{' '}
-              <Link to="/shift" className="text-sky-700 underline">
-                подробно
-              </Link>
-            </span>
-          </div>
-          <div className="text-xs text-slate-500">Всего денег</div>
-          <div className="text-3xl font-bold tabular-nums">{formatSom(d.data.money_total_tyiyn)}</div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
-            {d.data.accounts.map((a) => (
-              <span key={a.name}>
-                {a.name} <Money value={a.balance_tyiyn} tone="negative" className="font-medium text-slate-800" />
-              </span>
-            ))}
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-4">
-            <Link to="/debts" className="rounded-md hover:bg-slate-50">
-              <Tile label="Нам должны" value={formatSom(d.data.debts_in_tyiyn)} tone="text-amber-700" />
-            </Link>
-            <Link to="/debts" className="rounded-md hover:bg-slate-50">
-              <Tile label="Мы должны поставщикам" value={formatSom(d.data.debts_out_tyiyn)} />
-            </Link>
-          </div>
-        </Card>
 
         {(d.data.low_stock > 0 || d.data.needs_review > 0 || d.data.stale_stock > 0) && (
           <Card>
@@ -366,6 +399,12 @@ function ReportTable({ cols, rows, foot }: { cols: Col[]; rows: { key: string; c
   )
 }
 
+/** Сумма со знаком действия для отчёта «Прибыль»: «− 1 000 с» уменьшает прибыль, «+ 300 с» добавляет. */
+function reportSigned(value: number): string {
+  if (value === 0) return formatSom(0)
+  return `${value < 0 ? '−' : '+'} ${formatSom(Math.abs(value))}`
+}
+
 /** Строка расчёта прибыли: вычеты со знаком «−», итог красным при убытке. */
 /** Брак за день одним числом: разница возмещения минус списание (SPEC-25). */
 const defectNet = (x: { defect_writeoff_tyiyn?: number; defect_diff_tyiyn?: number }): number =>
@@ -397,7 +436,7 @@ function CalcRow({
         {hint && <span className="block text-xs font-normal text-slate-500">{hint}</span>}
       </span>
       {signed ? (
-        <span className={`whitespace-nowrap tabular-nums ${value < 0 ? 'text-rose-700' : ''}`}>{signedSom(value)}</span>
+        <span className={`whitespace-nowrap tabular-nums ${value < 0 ? 'text-rose-700' : ''}`}>{reportSigned(value)}</span>
       ) : minus ? (
         <span className="whitespace-nowrap tabular-nums">{value === 0 ? formatSom(0) : `− ${formatSom(value)}`}</span>
       ) : (
