@@ -44,6 +44,15 @@ pub fn format_som(t: i64) -> String {
     )
 }
 
+/// Сумма со знаком: «+300 с», «−1 000 с», «0 с» — недостача и излишек, правки начислений.
+pub fn format_som_signed(t: i64) -> String {
+    if t > 0 {
+        format!("+{}", format_som(t))
+    } else {
+        format_som(t)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +80,9 @@ mod tests {
         assert_eq!(format_som(500_000), "5 000 с");
         assert_eq!(format_som(-123_456_789), "−1 234 567,89 с");
         assert_eq!(format_som(50), "0,50 с");
+        assert_eq!(format_som_signed(30_000), "+300 с");
+        assert_eq!(format_som_signed(-100_000), "−1 000 с");
+        assert_eq!(format_som_signed(0), "0 с");
     }
 
     #[test]

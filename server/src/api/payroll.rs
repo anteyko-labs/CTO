@@ -236,17 +236,17 @@ struct EntriesQuery {
 }
 
 #[derive(Serialize)]
-struct AccrualRow {
-    id: Uuid,
-    business_date: NaiveDate,
-    kind: String,
-    amount_tyiyn: i64,
-    comment: String,
-    doc_type: String,
-    reversal_of: Option<Uuid>,
-    reversed: bool,
-    user_name: String,
-    created_at: DateTime<Utc>,
+pub(crate) struct AccrualRow {
+    pub(crate) id: Uuid,
+    pub(crate) business_date: NaiveDate,
+    pub(crate) kind: String,
+    pub(crate) amount_tyiyn: i64,
+    pub(crate) comment: String,
+    pub(crate) doc_type: String,
+    pub(crate) reversal_of: Option<Uuid>,
+    pub(crate) reversed: bool,
+    pub(crate) user_name: String,
+    pub(crate) created_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -288,23 +288,7 @@ async fn entries(
         return Err(invalid("период не больше года"));
     }
     let mut conn = state.pool.acquire().await?;
-    let accruals = sqlx::query_as!(
-        AccrualRow,
-        r#"select a.id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,
-                  a.reversal_of as "reversal_of?",
-                  exists (select 1 from payroll_accruals r where r.reversal_of = a.id) as "reversed!",
-                  u.full_name as "user_name!", a.created_at
-           from payroll_accruals a join users u on u.id = a.user_id
-           where a.branch_id = $1 and a.employee_id = $2 and a.business_date between $3 and $4
-             and a.doc_type not in ('sale', 'sale_return')
-           order by a.business_date desc, a.created_at desc"#,
-        user.branch_id,
-        q.employee_id,
-        q.from,
-        q.to
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    let accruals = accrual_rows(&mut conn, user.branch_id, q.employee_id, q.from, q.to).await?;
     let payouts = sqlx::query_as!(
         PayoutRow,
         r#"select p.id, p.number, p.amount_tyiyn, p.source, c.name as "account_name?", p.comment,
@@ -324,6 +308,61 @@ async fn entries(
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(EntriesOut { accruals, payouts }))
+}
+
+/// Начисления сотрудника не из чеков за период, со сторно и отметкой «отменено»: для экрана
+/// «Расчёт» и для кабинета работника в боте (SPEC-07, SPEC-23).
+pub(crate) async fn accrual_rows(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<AccrualRow>> {
+    Ok(sqlx::query_as!(
+        AccrualRow,
+        r#"select a.id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,
+                  a.reversal_of as "reversal_of?",
+                  exists (select 1 from payroll_accruals r where r.reversal_of = a.id) as "reversed!",
+                  u.full_name as "user_name!", a.created_at
+           from payroll_accruals a join users u on u.id = a.user_id
+           where a.branch_id = $1 and a.employee_id = $2 and a.business_date between $3 and $4
+             and a.doc_type not in ('sale', 'sale_return')
+           order by a.business_date desc, a.created_at desc"#,
+        branch_id,
+        employee_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+/// Начислено сотруднику по учётным дням периода (со сторно); дни без начислений не попадают.
+pub(crate) async fn employee_days(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<(NaiveDate, i64)>> {
+    Ok(sqlx::query!(
+        r#"select business_date, sum(amount_tyiyn)::bigint as "sum!"
+           from payroll_accruals
+           where branch_id = $1 and employee_id = $2 and business_date between $3 and $4
+           group by business_date
+           having sum(amount_tyiyn) <> 0
+           order by business_date"#,
+        branch_id,
+        employee_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| (r.business_date, r.sum))
+    .collect())
 }
 
 // ---------- Правила оплаты ----------

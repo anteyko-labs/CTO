@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.business_date, v.plate as \"plate?\",\n                  (select o.oil_text from oil_changes o where o.sale_id = s.id\n                   order by o.created_at limit 1) as \"oil?\",\n                  (select string_agg(sv.name, ', ' order by l.line_no)\n                   from sale_lines l join services sv on sv.id = l.service_id\n                   where l.sale_id = s.id) as \"services?\",\n                  (select string_agg(p.name, ', ' order by l.line_no)\n                   from sale_lines l join products p on p.id = l.product_id\n                   where l.sale_id = s.id) as \"goods?\",\n                  coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0)\n                    = -s.total_tyiyn and s.total_tyiyn <> 0 as \"returned!\"\n           from sales s\n           left join party_vehicles v on v.id = s.vehicle_id\n           where s.branch_id = $1 and s.master_id = $2 and s.kind = 'sale'\n           order by s.business_date desc, s.created_at desc\n           limit $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "oil?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "services?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "goods?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "returned!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b24963e0c2b25bb66a1d0a00a132e854c3e685f82f11fed72e2db2fdea282af4"
+}

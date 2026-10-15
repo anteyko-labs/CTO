@@ -1,5 +1,6 @@
 // Справочник сотрудников: кассиры и мастера без входа в систему (SPEC-02, инвариант 15).
-// Карточка сотрудника у владельца — ещё и правила оплаты с историей (SPEC-07).
+// Карточка сотрудника у владельца — ещё и правила оплаты с историей (SPEC-07) и телефон, по которому
+// работник видит свой заработок в Телеграм-боте (SPEC-23).
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../components/icons'
@@ -160,10 +161,17 @@ function Roles({ e }: { e: Employee }) {
   )
 }
 
-/** Признак «кассир» назначает оплату (2 % и оклад) — ставит только владелец; сервер проверяет сам (ADR-059). */
+/** Телефон для бота: пусто или не меньше 9 цифр — сверяются последние 9, как у клиентов. */
+const phoneOk = (phone: string) => {
+  const t = phone.trim()
+  return t === '' || t.replace(/\D/g, '').length >= 9
+}
+
+/** Признак «кассир» назначает оплату (2 % и оклад) — ставит только владелец; сервер проверяет сам (ADR-059).
+ *  Телефон открывает работнику его начисления в боте — его тоже задаёт только владелец (SPEC-23). */
 function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose: () => void; onSaved: () => void }) {
   const owner = useUser().role === 'owner'
-  const [form, setForm] = useState(employee)
+  const [form, setForm] = useState({ ...employee, phone: employee.phone ?? '' })
   const { busy, error, run } = useAction()
 
   const save = () =>
@@ -173,6 +181,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
         is_cashier: form.is_cashier,
         is_master: form.is_master,
         active: form.active,
+        ...(owner ? { phone: form.phone.trim() } : {}),
       })
       onSaved()
     })
@@ -183,6 +192,23 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
         <Field label="ФИО">
           <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
         </Field>
+        {owner && (
+          <Field label="Телефон для бота" error={phoneOk(form.phone) ? undefined : 'Не меньше 9 цифр'}>
+            <input
+              type="tel"
+              inputMode="tel"
+              placeholder="+996 555 12 34 56"
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            />
+          </Field>
+        )}
+        {owner && (
+          <p className="-mt-2 text-xs text-slate-500">
+            По этому номеру работник подключается к Телеграм-боту: там его заработок, удержания и премии. Сменили номер или
+            отключили сотрудника — бот отключает его сразу.
+          </p>
+        )}
         <div className="flex flex-wrap gap-4">
           {owner && <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />}
           <Checkbox label="Мастер" checked={form.is_master} onChange={(v) => setForm({ ...form, is_master: v })} />
@@ -193,7 +219,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || !form.full_name.trim()} onClick={() => void save()}>
+          <Button disabled={busy || !form.full_name.trim() || !phoneOk(form.phone)} onClick={() => void save()}>
             Сохранить
           </Button>
         </div>

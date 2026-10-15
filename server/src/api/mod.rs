@@ -5,6 +5,7 @@ pub mod assistant;
 pub mod auth;
 pub mod batteries;
 pub mod bot_cars;
+pub mod bot_staff;
 pub mod cabinet;
 pub mod cash;
 pub mod catalog;

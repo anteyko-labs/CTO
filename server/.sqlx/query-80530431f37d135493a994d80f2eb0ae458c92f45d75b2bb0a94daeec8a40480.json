@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select business_date, sum(amount_tyiyn)::bigint as \"sum!\"\n           from payroll_accruals\n           where branch_id = $1 and employee_id = $2 and business_date between $3 and $4\n           group by business_date\n           having sum(amount_tyiyn) <> 0\n           order by business_date",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "80530431f37d135493a994d80f2eb0ae458c92f45d75b2bb0a94daeec8a40480"
+}

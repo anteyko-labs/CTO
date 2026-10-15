@@ -67,20 +67,45 @@ struct EmployeeOut {
     is_cashier: bool,
     is_master: bool,
     active: bool,
+    /// Телефон для кабинета в боте (SPEC-23) — только владельцу: он открывает доступ к начислениям.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phone: Option<String>,
 }
 
 async fn list_employees(
     State(state): State<AppState>,
     user: CurrentUser,
 ) -> AppResult<Json<Vec<EmployeeOut>>> {
-    let rows = sqlx::query_as!(
-        EmployeeOut,
-        "select id, full_name, is_cashier, is_master, active from employees where branch_id = $1 order by full_name",
+    let owner = user.is_owner();
+    let rows = sqlx::query!(
+        "select id, full_name, is_cashier, is_master, active, phone from employees where branch_id = $1 order by full_name",
         user.branch_id
     )
     .fetch_all(&state.pool)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|r| EmployeeOut {
+        id: r.id,
+        full_name: r.full_name,
+        is_cashier: r.is_cashier,
+        is_master: r.is_master,
+        active: r.active,
+        phone: owner.then_some(r.phone),
+    })
+    .collect();
     Ok(Json(rows))
+}
+
+/// Телефон сотрудника: пусто или номер, в котором не меньше 9 цифр (сверяются последние 9).
+fn employee_phone(s: &str) -> AppResult<String> {
+    let t = s.trim();
+    if !t.is_empty() && crate::api::telegram::phone_key(t).is_none() {
+        return Err(invalid("телефон: не меньше 9 цифр"));
+    }
+    if t.chars().count() > 40 {
+        return Err(invalid("телефон не длиннее 40 знаков"));
+    }
+    Ok(t.to_string())
 }
 
 #[derive(Deserialize)]
@@ -140,6 +165,7 @@ async fn create_employee(
         is_cashier: req.is_cashier,
         is_master: req.is_master,
         active: true,
+        phone: ctx.user.is_owner().then(String::new),
     }))
 }
 
@@ -149,6 +175,8 @@ struct EmployeePatch {
     is_cashier: Option<bool>,
     is_master: Option<bool>,
     active: Option<bool>,
+    /// Телефон для кабинета в боте — меняет только владелец (SPEC-23).
+    phone: Option<String>,
 }
 
 async fn update_employee(
@@ -158,9 +186,10 @@ async fn update_employee(
     Json(req): Json<EmployeePatch>,
 ) -> AppResult<Json<EmployeeOut>> {
     let full_name = optional_required(req.full_name, "ФИО")?;
+    let phone = req.phone.as_deref().map(employee_phone).transpose()?;
     let mut tx = state.pool.begin().await?;
     let prev = sqlx::query!(
-        "select full_name, is_cashier, is_master, active from employees where id = $1 and branch_id = $2 for update",
+        "select full_name, is_cashier, is_master, active, phone from employees where id = $1 and branch_id = $2 for update",
         id,
         ctx.user.branch_id
     )
@@ -173,6 +202,7 @@ async fn update_employee(
         "is_cashier": prev.is_cashier,
         "is_master": prev.is_master,
         "active": prev.active,
+        "phone": prev.phone,
     });
     // Признак «кассир» меняет оплату (процент с чеков, оклад) — только владелец (SPEC-07, ADR-059).
     // Клиент шлёт признак и без изменения — это не правка.
@@ -180,22 +210,43 @@ async fn update_employee(
     if req.is_cashier.is_some_and(|c| c != was_cashier) && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let out = sqlx::query_as!(
-        EmployeeOut,
+    // Телефон открывает работнику его начисления в боте — задаёт и меняет только владелец (SPEC-23).
+    let phone_changed = phone.as_ref().is_some_and(|p| *p != prev.phone);
+    if phone_changed && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let r = sqlx::query!(
         r#"update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),
-             is_master = coalesce($5, is_master), active = coalesce($6, active)
+             is_master = coalesce($5, is_master), active = coalesce($6, active), phone = coalesce($7, phone)
            where id = $1 and branch_id = $2
-           returning id, full_name, is_cashier, is_master, active"#,
+           returning id, full_name, is_cashier, is_master, active, phone"#,
         id,
         ctx.user.branch_id,
         full_name,
         req.is_cashier,
         req.is_master,
-        req.active
+        req.active,
+        phone
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Отключили или сменили номер (по последним 9 цифрам) — чат работника отвязывается сразу.
+    let new_key = crate::api::telegram::phone_key(&r.phone);
+    if prev.active && !r.active {
+        crate::api::bot_staff::drop_for_employee(&mut tx, &ctx, id, "сотрудник отключён").await?;
+    } else if new_key.is_none() || new_key != crate::api::telegram::phone_key(&prev.phone) {
+        crate::api::bot_staff::drop_for_employee(&mut tx, &ctx, id, "телефон в карточке изменён")
+            .await?;
+    }
+    let out = EmployeeOut {
+        id: r.id,
+        full_name: r.full_name,
+        is_cashier: r.is_cashier,
+        is_master: r.is_master,
+        active: r.active,
+        phone: ctx.user.is_owner().then(|| r.phone.clone()),
+    };
     // Правила по умолчанию — только когда сотрудник становится кассиром и правил кассира у него
     // никогда не было: правка имени и повторное назначение не возвращают закрытый оклад (ADR-062).
     let rules_added = if becomes_cashier {
@@ -214,6 +265,8 @@ async fn update_employee(
             "is_cashier": out.is_cashier,
             "is_master": out.is_master,
             "active": out.active,
+            "phone": r.phone,
+            "phone_changed": phone_changed,
             "pay_rules_added": rules_added,
             "before": before,
         }),

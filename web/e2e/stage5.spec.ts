@@ -74,3 +74,20 @@ test('правила оплаты в карточке сотрудника и п
   await page.getByRole('button', { name: 'Отменить', exact: true }).last().click()
   await expect(page.getByText('отменено').first()).toBeVisible()
 })
+
+test('телефон сотрудника для кабинета в боте задаёт владелец', async ({ page }) => {
+  await login(page)
+  const name = `Мастер ${RUN}`
+  await apiPost(page.request, '/employees', { full_name: name, is_master: true })
+  await page.goto('/employees')
+  await page.getByRole('row', { name: new RegExp(name) }).getByText(name).click()
+  const phone = page.getByLabel('Телефон для бота')
+  await phone.fill('12-34')
+  await expect(page.getByText('Не меньше 9 цифр')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Сохранить' }).first()).toBeDisabled()
+  await phone.fill(`+996 700 ${RUN.slice(0, 3)} ${RUN.slice(3, 6)}`)
+  await page.getByRole('button', { name: 'Сохранить' }).first().click()
+  await expect(page.getByRole('dialog')).toBeHidden()
+  await page.getByRole('row', { name: new RegExp(name) }).getByText(name).click()
+  await expect(page.getByLabel('Телефон для бота')).toHaveValue(`+996 700 ${RUN.slice(0, 3)} ${RUN.slice(3, 6)}`)
+})

@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.employee_id, t.branch_id as link_branch, t.phone as link_phone,\n                  e.branch_id, e.full_name, e.phone, e.active, e.is_cashier, e.is_master\n           from telegram_employees t join employees e on e.id = t.employee_id\n           where t.chat_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "link_branch",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "link_phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_master",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d00ca49c585f50a22116b1519e14fa1570805cd0b32f9040702ddab09d3e062e"
+}

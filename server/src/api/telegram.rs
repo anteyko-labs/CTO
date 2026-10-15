@@ -3,6 +3,8 @@
 //! сетевая часть — два фоновых цикла с исходящими запросами к Телеграму.
 //! Вопросы владельца обычным текстом разбирает `api::assistant` (SPEC-21, ADR-060).
 //! Доставка событий по каждому чату отдельно, пределы привязки и окно напоминаний — ADR-063.
+//! Кабинет работника (свой заработок по номеру из карточки сотрудника) — `api::bot_staff`
+//! (SPEC-23, ADR-066).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -16,10 +18,11 @@ use sqlx::{Connection, PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::api::assistant::{self, Assistant};
+use crate::api::bot_staff::{self, EmployeeLink};
 use crate::api::notifications::{WATCHED, describe};
 use crate::api::parties::{ListQuery, PartyOut, search_parties};
 use crate::auth::{Ctx, Owner};
-use crate::domain::money::format_som;
+use crate::domain::money::{format_som, format_som_signed};
 use crate::error::{AppError, AppResult};
 use crate::ops;
 use crate::state::AppState;
@@ -247,6 +250,10 @@ pub enum Keys {
     Contact,
     Owner,
     Customer,
+    /// Работник (SPEC-23): «Сегодня», «Месяц», «Удержания и премии», «Мои работы».
+    Employee,
+    /// Номер и у работника, и у клиента: «Мой заработок» и кнопки клиента.
+    Both,
     ConfirmLeave,
 }
 
@@ -261,6 +268,16 @@ impl Keys {
                 vec![json!(BTN_CARS), json!(BTN_BONUS)],
                 vec![json!(BTN_LEAVE)],
             ],
+            Keys::Employee => vec![
+                vec![json!(bot_staff::BTN_DAY), json!(bot_staff::BTN_MONTH)],
+                vec![json!(bot_staff::BTN_ADJUST), json!(bot_staff::BTN_WORKS)],
+                vec![json!(BTN_LEAVE)],
+            ],
+            Keys::Both => vec![
+                vec![json!(bot_staff::BTN_EARNINGS)],
+                vec![json!(BTN_CARS), json!(BTN_BONUS)],
+                vec![json!(BTN_LEAVE)],
+            ],
             Keys::ConfirmLeave => vec![vec![json!(BTN_LEAVE_YES), json!(BTN_BACK)]],
         };
         json!({ "keyboard": rows, "resize_keyboard": true, "is_persistent": true })
@@ -268,7 +285,7 @@ impl Keys {
 }
 
 /// Команда из текста: первое слово без значков и знаков — «📊 Сегодня» → «сегодня», «/долги» → «долги».
-fn command(text: &str) -> String {
+pub(crate) fn command(text: &str) -> String {
     text.split_whitespace()
         .find(|w| w.chars().any(char::is_alphanumeric))
         .unwrap_or("")
@@ -342,7 +359,9 @@ impl Reply {
 /// Кнопка меню клиента или команда: отменяет ожидание ввода, а не становится номером или пометкой.
 fn is_menu(text: &str) -> bool {
     let t = text.trim();
-    t.starts_with('/') || [BTN_CARS, BTN_BONUS, BTN_LEAVE, BTN_LEAVE_YES, BTN_BACK].contains(&t)
+    t.starts_with('/')
+        || [BTN_CARS, BTN_BONUS, BTN_LEAVE, BTN_LEAVE_YES, BTN_BACK].contains(&t)
+        || bot_staff::BUTTONS.contains(&t)
 }
 
 /// Код привязки цифрами: ровно шесть цифр.
@@ -358,7 +377,7 @@ pub fn is_question(text: &str) -> bool {
     if text.is_empty() || text.starts_with('/') || is_code(text) {
         return false;
     }
-    if CUSTOMER_BUTTONS.contains(&text) {
+    if CUSTOMER_BUTTONS.contains(&text) || bot_staff::BUTTONS.contains(&text) {
         return false;
     }
     let words = text
@@ -388,7 +407,7 @@ pub struct SharedContact {
 }
 
 /// Запись в журнал действий от имени бота: пользователя и устройства нет, чат — в данных.
-async fn bot_journal(
+pub(crate) async fn bot_journal(
     conn: &mut PgConnection,
     branch_id: Uuid,
     action: &str,
@@ -506,9 +525,49 @@ pub async fn handle_message(
     handle_message_with(conn, None, chat_id, from_id, text, contact).await
 }
 
+/// Кнопки внизу чата по тому, кем подключён чат.
+fn section_keys(customer: bool, employee: bool) -> Keys {
+    match (customer, employee) {
+        (true, true) => Keys::Both,
+        (true, false) => Keys::Customer,
+        (false, true) => Keys::Employee,
+        (false, false) => Keys::Contact,
+    }
+}
+
+/// Чат подключён и клиентом, и работником (SPEC-23): внизу — кнопки обоих разделов, а не одного.
+async fn fit_keys(conn: &mut PgConnection, chat_id: i64, mut r: Reply) -> AppResult<Reply> {
+    if matches!(r.keys, Keys::Customer | Keys::Employee) {
+        let both = sqlx::query_scalar!(
+            r#"select exists (select 1 from telegram_customers where chat_id = $1)
+                      and exists (select 1 from telegram_employees where chat_id = $1) as "b!""#,
+            chat_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if both {
+            r.keys = Keys::Both;
+        }
+    }
+    Ok(r)
+}
+
 /// Сообщение в бот: владелец — команды, привязка кодом и вопросы текстом (если сервис разбора
-/// задан, SPEC-21); клиент — своя масляная книжка. `text = None` — не текст (наклейка, фото).
+/// задан, SPEC-21); клиент — своя масляная книжка; работник — свой заработок (SPEC-23).
+/// `text = None` — не текст (наклейка, фото).
 pub async fn handle_message_with(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    chat_id: i64,
+    from_id: i64,
+    text: Option<&str>,
+    contact: Option<SharedContact>,
+) -> AppResult<Reply> {
+    let r = message(conn, assistant, chat_id, from_id, text, contact).await?;
+    fit_keys(conn, chat_id, r).await
+}
+
+async fn message(
     conn: &mut PgConnection,
     assistant: Option<&Assistant>,
     chat_id: i64,
@@ -518,30 +577,41 @@ pub async fn handle_message_with(
 ) -> AppResult<Reply> {
     let owner = chat_owner(conn, chat_id).await?.is_some();
     if let Some(c) = contact {
-        // Владельцу контакт ни к чему: клавиатуры клиента он не получает.
+        // Владельцу контакт ни к чему: клавиатуры клиента и работника он не получает.
         if owner {
             return Ok(Reply::new(HELP, Keys::Owner));
         }
-        return link_customer(conn, chat_id, from_id, c).await;
+        return link_contact(conn, chat_id, from_id, c).await;
     }
     let raw = text;
     let text = text.unwrap_or("");
-    let customer = if owner {
-        None
-    } else {
-        match customer_link(conn, chat_id).await? {
-            CustomerLink::Linked(p) => Some(p),
-            CustomerLink::None => None,
-            CustomerLink::Dropped => {
-                // Код привязки владельца из такого чата всё равно проверяем.
-                if text.trim().starts_with("/start") {
-                    None
-                } else {
-                    return Ok(Reply::new(RESHARE, Keys::Contact));
-                }
-            }
+    let (mut customer, mut employee) = (None, None);
+    let mut dropped: Vec<&str> = Vec::new();
+    if !owner {
+        // Подключение работника и клиента проверяется при каждом сообщении (ADR-063, SPEC-23).
+        match bot_staff::employee_link(conn, chat_id).await? {
+            EmployeeLink::Linked(e) => employee = Some(e),
+            EmployeeLink::None => {}
+            EmployeeLink::Dropped => dropped.push(bot_staff::RESHARE),
         }
-    };
+        match customer_link(conn, chat_id).await? {
+            CustomerLink::Linked(p) => customer = Some(p),
+            CustomerLink::None => {}
+            CustomerLink::Dropped => dropped.push(RESHARE),
+        }
+    }
+    // Код привязки владельца из такого чата всё равно проверяем.
+    if !dropped.is_empty() && !text.trim().starts_with("/start") {
+        return Ok(Reply::new(
+            dropped.join("\n\n"),
+            section_keys(customer.is_some(), employee.is_some()),
+        ));
+    }
+    let both = customer.is_some() && employee.is_some();
+    // Чат работника — не больше 30 действий в минуту (SPEC-23).
+    if employee.is_some() && bot_staff::too_often(conn, chat_id).await? {
+        return Ok(bot_staff::too_often_reply());
+    }
     // Клиент пишет номер, марку или пометку: это не команда и не код привязки (SPEC-22).
     if let Some(party_id) = customer {
         if is_menu(text) {
@@ -551,44 +621,70 @@ pub async fn handle_message_with(
             return Ok(r);
         }
     }
-    let answer = handle_text(conn, assistant, chat_id, text, customer.is_some()).await?;
+    if let Some(e) = &employee
+        && let Some(s) = bot_staff::section(text)
+    {
+        return bot_staff::show(conn, e, s, both).await;
+    }
+    let linked = customer.is_some() || employee.is_some();
+    let answer = handle_text(conn, assistant, chat_id, text, linked).await?;
     if let Some(r) = answer {
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
             Keys::Owner
-        } else if customer.is_some() {
-            Keys::Customer
         } else {
-            Keys::Contact
+            section_keys(customer.is_some(), employee.is_some())
         };
         return Ok(Reply::new(r, keys));
     }
-    // Не владелец: подключившийся клиент видит свои машины, остальным — кнопка номера.
+    // Отключение — только кнопкой подтверждения или ровно «/стоп»: фраза, начатая со «стоп»
+    // или «да», — обычный текст (ADR-063). Отключается всё, к чему подключён чат.
+    let exact = text.trim();
+    if linked && (exact == BTN_LEAVE_YES || exact.eq_ignore_ascii_case("/stop") || exact == "/стоп")
+    {
+        let mut done = "Готово, вы отключены.".to_string();
+        if let Some(party_id) = customer {
+            let branch_id =
+                sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            drop_customer(conn, chat_id, party_id, branch_id, "клиент отключился сам").await?;
+            done.push_str(" Накопленные баллы сохранились.");
+        }
+        if let Some(e) = &employee {
+            bot_staff::drop_chat(conn, chat_id, e.id, e.branch_id, "работник отключился сам")
+                .await?;
+        }
+        return Ok(Reply::new(
+            format!("{done}\n\nЧтобы вернуться, нажмите «📱 Поделиться номером»."),
+            Keys::Contact,
+        ));
+    }
+    if linked && command(text) == "отключиться" {
+        let mut ask = "Отключиться от бота?".to_string();
+        if customer.is_some() {
+            ask.push_str("\n\nНапоминаний о замене больше не будет и новые баллы не начислятся. Накопленные баллы сохранятся.");
+        }
+        if employee.is_some() {
+            ask.push_str("\n\nЗаработок в боте не будет виден, пока снова не поделитесь номером.");
+        }
+        return Ok(Reply::new(ask, Keys::ConfirmLeave));
+    }
+    // Не клиент: работнику на свободный текст — его кнопки (вопросы текстом ему недоступны,
+    // SPEC-23), остальным — кнопка номера.
     let Some(party_id) = customer else {
+        if let Some(e) = &employee {
+            if exact == BTN_BACK {
+                return bot_staff::show(conn, e, bot_staff::Section::Day, false).await;
+            }
+            return Ok(bot_staff::help(e, false));
+        }
         return Ok(Reply::new(
             "Здравствуйте! Это бот Avtodom.\n\nЗдесь вы увидите, когда меняли масло, какое залили, когда следующая замена, и свои бонусные баллы.\n\nНажмите кнопку «📱 Поделиться номером» внизу — нужен тот номер, что записан у нас на кассе.",
             Keys::Contact,
         ));
     };
-    // Отключение — только кнопкой подтверждения или ровно «/стоп»: фраза, начатая со «стоп»
-    // или «да», — обычный текст (ADR-063).
-    let exact = text.trim();
-    if exact == BTN_LEAVE_YES || exact.eq_ignore_ascii_case("/stop") || exact == "/стоп" {
-        let branch_id =
-            sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
-                .fetch_one(&mut *conn)
-                .await?;
-        drop_customer(conn, chat_id, party_id, branch_id, "клиент отключился сам").await?;
-        return Ok(Reply::new(
-            "Готово, вы отключены. Накопленные баллы сохранились.\n\nЧтобы вернуться, нажмите «📱 Поделиться номером».",
-            Keys::Contact,
-        ));
-    }
     match command(text).as_str() {
-        "отключиться" => Ok(Reply::new(
-            "Отключиться от бота?\n\nНапоминаний о замене больше не будет и новые баллы не начислятся. Накопленные баллы сохранятся.",
-            Keys::ConfirmLeave,
-        )),
         "баллы" | "bonus" => Ok(Reply::new(
             bonus_history(conn, party_id).await?,
             Keys::Customer,
@@ -603,36 +699,78 @@ pub async fn handle_message_with(
     }
 }
 
-/// Нажатие кнопки под сообщением. Только подключённому клиенту: владелец и чужой чат их не получают.
+const NOT_LINKED: &str = "Сначала подключитесь: нажмите «📱 Поделиться номером» внизу.";
+
+/// Нажатие кнопки под сообщением. Только подключённому клиенту или работнику: владелец и чужой
+/// чат их не получают.
 pub async fn handle_callback(
     conn: &mut PgConnection,
     chat_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
+    let r = callback(conn, chat_id, data).await?;
+    fit_keys(conn, chat_id, r).await
+}
+
+async fn callback(conn: &mut PgConnection, chat_id: i64, data: &str) -> AppResult<Reply> {
     if chat_owner(conn, chat_id).await?.is_some() {
         return Ok(Reply::new(HELP, Keys::Owner));
+    }
+    // Кнопки кабинета работника: сотрудник из данных кнопки сверяется с привязкой чата.
+    if data.starts_with("e:") {
+        let employee = bot_staff::employee_link(conn, chat_id).await?;
+        let customer = matches!(customer_link(conn, chat_id).await?, CustomerLink::Linked(_));
+        return match employee {
+            EmployeeLink::Linked(e) => {
+                if bot_staff::too_often(conn, chat_id).await? {
+                    return Ok(bot_staff::too_often_reply());
+                }
+                bot_staff::callback(conn, &e, data, customer).await
+            }
+            EmployeeLink::Dropped => Ok(Reply::new(
+                bot_staff::RESHARE,
+                section_keys(customer, false),
+            )),
+            EmployeeLink::None if customer => Ok(Reply::new(
+                "Кнопка устарела — нажмите кнопку внизу.",
+                Keys::Customer,
+            )),
+            EmployeeLink::None => Ok(Reply::new(NOT_LINKED, Keys::Contact)),
+        };
     }
     match customer_link(conn, chat_id).await? {
         CustomerLink::Linked(party_id) => {
             crate::api::bot_cars::callback(conn, party_id, chat_id, data).await
         }
         CustomerLink::Dropped => Ok(Reply::new(RESHARE, Keys::Contact)),
-        CustomerLink::None => Ok(Reply::new(
-            "Сначала подключитесь: нажмите «📱 Поделиться номером» внизу.",
-            Keys::Contact,
-        )),
+        CustomerLink::None => {
+            if matches!(
+                bot_staff::employee_link(conn, chat_id).await?,
+                EmployeeLink::Linked(_)
+            ) {
+                return Ok(Reply::new(
+                    "Кнопка устарела — нажмите кнопку внизу.",
+                    Keys::Employee,
+                ));
+            }
+            Ok(Reply::new(NOT_LINKED, Keys::Contact))
+        }
     }
 }
 
 const AMBIGUOUS: &str = "По этому номеру у нас несколько карточек клиентов, и мы не знаем, какая ваша. Обратитесь на точку — оставят номер в одной карточке, и подключитесь снова.";
+const NOT_CUSTOMER: &str = "Этого номера нет среди наших клиентов. Назовите его кассиру при следующей покупке или замене — и потом снова нажмите «📱 Поделиться номером».";
 
-async fn link_customer(
+/// Контакт из кнопки «Поделиться номером»: номер сверяется сначала с активными сотрудниками
+/// (SPEC-23), потом — независимо — с клиентами (SPEC-18). Совпал и тот, и другой — чат получает
+/// оба раздела.
+async fn link_contact(
     conn: &mut PgConnection,
     chat_id: i64,
     from_id: i64,
     c: SharedContact,
 ) -> AppResult<Reply> {
-    // Только свой номер: чужую карточку контакта переслать можно, но книжку она не откроет.
+    // Только свой номер: чужую карточку контакта переслать можно, но она ничего не откроет.
     if c.user_id != Some(from_id) {
         return Ok(Reply::new(
             "Нужен ваш собственный номер: нажмите кнопку «📱 Поделиться номером» внизу.",
@@ -642,6 +780,77 @@ async fn link_customer(
     let Some(key) = phone_key(&c.phone) else {
         return Ok(Reply::new("Номер не распознан.", Keys::Contact));
     };
+    // Ровно один активный сотрудник — чат работника; несколько — не угадываем (SPEC-23).
+    let mut staff = bot_staff::by_phone(conn, &key).await?;
+    let staff_ambiguous = staff.len() > 1;
+    let employee = if staff.len() == 1 { staff.pop() } else { None };
+    if let Some(e) = &employee {
+        bot_staff::link(conn, chat_id, e, &c.phone).await?;
+    }
+    let customer = link_customer(conn, chat_id, &key, &c.phone).await?;
+    match (employee, customer) {
+        (Some(e), CustomerMatch::Linked { party_id, .. }) => {
+            let book = customer_book(conn, party_id).await?;
+            Ok(Reply::new(
+                format!(
+                    "{}, вы подключены ✅\n\n💼 Как работник: кнопка «💼 Мой заработок» — сколько заработали за день и месяц, удержания и премии, ваши работы.\n\n🚗 Как клиент: напомним о замене масла, с покупок — бонусные баллы (1 балл = 1 сом). Кнопки «🚗 Мои машины», «⭐ Баллы».\n\n{book}",
+                    e.name
+                ),
+                Keys::Both,
+            ))
+        }
+        (Some(e), _) => {
+            let day = bot_staff::show(conn, &e, bot_staff::Section::Day, false)
+                .await?
+                .text;
+            Ok(Reply::new(
+                format!(
+                    "{}, вы подключены ✅\n\n{}\n\n{day}",
+                    e.name,
+                    bot_staff::HELP
+                ),
+                Keys::Employee,
+            ))
+        }
+        (None, CustomerMatch::Linked { party_id, name }) => {
+            let book = customer_book(conn, party_id).await?;
+            let staff_note = if staff_ambiguous {
+                format!("\n\n{}", bot_staff::AMBIGUOUS)
+            } else {
+                String::new()
+            };
+            Ok(Reply::new(
+                format!(
+                    "{name}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы».\n\n{book}{staff_note}"
+                ),
+                Keys::Customer,
+            ))
+        }
+        (None, CustomerMatch::Ambiguous) if staff_ambiguous => Ok(Reply::new(
+            format!("{}\n\n{AMBIGUOUS}", bot_staff::AMBIGUOUS),
+            Keys::Contact,
+        )),
+        (None, CustomerMatch::Ambiguous) => Ok(Reply::new(AMBIGUOUS, Keys::Contact)),
+        (None, CustomerMatch::NotFound) if staff_ambiguous => {
+            Ok(Reply::new(bot_staff::AMBIGUOUS, Keys::Contact))
+        }
+        (None, CustomerMatch::NotFound) => Ok(Reply::new(NOT_CUSTOMER, Keys::Contact)),
+    }
+}
+
+/// Что дала сверка номера с карточками клиентов.
+enum CustomerMatch {
+    NotFound,
+    Ambiguous,
+    Linked { party_id: Uuid, name: String },
+}
+
+async fn link_customer(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    key: &str,
+    phone: &str,
+) -> AppResult<CustomerMatch> {
     // Только телефон в самой карточке клиента (человек или фирма, SPEC-18); телефоны контактов
     // фирмы не подключают. Несколько карточек — не угадываем (ADR-063).
     let found = sqlx::query!(
@@ -654,12 +863,7 @@ async fn link_customer(
     .fetch_all(&mut *conn)
     .await?;
     let p = match found.as_slice() {
-        [] => {
-            return Ok(Reply::new(
-                "Этого номера нет среди наших клиентов. Назовите его кассиру при следующей покупке или замене — и потом снова нажмите «📱 Поделиться номером».",
-                Keys::Contact,
-            ));
-        }
+        [] => return Ok(CustomerMatch::NotFound),
         [one] => one,
         many => {
             let mut tx = conn.begin().await?;
@@ -696,7 +900,7 @@ async fn link_customer(
                 .await?;
             }
             tx.commit().await?;
-            return Ok(Reply::new(AMBIGUOUS, Keys::Contact));
+            return Ok(CustomerMatch::Ambiguous);
         }
     };
     let mut tx = conn.begin().await?;
@@ -705,7 +909,7 @@ async fn link_customer(
            on conflict (chat_id) do update set party_id = excluded.party_id, phone = excluded.phone, linked_at = now()"#,
         chat_id,
         p.id,
-        c.phone
+        phone
     )
     .execute(&mut *tx)
     .await?;
@@ -719,14 +923,10 @@ async fn link_customer(
     )
     .await?;
     tx.commit().await?;
-    let book = customer_book(conn, p.id).await?;
-    Ok(Reply::new(
-        format!(
-            "{}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы».\n\n{book}",
-            p.name
-        ),
-        Keys::Customer,
-    ))
+    Ok(CustomerMatch::Linked {
+        party_id: p.id,
+        name: p.name.clone(),
+    })
 }
 
 pub(crate) fn km(v: i32) -> String {
@@ -1278,6 +1478,13 @@ async fn day_report(
     }
     if t.bonus_tyiyn != 0 {
         minus.push(format!("  − скидки баллами: {}", format_som(t.bonus_tyiyn)));
+    }
+    // Как в отчёте о прибыли: недостача — минус, излишек — плюс (ADR-065).
+    if t.cash_diff_tyiyn != 0 {
+        minus.push(format!(
+            "  ± недостача / излишек кассы: {}",
+            format_som_signed(t.cash_diff_tyiyn)
+        ));
     }
     let (head, earned) = if is_today {
         ("📊 Сегодня", "👥 Заработали сегодня")

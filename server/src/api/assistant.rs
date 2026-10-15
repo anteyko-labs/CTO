@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::api::catalog::{ProductFilter, query_products};
 use crate::api::parties::{ListQuery, ledger_title, search_parties};
 use crate::auth::{CurrentUser, Role};
-use crate::domain::money::format_som;
+use crate::domain::money::{format_som, format_som_signed};
 use crate::error::{AppError, AppResult};
 use crate::ops;
 
@@ -571,7 +571,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "profit_totals",
-            "description": "Итоги за период (дни учёта по Бишкеку): число чеков, выручка (товары и работы), закупка проданного, валовая прибыль, оплата труда, комиссия банка, расходы, скидки баллами, чистая прибыль. Тот же расчёт, что отчёт о прибыли в программе. Период не больше 366 дней.",
+            "description": "Итоги за период (дни учёта по Бишкеку): число чеков, выручка (товары и работы), закупка проданного, валовая прибыль, оплата труда, комиссия банка, расходы, скидки баллами, недостача / излишек кассы (минус — недостача, плюс — излишек), чистая прибыль. Тот же расчёт, что отчёт о прибыли в программе. Период не больше 366 дней.",
             "input_schema": period
         },
         {
@@ -781,7 +781,7 @@ async fn totals_text(
     let t = crate::api::reports::totals_for(conn, branch_id, from, to).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
     Ok(format!(
-        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nЧистая прибыль: {}",
+        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nЧистая прибыль: {}",
         period_label(from, to),
         t.sales_count,
         format_som(revenue),
@@ -793,6 +793,7 @@ async fn totals_text(
         format_som(t.bank_fee_tyiyn),
         format_som(t.expenses_tyiyn),
         format_som(t.bonus_tyiyn),
+        format_som_signed(t.cash_diff_tyiyn),
         format_som(t.net_tyiyn),
     ))
 }
@@ -809,7 +810,7 @@ async fn by_day_text(
         let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
         let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
         lines.push(format!(
-            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, чистая прибыль {}",
+            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, чистая прибыль {}",
             day.format("%d.%m.%Y"),
             weekday(day),
             t.sales_count,
@@ -819,6 +820,7 @@ async fn by_day_text(
             format_som(t.bank_fee_tyiyn),
             format_som(t.expenses_tyiyn),
             format_som(t.bonus_tyiyn),
+            format_som_signed(t.cash_diff_tyiyn),
             format_som(t.net_tyiyn),
         ));
         let Some(next) = day.succ_opt() else { break };

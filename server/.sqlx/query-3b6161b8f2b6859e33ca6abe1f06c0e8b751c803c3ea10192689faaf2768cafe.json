@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from telegram_customers where chat_id = $1)\n                      and exists (select 1 from telegram_employees where chat_id = $1) as \"b!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "b!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3b6161b8f2b6859e33ca6abe1f06c0e8b751c803c3ea10192689faaf2768cafe"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from telegram_employees where employee_id = $1 and branch_id = $2 returning chat_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8c2ec4654926785daa8b2c65ab413a34ddf4d231bbdea341f96c9ec7b40878d8"
+}

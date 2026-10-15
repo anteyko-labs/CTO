@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into telegram_hits (chat_id) values ($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc19053236994150b40bcdac13d283c8dea5268b48d6582f76b83e2cd38b4fb8"
+}

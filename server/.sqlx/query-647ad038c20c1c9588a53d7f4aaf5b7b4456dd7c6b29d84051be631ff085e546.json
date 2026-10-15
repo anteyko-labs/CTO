@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from telegram_hits where at < now() - interval '1 minute'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "647ad038c20c1c9588a53d7f4aaf5b7b4456dd7c6b29d84051be631ff085e546"
+}

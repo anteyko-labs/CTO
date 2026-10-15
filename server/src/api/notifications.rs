@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 44] = [
+pub(crate) const WATCHED: [&str; 45] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -64,6 +64,7 @@ pub(crate) const WATCHED: [&str; 44] = [
     "receipt.reverse_negative",
     "battery.intake_reverse",
     "settings.payment_fee",
+    "telegram.employee_link",
 ];
 
 #[derive(Serialize)]
@@ -337,6 +338,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .filter(|a| !a)
                     .map(|_| "отключён".to_string()),
                 flag("pay_rules_added", "назначена оплата кассира по умолчанию"),
+                flag("phone_changed", "изменён телефон (кабинет в боте)"),
             ]
             .into_iter()
             .flatten()
@@ -636,6 +638,10 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                         .join(", "))
                     .unwrap_or_default()
             ),
+        ),
+        "telegram.employee_link" => (
+            format!("Работник {} подключился к боту", text("name")),
+            "видит в боте свой заработок, удержания и премии".into(),
         ),
         _ => (action.into(), String::new()),
     }

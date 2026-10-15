@@ -4939,3 +4939,404 @@ async fn receipt_reversal_of_sold_goods_is_owner_only(pool: PgPool) {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0]["lines"][0]["after"], -3);
 }
+
+// ---------- Кабинет работника в боте (SPEC-23) ----------
+
+async fn set_phone(pool: &PgPool, employee: Uuid, phone: &str) {
+    sqlx::query("update employees set phone = $2 where id = $1")
+        .bind(employee)
+        .bind(phone)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Контакт из чата `chat`: свой (`own`) или пересланный чужой.
+async fn share(
+    conn: &mut sqlx::PgConnection,
+    chat: i64,
+    phone: &str,
+    own: bool,
+) -> avtodom_server::api::telegram::Reply {
+    let c = avtodom_server::api::telegram::SharedContact {
+        phone: phone.into(),
+        user_id: Some(if own { chat } else { chat + 1 }),
+    };
+    avtodom_server::api::telegram::handle_message(conn, chat, chat, None, Some(c))
+        .await
+        .unwrap()
+}
+
+async fn employee_chats(pool: &PgPool) -> Vec<(i64, Uuid)> {
+    sqlx::query_as("select chat_id, employee_id from telegram_employees order by chat_id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_employee_links_only_by_own_unambiguous_number(pool: PgPool) {
+    // Свой контакт — подключает, чужой — нет; номер у двух сотрудников — привязки нет; владельцу
+    // уведомление о подключении; чат владельца контакт не принимает (SPEC-23).
+    use avtodom_server::api::telegram::{Keys, pending};
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    set_phone(&pool, w.master, "0700 11-22-33").await;
+    let owner_chat = 951_000i64;
+    link_user_chat(&pool, w.owner.user.id, branch, owner_chat, 1).await;
+    feed_started_hour_ago(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let r = share(&mut conn, owner_chat, "+996700112233", true).await;
+    assert_eq!(r.keys, Keys::Owner);
+    let chat = 951_001i64;
+    let r = share(&mut conn, chat, "+996700112233", false).await;
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(r.text.contains("собственный номер"), "{}", r.text);
+    assert!(employee_chats(&pool).await.is_empty());
+
+    let r = share(&mut conn, chat, "+996700112233", true).await;
+    assert_eq!(r.keys, Keys::Employee, "{}", r.text);
+    assert!(
+        r.text.contains("Мастер, вы подключены") && r.text.contains("💼 Сегодня"),
+        "{}",
+        r.text
+    );
+    assert_eq!(employee_chats(&pool).await, vec![(chat, w.master)]);
+    // Повторный контакт того же работника — без второго уведомления.
+    share(&mut conn, chat, "+996700112233", true).await;
+    assert_eq!(audit_data(&pool, "telegram.employee_link").await.len(), 1);
+    let feed = pending(&mut conn).await.unwrap();
+    assert!(
+        feed.iter()
+            .any(|m| m.chat_id == owner_chat
+                && m.text.contains("Работник Мастер подключился к боту")),
+        "{:?}",
+        feed.iter().map(|m| m.text.clone()).collect::<Vec<_>>()
+    );
+
+    // Тот же номер у двух активных сотрудников — не угадываем.
+    let twin = Uuid::now_v7();
+    sqlx::query("insert into employees (id, branch_id, full_name, is_master, phone) values ($1, $2, 'Двойник', true, '+996 555 44 33 22')")
+        .bind(twin)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    set_phone(&pool, w.cashier, "0555 443 322").await;
+    let other = 951_002i64;
+    let r = share(&mut conn, other, "+996555443322", true).await;
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(
+        r.text.to_lowercase().contains("обратитесь к владельцу"),
+        "{}",
+        r.text
+    );
+    assert_eq!(employee_chats(&pool).await, vec![(chat, w.master)]);
+    // Второго отключили — номер снова однозначный.
+    sqlx::query("update employees set active = false where id = $1")
+        .bind(twin)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = share(&mut conn, other, "+996555443322", true).await;
+    assert_eq!(r.keys, Keys::Employee, "{}", r.text);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_employee_and_customer_on_one_number(pool: PgPool) {
+    // Номер у сотрудника и у клиента — оба раздела; поддельная кнопка с чужим сотрудником или
+    // месяцем вне пределов ничего не показывает; отключение — с подтверждением, от всего (SPEC-23).
+    use avtodom_server::api::telegram::{Keys, handle_callback};
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    set_phone(&pool, w.master, "0555 12-34-56").await;
+    set_phone(&pool, w.cashier, "0700 99-88-77").await;
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Мастер как клиент', '+996555123456')")
+        .bind(party)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 30_000).await;
+    let car = staff_car(&pool, &w, party, "01KG777AAA", true).await;
+    service_change(&pool, &w, party, car).await;
+    let chat = 952_001i64;
+    let mut conn = pool.acquire().await.unwrap();
+    let r = share(&mut conn, chat, "+996555123456", true).await;
+    assert_eq!(r.keys, Keys::Both, "{}", r.text);
+    assert!(r.text.contains("Как работник") && r.text.contains("01KG777AAA"));
+
+    // Клиентская кнопка — кнопки обоих разделов остаются.
+    let r = handle_message(&mut conn, chat, "⭐ Баллы").await;
+    assert!(
+        r.text.contains("Баллов:") && r.keys == Keys::Both,
+        "{}",
+        r.text
+    );
+    let r = handle_message(&mut conn, chat, "💼 Мой заработок").await;
+    assert!(r.text.contains("за замены: 1 × 30 с = 30 с"), "{}", r.text);
+    let data: Vec<String> = r.inline.iter().flatten().map(|b| b.data.clone()).collect();
+    assert!(data.contains(&format!("e:m:{}", w.master)), "{data:?}");
+    // «Мои работы» мастера: госномер и масло, без суммы чека.
+    let works = handle_callback(&mut conn, chat, &format!("e:w:{}", w.master))
+        .await
+        .unwrap();
+    assert!(works.text.contains("01KG777AAA"), "{}", works.text);
+    assert!(!works.text.contains("2 500 с"), "{}", works.text);
+    let r = handle_callback(&mut conn, chat, &format!("e:m:{}", w.master))
+        .await
+        .unwrap();
+    assert!(r.text.contains("Итого за месяц: 30 с"), "{}", r.text);
+
+    // Поддельные кнопки: чужой сотрудник, месяц вне пределов, мусор.
+    sqlx::query("update employees set full_name = 'Айгуль' where id = $1")
+        .bind(w.cashier)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let next = today
+        .checked_add_months(chrono::Months::new(1))
+        .unwrap()
+        .format("%Y-%m");
+    let old = today
+        .checked_sub_months(chrono::Months::new(13))
+        .unwrap()
+        .format("%Y-%m");
+    let last = today
+        .checked_sub_months(chrono::Months::new(12))
+        .unwrap()
+        .format("%Y-%m");
+    for forged in [
+        format!("e:t:{}", w.cashier),
+        format!("e:m:{}:{}", w.cashier, today.format("%Y-%m")),
+        format!("e:a:{}", w.cashier),
+        format!("e:w:{}", w.cashier),
+        format!("e:m:{}:{next}", w.master),
+        format!("e:m:{}:{old}", w.master),
+        format!("e:m:{}:2026-1", w.master),
+        format!("e:t:{}:x", w.master),
+        "e:t".to_string(),
+    ] {
+        let r = handle_callback(&mut conn, chat, &forged).await.unwrap();
+        assert!(r.text.contains("Кнопка устарела"), "{forged}: {}", r.text);
+        assert!(!r.text.contains("Айгуль") && !r.text.contains("Итого"));
+    }
+    // Двенадцать месяцев назад — можно, дальше назад кнопки нет.
+    let r = handle_callback(&mut conn, chat, &format!("e:m:{}:{last}", w.master))
+        .await
+        .unwrap();
+    assert!(r.text.contains("Итого за месяц: 0 с"), "{}", r.text);
+    assert!(!r.inline.iter().flatten().any(|b| b.text.starts_with('←')));
+    // Чужой чат кнопками работника ничего не видит.
+    let r = handle_callback(&mut conn, 952_999, &format!("e:t:{}", w.master))
+        .await
+        .unwrap();
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(!r.text.contains("Итого"));
+
+    let r = handle_message(&mut conn, chat, "🚪 Отключиться").await;
+    assert_eq!(r.keys, Keys::ConfirmLeave);
+    assert!(
+        r.text.contains("баллы") && r.text.contains("Заработок"),
+        "{}",
+        r.text
+    );
+    let r = handle_message(&mut conn, chat, "Да, отключиться").await;
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(employee_chats(&pool).await.is_empty());
+    let customers: i64 = sqlx::query_scalar("select count(*) from telegram_customers")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(customers, 0);
+}
+
+/// Ответ бота целиком на текст из чата `chat`.
+async fn handle_message(
+    conn: &mut sqlx::PgConnection,
+    chat: i64,
+    text: &str,
+) -> avtodom_server::api::telegram::Reply {
+    avtodom_server::api::telegram::handle_message(conn, chat, chat, Some(text), None)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_employee_is_rechecked_limited_and_never_asked(pool: PgPool) {
+    // Свободный текст работника не уходит в разбор вопросов; 30 действий в минуту; сменили
+    // телефон или отключили сотрудника — при следующем обращении чат отвязан (SPEC-23).
+    use avtodom_server::api::assistant::Assistant;
+    use avtodom_server::api::bot_staff::RESHARE;
+    use avtodom_server::api::telegram::{Keys, handle_callback, handle_message_with};
+    let w = seed(&pool).await;
+    set_phone(&pool, w.master, "0700 11-22-33").await;
+    let chat = 953_001i64;
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(
+        share(&mut conn, chat, "+996700112233", true).await.keys,
+        Keys::Employee
+    );
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    for q in ["сколько я заработал за неделю?", "когда зарплата", "123456"]
+    {
+        let r = handle_message_with(&mut conn, Some(&a), chat, chat, Some(q), None)
+            .await
+            .unwrap();
+        assert!(
+            r.text.starts_with("Нажмите кнопку внизу"),
+            "{q}: {}",
+            r.text
+        );
+        assert_eq!(r.keys, Keys::Employee);
+    }
+    assert_eq!(fake.requests().len(), 0);
+    let asked: i64 = sqlx::query_scalar("select count(*) from bot_questions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(asked, 0);
+
+    // Не больше 30 действий в минуту: 31-е — отказ, и кнопки под сообщением тоже.
+    sqlx::query("delete from telegram_hits")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for i in 0..30 {
+        let r = handle_message(&mut conn, chat, "💼 Сегодня").await;
+        assert!(r.text.contains("💼 Сегодня,"), "{i}: {}", r.text);
+    }
+    assert!(
+        handle_message(&mut conn, chat, "📅 Месяц")
+            .await
+            .text
+            .contains("Слишком часто")
+    );
+    assert!(
+        handle_callback(&mut conn, chat, &format!("e:t:{}", w.master))
+            .await
+            .unwrap()
+            .text
+            .contains("Слишком часто")
+    );
+    sqlx::query("delete from telegram_hits")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Телефон в карточке сменили мимо программы — чат отвязан при следующем обращении.
+    set_phone(&pool, w.master, "0700 00-00-01").await;
+    let r = handle_message(&mut conn, chat, "💼 Сегодня").await;
+    assert_eq!(r.text, RESHARE);
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(employee_chats(&pool).await.is_empty());
+    let gone = audit_data(&pool, "telegram.employee_unlink").await;
+    assert_eq!(gone.len(), 1);
+    assert_eq!(gone[0]["chat"], chat);
+    // Новый номер — подключается снова; сотрудника отключили — кнопка ничего не показывает.
+    assert_eq!(
+        share(&mut conn, chat, "+996700000001", true).await.keys,
+        Keys::Employee
+    );
+    sqlx::query("update employees set active = false where id = $1")
+        .bind(w.master)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = handle_callback(&mut conn, chat, &format!("e:m:{}", w.master))
+        .await
+        .unwrap();
+    assert_eq!(r.text, RESHARE);
+    assert!(employee_chats(&pool).await.is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_shows_cash_diff_like_profit_report(pool: PgPool) {
+    // Строка «Недостача / излишек кассы» в «📊 Сегодня» и в отчётах для вопросов — та же, что в
+    // отчёте о прибыли (ADR-065).
+    use avtodom_server::api::assistant::Assistant;
+    use avtodom_server::domain::money::format_som_signed;
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    let till = open_till(&pool, &w).await;
+    let shift: Uuid = sqlx::query_scalar("select id from shifts where branch_id = $1")
+        .bind(branch)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into cash_movements (id, branch_id, account_id, shift_id, kind, amount_tyiyn, doc_type, doc_id, user_id, device_id)
+         values ($1, $2, $3, $4, 'count_diff', -100000, 'shift', $4, $5, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(branch)
+    .bind(till)
+    .bind(shift)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let t = avtodom_server::api::reports::totals_for(&mut conn, branch, today, today)
+        .await
+        .unwrap();
+    assert_eq!(t.cash_diff_tyiyn, -100_000);
+    let line = format_som_signed(t.cash_diff_tyiyn);
+    let chat = 954_001i64;
+    link_owner(&pool, &w, chat).await;
+    let button = say(&mut conn, chat, "📊 Сегодня").await;
+    assert!(
+        button.contains(&format!("± недостача / излишек кассы: {line}")),
+        "{button}"
+    );
+    assert!(button.contains(&format!(
+        "ЧИСТАЯ ПРИБЫЛЬ: {}",
+        avtodom_server::domain::money::format_som(t.net_tyiyn)
+    )));
+
+    let (url, fake) = fake_service().await;
+    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let day = bishkek_today(&pool).await;
+    fake.push(vec![
+        Step::Reply(
+            200,
+            tool_use(
+                "profit_totals",
+                serde_json::json!({ "from": day, "to": day }),
+            ),
+        ),
+        Step::Echo,
+        Step::Reply(
+            200,
+            tool_use(
+                "profit_by_day",
+                serde_json::json!({ "from": day, "to": day }),
+            ),
+        ),
+        Step::Echo,
+    ]);
+    let reply = ask(&mut conn, &a, chat, "сколько прибыли сегодня?").await;
+    assert!(
+        reply.contains(&format!("Недостача / излишек кассы: {line}")),
+        "{reply}"
+    );
+    let reply = ask(&mut conn, &a, chat, "а по дням?").await;
+    assert!(
+        reply.contains(&format!("недостача / излишек кассы {line}")),
+        "{reply}"
+    );
+}

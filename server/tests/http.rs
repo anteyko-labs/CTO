@@ -3605,3 +3605,343 @@ async fn expense_articles_are_managed_by_owner(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::CONFLICT);
 }
+
+// ---------- Кабинет работника в боте (SPEC-23) ----------
+
+/// Ответ бота на сообщение или контакт из чата `chat`.
+async fn bot(
+    pool: &PgPool,
+    chat: i64,
+    text: Option<&str>,
+    phone: Option<&str>,
+) -> avtodom_server::api::telegram::Reply {
+    let mut conn = pool.acquire().await.unwrap();
+    let contact = phone.map(|p| avtodom_server::api::telegram::SharedContact {
+        phone: p.into(),
+        user_id: Some(chat),
+    });
+    avtodom_server::api::telegram::handle_message(&mut conn, chat, chat, text, contact)
+        .await
+        .unwrap()
+}
+
+/// Слова о выплатах: в кабинете работника их быть не должно (SPEC-23).
+fn no_payout_words(text: &str) {
+    let low = text.to_lowercase();
+    for w in ["выплат", "выдан", "выдач", "аванс", "к выплате", "остаток"]
+    {
+        assert!(!low.contains(w), "«{w}» в ответе работнику: {text}");
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
+    // Телефон задаёт только владелец; «Сегодня» и «Месяц» в боте — до тыйына как экран «Расчёт»,
+    // со сторно; выплат в боте нет; отключение и смена телефона отвязывают чат сразу (SPEC-23).
+    use avtodom_server::api::telegram::Keys;
+    use avtodom_server::domain::money::format_som;
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let post = |cookie: &str, uri: String, body: Value| {
+        let app = app.clone();
+        let cookie = cookie.to_string();
+        async move { call(&app, "POST", &uri, Some(&cookie), Some(body)).await }
+    };
+    let patch = |cookie: &str, uri: String, body: Value| {
+        let app = app.clone();
+        let cookie = cookie.to_string();
+        async move { call(&app, "PATCH", &uri, Some(&cookie), Some(body)).await }
+    };
+    let cashier = cashier_employee(&app, &owner).await;
+    let (s, _, m) = post(
+        &admin,
+        "/api/v1/employees".into(),
+        json!({ "full_name": "Бакыт", "is_master": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let master = m["id"].as_str().unwrap().to_string();
+
+    // Телефон: администратор не задаёт (403), владелец — да; правка в журнале с прежним значением.
+    let (s, _, _) = patch(
+        &admin,
+        format!("/api/v1/employees/{cashier}"),
+        json!({ "phone": "+996 555 12 34 56" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = patch(
+        &owner,
+        format!("/api/v1/employees/{cashier}"),
+        json!({ "phone": "12-34" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, e) = patch(
+        &owner,
+        format!("/api/v1/employees/{cashier}"),
+        json!({ "phone": "+996 555 12 34 56" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    assert_eq!(e["phone"], "+996 555 12 34 56");
+    let (s, _, _) = patch(
+        &owner,
+        format!("/api/v1/employees/{master}"),
+        json!({ "phone": "0700 11 22 33" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // Администратор правит имя, телефон шлёт тем же — это можно; сам телефон ему не виден.
+    let (s, _, e) = patch(
+        &admin,
+        format!("/api/v1/employees/{master}"),
+        json!({ "full_name": "Бакыт", "phone": "0700 11 22 33" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    assert!(e.get("phone").is_none());
+    let (_, _, list) = call(&app, "GET", "/api/v1/employees", Some(&admin), None).await;
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e.get("phone").is_none())
+    );
+    let (_, _, list) = call(&app, "GET", "/api/v1/employees", Some(&owner), None).await;
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["phone"] == "0700 11 22 33")
+    );
+    let edits = actions(&pool, "employee.update").await;
+    let first = edits
+        .iter()
+        .find(|d| d["phone"] == "+996 555 12 34 56")
+        .unwrap();
+    assert_eq!(first["before"]["phone"], "");
+    assert_eq!(first["phone_changed"], true);
+
+    // Работники подключаются своим номером.
+    let (cchat, mchat) = (950_101i64, 950_102i64);
+    let r = bot(&pool, cchat, None, Some("+996555123456")).await;
+    assert_eq!(r.keys, Keys::Employee, "{}", r.text);
+    assert!(r.text.contains("Айбек, вы подключены"), "{}", r.text);
+    let r = bot(&pool, mchat, None, Some("+996700112233")).await;
+    assert_eq!(r.keys, Keys::Employee, "{}", r.text);
+    let linked = actions(&pool, "telegram.employee_link").await;
+    assert_eq!(linked.len(), 2);
+
+    // День: продажа кассира (2 % с валовой), две замены мастера, премия со сторно, удержание,
+    // выплата и недостача при закрытии смены.
+    let item = product(&app, &owner, "Масло", 50_000, 0).await;
+    let (s, _, _) = post(
+        &owner,
+        "/api/v1/receipts".into(),
+        json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
+                "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 30_000 }] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, shift) = post(
+        &admin,
+        "/api/v1/shifts/open".into(),
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{shift}");
+    let sid = shift["id"].as_str().unwrap().to_string();
+    let mut totals = Vec::new();
+    for (kind, qty) in [("takeaway", 2), ("service", 1), ("service", 1)] {
+        let mut body = json!({
+            "op_id": Uuid::now_v7(), "sale_type": kind, "cashier_id": cashier,
+            "lines": [{ "kind": "piece", "product_id": item, "qty": qty, "unit_price_tyiyn": 50_000 }],
+            "payments": [{ "method": "cash", "amount_tyiyn": 50_000 * qty }]
+        });
+        if kind == "service" {
+            body["master_id"] = json!(master);
+        }
+        let (s, _, sale) = post(&admin, "/api/v1/sales".into(), body).await;
+        assert_eq!(s, StatusCode::OK, "{sale}");
+        totals.push(50_000 * qty);
+    }
+    for (kind, amount, comment) in [
+        ("bonus", 50_000, "за чистоту"),
+        ("penalty", 10_000, "опоздание"),
+    ] {
+        let (s, _, _) = post(
+            &owner,
+            "/api/v1/payroll/accruals".into(),
+            json!({ "op_id": Uuid::now_v7(), "employee_id": cashier, "kind": kind,
+                    "amount_tyiyn": amount, "comment": comment }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let bonus: Uuid = sqlx::query_scalar("select id from payroll_accruals where kind = 'bonus'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let (s, _, _) = post(
+        &owner,
+        format!("/api/v1/payroll/accruals/{bonus}/reverse"),
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, p) = post(
+        &owner,
+        "/api/v1/payouts".into(),
+        json!({ "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 1_000, "source": "outside" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let (till, _, _) = accounts_of(&app, &owner).await;
+    let counted = balance_of(&pool, &till).await - 20_000;
+    let (s, _, _) = post(
+        &admin,
+        format!("/api/v1/shifts/{sid}/close"),
+        json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": counted, "comment": "не хватает" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Экран «Расчёт»: день и месяц.
+    let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&owner), None).await;
+    let (_, _, month) = call(&app, "GET", "/api/v1/payroll/month", Some(&owner), None).await;
+    let of = |v: &Value, id: &str, key: &str| {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["employee_id"] == id)
+            .unwrap()[key]
+            .as_i64()
+            .unwrap()
+    };
+    let c_day = of(&day, &cashier, "accrued_tyiyn");
+    let m_day = of(&day, &master, "accrued_tyiyn");
+    let c_month = of(&month["rows"], &cashier, "accrued_tyiyn");
+    let m_month = of(&month["rows"], &master, "accrued_tyiyn");
+    // 2 % с валовой 4 × 470 с → 37,60 с; удержание 100 с; недостача 200 с; премия сторнирована.
+    assert_eq!(c_day, 3_760 - 10_000 - 20_000);
+    assert_eq!(m_day, 6_000);
+
+    let mut replies = Vec::new();
+    let r = bot(&pool, cchat, Some("💼 Сегодня"), None).await;
+    assert!(
+        r.text
+            .contains(&format!("Итого за день: {}", format_som(c_day))),
+        "{}",
+        r.text
+    );
+    assert!(
+        r.text.contains("% с чеков: 37,60 с") && r.text.contains("удержание недостачи: −200 с")
+    );
+    replies.push(r.text);
+    let r = bot(&pool, cchat, Some("📅 Месяц"), None).await;
+    assert!(
+        r.text
+            .contains(&format!("Итого за месяц: {}", format_som(c_month))),
+        "{}",
+        r.text
+    );
+    assert!(r.text.contains(&format!("— {}", format_som(c_day))));
+    assert!(r.text.contains("Оклад за этот месяц ещё не начислен"));
+    // Листается назад, вперёд дальше текущего — нет.
+    let texts: Vec<&str> = r.inline.iter().flatten().map(|b| b.text.as_str()).collect();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    assert!(texts[0].starts_with('←'));
+    replies.push(r.text);
+    let r = bot(&pool, mchat, Some("💼 Сегодня"), None).await;
+    assert!(
+        r.text.contains("за замены: 2 × 30 с = 60 с")
+            && r.text
+                .contains(&format!("Итого за день: {}", format_som(m_day))),
+        "{}",
+        r.text
+    );
+    replies.push(r.text);
+    let r = bot(&pool, mchat, Some("/месяц"), None).await;
+    assert!(
+        r.text
+            .contains(&format!("Итого за месяц: {}", format_som(m_month)))
+    );
+    replies.push(r.text);
+    let r = bot(&pool, cchat, Some("🧾 Удержания и премии"), None).await;
+    assert!(
+        r.text.contains("премия +500 с — за чистоту")
+            && r.text.contains("отменено: ошибка")
+            && r.text.contains("удержание −100 с — опоздание")
+            && r.text.contains("удержание недостачи −200 с"),
+        "{}",
+        r.text
+    );
+    replies.push(r.text);
+    // Мастер видит свои замены без сумм чеков; кассир — свои смены.
+    let r = bot(&pool, mchat, Some("🔧 Мои работы"), None).await;
+    assert_eq!(r.text.matches(" · Масло").count(), 2, "{}", r.text);
+    for t in &totals {
+        assert!(!r.text.contains(&format_som(*t)), "{}", r.text);
+    }
+    replies.push(r.text);
+    let r = bot(&pool, cchat, Some("🔧 Мои работы"), None).await;
+    assert!(
+        r.text.contains("смена № 1") && r.text.contains("недостача 200 с"),
+        "{}",
+        r.text
+    );
+    replies.push(r.text);
+    replies.push(
+        bot(&pool, cchat, Some("а когда зарплата?"), None)
+            .await
+            .text,
+    );
+    for t in &replies {
+        no_payout_words(t);
+    }
+
+    // Отключение сотрудника и смена телефона отвязывают чат сразу, в той же правке.
+    let (s, _, _) = patch(
+        &owner,
+        format!("/api/v1/employees/{master}"),
+        json!({ "active": false }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let r = bot(&pool, mchat, Some("💼 Сегодня"), None).await;
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(!r.text.contains("Итого"), "{}", r.text);
+    let (s, _, _) = patch(
+        &owner,
+        format!("/api/v1/employees/{cashier}"),
+        json!({ "phone": "0555 99 88 77" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let r = bot(&pool, cchat, Some("📅 Месяц"), None).await;
+    assert_eq!(r.keys, Keys::Contact);
+    assert!(!r.text.contains("Итого"), "{}", r.text);
+    let left: i64 = sqlx::query_scalar("select count(*) from telegram_employees")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+    let unlinked = actions(&pool, "telegram.employee_unlink").await;
+    assert_eq!(unlinked.len(), 2);
+    // Тот же номер в другой записи — чат не отвязывается.
+    let r = bot(&pool, cchat, None, Some("+996 555 998 877")).await;
+    assert_eq!(r.keys, Keys::Employee);
+    let (s, _, _) = patch(
+        &owner,
+        format!("/api/v1/employees/{cashier}"),
+        json!({ "phone": "+996555998877" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        bot(&pool, cchat, Some("💼 Сегодня"), None).await.keys,
+        Keys::Employee
+    );
+}

@@ -66,6 +66,8 @@ export interface Employee {
   is_cashier: boolean
   is_master: boolean
   active: boolean
+  /** Телефон для кабинета в боте (SPEC-23); сервер отдаёт его только владельцу. */
+  phone?: string
 }
 
 export interface Service {

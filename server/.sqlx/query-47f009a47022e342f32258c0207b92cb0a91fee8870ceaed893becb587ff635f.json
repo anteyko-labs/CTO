@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),\n             is_master = coalesce($5, is_master), active = coalesce($6, active)\n           where id = $1 and branch_id = $2\n           returning id, full_name, is_cashier, is_master, active",
+  "query": "update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),\n             is_master = coalesce($5, is_master), active = coalesce($6, active), phone = coalesce($7, phone)\n           where id = $1 and branch_id = $2\n           returning id, full_name, is_cashier, is_master, active, phone",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,11 @@
         "ordinal": 4,
         "name": "active",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "phone",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -36,7 +41,8 @@
         "Text",
         "Bool",
         "Bool",
-        "Bool"
+        "Bool",
+        "Text"
       ]
     },
     "nullable": [
@@ -44,8 +50,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "e6e452eac292c6d675d2b5512698009eb4c9378446489570c57d593c8ac749f2"
+  "hash": "47f009a47022e342f32258c0207b92cb0a91fee8870ceaed893becb587ff635f"
 }

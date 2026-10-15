@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into telegram_employees (chat_id, employee_id, branch_id, phone)\n           values ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a2066b343c9967bacb899e99f254b86842bdb9b946bd0b469b219edcbfa97ee7"
+}

@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, branch_id, full_name, is_cashier, is_master from employees\n           where active and length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 9\n             and right(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = $1\n           order by created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_master",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6390d2d7638ebb5600366a2bc440bdb2cd860ebfee47ef00bbe73ec391b80f10"
+}

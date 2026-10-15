@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.number, s.business_date, c.diff_tyiyn as \"diff?\",\n                  (c.id is not null\n                   and not exists (select 1 from shift_reopens r where r.close_id = c.id)) as \"closed!\"\n           from shifts s\n           left join lateral (select x.id, x.diff_tyiyn from shift_closes x\n                              where x.shift_id = s.id order by x.seq desc limit 1) c on true\n           where s.branch_id = $1 and s.cashier_employee_id = $2\n           order by s.business_date desc, s.opened_at desc\n           limit $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 2,
+        "name": "diff?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "closed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "bd22ebcd5ace4d7207e23c48ba3aba49fab57d294ee1e35630dee75b57984c88"
+}
