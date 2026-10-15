@@ -101,8 +101,21 @@ pub async fn audit(
     action: &str,
     entity: &str,
     entity_id: Option<Uuid>,
-    data: Value,
+    mut data: Value,
 ) -> AppResult<()> {
+    // Проведено кнопкой в чате бота (SPEC-24): источник и чат — в данных записи. Ключ
+    // «source» занят только этим; откуда платили по расходу — ключ «from».
+    if let Some(chat) = ctx.bot_chat {
+        match data.as_object_mut() {
+            Some(obj) => {
+                obj.insert("source".into(), Value::from("bot"));
+                obj.insert("chat".into(), Value::from(chat));
+            }
+            None => {
+                data = serde_json::json!({ "source": "bot", "chat": chat, "value": data });
+            }
+        }
+    }
     sqlx::query!(
         r#"insert into audit_log (id, branch_id, user_id, device_id, action, entity, entity_id, data)
            values ($1, $2, $3, $4, $5, $6, $7, $8)"#,

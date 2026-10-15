@@ -849,11 +849,11 @@ async fn update_product(
     Ok(Json(out))
 }
 
-#[derive(Deserialize)]
-struct PricesReq {
-    sale_price_tyiyn: Option<i64>,
-    pour_price_per_l_tyiyn: Option<i64>,
-    min_stock: Option<i64>,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct PricesReq {
+    pub sale_price_tyiyn: Option<i64>,
+    pub pour_price_per_l_tyiyn: Option<i64>,
+    pub min_stock: Option<i64>,
 }
 
 async fn update_prices(
@@ -862,6 +862,20 @@ async fn update_prices(
     Path(id): Path<Uuid>,
     Json(req): Json<PricesReq>,
 ) -> AppResult<Json<ProductOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = update_prices_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Цены и минимальный остаток товара.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn update_prices_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: PricesReq,
+) -> AppResult<ProductOut> {
     // Менять цену заведённого товара может только владелец (ADR-032).
     if (req.pour_price_per_l_tyiyn.is_some() || req.sale_price_tyiyn.is_some())
         && !ctx.user.is_owner()
@@ -886,21 +900,20 @@ async fn update_prices(
     {
         ops::check_amount(v)?;
     }
-    let mut tx = state.pool.begin().await?;
     let unit = sqlx::query_scalar!("select unit from products where id = $1", id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or(AppError::NotFound)?;
     if req.pour_price_per_l_tyiyn.is_some() && unit != "ml" {
         return Err(invalid("цена розлива только для масла"));
     }
-    ops::lock_pool(&mut tx, ctx.user.branch_id, id).await?;
+    ops::lock_pool(&mut *conn, ctx.user.branch_id, id).await?;
     let old = sqlx::query!(
         "select sale_price_tyiyn, pour_price_per_l_tyiyn, min_stock from branch_products where branch_id = $1 and product_id = $2",
         ctx.user.branch_id,
         id
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     sqlx::query!(
         r#"update branch_products set sale_price_tyiyn = coalesce($3, sale_price_tyiyn),
@@ -912,14 +925,14 @@ async fn update_prices(
         req.pour_price_per_l_tyiyn,
         req.min_stock
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     let name = sqlx::query_scalar!("select name from products where id = $1", id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         "product.prices",
         "product",
         Some(id),
@@ -932,9 +945,8 @@ async fn update_prices(
         }),
     )
     .await?;
-    let out = product_by_id(&mut tx, &ctx.user, id).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    let out = product_by_id(&mut *conn, &ctx.user, id).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize)]

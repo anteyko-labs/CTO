@@ -4,7 +4,8 @@
 //! Вопросы владельца обычным текстом разбирает `api::assistant` (SPEC-21, ADR-060).
 //! Доставка событий по каждому чату отдельно, пределы привязки и окно напоминаний — ADR-063.
 //! Кабинет работника (свой заработок по номеру из карточки сотрудника) — `api::bot_staff`
-//! (SPEC-23, ADR-066).
+//! (SPEC-23, ADR-066). Черновики операций владельца и кнопки «✅ Провести» / «✖ Отмена» —
+//! `api::bot_drafts` (SPEC-24, ADR-068).
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -509,6 +510,47 @@ pub struct Reply {
     pub keys: Keys,
     /// Кнопки под самим сообщением (SPEC-22); пусто — только кнопки внизу чата.
     pub inline: Vec<Vec<Button>>,
+    /// Следующее сообщение — черновик операции владельца с кнопками «✅ Провести» и «✖ Отмена»
+    /// (SPEC-24).
+    pub follow: Option<Follow>,
+}
+
+/// Отдельное сообщение после ответа: текст и кнопки под ним.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Follow {
+    pub text: String,
+    pub inline: Vec<Vec<Button>>,
+}
+
+impl Follow {
+    /// Черновик операции с кнопками подтверждения.
+    fn draft(d: &crate::api::bot_drafts::Shown) -> Self {
+        Self {
+            text: d.summary.clone(),
+            inline: vec![
+                crate::api::bot_drafts::buttons(d.id)
+                    .into_iter()
+                    .map(|(text, data)| Button { text, data })
+                    .collect(),
+            ],
+        }
+    }
+
+    fn markup(&self) -> Value {
+        inline_markup(&self.inline)
+    }
+}
+
+fn inline_markup(rows: &[Vec<Button>]) -> Value {
+    let rows: Vec<Vec<Value>> = rows
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|b| json!({ "text": b.text, "callback_data": b.data }))
+                .collect()
+        })
+        .collect();
+    json!({ "inline_keyboard": rows })
 }
 
 impl Reply {
@@ -517,6 +559,7 @@ impl Reply {
             text: text.into(),
             keys,
             inline: Vec::new(),
+            follow: None,
         }
     }
 
@@ -526,6 +569,7 @@ impl Reply {
             text: text.into(),
             keys: Keys::Customer,
             inline: rows,
+            follow: None,
         }
     }
 
@@ -534,16 +578,7 @@ impl Reply {
         if self.inline.is_empty() {
             return self.keys.markup();
         }
-        let rows: Vec<Vec<Value>> = self
-            .inline
-            .iter()
-            .map(|r| {
-                r.iter()
-                    .map(|b| json!({ "text": b.text, "callback_data": b.data }))
-                    .collect()
-            })
-            .collect();
-        json!({ "inline_keyboard": rows })
+        inline_markup(&self.inline)
     }
 }
 
@@ -824,14 +859,16 @@ async fn message(
     }
     let linked = customer.is_some() || employee.is_some();
     let answer = handle_text(conn, assistant, chat_id, text, linked).await?;
-    if let Some(r) = answer {
+    if let Some((r, draft)) = answer {
         // Код привязки мог прислать и не владелец: кнопки — по тому, кто он сейчас.
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
             owner_keys(conn, assistant, chat_id).await?
         } else {
             section_keys(customer.is_some(), employee.is_some())
         };
-        return Ok(Reply::new(r, keys));
+        let mut reply = Reply::new(r, keys);
+        reply.follow = draft.as_ref().map(Follow::draft);
+        return Ok(reply);
     }
     // Отключение — только кнопкой подтверждения или ровно «/стоп»: фраза, начатая со «стоп»
     // или «да», — обычный текст (ADR-063). Отключается всё, к чему подключён чат.
@@ -927,6 +964,12 @@ async fn callback(
 ) -> AppResult<Reply> {
     if chat_owner(conn, chat_id).await?.is_some() {
         let keys = owner_keys(conn, assistant, chat_id).await?;
+        // «✅ Провести» и «✖ Отмена» под черновиком операции (SPEC-24): чат, владелец, филиал и
+        // срок черновика сверяет `bot_drafts::press`.
+        if data.starts_with("d:") {
+            let text = crate::api::bot_drafts::press(conn, chat_id, data).await?;
+            return Ok(Reply::new(text, keys));
+        }
         return Ok(Reply::new(HELP, keys));
     }
     // Кнопки кабинета работника: сотрудник из данных кнопки сверяется с привязкой чата.
@@ -1461,16 +1504,19 @@ pub async fn mark_reminded(conn: &mut PgConnection, r: &Reminder) -> AppResult<(
 pub const CODE_TRIES_PER_CHAT: i64 = 5;
 pub const CODE_TRIES_TOTAL: i64 = 20;
 
+/// Ответ на текст и черновик операции владельца, если разбор вопроса его подготовил (SPEC-24).
+type Said = (String, Option<crate::api::bot_drafts::Shown>);
+
 /// Команды владельца, привязка кодом и вопросы текстом в режиме «💬 Спросить» (ADR-067).
 /// `None` — чат не владельца и это не код: дальше решает клиентская часть. `customer` — чат
 /// подключённого клиента: шесть цифр от него — не код, если не начинаются с `/start`.
-pub async fn handle_text(
+async fn handle_text(
     conn: &mut PgConnection,
     assistant: Option<&Assistant>,
     chat_id: i64,
     text: &str,
     customer: bool,
-) -> AppResult<Option<String>> {
+) -> AppResult<Option<Said>> {
     let text = text.trim();
     let word = text.split_whitespace().next().unwrap_or("").to_lowercase();
     let arg = text.split_whitespace().nth(1).unwrap_or("");
@@ -1483,7 +1529,7 @@ pub async fn handle_text(
         ""
     };
     if !code.is_empty() {
-        return link(conn, chat_id, code).await.map(Some);
+        return link(conn, chat_id, code).await.map(|t| Some((t, None)));
     }
     let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? else {
         return Ok(None);
@@ -1495,24 +1541,27 @@ pub async fn handle_text(
     };
     // Кнопки клиента из чата владельца — не вопрос и не команда.
     if CUSTOMER_BUTTONS.contains(&text) {
-        return Ok(Some(help));
+        return Ok(Some((help, None)));
     }
     // Вопросы — только в режиме «💬 Спросить», который владелец включает сам (ADR-067).
     // Без ключа сервиса режим не включается: кнопки нет, на её текст — подсказка.
     if text == BTN_ASK || text == "/спросить" {
         if assistant.is_none() {
-            return Ok(Some(help));
+            return Ok(Some((help, None)));
         }
         ask_start(conn, chat_id, user_id, branch_id).await?;
-        return Ok(Some(ASK_PROMPT.into()));
+        return Ok(Some((ASK_PROMPT.into(), None)));
     }
     if text == BTN_END || text == "/закончить" {
         ask_stop(conn, chat_id, user_id, branch_id, "кнопкой").await?;
-        return Ok(Some(if assistant.is_some() {
-            ASK_ENDED.into()
-        } else {
-            help
-        }));
+        return Ok(Some((
+            if assistant.is_some() {
+                ASK_ENDED.into()
+            } else {
+                help
+            },
+            None,
+        )));
     }
     let mode = ask_mode(conn, chat_id, user_id, branch_id).await?;
     let question = is_question(text);
@@ -1524,7 +1573,7 @@ pub async fn handle_text(
         ask_touch(conn, chat_id).await?;
         return assistant::answer(conn, a, chat_id, user_id, branch_id, text)
             .await
-            .map(Some);
+            .map(|a| Some((a.text, a.draft)));
     }
     // Команды работают и в режиме, и без него; режим они не закрывают, а продлевают.
     let reply = match command(text).as_str() {
@@ -1537,16 +1586,16 @@ pub async fn handle_text(
         if mode == AskMode::On {
             ask_touch(conn, chat_id).await?;
         }
-        return Ok(Some(r));
+        return Ok(Some((r, None)));
     }
     // Режим закрылся по времени: первый же текст после — сообщение об этом, без обращения
     // к сервису разбора.
     if assistant.is_some() && mode == AskMode::Expired && question {
         ask_stop(conn, chat_id, user_id, branch_id, "10 минут без сообщений").await?;
-        return Ok(Some(ASK_EXPIRED.into()));
+        return Ok(Some((ASK_EXPIRED.into(), None)));
     }
     // Вне режима свободный текст — подсказка с кнопками, как без ключа (SPEC-18).
-    Ok(Some(help))
+    Ok(Some((help, None)))
 }
 
 /// Привязка чата к владельцу по коду — одной транзакцией с журналом. Неверные коды
@@ -1653,7 +1702,7 @@ async fn code_flood(conn: &mut PgConnection) -> AppResult<()> {
 }
 
 /// «Айгуль — 308,00 с (2 % с чеков 308,00 с)» по строкам начислений.
-fn staff_lines(staff: &[crate::api::payroll::StaffPay]) -> String {
+pub(crate) fn staff_lines(staff: &[crate::api::payroll::StaffPay]) -> String {
     if staff.is_empty() {
         return "  пока никому не начислено".into();
     }
@@ -2255,7 +2304,8 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
                 None => None,
             }
             .unwrap_or_else(|| {
-                if txt("source") == "outside" {
+                // «from» — с SPEC-24 («source» в журнале — источник: программа или бот).
+                if txt("from") == "outside" || txt("source") == "outside" {
                     "из своих, мимо касс".into()
                 } else {
                     "из кассы".into()
@@ -2992,6 +3042,17 @@ async fn is_asking_chat(pool: &PgPool, chat_id: i64) -> bool {
     }
 }
 
+/// Ответ в чат и следом — черновик операции с кнопками, если он есть (SPEC-24). Черновик
+/// уходит, только если ответ принят: иначе кнопки пришли бы без объяснения.
+async fn send_reply(api: &Api, chat_id: i64, r: &Reply) {
+    let sent = api.send_with(chat_id, &r.text, Some(r.markup())).await;
+    if let Some(f) = &r.follow
+        && sent == Delivery::Sent
+    {
+        api.send_with(chat_id, &f.text, Some(f.markup())).await;
+    }
+}
+
 async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
     let owner_turn = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let mut offset = match pool.acquire().await {
@@ -3025,9 +3086,7 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                     Err(e) => Err(AppError::from(e)),
                 };
                 match reply {
-                    Ok(r) => {
-                        api.send_with(chat_id, &r.text, Some(r.markup())).await;
-                    }
+                    Ok(r) => send_reply(&api, chat_id, &r).await,
                     Err(e) => {
                         tracing::warn!(error = %e, "телеграм: кнопка не обработана");
                         api.send(chat_id, "Не получилось, попробуйте позже.").await;
@@ -3073,9 +3132,7 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                         Err(e) => Err(AppError::from(e)),
                     };
                     match reply {
-                        Ok(r) => {
-                            api.send_with(chat_id, &r.text, Some(r.markup())).await;
-                        }
+                        Ok(r) => send_reply(&api, chat_id, &r).await,
                         Err(e) => {
                             tracing::warn!(error = %e, "телеграм: вопрос владельца не обработан");
                             api.send(chat_id, "Не получилось, попробуйте позже.").await;
@@ -3099,9 +3156,7 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                 Err(e) => Err(AppError::from(e)),
             };
             match reply {
-                Ok(r) => {
-                    api.send_with(m.chat.id, &r.text, Some(r.markup())).await;
-                }
+                Ok(r) => send_reply(&api, m.chat.id, &r).await,
                 Err(e) => {
                     tracing::warn!(error = %e, "телеграм: команда не обработана");
                     api.send(m.chat.id, "Не получилось, попробуйте позже.")

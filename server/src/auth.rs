@@ -67,6 +67,24 @@ impl CurrentUser {
 pub struct Ctx {
     pub user: CurrentUser,
     pub device_id: Uuid,
+    /// Операция пришла из чата владельца в Телеграме (SPEC-24): журнал помечает источник «бот»
+    /// и чат. `None` — программа.
+    pub bot_chat: Option<i64>,
+}
+
+/// Устройство операций, проведённых владельцем через Телеграм-бот (SPEC-24): одно на всех,
+/// чтобы в журнале и документах было видно, что это не касса и не телефон владельца.
+pub const TELEGRAM_DEVICE: Uuid = Uuid::from_u128(0x7e1e_6a3d_0000_4000_8000_0000_0000_0b07);
+
+impl Ctx {
+    /// Владелец, проводящий операцию кнопкой в чате бота.
+    pub fn bot(user: CurrentUser, chat_id: i64) -> Self {
+        Self {
+            user,
+            device_id: TELEGRAM_DEVICE,
+            bot_chat: Some(chat_id),
+        }
+    }
 }
 
 pub async fn hash_password(password: String) -> AppResult<String> {
@@ -188,7 +206,11 @@ impl FromRequestParts<AppState> for Ctx {
     ) -> Result<Self, Self::Rejection> {
         let user = CurrentUser::from_request_parts(parts, state).await?;
         let device_id = device_id(parts).ok_or_else(|| invalid("нужен заголовок X-Device-Id"))?;
-        Ok(Self { user, device_id })
+        Ok(Self {
+            user,
+            device_id,
+            bot_chat: None,
+        })
     }
 }
 

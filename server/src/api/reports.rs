@@ -39,35 +39,35 @@ pub struct Totals {
 }
 
 #[derive(Serialize)]
-struct CategoryRow {
-    name: String,
-    revenue_tyiyn: i64,
-    cost_tyiyn: i64,
-    gross_tyiyn: i64,
+pub(crate) struct CategoryRow {
+    pub(crate) name: String,
+    pub(crate) revenue_tyiyn: i64,
+    pub(crate) cost_tyiyn: i64,
+    pub(crate) gross_tyiyn: i64,
 }
 
 #[derive(Serialize)]
-struct DayRow {
-    date: NaiveDate,
-    revenue_tyiyn: i64,
-    gross_tyiyn: i64,
-    payroll_tyiyn: i64,
-    expenses_tyiyn: i64,
+pub(crate) struct DayRow {
+    pub(crate) date: NaiveDate,
+    pub(crate) revenue_tyiyn: i64,
+    pub(crate) gross_tyiyn: i64,
+    pub(crate) payroll_tyiyn: i64,
+    pub(crate) expenses_tyiyn: i64,
     /// Комиссия банка и скидки баллами — чтобы «чистая» сходилась на глаз.
-    fee_tyiyn: i64,
-    bonus_tyiyn: i64,
+    pub(crate) fee_tyiyn: i64,
+    pub(crate) bonus_tyiyn: i64,
     /// Недостача (минус) или излишек (плюс) кассы.
-    cash_diff_tyiyn: i64,
-    net_tyiyn: i64,
+    pub(crate) cash_diff_tyiyn: i64,
+    pub(crate) net_tyiyn: i64,
 }
 
 /// Часы одного дня — для графика «Сегодня».
 #[derive(Serialize)]
-struct HourRow {
-    hour: i32,
-    revenue_tyiyn: i64,
-    gross_tyiyn: i64,
-    sales_count: i64,
+pub(crate) struct HourRow {
+    pub(crate) hour: i32,
+    pub(crate) revenue_tyiyn: i64,
+    pub(crate) gross_tyiyn: i64,
+    pub(crate) sales_count: i64,
 }
 
 #[derive(Serialize)]
@@ -77,18 +77,18 @@ pub(crate) struct ArticleRow {
 }
 
 #[derive(Serialize)]
-struct ProfitOut {
-    from: NaiveDate,
-    to: NaiveDate,
-    totals: Totals,
-    categories: Vec<CategoryRow>,
-    days: Vec<DayRow>,
-    articles: Vec<ArticleRow>,
-    warnings: Vec<String>,
+pub(crate) struct ProfitOut {
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
+    pub(crate) totals: Totals,
+    pub(crate) categories: Vec<CategoryRow>,
+    pub(crate) days: Vec<DayRow>,
+    pub(crate) articles: Vec<ArticleRow>,
+    pub(crate) warnings: Vec<String>,
     /// Кто сколько заработал за период.
-    staff: Vec<crate::api::payroll::StaffPay>,
+    pub(crate) staff: Vec<crate::api::payroll::StaffPay>,
     /// По часам — только когда период один день.
-    hours: Vec<HourRow>,
+    pub(crate) hours: Vec<HourRow>,
 }
 
 #[derive(Deserialize)]
@@ -259,13 +259,23 @@ async fn profit(
     user: CurrentUser,
     Query(q): Query<Period>,
 ) -> AppResult<Json<ProfitOut>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(profit_data(&mut conn, &user, q.from, q.to).await?))
+}
+
+/// Отчёт о прибыли за период — экран и бот владельца (SPEC-24) берут его отсюда.
+pub(crate) async fn profit_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<ProfitOut> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let mut conn = state.pool.acquire().await?;
-    let today = today(&mut conn).await?;
-    let to = q.to.unwrap_or(today);
-    let from = q.from.unwrap_or(to);
+    let today = today(&mut *conn).await?;
+    let to = to.unwrap_or(today);
+    let from = from.unwrap_or(to);
     if from > to {
         return Err(invalid("начало периода позже конца"));
     }
@@ -273,7 +283,7 @@ async fn profit(
         return Err(invalid("период не больше года"));
     }
     let branch_id = user.branch_id;
-    let totals = totals_for(&mut conn, branch_id, from, to).await?;
+    let totals = totals_for(&mut *conn, branch_id, from, to).await?;
 
     let categories = sqlx::query!(
         r#"select c.name as "name!",
@@ -351,7 +361,7 @@ async fn profit(
     })
     .collect();
 
-    let articles = articles_for(&mut conn, branch_id, from, to).await?;
+    let articles = articles_for(&mut *conn, branch_id, from, to).await?;
 
     let mut warnings = Vec::new();
     let review = sqlx::query_scalar!(
@@ -392,7 +402,7 @@ async fn profit(
         ));
     }
 
-    let staff = crate::api::payroll::staff_pay(&mut conn, branch_id, from, to).await?;
+    let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, from, to).await?;
     let hours = if from == to {
         sqlx::query!(
             r#"select extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as "hour!",
@@ -418,7 +428,7 @@ async fn profit(
     } else {
         Vec::new()
     };
-    Ok(Json(ProfitOut {
+    Ok(ProfitOut {
         from,
         to,
         totals,
@@ -428,50 +438,50 @@ async fn profit(
         warnings,
         staff,
         hours,
-    }))
+    })
 }
 
 #[derive(Serialize)]
-struct AccountRow {
-    name: String,
-    balance_tyiyn: i64,
+pub(crate) struct AccountRow {
+    pub(crate) name: String,
+    pub(crate) balance_tyiyn: i64,
 }
 
 #[derive(Serialize)]
-struct Dashboard {
-    date: NaiveDate,
-    totals: Totals,
-    returns_tyiyn: i64,
-    average_check_tyiyn: i64,
-    accounts: Vec<AccountRow>,
-    money_total_tyiyn: i64,
-    shift_open: bool,
-    shift_cashier: Option<String>,
-    to_pay_tyiyn: i64,
-    debts_in_tyiyn: i64,
-    debts_out_tyiyn: i64,
-    low_stock: i64,
-    needs_review: i64,
+pub(crate) struct Dashboard {
+    pub(crate) date: NaiveDate,
+    pub(crate) totals: Totals,
+    pub(crate) returns_tyiyn: i64,
+    pub(crate) average_check_tyiyn: i64,
+    pub(crate) accounts: Vec<AccountRow>,
+    pub(crate) money_total_tyiyn: i64,
+    pub(crate) shift_open: bool,
+    pub(crate) shift_cashier: Option<String>,
+    pub(crate) to_pay_tyiyn: i64,
+    pub(crate) debts_in_tyiyn: i64,
+    pub(crate) debts_out_tyiyn: i64,
+    pub(crate) low_stock: i64,
+    pub(crate) needs_review: i64,
     /// Залежалые: остаток есть, продаж нет дольше срока (ADR-039).
-    stale_stock: i64,
+    pub(crate) stale_stock: i64,
     /// Кто сколько заработал сегодня.
-    staff: Vec<crate::api::payroll::StaffPay>,
+    pub(crate) staff: Vec<crate::api::payroll::StaffPay>,
     /// Для сравнения: вчера и неделю назад к этому же часу.
-    compare: Compare,
+    pub(crate) compare: Compare,
 }
 
 #[derive(Serialize, Default)]
-struct DayPart {
-    revenue_tyiyn: i64,
-    gross_tyiyn: i64,
-    sales_count: i64,
+pub(crate) struct DayPart {
+    pub(crate) revenue_tyiyn: i64,
+    pub(crate) gross_tyiyn: i64,
+    pub(crate) sales_count: i64,
 }
 
 #[derive(Serialize, Default)]
-struct Compare {
-    today: DayPart,
-    yesterday: DayPart,
-    week_ago: DayPart,
+pub(crate) struct Compare {
+    pub(crate) today: DayPart,
+    pub(crate) yesterday: DayPart,
+    pub(crate) week_ago: DayPart,
 }
 
 /// Продажи дня до того же времени суток, что сейчас: честное «к вчера на этот час».
@@ -500,12 +510,12 @@ async fn day_until_now(
 }
 
 #[derive(Serialize)]
-struct HeatCell {
+pub(crate) struct HeatCell {
     /// День недели: 1 — понедельник … 7 — воскресенье.
-    dow: i32,
-    hour: i32,
-    revenue_tyiyn: i64,
-    sales_count: i64,
+    pub(crate) dow: i32,
+    pub(crate) hour: i32,
+    pub(crate) revenue_tyiyn: i64,
+    pub(crate) sales_count: i64,
 }
 
 #[derive(Deserialize)]
@@ -519,10 +529,20 @@ async fn heatmap(
     user: CurrentUser,
     Query(q): Query<HeatQuery>,
 ) -> AppResult<Json<Vec<HeatCell>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(heatmap_data(&mut conn, &user, q.days).await?))
+}
+
+/// Продажи по дню недели и часу — экран и бот владельца (SPEC-24).
+pub(crate) async fn heatmap_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    days: Option<i64>,
+) -> AppResult<Vec<HeatCell>> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let days = q.days.unwrap_or(28).clamp(7, 366);
+    let days = days.unwrap_or(28).clamp(7, 366);
     let rows = sqlx::query!(
         r#"select extract(isodow from s.created_at at time zone 'Asia/Bishkek')::int as "dow!",
                   extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as "hour!",
@@ -535,7 +555,7 @@ async fn heatmap(
         user.branch_id,
         i32::try_from(days).unwrap_or(28)
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .map(|r| HeatCell {
@@ -545,17 +565,25 @@ async fn heatmap(
         sales_count: r.count,
     })
     .collect();
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Dashboard>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(dashboard_data(&mut conn, &user).await?))
+}
+
+/// Сводка владельца на сегодня — экран и бот владельца (SPEC-24).
+pub(crate) async fn dashboard_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+) -> AppResult<Dashboard> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let mut conn = state.pool.acquire().await?;
-    let date = today(&mut conn).await?;
+    let date = today(&mut *conn).await?;
     let branch_id = user.branch_id;
-    let totals = totals_for(&mut conn, branch_id, date, date).await?;
+    let totals = totals_for(&mut *conn, branch_id, date, date).await?;
     let returns = sqlx::query_scalar!(
         r#"select coalesce(sum(-total_tyiyn), 0)::bigint as "v!" from sales
            where branch_id = $1 and business_date = $2 and kind = 'return'"#,
@@ -620,15 +648,15 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
     )
     .fetch_one(&mut *conn)
     .await?;
-    let (_, stale) = crate::api::receipts::stale_list(&mut conn, branch_id).await?;
+    let (_, stale) = crate::api::receipts::stale_list(&mut *conn, branch_id).await?;
     let revenue = totals.goods_tyiyn + totals.services_tyiyn;
     let compare = Compare {
-        today: day_until_now(&mut conn, branch_id, date).await?,
-        yesterday: day_until_now(&mut conn, branch_id, date - chrono::Duration::days(1)).await?,
-        week_ago: day_until_now(&mut conn, branch_id, date - chrono::Duration::days(7)).await?,
+        today: day_until_now(&mut *conn, branch_id, date).await?,
+        yesterday: day_until_now(&mut *conn, branch_id, date - chrono::Duration::days(1)).await?,
+        week_ago: day_until_now(&mut *conn, branch_id, date - chrono::Duration::days(7)).await?,
     };
-    let staff = crate::api::payroll::staff_pay(&mut conn, branch_id, date, date).await?;
-    Ok(Json(Dashboard {
+    let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, date, date).await?;
+    Ok(Dashboard {
         compare,
         staff,
         date,
@@ -651,24 +679,24 @@ async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResul
         low_stock: stock.low,
         needs_review: stock.review,
         stale_stock: i64::try_from(stale.len()).unwrap_or(i64::MAX),
-    }))
+    })
 }
 
 #[derive(Deserialize)]
-struct GiftsQuery {
-    from: NaiveDate,
-    to: NaiveDate,
+pub(crate) struct GiftsQuery {
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
 }
 
 #[derive(Serialize)]
-struct GiftRow {
-    product_id: Uuid,
-    name: String,
-    unit: String,
+pub(crate) struct GiftRow {
+    pub(crate) product_id: Uuid,
+    pub(crate) name: String,
+    pub(crate) unit: String,
     /// Подарено за вычетом возвратов: штук или мл.
-    qty: i64,
-    checks: i64,
-    cost_tyiyn: i64,
+    pub(crate) qty: i64,
+    pub(crate) checks: i64,
+    pub(crate) cost_tyiyn: i64,
 }
 
 /// Отчёт по подаркам: что и сколько подарили и во что это обошлось (SPEC-11). Только владелец.
@@ -677,6 +705,16 @@ async fn gifts(
     user: CurrentUser,
     Query(q): Query<GiftsQuery>,
 ) -> AppResult<Json<Vec<GiftRow>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(gifts_data(&mut conn, &user, q).await?))
+}
+
+/// Подарки за период — экран и бот владельца (SPEC-24).
+pub(crate) async fn gifts_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    q: GiftsQuery,
+) -> AppResult<Vec<GiftRow>> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
@@ -699,7 +737,7 @@ async fn gifts(
         q.from,
         q.to
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }

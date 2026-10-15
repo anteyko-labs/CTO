@@ -51,7 +51,15 @@ async fn list_accounts(
     user: CurrentUser,
 ) -> AppResult<Json<Vec<AccountOut>>> {
     let mut conn = state.pool.acquire().await?;
-    ensure_accounts(&mut conn, user.branch_id).await?;
+    Ok(Json(accounts_data(&mut conn, &user).await?))
+}
+
+/// Кассы с остатками — экран «Деньги» и бот владельца (SPEC-24).
+pub(crate) async fn accounts_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+) -> AppResult<Vec<AccountOut>> {
+    ensure_accounts(&mut *conn, user.branch_id).await?;
     // Сейф владельца администратору не показываем, перевести в него он может (SPEC-05).
     let rows = sqlx::query_as!(
         AccountOut,
@@ -64,7 +72,7 @@ async fn list_accounts(
     )
     .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 /// Новый филиал получает свои кассы при первом обращении: касса, счёт и два сейфа (ADR-037).
@@ -448,6 +456,17 @@ async fn list_shifts(
     Query(q): Query<PeriodQuery>,
 ) -> AppResult<Json<Vec<ShiftOut>>> {
     let mut conn = state.pool.acquire().await?;
+    Ok(Json(shifts_data(&mut conn, &user, q.from, q.to).await?))
+}
+
+/// Смены за период с закрытием — экран «Смены» и бот владельца (SPEC-24).
+pub(crate) async fn shifts_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<Vec<ShiftOut>> {
+    let q = PeriodQuery { from, to };
     // Администратору — только последние 7 дней (SPEC-05, права).
     let earliest = if user.is_owner() {
         None
@@ -478,9 +497,9 @@ async fn list_shifts(
     .await?;
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        out.push(load_shift(&mut conn, user.branch_id, id).await?);
+        out.push(load_shift(&mut *conn, user.branch_id, id).await?);
     }
-    Ok(Json(out))
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -933,13 +952,13 @@ async fn handover_shift(
     Ok(Json(out))
 }
 
-#[derive(Deserialize)]
-struct MovementReq {
-    op_id: Uuid,
-    account_id: Option<Uuid>,
-    kind: String,
-    amount_tyiyn: i64,
-    comment: String,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct MovementReq {
+    pub op_id: Uuid,
+    pub account_id: Option<Uuid>,
+    pub kind: String,
+    pub amount_tyiyn: i64,
+    pub comment: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -973,6 +992,19 @@ async fn post_movement(
     ctx: Ctx,
     Json(req): Json<MovementReq>,
 ) -> AppResult<Json<BalanceOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_movement_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Внесение или изъятие.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_movement_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: MovementReq,
+) -> AppResult<BalanceOut> {
     const KIND: &str = "cash.movement";
     if !matches!(req.kind.as_str(), "cash_in" | "cash_out") {
         return Err(invalid("вид движения: внесение или изъятие"));
@@ -984,33 +1016,32 @@ async fn post_movement(
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите, за что"));
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let account_id = match req.account_id {
         Some(id) => id,
-        None => default_account(&mut tx, ctx.user.branch_id).await?,
+        None => default_account(&mut *conn, ctx.user.branch_id).await?,
     };
-    check_account_access(&mut tx, &ctx, account_id).await?;
+    check_account_access(&mut *conn, ctx, account_id).await?;
     // Из сейфа и со счёта деньги двигает владелец (ADR-037): администратор — только касса смены.
     if !ctx.user.is_owner() {
         let kind = sqlx::query_scalar!("select kind from cash_accounts where id = $1", account_id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await?;
         if kind != "register" {
             return Err(AppError::Forbidden);
         }
     }
-    require_open_shift(&mut tx, ctx.user.branch_id, account_id).await?;
+    require_open_shift(&mut *conn, ctx.user.branch_id, account_id).await?;
     let amount = if req.kind == "cash_in" {
         req.amount_tyiyn
     } else {
         -req.amount_tyiyn
     };
     let balance = add_movement(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         CashEntry {
             account_id,
             kind: &req.kind,
@@ -1022,8 +1053,8 @@ async fn post_movement(
     )
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "cash",
         Some(account_id),
@@ -1034,9 +1065,8 @@ async fn post_movement(
         account_id,
         balance_tyiyn: balance,
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -1137,14 +1167,14 @@ async fn reverse_movement(
     Ok(Json(out))
 }
 
-#[derive(Deserialize)]
-struct TransferReq {
-    op_id: Uuid,
-    from_account_id: Uuid,
-    to_account_id: Uuid,
-    amount_tyiyn: i64,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct TransferReq {
+    pub op_id: Uuid,
+    pub from_account_id: Uuid,
+    pub to_account_id: Uuid,
+    pub amount_tyiyn: i64,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 struct TransferArgs<'a> {
@@ -1230,6 +1260,19 @@ async fn post_transfer(
     ctx: Ctx,
     Json(req): Json<TransferReq>,
 ) -> AppResult<Json<Value>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_transfer_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Перемещение между кассами.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_transfer_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: TransferReq,
+) -> AppResult<Value> {
     const KIND: &str = "cash.transfer";
     if req.from_account_id == req.to_account_id {
         return Err(invalid("кассы должны быть разные"));
@@ -1238,16 +1281,15 @@ async fn post_transfer(
         return Err(invalid("сумма больше нуля"));
     }
     crate::ops::check_amount(req.amount_tyiyn)?;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let from_kind = sqlx::query_scalar!(
         "select kind from cash_accounts where id = $1 and branch_id = $2",
         req.from_account_id,
         ctx.user.branch_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("касса не найдена"))?;
     // Администратор переводит только из кассы смены: из сейфов и со счёта деньги двигает
@@ -1256,14 +1298,14 @@ async fn post_transfer(
         return Err(AppError::Forbidden);
     }
     lock_accounts(
-        &mut tx,
+        &mut *conn,
         ctx.user.branch_id,
         &[req.from_account_id, req.to_account_id],
     )
     .await?;
     let (id, number) = transfer_tx(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         TransferArgs {
             from: req.from_account_id,
             to: req.to_account_id,
@@ -1274,8 +1316,8 @@ async fn post_transfer(
     )
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "cash",
         Some(id),
@@ -1283,9 +1325,8 @@ async fn post_transfer(
     )
     .await?;
     let out = json!({ "id": id, "number": number });
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 async fn reverse_transfer(
@@ -1384,17 +1425,17 @@ async fn reverse_transfer(
 }
 
 #[derive(Serialize)]
-struct MovementOut {
-    id: Uuid,
-    kind: String,
-    amount_tyiyn: i64,
-    comment: String,
-    doc_type: String,
-    doc_id: Option<Uuid>,
-    user_name: String,
-    created_at: DateTime<Utc>,
+pub(crate) struct MovementOut {
+    pub(crate) id: Uuid,
+    pub(crate) kind: String,
+    pub(crate) amount_tyiyn: i64,
+    pub(crate) comment: String,
+    pub(crate) doc_type: String,
+    pub(crate) doc_id: Option<Uuid>,
+    pub(crate) user_name: String,
+    pub(crate) created_at: DateTime<Utc>,
     /// Можно отменить сторно: внесение, изъятие или перемещение, ещё не отменённые.
-    reversible: bool,
+    pub(crate) reversible: bool,
 }
 
 async fn account_movements(
@@ -1402,13 +1443,23 @@ async fn account_movements(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<Vec<MovementOut>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(movements_data(&mut conn, &user, id).await?))
+}
+
+/// Последние 200 движений кассы — экран и бот владельца (SPEC-24).
+pub(crate) async fn movements_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    id: Uuid,
+) -> AppResult<Vec<MovementOut>> {
     // Движения сейфа владельца администратору не отдаём, как и его остаток (ADR-037).
     let owner_only = sqlx::query_scalar!(
         "select owner_only from cash_accounts where id = $1 and branch_id = $2",
         id,
         user.branch_id
     )
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
     if owner_only && !user.is_owner() {
@@ -1432,7 +1483,7 @@ async fn account_movements(
         id,
         user.branch_id
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }

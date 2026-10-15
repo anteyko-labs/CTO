@@ -357,6 +357,7 @@ fn reply(e: &Employee, text: String, both: bool, mut rows: Vec<Vec<Button>>) -> 
         text,
         keys: Keys::Employee,
         inline: rows,
+        follow: None,
     }
 }
 

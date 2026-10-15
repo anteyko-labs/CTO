@@ -704,7 +704,15 @@ pub(crate) async fn latest(
     Ok(rows
         .into_iter()
         .map(|r| {
-            let (title, details) = describe(&r.action, &r.data);
+            let (title, mut details) = describe(&r.action, &r.data);
+            // Проведено кнопкой в Телеграм-боте (SPEC-24) — видно и на экране.
+            if r.data.get("source").and_then(Value::as_str) == Some("bot") {
+                details = if details.is_empty() {
+                    "через бот".into()
+                } else {
+                    format!("{details} · через бот")
+                };
+            }
             NotificationOut {
                 id: r.id,
                 action: r.action,

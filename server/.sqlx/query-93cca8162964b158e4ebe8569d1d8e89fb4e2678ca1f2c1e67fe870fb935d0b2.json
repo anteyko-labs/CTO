@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_drafts (id, chat_id, user_id, branch_id, kind, payload, summary, op_id,\n                                   expires_at)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, now() + make_interval(mins => $9))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93cca8162964b158e4ebe8569d1d8e89fb4e2678ca1f2c1e67fe870fb935d0b2"
+}

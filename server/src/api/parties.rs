@@ -59,23 +59,23 @@ pub struct PartyOut {
 }
 
 #[derive(Serialize)]
-struct ContactOut {
-    id: Uuid,
-    full_name: String,
-    phone: String,
-    position: String,
-    inn: String,
-    active: bool,
+pub(crate) struct ContactOut {
+    pub(crate) id: Uuid,
+    pub(crate) full_name: String,
+    pub(crate) phone: String,
+    pub(crate) position: String,
+    pub(crate) inn: String,
+    pub(crate) active: bool,
 }
 
 #[derive(Serialize)]
-struct VehicleOut {
-    id: Uuid,
-    plate: String,
-    brand: String,
-    model: String,
-    comment: String,
-    active: bool,
+pub(crate) struct VehicleOut {
+    pub(crate) id: Uuid,
+    pub(crate) plate: String,
+    pub(crate) brand: String,
+    pub(crate) model: String,
+    pub(crate) comment: String,
+    pub(crate) active: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -900,34 +900,34 @@ struct ReconQuery {
 
 #[derive(Serialize)]
 pub(crate) struct ReconRow {
-    date: NaiveDate,
-    document: String,
+    pub(crate) date: NaiveDate,
+    pub(crate) document: String,
     /// Документ-основание: по нему касса находит свой чек в истории долга.
-    doc_type: String,
-    doc_id: Option<Uuid>,
+    pub(crate) doc_type: String,
+    pub(crate) doc_id: Option<Uuid>,
     /// В пользу точки: отгрузили клиенту / оплатили поставщику.
-    debit_tyiyn: i64,
+    pub(crate) debit_tyiyn: i64,
     /// В пользу контрагента: клиент оплатил / поставщик привёз.
-    credit_tyiyn: i64,
-    comment: String,
+    pub(crate) credit_tyiyn: i64,
+    pub(crate) comment: String,
 }
 
 #[derive(Serialize)]
 pub(crate) struct ReconOut {
-    party_id: Uuid,
-    name: String,
-    kind: String,
-    role: String,
-    inn: String,
-    phone: String,
-    from: NaiveDate,
-    to: NaiveDate,
+    pub(crate) party_id: Uuid,
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) role: String,
+    pub(crate) inn: String,
+    pub(crate) phone: String,
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
     /// Сальдо в пользу точки: больше нуля — контрагент должен нам, меньше — мы ему.
-    opening_tyiyn: i64,
-    rows: Vec<ReconRow>,
-    debit_total_tyiyn: i64,
-    credit_total_tyiyn: i64,
-    closing_tyiyn: i64,
+    pub(crate) opening_tyiyn: i64,
+    pub(crate) rows: Vec<ReconRow>,
+    pub(crate) debit_total_tyiyn: i64,
+    pub(crate) credit_total_tyiyn: i64,
+    pub(crate) closing_tyiyn: i64,
 }
 
 /// Акт сверки: все движения долга контрагента за период с номерами документов.
@@ -1058,17 +1058,17 @@ pub(crate) async fn reconciliation_data(
     })
 }
 
-#[derive(Deserialize)]
-struct RepaymentReq {
-    op_id: Uuid,
-    party_id: Uuid,
-    amount_tyiyn: i64,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct RepaymentReq {
+    pub op_id: Uuid,
+    pub party_id: Uuid,
+    pub amount_tyiyn: i64,
     /// Чем платят: `cash` — касса смены, `card` / `transfer` — счёт, `outside` — мимо денег
     /// точки (владелец заплатил из своих). По умолчанию наличные.
     #[serde(default)]
-    method: Option<String>,
+    pub method: Option<String>,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1085,6 +1085,19 @@ async fn post_repayment(
     ctx: Ctx,
     Json(req): Json<RepaymentReq>,
 ) -> AppResult<Json<LedgerResult>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_repayment_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Погашение долга клиентом или оплата поставщику.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_repayment_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: RepaymentReq,
+) -> AppResult<LedgerResult> {
     const KIND: &str = "debt.repayment";
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма погашения больше нуля"));
@@ -1097,9 +1110,8 @@ async fn post_repayment(
         ));
     }
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     // Клиент гасит свой долг, мы — свой перед поставщиком: знак разный.
     let party = sqlx::query!(
@@ -1107,7 +1119,7 @@ async fn post_repayment(
         req.party_id,
         branch_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
     let supplier = party.role == "supplier";
@@ -1138,11 +1150,11 @@ async fn post_repayment(
     };
     match method.as_str() {
         "cash" => {
-            let till = crate::api::cash::default_account(&mut tx, branch_id).await?;
-            crate::api::cash::require_open_shift(&mut tx, branch_id, till).await?;
+            let till = crate::api::cash::default_account(&mut *conn, branch_id).await?;
+            crate::api::cash::require_open_shift(&mut *conn, branch_id, till).await?;
             crate::api::cash::add_movement(
-                &mut tx,
-                &ctx,
+                &mut *conn,
+                ctx,
                 crate::api::cash::CashEntry {
                     account_id: till,
                     kind,
@@ -1155,12 +1167,12 @@ async fn post_repayment(
             .await?;
         }
         "card" | "transfer" => {
-            let bank = crate::api::cash::bank_account(&mut tx, branch_id)
+            let bank = crate::api::cash::bank_account(&mut *conn, branch_id)
                 .await?
                 .ok_or_else(|| invalid("нет кассы «Счёт»"))?;
             crate::api::cash::add_movement(
-                &mut tx,
-                &ctx,
+                &mut *conn,
+                ctx,
                 crate::api::cash::CashEntry {
                     account_id: bank,
                     kind,
@@ -1177,9 +1189,9 @@ async fn post_repayment(
                 let today = sqlx::query_scalar!(
                     r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#
                 )
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut *conn)
                 .await?;
-                let rate = crate::api::fees::rate_on(&mut tx, branch_id, &method, today).await?;
+                let rate = crate::api::fees::rate_on(&mut *conn, branch_id, &method, today).await?;
                 let fee = crate::domain::money::div_round(
                     i128::from(req.amount_tyiyn) * i128::from(rate),
                     10_000,
@@ -1187,8 +1199,8 @@ async fn post_repayment(
                 .unwrap_or(0);
                 if fee != 0 {
                     crate::api::cash::add_movement(
-                        &mut tx,
-                        &ctx,
+                        &mut *conn,
+                        ctx,
                         crate::api::cash::CashEntry {
                             account_id: bank,
                             kind: "bank_fee",
@@ -1205,8 +1217,8 @@ async fn post_repayment(
         _ => {}
     }
     let balance = add_ledger(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         LedgerEntry {
             party_id: req.party_id,
             kind: "repayment",
@@ -1218,12 +1230,12 @@ async fn post_repayment(
     )
     .await?;
     if !supplier {
-        crate::api::payroll::accrue_on_repayment(&mut tx, &ctx, req.party_id, req.amount_tyiyn)
+        crate::api::payroll::accrue_on_repayment(&mut *conn, ctx, req.party_id, req.amount_tyiyn)
             .await?;
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "party",
         Some(req.party_id),
@@ -1239,17 +1251,16 @@ async fn post_repayment(
         party_id: req.party_id,
         balance_tyiyn: balance,
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
-#[derive(Deserialize)]
-struct AdjustReq {
-    op_id: Uuid,
-    party_id: Uuid,
-    amount_tyiyn: i64,
-    comment: String,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct AdjustReq {
+    pub op_id: Uuid,
+    pub party_id: Uuid,
+    pub amount_tyiyn: i64,
+    pub comment: String,
 }
 
 /// Правка баланса владельцем: прощение долга или перенос старого долга из тетради.
@@ -1258,6 +1269,19 @@ async fn post_adjust(
     ctx: Ctx,
     Json(req): Json<AdjustReq>,
 ) -> AppResult<Json<LedgerResult>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_adjust_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Правка долга владельцем.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_adjust_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: AdjustReq,
+) -> AppResult<LedgerResult> {
     const KIND: &str = "debt.adjust";
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
@@ -1268,13 +1292,12 @@ async fn post_adjust(
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину правки"));
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let balance = add_ledger(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         LedgerEntry {
             party_id: req.party_id,
             kind: "adjust",
@@ -1287,12 +1310,12 @@ async fn post_adjust(
     .await?;
     // Прощённый долг не будет погашен: процент кассира по нему не ждём.
     if req.amount_tyiyn < 0 {
-        crate::api::payroll::forgive_pending(&mut tx, &ctx, req.party_id, -req.amount_tyiyn)
+        crate::api::payroll::forgive_pending(&mut *conn, ctx, req.party_id, -req.amount_tyiyn)
             .await?;
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "party",
         Some(req.party_id),
@@ -1303,38 +1326,37 @@ async fn post_adjust(
         party_id: req.party_id,
         balance_tyiyn: balance,
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 // ---------- Карточка ----------
 
 #[derive(Serialize)]
-struct TimelineItem {
-    at: DateTime<Utc>,
+pub(crate) struct TimelineItem {
+    pub(crate) at: DateTime<Utc>,
     /// Запись долга: её можно сторнировать, если это погашение или правка (SPEC-10).
-    ledger_id: Option<Uuid>,
-    reversible: bool,
-    kind: String,
-    title: String,
-    amount_tyiyn: i64,
-    number: Option<i64>,
-    doc_id: Option<Uuid>,
-    comment: String,
+    pub(crate) ledger_id: Option<Uuid>,
+    pub(crate) reversible: bool,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    pub(crate) amount_tyiyn: i64,
+    pub(crate) number: Option<i64>,
+    pub(crate) doc_id: Option<Uuid>,
+    pub(crate) comment: String,
 }
 
 #[derive(Serialize)]
-struct PartyCard {
-    party: PartyOut,
-    contacts: Vec<ContactOut>,
-    vehicles: Vec<VehicleOut>,
-    purchases: i64,
-    purchases_tyiyn: i64,
-    debt_taken_tyiyn: i64,
-    repaid_tyiyn: i64,
-    last_at: Option<DateTime<Utc>>,
-    timeline: Vec<TimelineItem>,
+pub(crate) struct PartyCard {
+    pub(crate) party: PartyOut,
+    pub(crate) contacts: Vec<ContactOut>,
+    pub(crate) vehicles: Vec<VehicleOut>,
+    pub(crate) purchases: i64,
+    pub(crate) purchases_tyiyn: i64,
+    pub(crate) debt_taken_tyiyn: i64,
+    pub(crate) repaid_tyiyn: i64,
+    pub(crate) last_at: Option<DateTime<Utc>>,
+    pub(crate) timeline: Vec<TimelineItem>,
 }
 
 #[derive(Deserialize)]
@@ -1350,7 +1372,21 @@ async fn party_card(
     Query(q): Query<CardQuery>,
 ) -> AppResult<Json<PartyCard>> {
     let mut conn = state.pool.acquire().await?;
-    let party = load_party(&mut conn, user.branch_id, id).await?;
+    Ok(Json(
+        party_card_data(&mut conn, &user, id, q.from, q.to).await?,
+    ))
+}
+
+/// Карточка контрагента: покупки, долг и история — экран и бот владельца (SPEC-24).
+pub(crate) async fn party_card_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    id: Uuid,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<PartyCard> {
+    let q = CardQuery { from, to };
+    let party = load_party(&mut *conn, user.branch_id, id).await?;
     let contacts = sqlx::query_as!(
         ContactOut,
         "select id, full_name, phone, position, inn, active from party_contacts
@@ -1494,7 +1530,7 @@ async fn party_card(
     timeline.sort_by_key(|t| std::cmp::Reverse(t.at));
     let last_at = timeline.first().map(|t| t.at);
 
-    Ok(Json(PartyCard {
+    Ok(PartyCard {
         party,
         contacts,
         vehicles,
@@ -1504,7 +1540,7 @@ async fn party_card(
         repaid_tyiyn,
         last_at,
         timeline,
-    }))
+    })
 }
 
 /// Название записи долга для людей: в карточке клиента и в ответе бота.

@@ -241,6 +241,7 @@ async fn login(
     let ctx = Ctx {
         user: user.clone(),
         device_id: device_id.unwrap_or_else(Uuid::nil),
+        bot_chat: None,
     };
     ops::audit(
         &mut tx,

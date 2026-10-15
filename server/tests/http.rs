@@ -3945,3 +3945,319 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
         Keys::Employee
     );
 }
+
+// ---------- Операции и отчёты владельца через бота (SPEC-24) ----------
+
+/// Поддельный сервис разбора вопросов: отдаёт заготовленные ответы по очереди; `None` —
+/// вернуть текстом результаты инструментов из последнего сообщения.
+#[derive(Clone, Default)]
+struct FakeModel {
+    steps: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Option<Value>>>>,
+}
+
+async fn fake_model_messages(
+    axum::extract::State(f): axum::extract::State<FakeModel>,
+    axum::Json(body): axum::Json<Value>,
+) -> axum::Json<Value> {
+    let step = f.steps.lock().unwrap().pop_front().flatten();
+    axum::Json(step.unwrap_or_else(|| {
+        let last = body["messages"].as_array().unwrap().last().unwrap().clone();
+        let text = last["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["content"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        model_text(&text)
+    }))
+}
+
+fn model_text(text: &str) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 10, "output_tokens": 5 }
+    })
+}
+
+fn model_tool(name: &str, input: Value) -> Value {
+    json!({
+        "content": [{ "type": "tool_use", "id": "tu_1", "name": name, "input": input }],
+        "stop_reason": "tool_use",
+        "usage": { "input_tokens": 10, "output_tokens": 5 }
+    })
+}
+
+async fn fake_model() -> (String, FakeModel) {
+    let fake = FakeModel::default();
+    let app = Router::new()
+        .route("/v1/messages", axum::routing::post(fake_model_messages))
+        .with_state(fake.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), fake)
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_operations_and_reports_match_the_screens(pool: PgPool) {
+    // Расход через бота — такой же, как внесённый на экране; отчёты бота — те же числа, что
+    // отдают экраны владельца (SPEC-24).
+    use avtodom_server::api::assistant::Assistant;
+    use avtodom_server::api::telegram::{handle_callback, handle_message_with};
+    use avtodom_server::domain::money::format_som;
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (owner_id, branch): (Uuid, Uuid) =
+        sqlx::query_as("select id, branch_id from users where login = 'owner'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let (till, _, _) = accounts_of(&app, &owner).await;
+    let eid = cashier_employee(&app, &owner).await;
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": eid })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/movements",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 2_000_000, "comment": "размен" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pid = product(&app, &owner, "Фильтр C-1821", 50_000, 10).await;
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "lines": [{ "product_id": pid, "qty": 4, "cost_tyiyn": 120_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, articles) = call(&app, "GET", "/api/v1/expense-articles", Some(&owner), None).await;
+    let household = articles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("Хозтовары"))
+        .unwrap()["id"]
+        .clone();
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/expenses",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 150_000,
+            "source": "account", "account_id": till, "comment": "ведро"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Тот же расход через бота.
+    let chat = 980_001i64;
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) values ($1, $2, $3)")
+        .bind(chat)
+        .bind(owner_id)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (url, fake) = fake_model().await;
+    let a = Assistant::new("test-key".into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+    let ask = |steps: Vec<Option<Value>>| {
+        fake.steps.lock().unwrap().extend(steps);
+    };
+    async fn say_in(
+        conn: &mut sqlx::PgConnection,
+        a: &Assistant,
+        chat: i64,
+        text: &str,
+    ) -> avtodom_server::api::telegram::Reply {
+        handle_message_with(conn, Some(a), chat, chat, Some(text), None)
+            .await
+            .unwrap()
+    }
+    say_in(&mut conn, &a, chat, "💬 Спросить").await;
+    ask(vec![
+        Some(model_tool(
+            "draft_expense",
+            json!({ "article": "Хозтовары", "amount": "1 500", "comment": "ведро" }),
+        )),
+        Some(model_text("Проверьте черновик и нажмите «✅ Провести».")),
+    ]);
+    let r = say_in(
+        &mut conn,
+        &a,
+        chat,
+        "расход 1500 на хозтовары из кассы, ведро",
+    )
+    .await;
+    let ok = r.follow.as_ref().unwrap().inline[0][0].data.clone();
+    let done = handle_callback(&mut conn, chat, &ok).await.unwrap().text;
+    assert!(done.starts_with("Проведено: расход № 2"), "{done}");
+    let (_, _, list) = call(&app, "GET", "/api/v1/expenses", Some(&owner), None).await;
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    for key in [
+        "article_id",
+        "article_name",
+        "amount_tyiyn",
+        "source",
+        "account_name",
+        "expense_date",
+        "comment",
+        "reversed",
+        "user_name",
+    ] {
+        assert_eq!(list[0][key], list[1][key], "{key}");
+    }
+
+    // Цена через бота — на экране «Уведомления» с пометкой «через бот».
+    ask(vec![
+        Some(model_tool(
+            "draft_product",
+            json!({ "operation": "цена продажи", "product": "C-1821", "value": "550" }),
+        )),
+        Some(model_text("Проверьте черновик.")),
+    ]);
+    let r = say_in(&mut conn, &a, chat, "цена C-1821 теперь 550").await;
+    let ok = r.follow.as_ref().unwrap().inline[0][0].data.clone();
+    let done = handle_callback(&mut conn, chat, &ok).await.unwrap().text;
+    assert!(
+        done.starts_with("Проведено: «Фильтр C-1821»: цена 550 с"),
+        "{done}"
+    );
+    let (_, _, events) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let price = events["items"]
+        .as_array()
+        .or(events.as_array())
+        .unwrap()
+        .iter()
+        .find(|n| n["action"] == json!("product.prices"))
+        .unwrap()
+        .clone();
+    assert!(
+        price["details"].as_str().unwrap().ends_with("через бот"),
+        "{price}"
+    );
+
+    // Отчёты бота — те же числа, что экраны.
+    let (_, _, accs) = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None).await;
+    let till_balance = accs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == json!(till))
+        .unwrap()["balance_tyiyn"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(till_balance, 1_700_000);
+    ask(vec![
+        Some(model_tool(
+            "money_report",
+            json!({ "report": "movements", "account": "Касса" }),
+        )),
+        None,
+    ]);
+    let text = say_in(&mut conn, &a, chat, "движения по кассе").await.text;
+    assert!(
+        text.contains(&format!("Касса: сейчас {}", format_som(till_balance))),
+        "{text}"
+    );
+
+    let (_, _, dash) = call(&app, "GET", "/api/v1/owner/dashboard", Some(&owner), None).await;
+    ask(vec![
+        Some(model_tool("sales_report", json!({ "report": "dashboard" }))),
+        None,
+    ]);
+    let text = say_in(&mut conn, &a, chat, "сводка").await.text;
+    for want in [
+        format!(
+            "Деньги всего: {}",
+            format_som(dash["money_total_tyiyn"].as_i64().unwrap())
+        ),
+        format!(
+            "чистая прибыль {}",
+            format_som(dash["totals"]["net_tyiyn"].as_i64().unwrap())
+        ),
+        format!("кончается {}", dash["low_stock"]),
+    ] {
+        assert!(text.contains(&want), "{want}: {text}");
+    }
+
+    let day = dash["date"].as_str().unwrap().to_string();
+    let (_, _, exps) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/expenses?from={day}&to={day}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    let total: i64 = exps
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["amount_tyiyn"].as_i64().unwrap())
+        .sum();
+    ask(vec![
+        Some(model_tool(
+            "money_report",
+            json!({ "report": "expenses_list" }),
+        )),
+        None,
+    ]);
+    let text = say_in(&mut conn, &a, chat, "расходы сегодня").await.text;
+    assert!(
+        text.contains(&format!("итого {}", format_som(total))),
+        "{text}"
+    );
+
+    let (_, _, shifts) = call(&app, "GET", "/api/v1/shifts", Some(&owner), None).await;
+    let expected = shifts[0]["expected_tyiyn"].as_i64().unwrap();
+    ask(vec![
+        Some(model_tool("money_report", json!({ "report": "shifts" }))),
+        None,
+    ]);
+    let text = say_in(&mut conn, &a, chat, "смены").await.text;
+    assert!(
+        text.contains(&format!("в кассе должно быть {}", format_som(expected))),
+        "{text}"
+    );
+
+    let (_, _, stock) = call(&app, "GET", "/api/v1/stock", Some(&owner), None).await;
+    let value: i64 = stock
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["stock_value_tyiyn"].as_i64().unwrap_or(0))
+        .sum();
+    assert_eq!(value, 120_000);
+    ask(vec![
+        Some(model_tool("stock_report", json!({ "report": "stock" }))),
+        None,
+    ]);
+    let text = say_in(&mut conn, &a, chat, "склад").await.text;
+    assert!(
+        text.contains(&format!("стоимость остатков {}", format_som(value))),
+        "{text}"
+    );
+}

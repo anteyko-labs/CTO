@@ -212,27 +212,27 @@ async fn update_article(
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct ExpenseOut {
-    id: Uuid,
-    number: i64,
-    article_id: Uuid,
-    article_name: String,
-    amount_tyiyn: i64,
-    source: String,
-    account_name: Option<String>,
-    expense_date: NaiveDate,
-    comment: String,
-    reversal_of: Option<Uuid>,
-    reversed: bool,
-    user_name: String,
-    created_at: DateTime<Utc>,
+pub struct ExpenseOut {
+    pub id: Uuid,
+    pub number: i64,
+    pub article_id: Uuid,
+    pub article_name: String,
+    pub amount_tyiyn: i64,
+    pub source: String,
+    pub account_name: Option<String>,
+    pub expense_date: NaiveDate,
+    pub comment: String,
+    pub reversal_of: Option<Uuid>,
+    pub reversed: bool,
+    pub user_name: String,
+    pub created_at: DateTime<Utc>,
 }
 
-#[derive(Deserialize)]
-struct ListQuery {
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
-    article_id: Option<Uuid>,
+#[derive(Deserialize, Default)]
+pub(crate) struct ListQuery {
+    pub(crate) from: Option<NaiveDate>,
+    pub(crate) to: Option<NaiveDate>,
+    pub(crate) article_id: Option<Uuid>,
 }
 
 async fn list(
@@ -240,6 +240,16 @@ async fn list(
     user: CurrentUser,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Vec<ExpenseOut>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(list_data(&mut conn, &user, q).await?))
+}
+
+/// Список расходов экрана «Расходы» — и для отчёта бота владельцу (SPEC-24).
+pub(crate) async fn list_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    q: ListQuery,
+) -> AppResult<Vec<ExpenseOut>> {
     // Администратору — только то, что он мог провести сам: из кассы, за последнюю неделю.
     let owner = user.is_owner();
     let rows = sqlx::query_as!(
@@ -267,22 +277,22 @@ async fn list(
         q.article_id,
         owner
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }
 
-#[derive(Deserialize)]
-struct ExpenseReq {
-    op_id: Uuid,
-    article_id: Uuid,
-    amount_tyiyn: i64,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ExpenseReq {
+    pub op_id: Uuid,
+    pub article_id: Uuid,
+    pub amount_tyiyn: i64,
     /// `account` — из кассы или со счёта, `outside` — не из денег точки.
-    source: Option<String>,
-    account_id: Option<Uuid>,
-    expense_date: Option<NaiveDate>,
+    pub source: Option<String>,
+    pub account_id: Option<Uuid>,
+    pub expense_date: Option<NaiveDate>,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 async fn load_expense(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<ExpenseOut> {
@@ -310,6 +320,19 @@ async fn post_expense(
     ctx: Ctx,
     Json(req): Json<ExpenseReq>,
 ) -> AppResult<Json<ExpenseOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_expense_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Расход по статье — одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят
+/// одной функцией, с одними проверками.
+pub async fn post_expense_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: ExpenseReq,
+) -> AppResult<ExpenseOut> {
     const KIND: &str = "expense.post";
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма больше нуля"));
@@ -324,17 +347,16 @@ async fn post_expense(
         return Err(AppError::Forbidden);
     }
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
-    ensure_articles(&mut tx, branch_id).await?;
+    ensure_articles(&mut *conn, branch_id).await?;
     let article = sqlx::query!(
         "select name, owner_only, active from expense_articles where id = $1 and branch_id = $2",
         req.article_id,
         branch_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("статья не найдена"))?;
     if !article.active {
@@ -347,7 +369,7 @@ async fn post_expense(
         return Err(invalid("по статье «Прочее» нужен комментарий"));
     }
     let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
     let date = req.expense_date.unwrap_or(today);
     if date != today && !owner {
@@ -358,14 +380,14 @@ async fn post_expense(
     if source == "account" {
         let id = match req.account_id {
             Some(id) => id,
-            None => cash::default_account(&mut tx, branch_id).await?,
+            None => cash::default_account(&mut *conn, branch_id).await?,
         };
         let acc = sqlx::query!(
             "select kind, owner_only from cash_accounts where id = $1 and branch_id = $2",
             id,
             branch_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| invalid("касса не найдена"))?;
         // Администратор тратит только из кассы смены: счёт и сейфы — владельцу.
@@ -375,7 +397,7 @@ async fn post_expense(
         account_id = Some(id);
     }
 
-    let number = ops::next_counter(&mut tx, branch_id, "expense").await?;
+    let number = ops::next_counter(&mut *conn, branch_id, "expense").await?;
     let id = new_id();
     sqlx::query!(
         r#"insert into expenses (id, branch_id, number, article_id, amount_tyiyn, source,
@@ -393,13 +415,13 @@ async fn post_expense(
         ctx.user.id,
         ctx.device_id
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     if let Some(acc) = account_id {
-        cash::require_open_shift(&mut tx, branch_id, acc).await?;
+        cash::require_open_shift(&mut *conn, branch_id, acc).await?;
         cash::add_movement(
-            &mut tx,
-            &ctx,
+            &mut *conn,
+            ctx,
             CashEntry {
                 account_id: acc,
                 kind: "expense",
@@ -412,18 +434,17 @@ async fn post_expense(
         .await?;
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "expense",
         Some(id),
-        json!({ "article": article.name, "amount_tyiyn": req.amount_tyiyn, "source": source }),
+        json!({ "article": article.name, "amount_tyiyn": req.amount_tyiyn, "from": source }),
     )
     .await?;
-    let out = load_expense(&mut tx, branch_id, id).await?;
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    let out = load_expense(&mut *conn, branch_id, id).await?;
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize)]

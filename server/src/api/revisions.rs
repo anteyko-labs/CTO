@@ -176,6 +176,15 @@ async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
 ) -> AppResult<Json<Vec<RevisionHead>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(list_data(&mut conn, &user).await?))
+}
+
+/// Последние 100 ревизий — экран и бот владельца (SPEC-24).
+pub(crate) async fn list_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+) -> AppResult<Vec<RevisionHead>> {
     let rows = sqlx::query_as!(
         RevisionHead,
         r#"select r.id, r.number, r.category_id, c.name as "category_name?", r.status, r.comment,
@@ -188,9 +197,9 @@ async fn list(
            order by r.created_at desc limit 100"#,
         user.branch_id
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 async fn get_one(

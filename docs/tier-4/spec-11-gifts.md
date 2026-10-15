@@ -1,6 +1,6 @@
 ---
 type: spec
-status: draft
+status: approved
 tier: 4
 stage: 3
 updated: 2026-10-08

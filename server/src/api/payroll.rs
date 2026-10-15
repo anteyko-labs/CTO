@@ -1620,14 +1620,14 @@ pub(crate) async fn month_data(
     })
 }
 
-#[derive(Deserialize)]
-struct AccrualReq {
-    op_id: Uuid,
-    employee_id: Uuid,
-    kind: String,
-    amount_tyiyn: i64,
-    business_date: Option<NaiveDate>,
-    comment: String,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct AccrualReq {
+    pub op_id: Uuid,
+    pub employee_id: Uuid,
+    pub kind: String,
+    pub amount_tyiyn: i64,
+    pub business_date: Option<NaiveDate>,
+    pub comment: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1640,6 +1640,19 @@ async fn post_accrual(
     ctx: Ctx,
     Json(req): Json<AccrualReq>,
 ) -> AppResult<Json<OkOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_accrual_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Премия или удержание.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_accrual_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: AccrualReq,
+) -> AppResult<OkOut> {
     const KIND: &str = "payroll.accrual";
     // Бонус, удержание и аванс отмечает только владелец (SPEC-07).
     if !ctx.user.is_owner() {
@@ -1655,19 +1668,18 @@ async fn post_accrual(
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
-    lock_employee(&mut tx, ctx.user.branch_id, req.employee_id).await?;
+    lock_employee(&mut *conn, ctx.user.branch_id, req.employee_id).await?;
     let amount = if req.kind == "penalty" {
         -req.amount_tyiyn
     } else {
         req.amount_tyiyn
     };
     add_accrual(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         req.business_date,
         Accrual {
             employee_id: req.employee_id,
@@ -1682,8 +1694,8 @@ async fn post_accrual(
     )
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "employee",
         Some(req.employee_id),
@@ -1691,18 +1703,17 @@ async fn post_accrual(
     )
     .await?;
     let out = OkOut { ok: true };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
-#[derive(Deserialize)]
-struct SalaryReq {
-    op_id: Uuid,
-    employee_id: Uuid,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct SalaryReq {
+    pub op_id: Uuid,
+    pub employee_id: Uuid,
     /// Первый день месяца, за который платим.
-    month: NaiveDate,
-    amount_tyiyn: Option<i64>,
+    pub month: NaiveDate,
+    pub amount_tyiyn: Option<i64>,
 }
 
 async fn post_salary(
@@ -1710,15 +1721,27 @@ async fn post_salary(
     ctx: Ctx,
     Json(req): Json<SalaryReq>,
 ) -> AppResult<Json<OkOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_salary_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Оклад за месяц.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_salary_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: SalaryReq,
+) -> AppResult<OkOut> {
     const KIND: &str = "payroll.salary";
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
-    lock_employee(&mut tx, ctx.user.branch_id, req.employee_id).await?;
+    lock_employee(&mut *conn, ctx.user.branch_id, req.employee_id).await?;
     // Оклад попадает в последний день месяца, но не в будущее (SPEC-07).
     let d = sqlx::query!(
         r#"select least((date_trunc('month', $1::date) + interval '1 month - 1 day')::date,
@@ -1727,7 +1750,7 @@ async fn post_salary(
                     as "future!""#,
         req.month
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     // Иначе оклад «за ноябрь» лёг бы в октябрь и закрыл бы начисление настоящего октябрьского.
     if d.future {
@@ -1737,7 +1760,7 @@ async fn post_salary(
     }
     let date = d.d;
     let rule = active_rule(
-        &mut tx,
+        &mut *conn,
         ctx.user.branch_id,
         req.employee_id,
         "monthly_salary",
@@ -1760,7 +1783,7 @@ async fn post_salary(
         req.employee_id,
         req.month
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if exists > 0 {
         return Err(AppError::Conflict(
@@ -1768,8 +1791,8 @@ async fn post_salary(
         ));
     }
     add_accrual(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         Some(date),
         Accrual {
             employee_id: req.employee_id,
@@ -1784,8 +1807,8 @@ async fn post_salary(
     )
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "employee",
         Some(req.employee_id),
@@ -1793,22 +1816,21 @@ async fn post_salary(
     )
     .await?;
     let out = OkOut { ok: true };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
-#[derive(Deserialize)]
-struct PayoutReq {
-    op_id: Uuid,
-    employee_id: Uuid,
-    amount_tyiyn: i64,
-    source: Option<String>,
-    account_id: Option<Uuid>,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct PayoutReq {
+    pub op_id: Uuid,
+    pub employee_id: Uuid,
+    pub amount_tyiyn: i64,
+    pub source: Option<String>,
+    pub account_id: Option<Uuid>,
     #[serde(default)]
-    advance: bool,
+    pub advance: bool,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1823,6 +1845,19 @@ async fn post_payout(
     ctx: Ctx,
     Json(req): Json<PayoutReq>,
 ) -> AppResult<Json<PayoutOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_payout_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Выплата или аванс сотруднику.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_payout_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: PayoutReq,
+) -> AppResult<PayoutOut> {
     const KIND: &str = "payout.post";
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма больше нуля"));
@@ -1837,17 +1872,16 @@ async fn post_payout(
         return Err(AppError::Forbidden);
     }
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
-    lock_employee(&mut tx, branch_id, req.employee_id).await?;
+    lock_employee(&mut *conn, branch_id, req.employee_id).await?;
     let balance = sqlx::query_scalar!(
         r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
                 - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,
         req.employee_id
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     // Аванс сверх заработанного отмечает только владелец (ответ заказчика).
     if req.amount_tyiyn > balance && (!req.advance || !owner) {
@@ -1860,14 +1894,14 @@ async fn post_payout(
     if source == "account" {
         let id = match req.account_id {
             Some(id) => id,
-            None => cash::default_account(&mut tx, branch_id).await?,
+            None => cash::default_account(&mut *conn, branch_id).await?,
         };
         let acc = sqlx::query!(
             "select kind, owner_only from cash_accounts where id = $1 and branch_id = $2",
             id,
             branch_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| invalid("касса не найдена"))?;
         if !owner && (acc.kind != "register" || acc.owner_only) {
@@ -1875,7 +1909,7 @@ async fn post_payout(
         }
         account_id = Some(id);
     }
-    let number = ops::next_counter(&mut tx, branch_id, "payout").await?;
+    let number = ops::next_counter(&mut *conn, branch_id, "payout").await?;
     let id = new_id();
     sqlx::query!(
         r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
@@ -1892,13 +1926,13 @@ async fn post_payout(
         ctx.user.id,
         ctx.device_id
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     if let Some(acc) = account_id {
-        cash::require_open_shift(&mut tx, branch_id, acc).await?;
+        cash::require_open_shift(&mut *conn, branch_id, acc).await?;
         cash::add_movement(
-            &mut tx,
-            &ctx,
+            &mut *conn,
+            ctx,
             CashEntry {
                 account_id: acc,
                 kind: "payout",
@@ -1911,8 +1945,8 @@ async fn post_payout(
         .await?;
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "employee",
         Some(req.employee_id),
@@ -1926,9 +1960,8 @@ async fn post_payout(
             .checked_sub(req.amount_tyiyn)
             .ok_or_else(crate::error::overflow)?,
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Serialize)]

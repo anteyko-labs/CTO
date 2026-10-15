@@ -347,23 +347,33 @@ async fn reverse_transfer(
 }
 
 #[derive(Serialize)]
-struct TransferRow {
-    id: Uuid,
-    number: i64,
-    from_name: String,
-    to_name: String,
-    qty_ml: i64,
-    value_tyiyn: i64,
-    comment: String,
-    user_name: String,
-    created_at: DateTime<Utc>,
-    reversed: bool,
+pub(crate) struct TransferRow {
+    pub(crate) id: Uuid,
+    pub(crate) number: i64,
+    pub(crate) from_name: String,
+    pub(crate) to_name: String,
+    pub(crate) qty_ml: i64,
+    pub(crate) value_tyiyn: i64,
+    pub(crate) comment: String,
+    pub(crate) user_name: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) reversed: bool,
 }
 
 async fn list(
     State(state): State<AppState>,
     Owner(user): Owner,
 ) -> AppResult<Json<Vec<TransferRow>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(list_data(&mut conn, &user).await?))
+}
+
+/// Последние 100 переливов — экран владельца и его бот (SPEC-24). Только владелец.
+pub(crate) async fn list_data(
+    conn: &mut PgConnection,
+    user: &crate::auth::CurrentUser,
+) -> AppResult<Vec<TransferRow>> {
+    user.require_owner()?;
     let rows = sqlx::query_as!(
         TransferRow,
         r#"select t.id, t.number, f.name as from_name, d.name as to_name, t.qty_ml, t.value_tyiyn,
@@ -377,7 +387,7 @@ async fn list(
            order by t.created_at desc limit 100"#,
         user.branch_id
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }

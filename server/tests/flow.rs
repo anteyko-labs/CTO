@@ -52,6 +52,7 @@ async fn seed(pool: &PgPool) -> World {
                 role: Role::parse(role).unwrap(),
             },
             device_id: Uuid::now_v7(),
+            bot_chat: None,
         });
     }
     let (cashier, master, service) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
@@ -3122,7 +3123,7 @@ async fn bot_question_answers_from_profit_report(pool: PgPool) {
     assert_eq!(fake.header(0, "x-api-key"), SERVICE_KEY);
     assert!(reqs[0].get("temperature").is_none());
     assert_eq!(reqs[0]["max_tokens"], 4096);
-    assert_eq!(reqs[0]["tools"].as_array().unwrap().len(), 11);
+    assert_eq!(reqs[0]["tools"].as_array().unwrap().len(), 21);
     let system = reqs[0]["system"]
         .as_array()
         .unwrap()
@@ -5536,4 +5537,958 @@ async fn bot_shows_cash_diff_like_profit_report(pool: PgPool) {
         reply.contains(&format!("недостача / излишек кассы {line}")),
         "{reply}"
     );
+}
+
+// ---------- Операции владельца через бота (SPEC-24) ----------
+
+const DRAFT_SAID: &str = "Проверьте черновик и нажмите «✅ Провести».";
+
+/// Ответ бота целиком (с черновиком) на сообщение владельца в режиме вопросов.
+async fn ask_reply(
+    conn: &mut sqlx::PgConnection,
+    a: &avtodom_server::api::assistant::Assistant,
+    chat: i64,
+    text: &str,
+) -> avtodom_server::api::telegram::Reply {
+    avtodom_server::api::telegram::handle_message_with(conn, Some(a), chat, chat, Some(text), None)
+        .await
+        .unwrap()
+}
+
+/// Модель вызывает черновик `tool` и отвечает просьбой проверить его.
+async fn draft_turn(
+    conn: &mut sqlx::PgConnection,
+    a: &avtodom_server::api::assistant::Assistant,
+    fake: &FakeService,
+    chat: i64,
+    tool: &str,
+    input: serde_json::Value,
+) -> avtodom_server::api::telegram::Reply {
+    fake.push(vec![
+        Step::Reply(200, tool_use(tool, input)),
+        Step::Reply(200, final_text(DRAFT_SAID)),
+    ]);
+    ask_reply(conn, a, chat, "внеси, пожалуйста").await
+}
+
+/// Данные кнопок «✅ Провести» и «✖ Отмена» под черновиком.
+fn draft_buttons(r: &avtodom_server::api::telegram::Reply) -> (String, String) {
+    let f = r.follow.as_ref().expect("черновик не показан");
+    assert_eq!(f.inline[0][0].text, "✅ Провести");
+    assert_eq!(f.inline[0][1].text, "✖ Отмена");
+    (f.inline[0][0].data.clone(), f.inline[0][1].data.clone())
+}
+
+/// Что сервер вернул модели последним результатом инструмента.
+fn last_tool_result(fake: &FakeService) -> String {
+    let reqs = fake.requests();
+    let last = reqs.last().unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    last["content"][0]["content"].as_str().unwrap().to_string()
+}
+
+/// Черновик, подготовленный и проведённый кнопкой; ответ на нажатие.
+async fn post_via_bot(
+    conn: &mut sqlx::PgConnection,
+    a: &avtodom_server::api::assistant::Assistant,
+    fake: &FakeService,
+    chat: i64,
+    tool: &str,
+    input: serde_json::Value,
+) -> String {
+    let r = draft_turn(conn, a, fake, chat, tool, input).await;
+    assert!(
+        r.follow.is_some(),
+        "нет черновика: {}",
+        last_tool_result(fake)
+    );
+    let (ok, _) = draft_buttons(&r);
+    let text = press(conn, chat, &ok).await.text;
+    assert!(text.starts_with("Проведено: "), "{text}");
+    text
+}
+
+async fn count(pool: &PgPool, sql: &str) -> i64 {
+    sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
+}
+
+/// Владелец в режиме «💬 Спросить» с поддельным сервисом разбора.
+async fn owner_asking(
+    pool: &PgPool,
+    w: &World,
+    chat: i64,
+) -> (avtodom_server::api::assistant::Assistant, FakeService) {
+    link_owner(pool, w, chat).await;
+    let (url, fake) = fake_service().await;
+    let a =
+        avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let mut conn = pool.acquire().await.unwrap();
+    start_asking(&mut conn, &a, chat).await;
+    (a, fake)
+}
+
+async fn add_party(pool: &PgPool, w: &World, name: &str, role: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, $3, 'person', $4, '')")
+        .bind(id)
+        .bind(w.owner.user.branch_id)
+        .bind(role)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+    if role == "supplier" {
+        sqlx::query("insert into suppliers (id, name) values ($1, $2)")
+            .bind(id)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    id
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_expense_posts_only_by_button_like_the_program(pool: PgPool) {
+    // Модель готовит черновик — документа нет; «✅ Провести» проводит той же функцией, что
+    // программа, один раз; журнал помечает источник «бот» (SPEC-24).
+    use avtodom_server::api::expenses::{ExpenseReq, post_expense_tx};
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 2_000_000).await;
+    let chat = 970_001i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_expense",
+        serde_json::json!({ "article": "хозтовары", "amount": "1 500", "source": "из кассы", "comment": "ведро и тряпки" }),
+    )
+    .await;
+    assert_eq!(r.text, DRAFT_SAID);
+    let f = r.follow.as_ref().unwrap();
+    assert_eq!(
+        f.text,
+        format!(
+            "Расход\nСтатья: Хозтовары\nСумма: 1 500 с\nОткуда: Касса (сейчас 20 000 с)\nДата: {}\nКомментарий: ведро и тряпки",
+            today.format("%d.%m.%Y")
+        )
+    );
+    let (ok, no) = draft_buttons(&r);
+    assert!(ok.starts_with("d:ok:") && no.starts_with("d:no:"));
+    // Черновик — ещё не документ.
+    assert_eq!(count(&pool, "select count(*) from expenses").await, 0);
+    assert_eq!(till_balance(&pool, till).await, 2_000_000);
+    let told = last_tool_result(&fake);
+    assert!(told.contains("НЕ проведён"), "{told}");
+    // Модели не дан инструмент, который проводит: только отчёты и черновики.
+    let names: Vec<String> = fake.requests()[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .all(|n| n.starts_with("draft_") || !n.contains("post"))
+    );
+    assert!(
+        fake.requests()[0]["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Никогда не пиши, что операция проведена")
+    );
+
+    let done = press(&mut conn, chat, &ok).await.text;
+    assert_eq!(done, "Проведено: расход № 1 — Хозтовары, 1 500 с.");
+    // Двойное нажатие — тот же документ, второго нет.
+    assert_eq!(
+        press(&mut conn, chat, &ok).await.text,
+        "Уже проведено: расход № 1 — Хозтовары, 1 500 с."
+    );
+    assert_eq!(
+        press(&mut conn, chat, &no).await.text,
+        "Уже проведено: расход № 1 — Хозтовары, 1 500 с."
+    );
+    assert_eq!(count(&pool, "select count(*) from expenses").await, 1);
+    assert_eq!(till_balance(&pool, till).await, 1_850_000);
+
+    // Тот же расход из программы — те же поля.
+    let article: Uuid = sqlx::query_scalar("select article_id from expenses")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    post_expense_tx(
+        &mut tx,
+        &w.owner,
+        ExpenseReq {
+            op_id: Uuid::now_v7(),
+            article_id: article,
+            amount_tyiyn: 150_000,
+            source: Some("account".into()),
+            account_id: Some(till),
+            expense_date: Some(today),
+            comment: "ведро и тряпки".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    type Row = (
+        Uuid,
+        i64,
+        String,
+        Option<Uuid>,
+        chrono::NaiveDate,
+        String,
+        Uuid,
+        Uuid,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "select article_id, amount_tyiyn, source, account_id, expense_date, comment, user_id, branch_id from expenses order by number",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows[0], rows[1]);
+    let devices: Vec<Uuid> = sqlx::query_scalar("select device_id from expenses order by number")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(devices[0], avtodom_server::auth::TELEGRAM_DEVICE);
+    assert_eq!(devices[1], w.owner.device_id);
+    // Журнал: источник «бот» и чат — только у проведённого через бот.
+    let journal = audit_data(&pool, "expense.post").await;
+    assert_eq!(journal[0]["source"], "bot");
+    assert_eq!(journal[0]["chat"], chat);
+    assert_eq!(journal[0]["from"], "account");
+    assert!(journal[1].get("source").is_none());
+    assert_eq!(journal[1]["from"], "account");
+    // Черновик: проведён, номер документа в итоге; изменить или удалить нельзя.
+    let (status, number): (String, Option<i64>) =
+        sqlx::query_as("select status, (result->>'number')::bigint from bot_drafts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), number), ("posted", Some(1)));
+    assert!(
+        sqlx::query("update bot_drafts set status = 'cancelled'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("update bot_drafts set summary = 'x'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("delete from bot_drafts")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_draft_cancel_expiry_and_foreign_buttons(pool: PgPool) {
+    // «✖ Отмена», 10 минут, кнопка из другого чата или чужой черновик — ничего не проводят;
+    // новый черновик закрывает прежний (SPEC-24).
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 100_000).await;
+    let chat = 970_101i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let bot_moves = "select count(*) from cash_movements where device_id = '7e1e6a3d-0000-4000-8000-000000000b07'";
+    let deposit =
+        serde_json::json!({ "operation": "внесение", "amount": "500", "comment": "размен" });
+
+    let r = draft_turn(&mut conn, &a, &fake, chat, "draft_money", deposit.clone()).await;
+    assert_eq!(
+        r.follow.as_ref().unwrap().text,
+        "Внесение денег\nКасса: Касса (сейчас 1 000 с)\nСумма: 500 с\nКомментарий: размен"
+    );
+    let (ok, no) = draft_buttons(&r);
+    // Чат другого владельца того же филиала и непривязанный чат.
+    let other_owner = Uuid::now_v7();
+    sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'owner2', 'x', 'owner', 'owner2')")
+        .bind(other_owner)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let other_owner_chat = 970_102i64;
+    link_user_chat(
+        &pool,
+        other_owner,
+        w.owner.user.branch_id,
+        other_owner_chat,
+        0,
+    )
+    .await;
+    assert_eq!(
+        press(&mut conn, other_owner_chat, &ok).await.text,
+        "Черновик не найден — ничего не проведено."
+    );
+    press(&mut conn, 970_103, &ok).await;
+    // Чат работника.
+    set_phone(&pool, w.master, "0700 55-66-77").await;
+    let staff_chat = 970_104i64;
+    share(&mut conn, staff_chat, "+996 700 55 66 77", true).await;
+    assert_eq!(employee_chats(&pool).await.len(), 1);
+    press(&mut conn, staff_chat, &ok).await;
+    // Подделанные данные кнопки.
+    assert_eq!(
+        press(&mut conn, chat, "d:ok:не-id").await.text,
+        "Кнопка устарела."
+    );
+    assert_eq!(
+        press(&mut conn, chat, &format!("d:ok:{}", Uuid::now_v7()))
+            .await
+            .text,
+        "Черновик не найден — ничего не проведено."
+    );
+    assert_eq!(count(&pool, bot_moves).await, 0);
+
+    // Отмена — ничего не проведено, после неё «Провести» не работает.
+    assert_eq!(
+        press(&mut conn, chat, &no).await.text,
+        "Черновик отменён — ничего не проведено."
+    );
+    assert_eq!(
+        press(&mut conn, chat, &ok).await.text,
+        "Черновик уже снят — ничего не проведено."
+    );
+    assert_eq!(count(&pool, bot_moves).await, 0);
+
+    // Через 10 минут черновик не проводится.
+    let r = draft_turn(&mut conn, &a, &fake, chat, "draft_money", deposit.clone()).await;
+    let (ok, _) = draft_buttons(&r);
+    sqlx::query("alter table bot_drafts disable trigger bot_drafts_immutable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "update bot_drafts set expires_at = now() - interval '1 second' where status = 'open'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("alter table bot_drafts enable trigger bot_drafts_immutable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        press(&mut conn, chat, &ok)
+            .await
+            .text
+            .starts_with("Черновик устарел")
+    );
+    assert_eq!(count(&pool, bot_moves).await, 0);
+
+    // Новый черновик закрывает прежний: проводится только последний.
+    let first = draft_turn(&mut conn, &a, &fake, chat, "draft_money", deposit.clone()).await;
+    let second = draft_turn(&mut conn, &a, &fake, chat, "draft_money", deposit).await;
+    let (ok1, _) = draft_buttons(&first);
+    let (ok2, _) = draft_buttons(&second);
+    assert_eq!(
+        press(&mut conn, chat, &ok1).await.text,
+        "Черновик уже снят — ничего не проведено."
+    );
+    assert_eq!(
+        press(&mut conn, chat, &ok2).await.text,
+        "Проведено: внесение 500 с, в кассе теперь 1 500 с."
+    );
+    assert_eq!(count(&pool, bot_moves).await, 1);
+    let statuses: Vec<String> =
+        sqlx::query_scalar("select status from bot_drafts order by created_at")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(statuses, ["cancelled", "expired", "cancelled", "posted"]);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_draft_refuses_ambiguous_and_impossible(pool: PgPool) {
+    // Два «Азамата» — список, черновика нет; расход больше остатка — отказ с остатком; без
+    // черновика «записал» не проходит; вне режима и не владельцу черновик не готовится (SPEC-24).
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 10_000).await;
+    add_party(&pool, &w, "Азамат Осмонов", "customer").await;
+    add_party(&pool, &w, "Азамат Бекович", "customer").await;
+    let chat = 970_201i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_debt",
+        serde_json::json!({ "operation": "погашение долга клиентом", "party": "Азамат", "amount": "5 000" }),
+    )
+    .await;
+    assert!(r.follow.is_none());
+    let told = last_tool_result(&fake);
+    assert!(
+        told.contains("Азамат Осмонов")
+            && told.contains("Азамат Бекович")
+            && told.contains("уточните"),
+        "{told}"
+    );
+
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_expense",
+        serde_json::json!({ "article": "Хозтовары", "amount": "1 500 сом" }),
+    )
+    .await;
+    assert!(r.follow.is_none());
+    let told = last_tool_result(&fake);
+    assert!(
+        told.contains("в кассе столько нет") && told.contains("В «Касса» сейчас 100 с"),
+        "{told}"
+    );
+
+    for (tool, input, why) in [
+        (
+            "draft_product",
+            serde_json::json!({ "operation": "цена продажи", "product": "Свечи NGK", "value": "300" }),
+            "не найден",
+        ),
+        (
+            "draft_expense",
+            serde_json::json!({ "article": "Хозтовары", "amount": "полторы тысячи" }),
+            "не разобрать",
+        ),
+        (
+            "draft_staff",
+            serde_json::json!({ "operation": "премия", "employee": "Тимур", "amount": "100" }),
+            "не найден",
+        ),
+        (
+            "draft_money",
+            serde_json::json!({ "operation": "перевод", "amount": "50", "to": "сейф" }),
+            "несколько касс",
+        ),
+    ] {
+        let r = draft_turn(&mut conn, &a, &fake, chat, tool, input).await;
+        assert!(r.follow.is_none());
+        let told = last_tool_result(&fake);
+        assert!(told.contains(why), "{tool}: {told}");
+    }
+    assert_eq!(count(&pool, "select count(*) from bot_drafts").await, 0);
+
+    // Модель «записала» без черновика — сервер не верит, документа нет.
+    fake.push(vec![Step::Reply(
+        200,
+        final_text("Записал расход 1 500 на хозтовары."),
+    )]);
+    let r = ask_reply(&mut conn, &a, chat, "запиши расход 1500 на хозтовары").await;
+    assert!(r.text.starts_with("Ничего не проведено"), "{}", r.text);
+    assert!(r.follow.is_none());
+    assert_eq!(count(&pool, "select count(*) from expenses").await, 0);
+
+    // Вне режима «Спросить», в чужом чате и не владельцу черновик не готовится.
+    use avtodom_server::api::bot_drafts::{Prepared, prepare};
+    let input = serde_json::json!({ "article": "Хозтовары", "amount": "10" });
+    for (user, chat_id) in [(&w.owner.user, 970_202i64), (&w.admin.user, chat)] {
+        let p = prepare(&mut conn, user, chat_id, "draft_expense", &input)
+            .await
+            .unwrap();
+        assert!(matches!(p, Prepared::Refused(_)));
+    }
+    say(&mut conn, chat, "✖ Закончить").await;
+    let p = prepare(&mut conn, &w.owner.user, chat, "draft_expense", &input)
+        .await
+        .unwrap();
+    assert!(matches!(p, Prepared::Refused(_)));
+    assert_eq!(count(&pool, "select count(*) from bot_drafts").await, 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_receipt_totals_by_server_and_daily_cap(pool: PgPool) {
+    // Сумму строк прихода считает сервер; приход через бот — как из программы; 31-я операция
+    // за сутки не проводится (SPEC-24).
+    use avtodom_server::api::receipts::{ReceiptLineReq, ReceiptReq, post_receipt_tx};
+    let w = seed(&pool).await;
+    let supplier = add_party(&pool, &w, "Автоснаб", "supplier").await;
+    let chat = 970_301i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_receipt",
+        serde_json::json!({
+            "supplier": "Автоснаб", "payment": "в долг", "supplier_doc": "Н-77",
+            "lines": [
+                { "product": "Фильтр W712", "quantity": "10", "price": "350" },
+                { "product": "масло 5w-30", "quantity": "2 канистры", "price": "1 800,50" }
+            ]
+        }),
+    )
+    .await;
+    let text = r.follow.as_ref().unwrap().text.clone();
+    assert_eq!(
+        text,
+        "Приход товара\nПоставщик: Автоснаб\n1. Фильтр W712 — 10 шт × 350 с = 3 500 с\n2. Масло 5W-30 4л — 2 кан. по 4 л × 1 800,50 с = 3 601 с\nИтого: 7 101 с\nРасчёт: в долг поставщику\nДокумент поставщика: Н-77\nКомментарий: —"
+    );
+    assert_eq!(count(&pool, "select count(*) from receipts").await, 0);
+    let (ok, _) = draft_buttons(&r);
+    assert_eq!(
+        press(&mut conn, chat, &ok).await.text,
+        "Проведено: приход № 1 — 7 101 с."
+    );
+    let balance: i64 = sqlx::query_scalar("select balance_tyiyn from parties where id = $1")
+        .bind(supplier)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(balance, -710_100);
+    // Тот же приход из программы.
+    let mut tx = pool.begin().await.unwrap();
+    post_receipt_tx(
+        &mut tx,
+        &w.owner,
+        ReceiptReq {
+            op_id: Uuid::now_v7(),
+            supplier_id: Some(supplier),
+            payment: Some("debt".into()),
+            supplier_doc: "Н-77".into(),
+            comment: String::new(),
+            lines: vec![
+                ReceiptLineReq {
+                    product_id: w.filter,
+                    qty: 10,
+                    cost_tyiyn: 350_000,
+                },
+                ReceiptLineReq {
+                    product_id: w.oil,
+                    qty: 8000,
+                    cost_tyiyn: 360_100,
+                },
+            ],
+            paid_from: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    type Line = (i32, Uuid, i64, i64);
+    let lines = |n: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, Line>(
+                "select l.line_no, l.product_id, l.qty, l.cost_tyiyn from receipt_lines l join receipts r on r.id = l.receipt_id where r.number = $1 order by l.line_no",
+            )
+            .bind(n)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(lines(1).await, lines(2).await);
+    let heads: Vec<(i64, Option<Uuid>, String, Option<String>)> = sqlx::query_as(
+        "select total_tyiyn, supplier_id, supplier_doc, paid_from from receipts order by number",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(heads[0], heads[1]);
+    assert_eq!(heads[0].0, 710_100);
+    let journal = audit_data(&pool, "receipt.post").await;
+    assert_eq!(journal[0]["source"], "bot");
+    assert!(journal[1].get("source").is_none());
+
+    // 30 операций уже проведено через бот: черновик, созданный раньше, не проводится.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_product",
+        serde_json::json!({ "operation": "минимальный остаток", "product": "Фильтр W712", "value": "5" }),
+    )
+    .await;
+    let (ok, _) = draft_buttons(&r);
+    sqlx::query(
+        "insert into bot_drafts (id, chat_id, user_id, branch_id, kind, payload, summary, op_id, status, finished_at, expires_at)
+         select gen_random_uuid(), 1, $1, $2, 'expense', '{}', '', gen_random_uuid(), 'posted', now(), now()
+         from generate_series(1, 29)",
+    )
+    .bind(w.owner.user.id)
+    .bind(w.owner.user.branch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        press(&mut conn, chat, &ok).await.text,
+        avtodom_server::api::bot_drafts::LIMIT_TEXT
+    );
+    let min: i64 =
+        sqlx::query_scalar("select min_stock from branch_products where product_id = $1")
+            .bind(w.filter)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(min, 0);
+    assert_eq!(
+        count(
+            &pool,
+            "select count(*) from bot_drafts where status = 'rejected'"
+        )
+        .await,
+        1
+    );
+    // И новый черновик уже не готовится.
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_product",
+        serde_json::json!({ "operation": "минимальный остаток", "product": "Фильтр W712", "value": "5" }),
+    )
+    .await;
+    assert!(r.follow.is_none());
+    assert!(last_tool_result(&fake).contains("30 операций"));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
+    // Деньги, долги, сотрудники, товар: каждая операция проводится той же функцией, что
+    // программа, с источником «бот» в журнале (SPEC-24).
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    fund_till(&pool, &w, till, 2_000_000).await;
+    let client = add_party(&pool, &w, "Азамат Осмонов", "customer").await;
+    let supplier = add_party(&pool, &w, "Автоснаб", "supplier").await;
+    let chat = 970_401i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let party_balance = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("select balance_tyiyn from parties where id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // Сдать в сейф.
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_money",
+        serde_json::json!({ "operation": "перевод", "amount": "5 000", "from": "Касса", "to": "сейф владельца" })).await;
+    let safe: i64 =
+        sqlx::query_scalar("select balance_tyiyn from cash_accounts where name = 'Сейф владельца'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (till_balance(&pool, till).await, safe),
+        (1_500_000, 500_000)
+    );
+
+    // Долг из тетради, погашение наличными, оплата поставщику.
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "перенос долга из тетради", "party": "Азамат", "amount": "5 000", "comment": "старая тетрадь" })).await;
+    assert_eq!(party_balance(client).await, 500_000);
+    let text = post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "погашение долга клиентом", "party": "Азамат Осмонов", "amount": "2 000", "method": "наличные" })).await;
+    assert_eq!(
+        text,
+        "Проведено: оплата 2 000 с учтена, баланс теперь 3 000 с — должны нам."
+    );
+    assert_eq!(party_balance(client).await, 300_000);
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "оплата поставщику", "party": "Автоснаб", "amount": "1 000" })).await;
+    assert_eq!(party_balance(supplier).await, 100_000);
+    assert_eq!(till_balance(&pool, till).await, 1_600_000);
+
+    // Премия, удержание, аванс сверх заработанного, выплата сверх — отказ, оклад.
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_staff",
+        serde_json::json!({ "operation": "премия", "employee": "мастер", "amount": "2 000", "comment": "за чистоту" })).await;
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_staff",
+        serde_json::json!({ "operation": "удержание", "employee": "Мастер", "amount": "500", "comment": "опоздание" })).await;
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_staff",
+        serde_json::json!({ "operation": "выплата", "employee": "Мастер", "amount": "3 000" }),
+    )
+    .await;
+    assert!(r.follow.is_none());
+    assert!(
+        last_tool_result(&fake).contains("заработано 1 500 с"),
+        "{}",
+        last_tool_result(&fake)
+    );
+    let text = post_via_bot(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_staff",
+        serde_json::json!({ "operation": "аванс", "employee": "Мастер", "amount": "3 000" }),
+    )
+    .await;
+    assert_eq!(text, "Проведено: аванс № 1 — 3 000 с.");
+    assert_eq!(till_balance(&pool, till).await, 1_300_000);
+    post_via_bot(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_staff",
+        serde_json::json!({ "operation": "оклад", "employee": "Кассир", "amount": "30 000" }),
+    )
+    .await;
+    let accruals: Vec<(String, i64, String)> = sqlx::query_as(
+        "select kind, amount_tyiyn, comment from payroll_accruals order by created_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        accruals,
+        [
+            ("bonus".to_string(), 200_000, "за чистоту".to_string()),
+            ("penalty".to_string(), -50_000, "опоздание".to_string()),
+            ("monthly_salary".to_string(), 3_000_000, String::new()),
+        ]
+    );
+
+    // Цена продажи, минимальный остаток (масло — литрами), цена закупки без прихода.
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_product",
+        serde_json::json!({ "operation": "цена продажи", "product": "Фильтр W712", "value": "550" })).await;
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_product",
+        serde_json::json!({ "operation": "минимальный остаток", "product": "Масло 5W-30 4л", "value": "12,5" })).await;
+    post_via_bot(&mut conn, &a, &fake, chat, "draft_product",
+        serde_json::json!({ "operation": "цена закупки", "product": "Фильтр W712", "value": "300" })).await;
+    let (sale, last_qty, last_cost): (i64, i64, i64) = sqlx::query_as(
+        "select sale_price_tyiyn, last_cost_qty, last_cost_tyiyn from branch_products where product_id = $1",
+    )
+    .bind(w.filter)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((sale, last_qty, last_cost), (55_000, 1, 30_000));
+    let min: i64 =
+        sqlx::query_scalar("select min_stock from branch_products where product_id = $1")
+            .bind(w.oil)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(min, 12_500);
+
+    // Каждое действие бота в журнале — с источником «бот» и чатом.
+    let journal: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "select action, data from audit_log where device_id = $1 order by created_at",
+    )
+    .bind(avtodom_server::auth::TELEGRAM_DEVICE)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let actions: std::collections::BTreeSet<&str> =
+        journal.iter().map(|(a, _)| a.as_str()).collect();
+    for want in [
+        "cash.transfer",
+        "debt.adjust",
+        "debt.repayment",
+        "payroll.accrual",
+        "payout.post",
+        "payroll.salary",
+        "product.prices",
+        "stock.purchase_price",
+    ] {
+        assert!(actions.contains(want), "нет {want}: {actions:?}");
+    }
+    assert!(
+        journal
+            .iter()
+            .all(|(_, d)| d["source"] == "bot" && d["chat"] == chat)
+    );
+    assert_eq!(
+        count(
+            &pool,
+            "select count(*) from bot_drafts where status = 'posted'"
+        )
+        .await,
+        11
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_owner_reports_come_from_program_functions(pool: PgPool) {
+    // Отчёты бота — из тех же расчётов, что экраны: склад, деньги, чеки, сводка (SPEC-24).
+    use avtodom_server::api::catalog::{ProductFilter, query_products};
+    use avtodom_server::domain::money::format_som;
+    let w = seed(&pool).await;
+    let till = open_till(&pool, &w).await;
+    receive(&pool, &w.admin, w.filter, 5, 150_000).await;
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    let chat = 970_501i64;
+    let (a, fake) = owner_asking(&pool, &w, chat).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let report = |tool: &'static str, input: serde_json::Value| {
+        fake.push(vec![Step::Reply(200, tool_use(tool, input)), Step::Echo]);
+    };
+
+    report("stock_report", serde_json::json!({ "report": "stock" }));
+    let text = ask_reply(&mut conn, &a, chat, "сколько товара на складе?")
+        .await
+        .text;
+    let products = query_products(
+        &mut conn,
+        &w.owner.user,
+        ProductFilter {
+            limit: 500,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let value: i64 = products.iter().map(|p| p.stock_value_tyiyn.unwrap()).sum();
+    assert_ne!(value, 0);
+    assert!(
+        text.contains(&format!("стоимость остатков {}", format_som(value))),
+        "{text}"
+    );
+
+    report(
+        "money_report",
+        serde_json::json!({ "report": "movements", "account": "касса" }),
+    );
+    let text = ask_reply(&mut conn, &a, chat, "движения по кассе")
+        .await
+        .text;
+    assert!(
+        text.contains(&format!(
+            "Касса: сейчас {}",
+            format_som(till_balance(&pool, till).await)
+        )),
+        "{text}"
+    );
+    assert!(text.contains("продажа наличными: +1 000 с"), "{text}");
+
+    report("sales_report", serde_json::json!({ "report": "checks" }));
+    let text = ask_reply(&mut conn, &a, chat, "чеки за сегодня").await.text;
+    assert!(
+        text.contains("продаж 1, итог с возвратами 1 000 с (наличными 1 000 с"),
+        "{text}"
+    );
+
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let totals =
+        avtodom_server::api::reports::totals_for(&mut conn, w.owner.user.branch_id, today, today)
+            .await
+            .unwrap();
+    report("sales_report", serde_json::json!({ "report": "dashboard" }));
+    let text = ask_reply(&mut conn, &a, chat, "сводка").await.text;
+    assert!(
+        text.contains(&format!("чистая прибыль {}", format_som(totals.net_tyiyn))),
+        "{text}"
+    );
+    report(
+        "sales_report",
+        serde_json::json!({ "report": "categories" }),
+    );
+    let text = ask_reply(&mut conn, &a, chat, "по категориям").await.text;
+    assert!(
+        text.contains(&format!(
+            "— Фильтры: выручка 1 000 с, закупка 600 с, валовая {}",
+            format_som(totals.gross_tyiyn)
+        )),
+        "{text}"
+    );
+    report("stock_report", serde_json::json!({ "report": "receipts" }));
+    let text = ask_reply(&mut conn, &a, chat, "приходы").await.text;
+    assert!(text.contains("1 накладных на 1 500 с"), "{text}");
+
+    // Карточка клиента и акт сверки — те же функции, что экраны.
+    let client = add_party(&pool, &w, "Азамат Осмонов", "customer").await;
+    let mut tx = pool.begin().await.unwrap();
+    avtodom_server::api::parties::post_adjust_tx(
+        &mut tx,
+        &w.owner,
+        avtodom_server::api::parties::AdjustReq {
+            op_id: Uuid::now_v7(),
+            party_id: client,
+            amount_tyiyn: 500_000,
+            comment: "тетрадь".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    report(
+        "party_report",
+        serde_json::json!({ "report": "reconciliation", "query": "Азамат" }),
+    );
+    let text = ask_reply(&mut conn, &a, chat, "акт сверки Азамат")
+        .await
+        .text;
+    assert!(
+        text.contains("Сальдо на конец: 5 000 с (должны точке)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Корректировка долга: в пользу точки 5 000 с"),
+        "{text}"
+    );
+    report(
+        "party_report",
+        serde_json::json!({ "report": "card", "query": "азамат" }),
+    );
+    let text = ask_reply(&mut conn, &a, chat, "карточка Азамата")
+        .await
+        .text;
+    assert!(text.contains("Баланс: 5 000 с (должны точке)"), "{text}");
+    report(
+        "party_report",
+        serde_json::json!({ "report": "oil_book", "query": "Азамат" }),
+    );
+    let text = ask_reply(&mut conn, &a, chat, "книжка Азамата").await.text;
+    assert!(text.contains("машин в масляной книжке нет"), "{text}");
+    // Отчёты бота журналируются как вопросы и ничего не проводят.
+    assert_eq!(count(&pool, "select count(*) from bot_drafts").await, 0);
 }

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from bot_question_mode\n                          where chat_id = $1 and user_id = $2 and branch_id = $3\n                            and last_at > now() - interval '10 minutes') as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "13f6f7a3a5f0e25b3473d21dfa2ec9680d74aebfaac667d701031a8e4597ba23"
+}

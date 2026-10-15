@@ -38,14 +38,14 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ReceiptLineReq {
     pub product_id: Uuid,
     pub qty: i64,
     pub cost_tyiyn: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct ReceiptReq {
     pub op_id: Uuid,
     pub supplier_id: Option<Uuid>,
@@ -898,18 +898,18 @@ pub struct PeriodQuery {
 }
 
 #[derive(Serialize)]
-struct ReceiptListItem {
-    id: Uuid,
-    number: i64,
-    supplier_name: Option<String>,
-    supplier_doc: String,
-    total_tyiyn: i64,
-    reversal_of: Option<Uuid>,
-    reversed: bool,
-    user_name: String,
-    created_at: DateTime<Utc>,
+pub(crate) struct ReceiptListItem {
+    pub(crate) id: Uuid,
+    pub(crate) number: i64,
+    pub(crate) supplier_name: Option<String>,
+    pub(crate) supplier_doc: String,
+    pub(crate) total_tyiyn: i64,
+    pub(crate) reversal_of: Option<Uuid>,
+    pub(crate) reversed: bool,
+    pub(crate) user_name: String,
+    pub(crate) created_at: DateTime<Utc>,
     /// Взято в долг у поставщика по этой накладной (0 — оплачено сразу).
-    on_debt_tyiyn: i64,
+    pub(crate) on_debt_tyiyn: i64,
 }
 
 async fn list_receipts(
@@ -917,6 +917,16 @@ async fn list_receipts(
     user: CurrentUser,
     Query(q): Query<PeriodQuery>,
 ) -> AppResult<Json<Vec<ReceiptListItem>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(receipts_data(&mut conn, &user, q).await?))
+}
+
+/// Приходы за период — экран «Приход» и бот владельца (SPEC-24).
+pub(crate) async fn receipts_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    q: PeriodQuery,
+) -> AppResult<Vec<ReceiptListItem>> {
     let rows = sqlx::query_as!(
         ReceiptListItem,
         r#"select r.id, r.number, s.name as "supplier_name?", r.supplier_doc, r.total_tyiyn, r.reversal_of,
@@ -938,9 +948,9 @@ async fn list_receipts(
         q.to,
         q.supplier_id
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(rows))
+    Ok(rows)
 }
 
 #[derive(Deserialize)]
@@ -1054,11 +1064,11 @@ async fn review_done(
     Ok(Json(json!({})))
 }
 
-#[derive(Deserialize)]
-struct PurchasePriceReq {
-    op_id: Uuid,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct PurchasePriceReq {
+    pub op_id: Uuid,
     /// Цена закупки за штуку, за канистру (масло) или за килограмм (на вес).
-    price_tyiyn: i64,
+    pub price_tyiyn: i64,
 }
 
 /// Владелец указывает цену закупки товара, проданного без неё (ADR-062): строки чеков получают
@@ -1070,6 +1080,20 @@ async fn purchase_price(
     Path(product_id): Path<Uuid>,
     Json(req): Json<PurchasePriceReq>,
 ) -> AppResult<Json<crate::api::payroll::CostResolved>> {
+    let mut tx = state.pool.begin().await?;
+    let out = purchase_price_tx(&mut tx, &ctx, product_id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Цена закупки товара без прихода (ADR-062).
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn purchase_price_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    product_id: Uuid,
+    req: PurchasePriceReq,
+) -> AppResult<crate::api::payroll::CostResolved> {
     const KIND: &str = "stock.purchase_price";
     ctx.user.require_owner()?;
     if req.price_tyiyn <= 0 {
@@ -1077,15 +1101,14 @@ async fn purchase_price(
     }
     ops::check_amount(req.price_tyiyn)?;
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let p = sqlx::query!(
         "select name, unit, container_ml, archived from products where id = $1",
         product_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
     if p.archived {
@@ -1097,7 +1120,7 @@ async fn purchase_price(
         (_, Some(c)) => c,
         _ => 1,
     };
-    ops::lock_pool(&mut tx, branch_id, product_id).await?;
+    ops::lock_pool(&mut *conn, branch_id, product_id).await?;
     // Закупок не было — цена владельца становится «последней закупочной»: следующие продажи
     // при нехватке остатка возьмут себестоимость по ней (SPEC-03). Цену прихода не перебиваем.
     sqlx::query!(
@@ -1108,14 +1131,19 @@ async fn purchase_price(
         per,
         req.price_tyiyn
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    let out =
-        crate::api::payroll::resolve_cost_pending(&mut tx, &ctx, product_id, req.price_tyiyn, per)
-            .await?;
+    let out = crate::api::payroll::resolve_cost_pending(
+        &mut *conn,
+        ctx,
+        product_id,
+        req.price_tyiyn,
+        per,
+    )
+    .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         KIND,
         "product",
         Some(product_id),
@@ -1128,7 +1156,6 @@ async fn purchase_price(
         }),
     )
     .await?;
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }

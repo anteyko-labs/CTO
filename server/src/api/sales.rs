@@ -1593,38 +1593,38 @@ struct DayQuery {
 }
 
 #[derive(Serialize)]
-struct SaleListItem {
-    id: Uuid,
-    number: i64,
-    kind: String,
-    sale_type: String,
-    cashier_name: String,
-    master_name: Option<String>,
-    party_name: Option<String>,
-    party_phone: Option<String>,
+pub(crate) struct SaleListItem {
+    pub(crate) id: Uuid,
+    pub(crate) number: i64,
+    pub(crate) kind: String,
+    pub(crate) sale_type: String,
+    pub(crate) cashier_name: String,
+    pub(crate) master_name: Option<String>,
+    pub(crate) party_name: Option<String>,
+    pub(crate) party_phone: Option<String>,
     /// Сколько из этого чека ушло в долг.
-    debt_tyiyn: i64,
-    total_tyiyn: i64,
-    reversal_of: Option<Uuid>,
-    created_at: DateTime<Utc>,
+    pub(crate) debt_tyiyn: i64,
+    pub(crate) total_tyiyn: i64,
+    pub(crate) reversal_of: Option<Uuid>,
+    pub(crate) created_at: DateTime<Utc>,
 }
 
 #[derive(Serialize, Default)]
-struct DayTotals {
-    count: i64,
-    total_tyiyn: i64,
-    cash_tyiyn: i64,
-    card_tyiyn: i64,
-    transfer_tyiyn: i64,
-    debt_tyiyn: i64,
-    bonus_tyiyn: i64,
+pub(crate) struct DayTotals {
+    pub(crate) count: i64,
+    pub(crate) total_tyiyn: i64,
+    pub(crate) cash_tyiyn: i64,
+    pub(crate) card_tyiyn: i64,
+    pub(crate) transfer_tyiyn: i64,
+    pub(crate) debt_tyiyn: i64,
+    pub(crate) bonus_tyiyn: i64,
 }
 
 #[derive(Serialize)]
-struct DayOut {
-    date: NaiveDate,
-    sales: Vec<SaleListItem>,
-    totals: DayTotals,
+pub(crate) struct DayOut {
+    pub(crate) date: NaiveDate,
+    pub(crate) sales: Vec<SaleListItem>,
+    pub(crate) totals: DayTotals,
 }
 
 async fn list_sales(
@@ -1632,12 +1632,22 @@ async fn list_sales(
     user: CurrentUser,
     Query(q): Query<DayQuery>,
 ) -> AppResult<Json<DayOut>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(sales_day(&mut conn, &user, q.date).await?))
+}
+
+/// Чеки учётного дня с итогами по способам оплаты — экран и бот владельца (SPEC-24).
+pub(crate) async fn sales_day(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    date: Option<NaiveDate>,
+) -> AppResult<DayOut> {
     // День — учётный день чека, как в прибыли: офлайн-чек вчерашнего дня остаётся во вчерашнем (SPEC-08).
-    let date = match q.date {
+    let date = match date {
         Some(d) => d,
         None => {
             sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
-                .fetch_one(&state.pool)
+                .fetch_one(&mut *conn)
                 .await?
         }
     };
@@ -1658,7 +1668,7 @@ async fn list_sales(
         user.branch_id,
         date
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?;
     let t = sqlx::query!(
         r#"select
@@ -1673,7 +1683,7 @@ async fn list_sales(
         user.branch_id,
         date
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *conn)
     .await?;
     let totals = DayTotals {
         count: i64::try_from(sales.iter().filter(|s| s.kind == "sale").count()).unwrap_or(i64::MAX),
@@ -1686,9 +1696,9 @@ async fn list_sales(
         debt_tyiyn: t.debt,
         bonus_tyiyn: t.bonus,
     };
-    Ok(Json(DayOut {
+    Ok(DayOut {
         date,
         sales,
         totals,
-    }))
+    })
 }
