@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update defects set status = 'pending', resolved_at = null where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a1bd3987a208d9a93824e9e3aae9547d5882c673d7b1f873b853cb6a42f7074"
+}

@@ -1016,6 +1016,9 @@ pub(crate) async fn reconciliation_data(
                     .unwrap_or_default()
             ),
             ("receipt_reversal", _) => format!("Сторно накладной{}", num(r.receipt_number)),
+            // Возврат брака со скидкой на следующий приход (SPEC-25).
+            ("defect", _) => "Возврат брака поставщику".to_string(),
+            ("defect_reversal", _) => "Отмена возврата брака".to_string(),
             (_, "repayment") => match r.paid_via.as_deref() {
                 Some("register") => "Оплата наличными".to_string(),
                 Some("bank") => "Оплата безналичная".to_string(),
@@ -1423,7 +1426,7 @@ pub(crate) async fn party_card_data(
     .fetch_all(&mut *conn)
     .await?;
     let ledger = sqlx::query!(
-        r#"select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of,
+        r#"select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of, l.doc_type,
                   exists (select 1 from party_ledger r where r.reversal_of = l.id) as "reversed!"
            from party_ledger l where l.party_id = $1 and l.branch_id = $2
              and ($3::date is null or l.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')
@@ -1520,7 +1523,12 @@ pub(crate) async fn party_card_data(
             ledger_id: Some(l.id),
             reversible: l.kind != "debt" && l.reversal_of.is_none() && !l.reversed,
             kind: l.kind.clone(),
-            title: ledger_title(&l.kind, l.amount_tyiyn, l.reversal_of.is_some()).into(),
+            title: match l.doc_type.as_str() {
+                // Возмещение за брак: поставщик должен нам (SPEC-25).
+                "defect" => "Возврат брака: скидка на приход".into(),
+                "defect_reversal" => "Отмена возврата брака".into(),
+                _ => ledger_title(&l.kind, l.amount_tyiyn, l.reversal_of.is_some()).into(),
+            },
             amount_tyiyn: l.amount_tyiyn,
             number: None,
             doc_id: l.doc_id,
@@ -1594,6 +1602,11 @@ async fn reverse_ledger(
     .ok_or(AppError::NotFound)?;
     if l.reversal_of.is_some() {
         return Err(invalid("это уже сторно"));
+    }
+    if l.kind == "debt" && l.doc_type.starts_with("defect") {
+        return Err(AppError::Conflict(
+            "возврат брака отменяется на экране «Остатки → Брак»".into(),
+        ));
     }
     if l.kind == "debt" {
         return Err(AppError::Conflict(

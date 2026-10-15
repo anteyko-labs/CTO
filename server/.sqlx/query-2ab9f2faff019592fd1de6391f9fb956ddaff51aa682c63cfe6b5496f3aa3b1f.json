@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\", coalesce(sum(cost_tyiyn), 0)::bigint as \"cost!\"\n           from defects where branch_id = $1 and supplier_id = $2 and status = 'pending'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cost!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "2ab9f2faff019592fd1de6391f9fb956ddaff51aa682c63cfe6b5496f3aa3b1f"
+}

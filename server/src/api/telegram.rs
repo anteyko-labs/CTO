@@ -1788,6 +1788,19 @@ async fn day_report(
             format_som_signed(t.cash_diff_tyiyn)
         ));
     }
+    // Брак (SPEC-25): списание — минус, разница возмещения — со своим знаком.
+    if t.defect_writeoff_tyiyn != 0 {
+        minus.push(format!(
+            "  − списание брака: {}",
+            format_som(t.defect_writeoff_tyiyn)
+        ));
+    }
+    if t.defect_diff_tyiyn != 0 {
+        minus.push(format!(
+            "  ± брак: разница возмещения: {}",
+            format_som_signed(t.defect_diff_tyiyn)
+        ));
+    }
     let (head, earned) = if is_today {
         ("📊 Сегодня", "👥 Заработали сегодня")
     } else {
@@ -1864,6 +1877,7 @@ pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult
                 "expense" => "расходы из кассы",
                 "payout" => "выплаты сотрудникам",
                 "supplier_payment" => "оплата поставщикам",
+                "supplier_refund" => "возмещения поставщиков за брак",
                 "debt_repayment" => "погашения долгов",
                 "battery_intake" => "приём аккумуляторов",
                 "count_diff" => "пересчёт",

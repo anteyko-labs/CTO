@@ -210,6 +210,8 @@ export function OwnerDashboard() {
               {t.expenses_tyiyn !== 0 && <Step label="Расходы" value={t.expenses_tyiyn} minus />}
               {t.bonus_tyiyn !== 0 && <Step label="Скидки баллами" value={t.bonus_tyiyn} minus />}
               {(t.cash_diff_tyiyn ?? 0) !== 0 && <Step label="Недостача / излишек кассы" value={t.cash_diff_tyiyn ?? 0} signed />}
+              {(t.defect_writeoff_tyiyn ?? 0) !== 0 && <Step label="Списание брака" value={t.defect_writeoff_tyiyn ?? 0} minus />}
+              {(t.defect_diff_tyiyn ?? 0) !== 0 && <Step label="Брак: разница возмещения" value={t.defect_diff_tyiyn ?? 0} signed />}
               <Step label="Чистая прибыль" value={t.net_tyiyn} strong />
             </div>
             <div className="mt-2 text-xs text-slate-500">
@@ -365,6 +367,10 @@ function ReportTable({ cols, rows, foot }: { cols: Col[]; rows: { key: string; c
 }
 
 /** Строка расчёта прибыли: вычеты со знаком «−», итог красным при убытке. */
+/** Брак за день одним числом: разница возмещения минус списание (SPEC-25). */
+const defectNet = (x: { defect_writeoff_tyiyn?: number; defect_diff_tyiyn?: number }): number =>
+  (x.defect_diff_tyiyn ?? 0) - (x.defect_writeoff_tyiyn ?? 0)
+
 function CalcRow({
   label,
   value,
@@ -483,6 +489,13 @@ export default function Profit() {
                 signed
                 hint="Пересчёт смен; удержание недостачи с кассира уже уменьшило оплату труда"
               />
+              <CalcRow label="Списание брака" value={t.defect_writeoff_tyiyn ?? 0} minus />
+              <CalcRow
+                label="Брак: разница возмещения"
+                value={t.defect_diff_tyiyn ?? 0}
+                signed
+                hint="Возмещение поставщика минус стоимость брака: минус — убыток, плюс — доход"
+              />
               <CalcRow label="Чистая прибыль" value={t.net_tyiyn} total big />
               <div className="mt-2 text-xs text-slate-500">
                 Чеков {t.sales_count}, маржа {percent(t.margin_bp)}
@@ -539,6 +552,7 @@ export default function Profit() {
                   { label: 'Расходы', right: true },
                   { label: 'Баллы', right: true },
                   { label: 'Касса ±', right: true },
+                  { label: 'Брак', right: true },
                   { label: 'Чистая', right: true },
                 ]}
                 rows={days.map((x) => ({
@@ -552,6 +566,7 @@ export default function Profit() {
                     money(x.expenses_tyiyn),
                     money(x.bonus_tyiyn ?? 0),
                     <Money key="cash" value={x.cash_diff_tyiyn ?? 0} tone="negative" zero="—" />,
+                    <Money key="defect" value={defectNet(x)} tone="negative" zero="—" />,
                     <Money key="net" value={x.net_tyiyn} tone="negative" className="font-semibold" />,
                   ],
                 }))}
@@ -566,6 +581,7 @@ export default function Profit() {
                         money(sum((x) => x.expenses_tyiyn)),
                         money(sum((x) => x.bonus_tyiyn ?? 0)),
                         <Money key="cash" value={sum((x) => x.cash_diff_tyiyn ?? 0)} tone="negative" zero="—" />,
+                        <Money key="defect" value={sum(defectNet)} tone="negative" zero="—" />,
                         money(sum((x) => x.net_tyiyn)),
                       ]
                     : undefined

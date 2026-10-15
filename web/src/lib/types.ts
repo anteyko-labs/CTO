@@ -86,19 +86,6 @@ export interface Supplier {
   active: boolean
 }
 
-/** Строка «что привозил поставщик» для его карточки. */
-export interface SupplierSupply {
-  product_id: string
-  name: string
-  unit: 'piece' | 'ml'
-  container_ml: number | null
-  receipts: number
-  qty: number
-  amount_tyiyn: number
-  last_price_tyiyn: number
-  last_at: string
-}
-
 export interface LabelSettings {
   width_mm: number
   height_mm: number
@@ -459,6 +446,10 @@ export interface ProfitTotals {
   bonus_tyiyn: number
   /** Недостача (минус) или излишек (плюс) кассы по пересчётам смен (ADR-065). */
   cash_diff_tyiyn?: number
+  /** «Списание брака» — убыток (SPEC-25). */
+  defect_writeoff_tyiyn?: number
+  /** «Брак: разница возмещения»: минус — убыток, плюс — доход (SPEC-25). */
+  defect_diff_tyiyn?: number
   net_tyiyn: number
   margin_bp: number | null
   sales_count: number
@@ -478,6 +469,8 @@ export interface ProfitReport {
     fee_tyiyn?: number
     bonus_tyiyn?: number
     cash_diff_tyiyn?: number
+    defect_writeoff_tyiyn?: number
+    defect_diff_tyiyn?: number
     net_tyiyn: number
   }[]
   articles: { name: string; amount_tyiyn: number }[]
@@ -535,4 +528,81 @@ export interface StaffPay {
   total_tyiyn: number
   paid_tyiyn?: number
   owed_tyiyn?: number
+}
+
+/** Решение владельца по браку (SPEC-25). Суммы — только владельцу. */
+export interface DefectResolution {
+  id: string
+  kind: 'write_off' | 'replace' | 'credit' | 'cash'
+  supplier_id: string | null
+  supplier_name: string | null
+  replace_qty: number | null
+  refund_tyiyn: number | null
+  account_name: string | null
+  writeoff_tyiyn: number | null
+  diff_tyiyn: number | null
+  comment: string
+  user_name: string
+  created_at: string
+}
+
+export interface Defect {
+  id: string
+  number: number
+  product_id: string
+  product_name: string
+  unit: 'piece' | 'ml' | 'g'
+  container_ml: number | null
+  qty: number
+  /** Стоимость по средней на момент отметки — только владельцу. */
+  cost_tyiyn: number | null
+  reason: string
+  supplier_id: string | null
+  supplier_name: string | null
+  user_name: string
+  created_at: string
+  status: 'pending' | 'written_off' | 'returned' | 'cancelled'
+  resolved_at: string | null
+  resolution: DefectResolution | null
+}
+
+/** Строка «Поставки» в карточке поставщика (SPEC-26). */
+export interface DeliveryRow {
+  product_id: string
+  name: string
+  unit: 'piece' | 'ml' | 'g'
+  container_ml: number | null
+  receipts: number
+  delivered_qty: number
+  returned_qty: number
+  amount_tyiyn: number
+  last_price_tyiyn: number | null
+  last_at: string | null
+  stock_qty: number
+  estimate_qty: number
+  /** Себестоимость оценки — только владельцу. */
+  estimate_value_tyiyn: number | null
+}
+
+export interface SupplierDeliveries {
+  supplier_id: string
+  supplier_name: string
+  from: string | null
+  to: string | null
+  rows: DeliveryRow[]
+  amount_tyiyn: number
+  balance_tyiyn: number
+  pending_defects: number
+  pending_defects_tyiyn: number | null
+}
+
+export interface DeliveryReceipt {
+  receipt_id: string
+  number: number
+  created_at: string
+  supplier_doc: string
+  qty: number
+  cost_tyiyn: number
+  price_tyiyn: number | null
+  reversed: boolean
 }

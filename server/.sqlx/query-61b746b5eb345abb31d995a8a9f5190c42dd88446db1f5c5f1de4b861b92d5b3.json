@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.created_at, r.supplier_doc, l.qty, l.cost_tyiyn,\n                  exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\"\n           from receipt_lines l join receipts r on r.id = l.receipt_id\n           where r.branch_id = $1 and r.supplier_id = $2 and l.product_id = $3\n             and r.reversal_of is null\n             and ($4::date is null or r.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($5::date is null or r.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by r.created_at desc, l.line_no\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "61b746b5eb345abb31d995a8a9f5190c42dd88446db1f5c5f1de4b861b92d5b3"
+}

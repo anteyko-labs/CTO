@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 45] = [
+pub(crate) const WATCHED: [&str; 49] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -65,6 +65,10 @@ pub(crate) const WATCHED: [&str; 45] = [
     "battery.intake_reverse",
     "settings.payment_fee",
     "telegram.employee_link",
+    "defect.mark",
+    "defect.unmark",
+    "defect.resolve",
+    "defect.resolve_reverse",
 ];
 
 #[derive(Serialize)]
@@ -638,6 +642,63 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                         .join(", "))
                     .unwrap_or_default()
             ),
+        ),
+        "defect.mark" => (
+            format!("В брак: {} × {}", text("name"), text("qty_text")),
+            format!(
+                "{} — {}{}",
+                money(num("cost")),
+                text("reason"),
+                data.get("supplier")
+                    .and_then(Value::as_str)
+                    .map(|s| format!("; поставщик {s}"))
+                    .unwrap_or_default()
+            ),
+        ),
+        "defect.unmark" => (
+            format!(
+                "Брак № {} снят: товар вернулся в продажу",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} × {}, {}{}",
+                text("name"),
+                text("qty_text"),
+                money(num("cost")),
+                comment(data)
+            ),
+        ),
+        "defect.resolve" => (
+            format!(
+                "Брак № {}: {}",
+                num("number").unwrap_or(0),
+                crate::api::defects::kind_words(&text("kind"))
+            ),
+            {
+                let mut parts = vec![format!("{} × {}", text("name"), text("qty_text"))];
+                if let Some(q) = data.get("replace_qty_text").and_then(Value::as_str) {
+                    parts.push(format!("взамен {q}"));
+                }
+                if let Some(r) = num("refund") {
+                    parts.push(format!("возмещение {}", money(Some(r))));
+                }
+                match num("writeoff") {
+                    Some(w) if w != 0 => parts.push(format!("в убыток {}", money(Some(w)))),
+                    _ => {}
+                }
+                match num("diff") {
+                    Some(d) if d != 0 => parts.push(format!(
+                        "разница {}",
+                        crate::domain::money::format_som_signed(d)
+                    )),
+                    _ => {}
+                }
+                parts.join(", ") + &comment(data)
+            },
+        ),
+        "defect.resolve_reverse" => (
+            format!("Отменено решение по браку № {}", num("number").unwrap_or(0)),
+            format!("{}{}", text("name"), comment(data)),
         ),
         "telegram.employee_link" => (
             format!("Работник {} подключился к боту", text("name")),

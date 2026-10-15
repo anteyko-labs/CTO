@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update defects set status = 'cancelled', resolved_at = now() where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "18a52e0b243c23702fc11623ef8906a4548d221602421bf6a5b0c6f33a26dbe9"
+}

@@ -1,5 +1,7 @@
 // Остатки филиала: фильтры «мало» и «проверить», себестоимость и сверка с движениями — только владельцу (SPEC-03).
+// Вкладка «Брак» и кнопка «В брак» в строке товара — SPEC-25.
 import { useState } from 'react'
+import { DefectMarkModal, DefectsTab } from '../components/Defects'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
@@ -35,6 +37,8 @@ export default function Stock() {
   const [staleDays, setStaleDays] = useState('')
   const staleSave = useAction()
   const [editing, setEditing] = useState<Product | null>(null)
+  const [tab, setTab] = useState<'stock' | 'defects'>('stock')
+  const [marking, setMarking] = useState<Product | null>(null)
   const query = useDebounced(q.trim())
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const stock = useLoad(() => get<Product[]>(`/stock${qs({ q: query, category_id: categoryId })}`), [query, categoryId])
@@ -132,6 +136,21 @@ export default function Stock() {
       </Button>
     ) : null
 
+  /** «В брак» — администратор и владелец, только из того, что есть на складе. */
+  const defectButton = (p: Product, cls: string) =>
+    p.stock_qty > 0 ? (
+      <Button
+        variant="secondary"
+        className={cls}
+        onClick={(e) => {
+          e.stopPropagation()
+          setMarking(p)
+        }}
+      >
+        В брак
+      </Button>
+    ) : null
+
   const rowTone = (p: Product) => (isOut(p) ? 'bg-rose-50 hover:bg-rose-100' : isLow(p) ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-slate-50')
   const qtyTone = (p: Product) => (isOut(p) ? 'text-rose-700' : isLow(p) ? 'text-amber-800' : '')
   const badges = (p: Product) => (
@@ -163,6 +182,28 @@ export default function Stock() {
           )
         }
       />
+      <div className="mb-3 flex gap-2" role="tablist">
+        {(
+          [
+            ['stock', 'Остатки'],
+            ['defects', 'Брак'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={`min-h-[38px] rounded-md border px-4 py-2 text-sm font-medium ${tab === key ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+            onClick={() => setTab(key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === 'defects' ? (
+        <DefectsTab />
+      ) : (
       <Card>
         <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr] sm:items-end">
           <Field label="Поиск">
@@ -260,8 +301,11 @@ export default function Stock() {
                     </div>
                     <div className={`shrink-0 text-right text-lg font-bold tabular-nums ${qtyTone(p)}`}>{stockShort(p)}</div>
                   </button>
-                  {owner && (p.needs_review || p.cost_pending) && (
-                    <div className="px-4 pb-2.5">{ownerAction(p, 'min-h-[36px] py-1 text-xs')}</div>
+                  {((owner && (p.needs_review || p.cost_pending)) || p.stock_qty > 0) && (
+                    <div className="flex gap-2 px-4 pb-2.5">
+                      {owner && ownerAction(p, 'min-h-[36px] py-1 text-xs')}
+                      {defectButton(p, 'min-h-[36px] py-1 text-xs')}
+                    </div>
                   )}
                 </li>
               ))}
@@ -295,7 +339,12 @@ export default function Stock() {
                         {p.stock_value_tyiyn != null ? formatSom(p.stock_value_tyiyn) : '—'}
                       </td>
                     )}
-                    <td className="px-2 py-2 text-right">{ownerAction(p, '')}</td>
+                    <td className="whitespace-nowrap px-2 py-2 text-right">
+                      <div className="flex justify-end gap-2">
+                        {ownerAction(p, '')}
+                        {defectButton(p, '')}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </Table>
@@ -311,6 +360,18 @@ export default function Stock() {
           </>
         )}
       </Card>
+      )}
+
+      {marking && (
+        <DefectMarkModal
+          product={marking}
+          onClose={() => setMarking(null)}
+          onDone={() => {
+            setMarking(null)
+            stock.reload()
+          }}
+        />
+      )}
 
       {editing && (
         <ProductFormModal

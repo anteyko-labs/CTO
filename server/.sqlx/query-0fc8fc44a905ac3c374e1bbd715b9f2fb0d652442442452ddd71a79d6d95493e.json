@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update defects set status = $2, resolved_at = now() where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0fc8fc44a905ac3c374e1bbd715b9f2fb0d652442442452ddd71a79d6d95493e"
+}

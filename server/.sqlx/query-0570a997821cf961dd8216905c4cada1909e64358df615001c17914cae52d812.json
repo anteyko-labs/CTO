@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select product_id, stock_qty, stock_value_tyiyn from branch_products\n           where branch_id = $1 and product_id = any($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "stock_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "stock_value_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0570a997821cf961dd8216905c4cada1909e64358df615001c17914cae52d812"
+}

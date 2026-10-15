@@ -4261,3 +4261,286 @@ async fn bot_operations_and_reports_match_the_screens(pool: PgPool) {
         "{text}"
     );
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defects_and_supplier_deliveries(pool: PgPool) {
+    // Брак (SPEC-25) и поставки в карточке поставщика (SPEC-26) через HTTP: права, уведомление,
+    // строки прибыли, оценка остатка «первым продаётся пришедшее раньше».
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let mut suppliers = vec![];
+    for name in ["Автоснаб", "Колёса"] {
+        let (_, _, s) = call(
+            &app,
+            "POST",
+            "/api/v1/suppliers",
+            Some(&admin),
+            Some(json!({ "name": name })),
+        )
+        .await;
+        suppliers.push(s["id"].as_str().unwrap().to_string());
+    }
+    let (a, b) = (suppliers[0].clone(), suppliers[1].clone());
+    // Автоснаб: 10 шт, потом Колёса: 5 шт, потом Автоснаб: 3 шт и сторнированная накладная.
+    let mut receipts = vec![];
+    for (sid, qty, cost) in [
+        (&a, 10, 1_000_000),
+        (&b, 5, 600_000),
+        (&a, 3, 360_000),
+        (&a, 7, 700_000),
+    ] {
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/receipts",
+            Some(&admin),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": sid, "payment": "debt",
+                         "lines": [{ "product_id": item, "qty": qty, "cost_tyiyn": cost }] }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+        receipts.push(r["id"].as_str().unwrap().to_string());
+    }
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/receipts/{}/reverse", receipts[3]),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7() })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Подсказка поставщика — из последнего непогашенного прихода.
+    let (_, _, hint) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/defects/supplier-hint?product_id={item}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(hint["supplier_id"], json!(a));
+
+    // Администратор отмечает брак без причины — нельзя, с причиной — можно.
+    let mark = |reason: &str, qty: i64| json!({ "op_id": Uuid::now_v7(), "product_id": item, "qty": qty, "reason": reason });
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/defects",
+        Some(&admin),
+        Some(mark("  ", 1)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, d) = call(
+        &app,
+        "POST",
+        "/api/v1/defects",
+        Some(&admin),
+        Some(mark("битый корпус", 2)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    assert_eq!(d["cost_tyiyn"], Value::Null);
+    let id = d["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/defects",
+        Some(&admin),
+        Some(mark("много", 100)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // Владельцу — уведомление.
+    let (_, _, notes) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let note = notes["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["action"] == "defect.mark")
+        .unwrap()
+        .clone();
+    assert_eq!(note["title"], "В брак: Фильтр × 2 шт");
+    assert!(
+        note["details"].as_str().unwrap().contains("битый корпус"),
+        "{note}"
+    );
+
+    // Решение и его сторно — только владелец.
+    let resolve = |kind: &str| json!({ "op_id": Uuid::now_v7(), "kind": kind });
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/defects/{id}/resolve"),
+        Some(&admin),
+        Some(resolve("write_off")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, r) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/defects/{id}/resolve"),
+        Some(&owner),
+        Some(resolve("credit")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["status"], "returned");
+    let cost = r["cost_tyiyn"].as_i64().unwrap();
+    // Средняя: 19 600 с за 18 шт, брак 2 шт.
+    assert_eq!(cost, 217_778);
+    assert_eq!(r["resolution"]["refund_tyiyn"], cost);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/defects/{id}/resolution/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Списки: ожидающие и решённые; администратору стоимость не отдаётся.
+    let (_, _, pending) = call(
+        &app,
+        "GET",
+        "/api/v1/defects?status=pending",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(pending.as_array().map(Vec::len), Some(0));
+    let (_, _, done) = call(
+        &app,
+        "GET",
+        "/api/v1/defects?status=resolved",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(done[0]["resolution"]["kind"], "credit");
+    assert_eq!(done[0]["resolution"]["refund_tyiyn"], Value::Null);
+
+    // Второй брак списываем: отчёт о прибыли показывает строку «Списание брака».
+    let (_, _, d2) = call(
+        &app,
+        "POST",
+        "/api/v1/defects",
+        Some(&owner),
+        Some(mark("течёт", 1)),
+    )
+    .await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/defects/{}/resolve", d2["id"].as_str().unwrap()),
+        Some(&owner),
+        Some(resolve("write_off")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, profit) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
+    assert_eq!(profit["totals"]["defect_writeoff_tyiyn"], d2["cost_tyiyn"]);
+    assert_eq!(profit["totals"]["defect_diff_tyiyn"], 0);
+    assert_eq!(profit["days"][0]["defect_writeoff_tyiyn"], d2["cost_tyiyn"]);
+    let (_, _, dash) = call(&app, "GET", "/api/v1/owner/dashboard", Some(&owner), None).await;
+    assert_eq!(dash["totals"]["defect_writeoff_tyiyn"], d2["cost_tyiyn"]);
+
+    // Остаток: 18 − 2 − 1 = 15. Сходится с движениями.
+    let (_, _, verify) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
+    assert_eq!(verify, json!([]));
+
+    // Поставки Автоснаба: привёз 13 (сторнированная не считается), вернули 2.
+    let (s, _, del) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{a}/deliveries"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{del}");
+    let row = &del["rows"][0];
+    assert_eq!(row["delivered_qty"], 13);
+    assert_eq!(row["returned_qty"], 2);
+    assert_eq!(row["amount_tyiyn"], 1_360_000);
+    assert_eq!(row["last_price_tyiyn"], 120_000);
+    assert_eq!(row["stock_qty"], 15);
+    // От новых к старым: 3 от Автоснаба, 5 от Колёс, оставшиеся 7 — от Автоснаба: 10.
+    assert_eq!(row["estimate_qty"], 10);
+    assert!(row["estimate_value_tyiyn"].is_i64());
+    assert_eq!(del["amount_tyiyn"], 1_360_000);
+    // Наш долг минус возмещение брака.
+    assert_eq!(del["balance_tyiyn"], -1_360_000 + cost);
+    let (_, _, del_b) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{b}/deliveries"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(del_b["rows"][0]["estimate_qty"], 5);
+    assert_eq!(del_b["rows"][0]["returned_qty"], 0);
+    // Оценки не больше остатка в сумме.
+    assert!(row["estimate_qty"].as_i64().unwrap() + 5 <= 15);
+
+    // Администратор видит количества и суммы закупок, но не себестоимость остатка.
+    let (s, _, del_admin) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{a}/deliveries"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(del_admin["rows"][0]["amount_tyiyn"], 1_360_000);
+    assert_eq!(del_admin["rows"][0]["estimate_value_tyiyn"], Value::Null);
+    assert_eq!(del_admin["pending_defects_tyiyn"], Value::Null);
+
+    // Накладные поставщика с товаром: сторнированная помечена.
+    let (_, _, list) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{a}/deliveries/{item}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list.iter().filter(|r| r["reversed"] == true).count(), 1);
+
+    // Сторно решения по возврату: запись ждёт решения, долг поставщика вернулся, возврат пропал.
+    let (s, _, back) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/defects/{id}/resolution/reverse"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "поставщик не принял" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert_eq!(back["status"], "pending");
+    let (_, _, del) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{a}/deliveries"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(del["rows"][0]["returned_qty"], 0);
+    assert_eq!(del["balance_tyiyn"], -1_360_000);
+    assert_eq!(del["pending_defects"], 1);
+    let (_, _, verify) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
+    assert_eq!(verify, json!([]));
+}

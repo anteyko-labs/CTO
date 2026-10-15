@@ -11,6 +11,8 @@ pub mod bot_staff;
 pub mod cabinet;
 pub mod cash;
 pub mod catalog;
+pub mod defects;
+pub mod deliveries;
 pub mod expenses;
 pub mod favorites;
 pub mod fees;
@@ -42,6 +44,8 @@ pub fn routes() -> Router<AppState> {
         .merge(cabinet::routes())
         .merge(cash::routes())
         .merge(catalog::routes())
+        .merge(defects::routes())
+        .merge(deliveries::routes())
         .merge(expenses::routes())
         .merge(favorites::routes())
         .merge(fees::routes())

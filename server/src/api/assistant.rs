@@ -726,11 +726,11 @@ fn tools() -> Value {
         },
         {
             "name": "stock_report",
-            "description": "Склад, как в программе. report: stock — остатки и стоимость склада на сейчас (query — фильтр по названию, необязательно); stale — залежалые товары без продаж; receipts — приходы (накладные) за период; revisions — последние ревизии; oil_transfers — последние переливы масла. Без дат — сегодня.",
+            "description": "Склад, как в программе. report: stock — остатки и стоимость склада на сейчас (query — фильтр по названию, необязательно); stale — залежалые товары без продаж; receipts — приходы (накладные) за период; revisions — последние ревизии; oil_transfers — последние переливы масла; defects — брак: что ждёт решения владельца и что решено за период (списано, возвращено поставщику). Без дат — сегодня.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "report": { "type": "string", "enum": ["stock", "stale", "receipts", "revisions", "oil_transfers"] },
+                    "report": { "type": "string", "enum": ["stock", "stale", "receipts", "revisions", "oil_transfers", "defects"] },
                     "query": { "type": "string", "description": "Название, бренд, артикул или штрихкод товара для stock" },
                     "from": { "type": "string", "description": "Первый день периода, ГГГГ-ММ-ДД" },
                     "to": { "type": "string", "description": "Последний день периода, ГГГГ-ММ-ДД" }
@@ -741,11 +741,11 @@ fn tools() -> Value {
         },
         {
             "name": "party_report",
-            "description": "Клиент или поставщик, как в программе. report: card — карточка (баланс, покупки, долг, машины, последние записи); reconciliation — акт сверки за период (без дат — за всё время); loyalty — бонусные баллы клиента; oil_book — масляная книжка машин клиента (можно искать по госномеру). Если найдено несколько — список для уточнения.",
+            "description": "Клиент или поставщик, как в программе. report: card — карточка (баланс, покупки, долг, машины, последние записи); reconciliation — акт сверки за период (без дат — за всё время); loyalty — бонусные баллы клиента; oil_book — масляная книжка машин клиента (можно искать по госномеру); deliveries — что привёз поставщик по товарам за период (без дат — за всё время): количество, сумма, возвраты брака, остаток и оценка, сколько из остатка от него. Если найдено несколько — список для уточнения.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "report": { "type": "string", "enum": ["card", "reconciliation", "loyalty", "oil_book"] },
+                    "report": { "type": "string", "enum": ["card", "reconciliation", "loyalty", "oil_book", "deliveries"] },
                     "query": { "type": "string", "description": "Название, имя, телефон или госномер машины" },
                     "from": { "type": "string", "description": "Первый день периода, ГГГГ-ММ-ДД" },
                     "to": { "type": "string", "description": "Последний день периода, ГГГГ-ММ-ДД" }
@@ -1142,7 +1142,7 @@ async fn totals_text(
     let t = crate::api::reports::totals_for(conn, branch_id, from, to).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
     Ok(format!(
-        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nЧистая прибыль: {}",
+        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nЧистая прибыль: {}",
         period_label(from, to),
         t.sales_count,
         format_som(revenue),
@@ -1155,6 +1155,8 @@ async fn totals_text(
         format_som(t.expenses_tyiyn),
         format_som(t.bonus_tyiyn),
         format_som_signed(t.cash_diff_tyiyn),
+        format_som(t.defect_writeoff_tyiyn),
+        format_som_signed(t.defect_diff_tyiyn),
         format_som(t.net_tyiyn),
     ))
 }
@@ -1171,7 +1173,7 @@ async fn by_day_text(
         let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
         let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
         lines.push(format!(
-            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, чистая прибыль {}",
+            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, чистая прибыль {}",
             day.format("%d.%m.%Y"),
             weekday(day),
             t.sales_count,
@@ -1182,6 +1184,8 @@ async fn by_day_text(
             format_som(t.expenses_tyiyn),
             format_som(t.bonus_tyiyn),
             format_som_signed(t.cash_diff_tyiyn),
+            format_som(t.defect_writeoff_tyiyn),
+            format_som_signed(t.defect_diff_tyiyn),
             format_som(t.net_tyiyn),
         ));
         let Some(next) = day.succ_opt() else { break };

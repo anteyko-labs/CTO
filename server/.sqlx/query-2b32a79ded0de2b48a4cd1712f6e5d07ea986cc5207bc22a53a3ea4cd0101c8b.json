@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into defect_resolutions (id, branch_id, defect_id, kind, supplier_id, replace_qty,\n                                           replace_tyiyn, refund_tyiyn, account_id, writeoff_tyiyn,\n                                           diff_tyiyn, comment, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2b32a79ded0de2b48a4cd1712f6e5d07ea986cc5207bc22a53a3ea4cd0101c8b"
+}

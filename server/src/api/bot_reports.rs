@@ -55,6 +55,7 @@ fn movement_kind(kind: &str) -> &str {
         "expense" => "расход",
         "payout" => "выплата сотруднику",
         "supplier_payment" => "оплата поставщику",
+        "supplier_refund" => "возмещение поставщика за брак",
         "debt_repayment" => "погашение долга",
         "battery_intake" => "приём аккумуляторов",
         "count_diff" => "пересчёт",
@@ -743,8 +744,67 @@ pub async fn stock(
             );
             Ok(lines.join("\n"))
         }
+        "defects" => {
+            // Тот же список, что экран «Остатки → Брак» (SPEC-25): только чтение.
+            let rows = crate::api::defects::load_defects(conn, user, None, None).await?;
+            let pending: Vec<_> = rows.iter().filter(|d| d.status == "pending").collect();
+            let pending_cost = pending
+                .iter()
+                .fold(0i64, |acc, d| acc.saturating_add(d.cost_tyiyn.unwrap_or(0)));
+            let mut lines = vec![format!(
+                "Брак: ждут решения {} на {}",
+                pending.len(),
+                format_som(pending_cost)
+            )];
+            let line = |d: &crate::api::defects::DefectOut| {
+                let status = match (d.status.as_str(), &d.resolution) {
+                    ("pending", _) => "ждёт решения".to_string(),
+                    ("cancelled", _) => "отметку сняли".to_string(),
+                    (_, Some(r)) => {
+                        let mut t = crate::api::defects::kind_words(&r.kind).to_string();
+                        if let Some(v) = r.refund_tyiyn {
+                            t.push_str(&format!(", возмещение {}", format_som(v)));
+                        }
+                        if let Some(q) = r.replace_qty {
+                            t.push_str(&format!(", взамен {}", qty_text(q, &d.unit)));
+                        }
+                        t
+                    }
+                    _ => d.status.clone(),
+                };
+                format!(
+                    "№ {} {}: {} × {}, {} — {}; {}{}",
+                    d.number,
+                    local(d.created_at),
+                    d.product_name,
+                    qty_text(d.qty, &d.unit),
+                    format_som(d.cost_tyiyn.unwrap_or(0)),
+                    d.reason,
+                    status,
+                    d.supplier_name
+                        .as_deref()
+                        .map(|s| format!(" (поставщик {s})"))
+                        .unwrap_or_default()
+                )
+            };
+            capped(&mut lines, pending.iter().map(|d| line(d)).collect());
+            let done: Vec<String> = rows
+                .iter()
+                .filter(|d| {
+                    d.status != "pending"
+                        && d.resolved_at.is_some_and(|t| {
+                            let day = (t + chrono::Duration::hours(6)).date_naive();
+                            day >= from && day <= to
+                        })
+                })
+                .map(line)
+                .collect();
+            lines.push(format!("Решено {}: {}", period_label(from, to), done.len()));
+            capped(&mut lines, done);
+            Ok(lines.join("\n"))
+        }
         _ => Err(invalid(
-            "report: stock, stale, receipts, revisions или oil_transfers",
+            "report: stock, stale, receipts, revisions, oil_transfers или defects",
         )),
     }
 }
@@ -759,12 +819,16 @@ pub async fn party(
     query: &str,
     period: Option<(NaiveDate, NaiveDate)>,
 ) -> AppResult<String> {
-    if !matches!(report, "card" | "reconciliation" | "loyalty" | "oil_book") {
+    if !matches!(
+        report,
+        "card" | "reconciliation" | "loyalty" | "oil_book" | "deliveries"
+    ) {
         return Err(invalid(
-            "report: card, reconciliation, loyalty или oil_book",
+            "report: card, reconciliation, loyalty, oil_book или deliveries",
         ));
     }
-    let p = match find_party(conn, user.branch_id, None, query).await? {
+    let role = (report == "deliveries").then_some("supplier");
+    let p = match find_party(conn, user.branch_id, role, query).await? {
         Ok(p) => p,
         Err(text) => {
             return Ok(text.replace("Черновик не создан. ", "").replace(
@@ -875,6 +939,64 @@ pub async fn party(
                 "Сальдо на конец: {}",
                 balance_text(r.closing_tyiyn)
             ));
+            Ok(lines.join("\n"))
+        }
+        "deliveries" => {
+            // Как вкладка «Поставки» в карточке поставщика (SPEC-26).
+            let (from, to) = period.map_or((None, None), |(f, t)| (Some(f), Some(t)));
+            let d = crate::api::deliveries::deliveries_data(conn, user, p.id, from, to).await?;
+            let mut lines = vec![format!(
+                "Поставки {} {}: на {}",
+                d.supplier_name,
+                period
+                    .map(|(f, t)| period_label(f, t))
+                    .unwrap_or_else(|| "за всё время".into()),
+                format_som(d.amount_tyiyn)
+            )];
+            lines.push(format!("Баланс: {}", balance_text(d.balance_tyiyn)));
+            if d.pending_defects > 0 {
+                lines.push(format!(
+                    "Брак ждёт решения: {} на {}",
+                    d.pending_defects,
+                    format_som(d.pending_defects_tyiyn.unwrap_or(0))
+                ));
+            }
+            if d.rows.is_empty() {
+                lines.push("Поставок нет.".into());
+            }
+            capped(
+                &mut lines,
+                d.rows
+                    .iter()
+                    .map(|r| {
+                        let mut t = format!(
+                            "— {}: привёз {}, на {}",
+                            r.name,
+                            qty_text(r.delivered_qty, &r.unit),
+                            format_som(r.amount_tyiyn)
+                        );
+                        if r.returned_qty != 0 {
+                            t.push_str(&format!(
+                                ", вернули браком {}",
+                                qty_text(r.returned_qty, &r.unit)
+                            ));
+                        }
+                        if let (Some(price), Some(at)) = (r.last_price_tyiyn, r.last_at) {
+                            t.push_str(&format!(
+                                ", последняя цена {} ({})",
+                                format_som(price),
+                                local(at)
+                            ));
+                        }
+                        t.push_str(&format!(
+                            "; на складе {}, из них от него (оценка) {}",
+                            qty_text(r.stock_qty, &r.unit),
+                            qty_text(r.estimate_qty, &r.unit)
+                        ));
+                        t
+                    })
+                    .collect(),
+            );
             Ok(lines.join("\n"))
         }
         "loyalty" => {

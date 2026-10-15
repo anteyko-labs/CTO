@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.supplier_id as \"supplier_id!\" from receipt_lines l join receipts r on r.id = l.receipt_id\n           where r.branch_id = $1 and l.product_id = $2 and l.qty > 0 and r.supplier_id is not null\n             and r.reversal_of is null\n             and not exists (select 1 from receipts x where x.reversal_of = r.id)\n           order by r.created_at desc, l.line_no desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "supplier_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9024b14627c3dc4edcb76db3d63610c881049f35b390f05d8bff8f76a37cf571"
+}

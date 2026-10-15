@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select x.id, x.kind, x.supplier_id, x.replace_qty, x.replace_tyiyn, x.refund_tyiyn,\n                  x.account_id, x.writeoff_tyiyn, x.diff_tyiyn\n           from defect_resolutions x\n           where x.defect_id = $1 and x.reversal_of is null\n             and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)\n           order by x.created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "replace_qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "replace_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "refund_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "writeoff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "9dc4537b00be83e0805ab5f3234b08f84a5cae39a2fbbe4d6b0a3da6ceddceca"
+}

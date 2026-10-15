@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.number, d.product_id, p.name, p.unit, d.qty, d.cost_tyiyn, d.supplier_id, d.status\n           from defects d join products p on p.id = d.product_id\n           where d.id = $1 and d.branch_id = $2\n           for update of d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "cbd8d6f6869d00fb3d091a0198943268372cf0504ac4171ff43ac7aa141b1f6a"
+}

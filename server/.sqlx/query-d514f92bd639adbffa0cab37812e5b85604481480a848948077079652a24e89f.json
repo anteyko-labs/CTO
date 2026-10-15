@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.product_id, p.name, p.unit, p.container_ml, r.id as receipt_id, r.created_at,\n                  l.line_no, l.qty, l.cost_tyiyn,\n                  (($1::date is null or r.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')\n                   and ($2::date is null or r.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))\n                    as \"in_period!\"\n           from receipt_lines l\n           join receipts r on r.id = l.receipt_id\n           join products p on p.id = l.product_id\n           where r.branch_id = $3 and r.supplier_id = $4 and r.reversal_of is null\n             and not exists (select 1 from receipts x where x.reversal_of = r.id)\n           order by r.created_at, l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "receipt_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "in_period!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Date",
+        "Date",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "d514f92bd639adbffa0cab37812e5b85604481480a848948077079652a24e89f"
+}

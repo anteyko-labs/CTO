@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select unit, container_ml from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "container_ml",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "fcb30c53848cafb1607254b5a6fa315da324e78379b7da4fff83ccf3ea0b6196"
+}

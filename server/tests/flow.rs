@@ -6492,3 +6492,414 @@ async fn bot_owner_reports_come_from_program_functions(pool: PgPool) {
     // Отчёты бота журналируются как вопросы и ничего не проводят.
     assert_eq!(count(&pool, "select count(*) from bot_drafts").await, 0);
 }
+
+// ---------- Брак и возврат поставщику (SPEC-25) ----------
+
+use avtodom_server::api::defects::{
+    CommentReq, MarkReq, ResolveReq, mark_tx, resolve_tx, reverse_tx, unmark_tx,
+};
+
+/// Поставщик: запись справочника и контрагент с тем же id (SPEC-10).
+async fn supplier(pool: &PgPool, w: &World, name: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into suppliers (id, name) values ($1, $2)")
+        .bind(id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name) values ($1, $2, 'supplier', 'company', $3)")
+        .bind(id)
+        .bind(w.owner.user.branch_id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+/// Приход от поставщика: в долг или «из своих».
+async fn receive_from(
+    pool: &PgPool,
+    w: &World,
+    sid: Uuid,
+    product: Uuid,
+    qty: i64,
+    cost: i64,
+    debt: bool,
+) {
+    let mut tx = pool.begin().await.unwrap();
+    post_receipt_tx(
+        &mut tx,
+        &w.owner,
+        ReceiptReq {
+            op_id: Uuid::now_v7(),
+            payment: Some(if debt { "debt" } else { "paid" }.into()),
+            paid_from: (!debt).then(|| "outside".into()),
+            supplier_id: Some(sid),
+            supplier_doc: String::new(),
+            comment: String::new(),
+            lines: vec![ReceiptLineReq {
+                product_id: product,
+                qty,
+                cost_tyiyn: cost,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn mark_defect(
+    pool: &PgPool,
+    ctx: &Ctx,
+    product: Uuid,
+    qty: i64,
+) -> Result<avtodom_server::api::defects::DefectOut, AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = mark_tx(
+        &mut tx,
+        ctx,
+        MarkReq {
+            op_id: Uuid::now_v7(),
+            product_id: product,
+            qty,
+            reason: "течёт канистра".into(),
+            supplier_id: None,
+            no_supplier: false,
+        },
+    )
+    .await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r
+}
+
+fn resolution(kind: &str) -> ResolveReq {
+    ResolveReq {
+        op_id: Uuid::now_v7(),
+        kind: kind.into(),
+        replace_qty: None,
+        refund_tyiyn: None,
+        account_id: None,
+        supplier_id: None,
+        comment: String::new(),
+    }
+}
+
+async fn decide(
+    pool: &PgPool,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ResolveReq,
+) -> Result<avtodom_server::api::defects::DefectOut, AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = resolve_tx(&mut tx, ctx, id, req).await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r
+}
+
+async fn undo(pool: &PgPool, ctx: &Ctx, id: Uuid) -> avtodom_server::api::defects::DefectOut {
+    let mut tx = pool.begin().await.unwrap();
+    let r = reverse_tx(
+        &mut tx,
+        ctx,
+        id,
+        CommentReq {
+            op_id: Uuid::now_v7(),
+            comment: "ошиблись".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    r
+}
+
+async fn today_totals(pool: &PgPool, w: &World) -> avtodom_server::api::reports::Totals {
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    avtodom_server::api::reports::totals_for(&mut conn, w.owner.user.branch_id, today, today)
+        .await
+        .unwrap()
+}
+
+async fn party_balance(pool: &PgPool, id: Uuid) -> i64 {
+    sqlx::query_scalar("select balance_tyiyn from parties where id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defect_mark_unmark_and_write_off(pool: PgPool) {
+    let w = seed(&pool).await;
+    let sid = supplier(&pool, &w, "Автоснаб").await;
+    // 10 шт по 1 000 и 10 шт по 2 000 — средняя 1 500.
+    receive_from(&pool, &w, sid, w.filter, 10, 1_000_000, false).await;
+    receive(&pool, &w.owner, w.filter, 10, 2_000_000).await;
+
+    // Больше остатка — отказ.
+    let err = mark_defect(&pool, &w.admin, w.filter, 21)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+
+    // Администратор отмечает: товар уходит из остатка по средней, поставщик — из последнего
+    // прихода с поставщиком; стоимость администратору не отдаётся.
+    let d = mark_defect(&pool, &w.admin, w.filter, 2).await.unwrap();
+    assert_eq!(d.status, "pending");
+    assert_eq!(d.supplier_id, Some(sid));
+    assert_eq!(d.cost_tyiyn, None);
+    assert_eq!(pool_of(&pool, w.filter).await, (18, 2_700_000, false));
+    let cost: i64 = sqlx::query_scalar("select cost_tyiyn from defects where id = $1")
+        .bind(d.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cost, 300_000);
+    assert_stock_consistent(&pool, &w).await;
+
+    // Владелец узнаёт об отметке.
+    let note: serde_json::Value =
+        sqlx::query_scalar("select data from audit_log where action = 'defect.mark'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(note["cost"], 300_000);
+    assert_eq!(note["reason"], "течёт канистра");
+
+    // Решает только владелец.
+    let err = decide(&pool, &w.admin, d.id, resolution("write_off"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Forbidden), "{err:?}");
+
+    // Снять отметку до решения: товар возвращается по той же стоимости.
+    let mut tx = pool.begin().await.unwrap();
+    let back = unmark_tx(
+        &mut tx,
+        &w.admin,
+        d.id,
+        CommentReq {
+            op_id: Uuid::now_v7(),
+            comment: "проверили — целый".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(back.status, "cancelled");
+    assert_eq!(pool_of(&pool, w.filter).await, (20, 3_000_000, false));
+    assert_stock_consistent(&pool, &w).await;
+    // Снятую отметку не решают.
+    let err = decide(&pool, &w.owner, d.id, resolution("write_off"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+
+    // Списание: убыток ровно на стоимость брака.
+    let before = today_totals(&pool, &w).await;
+    let d = mark_defect(&pool, &w.owner, w.filter, 2).await.unwrap();
+    assert_eq!(d.cost_tyiyn, Some(300_000));
+    let out = decide(&pool, &w.owner, d.id, resolution("write_off"))
+        .await
+        .unwrap();
+    assert_eq!(out.status, "written_off");
+    let after = today_totals(&pool, &w).await;
+    assert_eq!(after.defect_writeoff_tyiyn, 300_000);
+    assert_eq!(after.net_tyiyn, before.net_tyiyn - 300_000);
+    assert_eq!(after.cost_tyiyn, before.cost_tyiyn);
+    assert_stock_consistent(&pool, &w).await;
+
+    // Сторно списания: запись снова ждёт решения, убыток уходит.
+    let back = undo(&pool, &w.owner, d.id).await;
+    assert_eq!(back.status, "pending");
+    assert!(back.resolution.is_none());
+    let after = today_totals(&pool, &w).await;
+    assert_eq!(after.defect_writeoff_tyiyn, 0);
+    assert_eq!(after.net_tyiyn, before.net_tyiyn);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defect_returned_for_new_goods(pool: PgPool) {
+    let w = seed(&pool).await;
+    let sid = supplier(&pool, &w, "Автоснаб").await;
+    receive_from(&pool, &w, sid, w.filter, 10, 1_000_000, false).await;
+    let before = today_totals(&pool, &w).await;
+    let d = mark_defect(&pool, &w.admin, w.filter, 4).await.unwrap();
+    assert_eq!(pool_of(&pool, w.filter).await.0, 6);
+
+    // Взамен столько же: остаток вернулся, прибыль не изменилась.
+    let out = decide(&pool, &w.owner, d.id, resolution("replace"))
+        .await
+        .unwrap();
+    assert_eq!(out.status, "returned");
+    assert_eq!(pool_of(&pool, w.filter).await, (10, 1_000_000, false));
+    let t = today_totals(&pool, &w).await;
+    assert_eq!((t.defect_writeoff_tyiyn, t.defect_diff_tyiyn), (0, 0));
+    assert_eq!(t.net_tyiyn, before.net_tyiyn);
+    assert_stock_consistent(&pool, &w).await;
+
+    // Сторно возвращает товар взамен обратно.
+    undo(&pool, &w.owner, d.id).await;
+    assert_eq!(pool_of(&pool, w.filter).await, (6, 600_000, false));
+    assert_stock_consistent(&pool, &w).await;
+
+    // Взамен меньше: недостающее списывается той же операцией.
+    let mut req = resolution("replace");
+    req.replace_qty = Some(3);
+    decide(&pool, &w.owner, d.id, req).await.unwrap();
+    assert_eq!(pool_of(&pool, w.filter).await, (9, 900_000, false));
+    let t = today_totals(&pool, &w).await;
+    assert_eq!(t.defect_writeoff_tyiyn, 100_000);
+    assert_eq!(t.net_tyiyn, before.net_tyiyn - 100_000);
+    // Больше брака взамен не бывает.
+    assert_stock_consistent(&pool, &w).await;
+    let d2 = mark_defect(&pool, &w.admin, w.filter, 1).await.unwrap();
+    let mut req = resolution("replace");
+    req.replace_qty = Some(2);
+    let err = decide(&pool, &w.owner, d2.id, req).await.unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defect_credit_nets_with_next_debt_receipt(pool: PgPool) {
+    let w = seed(&pool).await;
+    let sid = supplier(&pool, &w, "Автоснаб").await;
+    receive_from(&pool, &w, sid, w.filter, 10, 1_000_000, false).await;
+    let before = today_totals(&pool, &w).await;
+    let d = mark_defect(&pool, &w.admin, w.filter, 2).await.unwrap();
+    // Поставщик дал меньше стоимости: 150 с вместо 200 с.
+    let mut req = resolution("credit");
+    req.refund_tyiyn = Some(150_000);
+    let out = decide(&pool, &w.owner, d.id, req).await.unwrap();
+    assert_eq!(out.resolution.as_ref().unwrap().diff_tyiyn, Some(-50_000));
+    // Поставщик должен нам.
+    assert_eq!(party_balance(&pool, sid).await, 150_000);
+    let t = today_totals(&pool, &w).await;
+    assert_eq!(t.defect_diff_tyiyn, -50_000);
+    assert_eq!(t.net_tyiyn, before.net_tyiyn - 50_000);
+    // Следующая накладная в долг на 1 000 с: наш долг — 850 с.
+    receive_from(&pool, &w, sid, w.filter, 5, 100_000, true).await;
+    assert_eq!(party_balance(&pool, sid).await, -100_000 + 150_000);
+    receive_from(&pool, &w, sid, w.filter, 5, 1_000_000, true).await;
+    assert_eq!(party_balance(&pool, sid).await, 150_000 - 1_100_000);
+    assert_stock_consistent(&pool, &w).await;
+
+    // Сторно решения откатывает долг и разницу.
+    undo(&pool, &w.owner, d.id).await;
+    assert_eq!(party_balance(&pool, sid).await, -1_100_000);
+    let t = today_totals(&pool, &w).await;
+    assert_eq!(t.defect_diff_tyiyn, 0);
+    let entries: i64 = sqlx::query_scalar(
+        "select count(*) from party_ledger where party_id = $1 and doc_type in ('defect', 'defect_reversal')",
+    )
+    .bind(sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(entries, 2);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn defect_cash_refund_goes_to_till(pool: PgPool) {
+    let w = seed(&pool).await;
+    let sid = supplier(&pool, &w, "Автоснаб").await;
+    receive_from(&pool, &w, sid, w.filter, 10, 1_000_000, false).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let till = avtodom_server::api::cash::default_account(&mut conn, w.owner.user.branch_id)
+        .await
+        .unwrap();
+    drop(conn);
+    let before = today_totals(&pool, &w).await;
+    let d = mark_defect(&pool, &w.admin, w.filter, 1).await.unwrap();
+    let mut req = resolution("cash");
+    req.account_id = Some(till);
+    req.refund_tyiyn = Some(120_000);
+    // В кассу смены — только в открытой смене.
+    let err = decide(&pool, &w.owner, d.id, req.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+    open_till(&pool, &w).await;
+    // Администратору деньгами нельзя.
+    let err = decide(&pool, &w.admin, d.id, req.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Forbidden), "{err:?}");
+    req.op_id = Uuid::now_v7();
+    decide(&pool, &w.owner, d.id, req).await.unwrap();
+    let balance = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>("select balance_tyiyn from cash_accounts where id = $1")
+            .bind(till)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(balance(pool.clone()).await, 120_000);
+    // Поставщик дал больше стоимости (100 с) — доход 20 с.
+    let t = today_totals(&pool, &w).await;
+    assert_eq!(t.defect_diff_tyiyn, 20_000);
+    assert_eq!(t.net_tyiyn, before.net_tyiyn + 20_000);
+    // Сторно забирает деньги из кассы.
+    undo(&pool, &w.owner, d.id).await;
+    assert_eq!(balance(pool.clone()).await, 0);
+    assert_eq!(today_totals(&pool, &w).await.net_tyiyn, before.net_tyiyn);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_reports_show_defects_and_deliveries(pool: PgPool) {
+    // Отчёты бота «брак» и «поставки» — из тех же функций, что экраны (SPEC-24, -25, -26).
+    let w = seed(&pool).await;
+    let sid = supplier(&pool, &w, "Автоснаб").await;
+    receive_from(&pool, &w, sid, w.filter, 10, 1_000_000, false).await;
+    mark_defect(&pool, &w.admin, w.filter, 2).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    let text = avtodom_server::api::bot_reports::stock(
+        &mut conn,
+        &w.owner.user,
+        "defects",
+        None,
+        (today, today),
+    )
+    .await
+    .unwrap();
+    assert!(text.contains("ждут решения 1 на 2 000 с"), "{text}");
+    assert!(text.contains("Фильтр W712 × 2 шт"), "{text}");
+    let text = avtodom_server::api::bot_reports::party(
+        &mut conn,
+        &w.owner.user,
+        "deliveries",
+        "Автоснаб",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        text.contains("Поставки Автоснаб за всё время: на 10 000 с"),
+        "{text}"
+    );
+    assert!(text.contains("привёз 10 шт"), "{text}");
+    assert!(
+        text.contains("на складе 8 шт, из них от него (оценка) 8 шт"),
+        "{text}"
+    );
+}
