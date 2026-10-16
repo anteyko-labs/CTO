@@ -8932,3 +8932,139 @@ mod point_feedback_stock {
         assert_allocations_consistent(&pool, &w, sid).await;
     }
 }
+
+// ---------- Проданное по накладным и напоминания о долге (SPEC-27 §6–7) ----------
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipts_sold_fifo_bounds(pool: PgPool) {
+    // Остаток раскладывается по накладным от новых к старым: продано + осталось = привезли,
+    // осталось не больше привезённого и не меньше нуля; заработок — только владельцу.
+    use avtodom_server::api::income::receipts_sold;
+    let w = seed(&pool).await;
+    let first = receive(&pool, &w.admin, w.filter, 10, 1_000).await;
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 4, 1_000)], cash(4_000)),
+    )
+    .await
+    .unwrap();
+    let second = receive(&pool, &w.admin, w.filter, 5, 1_000).await;
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 8, 1_000)], cash(8_000)),
+    )
+    .await
+    .unwrap();
+    // Остаток 3: все из второй накладной, первая продана целиком.
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let list = receipts_sold(&mut conn, &w.owner.user, today, today)
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 2);
+    for r in &list {
+        for i in &r.items {
+            assert!(i.left_qty >= 0 && i.left_qty <= i.qty, "{i:?}");
+            assert_eq!(i.sold_qty + i.left_qty, i.qty);
+            assert!(i.left_cost_tyiyn >= 0 && i.left_cost_tyiyn <= i.cost_tyiyn);
+        }
+        assert_eq!(r.sold_cost_tyiyn + r.left_cost_tyiyn, r.cost_tyiyn);
+    }
+    let by = |id: Uuid| list.iter().find(|r| r.receipt_id == id).unwrap();
+    let (a, b) = (by(first.id), by(second.id));
+    assert_eq!((a.items[0].sold_qty, a.items[0].left_qty), (10, 0));
+    assert_eq!((b.items[0].sold_qty, b.items[0].left_qty), (2, 3));
+    // Первая: 10 шт по 10 с продано по 10 с = 100 с выручки при закупке 10 с — заработано 90 с.
+    assert_eq!(a.revenue_tyiyn, 10_000);
+    assert_eq!(a.earned_tyiyn, 9_000);
+    assert_eq!(b.left_cost_tyiyn, 600);
+    // Ушли в минус — у накладной ничего не осталось, но и не меньше нуля.
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 5, 1_000)], cash(5_000)),
+    )
+    .await
+    .unwrap();
+    let list = receipts_sold(&mut conn, &w.owner.user, today, today)
+        .await
+        .unwrap();
+    assert!(list.iter().all(|r| r.items.iter().all(|i| i.left_qty == 0)));
+    assert!(matches!(
+        receipts_sold(&mut conn, &w.admin.user, today, today).await,
+        Err(AppError::Forbidden)
+    ));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn debt_reminders_three_days_before_and_on_due_date_once(pool: PgPool) {
+    // Напоминание о долге: за 3 дня и в день срока, каждое один раз и только в окно рассылок
+    // (SPEC-27 §7, ADR-063). Просроченный долг каждый день не напоминается.
+    use avtodom_server::api::telegram::notify_pass;
+    let w = seed(&pool).await;
+    let chat = 600_100_200i64;
+    let party = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let quiet = bot_customer(&pool, &w, "Без долга", "person", chat + 1).await;
+    // Долг взят сегодня, платить 4 дня: последний день — через 3 дня.
+    sqlx::query(
+        "insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date, user_id, device_id)
+         values ($1, $2, $3, 'debt', 150000, (now() at time zone 'Asia/Bishkek')::date, $4, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(party)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update parties set balance_tyiyn = 150000, due_days = 4 where id = $1")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update parties set due_days = 4 where id = $1")
+        .bind(quiet)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (api, fake) = fake_telegram().await;
+    let mut conn = pool.acquire().await.unwrap();
+    // Вне окна — ничего.
+    notify_pass(&mut conn, &api, 8, true).await.unwrap();
+    assert!(fake.texts(chat).is_empty());
+    notify_pass(&mut conn, &api, 10, true).await.unwrap();
+    let got = fake.texts(chat);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].contains("1 500 с") && got[0].contains("через 3 дня"),
+        "{got:?}"
+    );
+    notify_pass(&mut conn, &api, 11, true).await.unwrap();
+    assert_eq!(fake.texts(chat).len(), 1);
+    // Срок сегодня: второе напоминание, тоже один раз.
+    sqlx::query("update parties set due_days = 1 where id = $1")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    notify_pass(&mut conn, &api, 19, true).await.unwrap();
+    notify_pass(&mut conn, &api, 19, true).await.unwrap();
+    let got = fake.texts(chat);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got[1].contains("сегодня"), "{got:?}");
+    // Просрочен — больше не напоминаем; без долга — ничего.
+    sqlx::query("update parties set due_days = 0 where id = $1")
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    notify_pass(&mut conn, &api, 12, true).await.unwrap();
+    assert_eq!(fake.texts(chat).len(), 2);
+    assert!(fake.texts(chat + 1).is_empty());
+}

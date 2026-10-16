@@ -14,7 +14,9 @@ import SettingsHub from './pages/SettingsHub'
 import Cashier from './pages/Cashier'
 import Categories from './pages/Categories'
 import ClientCard from './pages/ClientCard'
+import Bank from './pages/Bank'
 import Debts from './pages/Debts'
+import Income from './pages/Income'
 import Clients from './pages/Clients'
 import Employees from './pages/Employees'
 import Expenses from './pages/Expenses'
@@ -72,6 +74,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/expenses', label: 'Расходы', icon: 'expenses' },
       { to: '/payroll', label: 'Расчёт', icon: 'payroll' },
       { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
+      { to: '/income', label: 'Поступления', icon: 'incoming' },
+      { to: '/bank', label: 'Счёт', icon: 'expenses', ownerOnly: true },
     ],
   },
   {
@@ -260,6 +264,8 @@ function Shell() {
           <Route path="/payroll" element={<Payroll />} />
           {owner && <Route path="/summary" element={<OwnerDashboard />} />}
           {owner && <Route path="/profit" element={<Profit />} />}
+          {owner && <Route path="/bank" element={<Bank />} />}
+          <Route path="/income" element={<Income />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

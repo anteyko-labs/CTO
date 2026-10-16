@@ -606,10 +606,15 @@ export interface ProfitReport {
 }
 
 export interface Dashboard {
+  /** Последний день периода. */
   date: string
+  from: string
+  to: string
+  today: string
   totals: ProfitTotals
   returns_tyiyn: number
   average_check_tyiyn: number
+  /** Остатки касс — всегда на сейчас. */
   accounts: { name: string; balance_tyiyn: number }[]
   money_total_tyiyn: number
   shift_open: boolean
@@ -621,8 +626,130 @@ export interface Dashboard {
   needs_review: number
   stale_stock: number
   staff: StaffPay[]
-  /** Продажи к этому же часу: сегодня, вчера, неделю назад. */
-  compare?: { today: DayPart; yesterday: DayPart; week_ago: DayPart; /** Чистая прибыль вчера за весь день. */ yesterday_net_tyiyn: number }
+  /** «Сколько по карте ушло»: безнал чеков за период (SPEC-27 §6). */
+  noncash: Noncash
+  /** Один день: к предыдущему дню и тому же дню неделю назад; сегодня — к этому часу. */
+  compare: {
+    today: DayPart
+    yesterday: DayPart
+    week_ago: DayPart
+    /** Чистая прибыль предыдущего дня за весь день. */
+    yesterday_net_tyiyn: number
+    until_now: boolean
+  } | null
+  /** Период: те же числа за предыдущий период такой же длины. */
+  previous: { from: string; to: string; revenue_tyiyn: number; gross_tyiyn: number; net_tyiyn: number; sales_count: number } | null
+}
+
+export interface Noncash {
+  card_tyiyn: number
+  transfer_tyiyn: number
+  total_tyiyn: number
+}
+
+// ---------- Деньги и отчёты (SPEC-27 §6) ----------
+
+export interface KindRow {
+  kind: string
+  in_tyiyn: number
+  out_tyiyn: number
+}
+
+export interface BankIncome {
+  sales_tyiyn: number
+  repayments_tyiyn: number
+  total_tyiyn: number
+}
+
+/** Экран «Счёт»: только владельцу. */
+export interface BankReport {
+  account_id: string
+  name: string
+  from: string
+  to: string
+  balance_tyiyn: number
+  opening_tyiyn: number
+  closing_tyiyn: number
+  card: BankIncome
+  transfer: BankIncome
+  fee_tyiyn: number
+  other_in_tyiyn: number
+  outgoing_tyiyn: number
+  kinds: KindRow[]
+  days: { date: string; card_tyiyn: number; transfer_tyiyn: number; fee_tyiyn: number; other_tyiyn: number; net_tyiyn: number }[]
+  movements: CashMovement[]
+  movements_count: number
+}
+
+export interface MethodRow {
+  method: string
+  sales_tyiyn: number
+  returns_tyiyn: number
+  net_tyiyn: number
+  fee_tyiyn: number
+}
+
+export interface AccountFlow {
+  account_id: string
+  name: string
+  kind: string
+  opening_tyiyn: number
+  in_tyiyn: number
+  out_tyiyn: number
+  closing_tyiyn: number
+  kinds: KindRow[]
+}
+
+export interface ReceiptSoldItem {
+  product_id: string
+  name: string
+  unit: 'piece' | 'ml' | 'g'
+  container_ml: number | null
+  qty: number
+  sold_qty: number
+  left_qty: number
+  cost_tyiyn: number
+  left_cost_tyiyn: number
+  sold_cost_tyiyn: number
+  revenue_tyiyn: number
+  earned_tyiyn: number
+}
+
+export interface ReceiptSold {
+  receipt_id: string
+  number: number
+  created_at: string
+  supplier_name: string | null
+  cost_tyiyn: number
+  sold_cost_tyiyn: number
+  left_cost_tyiyn: number
+  revenue_tyiyn: number
+  earned_tyiyn: number
+  items: ReceiptSoldItem[]
+}
+
+/** «Куда сколько поступило»: администратору — без сейфа владельца и без накладных. */
+export interface IncomeReport {
+  from: string
+  to: string
+  methods: MethodRow[]
+  revenue_tyiyn: number
+  goods_tyiyn: number
+  services_tyiyn: number
+  sales_tyiyn: number
+  returns_tyiyn: number
+  fee_tyiyn: number
+  accounts: AccountFlow[]
+  categories: { name: string; revenue_tyiyn: number }[]
+  products: TopProduct[]
+  receipts: ReceiptSold[] | null
+}
+
+/** Строка экрана «Долги»: карточка со сроком и последней оплатой. */
+export interface DebtRow extends Party {
+  due_date: string | null
+  overdue_days: number
+  last_payment_at: string | null
 }
 
 export interface DayPart {

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with recursive fam (id, root, depth) as (\n             select id, id, 0 from products where merged_into is null\n             union all\n             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id\n             where fam.depth < 8\n           )\n           select u.product_id as \"product_id!\", u.supplier_id, u.receipt_id, u.qty as \"qty!\"\n           from (\n             select fam.root as product_id, r.supplier_id, r.id as receipt_id, l.qty,\n                    r.created_at as at, l.line_no as ord\n             from receipt_lines l join receipts r on r.id = l.receipt_id\n             join fam on fam.id = l.product_id\n             where r.branch_id = $1 and fam.root = any($2) and l.qty > 0\n               and r.reversal_of is null\n               and not exists (select 1 from receipts x where x.reversal_of = r.id)\n             union all\n             select fam.root, x.supplier_id, null::uuid, x.replace_qty, x.created_at, 0\n             from defect_resolutions x join defects d on d.id = x.defect_id\n             join fam on fam.id = d.product_id\n             where x.branch_id = $1 and fam.root = any($2) and x.kind = 'replace'\n               and x.reversal_of is null and x.replace_qty > 0\n               and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)\n           ) u\n           order by u.at desc, u.ord desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "receipt_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "qty!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "96ca69fed8843935113838bf9005f41beed98d9129d25fd74cc0a4682a93a986"
+}

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.name, a.kind,\n                  coalesce((select sum(m.amount_tyiyn) from cash_movements m\n                            where m.account_id = a.id\n                              and m.created_at < ($3::date)::timestamp at time zone 'Asia/Bishkek'), 0)::bigint as \"opening!\"\n           from cash_accounts a\n           where a.branch_id = $1 and a.active and (not a.owner_only or $2)\n           order by a.is_default desc, a.kind, a.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "opening!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "1a49766abaf9fe9b4bcccf4c556c68ef2d1988caa9929a779fb0c67d933fb58b"
+}

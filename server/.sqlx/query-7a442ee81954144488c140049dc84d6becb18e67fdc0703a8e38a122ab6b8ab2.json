@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.method as \"method!\",\n                  coalesce(sum(p.amount_tyiyn) filter (where s.kind = 'sale'), 0)::bigint as \"sales!\",\n                  coalesce(-sum(p.amount_tyiyn) filter (where s.kind = 'return'), 0)::bigint as \"returns!\",\n                  coalesce(sum(p.amount_tyiyn), 0)::bigint as \"net!\",\n                  coalesce(sum(p.fee_tyiyn), 0)::bigint as \"fee!\"\n           from sale_payments p join sales s on s.id = p.sale_id\n           where s.branch_id = $1 and s.business_date between $2 and $3\n           group by p.method",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "method!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sales!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "returns!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "net!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7a442ee81954144488c140049dc84d6becb18e67fdc0703a8e38a122ab6b8ab2"
+}

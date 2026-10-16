@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Money, Notice, PageHeader } from '../components/ui'
 import { Icon } from '../components/icons'
@@ -8,7 +8,8 @@ import { useLoad, usePolling } from '../lib/hooks'
 import { Heatmap } from '../components/Heatmap'
 import { ProfitChart, type Point, type Series } from '../components/ProfitChart'
 import type { Dashboard, HeatCell, ProfitReport, StaffPay } from '../lib/types'
-import { earnedList, minusSom, payReason, signedSom, vsYesterday, weekAgo } from '../lib/dashboard'
+import { VS_PREV_DAY, VS_PREV_PERIOD, earnedList, minusSom, payReason, signedSom, vsYesterday, weekAgo } from '../lib/dashboard'
+import { QUICK, normalizeRange, quickOf, quickRange, rangeTitle, type Range } from '../lib/income'
 
 const percent = (bp: number | null): string => (bp === null ? '—' : `${(bp / 100).toFixed(1).replace('.', ',')} %`)
 
@@ -24,23 +25,35 @@ function Tile({ label, value, tone = '', children }: { label: string; value: str
 
 const TONE = { up: 'text-emerald-700', down: 'text-rose-700', flat: 'text-slate-500' } as const
 
+type Part = { revenue_tyiyn: number; gross_tyiyn: number; sales_count: number }
+
 /**
- * Две короткие строки под плиткой: «▲ 40 % к вчера» (к этому же часу) и «нед. назад: 9 200 с».
- * Короткие, чтобы на телефоне не переносились; полная подпись — во всплывающей подсказке.
+ * Две короткие строки под плиткой. Один день: «▲ 40 % к вчера» (сегодня — к этому же часу,
+ * прошедший день — к предыдущему целиком) и «нед. назад: 9 200 с». Период: «▲ 12 % к пред.
+ * периоду». Короткие, чтобы на телефоне не переносились; полная подпись — в подсказке.
  */
 function Compare({
   pick,
   data,
+  now,
   money = true,
 }: {
-  pick: (x: { revenue_tyiyn: number; gross_tyiyn: number; sales_count: number }) => number
-  data: Dashboard['compare']
+  pick: (x: Part) => number
+  data: Dashboard
+  /** Значение выбранного периода — для сравнения с предыдущим периодом. */
+  now: number
   money?: boolean
 }) {
-  if (!data) return null
   const fmt = money ? (v: number) => formatSom(v) : String
-  const y = vsYesterday(pick(data.today), pick(data.yesterday), fmt)
-  const w = weekAgo(pick(data.week_ago), fmt)
+  const c = data.compare
+  const p = data.previous
+  const y = c
+    ? vsYesterday(pick(c.today), pick(c.yesterday), fmt, c.until_now ? undefined : VS_PREV_DAY)
+    : p
+      ? vsYesterday(now, pick(p), fmt, VS_PREV_PERIOD)
+      : null
+  const w = c ? weekAgo(pick(c.week_ago), fmt) : null
+  if (!y && !w) return null
   return (
     <div className="mt-1 flex flex-col gap-0.5 whitespace-nowrap text-xs">
       {y && (
@@ -49,7 +62,7 @@ function Compare({
         </span>
       )}
       {w && (
-        <span title="тот же день неделю назад к этому часу" className="tabular-nums text-slate-500">
+        <span title={c?.until_now ? 'тот же день неделю назад к этому часу' : 'тот же день неделю назад'} className="tabular-nums text-slate-500">
           {w}
         </span>
       )}
@@ -119,110 +132,175 @@ function EarnedList({ staff, empty }: { staff: StaffPay[]; empty: string }) {
   )
 }
 
-/** Сводка владельца: что с точкой прямо сейчас (SPEC-08). */
-const PERIODS = [
-  ['today', 'Сегодня', 0],
-  ['week', '7 дней', 6],
-  ['month', '30 дней', 29],
-] as const
-
+/**
+ * Сводка владельца (SPEC-08): сегодня, 7 или 30 дней, любой день или период (SPEC-27 §6).
+ * Все блоки — за выбранный период; остатки касс, долги и склад — на сейчас.
+ */
 export function OwnerDashboard() {
   const today = todayBishkek()
-  const [period, setPeriod] = useState<(typeof PERIODS)[number][0]>('today')
-  const back = PERIODS.find((x) => x[0] === period)?.[2] ?? 0
-  const from = shiftDate(today, -back)
-  const d = useLoad(() => get<Dashboard>('/owner/dashboard'), [])
-  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to: today })}`), [from, today])
-  const heat = useLoad(() => get<HeatCell[]>('/reports/heatmap?days=28'), [])
-  // Сводка живая: чеки с кассы появляются без перезагрузки страницы.
-  usePolling(d.reload)
-  usePolling(r.reload)
+  const [range, setRange] = useState<Range>(() => quickRange('today', today))
+  const [custom, setCustom] = useState(false)
+  const { from, to } = range
+  const single = from === to
+  const isToday = single && to === today
+  const quick = quickOf(range, today)
+  const d = useLoad(() => get<Dashboard>(`/owner/dashboard${qs({ from, to })}`), [from, to])
+  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to })}`), [from, to])
+  // Один день — карта за последние 4 недели (по одному дню она пуста), период — за период.
+  const heat = useLoad(() => get<HeatCell[]>(`/reports/heatmap${single ? '?days=28' : qs({ from, to })}`), [from, to, single])
+  // Сводка живая, пока в период входит сегодня: чеки с кассы появляются без перезагрузки.
+  const live = to === today
+  const { reload: reloadDash } = d
+  const { reload: reloadReport } = r
+  const reloadLive = useCallback(() => {
+    if (!live) return
+    reloadDash()
+    reloadReport()
+  }, [live, reloadDash, reloadReport])
+  usePolling(reloadLive)
+  const pick = (next: Range) => setRange(normalizeRange(next.from, next.to))
+  const word = rangeTitle(range, today)
+
+  const picker = (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm">
+        {QUICK.map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={quick === key}
+            className={`min-h-[38px] px-3 ${quick === key ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+            onClick={() => {
+              setCustom(false)
+              setRange(quickRange(key, today))
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <input
+        type="date"
+        aria-label="День сводки"
+        className="w-40"
+        max={today}
+        value={single ? to : ''}
+        onChange={(e) => {
+          if (!e.target.value) return
+          setCustom(false)
+          pick({ from: e.target.value, to: e.target.value })
+        }}
+      />
+      <button
+        type="button"
+        aria-pressed={custom || (!single && quick === null)}
+        className={`min-h-[38px] rounded-md border px-3 text-sm ${custom || (!single && quick === null) ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+        onClick={() => setCustom(!custom)}
+      >
+        Период
+      </button>
+    </div>
+  )
+
   if (d.loading && !d.data) return <Loading />
   if (!d.data) return <ErrorBox error={d.error} />
-  const t = r.data?.totals ?? d.data.totals
+  const data = d.data
+  const t = data.totals
   const revenue = t.goods_tyiyn + t.services_tyiyn
-  // Сравнение «к этому часу» имеет смысл только для сегодняшнего дня.
-  const compare = period === 'today' ? d.data.compare : undefined
-  const word = period === 'today' ? 'сегодня' : period === 'week' ? 'за 7 дней' : 'за 30 дней'
-  // Сегодня — каждый час с открытия (8:00) до текущего, без пропусков: линия идёт вверх и вниз честно.
   const hours = r.data?.hours ?? []
+  // Один день по часам: с открытия (8:00) до текущего часа (сегодня) или до закрытия (прошедший
+  // день), без пропусков — линия идёт вверх и вниз честно.
   const nowHour = hourBishkek()
   const firstHour = Math.min(8, ...hours.map((h) => h.hour))
-  const lastHour = Math.max(Number.isFinite(nowHour) ? nowHour : 0, ...hours.map((h) => h.hour))
+  const lastHour = Math.max(isToday ? (Number.isFinite(nowHour) ? nowHour : 0) : 20, ...hours.map((h) => h.hour))
   const hourRange = Array.from({ length: Math.max(lastHour - firstHour + 1, 1) }, (_, k) => firstHour + k)
   const byHour = new Map(hours.map((h) => [h.hour, h]))
   const days = [...(r.data?.days ?? [])].reverse()
-  const weekday = (d: string) => ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][new Date(`${d}T12:00:00`).getDay()]
-  const chart: { points: Point[]; series: Series[] } =
-    period === 'today'
-      ? {
-          points: hourRange.map((h) => ({
-            label: `${h}:00`,
-            title: `${h}:00–${h + 1}:00 · чеков ${byHour.get(h)?.sales_count ?? 0}`,
-          })),
-          series: [
-            { name: 'Выручка', color: 'slate', values: hourRange.map((h) => byHour.get(h)?.revenue_tyiyn ?? 0) },
-            { name: 'Валовая прибыль', color: 'sky', values: hourRange.map((h) => byHour.get(h)?.gross_tyiyn ?? 0) },
+  const weekday = (x: string) => ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][new Date(`${x}T12:00:00`).getDay()]
+  const chart: { points: Point[]; series: Series[] } = single
+    ? {
+        points: hourRange.map((h) => ({
+          label: `${h}:00`,
+          title: `${h}:00–${h + 1}:00 · чеков ${byHour.get(h)?.sales_count ?? 0}`,
+        })),
+        series: [
+          { name: 'Выручка', color: 'slate', values: hourRange.map((h) => byHour.get(h)?.revenue_tyiyn ?? 0) },
+          { name: 'Валовая прибыль', color: 'sky', values: hourRange.map((h) => byHour.get(h)?.gross_tyiyn ?? 0) },
+        ],
+      }
+    : {
+        points: days.map((x) => ({
+          label: x.date.slice(8, 10) + '.' + x.date.slice(5, 7),
+          title: `${weekday(x.date)}, ${formatDate(x.date)}`,
+          extra: [
+            ['Выручка', x.revenue_tyiyn],
+            ['Зарплата', x.payroll_tyiyn],
+            ['Расходы', x.expenses_tyiyn],
           ],
-        }
-      : {
-          points: days.map((x) => ({
-            label: x.date.slice(8, 10) + '.' + x.date.slice(5, 7),
-            title: `${weekday(x.date)}, ${formatDate(x.date)}`,
-            extra: [
-              ['Выручка', x.revenue_tyiyn],
-              ['Зарплата', x.payroll_tyiyn],
-              ['Расходы', x.expenses_tyiyn],
-            ],
-          })),
-          series: [
-            { name: 'Валовая прибыль', color: 'sky', values: days.map((x) => x.gross_tyiyn) },
-            { name: 'Чистая прибыль', color: 'emerald', values: days.map((x) => x.net_tyiyn) },
-          ],
-        }
+        })),
+        series: [
+          { name: 'Валовая прибыль', color: 'sky', values: days.map((x) => x.gross_tyiyn) },
+          { name: 'Чистая прибыль', color: 'emerald', values: days.map((x) => x.net_tyiyn) },
+        ],
+      }
   // Лучший и худший день периода — словами под графиком.
   const best = days.length > 1 ? days.reduce((a, b) => (b.net_tyiyn > a.net_tyiyn ? b : a)) : null
   const worst = days.length > 1 ? days.reduce((a, b) => (b.net_tyiyn < a.net_tyiyn ? b : a)) : null
+  const prevDay = data.compare && !data.compare.until_now ? 'накануне' : 'вчера'
 
   return (
     <div>
-      <PageHeader
-        title={`Сводка ${word}`}
-        actions={
-          <div className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm">
-            {PERIODS.map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                aria-pressed={period === key}
-                className={`min-h-[38px] px-3 ${period === key ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
-                onClick={() => setPeriod(key)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        }
-      />
+      <PageHeader title={`Сводка ${word}`} actions={picker} />
       <div className="flex flex-col gap-4">
-        <ErrorBox error={r.error} />
+        {(custom || (!single && quick === null)) && (
+          <Card className="flex flex-wrap items-end gap-3">
+            <Field label="С">
+              <input
+                type="date"
+                aria-label="Период с"
+                className="w-40"
+                value={from}
+                max={today}
+                onChange={(e) => e.target.value && pick({ from: e.target.value, to })}
+              />
+            </Field>
+            <Field label="По">
+              <input
+                type="date"
+                aria-label="Период по"
+                className="w-40"
+                value={to}
+                max={today}
+                onChange={(e) => e.target.value && pick({ from, to: e.target.value })}
+              />
+            </Field>
+            <div className="pb-2 text-xs text-slate-500">Не больше года; сравнение — с таким же периодом перед ним.</div>
+          </Card>
+        )}
+        <ErrorBox error={r.error ?? d.error} />
         <Card className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Tile label="Продано" value={formatSom(revenue)}>
-            <Compare data={compare} pick={(x) => x.revenue_tyiyn} />
+            <Compare data={data} now={revenue} pick={(x) => x.revenue_tyiyn} />
           </Tile>
           <Tile label="Валовая прибыль" value={formatSom(t.gross_tyiyn)}>
-            <Compare data={compare} pick={(x) => x.gross_tyiyn} />
+            <Compare data={data} now={t.gross_tyiyn} pick={(x) => x.gross_tyiyn} />
           </Tile>
           <Tile label="Чистая прибыль" value={formatSom(t.net_tyiyn)} tone={t.net_tyiyn < 0 ? 'text-rose-700' : 'text-emerald-700'}>
-            {/* Зарплата и расходы считаются за день целиком: «к этому часу» для чистой не честно — только вчера за день. */}
-            {compare && (
-              <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500" title="чистая прибыль вчера за весь день">
-                вчера за день: <span className={compare.yesterday_net_tyiyn < 0 ? 'text-rose-700' : ''}>{formatSom(compare.yesterday_net_tyiyn)}</span>
+            {/* Зарплата и расходы считаются за день целиком: «к этому часу» для чистой не честно — только предыдущий день целиком. */}
+            {data.compare && (
+              <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500" title="чистая прибыль предыдущего дня за весь день">
+                {prevDay} за день:{' '}
+                <span className={data.compare.yesterday_net_tyiyn < 0 ? 'text-rose-700' : ''}>{formatSom(data.compare.yesterday_net_tyiyn)}</span>
+              </div>
+            )}
+            {data.previous && (
+              <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500" title="чистая прибыль предыдущего периода той же длины">
+                пред. период: <span className={data.previous.net_tyiyn < 0 ? 'text-rose-700' : ''}>{formatSom(data.previous.net_tyiyn)}</span>
               </div>
             )}
           </Tile>
           <Tile label="Чеков" value={String(t.sales_count)}>
-            <Compare data={compare} pick={(x) => x.sales_count} money={false} />
+            <Compare data={data} now={t.sales_count} pick={(x) => x.sales_count} money={false} />
           </Tile>
         </Card>
 
@@ -230,27 +308,37 @@ export function OwnerDashboard() {
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="font-semibold">Деньги сейчас</h2>
             <span className="text-sm text-slate-500">
-              Смена: {d.data.shift_open ? `открыта, кассир ${d.data.shift_cashier}` : 'не открыта'} ·{' '}
+              Смена: {data.shift_open ? `открыта, кассир ${data.shift_cashier}` : 'не открыта'} ·{' '}
               <Link to="/shift" className="text-sky-700 underline">
                 подробно
               </Link>
             </span>
           </div>
           <div className="text-xs text-slate-500">Всего денег</div>
-          <div className="text-3xl font-bold tabular-nums">{formatSom(d.data.money_total_tyiyn)}</div>
+          <div className="text-3xl font-bold tabular-nums">{formatSom(data.money_total_tyiyn)}</div>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
-            {d.data.accounts.map((a) => (
+            {data.accounts.map((a) => (
               <span key={a.name}>
                 {a.name} <Money value={a.balance_tyiyn} tone="negative" className="font-medium text-slate-800" />
               </span>
             ))}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-4">
-            <Link to="/debts" className="rounded-md hover:bg-slate-50">
-              <Tile label="Нам должны" value={formatSom(d.data.debts_in_tyiyn)} tone="text-amber-700" />
+            <Link to="/bank" className="rounded-md hover:bg-slate-50" data-testid="noncash">
+              <Tile label={`Безнал ${word}`} value={formatSom(data.noncash.total_tyiyn)}>
+                <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500">
+                  картой {formatSom(data.noncash.card_tyiyn)} · QR {formatSom(data.noncash.transfer_tyiyn)}
+                </div>
+              </Tile>
             </Link>
             <Link to="/debts" className="rounded-md hover:bg-slate-50">
-              <Tile label="Мы должны поставщикам" value={formatSom(d.data.debts_out_tyiyn)} />
+              <Tile label="Нам должны" value={formatSom(data.debts_in_tyiyn)} tone="text-amber-700" />
+            </Link>
+            <Link to="/debts" className="rounded-md hover:bg-slate-50">
+              <Tile label="Мы должны поставщикам" value={formatSom(data.debts_out_tyiyn)} />
+            </Link>
+            <Link to={`/income${qs({ from, to })}`} className="flex items-center rounded-md text-sm text-sky-700 hover:bg-slate-50">
+              Куда сколько поступило →
             </Link>
           </div>
         </Card>
@@ -275,31 +363,25 @@ export function OwnerDashboard() {
               <Step label="Чистая прибыль" value={t.net_tyiyn} strong />
             </div>
             <div className="mt-2 text-xs text-slate-500">
-              Средний чек {formatSom(d.data.average_check_tyiyn)} · маржа {percent(t.margin_bp)}
-              {d.data.returns_tyiyn !== 0 && ` · возвраты ${formatSom(d.data.returns_tyiyn)}`}
+              Средний чек {formatSom(data.average_check_tyiyn)} · маржа {percent(t.margin_bp)}
+              {data.returns_tyiyn !== 0 && ` · возвраты ${formatSom(data.returns_tyiyn)}`}
             </div>
           </Card>
 
           <Card>
             <h2 className="mb-2 font-semibold">Кто сколько заработал {word}</h2>
-            <EarnedList
-              key={period}
-              staff={r.data?.staff ?? (period === 'today' ? d.data.staff : [])}
-              empty={period === 'today' ? 'Сегодня начислений нет' : 'За период начислений нет'}
-            />
+            <EarnedList key={`${from}:${to}`} staff={data.staff} empty={isToday ? 'Сегодня начислений нет' : 'За период начислений нет'} />
             <Link to="/payroll" className="mt-2 flex min-h-[42px] items-center justify-between gap-3 border-t border-slate-200 pt-2 text-sm hover:text-sky-700">
               <span className="text-slate-600">К выплате за все дни:</span>
-              <span className="whitespace-nowrap font-semibold tabular-nums text-sky-700">{formatSom(d.data.to_pay_tyiyn)} →</span>
+              <span className="whitespace-nowrap font-semibold tabular-nums text-sky-700">{formatSom(data.to_pay_tyiyn)} →</span>
             </Link>
           </Card>
         </div>
 
         <Card>
-          <h2 className="mb-2 font-semibold">
-            {period === 'today' ? 'Продажи сегодня по часам' : `Прибыль по дням ${word}`}
-          </h2>
+          <h2 className="mb-2 font-semibold">{single ? `Продажи ${word} по часам` : `Прибыль по дням ${word}`}</h2>
           <ProfitChart points={chart.points} series={chart.series} />
-          {period !== 'today' && best && worst && best.date !== worst.date && (
+          {!single && best && worst && best.date !== worst.date && (
             <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
               <span>
                 Лучший день: <b className="text-emerald-700">{formatDate(best.date)}</b> — чистая {formatSom(best.net_tyiyn)}
@@ -309,7 +391,7 @@ export function OwnerDashboard() {
               </span>
             </div>
           )}
-          {period === 'today' && (
+          {single && (
             <div className="mt-1 text-xs text-slate-500">Чистая прибыль считается за день целиком (зарплата и расходы — за день), поэтому по часам — выручка и валовая.</div>
           )}
         </Card>
@@ -318,20 +400,22 @@ export function OwnerDashboard() {
         {!heat.error && (
           <Card>
             <h2 className="mb-1 font-semibold">Когда покупают</h2>
-            <div className="mb-3 text-xs text-slate-500">Выручка по дням недели и часам за последние 4 недели</div>
+            <div className="mb-3 text-xs text-slate-500">
+              {single ? 'Выручка по дням недели и часам за последние 4 недели' : `Выручка по дням недели и часам ${word}`}
+            </div>
             {heat.data ? <Heatmap cells={heat.data} /> : <Loading />}
           </Card>
         )}
 
-        {(d.data.low_stock > 0 || d.data.needs_review > 0 || d.data.stale_stock > 0) && (
+        {(data.low_stock > 0 || data.needs_review > 0 || data.stale_stock > 0) && (
           <Card>
-            <h2 className="mb-1 font-semibold">Склад</h2>
+            <h2 className="mb-1 font-semibold">Склад сейчас</h2>
             <div className="flex flex-col divide-y divide-slate-100 text-sm">
               {(
                 [
-                  [d.data.needs_review, 'Проверить остаток', 'bg-rose-500'],
-                  [d.data.low_stock, 'Заканчивается', 'bg-amber-500'],
-                  [d.data.stale_stock, 'Залежался больше 60 дней', 'bg-slate-400'],
+                  [data.needs_review, 'Проверить остаток', 'bg-rose-500'],
+                  [data.low_stock, 'Заканчивается', 'bg-amber-500'],
+                  [data.stale_stock, 'Залежался больше 60 дней', 'bg-slate-400'],
                 ] as const
               )
                 .filter(([n]) => n > 0)

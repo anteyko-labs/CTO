@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select sale_id, coalesce(sum(amount_tyiyn), 0)::bigint as \"card!\"\n           from sale_payments where sale_id = any($1) and method = 'card'\n           group by sale_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "card!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "2c59dc3afbed88106782829d21275edb2e8e8444698e94e76805d00ea7510d78"
+}

@@ -1581,6 +1581,17 @@ pub(crate) async fn movements_data(
     user: &CurrentUser,
     id: Uuid,
 ) -> AppResult<Vec<MovementOut>> {
+    movements_between(conn, user, id, None, 200).await
+}
+
+/// Движения кассы, новые сверху: все или за дни `period` по Бишкеку (экран «Счёт», SPEC-27 §6).
+pub(crate) async fn movements_between(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    id: Uuid,
+    period: Option<(NaiveDate, NaiveDate)>,
+    limit: i64,
+) -> AppResult<Vec<MovementOut>> {
     // Движения сейфа владельца администратору не отдаём, как и его остаток (ADR-037).
     let owner_only = sqlx::query_scalar!(
         "select owner_only from cash_accounts where id = $1 and branch_id = $2",
@@ -1607,9 +1618,14 @@ pub(crate) async fn movements_data(
                   end as "reversible!"
            from cash_movements m join users u on u.id = m.user_id
            where m.account_id = $1 and m.branch_id = $2
-           order by m.created_at desc limit 200"#,
+             and ($3::date is null or m.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')
+             and ($4::date is null or m.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')
+           order by m.created_at desc, m.id desc limit $5"#,
         id,
-        user.branch_id
+        user.branch_id,
+        period.map(|p| p.0),
+        period.map(|p| p.1),
+        limit
     )
     .fetch_all(&mut *conn)
     .await?;

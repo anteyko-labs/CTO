@@ -77,7 +77,7 @@ pub async fn sales(
     (from, to): (NaiveDate, NaiveDate),
 ) -> AppResult<String> {
     match report {
-        "dashboard" => dashboard(conn, user).await,
+        "dashboard" => dashboard(conn, user, from, to).await,
         "categories" => {
             let p = crate::api::reports::profit_data(conn, user, Some(from), Some(to)).await?;
             let mut lines = vec![format!(
@@ -128,7 +128,7 @@ pub async fn sales(
             Ok(lines.join("\n"))
         }
         "weekdays" => {
-            let mut cells = crate::api::reports::heatmap_data(conn, user, Some(28)).await?;
+            let mut cells = crate::api::reports::heatmap_data(conn, user, Some(28), None).await?;
             cells.sort_by_key(|c| std::cmp::Reverse(c.revenue_tyiyn));
             const DAYS: [&str; 7] = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
             let mut lines = vec![
@@ -291,11 +291,21 @@ pub async fn sales(
     }
 }
 
-async fn dashboard(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<String> {
-    let d = crate::api::reports::dashboard_data(conn, user).await?;
+async fn dashboard(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<String> {
+    let d = crate::api::reports::dashboard_data(conn, user, Some(from), Some(to)).await?;
     let t = &d.totals;
+    let head = if d.from == d.to && d.to == d.today {
+        format!("Сводка {} (на сейчас)", period_label(d.from, d.to))
+    } else {
+        format!("Сводка {}", period_label(d.from, d.to))
+    };
     let mut lines = vec![
-        format!("Сводка {} (на сейчас)", period_label(d.date, d.date)),
+        head,
         format!(
             "Чеков: {}, выручка {} (товары {}, работы {}), валовая прибыль {}, чистая прибыль {}",
             t.sales_count,
@@ -311,20 +321,48 @@ async fn dashboard(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<Str
             format_som(d.returns_tyiyn)
         ),
         format!(
-            "К этому часу: сегодня {} ({} чеков), вчера {} ({}), неделю назад {} ({})",
-            format_som(d.compare.today.revenue_tyiyn),
-            d.compare.today.sales_count,
-            format_som(d.compare.yesterday.revenue_tyiyn),
-            d.compare.yesterday.sales_count,
-            format_som(d.compare.week_ago.revenue_tyiyn),
-            d.compare.week_ago.sales_count
+            "Безнал чеков: картой {}, переводом {}",
+            format_som(d.noncash.card_tyiyn),
+            format_som(d.noncash.transfer_tyiyn)
         ),
+    ];
+    if let Some(c) = &d.compare {
+        let when = if c.until_now {
+            "К этому часу: сегодня"
+        } else {
+            "За день: этот день"
+        };
+        let prev = if c.until_now {
+            "вчера"
+        } else {
+            "накануне"
+        };
+        lines.push(format!(
+            "{when} {} ({} чеков), {prev} {} ({}), неделю назад {} ({})",
+            format_som(c.today.revenue_tyiyn),
+            c.today.sales_count,
+            format_som(c.yesterday.revenue_tyiyn),
+            c.yesterday.sales_count,
+            format_som(c.week_ago.revenue_tyiyn),
+            c.week_ago.sales_count
+        ));
+    }
+    if let Some(p) = &d.previous {
+        lines.push(format!(
+            "Предыдущий период {}: выручка {}, чистая прибыль {}, чеков {}",
+            period_label(p.from, p.to),
+            format_som(p.revenue_tyiyn),
+            format_som(p.net_tyiyn),
+            p.sales_count
+        ));
+    }
+    lines.extend([
         match &d.shift_cashier {
             Some(c) if d.shift_open => format!("Смена открыта, кассир {c}"),
             _ => "Смена не открыта".to_string(),
         },
         format!("Деньги всего: {}", format_som(d.money_total_tyiyn)),
-    ];
+    ]);
     for a in &d.accounts {
         lines.push(format!("— {}: {}", a.name, format_som(a.balance_tyiyn)));
     }
@@ -596,10 +634,176 @@ pub async fn money(
             );
             Ok(lines.join("\n"))
         }
+        "bank" => bank_text(conn, user, from, to).await,
+        "income" => income_text(conn, user, from, to).await,
         _ => Err(invalid(
-            "report: movements, shifts, shift или expenses_list",
+            "report: movements, shifts, shift, expenses_list, bank или income",
         )),
     }
+}
+
+/// Способ оплаты словами — как в отчёте «Куда сколько поступило».
+fn method_name(method: &str) -> &str {
+    match method {
+        "cash" => "наличными",
+        "card" => "картой",
+        "transfer" => "переводом",
+        "debt" => "в долг",
+        "bonus" => "баллами",
+        "battery" => "аккумуляторами",
+        other => other,
+    }
+}
+
+/// Экран «Счёт» (SPEC-27 §6) текстом: то же `bank_data`.
+async fn bank_text(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<String> {
+    let b = crate::api::income::bank_data(conn, user, Some(from), Some(to)).await?;
+    let mut lines = vec![
+        format!(
+            "{} {}: на начало {}, на конец {}, сейчас {}",
+            b.name,
+            period_label(b.from, b.to),
+            format_som(b.opening_tyiyn),
+            format_som(b.closing_tyiyn),
+            format_som(b.balance_tyiyn)
+        ),
+        format!(
+            "Картой: {} (чеки {}, погашения долга {})",
+            format_som(b.card.total_tyiyn),
+            format_som(b.card.sales_tyiyn),
+            format_som(b.card.repayments_tyiyn)
+        ),
+        format!(
+            "Переводом: {} (чеки {}, погашения долга {})",
+            format_som(b.transfer.total_tyiyn),
+            format_som(b.transfer.sales_tyiyn),
+            format_som(b.transfer.repayments_tyiyn)
+        ),
+        format!("Комиссия банка: {}", format_som(b.fee_tyiyn)),
+        format!(
+            "Прочие поступления: {}, списания: {}",
+            format_som(b.other_in_tyiyn),
+            format_som(b.outgoing_tyiyn)
+        ),
+    ];
+    if b.days.len() > 1 {
+        lines.push("По дням:".into());
+        capped(
+            &mut lines,
+            b.days
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}: картой {}, переводом {}, комиссия {}, итог {}",
+                        day(d.date),
+                        format_som(d.card_tyiyn),
+                        format_som(d.transfer_tyiyn),
+                        format_som(d.fee_tyiyn),
+                        format_som_signed(d.net_tyiyn)
+                    )
+                })
+                .collect(),
+        );
+    }
+    Ok(lines.join("\n"))
+}
+
+/// «Куда сколько поступило» (SPEC-27 §6) текстом: то же `income_data`.
+async fn income_text(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<String> {
+    let r = crate::api::income::income_data(conn, user, Some(from), Some(to)).await?;
+    let mut lines = vec![format!(
+        "Куда сколько поступило {}: выручка {} (товары {}, работы {}), возвраты {}",
+        period_label(r.from, r.to),
+        format_som(r.revenue_tyiyn),
+        format_som(r.goods_tyiyn),
+        format_som(r.services_tyiyn),
+        format_som(r.returns_tyiyn)
+    )];
+    lines.push("Оплаты чеков:".into());
+    for m in r
+        .methods
+        .iter()
+        .filter(|m| m.sales_tyiyn != 0 || m.returns_tyiyn != 0)
+    {
+        lines.push(format!(
+            "— {}: {} (продажи {}, возвраты {})",
+            method_name(&m.method),
+            format_som(m.net_tyiyn),
+            format_som(m.sales_tyiyn),
+            format_som(m.returns_tyiyn)
+        ));
+    }
+    lines.push("По кассам:".into());
+    for a in &r.accounts {
+        lines.push(format!(
+            "— {}: на начало {}, пришло {}, ушло {}, на конец {}",
+            a.name,
+            format_som(a.opening_tyiyn),
+            format_som(a.in_tyiyn),
+            format_som(a.out_tyiyn),
+            format_som(a.closing_tyiyn)
+        ));
+    }
+    if !r.categories.is_empty() {
+        lines.push("По категориям:".into());
+        capped(
+            &mut lines,
+            r.categories
+                .iter()
+                .map(|c| format!("— {}: {}", c.name, format_som(c.revenue_tyiyn)))
+                .collect(),
+        );
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Проданное по накладным (SPEC-27 §6): оценка «первым продаётся пришедшее раньше».
+async fn receipts_sold_text(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<String> {
+    let list = crate::api::income::receipts_sold(conn, user, from, to).await?;
+    let mut lines = vec![format!(
+        "Накладные {}: сколько продано и заработано (оценка: первым продаётся пришедшее раньше)",
+        period_label(from, to)
+    )];
+    if list.is_empty() {
+        lines.push("Накладных нет.".into());
+    }
+    capped(
+        &mut lines,
+        list.iter()
+            .map(|r| {
+                format!(
+                    "№ {} от {}{}: закупка {}, продано на {} по закупке, осталось на {}, выручка {}, заработано {}",
+                    r.number,
+                    local(r.created_at),
+                    r.supplier_name
+                        .as_ref()
+                        .map(|s| format!(", {s}"))
+                        .unwrap_or_default(),
+                    format_som(r.cost_tyiyn),
+                    format_som(r.sold_cost_tyiyn),
+                    format_som(r.left_cost_tyiyn),
+                    format_som(r.revenue_tyiyn),
+                    format_som(r.earned_tyiyn)
+                )
+            })
+            .collect(),
+    );
+    Ok(lines.join("\n"))
 }
 
 // ---------- Склад ----------
@@ -847,8 +1051,9 @@ pub async fn stock(
             capped(&mut lines, done);
             Ok(lines.join("\n"))
         }
+        "receipts_sold" => receipts_sold_text(conn, user, from, to).await,
         _ => Err(invalid(
-            "report: stock, stale, receipts, revisions, oil_transfers или defects",
+            "report: stock, stale, receipts, revisions, oil_transfers, defects или receipts_sold",
         )),
     }
 }

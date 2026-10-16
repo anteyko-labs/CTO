@@ -27,19 +27,19 @@ updated: 2026-10-08
 | 02 | Каталог, штрихкоды, этикетки, справочники | `api/catalog.rs`, `api/refs.rs`, `domain/barcode.rs` | `pages/Products.tsx`, `Categories.tsx`, `Employees.tsx`, `Services.tsx`, `Suppliers.tsx`, `LabelSettings.tsx`, `components/ProductFormModal.tsx`, `ProductPicker.tsx`, `UnknownCodeModal.tsx`, `labels.ts` |
 | 03 | Приход и остатки | `api/receipts.rs`, `domain/costing.rs` | `pages/Receipts.tsx`, `ReceiptNew.tsx`, `ReceiptView.tsx`, `Stock.tsx` |
 | 04 | Касса: продажа и возврат | `api/sales.rs`, `domain/money.rs` | `pages/Cashier.tsx`, `SalesDay.tsx`, `SaleView.tsx`, `components/salePrint.ts`, `ServicePicker.tsx`, `lib/money.ts` |
-| 05 | Смена, кассы, наличные | `api/cash.rs` | `pages/Shift.tsx` |
+| 05 | Смена, кассы, наличные | `api/cash.rs` | `pages/Shift.tsx`, `Bank.tsx` |
 | 06 | Операционные расходы | `api/expenses.rs` | `pages/Expenses.tsx`, `components/QuickExpense.tsx` |
 | 07 | Начисления и выплаты сотрудникам | `api/payroll.rs` | `pages/Payroll.tsx` |
-| 08 | Прибыль, сводка владельца | `api/reports.rs` | `pages/Owner.tsx` |
+| 08 | Прибыль, сводка владельца | `api/reports.rs`, `api/income.rs` | `pages/Owner.tsx`, `Income.tsx`, `components/PeriodPicker.tsx`, `lib/income.ts` |
 | 09 | Касса без сети | `api/offline.rs` | `lib/offline.ts`, `components/OfflineBar.tsx` |
-| 10 | Контрагенты, долги, балансы | `api/parties.rs` | `pages/Clients.tsx`, `ClientCard.tsx`, `Debts.tsx`, `SupplierCard.tsx`, `components/ClientPicker.tsx` |
+| 10 | Контрагенты, долги, балансы | `api/parties.rs`, `domain/debt.rs` | `pages/Clients.tsx`, `ClientCard.tsx`, `Debts.tsx`, `SupplierCard.tsx`, `components/ClientPicker.tsx` |
 | 11 | Подарки в чеке | `api/gifts.rs` | `pages/Gifts.tsx`, `components/GiftPicker.tsx` |
 | 12 | Кабинет юрлица по ИНН | `api/cabinet.rs` | `pages/cabinet/CabinetApp.tsx` |
 | 13 | Уведомления владельцу | `api/notifications.rs` | `pages/Notifications.tsx` |
 | 14 | Перелив масла | `api/oil.rs` | `pages/OilTransfer.tsx` |
 | 15 | Ревизия склада | `api/revisions.rs` | `pages/Revision.tsx` |
 | 16 | Масляная книжка | `api/oil_book.rs` | `components/OilBook.tsx` |
-| 18 | Телеграм-бот владельца | `api/telegram.rs` | `pages/TelegramSettings.tsx` |
+| 18 | Телеграм-бот владельца | `api/telegram.rs`, `api/bot_debt.rs` | `pages/TelegramSettings.tsx` |
 | 17 | Аналоги фильтров | `api/analogs.rs` | `components/ProductFormModal.tsx`, `pages/Cashier.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 

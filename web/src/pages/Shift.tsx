@@ -7,25 +7,12 @@ import { StaffPayList } from '../components/StaffPayList'
 import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
+import { MOVEMENT_LABELS } from '../lib/income'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
 import type { CashAccount, CashMovement, Employee, PayrollRow, Shift as ShiftRow } from '../lib/types'
 
-const KIND_LABELS: Record<string, string> = {
-  sale: 'Продажи',
-  sale_return: 'Возвраты',
-  cash_in: 'Внесения',
-  cash_out: 'Изъятия',
-  transfer_in: 'Переводы сюда',
-  transfer_out: 'Переводы отсюда',
-  bank_fee: 'Комиссия банка',
-  expense: 'Расходы',
-  payout: 'Выплаты',
-  supplier_payment: 'Оплата поставщикам',
-  supplier_refund: 'Возмещения за брак',
-  debt_repayment: 'Погашения долгов',
-  count_diff: 'Пересчёт',
-  reversal: 'Сторно',
-}
+/** Виды движений словами — общие с «Счётом» и «Куда сколько поступило». */
+const KIND_LABELS = MOVEMENT_LABELS
 
 /** Движения наличных словами: «+ продажи наличными». */
 const CASH_LABELS: Record<string, string> = {
@@ -567,6 +554,11 @@ export default function Shift() {
                 </div>
               </div>
             )}
+            <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700" data-testid="close-noncash">
+              Безнал за смену: картой <b className="tabular-nums">{formatSom(shift.card_tyiyn)}</b> · QR{' '}
+              <b className="tabular-nums">{formatSom(shift.transfer_tyiyn)}</b>
+              <div className="text-xs text-slate-500">В кассе этих денег нет — сверьте с терминалом и выпиской банка.</div>
+            </div>
             <div className="text-sm text-slate-600">
               Должно быть в кассе: {formatSom(shift.expected_tyiyn)}
               {payTotal > 0 && (

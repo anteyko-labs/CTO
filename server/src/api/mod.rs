@@ -5,6 +5,7 @@ pub mod assistant;
 pub mod auth;
 pub mod batteries;
 pub mod bot_cars;
+pub mod bot_debt;
 pub mod bot_drafts;
 pub mod bot_reports;
 pub mod bot_staff;
@@ -17,6 +18,7 @@ pub mod expenses;
 pub mod favorites;
 pub mod fees;
 pub mod gifts;
+pub mod income;
 pub mod loyalty;
 pub mod notifications;
 pub mod offline;
@@ -51,6 +53,7 @@ pub fn routes() -> Router<AppState> {
         .merge(favorites::routes())
         .merge(fees::routes())
         .merge(gifts::routes())
+        .merge(income::routes())
         .merge(loyalty::routes())
         .merge(notifications::routes())
         .merge(offline::routes())

@@ -37,6 +37,7 @@ pub fn routes() -> Router<AppState> {
         .route("/parties/{id}/limit-request", routing::post(limit_request))
         .route("/debts/repayments", routing::post(post_repayment))
         .route("/debts/adjust", routing::post(post_adjust))
+        .route("/debts/list", routing::get(debts_list))
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1828,4 +1829,129 @@ async fn limit_request(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+// ---------- Срок долга и экран «Долги» (SPEC-27 §6–7) ----------
+
+/// Срок долга клиента: последний день оплаты самого старого непогашенного долга и дней
+/// просрочки. Без срока оплаты у карточки или без долга — пусто.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DebtDue {
+    pub due_date: Option<NaiveDate>,
+    pub overdue_days: i64,
+}
+
+/// Сроки долгов контрагентов: `(id, баланс, срок оплаты в днях)`. Тот же отбор записей, что
+/// у просрочки `overdue_tyiyn` (долги и правки в плюс), поэтому просрочка в днях есть ровно
+/// тогда, когда есть просроченная сумма.
+pub(crate) async fn debt_dues(
+    conn: &mut PgConnection,
+    parties: &[(Uuid, i64, Option<i32>)],
+) -> AppResult<std::collections::HashMap<Uuid, DebtDue>> {
+    let ids: Vec<Uuid> = parties
+        .iter()
+        .filter(|(_, balance, days)| *balance > 0 && days.is_some())
+        .map(|(id, _, _)| *id)
+        .collect();
+    let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    let rows = sqlx::query!(
+        r#"select party_id, business_date, amount_tyiyn from party_ledger
+           where party_id = any($1) and kind in ('debt', 'adjust') and amount_tyiyn > 0
+           order by party_id, business_date desc, created_at desc"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut entries: std::collections::HashMap<Uuid, Vec<(NaiveDate, i64)>> =
+        std::collections::HashMap::new();
+    for r in rows {
+        entries
+            .entry(r.party_id)
+            .or_default()
+            .push((r.business_date, r.amount_tyiyn));
+    }
+    let mut out = std::collections::HashMap::new();
+    for (id, balance, days) in parties {
+        let due = match (days, entries.get(id)) {
+            (Some(days), Some(list)) => crate::domain::debt::oldest_unpaid(*balance, list)
+                .map(|oldest| crate::domain::debt::due_date(oldest, *days)),
+            _ => None,
+        };
+        out.insert(
+            *id,
+            DebtDue {
+                due_date: due,
+                overdue_days: due.map_or(0, |d| crate::domain::debt::overdue_days(d, today)),
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Строка экрана «Долги»: карточка, как в `GET /parties`, со сроком и последней оплатой.
+#[derive(Serialize)]
+pub struct DebtRow {
+    #[serde(flatten)]
+    pub party: PartyOut,
+    pub due_date: Option<NaiveDate>,
+    pub overdue_days: i64,
+    /// Последнее погашение (или оплата поставщику), не сторнированное.
+    pub last_payment_at: Option<DateTime<Utc>>,
+}
+
+async fn debts_list(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<Vec<DebtRow>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(debts_list_data(&mut conn, user.branch_id).await?))
+}
+
+/// Все должники и кому должны мы — тот же поиск, что `GET /parties?only_debtors=true`, с
+/// просрочкой в днях и датой последней оплаты (экран «Долги»).
+pub(crate) async fn debts_list_data(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+) -> AppResult<Vec<DebtRow>> {
+    let parties = search_parties(
+        &mut *conn,
+        branch_id,
+        ListQuery {
+            only_debtors: true,
+            ..ListQuery::default()
+        },
+    )
+    .await?;
+    let keys: Vec<(Uuid, i64, Option<i32>)> = parties
+        .iter()
+        .map(|p| (p.id, p.balance_tyiyn, p.due_days))
+        .collect();
+    let mut dues = debt_dues(&mut *conn, &keys).await?;
+    let ids: Vec<Uuid> = parties.iter().map(|p| p.id).collect();
+    let last: std::collections::HashMap<Uuid, DateTime<Utc>> = sqlx::query!(
+        r#"select l.party_id, max(l.created_at) as "at!" from party_ledger l
+           where l.party_id = any($1) and l.kind = 'repayment' and l.reversal_of is null
+             and not exists (select 1 from party_ledger r where r.reversal_of = l.id)
+           group by l.party_id"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| (r.party_id, r.at))
+    .collect();
+    Ok(parties
+        .into_iter()
+        .map(|p| {
+            let due = dues.remove(&p.id).unwrap_or_default();
+            DebtRow {
+                due_date: due.due_date,
+                overdue_days: due.overdue_days,
+                last_payment_at: last.get(&p.id).copied(),
+                party: p,
+            }
+        })
+        .collect())
 }

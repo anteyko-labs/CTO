@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.chat_id, p.id, p.balance_tyiyn, p.due_days as \"due_days?\"\n           from telegram_customers t join parties p on p.id = t.party_id\n           where p.active and p.role = 'customer' and p.balance_tyiyn > 0\n             and p.due_days is not null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "due_days?",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "56065ee3d633a1e9a7b8087f53bdd2e8809a02c175c588963fc48699767748e6"
+}

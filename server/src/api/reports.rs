@@ -109,12 +109,33 @@ struct Period {
     to: Option<NaiveDate>,
 }
 
-async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
+pub(crate) async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
     Ok(
         sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
             .fetch_one(&mut *conn)
             .await?,
     )
+}
+
+/// Период отчёта: без дат — сегодня, без начала — один день `to`; не больше года (366 дней).
+/// Один для прибыли, сводки, «Куда сколько поступило» и экрана «Счёт» (SPEC-27 §6).
+pub(crate) async fn resolve_period(
+    conn: &mut PgConnection,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<(NaiveDate, NaiveDate)> {
+    let to = match to {
+        Some(d) => d,
+        None => today(&mut *conn).await?,
+    };
+    let from = from.unwrap_or(to);
+    if from > to {
+        return Err(invalid("начало периода позже конца"));
+    }
+    if (to - from).num_days() > 366 {
+        return Err(invalid("период не больше года"));
+    }
+    Ok((from, to))
 }
 
 /// Деньги за период: выручка, себестоимость, оплата труда, комиссия и расходы.
@@ -286,38 +307,15 @@ pub(crate) async fn articles_for(
     .collect())
 }
 
-async fn profit(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Query(q): Query<Period>,
-) -> AppResult<Json<ProfitOut>> {
-    let mut conn = state.pool.acquire().await?;
-    Ok(Json(profit_data(&mut conn, &user, q.from, q.to).await?))
-}
-
-/// Отчёт о прибыли за период — экран и бот владельца (SPEC-24) берут его отсюда.
-pub(crate) async fn profit_data(
+/// Выручка, себестоимость и валовая по категориям товаров за период: отчёт о прибыли и
+/// «Куда сколько поступило» (SPEC-27 §6). Работы (услуги) в категории не входят.
+pub(crate) async fn categories_for(
     conn: &mut PgConnection,
-    user: &CurrentUser,
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
-) -> AppResult<ProfitOut> {
-    if !user.is_owner() {
-        return Err(AppError::Forbidden);
-    }
-    let today = today(&mut *conn).await?;
-    let to = to.unwrap_or(today);
-    let from = from.unwrap_or(to);
-    if from > to {
-        return Err(invalid("начало периода позже конца"));
-    }
-    if (to - from).num_days() > 366 {
-        return Err(invalid("период не больше года"));
-    }
-    let branch_id = user.branch_id;
-    let totals = totals_for(&mut *conn, branch_id, from, to).await?;
-
-    let categories = sqlx::query!(
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<CategoryRow>> {
+    Ok(sqlx::query!(
         r#"select c.name as "name!",
              coalesce(sum(l.amount_tyiyn), 0)::bigint as "revenue!",
              coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!"
@@ -340,7 +338,33 @@ pub(crate) async fn profit_data(
         cost_tyiyn: r.cost,
         gross_tyiyn: r.revenue - r.cost,
     })
-    .collect();
+    .collect())
+}
+
+async fn profit(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<Period>,
+) -> AppResult<Json<ProfitOut>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(profit_data(&mut conn, &user, q.from, q.to).await?))
+}
+
+/// Отчёт о прибыли за период — экран и бот владельца (SPEC-24) берут его отсюда.
+pub(crate) async fn profit_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<ProfitOut> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let (from, to) = resolve_period(&mut *conn, from, to).await?;
+    let branch_id = user.branch_id;
+    let totals = totals_for(&mut *conn, branch_id, from, to).await?;
+
+    let categories = categories_for(&mut *conn, branch_id, from, to).await?;
 
     let days = sqlx::query!(
         r#"with d as (select generate_series($2::date, $3::date, interval '1 day')::date as day)
@@ -491,10 +515,15 @@ pub(crate) struct AccountRow {
 
 #[derive(Serialize)]
 pub(crate) struct Dashboard {
+    /// Последний день выбранного периода (раньше — всегда сегодня).
     pub(crate) date: NaiveDate,
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
+    pub(crate) today: NaiveDate,
     pub(crate) totals: Totals,
     pub(crate) returns_tyiyn: i64,
     pub(crate) average_check_tyiyn: i64,
+    /// Остатки касс — всегда на сейчас.
     pub(crate) accounts: Vec<AccountRow>,
     pub(crate) money_total_tyiyn: i64,
     pub(crate) shift_open: bool,
@@ -506,10 +535,14 @@ pub(crate) struct Dashboard {
     pub(crate) needs_review: i64,
     /// Залежалые: остаток есть, продаж нет дольше срока (ADR-039).
     pub(crate) stale_stock: i64,
-    /// Кто сколько заработал сегодня.
+    /// Кто сколько заработал за период.
     pub(crate) staff: Vec<crate::api::payroll::StaffPay>,
-    /// Для сравнения: вчера и неделю назад к этому же часу.
-    pub(crate) compare: Compare,
+    /// «Сколько по карте ушло»: безнал чеков за период (SPEC-27 §6).
+    pub(crate) noncash: crate::api::income::Noncash,
+    /// Один день: сравнение с предыдущим днём и тем же днём неделю назад.
+    pub(crate) compare: Option<Compare>,
+    /// Период: те же числа за предыдущий период такой же длины.
+    pub(crate) previous: Option<PeriodPart>,
 }
 
 #[derive(Serialize, Default)]
@@ -524,16 +557,30 @@ pub(crate) struct Compare {
     pub(crate) today: DayPart,
     pub(crate) yesterday: DayPart,
     pub(crate) week_ago: DayPart,
-    /// Чистая прибыль вчера за весь день: зарплата и расходы считаются по дням,
+    /// Чистая прибыль предыдущего дня за весь день: зарплата и расходы считаются по дням,
     /// поэтому «к этому часу» для чистой честно не посчитать.
     pub(crate) yesterday_net_tyiyn: i64,
+    /// Сегодня — «к этому часу»; прошедший день сравнивается целиком.
+    pub(crate) until_now: bool,
 }
 
-/// Продажи дня до того же времени суток, что сейчас: честное «к вчера на этот час».
-async fn day_until_now(
+/// Итоги предыдущего периода для сравнения — из того же `totals_for`.
+#[derive(Serialize)]
+pub(crate) struct PeriodPart {
+    pub(crate) from: NaiveDate,
+    pub(crate) to: NaiveDate,
+    pub(crate) revenue_tyiyn: i64,
+    pub(crate) gross_tyiyn: i64,
+    pub(crate) net_tyiyn: i64,
+    pub(crate) sales_count: i64,
+}
+
+/// Продажи дня: целиком или до того же времени суток, что сейчас («к вчера на этот час»).
+async fn day_part(
     conn: &mut PgConnection,
     branch_id: Uuid,
     day: NaiveDate,
+    until_now: bool,
 ) -> AppResult<DayPart> {
     let r = sqlx::query!(
         r#"select coalesce(sum(l.amount_tyiyn), 0)::bigint as "revenue!",
@@ -541,9 +588,10 @@ async fn day_until_now(
                   count(distinct s.id) filter (where s.kind = 'sale') as "count!"
            from sales s join sale_lines l on l.sale_id = s.id
            where s.branch_id = $1 and s.business_date = $2
-             and (s.created_at at time zone 'Asia/Bishkek')::time <= (now() at time zone 'Asia/Bishkek')::time"#,
+             and (not $3 or (s.created_at at time zone 'Asia/Bishkek')::time <= (now() at time zone 'Asia/Bishkek')::time)"#,
         branch_id,
-        day
+        day,
+        until_now
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -566,16 +614,24 @@ pub(crate) struct HeatCell {
 #[derive(Deserialize)]
 struct HeatQuery {
     days: Option<i64>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 }
 
-/// Когда идут продажи: сумма по дню недели и часу за последние N дней (по умолчанию 28).
+/// Когда идут продажи: сумма по дню недели и часу за последние N дней (по умолчанию 28)
+/// или за выбранный на сводке период.
 async fn heatmap(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<HeatQuery>,
 ) -> AppResult<Json<Vec<HeatCell>>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(heatmap_data(&mut conn, &user, q.days).await?))
+    let range = if q.from.is_some() || q.to.is_some() {
+        Some(resolve_period(&mut conn, q.from, q.to).await?)
+    } else {
+        None
+    };
+    Ok(Json(heatmap_data(&mut conn, &user, q.days, range).await?))
 }
 
 /// Продажи по дню недели и часу — экран и бот владельца (SPEC-24).
@@ -583,22 +639,30 @@ pub(crate) async fn heatmap_data(
     conn: &mut PgConnection,
     user: &CurrentUser,
     days: Option<i64>,
+    range: Option<(NaiveDate, NaiveDate)>,
 ) -> AppResult<Vec<HeatCell>> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let days = days.unwrap_or(28).clamp(7, 366);
+    let (from, to) = match range {
+        Some(r) => r,
+        None => {
+            let to = today(&mut *conn).await?;
+            let days = days.unwrap_or(28).clamp(7, 366);
+            (to - chrono::Duration::days(days - 1), to)
+        }
+    };
     let rows = sqlx::query!(
         r#"select extract(isodow from s.created_at at time zone 'Asia/Bishkek')::int as "dow!",
                   extract(hour from s.created_at at time zone 'Asia/Bishkek')::int as "hour!",
                   coalesce(sum(s.total_tyiyn), 0)::bigint as "revenue!",
                   count(*) filter (where s.kind = 'sale') as "count!"
            from sales s
-           where s.branch_id = $1
-             and s.business_date > (now() at time zone 'Asia/Bishkek')::date - $2::int
+           where s.branch_id = $1 and s.business_date between $2 and $3
            group by 1, 2"#,
         user.branch_id,
-        i32::try_from(days).unwrap_or(28)
+        from,
+        to
     )
     .fetch_all(&mut *conn)
     .await?
@@ -613,27 +677,36 @@ pub(crate) async fn heatmap_data(
     Ok(rows)
 }
 
-async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Dashboard>> {
+async fn dashboard(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<Period>,
+) -> AppResult<Json<Dashboard>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(dashboard_data(&mut conn, &user).await?))
+    Ok(Json(dashboard_data(&mut conn, &user, q.from, q.to).await?))
 }
 
-/// Сводка владельца на сегодня — экран и бот владельца (SPEC-24).
+/// Сводка владельца за день или период (без дат — сегодня) — экран и бот владельца (SPEC-24,
+/// SPEC-27 §6). Деньги, итоги и заработок — из тех же функций, что отчёт о прибыли.
 pub(crate) async fn dashboard_data(
     conn: &mut PgConnection,
     user: &CurrentUser,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 ) -> AppResult<Dashboard> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let date = today(&mut *conn).await?;
+    let (from, to) = resolve_period(&mut *conn, from, to).await?;
+    let today = today(&mut *conn).await?;
     let branch_id = user.branch_id;
-    let totals = totals_for(&mut *conn, branch_id, date, date).await?;
+    let totals = totals_for(&mut *conn, branch_id, from, to).await?;
     let returns = sqlx::query_scalar!(
         r#"select coalesce(sum(-total_tyiyn), 0)::bigint as "v!" from sales
-           where branch_id = $1 and business_date = $2 and kind = 'return'"#,
+           where branch_id = $1 and business_date between $2 and $3 and kind = 'return'"#,
         branch_id,
-        date
+        from,
+        to
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -694,21 +767,59 @@ pub(crate) async fn dashboard_data(
     .fetch_one(&mut *conn)
     .await?;
     let (_, stale) = crate::api::receipts::stale_list(&mut *conn, branch_id).await?;
-    let revenue = totals.goods_tyiyn + totals.services_tyiyn;
-    let yesterday = date - chrono::Duration::days(1);
-    let compare = Compare {
-        today: day_until_now(&mut *conn, branch_id, date).await?,
-        yesterday: day_until_now(&mut *conn, branch_id, yesterday).await?,
-        week_ago: day_until_now(&mut *conn, branch_id, date - chrono::Duration::days(7)).await?,
-        yesterday_net_tyiyn: totals_for(&mut *conn, branch_id, yesterday, yesterday)
-            .await?
-            .net_tyiyn,
+    let revenue = totals.goods_tyiyn.saturating_add(totals.services_tyiyn);
+    let (compare, previous) = if from == to {
+        // Сегодня — «к этому часу»; прошедший день — целиком.
+        let until_now = to == today;
+        let prev = to - chrono::Duration::days(1);
+        (
+            Some(Compare {
+                today: day_part(&mut *conn, branch_id, to, until_now).await?,
+                yesterday: day_part(&mut *conn, branch_id, prev, until_now).await?,
+                week_ago: day_part(
+                    &mut *conn,
+                    branch_id,
+                    to - chrono::Duration::days(7),
+                    until_now,
+                )
+                .await?,
+                yesterday_net_tyiyn: totals_for(&mut *conn, branch_id, prev, prev)
+                    .await?
+                    .net_tyiyn,
+                until_now,
+            }),
+            None,
+        )
+    } else {
+        let len = (to - from).num_days() + 1;
+        let (pf, pt) = (
+            from - chrono::Duration::days(len),
+            from - chrono::Duration::days(1),
+        );
+        let p = totals_for(&mut *conn, branch_id, pf, pt).await?;
+        (
+            None,
+            Some(PeriodPart {
+                from: pf,
+                to: pt,
+                revenue_tyiyn: p.goods_tyiyn.saturating_add(p.services_tyiyn),
+                gross_tyiyn: p.gross_tyiyn,
+                net_tyiyn: p.net_tyiyn,
+                sales_count: p.sales_count,
+            }),
+        )
     };
-    let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, date, date).await?;
+    let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, from, to).await?;
+    let noncash = crate::api::income::noncash_for(&mut *conn, branch_id, from, to).await?;
     Ok(Dashboard {
         compare,
+        previous,
         staff,
-        date,
+        noncash,
+        date: to,
+        from,
+        to,
+        today,
         average_check_tyiyn: if totals.sales_count > 0 {
             div_round(i128::from(revenue), i128::from(totals.sales_count)).unwrap_or(0)
         } else {

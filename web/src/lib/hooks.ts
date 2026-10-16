@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ApiError } from './api'
+import { todayBishkek } from './format'
+import { normalizeRange, type Range } from './income'
 
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.message
@@ -82,4 +85,18 @@ export function usePolling(reload: () => void, ms = 15_000) {
     }, ms)
     return () => clearInterval(t)
   }, [reload, ms])
+}
+
+/** Период из адреса (?from&to) — сводка открывает «Счёт» за свой период. */
+export function useRangeParam(): [Range, string, (r: Range) => void] {
+  const today = todayBishkek()
+  const [params, setParams] = useSearchParams()
+  const [range, setRange] = useState<Range>(() =>
+    normalizeRange(params.get('from') ?? params.get('to') ?? today, params.get('to') ?? params.get('from') ?? today),
+  )
+  const change = (r: Range) => {
+    setRange(r)
+    setParams({ from: r.from, to: r.to }, { replace: true })
+  }
+  return [range, today, change]
 }

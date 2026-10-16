@@ -34,16 +34,27 @@ export interface CompareLine {
 /**
  * Короткое сравнение под плиткой: «▲ 40 % к вчера». Не с чем сравнить (вчера к этому часу
  * было 0) — null. Разница больше 200 % в процентах ничего не говорит: показываем, сколько было.
+ * `base` — с чем сравниваем: «вчера» (к этому часу), «пред. дню» (прошедший день целиком),
+ * «пред. периоду» (период той же длины перед выбранным).
  */
-export function vsYesterday(now: number, base: number, fmt: (v: number) => string): CompareLine | null {
+export function vsYesterday(
+  now: number,
+  base: number,
+  fmt: (v: number) => string,
+  label: { short: string; was: string; title: string } = { short: 'к вчера', was: 'вчера', title: 'вчера к этому часу' },
+): CompareLine | null {
   if (base === 0) return null
   const pct = Math.round(((now - base) * 100) / base)
   const tone = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat'
   const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '='
-  const title = `вчера к этому часу: ${fmt(base)}`
-  if (Math.abs(pct) > 200) return { text: `${arrow} вчера: ${fmt(base)}`, tone, title }
-  return { text: `${arrow} ${Math.abs(pct)} % к вчера`, tone, title }
+  const title = `${label.title}: ${fmt(base)}`
+  if (Math.abs(pct) > 200) return { text: `${arrow} ${label.was}: ${fmt(base)}`, tone, title }
+  return { text: `${arrow} ${Math.abs(pct)} % ${label.short}`, tone, title }
 }
+
+/** Подписи сравнения: прошедший день сравнивается с предыдущим целиком (SPEC-27 §6). */
+export const VS_PREV_DAY = { short: 'к пред. дню', was: 'накануне', title: 'предыдущий день целиком' }
+export const VS_PREV_PERIOD = { short: 'к пред. периоду', was: 'было', title: 'предыдущий период той же длины' }
 
 /** «нед. назад: 9 200 с» — тот же день неделю назад к этому часу; нуль не показываем. */
 export function weekAgo(base: number, fmt: (v: number) => string): string | null {

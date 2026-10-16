@@ -47,6 +47,62 @@ pub fn fifo_estimate(stock: i64, inflows: &[(bool, i64)], cap: i64) -> i64 {
     mine.min(cap.max(0)).min(stock.max(0))
 }
 
+/// Приход товара на склад: накладная или товар взамен брака (у него накладной нет).
+pub struct Inflow {
+    pub supplier_id: Option<Uuid>,
+    pub receipt_id: Option<Uuid>,
+    pub qty: i64,
+}
+
+/// Все приходы товаров `ids` (основных карточек, с влитыми в них) от всех поставщиков и товар
+/// взамен брака — от новых к старым. Общая основа оценок «первым продаётся пришедшее раньше»:
+/// поставки поставщика (SPEC-26) и проданное по накладным (SPEC-27 §6).
+pub(crate) async fn inflows(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    ids: &[Uuid],
+) -> AppResult<HashMap<Uuid, Vec<Inflow>>> {
+    let rows = sqlx::query!(
+        r#"with recursive fam (id, root, depth) as (
+             select id, id, 0 from products where merged_into is null
+             union all
+             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+             where fam.depth < 8
+           )
+           select u.product_id as "product_id!", u.supplier_id, u.receipt_id, u.qty as "qty!"
+           from (
+             select fam.root as product_id, r.supplier_id, r.id as receipt_id, l.qty,
+                    r.created_at as at, l.line_no as ord
+             from receipt_lines l join receipts r on r.id = l.receipt_id
+             join fam on fam.id = l.product_id
+             where r.branch_id = $1 and fam.root = any($2) and l.qty > 0
+               and r.reversal_of is null
+               and not exists (select 1 from receipts x where x.reversal_of = r.id)
+             union all
+             select fam.root, x.supplier_id, null::uuid, x.replace_qty, x.created_at, 0
+             from defect_resolutions x join defects d on d.id = x.defect_id
+             join fam on fam.id = d.product_id
+             where x.branch_id = $1 and fam.root = any($2) and x.kind = 'replace'
+               and x.reversal_of is null and x.replace_qty > 0
+               and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)
+           ) u
+           order by u.at desc, u.ord desc"#,
+        branch_id,
+        ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out: HashMap<Uuid, Vec<Inflow>> = HashMap::new();
+    for f in rows {
+        out.entry(f.product_id).or_default().push(Inflow {
+            supplier_id: f.supplier_id,
+            receipt_id: f.receipt_id,
+            qty: f.qty,
+        });
+    }
+    Ok(out)
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeliveryRow {
     pub product_id: Uuid,
@@ -252,43 +308,17 @@ pub(crate) async fn deliveries_data(
     .into_iter()
     .map(|r| (r.product_id, (r.stock_qty, r.stock_value_tyiyn)))
     .collect();
-    // Все приходы этих товаров от всех поставщиков и товар взамен брака — от новых к старым.
-    let inflows = sqlx::query!(
-        r#"with recursive fam (id, root, depth) as (
-             select id, id, 0 from products where merged_into is null
-             union all
-             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
-             where fam.depth < 8
-           )
-           select u.product_id as "product_id!", u.supplier_id, u.qty as "qty!"
-           from (
-             select fam.root as product_id, r.supplier_id, l.qty, r.created_at as at, l.line_no as ord
-             from receipt_lines l join receipts r on r.id = l.receipt_id
-             join fam on fam.id = l.product_id
-             where r.branch_id = $1 and fam.root = any($2) and l.qty > 0
-               and r.reversal_of is null
-               and not exists (select 1 from receipts x where x.reversal_of = r.id)
-             union all
-             select fam.root, x.supplier_id, x.replace_qty, x.created_at, 0
-             from defect_resolutions x join defects d on d.id = x.defect_id
-             join fam on fam.id = d.product_id
-             where x.branch_id = $1 and fam.root = any($2) and x.kind = 'replace'
-               and x.reversal_of is null and x.replace_qty > 0
-               and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)
-           ) u
-           order by u.at desc, u.ord desc"#,
-        branch_id,
-        &ids
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut by_product: HashMap<Uuid, Vec<(bool, i64)>> = HashMap::new();
-    for f in inflows {
-        by_product
-            .entry(f.product_id)
-            .or_default()
-            .push((f.supplier_id == Some(supplier_id), f.qty));
-    }
+    let all = inflows(&mut *conn, branch_id, &ids).await?;
+    let by_product: HashMap<Uuid, Vec<(bool, i64)>> = all
+        .into_iter()
+        .map(|(id, list)| {
+            let tagged = list
+                .iter()
+                .map(|f| (f.supplier_id == Some(supplier_id), f.qty))
+                .collect();
+            (id, tagged)
+        })
+        .collect();
 
     let mut rows: Vec<DeliveryRow> = acc
         .into_iter()

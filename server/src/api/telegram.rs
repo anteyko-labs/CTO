@@ -234,6 +234,8 @@ const BTN_LEAVE: &str = "🚪 Отключиться";
 const BTN_LEAVE_YES: &str = "Да, отключиться";
 const BTN_BACK: &str = "Назад";
 const BTN_CONTACT: &str = "📱 Поделиться номером";
+/// Долг клиента (SPEC-27 §7).
+const BTN_DEBT: &str = crate::api::bot_debt::BTN_DEBT;
 /// Режим вопросов владельца (SPEC-21, ADR-067): только в нём текст уходит в сервис разбора.
 const BTN_ASK: &str = "💬 Спросить";
 const BTN_END: &str = "✖ Закончить";
@@ -245,9 +247,10 @@ const ASK_ENDED: &str = "Режим вопросов закрыт. Спроси�
 const ASK_EXPIRED: &str = "Режим вопросов закрыт — нажмите «💬 Спросить»";
 
 /// Кнопки клиента: из чата владельца они не вопрос и не команда.
-const CUSTOMER_BUTTONS: [&str; 6] = [
+const CUSTOMER_BUTTONS: [&str; 7] = [
     BTN_CARS,
     BTN_BONUS,
+    BTN_DEBT,
     BTN_LEAVE,
     BTN_LEAVE_YES,
     BTN_BACK,
@@ -293,7 +296,7 @@ impl Keys {
             ],
             Keys::Customer => vec![
                 vec![json!(BTN_CARS), json!(BTN_BONUS)],
-                vec![json!(BTN_LEAVE)],
+                vec![json!(BTN_DEBT), json!(BTN_LEAVE)],
             ],
             Keys::Employee => vec![
                 vec![json!(bot_staff::BTN_DAY), json!(bot_staff::BTN_MONTH)],
@@ -303,7 +306,7 @@ impl Keys {
             Keys::Both => vec![
                 vec![json!(bot_staff::BTN_EARNINGS)],
                 vec![json!(BTN_CARS), json!(BTN_BONUS)],
-                vec![json!(BTN_LEAVE)],
+                vec![json!(BTN_DEBT), json!(BTN_LEAVE)],
             ],
             Keys::ConfirmLeave => vec![vec![json!(BTN_LEAVE_YES), json!(BTN_BACK)]],
         };
@@ -591,7 +594,15 @@ impl Reply {
 fn is_menu(text: &str) -> bool {
     let t = text.trim();
     t.starts_with('/')
-        || [BTN_CARS, BTN_BONUS, BTN_LEAVE, BTN_LEAVE_YES, BTN_BACK].contains(&t)
+        || [
+            BTN_CARS,
+            BTN_BONUS,
+            BTN_DEBT,
+            BTN_LEAVE,
+            BTN_LEAVE_YES,
+            BTN_BACK,
+        ]
+        .contains(&t)
         || bot_staff::BUTTONS.contains(&t)
 }
 
@@ -922,6 +933,13 @@ async fn message(
             Keys::Contact,
         ));
     };
+    // «💳 Мой долг» — сумма, срок, последние записи; долга нет — так и отвечаем (SPEC-27 §7).
+    if exact == BTN_DEBT || command(text) == "долг" {
+        return Ok(Reply::new(
+            crate::api::bot_debt::customer_debt(conn, party_id).await?,
+            Keys::Customer,
+        ));
+    }
     match command(text).as_str() {
         "баллы" | "bonus" => Ok(Reply::new(
             bonus_history(conn, party_id).await?,
@@ -1072,7 +1090,7 @@ async fn link_contact(
             let book = customer_book(conn, party_id).await?;
             Ok(Reply::new(
                 format!(
-                    "{}, вы подключены ✅\n\n💼 Как работник: кнопка «💼 Мой заработок» — сколько заработали за день и месяц, удержания и премии, ваши работы.\n\n🚗 Как клиент: напомним о замене масла, с покупок — бонусные баллы (1 балл = 1 сом). Кнопки «🚗 Мои машины», «⭐ Баллы».\n\n{book}",
+                    "{}, вы подключены ✅\n\n💼 Как работник: кнопка «💼 Мой заработок» — сколько заработали за день и месяц, удержания и премии, ваши работы.\n\n🚗 Как клиент: напомним о замене масла, с покупок — бонусные баллы (1 балл = 1 сом). Кнопки «🚗 Мои машины», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
                     e.name
                 ),
                 Keys::Both,
@@ -1100,7 +1118,7 @@ async fn link_contact(
             };
             Ok(Reply::new(
                 format!(
-                    "{name}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы».\n\n{book}{staff_note}"
+                    "{name}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы», «💳 Мой долг».\n\n{book}{staff_note}"
                 ),
                 Keys::Customer,
             ))
@@ -1441,7 +1459,7 @@ pub fn in_send_window(hour: u32) -> bool {
 }
 
 /// «2 дня», «5 дней».
-fn days_word(n: i64) -> String {
+pub(crate) fn days_word(n: i64) -> String {
     let word = match (n % 10, n % 100) {
         (1, x) if x != 11 => "день",
         (2..=4, x) if !(12..=14).contains(&x) => "дня",
@@ -3362,7 +3380,7 @@ pub async fn feed_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOutc
     Ok(out)
 }
 
-/// Напоминания о замене (раз в час, только в окно 09:00–20:00 по Бишкеку).
+/// Напоминания о замене и о сроке долга (раз в час, только в окно 09:00–20:00 по Бишкеку).
 pub async fn reminders_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOutcome> {
     let mut out = PassOutcome::default();
     let mut blocked: HashSet<i64> = HashSet::new();
@@ -3372,6 +3390,24 @@ pub async fn reminders_pass(conn: &mut PgConnection, api: &Api) -> AppResult<Pas
         }
         match api.push(r.chat_id, &r.text).await {
             Delivery::Sent | Delivery::Skip => mark_reminded(conn, &r).await?,
+            Delivery::Retry { after, all } => {
+                out.retry(after, all);
+                if all {
+                    return Ok(out);
+                }
+                blocked.insert(r.chat_id);
+            }
+        }
+    }
+    // Срок долга (SPEC-27 §7): за 3 дня и в день срока, каждое один раз.
+    for r in crate::api::bot_debt::due_debt_reminders(conn).await? {
+        if blocked.contains(&r.chat_id) {
+            continue;
+        }
+        match api.push(r.chat_id, &r.text).await {
+            Delivery::Sent | Delivery::Skip => {
+                crate::api::bot_debt::mark_debt_reminded(conn, &r).await?;
+            }
             Delivery::Retry { after, all } => {
                 out.retry(after, all);
                 if all {
