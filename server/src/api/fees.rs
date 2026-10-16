@@ -20,12 +20,14 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Начальная ставка безналичного счёта нового филиала — 0,5 % (ADR-022), действует «всегда».
+// Два первых запроса филиала одновременно: второй не падает на уникальной ставке.
 pub async fn ensure_default_fee(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     sqlx::query!(
         r#"insert into cash_account_fees (id, branch_id, account_id, rate_bp, active_from)
            select $1, a.branch_id, a.id, 50, date '2000-01-01' from cash_accounts a
            where a.branch_id = $2 and a.kind = 'bank' and a.default_card
-             and not exists (select 1 from cash_account_fees f where f.account_id = a.id)"#,
+             and not exists (select 1 from cash_account_fees f where f.account_id = a.id)
+           on conflict do nothing"#,
         new_id(),
         branch_id
     )
