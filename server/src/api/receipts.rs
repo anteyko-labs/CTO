@@ -506,8 +506,7 @@ pub async fn post_receipt_tx(
     let mut dearer = Vec::new();
     for l in &req.lines {
         let p = sqlx::query!(
-            r#"select p.name, p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as "sale!",
-                      bp.pour_price_per_l_tyiyn as "pour?"
+            r#"select p.name, p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as "sale!"
                from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
                where p.id = $1"#,
             l.product_id,
@@ -518,14 +517,12 @@ pub async fn post_receipt_tx(
         let qty = i128::from(l.qty);
         let cost = i128::from(l.cost_tyiyn);
         // Сравнение без деления: цена × количество против стоимости в тех же единицах.
-        let per_unit = match (p.unit.as_str(), p.container_ml) {
+        // Розлив за литр считается от цены канистры (ADR-074) — отдельной проверки ему не нужно.
+        let dearer_price = match (p.unit.as_str(), p.container_ml) {
             ("ml", Some(c)) => i128::from(p.sale) * qty < cost * i128::from(c),
             _ => i128::from(p.sale) * qty < cost,
         };
-        let per_liter = p
-            .pour
-            .is_some_and(|pour| i128::from(pour) * qty < cost * 1000);
-        if (per_unit || per_liter) && !dearer.contains(&p.name) {
+        if dearer_price && !dearer.contains(&p.name) {
             dearer.push(p.name);
         }
     }

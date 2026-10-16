@@ -94,7 +94,6 @@ async fn snapshot(
         r#"select p.id, p.name, p.brand, p.article, p.category_id, p.unit,
                   p.container_ml as "container_ml?",
                   coalesce(bp.sale_price_tyiyn, 0) as "sale_price_tyiyn!",
-                  bp.pour_price_per_l_tyiyn as "pour_price_per_l_tyiyn?",
                   coalesce(bp.stock_qty, 0) as "stock_qty!",
                   coalesce((select array_agg(b.code order by b.created_at)
                             from product_barcodes b where b.product_id = p.id), '{}') as "barcodes!: Vec<String>"
@@ -108,6 +107,12 @@ async fn snapshot(
     .await?
     .into_iter()
     .map(|r| SnapProduct {
+        // Касса без сети считает розлив по той же цене, что сервер (ADR-074).
+        pour_price_per_l_tyiyn: crate::domain::money::pour_price_per_l(
+            &r.unit,
+            r.container_ml,
+            r.sale_price_tyiyn,
+        ),
         id: r.id,
         name: r.name,
         brand: r.brand,
@@ -117,7 +122,6 @@ async fn snapshot(
         container_ml: r.container_ml,
         barcodes: r.barcodes,
         sale_price_tyiyn: r.sale_price_tyiyn,
-        pour_price_per_l_tyiyn: r.pour_price_per_l_tyiyn,
         stock_qty: r.stock_qty,
     })
     .collect::<Vec<_>>();

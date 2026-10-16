@@ -9,7 +9,7 @@ import { useUser } from '../lib/auth'
 import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { divRound } from '../lib/money'
+import { canisterPourPrice, divRound } from '../lib/money'
 import type { Category, Product } from '../lib/types'
 import { containerFromName, readXlsx, somToTyiyn } from '../lib/xlsx'
 
@@ -33,7 +33,6 @@ interface Form {
   categoryId: string
   liters: string
   price: string
-  pour: string
   cost: string
   count: string
   /** Откуда взяли данные — позиция старого списка. */
@@ -64,7 +63,6 @@ const emptyForm = (barcode: string, categoryId: string): Form => ({
   categoryId,
   liters: '',
   price: '',
-  pour: '',
   cost: '',
   count: '',
   from: null,
@@ -153,7 +151,6 @@ export default function ProductIntake() {
       categoryId,
       liters: ml ? formatLiters(ml).replace(/\s*л$/, '') : '',
       price: h.price_tyiyn ? somInput(per(h.price_tyiyn)) : '',
-      pour: liter && ml !== null && ml >= 20_000 && h.price_tyiyn ? somInput(h.price_tyiyn) : '',
       cost: h.cost_tyiyn ? somInput(per(h.cost_tyiyn)) : '',
       count: '',
       from: h,
@@ -287,6 +284,8 @@ export default function ProductIntake() {
   const qtyText = (unit: string, q: number) => (unit === 'ml' ? formatLiters(q) : `${q} шт`)
 
   const ml = isOil && form ? parseLiters(form.liters) : null
+  const shownPrice = form ? parseSom(form.price) : null
+  const pourShown = ml && shownPrice !== null ? canisterPourPrice(shownPrice, ml) : null
   const formBlockers = form
     ? missingWithFocus(
         [Boolean(form.barcode.trim()), 'штрихкод', '#intake-barcode'],
@@ -311,7 +310,6 @@ export default function ProductIntake() {
         container_ml: isOil ? ml : null,
         barcodes: [form.barcode.trim()],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
-        pour_price_per_l_tyiyn: owner && isOil && form.pour.trim() ? parseSom(form.pour) : null,
         initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
       })
       if (revision) await saveCount(p.id, p.unit, form.count)
@@ -541,10 +539,11 @@ export default function ProductIntake() {
                 <Field label={isOil ? 'Закупка канистры, с' : 'Закупка, с'} hint="По ней ревизия оценит остаток">
                   <input id="intake-cost" inputMode="decimal" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} />
                 </Field>
-                {isOil && owner && (
-                  <Field label="Розлив за литр, с" hint="Пусто — не на розлив">
-                    <input inputMode="decimal" value={form.pour} onChange={(e) => setForm({ ...form, pour: e.target.value })} />
-                  </Field>
+                {isOil && (
+                  // Одна цена масла — цена канистры (бочки); розлив за литр считается от неё (ADR-074).
+                  <div className="self-end pb-2 text-sm text-slate-600" data-testid="intake-pour-derived">
+                    {pourShown !== null ? `на розлив: ${formatSom(pourShown)} за л` : 'на розлив: от цены канистры'}
+                  </div>
                 )}
                 {revision && (
                   <Field label={isOil ? 'На полке, л' : 'На полке, шт'}>

@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::barcode;
 use crate::domain::costing::{Pool, average};
-use crate::domain::money::div_round;
+use crate::domain::money::{div_round, pour_price_per_l};
 use crate::error::{AppError, AppResult, invalid, is_unique_violation};
 use crate::ops::{self, Movement, new_id};
 use crate::state::AppState;
@@ -440,7 +440,6 @@ async fn query_products_raw(
         r#"select p.id, p.category_id, c.kind as category_kind, p.name, p.brand, p.article, p.unit,
                   p.container_ml, p.attrs, p.archived,
                   coalesce(bp.sale_price_tyiyn, 0) as "sale_price_tyiyn!",
-                  bp.pour_price_per_l_tyiyn as "pour_price_per_l_tyiyn?",
                   coalesce(bp.min_stock, 0) as "min_stock!",
                   coalesce(bp.stock_qty, 0) as "stock_qty!",
                   coalesce(bp.stock_value_tyiyn, 0) as "stock_value_tyiyn!",
@@ -499,6 +498,8 @@ async fn query_products_raw(
                 last_qty: r.last_cost_qty,
                 last_cost: r.last_cost_tyiyn,
             };
+            // У масла в канистре розлив за литр считается от цены канистры (ADR-074).
+            let pour = pour_price_per_l(&r.unit, r.container_ml, r.sale_price_tyiyn);
             let out = ProductOut {
                 id: r.id,
                 category_id: r.category_id,
@@ -512,7 +513,7 @@ async fn query_products_raw(
                 archived: r.archived,
                 barcodes: r.barcodes,
                 sale_price_tyiyn: r.sale_price_tyiyn,
-                pour_price_per_l_tyiyn: r.pour_price_per_l_tyiyn,
+                pour_price_per_l_tyiyn: pour,
                 min_stock: r.min_stock,
                 stock_qty: r.stock_qty,
                 needs_review: r.needs_review,
@@ -615,12 +616,8 @@ pub fn price_unit(unit: &str, container_ml: Option<i64>) -> i64 {
 pub fn valuation(p: &ProductOut, raw: &RawPool) -> Option<Valuation> {
     let per = price_unit(&p.unit, p.container_ml);
     let qty = i128::from(p.stock_qty);
-    // Масло без тары продаётся только розливом: цена — за литр.
-    let sale = match (p.unit.as_str(), p.container_ml) {
-        ("ml", None) => p.pour_price_per_l_tyiyn.unwrap_or(0),
-        _ => p.sale_price_tyiyn,
-    };
-    let stock_sale = div_round(qty * i128::from(sale), i128::from(per))?;
+    // У масла одна цена — цена канистры (ADR-074): остаток в мл × цена канистры / объём.
+    let stock_sale = div_round(qty * i128::from(p.sale_price_tyiyn), i128::from(per))?;
     let last = (raw.last_qty > 0).then(|| {
         div_round(
             i128::from(raw.last_cost) * i128::from(per),
@@ -984,22 +981,22 @@ async fn create_product(
     } else {
         ("piece", None)
     };
-    if req.sale_price_tyiyn < 0
-        || req.min_stock < 0
-        || req.pour_price_per_l_tyiyn.is_some_and(|v| v < 0)
-    {
+    if req.sale_price_tyiyn < 0 || req.min_stock < 0 {
         return Err(invalid("цены и минимальный остаток не отрицательны"));
     }
     ops::check_amount(req.sale_price_tyiyn)?;
-    ops::check_amount(req.pour_price_per_l_tyiyn.unwrap_or(0))?;
-    if req.pour_price_per_l_tyiyn.is_some() && !ctx.user.is_owner() {
-        return Err(AppError::Forbidden);
+    // У масла одна цена — цена канистры; розлив за литр считается от неё (ADR-074).
+    // Цены задаёт владелец (ADR-032): администратору — 403, как раньше.
+    if req.pour_price_per_l_tyiyn.is_some() {
+        if !ctx.user.is_owner() {
+            return Err(AppError::Forbidden);
+        }
+        return Err(invalid(if unit == "ml" {
+            POUR_FROM_CANISTER
+        } else {
+            "цена розлива только для масла"
+        }));
     }
-    let pour = if unit == "ml" {
-        req.pour_price_per_l_tyiyn
-    } else {
-        None
-    };
     let attrs = clean_attrs(req.attrs, &defs)?;
     let id = new_id();
     sqlx::query!(
@@ -1017,12 +1014,11 @@ async fn create_product(
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
-        r#"insert into branch_products (branch_id, product_id, sale_price_tyiyn, pour_price_per_l_tyiyn, min_stock)
-           values ($1, $2, $3, $4, $5)"#,
+        r#"insert into branch_products (branch_id, product_id, sale_price_tyiyn, min_stock)
+           values ($1, $2, $3, $4)"#,
         ctx.user.branch_id,
         id,
         req.sale_price_tyiyn,
-        pour,
         req.min_stock
     )
     .execute(&mut *tx)
@@ -1204,6 +1200,9 @@ async fn update_product(
     Ok(Json(out))
 }
 
+/// Отказ на отдельную цену розлива у масла в канистре (ADR-074).
+const POUR_FROM_CANISTER: &str = "у масла в канистре одна цена — цена канистры: розлив за литр считается от неё, отдельно не задаётся";
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct PricesReq {
     pub sale_price_tyiyn: Option<i64>,
@@ -1237,34 +1236,32 @@ pub async fn update_prices_tx(
     {
         return Err(AppError::Forbidden);
     }
-    if [
-        req.sale_price_tyiyn,
-        req.pour_price_per_l_tyiyn,
-        req.min_stock,
-    ]
-    .iter()
-    .flatten()
-    .any(|v| *v < 0)
+    let product = sqlx::query!("select unit, container_ml from products where id = $1", id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    // Отдельной цены розлива нет: у масла она считается от цены канистры (ADR-074).
+    if req.pour_price_per_l_tyiyn.is_some() {
+        return Err(invalid(if product.unit == "ml" {
+            POUR_FROM_CANISTER
+        } else {
+            "цена розлива только для масла"
+        }));
+    }
+    if [req.sale_price_tyiyn, req.min_stock]
+        .iter()
+        .flatten()
+        .any(|v| *v < 0)
     {
         return Err(invalid("значения не отрицательны"));
     }
     // Цена с потолком одной операции (ADR-045).
-    for v in [req.sale_price_tyiyn, req.pour_price_per_l_tyiyn]
-        .into_iter()
-        .flatten()
-    {
+    if let Some(v) = req.sale_price_tyiyn {
         ops::check_amount(v)?;
-    }
-    let unit = sqlx::query_scalar!("select unit from products where id = $1", id)
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    if req.pour_price_per_l_tyiyn.is_some() && unit != "ml" {
-        return Err(invalid("цена розлива только для масла"));
     }
     ops::lock_pool(&mut *conn, ctx.user.branch_id, id).await?;
     let old = sqlx::query!(
-        "select sale_price_tyiyn, pour_price_per_l_tyiyn, min_stock from branch_products where branch_id = $1 and product_id = $2",
+        "select sale_price_tyiyn, min_stock from branch_products where branch_id = $1 and product_id = $2",
         ctx.user.branch_id,
         id
     )
@@ -1272,12 +1269,11 @@ pub async fn update_prices_tx(
     .await?;
     sqlx::query!(
         r#"update branch_products set sale_price_tyiyn = coalesce($3, sale_price_tyiyn),
-             pour_price_per_l_tyiyn = coalesce($4, pour_price_per_l_tyiyn), min_stock = coalesce($5, min_stock)
+             min_stock = coalesce($4, min_stock)
            where branch_id = $1 and product_id = $2"#,
         ctx.user.branch_id,
         id,
         req.sale_price_tyiyn,
-        req.pour_price_per_l_tyiyn,
         req.min_stock
     )
     .execute(&mut *conn)
@@ -1285,6 +1281,8 @@ pub async fn update_prices_tx(
     let name = sqlx::query_scalar!("select name from products where id = $1", id)
         .fetch_one(&mut *conn)
         .await?;
+    // Розлив за литр у масла меняется вместе с ценой канистры — владелец видит оба числа.
+    let pour = |sale: i64| pour_price_per_l(&product.unit, product.container_ml, sale);
     ops::audit(
         &mut *conn,
         ctx,
@@ -1295,8 +1293,8 @@ pub async fn update_prices_tx(
             "name": name,
             "old_sale_price_tyiyn": old.sale_price_tyiyn,
             "sale_price_tyiyn": req.sale_price_tyiyn.unwrap_or(old.sale_price_tyiyn),
-            "old": { "sale": old.sale_price_tyiyn, "pour": old.pour_price_per_l_tyiyn, "min_stock": old.min_stock },
-            "new": { "sale": req.sale_price_tyiyn, "pour": req.pour_price_per_l_tyiyn, "min_stock": req.min_stock },
+            "old": { "sale": old.sale_price_tyiyn, "pour": pour(old.sale_price_tyiyn), "min_stock": old.min_stock },
+            "new": { "sale": req.sale_price_tyiyn, "pour": req.sale_price_tyiyn.and_then(pour), "min_stock": req.min_stock },
         }),
     )
     .await?;

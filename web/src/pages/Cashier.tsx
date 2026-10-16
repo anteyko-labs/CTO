@@ -26,7 +26,7 @@ import { enqueueSale, keepInQueue, markPending, markSent, removeSale, requestPer
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
-import { pourAmount } from '../lib/money'
+import { pourAmount, pourPricePerL } from '../lib/money'
 import { PAYMENT_LABELS, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
 
 interface CartLine {
@@ -63,7 +63,8 @@ function remember(key: string, value: string): void {
 
 function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>): number {
   if (l.kind === 'service') return l.service?.price_tyiyn ?? 0
-  if (l.kind === 'pour') return l.product?.pour_price_per_l_tyiyn ?? 0
+  // Розлив — от цены канистры (ADR-074): 4 л розливом стоят как канистра 4 л.
+  if (l.kind === 'pour') return (l.product && pourPricePerL(l.product)) ?? 0
   return l.product?.sale_price_tyiyn ?? 0
 }
 

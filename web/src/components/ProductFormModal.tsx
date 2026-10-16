@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { POLARITY_LABELS } from '../lib/battery'
-import { litersInput, parseLiters, parseSom, somInput } from '../lib/format'
+import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { canisterPourPrice } from '../lib/money'
 import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
 import { Badge, Button, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
@@ -17,7 +18,6 @@ interface Form {
   attrs: Record<string, string>
   barcode: string
   sale_price: string
-  pour_price: string
   min_stock: string
 }
 
@@ -38,7 +38,6 @@ function initialForm(
     attrs: { ...(p?.attrs ?? {}) },
     barcode: presetBarcode ?? '',
     sale_price: p ? somInput(p.sale_price_tyiyn) : '',
-    pour_price: p?.pour_price_per_l_tyiyn != null ? somInput(p.pour_price_per_l_tyiyn) : '',
     min_stock: p ? (oil ? toLiters(p.min_stock) : String(p.min_stock)) : '0',
   }
 }
@@ -105,18 +104,21 @@ export function ProductFormModal({
     }
   }, [nameQuery, editing])
 
+  // Розлив за литр — от цены и объёма канистры, как на сервере (ADR-074).
+  const shownSale = parseSom(form.sale_price)
+  const shownMl = parseLiters(form.container_l)
+  const pourShown = isOil && shownSale !== null && shownMl ? canisterPourPrice(shownSale, shownMl) : null
+
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const parsed = () => {
     const sale = parseSom(form.sale_price || '0')
-    const pour = form.pour_price.trim() ? parseSom(form.pour_price) : null
     const container = isOil ? parseLiters(form.container_l) : null
     const min = isOil ? parseLiters(form.min_stock || '0') : /^\d+$/.test(form.min_stock.trim() || '0') ? Number(form.min_stock || 0) : null
     if (sale === null) throw new Error('Неверная цена продажи')
-    if (form.pour_price.trim() && pour === null) throw new Error('Неверная цена розлива')
     if (isOil && (!container || container <= 0)) throw new Error('Укажите объём канистры в литрах')
     if (min === null) throw new Error('Неверный минимальный остаток')
-    return { sale, pour, container, min }
+    return { sale, container, min }
   }
 
   /** Новая категория создаётся здесь же и сразу выбирается в товаре. */
@@ -156,7 +158,6 @@ export function ProductFormModal({
           attrs: form.attrs,
           barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
           sale_price_tyiyn: v.sale,
-          pour_price_per_l_tyiyn: owner && isOil ? v.pour : null,
           min_stock: v.min,
         })
       } else {
@@ -170,7 +171,6 @@ export function ProductFormModal({
         const prices: Record<string, number> = {}
         if (v.sale !== product.sale_price_tyiyn) prices.sale_price_tyiyn = v.sale
         if (v.min !== product.min_stock) prices.min_stock = v.min
-        if (owner && isOil && v.pour !== null && v.pour !== product.pour_price_per_l_tyiyn) prices.pour_price_per_l_tyiyn = v.pour
         saved = Object.keys(prices).length
           ? await patch<Product>(`/products/${product.id}/prices`, prices)
           : await get<Product>(`/products/${product.id}`)
@@ -428,9 +428,10 @@ export function ProductFormModal({
           <input id="product-price" inputMode="decimal" value={form.sale_price} onChange={(e) => set('sale_price', e.target.value)} />
         </Field>
         {isOil && (
-          <Field label="Цена розлива за литр, с" hint={owner ? undefined : 'Меняет только владелец'}>
-            <input inputMode="decimal" disabled={!owner} value={form.pour_price} onChange={(e) => set('pour_price', e.target.value)} />
-          </Field>
+          // Одна цена масла — цена канистры; розлив за литр считается от неё (ADR-074).
+          <div className="self-end pb-2 text-sm text-slate-600" data-testid="product-pour-derived">
+            {pourShown !== null ? `на розлив: ${formatSom(pourShown)} за л` : 'на розлив: от цены канистры'}
+          </div>
         )}
         <Field label={isOil ? 'Минимальный остаток, л' : 'Минимальный остаток, шт'}>
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />

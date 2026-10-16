@@ -11,6 +11,7 @@ import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { pourPricePerL } from '../lib/money'
 import type { Category, Product, ProductList, ProductRow } from '../lib/types'
 
 interface Selected {
@@ -20,9 +21,9 @@ interface Selected {
 
 type SortKey = 'name' | 'code' | 'stock' | 'purchase' | 'sale' | 'stock_purchase' | 'stock_sale'
 
-/** За что цена: канистра масла, литр розлива, килограмм или штука. */
+/** За что цена: канистра масла, килограмм или штука. */
 const perText = (p: Product): string =>
-  p.unit === 'ml' ? (p.container_ml ? `за ${formatLiters(p.container_ml)}` : 'за л') : p.unit === 'g' ? 'за кг' : ''
+  p.unit === 'ml' && p.container_ml ? `за ${formatLiters(p.container_ml)}` : p.unit === 'g' ? 'за кг' : ''
 
 export default function Products() {
   const owner = useUser().role === 'owner'
@@ -311,7 +312,8 @@ function ProductTableRow({
   onToggle: (on: boolean) => void
   onArchive: () => void
 }) {
-  const oil = p.unit === 'ml'
+  // Розлив за литр — от цены канистры (ADR-074).
+  const pour = pourPricePerL(p)
   const minus = p.stock_qty < 0
   return (
     <tr className={`cursor-pointer hover:bg-slate-50 ${p.archived ? 'text-slate-400' : ''}`} onClick={onOpen}>
@@ -339,11 +341,9 @@ function ProductTableRow({
         </td>
       )}
       <td className="px-2 py-2 whitespace-nowrap text-right tabular-nums" data-label="Продажа">
-        {oil && !p.container_ml ? formatSom(p.pour_price_per_l_tyiyn ?? 0) : formatSom(p.sale_price_tyiyn)}
+        {formatSom(p.sale_price_tyiyn)}
         {perText(p) && <span className="text-xs text-slate-500"> {perText(p)}</span>}
-        {oil && p.container_ml != null && p.pour_price_per_l_tyiyn != null && (
-          <div className="text-xs text-slate-500">розлив {formatSom(p.pour_price_per_l_tyiyn)} за л</div>
-        )}
+        {pour !== null && <div className="text-xs text-slate-500">на розлив {formatSom(pour)} за л</div>}
       </td>
       {owner && (
         <td className={`px-2 py-2 whitespace-nowrap text-right tabular-nums ${minus ? 'text-rose-700' : ''}`} data-label="Сумма по закупке">

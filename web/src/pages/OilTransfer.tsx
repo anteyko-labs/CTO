@@ -5,7 +5,7 @@ import { get, newOpId, patch, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { divRound } from '../lib/money'
+import { canisterPourPrice, divRound } from '../lib/money'
 import type { Product } from '../lib/types'
 
 interface OilState {
@@ -48,7 +48,7 @@ export default function OilTransfer() {
   const [form, setForm] = useState({ from: '', to: '', liters: '', comment: '' })
   const [opId, setOpId] = useState(newOpId)
   const [done, setDone] = useState<TransferOut | null>(null)
-  const [prices, setPrices] = useState({ canister: '', pour: '' })
+  const [prices, setPrices] = useState({ canister: '' })
   const act = useAction()
   const priceAct = useAction()
   const [reversing, setReversing] = useState<{ row: TransferRow; comment: string; opId: string } | null>(null)
@@ -91,7 +91,7 @@ export default function OilTransfer() {
       })
       setDone(out)
       setOpId(newOpId())
-      setPrices({ canister: somInput(to?.sale_price_tyiyn ?? 0), pour: to?.pour_price_per_l_tyiyn ? somInput(to.pour_price_per_l_tyiyn) : '' })
+      setPrices({ canister: somInput(to?.sale_price_tyiyn ?? 0) })
       setForm({ from: '', to: '', liters: '', comment: '' })
       products.reload()
       history.reload()
@@ -102,15 +102,17 @@ export default function OilTransfer() {
     void priceAct.run(async () => {
       if (!done) return
       const canister = parseSom(prices.canister)
-      const pour = prices.pour.trim() ? parseSom(prices.pour) : null
-      if (canister === null || (prices.pour.trim() && pour === null)) throw new Error('Неверная цена')
-      await patch(`/products/${done.to.product_id}/prices`, { sale_price_tyiyn: canister, pour_price_per_l_tyiyn: pour })
+      if (canister === null) throw new Error('Неверная цена')
+      await patch(`/products/${done.to.product_id}/prices`, { sale_price_tyiyn: canister })
       setDone(null)
       products.reload()
       toast('Цены обновлены')
     })
 
   const doneProduct = done ? oils.find((p) => p.id === done.to.product_id) : undefined
+  // Розлив за литр — от цены канистры (ADR-074), отдельно не задаётся.
+  const newCanister = parseSom(prices.canister)
+  const newPour = doneProduct?.container_ml && newCanister !== null ? canisterPourPrice(newCanister, doneProduct.container_ml) : null
 
   return (
     <div className="flex flex-col gap-4">
@@ -218,14 +220,14 @@ export default function OilTransfer() {
                 ` Канистра ${formatLiters(doneProduct.container_ml)} обходится в ${formatSom(divRound(done.to.avg_per_l_tyiyn * doneProduct.container_ml, 1000))}.`}
             </div>
           </div>
-          <div className="text-sm font-medium">Цены продажи «{done.to.name}»</div>
+          <div className="text-sm font-medium">Цена продажи «{done.to.name}»</div>
           <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-            <Field label="Канистра, с">
-              <input inputMode="decimal" value={prices.canister} onChange={(e) => setPrices({ ...prices, canister: e.target.value })} />
+            <Field label="Канистра, с" hint="Одна цена: розлив за литр считается от неё">
+              <input inputMode="decimal" value={prices.canister} onChange={(e) => setPrices({ canister: e.target.value })} />
             </Field>
-            <Field label="Розлив, с за литр" hint="Пусто — не продаётся на розлив">
-              <input inputMode="decimal" value={prices.pour} onChange={(e) => setPrices({ ...prices, pour: e.target.value })} />
-            </Field>
+            <div className="pb-2 text-sm text-slate-600" data-testid="oil-pour-derived">
+              {newPour !== null ? `на розлив: ${formatSom(newPour)} за л` : ''}
+            </div>
             <div className="flex gap-2">
               <Button variant="secondary" onClick={() => setDone(null)}>
                 Оставить

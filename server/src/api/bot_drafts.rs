@@ -1379,12 +1379,16 @@ async fn goods(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
         }));
     }
     if operation.contains("продаж") || operation == "цена" {
-        let summary = format!(
+        let mut summary = format!(
             "Цена продажи\nТовар: {name}\nСейчас: {} {per}\nНовая: {} {per}",
             format_som(p.sale_price_tyiyn),
             format_som(price),
             per = per_text(&p)
         );
+        // У масла в канистре розлив за литр отдельно не задаётся — он идёт от цены канистры (ADR-074).
+        if let Some(pour) = crate::domain::money::pour_price_per_l(&p.unit, p.container_ml, price) {
+            summary.push_str(&format!("\nРозлив за литр станет: {}", format_som(pour)));
+        }
         return Ok(Ok(Built {
             op: DraftOp::Prices {
                 product_id: p.id,

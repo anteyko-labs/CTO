@@ -37,7 +37,7 @@ updated: 2026-10-16
 ```
 { version, server_time,
   products:  [{id, name, brand, article, category_id, unit, container_ml,
-               barcodes[], sale_price_tyiyn, pour_price_per_l_tyiyn, stock_qty}],
+               barcodes[], sale_price_tyiyn, pour_price_per_l_tyiyn (от цены канистры, ADR-074), stock_qty}],
   categories, employees (активные), services (активные), receipt_settings }
 ```
 Без себестоимости и стоимости остатка для любой роли — касса их не использует.

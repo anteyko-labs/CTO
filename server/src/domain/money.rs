@@ -14,6 +14,23 @@ pub fn div_round(n: i128, d: i128) -> Option<i64> {
     i64::try_from(q).ok()
 }
 
+/// Цена литра на розлив у масла в канистре: цена канистры × 1000 / объём канистры в мл,
+/// с округлением до тыйына (ADR-074). У такого масла одна цена — цена канистры; розлив за литр
+/// не хранится, а считается здесь. На экране то же правило — `canisterPourPrice` в
+/// `web/src/lib/money.ts`. `None` при объёме не больше нуля или переполнении.
+pub fn canister_pour_price(canister_price: i64, container_ml: i64) -> Option<i64> {
+    div_round(i128::from(canister_price) * 1000, i128::from(container_ml))
+}
+
+/// Цена литра на розлив товара: у масла (оно всегда в таре) — от цены канистры
+/// ([`canister_pour_price`]); у остального товара розлива нет — `None`.
+pub fn pour_price_per_l(unit: &str, container_ml: Option<i64>, sale_price: i64) -> Option<i64> {
+    match (unit, container_ml) {
+        ("ml", Some(c)) => canister_pour_price(sale_price, c),
+        _ => None,
+    }
+}
+
 /// Произведение двух целых без переполнения `i64`.
 pub fn mul(a: i64, b: i64) -> Option<i64> {
     a.checked_mul(b)
@@ -202,6 +219,26 @@ mod tests {
         assert_eq!(format_som_signed(30_000), "+300 с");
         assert_eq!(format_som_signed(-100_000), "−1 000 с");
         assert_eq!(format_som_signed(0), "0 с");
+    }
+
+    #[test]
+    fn pour_price_comes_from_canister() {
+        // Канистра 4 л за 2 000 с — литр 500 с: 4 л розливом = канистра, 2,5 л = 1 250 с.
+        assert_eq!(canister_pour_price(200_000, 4000), Some(50_000));
+        assert_eq!(div_round(4000 * 50_000, 1000), Some(200_000));
+        assert_eq!(div_round(2500 * 50_000, 1000), Some(125_000));
+        // 1 999,99 с за 4 л = 49 999,75 тыйын за литр → 50 000; 1 999,98 с → 49 999,5 → 50 000 (половина
+        // от нуля); 1 999,96 с → ровно 49 999.
+        assert_eq!(canister_pour_price(199_999, 4000), Some(50_000));
+        assert_eq!(canister_pour_price(199_998, 4000), Some(50_000));
+        assert_eq!(canister_pour_price(199_996, 4000), Some(49_999));
+        // Бочка 200 л за 120 000 с — 600 с за литр; 1 л за 333,33 с — та же цена.
+        assert_eq!(canister_pour_price(12_000_000, 200_000), Some(60_000));
+        assert_eq!(canister_pour_price(33_333, 1000), Some(33_333));
+        assert_eq!(canister_pour_price(1, 0), None);
+        assert_eq!(pour_price_per_l("ml", Some(4000), 200_000), Some(50_000));
+        assert_eq!(pour_price_per_l("piece", None, 50_000), None);
+        assert_eq!(pour_price_per_l("g", None, 50_000), None);
     }
 
     #[test]

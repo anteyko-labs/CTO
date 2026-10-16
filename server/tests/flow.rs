@@ -99,7 +99,7 @@ async fn seed(pool: &PgPool) -> World {
         .await
         .unwrap();
     sqlx::query(
-        "insert into branch_products (branch_id, product_id, sale_price_tyiyn, pour_price_per_l_tyiyn) values ($1, $2, 50000, null), ($1, $3, 200000, 33333)",
+        "insert into branch_products (branch_id, product_id, sale_price_tyiyn, pour_price_per_l_tyiyn) values ($1, $2, 50000, null), ($1, $3, 200000, null)",
     )
     .bind(branch)
     .bind(filter)
@@ -307,6 +307,41 @@ async fn oil_container_and_pour(pool: PgPool) {
     let (qty, value, _) = pool_of(&pool, w.oil).await;
     assert_eq!(qty, 2500);
     assert_eq!(value, 240_000 - 120_000 - 45_000);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+/// Одна цена масла (ADR-074): канистра 4 л за 2 000 с — розлив 500 с за литр, 4 л розливом
+/// стоят ровно как канистра, 2,5 л — 1 250 с; прайс строки розлива — от цены канистры.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn pour_price_comes_from_canister_price(pool: PgPool) {
+    let w = seed(&pool).await;
+    receive(&pool, &w.owner, w.oil, 12_000, 300_000).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let p = avtodom_server::api::catalog::product_by_id(&mut conn, &w.admin.user, w.oil)
+        .await
+        .unwrap();
+    assert_eq!(p.sale_price_tyiyn, 200_000);
+    assert_eq!(p.pour_price_per_l_tyiyn, Some(50_000));
+    drop(conn);
+    let sale = sell(
+        &pool,
+        &w.admin,
+        takeaway(
+            &w,
+            vec![
+                line("pour", w.oil, 4000, 50_000),
+                line("pour", w.oil, 2500, 50_000),
+            ],
+            cash(325_000),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sale.lines[0].amount_tyiyn, 200_000);
+    assert_eq!(sale.lines[1].amount_tyiyn, 125_000);
+    assert!(sale.lines.iter().all(|l| l.list_price_tyiyn == 50_000));
+    // Цена розлива совпала с прайсом — это не правка цены кассиром.
+    assert!(audit_data(&pool, "sale.price_override").await.is_empty());
     assert_stock_consistent(&pool, &w).await;
 }
 

@@ -121,7 +121,7 @@ async function pieceProduct(request: APIRequestContext, name: string, code: stri
 async function oilProduct(
   request: APIRequestContext,
   name: string,
-  opts: { code?: string; container_ml: number; price: number; pour?: number; ml: number; cost_per_l: number },
+  opts: { code?: string; container_ml: number; price: number; ml: number; cost_per_l: number },
 ) {
   const cat = await apiPost<{ id: string }>(request, '/categories', { name: `Масла ${name}`, kind: 'oil' })
   const p = await apiPost<{ id: string }>(request, '/products', {
@@ -131,7 +131,6 @@ async function oilProduct(
     container_ml: opts.container_ml,
     barcodes: opts.code ? [opts.code] : [],
     sale_price_tyiyn: opts.price,
-    pour_price_per_l_tyiyn: opts.pour ?? null,
   })
   await apiPost(request, '/receipts', {
     op_id: crypto.randomUUID(),
@@ -328,7 +327,6 @@ test('подарок по порогу: 1 л розлива мало, канис
     code: oilCode,
     container_ml: 4000,
     price: 300_000,
-    pour: 80_000,
     ml: 40_000,
     cost_per_l: 50_000,
   })
@@ -372,8 +370,8 @@ test('подарок по порогу: 1 л розлива мало, канис
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
-  // 1 л по 800 + канистра 3000, подарок за ноль.
-  await expect(page.getByText(money('Итог 3 800 с'))).toBeVisible()
+  // 1 л по 750 (розлив от цены канистры 3000 / 4 л, ADR-074) + канистра 3000, подарок за ноль.
+  await expect(page.getByText(money('Итог 3 750 с'))).toBeVisible()
 })
 
 test('подарок: обычный порядок кассира — скан, розлив 1 л, потом канистра', async ({ page }) => {
@@ -383,7 +381,6 @@ test('подарок: обычный порядок кассира — скан,
     code: oilCode,
     container_ml: 4000,
     price: 300_000,
-    pour: 80_000,
     ml: 40_000,
     cost_per_l: 50_000,
   })
@@ -421,6 +418,17 @@ test('перелив масла: 5 л по 100 в 50 л по 200 дают 190,91
   await expect(page.getByText(money('себестоимость 190,91 с за литр'))).toBeVisible()
   const stock = await apiGet<{ id: string; stock_qty: number }>(page.request, `/products/${to.id}`)
   expect(stock.stock_qty).toBe(55_000)
+
+  // Одна цена масла (ADR-074): после перелива правится только канистра, розлив за литр — от неё.
+  const derived = page.getByTestId('oil-pour-derived')
+  await expect(derived).toHaveText(money('на розлив: 300 с за л'))
+  await page.getByLabel('Канистра, с').fill('1400')
+  await expect(derived).toHaveText(money('на розлив: 350 с за л'))
+  await page.getByRole('button', { name: 'Сохранить цены' }).click()
+  await expect(page.getByText('Цены обновлены')).toBeVisible()
+  const priced = await apiGet<{ sale_price_tyiyn: number; pour_price_per_l_tyiyn: number }>(page.request, `/products/${to.id}`)
+  expect(priced.sale_price_tyiyn).toBe(140_000)
+  expect(priced.pour_price_per_l_tyiyn).toBe(35_000)
 })
 
 test('акт сверки из карточки клиента', async ({ page }) => {

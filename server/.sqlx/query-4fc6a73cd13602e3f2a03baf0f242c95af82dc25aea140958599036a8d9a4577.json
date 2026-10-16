@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products set sale_price_tyiyn = coalesce($3, sale_price_tyiyn),\n             min_stock = coalesce($4, min_stock)\n           where branch_id = $1 and product_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4fc6a73cd13602e3f2a03baf0f242c95af82dc25aea140958599036a8d9a4577"
+}

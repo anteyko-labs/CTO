@@ -339,8 +339,7 @@ async fn prepare_line(
     )
     .await?;
     let p = sqlx::query!(
-        r#"select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!",
-                  bp.pour_price_per_l_tyiyn as "pour_price?"
+        r#"select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!"
            from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
            where p.id = $1"#,
         pid,
@@ -363,10 +362,11 @@ async fn prepare_line(
             mul(l.qty, l.unit_price_tyiyn),
             p.sale_price,
         ),
-        ("pour", "ml", Some(_)) => (
+        // Прайс розлива — от цены канистры (ADR-074): 4 л розливом стоят как канистра 4 л.
+        ("pour", "ml", Some(c)) => (
             l.qty,
             div_round(i128::from(l.qty) * i128::from(l.unit_price_tyiyn), 1000),
-            p.pour_price.unwrap_or(0),
+            crate::domain::money::canister_pour_price(p.sale_price, c).unwrap_or(0),
         ),
         // На вес: граммы × цена за кг (ADR-048).
         ("weight", "g", _) => (

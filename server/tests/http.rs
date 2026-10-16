@@ -683,6 +683,109 @@ async fn price_changes_are_owner_only_and_notify(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn oil_has_one_price(pool: PgPool) {
+    // У масла в канистре одна цена — канистры; розлив за литр считается от неё (ADR-074).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Масла", "kind": "oil" })),
+    )
+    .await;
+    let new_oil = |pour: Option<i64>| {
+        json!({
+            "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Масло 4 л",
+            "container_ml": 4000, "sale_price_tyiyn": 200_000, "pour_price_per_l_tyiyn": pour
+        })
+    };
+    let (status, _, err) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(new_oil(Some(60_000))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("цена канистры")
+    );
+    let (status, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(new_oil(None)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(p["pour_price_per_l_tyiyn"], 50_000);
+    let pid = p["id"].as_str().unwrap().to_string();
+    let prices = format!("/api/v1/products/{pid}/prices");
+
+    // Отдельную цену розлива владельцу тоже не задать: 422 с понятным текстом.
+    let (status, _, err) = call(
+        &app,
+        "PATCH",
+        &prices,
+        Some(&owner),
+        Some(json!({ "pour_price_per_l_tyiyn": 60_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("розлив за литр считается")
+    );
+    // Новая цена канистры — новый розлив: 1 999,99 с / 4 л = 499,9975 с → 500,00 с.
+    let (status, _, p) = call(
+        &app,
+        "PATCH",
+        &prices,
+        Some(&owner),
+        Some(json!({ "sale_price_tyiyn": 199_999 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(p["pour_price_per_l_tyiyn"], 50_000);
+    let (status, _, p) = call(
+        &app,
+        "PATCH",
+        &prices,
+        Some(&owner),
+        Some(json!({ "sale_price_tyiyn": 240_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(p["pour_price_per_l_tyiyn"], 60_000);
+    // Касса без сети видит ту же цену розлива.
+    let (_, _, snap) = call(&app, "GET", "/api/v1/offline/snapshot", Some(&owner), None).await;
+    let oil = snap["products"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == json!(pid))
+        .unwrap();
+    assert_eq!(oil["pour_price_per_l_tyiyn"], 60_000);
+
+    // Лента владельца: с ценой канистры поменялся и розлив за литр.
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let details = list["items"][0]["details"].as_str().unwrap();
+    assert!(
+        details.contains("розлив за литр: было 500 с, стало 600 с"),
+        "{details}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn duplicate_products_can_be_merged(pool: PgPool) {
     // Дубль сливается в основной товар: коды и остаток переходят, дубль в архив (SPEC-02).
     let app = setup(pool.clone()).await;

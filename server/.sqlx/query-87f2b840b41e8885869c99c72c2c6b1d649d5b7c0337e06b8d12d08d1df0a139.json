@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.name, p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as \"sale!\",\n                      bp.pour_price_per_l_tyiyn as \"pour?\"\n               from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n               where p.id = $1",
+  "query": "select p.name, p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as \"sale!\"\n               from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n               where p.id = $1",
   "describe": {
     "columns": [
       {
@@ -22,11 +22,6 @@
         "ordinal": 3,
         "name": "sale!",
         "type_info": "Int8"
-      },
-      {
-        "ordinal": 4,
-        "name": "pour?",
-        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -39,9 +34,8 @@
       false,
       false,
       true,
-      null,
-      true
+      null
     ]
   },
-  "hash": "4cde75dbded1a07272bc95993600726595ca38d47cac9ef61d55c3e1183edcf2"
+  "hash": "87f2b840b41e8885869c99c72c2c6b1d649d5b7c0337e06b8d12d08d1df0a139"
 }

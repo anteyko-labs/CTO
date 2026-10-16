@@ -64,6 +64,7 @@ export interface Product {
   archived: boolean
   barcodes: string[]
   sale_price_tyiyn: number
+  /** Розлив за литр у масла — от цены канистры, сервер считает сам (ADR-074). */
   pour_price_per_l_tyiyn: number | null
   min_stock: number
   stock_qty: number
