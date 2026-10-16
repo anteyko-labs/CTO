@@ -199,6 +199,7 @@ fn line(kind: &str, product: Uuid, qty: i64, price: i64) -> SaleLineReq {
 
 fn cash(amount: i64) -> Vec<PaymentReq> {
     vec![PaymentReq {
+        account_id: None,
         method: "cash".into(),
         amount_tyiyn: amount,
         grams: None,
@@ -491,6 +492,7 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
     .unwrap();
 
     let pay = |method: &str, amount: i64| PaymentReq {
+        account_id: None,
         method: method.into(),
         amount_tyiyn: amount,
         grams: None,
@@ -579,6 +581,7 @@ async fn cash_follows_payments(pool: PgPool) {
         &w,
         vec![line("piece", w.filter, 1, 100_000)],
         vec![PaymentReq {
+            account_id: None,
             method: "card".into(),
             amount_tyiyn: 100_000,
             grams: None,
@@ -627,11 +630,13 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
         vec![line("piece", w.filter, 2, 50_000)],
         vec![
             PaymentReq {
+                account_id: None,
                 method: "cash".into(),
                 amount_tyiyn: 50_000,
                 grams: None,
             },
             PaymentReq {
+                account_id: None,
                 method: "debt".into(),
                 amount_tyiyn: 50_000,
                 grams: None,
@@ -685,11 +690,13 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments: vec![
                 PaymentReq {
+                    account_id: None,
                     method: "cash".into(),
                     amount_tyiyn: 25_000,
                     grams: None,
                 },
                 PaymentReq {
+                    account_id: None,
                     method: "debt".into(),
                     amount_tyiyn: 25_000,
                     grams: None,
@@ -1125,6 +1132,7 @@ async fn debt_needs_pin_or_inn(pool: PgPool) {
             &w,
             vec![line("piece", w.filter, 1, 1_000)],
             vec![PaymentReq {
+                account_id: None,
                 method: "debt".into(),
                 amount_tyiyn: 1_000,
                 grams: None,
@@ -1721,6 +1729,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
     let pay = |list: &[(&str, i64)]| -> Vec<PaymentReq> {
         list.iter()
             .map(|(m, a)| PaymentReq {
+                account_id: None,
                 method: (*m).into(),
                 amount_tyiyn: *a,
                 grams: None,
@@ -1821,6 +1830,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
 fn pay(list: &[(&str, i64)]) -> Vec<PaymentReq> {
     list.iter()
         .map(|(m, a)| PaymentReq {
+            account_id: None,
             method: (*m).into(),
             amount_tyiyn: *a,
             grams: None,
@@ -3859,6 +3869,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         &w,
         vec![line("piece", w.filter, 1, 50_000)],
         vec![PaymentReq {
+            account_id: None,
             method: "debt".into(),
             amount_tyiyn: 50_000,
             grams: None,
@@ -3871,6 +3882,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         &w,
         vec![line("piece", w.filter, 1, 50_000)],
         vec![PaymentReq {
+            account_id: None,
             method: "debt".into(),
             amount_tyiyn: 50_000,
             grams: None,
@@ -6105,7 +6117,7 @@ async fn bot_draft_refuses_ambiguous_and_impossible(pool: PgPool) {
     assert!(r.follow.is_none());
     let told = last_tool_result(&fake);
     assert!(
-        told.contains("в кассе столько нет") && told.contains("В «Касса» сейчас 100 с"),
+        told.contains("на счёте «Касса» только 100 с") && told.contains("В «Касса» сейчас 100 с"),
         "{told}"
     );
 
@@ -7717,6 +7729,7 @@ async fn battery_price(pool: &PgPool, w: &World, per_kg: i64) {
 
 fn battery(grams: i64, amount: i64) -> PaymentReq {
     PaymentReq {
+        account_id: None,
         method: "battery".into(),
         amount_tyiyn: amount,
         grams: Some(grams),
@@ -7920,6 +7933,7 @@ async fn battery_payment_returns_by_weight_not_cash(pool: PgPool) {
     // Вторая половина: 4 400 с деньгами и 600 с аккумулятором — 12 кг уходят со склада.
     let mut back = cash(440_000);
     back.push(PaymentReq {
+        account_id: None,
         method: "battery".into(),
         amount_tyiyn: 60_000,
         grams: None,
@@ -7952,6 +7966,7 @@ async fn battery_payment_returns_by_weight_not_cash(pool: PgPool) {
     .unwrap();
     let mut back = cash(940_000);
     back.push(PaymentReq {
+        account_id: None,
         method: "battery".into(),
         amount_tyiyn: 60_000,
         grams: None,
@@ -8657,6 +8672,7 @@ mod point_feedback_stock {
                 method: Some(method.into()),
                 comment: String::new(),
                 receipt_id,
+                account_id: None,
             },
         )
         .await;
@@ -9121,4 +9137,98 @@ async fn debt_reminders_three_days_before_and_on_due_date_once(pool: PgPool) {
     notify_pass(&mut conn, &api, 12, true).await.unwrap();
     assert_eq!(fake.texts(chat).len(), 2);
     assert!(fake.texts(chat + 1).is_empty());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
+    // Бот владельца: «Обзор счетов» — все счета с типом и остатком, итог наличными и безналом,
+    // архивные — отдельно; «Счёт» — по названию безналичного счёта (SPEC-28 §5, ADR-076).
+    use avtodom_server::api::cash::{
+        AccountCreateReq, AccountPatch, create_account_tx, update_account_tx,
+    };
+    let w = seed(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    let optima = create_account_tx(
+        &mut tx,
+        &w.owner,
+        AccountCreateReq {
+            op_id: Uuid::now_v7(),
+            name: "ОПТИМА БИЗНЕС".into(),
+            kind: "bank".into(),
+            allow_negative: true,
+            owner_only: false,
+        },
+    )
+    .await
+    .unwrap();
+    let lead = create_account_tx(
+        &mut tx,
+        &w.owner,
+        AccountCreateReq {
+            op_id: Uuid::now_v7(),
+            name: "СВИНЕЦ".into(),
+            kind: "other".into(),
+            allow_negative: false,
+            owner_only: false,
+        },
+    )
+    .await
+    .unwrap();
+    update_account_tx(
+        &mut tx,
+        &w.owner,
+        lead.id,
+        AccountPatch {
+            active: Some(false),
+            ..AccountPatch::default()
+        },
+    )
+    .await
+    .unwrap();
+    // Администратор счета не правит.
+    assert!(matches!(
+        update_account_tx(&mut tx, &w.admin, optima.id, AccountPatch::default()).await,
+        Err(AppError::Forbidden)
+    ));
+    tx.commit().await.unwrap();
+    let today = chrono::Utc::now().date_naive();
+    let mut conn = pool.acquire().await.unwrap();
+    let text = avtodom_server::api::bot_reports::money(
+        &mut conn,
+        &w.owner.user,
+        "accounts",
+        None,
+        None,
+        (today, today),
+    )
+    .await
+    .unwrap();
+    assert!(
+        text.contains("— ОПТИМА БИЗНЕС: 0 с (безналичный, минус разрешён)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("— Сейф владельца: 0 с (наличный, только владелец)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("— Счёт: 0 с (безналичный, основной)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Итого: наличные 0 с · безнал 0 с · всего 0 с"),
+        "{text}"
+    );
+    assert!(text.contains("В архиве: СВИНЕЦ"), "{text}");
+    let text = avtodom_server::api::bot_reports::money(
+        &mut conn,
+        &w.owner.user,
+        "bank",
+        Some("оптима бизнес"),
+        None,
+        (today, today),
+    )
+    .await
+    .unwrap();
+    assert!(text.starts_with("ОПТИМА БИЗНЕС"), "{text}");
 }

@@ -385,18 +385,9 @@ pub async fn post_expense_tx(
             Some(id) => id,
             None => cash::default_account(&mut *conn, branch_id).await?,
         };
-        let acc = sqlx::query!(
-            "select kind, owner_only from cash_accounts where id = $1 and branch_id = $2",
-            id,
-            branch_id
-        )
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or_else(|| invalid("касса не найдена"))?;
-        // Администратор тратит только из кассы смены: счёт и сейфы — владельцу.
-        if !owner && (acc.kind != "register" || acc.owner_only) {
-            return Err(AppError::Forbidden);
-        }
+        // Администратор платит только из кассы смены: счета и сейфы — владельцу; архивный
+        // счёт не выбирается (ADR-037, ADR-076).
+        cash::check_pay_account(&mut *conn, &ctx.user, id).await?;
         account_id = Some(id);
     }
 

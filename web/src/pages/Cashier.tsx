@@ -22,12 +22,13 @@ import { Icon } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } from '../components/ui'
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
-import { enqueueSale, keepInQueue, markPending, markSent, removeSale, requestPersistentStorage } from '../lib/offline'
+import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
+import { bankChoices } from '../lib/accounts'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
-import { PAYMENT_LABELS, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
+import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -44,6 +45,19 @@ interface CartLine {
 type PayMode = PaymentMethod | 'mixed'
 
 const CASHIER_KEY = 'avtodom.cashier_id'
+/** Банк для карты и перевода, выбранный на этом устройстве (ADR-076). */
+const BANK_KEY = 'avtodom.bank_id'
+
+type BankChoice = Pick<CashAccount, 'id' | 'name' | 'is_default'>
+
+/** Безналичные счета: с сервера, без связи — из снимка кассы. */
+async function loadBanks(): Promise<BankChoice[]> {
+  try {
+    return bankChoices(await get<CashAccount[]>('/cash/accounts'))
+  } catch {
+    return (await readSnapshot())?.bank_accounts ?? []
+  }
+}
 
 function remembered(key: string): string {
   try {
@@ -175,6 +189,11 @@ const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker
 
 export default function Cashier() {
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
+  // Куда идут карта и QR: выбор кассира, по умолчанию основной счёт (ADR-076).
+  const banks = useLoad(loadBanks, [])
+  const [bankPick, setBankPick] = useState(() => remembered(BANK_KEY))
+  const bankList = banks.data ?? []
+  const bankId = bankList.some((b) => b.id === bankPick) ? bankPick : (bankList[0]?.id ?? '')
   // Плашка смены: продавать можно и без неё, но деньги потом не с чем сверить (SPEC-05).
   // Без связи остаётся последняя известная смена: касса не начнёт спрашивать кассира посреди смены.
   const lastShift = useRef<Shift | null | undefined>(undefined)
@@ -304,18 +323,22 @@ export default function Cashier() {
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
 
-  const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number }[] | null => {
-    if (payMode !== 'mixed') return due > 0 ? [{ method: payMode, amount_tyiyn: due }] : []
-    const list: { method: PaymentMethod; amount_tyiyn: number }[] = []
+  // Карта и QR — с выбранным банком; без выбора сервер возьмёт основной счёт.
+  const withBank = (method: PaymentMethod, amount_tyiyn: number): { method: PaymentMethod; amount_tyiyn: number; account_id?: string } =>
+    (method === 'card' || method === 'transfer') && bankId ? { method, amount_tyiyn, account_id: bankId } : { method, amount_tyiyn }
+  const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] | null => {
+    if (payMode !== 'mixed') return due > 0 ? [withBank(payMode, due)] : []
+    const list: { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] = []
     for (const m of ['cash', 'card', 'transfer', 'debt'] as const) {
       if (!split[m].trim()) continue
       const v = parseSom(split[m])
       if (v === null) return null
-      if (v > 0) list.push({ method: m, amount_tyiyn: v })
+      if (v > 0) list.push(withBank(m, v))
     }
     return list
   })()
-  const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number }[] | null = moneyPayments && [
+  const noncashInCheck = (moneyPayments ?? []).some((p) => p.method === 'card' || p.method === 'transfer')
+  const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number; account_id?: string }[] | null = moneyPayments && [
     ...moneyPayments,
     ...(bonusAmount > 0 ? [{ method: 'bonus' as const, amount_tyiyn: bonusAmount }] : []),
     ...(batteryAmt > 0 && batteryGrams ? [{ method: 'battery' as const, amount_tyiyn: batteryAmt, grams: batteryGrams }] : []),
@@ -1313,6 +1336,25 @@ export default function Cashier() {
                 </Button>
               </div>
               <ErrorBox error={innSave.error} />
+            </div>
+          )}
+          {bankList.length > 1 && (payMode === 'card' || payMode === 'transfer' || (payMode === 'mixed' && noncashInCheck)) && (
+            <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="pay-bank">
+              <span className="text-slate-600">Банк:</span>
+              {bankList.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  aria-pressed={bankId === b.id}
+                  className={`min-h-9 rounded-md border px-3 py-1 ${bankId === b.id ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:border-sky-500'}`}
+                  onClick={() => {
+                    setBankPick(b.id)
+                    remember(BANK_KEY, b.id)
+                  }}
+                >
+                  {b.name}
+                </button>
+              ))}
             </div>
           )}
           {payMode === 'mixed' && (

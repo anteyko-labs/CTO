@@ -8,6 +8,7 @@ import { formatDateTime, formatSom, parseSom, todayBishkek } from '../lib/format
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { CashAccount, Expense, ExpenseArticle } from '../lib/types'
+import { isTill } from '../lib/accounts'
 
 /** Расходы точки: из кассы, со счёта или не из денег точки (SPEC-06). */
 export default function Expenses() {
@@ -98,7 +99,7 @@ export default function Expenses() {
             >
               <option value="">Касса</option>
               {(accounts.data ?? [])
-                .filter((a) => !a.is_default)
+                .filter((a) => !isTill(a))
                 .map((a) => (
                   <option key={a.id} value={a.id} disabled={!owner}>
                     {a.name}

@@ -1102,6 +1102,10 @@ pub struct RepaymentReq {
     /// оплата закрывает самые старые долги (ADR-073).
     #[serde(default)]
     pub receipt_id: Option<Uuid>,
+    /// Касса или счёт (ADR-076): наличные — касса (администратору — только касса смены), карта
+    /// и перевод — безналичный счёт. Без него — касса смены или основной безналичный счёт.
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1130,17 +1134,36 @@ async fn post_repayment(
 /// мимо касс — никакой (`None`). Одна функция и для проведения, и для черновика бота (ADR-070).
 pub(crate) async fn repayment_account(
     conn: &mut PgConnection,
-    branch_id: Uuid,
+    user: &crate::auth::CurrentUser,
     method: &str,
+    account: Option<Uuid>,
 ) -> AppResult<Option<Uuid>> {
-    match method {
-        "cash" => Ok(Some(
+    let branch_id = user.branch_id;
+    match (method, account) {
+        ("cash", None) => Ok(Some(
             crate::api::cash::default_account(&mut *conn, branch_id).await?,
         )),
-        "card" | "transfer" => crate::api::cash::bank_account(&mut *conn, branch_id)
+        // Наличные в выбранную кассу: владелец — в любую наличную, администратор — только в
+        // кассу смены (ADR-076).
+        ("cash", Some(id)) => {
+            let kind = crate::api::cash::check_pay_account(&mut *conn, user, id).await?;
+            if kind == "bank" {
+                return Err(invalid(
+                    "наличные — в кассу или сейф, не на безналичный счёт",
+                ));
+            }
+            Ok(Some(id))
+        }
+        ("card" | "transfer", None) => crate::api::cash::bank_account(&mut *conn, branch_id)
             .await?
-            .ok_or_else(|| invalid("нет кассы «Счёт»"))
+            .ok_or_else(|| invalid("нет безналичного счёта"))
             .map(Some),
+        ("card" | "transfer", Some(id)) => {
+            let mut ignored = Vec::new();
+            crate::api::cash::sale_bank_account(&mut *conn, user, Some(id), false, &mut ignored)
+                .await
+                .map(Some)
+        }
         _ => Ok(None),
     }
 }
@@ -1250,7 +1273,9 @@ pub async fn post_repayment_tx(
         "debt_repayment"
     };
     // Касса и комиссия — те же функции, что показывает черновик бота (SPEC-24, ADR-070).
-    if let Some(account_id) = repayment_account(&mut *conn, branch_id, &method).await? {
+    if let Some(account_id) =
+        repayment_account(&mut *conn, &ctx.user, &method, req.account_id).await?
+    {
         if method == "cash" {
             crate::api::cash::require_open_shift(&mut *conn, branch_id, account_id).await?;
         }

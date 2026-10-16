@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select not exists (select 1 from cash_accounts\n                                  where branch_id = $1 and kind = 'bank' and is_default) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "40cc7270cc04845644ba5f95fd33e1088818dc805e9bd43174f7ae6a034bb6a6"
+}

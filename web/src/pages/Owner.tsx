@@ -329,6 +329,11 @@ export function OwnerDashboard() {
                 <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500">
                   картой {formatSom(data.noncash.card_tyiyn)} · QR {formatSom(data.noncash.transfer_tyiyn)}
                 </div>
+                {(data.noncash.by_account ?? []).length > 1 && (
+                  <div className="text-xs tabular-nums text-slate-500" data-testid="noncash-banks">
+                    {(data.noncash.by_account ?? []).map((b) => `${b.name} ${formatSom(b.total_tyiyn)}`).join(' · ')}
+                  </div>
+                )}
               </Tile>
             </Link>
             <Link to="/debts" className="rounded-md hover:bg-slate-50">

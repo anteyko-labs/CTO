@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select kind, owner_only, active from cash_accounts where id = $1 and branch_id = $2",
+  "query": "select kind, owner_only, active, is_default from cash_accounts where id = $1 and branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,11 @@
         "ordinal": 2,
         "name": "active",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_default",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -28,8 +33,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "67102c823b5b06afdd537a8af5a8fdccad3eae850dcd962abbf2e803a5e92436"
+  "hash": "94a2f8561a522f5ff1ca50a0049fcff0d3aac8508ebbb5635e14f6c0839a65ff"
 }

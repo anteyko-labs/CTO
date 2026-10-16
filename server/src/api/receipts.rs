@@ -361,20 +361,8 @@ async fn resolve_paid_from(
         Some("outside") => return Err(AppError::Forbidden),
         Some(s) => Uuid::parse_str(s).map_err(|_| invalid("неизвестная касса"))?,
     };
-    let acc = sqlx::query!(
-        "select kind, owner_only, active from cash_accounts where id = $1 and branch_id = $2",
-        id,
-        branch_id
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or_else(|| invalid("касса не найдена"))?;
-    if !acc.active {
-        return Err(invalid("касса отключена"));
-    }
-    if !owner && (acc.kind != "register" || acc.owner_only) {
-        return Err(AppError::Forbidden);
-    }
+    // Администратор — только из кассы смены, архивный счёт не выбирается (ADR-076).
+    crate::api::cash::check_pay_account(conn, &ctx.user, id).await?;
     Ok(PaidFrom::Account(id))
 }
 

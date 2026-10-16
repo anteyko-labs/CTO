@@ -12,6 +12,7 @@ import { Icon, type IconName } from './components/icons'
 import { get } from './lib/api'
 import SettingsHub from './pages/SettingsHub'
 import Cashier from './pages/Cashier'
+import Accounts from './pages/Accounts'
 import Categories from './pages/Categories'
 import ClientCard from './pages/ClientCard'
 import Bank from './pages/Bank'
@@ -75,6 +76,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/payroll', label: 'Расчёт', icon: 'payroll' },
       { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
       { to: '/income', label: 'Поступления', icon: 'incoming' },
+      { to: '/accounts', label: 'Счета', icon: 'wallet' },
       { to: '/bank', label: 'Счёт', icon: 'expenses', ownerOnly: true },
     ],
   },
@@ -266,6 +268,7 @@ function Shell() {
           {owner && <Route path="/profit" element={<Profit />} />}
           {owner && <Route path="/bank" element={<Bank />} />}
           <Route path="/income" element={<Income />} />
+          <Route path="/accounts" element={<Accounts />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

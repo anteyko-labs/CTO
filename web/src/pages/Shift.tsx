@@ -9,6 +9,7 @@ import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../li
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { MOVEMENT_LABELS } from '../lib/income'
+import { isTill } from '../lib/accounts'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
 import type { CashAccount, CashMovement, Employee, PayrollRow, Shift as ShiftRow } from '../lib/types'
 
@@ -198,6 +199,8 @@ export default function Shift() {
       } else {
         await post('/cash/movements', {
           op_id: money.opId,
+          // Владелец вносит и изымает на любом счёте; без выбора — касса смены (ADR-076).
+          account_id: money.from || undefined,
           kind: money.kind,
           amount_tyiyn: sum,
           comment: money.comment,
@@ -232,7 +235,7 @@ export default function Shift() {
   }
 
   // Администратор переводит только из кассы смены (SPEC-05, права).
-  const fromAccounts = owner ? accs : accs.filter((a) => a.kind === 'register')
+  const fromAccounts = owner ? accs : accs.filter((a) => isTill(a))
   const openMissing = missingWithFocus([Boolean(open?.cashier), 'кассира', '#shift-cashier'])
   // Выплаты при закрытии уменьшают «должно быть»: пересчитывают то, что осталось после них.
   const payLines = closing?.pay ?? []
@@ -328,6 +331,8 @@ export default function Shift() {
               <Row label="Наличными" value={shift.cash_sales_tyiyn} />
               <Row label="Картой" value={shift.card_tyiyn} />
               <Row label="QR" value={shift.transfer_tyiyn} />
+              {(shift.bank_split ?? []).length > 1 &&
+                (shift.bank_split ?? []).map((b) => <Row key={b.account_id} label={`  на «${b.name}»`} value={b.total_tyiyn} />)}
               {shift.debt_tyiyn !== 0 && <Row label="В долг" value={shift.debt_tyiyn} />}
               {(shift.bonus_tyiyn ?? 0) !== 0 && <Row label="Баллами" value={shift.bonus_tyiyn ?? 0} />}
               {(shift.battery_tyiyn ?? 0) !== 0 && <Row label="Аккумуляторами" value={shift.battery_tyiyn ?? 0} />}
@@ -534,6 +539,15 @@ export default function Shift() {
             <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700" data-testid="close-noncash">
               Безнал за смену: картой <b className="tabular-nums">{formatSom(shift.card_tyiyn)}</b> · QR{' '}
               <b className="tabular-nums">{formatSom(shift.transfer_tyiyn)}</b>
+              {(shift.bank_split ?? []).length > 1 && (
+                <ul className="mt-1 text-xs" data-testid="close-noncash-banks">
+                  {(shift.bank_split ?? []).map((b) => (
+                    <li key={b.account_id}>
+                      {b.name}: картой {formatSom(b.card_tyiyn)} · QR {formatSom(b.transfer_tyiyn)}
+                    </li>
+                  ))}
+                </ul>
+              )}
               <div className="text-xs text-slate-500">В кассе этих денег нет — сверьте с терминалом и выпиской банка.</div>
             </div>
             <div className="text-sm text-slate-600">
@@ -685,6 +699,20 @@ export default function Shift() {
                   </select>
                 </Field>
               </div>
+            )}
+            {money.kind !== 'transfer' && owner && accs.length > 1 && (
+              <Field label="Касса или счёт">
+                <select id="money-account" value={money.from} onChange={(e) => setMoney({ ...money, from: e.target.value })}>
+                  <option value="">Касса смены</option>
+                  {accs
+                    .filter((a) => !isTill(a))
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                </select>
+              </Field>
             )}
             <Field label="Сумма, с" required>
               <input id="money-sum" autoFocus inputMode="decimal" value={money.sum} onChange={(e) => setMoney({ ...money, sum: e.target.value })} />

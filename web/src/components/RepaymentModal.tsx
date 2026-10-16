@@ -6,7 +6,8 @@ import { useUser } from '../lib/auth'
 import { formatDate, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
-import type { OpenDebt, OpenDebts, Party, SupplierInvoice, SupplierInvoices } from '../lib/types'
+import type { CashAccount, OpenDebt, OpenDebts, Party, SupplierInvoice, SupplierInvoices } from '../lib/types'
+import { bankChoices, isBank, isTill } from '../lib/accounts'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 type Method = 'cash' | 'card' | 'transfer' | 'outside'
@@ -20,8 +21,8 @@ const METHOD_LABELS: Record<Method, string> = {
 
 const METHOD_HINTS: Record<Method, string> = {
   cash: 'Деньги в кассе смены: смена должна быть открыта.',
-  card: 'Оплата картой через терминал: деньги на «Счёт», банк возьмёт 0,5 %.',
-  transfer: 'Оплата QR через терминал: деньги на «Счёт», банк возьмёт 0,5 %.',
+  card: 'Оплата картой через терминал: деньги на безналичный счёт, банк возьмёт комиссию.',
+  transfer: 'Оплата QR через терминал: деньги на безналичный счёт, банк возьмёт комиссию.',
   outside: 'Мимо денег точки: например, владелец заплатил из своих.',
 }
 
@@ -57,6 +58,14 @@ export function RepaymentModal({
   const owed = invoice ? invoice.left_tyiyn : Math.abs(party.balance_tyiyn)
   const [sum, setSum] = useState(owed > 0 ? somInput(owed) : '')
   const [method, setMethod] = useState<Method>('cash')
+  // Касса или счёт (ADR-076): карта и QR — безналичный счёт, наличные у владельца — любая касса.
+  const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
+  const [accountPick, setAccountPick] = useState('')
+  const accountOptions = (accounts.data ?? []).filter((a) =>
+    method === 'card' || method === 'transfer' ? bankChoices([a]).length > 0 : method === 'cash' && !isBank(a) && (owner || isTill(a)),
+  )
+  const accountOrdered = method === 'cash' ? accountOptions : bankChoices(accountOptions)
+  const accountId = accountOrdered.some((a) => a.id === accountPick) ? accountPick : (accountOrdered[0]?.id ?? '')
   const [comment, setComment] = useState('')
   const [done, setDone] = useState<{ paid: number; before: number; after: number } | null>(null)
   const { busy, error, run } = useAction()
@@ -84,6 +93,7 @@ export function RepaymentModal({
         party_id: party.id,
         amount_tyiyn: value,
         method,
+        account_id: method !== 'outside' && accountId ? accountId : undefined,
         comment,
         receipt_id: invoice?.receipt_id,
       })
@@ -171,6 +181,17 @@ export function RepaymentModal({
                   </button>
                 ))}
               </div>
+              {accountOrdered.length > 1 && (
+                <Field label={method === 'cash' ? 'Касса' : 'Безналичный счёт'}>
+                  <select id="repay-account" value={accountId} onChange={(e) => setAccountPick(e.target.value)}>
+                    {accountOrdered.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
               <div className="text-xs text-slate-500">
                 {METHOD_HINTS[method]} В прибыль оплата долга не идёт: выручка и прибыль по чеку учтены в день продажи.
               </div>

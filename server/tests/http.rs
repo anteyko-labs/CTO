@@ -6616,3 +6616,471 @@ async fn mixed_sale_cash_and_debt_shows_in_repayment_window(pool: PgPool) {
     assert_eq!(items[0]["overdue"], false);
     assert_eq!(open["overdue_tyiyn"], 0);
 }
+
+/// Сумма движений каждой кассы равна её остатку (инвариант 6): ни одной расходящейся кассы.
+async fn balances_match_movements(pool: &PgPool) {
+    let bad: i64 = sqlx::query_scalar(
+        "select count(*) from cash_accounts a where a.balance_tyiyn <>
+           coalesce((select sum(m.amount_tyiyn) from cash_movements m where m.account_id = a.id), 0)",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(bad, 0);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
+    // «Обзор счетов» (SPEC-28 §5, ADR-076): счета заводит и правит только владелец, архив — только
+    // с нулевым остатком, «отрицательный баланс» проверяется на каждом расходе.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let req = |cookie: &str, method: &str, uri: &str, body: Option<Value>| {
+        let app = app.clone();
+        let (cookie, method, uri) = (cookie.to_string(), method.to_string(), uri.to_string());
+        async move { call(&app, &method, &uri, Some(&cookie), body).await }
+    };
+    let create = |cookie: &str, name: &str, kind: &str, negative: bool, owner_only: bool| {
+        req(
+            cookie,
+            "POST",
+            "/api/v1/cash/accounts",
+            Some(json!({ "op_id": Uuid::now_v7(), "name": name, "kind": kind,
+                         "allow_negative": negative, "owner_only": owner_only })),
+        )
+    };
+    // Администратор счета не заводит и не правит.
+    assert_eq!(
+        create(&admin, "Оптима", "bank", false, false).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (till, bank, _) = accounts_of(&app, &owner).await;
+    assert_eq!(
+        req(
+            &admin,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{bank}"),
+            Some(json!({ "name": "Банк" }))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, _, optima) = create(&owner, "ОПТИМА БИЗНЕС", "bank", false, false).await;
+    assert_eq!(s, StatusCode::OK, "{optima}");
+    assert_eq!(optima["is_default"], false);
+    assert_eq!(optima["allow_negative"], false);
+    // Второй с тем же названием — 409; вторую кассу смены не заводят — 422.
+    assert_eq!(
+        create(&owner, "ОПТИМА БИЗНЕС", "bank", false, false)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        create(&owner, "Касса-3", "register", false, false).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (_, _, lead) = create(&owner, "СВИНЕЦ", "other", false, false).await;
+    let (_, _, cabinet) = create(&owner, "Кабинет касса", "other", true, true).await;
+    let lead = lead["id"].as_str().unwrap().to_string();
+    let cabinet = cabinet["id"].as_str().unwrap().to_string();
+
+    // Администратор видит счета без «только владелец»; владелец — все.
+    let (_, _, seen) = req(&admin, "GET", "/api/v1/cash/accounts", None).await;
+    let names = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(names(&seen).contains(&"СВИНЕЦ".to_string()));
+    assert!(!names(&seen).contains(&"Кабинет касса".to_string()));
+    let (_, _, all) = req(&owner, "GET", "/api/v1/cash/accounts", None).await;
+    assert!(names(&all).contains(&"Кабинет касса".to_string()));
+
+    // Отрицательный баланс не разрешён — 422 с остатком; разрешён — уходит ниже нуля.
+    let out = |acc: &str, amount: i64| {
+        req(
+            &owner,
+            "POST",
+            "/api/v1/cash/movements",
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "account_id": acc, "kind": "cash_out",
+                         "amount_tyiyn": amount, "comment": "проверка" }),
+            ),
+        )
+    };
+    let (s, _, e) = out(&lead, 10_000).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        e.to_string().contains("на счёте «СВИНЕЦ» только 0 с"),
+        "{e}"
+    );
+    let (s, _, e) = out(&cabinet, 10_000).await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    assert_eq!(balance_of(&pool, &cabinet).await, -10_000);
+    // Перемещение из счёта с разрешённым минусом проходит, в «СВИНЕЦ» — поступление.
+    let (s, _, e) = req(
+        &owner,
+        "POST",
+        "/api/v1/cash/transfers",
+        Some(json!({ "op_id": Uuid::now_v7(), "from_account_id": cabinet, "to_account_id": lead, "amount_tyiyn": 5_000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    assert_eq!(balance_of(&pool, &cabinet).await, -15_000);
+    // Касса смены — по-прежнему не ниже нуля, и разрешить ей минус нельзя.
+    assert_eq!(
+        req(
+            &owner,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{till}"),
+            Some(json!({ "allow_negative": true }))
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Архив — только с нулевым остатком; основной счёт и кассу смены в архив не убрать.
+    let archive = |acc: &str| {
+        req(
+            &owner,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{acc}"),
+            Some(json!({ "active": false })),
+        )
+    };
+    let (s, _, e) = archive(&lead).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(e.to_string().contains("остаток 50 с"), "{e}");
+    assert_eq!(archive(&till).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(archive(&bank).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = req(
+        &owner,
+        "POST",
+        "/api/v1/cash/transfers",
+        Some(json!({ "op_id": Uuid::now_v7(), "from_account_id": lead, "to_account_id": cabinet, "amount_tyiyn": 5_000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, archived) = archive(&lead).await;
+    assert_eq!(s, StatusCode::OK, "{archived}");
+    assert_eq!(archived["active"], false);
+    // Архивный — не в списке выбора, но в обзоре с архивом и с историей.
+    let (_, _, active) = req(&owner, "GET", "/api/v1/cash/accounts", None).await;
+    assert!(!names(&active).contains(&"СВИНЕЦ".to_string()));
+    let (_, _, with_archive) =
+        req(&owner, "GET", "/api/v1/cash/accounts?archived=true", None).await;
+    assert!(names(&with_archive).contains(&"СВИНЕЦ".to_string()));
+    let (s, _, moves) = req(
+        &owner,
+        "GET",
+        &format!("/api/v1/cash/accounts/{lead}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(moves.as_array().unwrap().len(), 2);
+    // Из архивного не платят.
+    assert_eq!(out(&lead, 1).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Правка названия — в журнал «было / стало»; основной безналичный счёт меняется выбором другого.
+    let opt = optima["id"].as_str().unwrap().to_string();
+    let (s, _, renamed) = req(
+        &owner,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{opt}"),
+        Some(json!({ "name": "Оптима", "is_default": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["is_default"], true);
+    let (_, _, accs) = req(&owner, "GET", "/api/v1/cash/accounts", None).await;
+    let old_bank = accs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == json!(bank))
+        .unwrap()
+        .clone();
+    assert_eq!(old_bank["is_default"], false);
+    let audit: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'cash.account_update' and entity_id = $1::uuid order by created_at desc limit 1",
+    )
+    .bind(&opt)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["before"]["name"], "ОПТИМА БИЗНЕС");
+    assert_eq!(audit["after"]["name"], "Оптима");
+    assert_eq!(audit["changes"]["is_default"]["new"], true);
+    // «Только владелец» основному счёту нельзя; снять «основной» напрямую — тоже.
+    assert_eq!(
+        req(
+            &owner,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{opt}"),
+            Some(json!({ "owner_only": true }))
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        req(
+            &owner,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{opt}"),
+            Some(json!({ "is_default": false }))
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Итоги истории за период сходятся с остатком: на конец = сумма движений.
+    let (s, _, sum) = req(
+        &owner,
+        "GET",
+        &format!("/api/v1/cash/accounts/{cabinet}/summary"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sum}");
+    assert_eq!(sum["closing_tyiyn"], balance_of(&pool, &cabinet).await);
+    // Сейф владельца и его история администратору не видны.
+    assert_eq!(
+        req(
+            &admin,
+            "GET",
+            &format!("/api/v1/cash/accounts/{cabinet}/summary"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    balances_match_movements(&pool).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: PgPool) {
+    // Кассир выбирает банк для карты и перевода (ADR-076): деньги и комиссия — на этот счёт,
+    // возврат — с него же; чек без сети с архивным счётом ложится на основной с отметкой владельцу.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let req = |cookie: &str, method: &str, uri: &str, body: Option<Value>| {
+        let app = app.clone();
+        let (cookie, method, uri) = (cookie.to_string(), method.to_string(), uri.to_string());
+        async move { call(&app, &method, &uri, Some(&cookie), body).await }
+    };
+    let (s, _, _) = req(
+        &owner,
+        "POST",
+        "/api/v1/receipts",
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
+                     "lines": [{ "product_id": item, "qty": 20, "cost_tyiyn": 10_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, bank, _) = accounts_of(&app, &owner).await;
+    let new_bank = |name: &str, owner_only: bool| {
+        req(
+            &owner,
+            "POST",
+            "/api/v1/cash/accounts",
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "name": name, "kind": "bank", "owner_only": owner_only }),
+            ),
+        )
+    };
+    let (_, _, optima) = new_bank("Оптима", false).await;
+    let optima = optima["id"].as_str().unwrap().to_string();
+    let sale = |pays: Value, qty: i64| {
+        json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                "lines": [{ "kind": "piece", "product_id": item, "qty": qty, "unit_price_tyiyn": 50_000 }],
+                "payments": pays })
+    };
+    // Картой 100 000 на «Оптиму»: комиссия 0,5 % — там же, «Счёт» не тронут.
+    let (s, _, sold) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(
+            json!([{ "method": "card", "amount_tyiyn": 100_000, "account_id": optima }]),
+            2,
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sold}");
+    assert_eq!(sold["payments"][0]["account_id"], json!(optima));
+    assert_eq!(sold["payments"][0]["account_name"], "Оптима");
+    assert_eq!(balance_of(&pool, &optima).await, 99_500);
+    assert_eq!(balance_of(&pool, &bank).await, 0);
+    // Перевод без выбора — на основной «Счёт».
+    let (s, _, _) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(
+            json!([{ "method": "transfer", "amount_tyiyn": 50_000 }]),
+            1,
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(balance_of(&pool, &bank).await, 49_750);
+
+    // «Счёт» по выбранному банку и по основному; сводка и смена — по счетам.
+    let (s, _, b) = req(
+        &owner,
+        "GET",
+        &format!("/api/v1/cash/bank?account_id={optima}"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["name"], "Оптима");
+    assert_eq!(b["card"]["sales_tyiyn"], 100_000);
+    assert_eq!(b["transfer"]["sales_tyiyn"], 0);
+    assert_eq!(b["fee_tyiyn"], 500);
+    assert_eq!(b["closing_tyiyn"], 99_500);
+    let (_, _, main) = req(&owner, "GET", "/api/v1/cash/bank", None).await;
+    assert_eq!(main["card"]["sales_tyiyn"], 0);
+    assert_eq!(main["transfer"]["sales_tyiyn"], 50_000);
+    let (_, _, dash) = req(&owner, "GET", "/api/v1/owner/dashboard", None).await;
+    let split = dash["noncash"]["by_account"].as_array().unwrap();
+    assert_eq!(split.len(), 2, "{dash}");
+    let of = |name: &str| split.iter().find(|a| a["name"] == name).unwrap().clone();
+    assert_eq!(of("Оптима")["card_tyiyn"], 100_000);
+    assert_eq!(of("Оптима")["fee_tyiyn"], 500);
+    assert_eq!(of("Счёт")["transfer_tyiyn"], 50_000);
+    assert_eq!(dash["noncash"]["total_tyiyn"], 150_000);
+    let (_, _, income) = req(&owner, "GET", "/api/v1/reports/income", None).await;
+    let flows = income["accounts"].as_array().unwrap();
+    let flow = flows.iter().find(|a| a["name"] == "Оптима").unwrap();
+    assert_eq!(flow["closing_tyiyn"], 99_500);
+
+    // Возврат на карту — с того счёта, куда пришли деньги, даже если касса прислала другой;
+    // комиссия возвращается туда же.
+    let (s, _, back) = req(
+        &admin,
+        "POST",
+        &format!("/api/v1/sales/{}/return", sold["id"].as_str().unwrap()),
+        Some(json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                     "payments": [{ "method": "card", "amount_tyiyn": 50_000, "account_id": bank }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert_eq!(back["payments"][0]["account_id"], json!(optima));
+    assert_eq!(balance_of(&pool, &optima).await, 99_500 - 50_000 + 250);
+    assert_eq!(balance_of(&pool, &bank).await, 49_750);
+
+    // Погашение долга картой на выбранный банк — с комиссией на нём же.
+    let (_, _, party) = req(
+        &owner,
+        "POST",
+        "/api/v1/parties",
+        Some(json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" })),
+    )
+    .await;
+    let pid = party["id"].as_str().unwrap().to_string();
+    let (s, _, _) = req(
+        &owner,
+        "POST",
+        "/api/v1/debts/adjust",
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 100_000, "comment": "из тетради" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let before = balance_of(&pool, &optima).await;
+    let (s, _, r) = req(
+        &admin,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 20_000,
+                     "method": "card", "account_id": optima }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(balance_of(&pool, &optima).await, before + 20_000 - 100);
+
+    // Счёт «только владелец» администратор выбрать не может; архивный — тоже.
+    let (_, _, private) = new_bank("Банк владельца", true).await;
+    let private = private["id"].as_str().unwrap().to_string();
+    let (s, _, e) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(
+            json!([{ "method": "card", "amount_tyiyn": 50_000, "account_id": private }]),
+            1,
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    let (_, _, gone) = new_bank("МБИЗНЕС", false).await;
+    let gone = gone["id"].as_str().unwrap().to_string();
+    let (s, _, _) = req(
+        &owner,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{gone}"),
+        Some(json!({ "active": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(
+            json!([{ "method": "card", "amount_tyiyn": 50_000, "account_id": gone }]),
+            1,
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    // Чек без сети с архивным счётом не теряется: деньги — на основной, владельцу — причина.
+    let mut offline = sale(
+        json!([{ "method": "card", "amount_tyiyn": 50_000, "account_id": gone }]),
+        1,
+    );
+    offline["offline"] = json!(true);
+    offline["client_time"] =
+        json!((chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
+    let main_before = balance_of(&pool, &bank).await;
+    let (s, _, off) = req(&admin, "POST", "/api/v1/sales", Some(offline)).await;
+    assert_eq!(s, StatusCode::OK, "{off}");
+    assert_eq!(off["payments"][0]["account_id"], json!(bank));
+    assert_eq!(balance_of(&pool, &bank).await, main_before + 50_000 - 250);
+    assert_eq!(balance_of(&pool, &gone).await, 0);
+    let reasons: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'sale.offline_bypass' and entity_id = $1::uuid",
+    )
+    .bind(off["id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        reasons.to_string().contains("счёт «МБИЗНЕС» в архиве"),
+        "{reasons}"
+    );
+    // Снимок кассы без сети знает действующие безналичные счета, без архивных и чужих.
+    let (_, _, snap) = req(&admin, "GET", "/api/v1/offline/snapshot", None).await;
+    let banks: Vec<&str> = snap["bank_accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(banks, vec!["Счёт", "Оптима"]);
+    balances_match_movements(&pool).await;
+}

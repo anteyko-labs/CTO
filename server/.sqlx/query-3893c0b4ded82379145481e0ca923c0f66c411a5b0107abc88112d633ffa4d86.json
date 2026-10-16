@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id from cash_accounts where branch_id = $1 and is_default and active order by created_at limit 1",
+  "query": "select id from cash_accounts where branch_id = $1 and kind = 'bank' and active\n           order by is_default desc, created_at limit 1",
   "describe": {
     "columns": [
       {
@@ -18,5 +18,5 @@
       false
     ]
   },
-  "hash": "1f6529cba0884e10dd14d199c8481d475c37ea4935d9f983212e26643bec8179"
+  "hash": "3893c0b4ded82379145481e0ca923c0f66c411a5b0107abc88112d633ffa4d86"
 }

@@ -538,7 +538,7 @@ pub(crate) struct Dashboard {
     /// Кто сколько заработал за период.
     pub(crate) staff: Vec<crate::api::payroll::StaffPay>,
     /// «Сколько по карте ушло»: безнал чеков за период (SPEC-27 §6).
-    pub(crate) noncash: crate::api::income::Noncash,
+    pub(crate) noncash: crate::api::income::NoncashSplit,
     /// Один день: сравнение с предыдущим днём и тем же днём неделю назад.
     pub(crate) compare: Option<Compare>,
     /// Период: те же числа за предыдущий период такой же длины.
@@ -810,7 +810,7 @@ pub(crate) async fn dashboard_data(
         )
     };
     let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, from, to).await?;
-    let noncash = crate::api::income::noncash_for(&mut *conn, branch_id, from, to).await?;
+    let noncash = crate::api::income::noncash_split_for(&mut *conn, branch_id, from, to).await?;
     Ok(Dashboard {
         compare,
         previous,

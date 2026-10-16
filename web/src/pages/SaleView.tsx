@@ -319,8 +319,9 @@ export default function SaleView() {
         <div className="mt-3 flex flex-col items-end gap-1 text-sm">
           <div className="text-lg font-semibold">Итого: {formatSom(sale.total_tyiyn)}</div>
           {sale.payments.map((p) => (
-            <div key={p.method}>
-              {paymentLabel(p)}: {formatSom(p.amount_tyiyn)}
+            <div key={`${p.method}:${p.account_id ?? ''}`}>
+              {paymentLabel(p)}
+              {p.account_name && <span className="text-slate-500"> · {p.account_name}</span>}: {formatSom(p.amount_tyiyn)}
             </div>
           ))}
           {owner && <div className="text-slate-500">Валовая прибыль: {formatSom(sale.total_tyiyn - cost)}</div>}

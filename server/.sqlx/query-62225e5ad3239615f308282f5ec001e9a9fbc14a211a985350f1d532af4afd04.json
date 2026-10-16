@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.method, p.amount_tyiyn, p.grams, p.account_id, a.name as \"account_name?\"\n           from sale_payments p left join cash_accounts a on a.id = p.account_id\n           where p.sale_id = $1 order by p.method, a.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "grams",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "account_name?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "62225e5ad3239615f308282f5ec001e9a9fbc14a211a985350f1d532af4afd04"
+}

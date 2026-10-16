@@ -2005,6 +2005,17 @@ pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult
             format_som(s.bank_fee_tyiyn)
         ));
     }
+    // Несколько безналичных счетов — куда сколько пришло (ADR-076).
+    if s.bank_split.len() > 1 {
+        for b in &s.bank_split {
+            pays.push(format!(
+                "  на «{}»: картой {}, QR {}",
+                b.name,
+                format_som(b.card_tyiyn),
+                format_som(b.transfer_tyiyn)
+            ));
+        }
+    }
     let returns = if s.returns_tyiyn != 0 {
         format!(", возвраты {}", format_som(s.returns_tyiyn))
     } else {

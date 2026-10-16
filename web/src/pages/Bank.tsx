@@ -1,5 +1,7 @@
 // Экран «Счёт» (SPEC-27 §6): безнал отдельно — поступления картой и переводом, комиссия банка,
 // списания и все движения кассы «Счёт» за период. Только владелец; суммы считает сервер.
+import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
@@ -7,7 +9,7 @@ import { get, qs } from '../lib/api'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useLoad, useRangeParam } from '../lib/hooks'
 import { MOVEMENT_LABELS } from '../lib/income'
-import type { BankReport } from '../lib/types'
+import type { BankReport, CashAccount } from '../lib/types'
 
 function Tile({ label, value, hint, tone = '' }: { label: string; value: number; hint?: string; tone?: string }) {
   return (
@@ -21,15 +23,41 @@ function Tile({ label, value, hint, tone = '' }: { label: string; value: number;
 
 export default function Bank() {
   const [range, today, setRange] = useRangeParam()
-  const b = useLoad(() => get<BankReport>(`/cash/bank${qs({ from: range.from, to: range.to })}`), [range.from, range.to])
+  // Любой безналичный счёт, и архивный; без выбора — основной (ADR-076).
+  const [params] = useSearchParams()
+  const [account, setAccount] = useState(() => params.get('account') ?? '')
+  const banks = useLoad(() => get<CashAccount[]>('/cash/accounts?archived=true').then((all) => all.filter((a) => a.kind === 'bank')), [])
+  const b = useLoad(
+    () => get<BankReport>(`/cash/bank${qs({ from: range.from, to: range.to, account_id: account || undefined })}`),
+    [range.from, range.to, account],
+  )
   const data = b.data
   // Движения за период приходят вместе с итогами; страницы — здесь, смена периода — первая страница.
-  const moves = usePager(data?.movements ?? [], 'bank.movements', `${range.from}:${range.to}`)
+  const moves = usePager(data?.movements ?? [], 'bank.movements', `${account}:${range.from}:${range.to}`)
   const subtitle = range.from === range.to ? `за ${formatDate(range.from)}` : `с ${formatDate(range.from)} по ${formatDate(range.to)}`
 
   return (
     <div>
-      <PageHeader title="Счёт" subtitle={`Безнал ${subtitle}: карта, перевод, комиссия банка и списания`} />
+      <PageHeader title={data?.name ?? 'Счёт'} subtitle={`Безнал ${subtitle}: карта, перевод, комиссия банка и списания`} />
+      {(banks.data ?? []).length > 1 && (
+        <div className="mb-3 flex flex-wrap gap-2" data-testid="bank-pick">
+          {(banks.data ?? []).map((a) => {
+            const on = (account || data?.account_id) === a.id
+            return (
+              <button
+                key={a.id}
+                type="button"
+                aria-pressed={on}
+                className={`min-h-9 rounded-md border px-3 py-1 text-sm ${on ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:border-sky-500'}`}
+                onClick={() => setAccount(a.id)}
+              >
+                {a.name}
+                {!a.active && ' (архив)'}
+              </button>
+            )
+          })}
+        </div>
+      )}
       <PeriodPicker value={range} today={today} onChange={setRange} />
       <ErrorBox error={b.error} />
       {b.loading && !data ? (

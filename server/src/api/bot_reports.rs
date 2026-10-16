@@ -333,9 +333,23 @@ async fn dashboard(
             format_som(d.returns_tyiyn)
         ),
         format!(
-            "Безнал чеков: картой {}, переводом {}",
-            format_som(d.noncash.card_tyiyn),
-            format_som(d.noncash.transfer_tyiyn)
+            "Безнал чеков: картой {}, переводом {}{}",
+            format_som(d.noncash.total.card_tyiyn),
+            format_som(d.noncash.total.transfer_tyiyn),
+            // Несколько безналичных счетов — по каждому, куда пришло (ADR-076).
+            if d.noncash.by_account.len() > 1 {
+                format!(
+                    " ({})",
+                    d.noncash
+                        .by_account
+                        .iter()
+                        .map(|a| format!("{}: {}", a.name, format_som(a.total_tyiyn)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            } else {
+                String::new()
+            }
         ),
     ];
     if let Some(c) = &d.compare {
@@ -409,38 +423,9 @@ pub async fn money(
         "movements" => {
             let all = crate::api::cash::accounts_data(conn, user).await?;
             let q = account.unwrap_or("Касса");
-            let wanted = norm(q);
-            let exact = all.iter().any(|a| norm(&a.name) == wanted);
-            let found: Vec<_> = all
-                .iter()
-                .filter(|a| {
-                    if exact {
-                        norm(&a.name) == wanted
-                    } else {
-                        sounds_like(&a.name, q)
-                    }
-                })
-                .collect();
-            let acc = match found.as_slice() {
-                [one] => *one,
-                [] => {
-                    return Ok(format!(
-                        "Касса «{q}» не найдена. Кассы: {}.",
-                        all.iter()
-                            .map(|a| a.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-                many => {
-                    return Ok(format!(
-                        "По «{q}» подходит несколько касс: {}. Уточните.",
-                        many.iter()
-                            .map(|a| a.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
+            let acc = match find_account(&all, q) {
+                Ok(a) => a,
+                Err(text) => return Ok(text),
             };
             let rows = crate::api::cash::movements_data(conn, user, acc.id).await?;
             let mut lines = vec![format!(
@@ -646,10 +631,28 @@ pub async fn money(
             );
             Ok(lines.join("\n"))
         }
-        "bank" => bank_text(conn, user, from, to).await,
+        "bank" => {
+            // Безналичный счёт по названию; без него — основной (ADR-076).
+            let id = match account {
+                None => None,
+                Some(q) => {
+                    let banks: Vec<_> = crate::api::cash::accounts_list(conn, user, true)
+                        .await?
+                        .into_iter()
+                        .filter(|a| a.kind == "bank")
+                        .collect();
+                    match find_account(&banks, q) {
+                        Ok(a) => Some(a.id),
+                        Err(text) => return Ok(text),
+                    }
+                }
+            };
+            bank_text(conn, user, from, to, id).await
+        }
+        "accounts" => accounts_text(conn, user).await,
         "income" => income_text(conn, user, from, to).await,
         _ => Err(invalid(
-            "report: movements, shifts, shift, expenses_list, bank или income",
+            "report: movements, shifts, shift, expenses_list, bank, accounts или income",
         )),
     }
 }
@@ -667,14 +670,105 @@ fn method_name(method: &str) -> &str {
     }
 }
 
+/// Касса или счёт по названию: точное совпадение или похожее; иначе — текст ответа.
+fn find_account<'a>(
+    all: &'a [crate::api::cash::AccountOut],
+    q: &str,
+) -> Result<&'a crate::api::cash::AccountOut, String> {
+    let wanted = norm(q);
+    let exact = all.iter().any(|a| norm(&a.name) == wanted);
+    let found: Vec<_> = all
+        .iter()
+        .filter(|a| {
+            if exact {
+                norm(&a.name) == wanted
+            } else {
+                sounds_like(&a.name, q)
+            }
+        })
+        .collect();
+    let names = |list: &[&crate::api::cash::AccountOut]| {
+        list.iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match found.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!(
+            "Касса «{q}» не найдена. Кассы: {}.",
+            names(&all.iter().collect::<Vec<_>>())
+        )),
+        many => Err(format!(
+            "По «{q}» подходит несколько касс: {}. Уточните.",
+            names(many)
+        )),
+    }
+}
+
+/// «Обзор счетов» (SPEC-28 §5) текстом: все счета с типом, остатком и признаками, итог по
+/// наличным и безналу. Владелец видит все, и архивные — отдельно.
+async fn accounts_text(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<String> {
+    let all = crate::api::cash::accounts_list(conn, user, true).await?;
+    let (mut cash, mut bank) = (0i64, 0i64);
+    let mut lines = vec!["Обзор счетов:".to_string()];
+    for a in all.iter().filter(|a| a.active) {
+        if a.kind == "bank" {
+            bank = bank.saturating_add(a.balance_tyiyn);
+        } else {
+            cash = cash.saturating_add(a.balance_tyiyn);
+        }
+        let mut marks = vec![if a.kind == "bank" {
+            "безналичный"
+        } else {
+            "наличный"
+        }];
+        if a.is_default {
+            marks.push(if a.kind == "bank" {
+                "основной"
+            } else {
+                "касса смены"
+            });
+        }
+        if a.allow_negative {
+            marks.push("минус разрешён");
+        }
+        if a.owner_only {
+            marks.push("только владелец");
+        }
+        lines.push(format!(
+            "— {}: {} ({})",
+            a.name,
+            format_som(a.balance_tyiyn),
+            marks.join(", ")
+        ));
+    }
+    lines.push(format!(
+        "Итого: наличные {} · безнал {} · всего {}",
+        format_som(cash),
+        format_som(bank),
+        format_som(cash.saturating_add(bank))
+    ));
+    let archived: Vec<_> = all
+        .iter()
+        .filter(|a| !a.active)
+        .map(|a| a.name.as_str())
+        .collect();
+    if !archived.is_empty() {
+        lines.push(format!("В архиве: {}", archived.join(", ")));
+    }
+    Ok(lines.join("\n"))
+}
+
 /// Экран «Счёт» (SPEC-27 §6) текстом: то же `bank_data`.
 async fn bank_text(
     conn: &mut PgConnection,
     user: &CurrentUser,
     from: NaiveDate,
     to: NaiveDate,
+    account: Option<uuid::Uuid>,
 ) -> AppResult<String> {
-    let b = crate::api::income::bank_data(conn, user, Some(from), Some(to)).await?;
+    let b = crate::api::income::bank_data(conn, user, Some(from), Some(to), account).await?;
     let mut lines = vec![
         format!(
             "{} {}: на начало {}, на конец {}, сейчас {}",

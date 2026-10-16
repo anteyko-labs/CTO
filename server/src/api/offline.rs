@@ -74,12 +74,21 @@ struct SnapEmployee {
     is_master: bool,
 }
 
+/// Безналичный счёт для выбора на кассе без сети (ADR-076).
+#[derive(Serialize)]
+struct SnapBank {
+    id: Uuid,
+    name: String,
+    is_default: bool,
+}
+
 #[derive(Serialize)]
 struct Snapshot {
     version: String,
     server_time: DateTime<Utc>,
     products: Vec<SnapProduct>,
     employees: Vec<SnapEmployee>,
+    bank_accounts: Vec<SnapBank>,
     oil_change_master_fee_tyiyn: i64,
 }
 
@@ -133,6 +142,18 @@ async fn snapshot(
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Счета карты и перевода: действующие; «только владелец» — только владельцу (ADR-076).
+    crate::api::cash::ensure_accounts(&mut conn, user.branch_id).await?;
+    let bank_accounts = sqlx::query_as!(
+        SnapBank,
+        r#"select id, name, is_default from cash_accounts
+           where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)
+           order by is_default desc, name"#,
+        user.branch_id,
+        user.is_owner()
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let fee = sqlx::query_scalar!(
         "select value from settings where branch_id = $1 and key = 'sales'",
         user.branch_id
@@ -151,11 +172,13 @@ async fn snapshot(
         server_time: Utc::now(),
         products,
         employees,
+        bank_accounts,
         oil_change_master_fee_tyiyn: fee,
     };
     let payload = serde_json::to_string(&json!({
         "products": &body.products,
         "employees": &body.employees,
+        "bank_accounts": &body.bank_accounts,
         "fee": fee,
     }))
     .unwrap_or_default();

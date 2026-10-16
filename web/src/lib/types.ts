@@ -292,6 +292,9 @@ export interface Payment {
   amount_tyiyn: number
   /** Аккумулятор в оплату: вес в граммах (у возврата — с минусом). */
   grams?: number | null
+  /** Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076). */
+  account_id?: string | null
+  account_name?: string | null
 }
 
 export interface Sale {
@@ -468,10 +471,26 @@ export interface GiftRule {
 export interface CashAccount {
   id: string
   name: string
+  /** `register` — касса смены, `safe`/`other` — наличные без смены, `bank` — безналичный счёт. */
   kind: 'register' | 'bank' | 'safe' | 'other'
   owner_only: boolean
+  /** Касса смены или основной безналичный счёт. */
   is_default: boolean
+  /** Отрицательный баланс разрешён (ADR-076). */
+  allow_negative: boolean
+  /** В архиве — false. */
+  active: boolean
   balance_tyiyn: number
+}
+
+/** Безнал чеков одного безналичного счёта (ADR-076). */
+export interface BankSplit {
+  account_id: string
+  name: string
+  card_tyiyn: number
+  transfer_tyiyn: number
+  fee_tyiyn: number
+  total_tyiyn: number
 }
 
 export interface Shift {
@@ -498,6 +517,8 @@ export interface Shift {
   bonus_tyiyn?: number
   battery_tyiyn?: number
   bank_fee_tyiyn: number
+  /** Безнал смены по безналичным счетам. */
+  bank_split?: BankSplit[]
   sales_count?: number
   sales_total_tyiyn?: number
   returns_tyiyn?: number
@@ -650,6 +671,8 @@ export interface Noncash {
   card_tyiyn: number
   transfer_tyiyn: number
   total_tyiyn: number
+  /** По безналичным счетам (ADR-076). */
+  by_account?: BankSplit[]
 }
 
 // ---------- Деньги и отчёты (SPEC-27 §6) ----------

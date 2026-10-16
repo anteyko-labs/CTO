@@ -15,6 +15,8 @@ export interface Snapshot {
   server_time: string
   products: SnapshotProduct[]
   employees: { id: string; full_name: string; is_cashier: boolean; is_master: boolean }[]
+  /** Безналичные счета для карты и перевода без сети (ADR-076); у старого снимка — нет. */
+  bank_accounts?: { id: string; name: string; is_default: boolean }[]
   oil_change_master_fee_tyiyn: number
   saved_at: string
 }

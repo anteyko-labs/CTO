@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, kind, owner_only, is_default, balance_tyiyn\n           from cash_accounts\n           where branch_id = $1 and active and (not owner_only or $2)\n           order by is_default desc, kind, name",
+  "query": "select id, name, kind, balance_tyiyn, is_default from cash_accounts\n           where branch_id = $1 and active order by is_default desc, kind, name",
   "describe": {
     "columns": [
       {
@@ -20,24 +20,18 @@
       },
       {
         "ordinal": 3,
-        "name": "owner_only",
-        "type_info": "Bool"
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
       },
       {
         "ordinal": 4,
         "name": "is_default",
         "type_info": "Bool"
-      },
-      {
-        "ordinal": 5,
-        "name": "balance_tyiyn",
-        "type_info": "Int8"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -45,9 +39,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "a8125bb313c6afc88ee981d0cac5949b3dba1a6bbf67a356e598237097a27b9b"
+  "hash": "f052add52090082101861190531b9eca7de5859e41aaeedb5670de9ca3f3e280"
 }

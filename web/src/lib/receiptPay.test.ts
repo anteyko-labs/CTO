@@ -27,6 +27,11 @@ describe('откуда оплачена накладная', () => {
     expect(notEnough(s, OUTSIDE, 1_000_000)).toBe(false)
   })
 
+  it('счёт с разрешённым минусом — хватает всегда (ADR-076)', () => {
+    const s = paySources([{ ...acc('opt', 'Оптима', 'bank', false, 0), allow_negative: true }], true)
+    expect(notEnough(s, 'opt', 1_000_000)).toBe(false)
+  })
+
   it('в документе', () => {
     expect(paidFromText('Касса')).toBe('из «Касса»')
     expect(paidFromText(OUTSIDE)).toBe('из своих, мимо касс')

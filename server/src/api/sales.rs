@@ -72,6 +72,10 @@ pub struct PaymentReq {
     /// возврате вес не присылается: сервер берёт долю веса исходного чека.
     #[serde(default)]
     pub grams: Option<i64>,
+    /// Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076); без него — основной.
+    /// У возврата не учитывается: деньги уходят со счёта исходной оплаты.
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -130,6 +134,11 @@ pub struct PaymentOut {
     /// Вес аккумулятора, принятого в оплату (у возврата — с минусом).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grams: Option<i64>,
+    /// Карта и перевод: на какой безналичный счёт (ADR-076).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -234,7 +243,9 @@ pub async fn load_sale(
     .collect();
     let payments = sqlx::query_as!(
         PaymentOut,
-        "select method, amount_tyiyn, grams from sale_payments where sale_id = $1 order by method",
+        r#"select p.method, p.amount_tyiyn, p.grams, p.account_id, a.name as "account_name?"
+           from sale_payments p left join cash_accounts a on a.id = p.account_id
+           where p.sale_id = $1 order by p.method, a.name"#,
         id
     )
     .fetch_all(&mut *conn)
@@ -593,7 +604,7 @@ async fn insert_payments(
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let register = cash::default_account(conn, branch_id).await?;
-    let bank = cash::bank_account(conn, branch_id).await?;
+    let default_bank = cash::bank_account(conn, branch_id).await?;
     let movement_kind = if sign > 0 { "sale" } else { "sale_return" };
     for p in payments {
         let amount = sign * p.amount_tyiyn;
@@ -622,34 +633,34 @@ async fn insert_payments(
                 .await?;
             }
             "card" | "transfer" => {
-                if let Some(bank_id) = bank {
-                    cash::add_movement(
-                        conn,
-                        ctx,
-                        CashEntry {
-                            account_id: bank_id,
-                            kind: movement_kind,
-                            amount,
-                            doc_type: "sale",
-                            doc_id: Some(sale_id),
-                            comment: "",
-                        },
-                    )
-                    .await?;
-                    if fee != 0 {
-                        cash::add_movement(
-                            conn,
-                            ctx,
-                            CashEntry {
-                                account_id: bank_id,
-                                kind: "bank_fee",
-                                amount: -fee,
-                                doc_type: "sale",
-                                doc_id: Some(sale_id),
-                                comment: "",
-                            },
-                        )
-                        .await?;
+                // Счёт выбран и проверен до проведения (ADR-076); комиссия — на тот же счёт.
+                if let Some(bank_id) = p.account_id.or(default_bank) {
+                    let money = CashEntry {
+                        account_id: bank_id,
+                        kind: movement_kind,
+                        amount,
+                        doc_type: "sale",
+                        doc_id: Some(sale_id),
+                        comment: "",
+                    };
+                    let fee_entry = CashEntry {
+                        account_id: bank_id,
+                        kind: "bank_fee",
+                        amount: -fee,
+                        doc_type: "sale",
+                        doc_id: Some(sale_id),
+                        comment: "",
+                    };
+                    // Возврат: сначала возвращается комиссия, потом уходят деньги — со счёта
+                    // уходит ровно то, что он получил за эту часть чека.
+                    if sign < 0 && fee != 0 {
+                        cash::add_movement(conn, ctx, fee_entry).await?;
+                        cash::add_movement(conn, ctx, money).await?;
+                    } else {
+                        cash::add_movement(conn, ctx, money).await?;
+                        if fee != 0 {
+                            cash::add_movement(conn, ctx, fee_entry).await?;
+                        }
                     }
                 }
             }
@@ -670,14 +681,20 @@ async fn insert_payments(
         } else {
             None
         };
+        let account_id = if matches!(p.method.as_str(), "card" | "transfer") {
+            p.account_id.or(default_bank)
+        } else {
+            None
+        };
         sqlx::query!(
-            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams) values ($1, $2, $3, $4, $5, $6)",
+            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams, account_id) values ($1, $2, $3, $4, $5, $6, $7)",
             new_id(),
             sale_id,
             p.method,
             amount,
             fee,
-            grams
+            grams,
+            account_id
         )
         .execute(&mut *conn)
         .await?;
@@ -874,6 +891,18 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     }
     ops::check_amount(total)?;
     check_payments(&req.payments, total)?;
+    // Карта и перевод — на выбранный безналичный счёт или основной (ADR-076). Чек без сети со
+    // счётом, который за это время убрали в архив, ложится на основной, владелец узнает.
+    for p in req.payments.iter_mut() {
+        p.account_id = if matches!(p.method.as_str(), "card" | "transfer") {
+            Some(
+                cash::sale_bank_account(conn, &ctx.user, p.account_id, offline, &mut bypass)
+                    .await?,
+            )
+        } else {
+            None
+        };
+    }
     // Мастеру: ставка замены за чек «в сервис» с товаром (ADR-027) плюс ставки услуг из строк.
     // Чек из одних услуг — клиент приехал со своим маслом — ставку замены не даёт (ADR-043).
     let has_goods = prepared.iter().any(|p| p.product_id.is_some() && !p.gift);
@@ -1320,6 +1349,37 @@ pub struct ReturnReq {
     pub battery_cash: bool,
 }
 
+/// Счёт возврата на карту или переводом (ADR-076): деньги уходят с того безналичного счёта,
+/// куда пришла исходная оплата этим способом (если счетов было несколько — с того, куда пришло
+/// больше), иначе — с любого счёта исходного безнала. Чек был оплачен не безналом — выбранный
+/// счёт или основной. Счёт исходной оплаты уже в архиве — основной.
+async fn refund_account(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    sale_id: Uuid,
+    p: &PaymentReq,
+) -> AppResult<Uuid> {
+    let orig = sqlx::query_scalar!(
+        r#"select p.account_id as "account_id!" from sale_payments p
+           join cash_accounts a on a.id = p.account_id
+           where p.sale_id = $1 and p.method in ('card', 'transfer') and a.active
+           group by p.account_id
+           order by bool_or(p.method = $2) desc, sum(p.amount_tyiyn) desc, p.account_id
+           limit 1"#,
+        sale_id,
+        p.method
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match orig {
+        Some(id) => Ok(id),
+        None => {
+            let mut ignored = Vec::new();
+            cash::sale_bank_account(conn, user, p.account_id, false, &mut ignored).await
+        }
+    }
+}
+
 /// Часть величины `part` для `qty` из `orig_qty`; последняя часть забирает точный остаток.
 fn share(orig: i64, already: i64, qty: i64, orig_qty: i64, returned_qty: i64) -> AppResult<i64> {
     if returned_qty + qty == orig_qty {
@@ -1497,6 +1557,11 @@ pub async fn return_sale_tx(
     for p in &req.payments {
         let mut p = p.clone();
         p.grams = None;
+        p.account_id = if matches!(p.method.as_str(), "card" | "transfer") {
+            Some(refund_account(conn, &ctx.user, id, &p).await?)
+        } else {
+            None
+        };
         if p.method == "battery" {
             let g = if p.amount_tyiyn == bat_left {
                 bat.grams.saturating_sub(bat.grams_back)

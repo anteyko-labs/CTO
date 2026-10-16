@@ -541,14 +541,18 @@ async fn account(
         });
     }
     let all = sqlx::query!(
-        r#"select id, name, balance_tyiyn, is_default from cash_accounts
+        r#"select id, name, kind, balance_tyiyn, is_default from cash_accounts
            where branch_id = $1 and active order by is_default desc, kind, name"#,
         branch_id
     )
     .fetch_all(&mut *conn)
     .await?;
     let found: Vec<_> = match q {
-        None => all.into_iter().filter(|a| a.is_default).collect(),
+        // Без названия — касса смены (основной безналичный счёт тоже `is_default`, ADR-076).
+        None => all
+            .into_iter()
+            .filter(|a| a.is_default && a.kind == "register")
+            .collect(),
         Some(q) => {
             let wanted = norm(q);
             if all.iter().any(|a| norm(&a.name) == wanted) {
@@ -1095,7 +1099,7 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
         ));
     };
     // Касса — ровно та, которую возьмёт проведение (та же функция), с комиссией банка.
-    let src = match crate::api::parties::repayment_account(conn, branch_id, method).await {
+    let src = match crate::api::parties::repayment_account(conn, user, method, None).await {
         Ok(Some(id)) => account_by_id(conn, id).await?,
         Ok(None) => Source::Outside,
         Err(e) => return Ok(Err(reason(e)?)),
@@ -1144,6 +1148,7 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
             method: Some(method.into()),
             comment: text,
             receipt_id: None,
+            account_id: None,
         }),
         kind: if supplier {
             "supplier_payment"

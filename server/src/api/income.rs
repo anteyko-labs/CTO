@@ -33,6 +33,14 @@ struct Period {
     to: Option<NaiveDate>,
 }
 
+#[derive(Deserialize)]
+struct BankQuery {
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+    /// Безналичный счёт; без него — основной (ADR-076).
+    account_id: Option<Uuid>,
+}
+
 /// Способы оплаты чека в постоянном порядке — строки отчёта есть всегда, даже нулевые.
 pub const METHODS: [&str; 6] = ["cash", "card", "transfer", "debt", "bonus", "battery"];
 
@@ -114,6 +122,82 @@ pub struct Noncash {
     pub total_tyiyn: i64,
 }
 
+/// Безнал чеков за период вместе с разбивкой по безналичным счетам (ADR-076).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct NoncashSplit {
+    #[serde(flatten)]
+    pub total: Noncash,
+    pub by_account: Vec<BankSplit>,
+}
+
+pub async fn noncash_split_for(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<NoncashSplit> {
+    Ok(NoncashSplit {
+        total: noncash_for(&mut *conn, branch_id, from, to).await?,
+        by_account: bank_split(&mut *conn, branch_id, Some((from, to)), None, None).await?,
+    })
+}
+
+/// Безнал чеков одного безналичного счёта (ADR-076): картой, переводом и комиссия банка.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BankSplit {
+    pub account_id: Uuid,
+    pub name: String,
+    pub card_tyiyn: i64,
+    pub transfer_tyiyn: i64,
+    pub fee_tyiyn: i64,
+    pub total_tyiyn: i64,
+}
+
+/// Безнал чеков по счетам: за учётные дни (`days`) — сводка, или за время смены (`since`..`until`)
+/// — закрытие смены. Сумма по счетам равна карте и переводу всего: у каждой такой оплаты есть счёт.
+pub async fn bank_split(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    days: Option<(NaiveDate, NaiveDate)>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> AppResult<Vec<BankSplit>> {
+    let rows = sqlx::query!(
+        r#"select p.account_id as "account_id!", a.name,
+                  coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as "card!",
+                  coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
+                  coalesce(sum(p.fee_tyiyn), 0)::bigint as "fee!"
+           from sale_payments p
+           join sales s on s.id = p.sale_id
+           join cash_accounts a on a.id = p.account_id
+           where s.branch_id = $1 and p.method in ('card', 'transfer')
+             and ($2::date is null or s.business_date >= $2)
+             and ($3::date is null or s.business_date <= $3)
+             and ($4::timestamptz is null or s.created_at >= $4)
+             and ($4::timestamptz is null or s.created_at <= coalesce($5, now()))
+           group by p.account_id, a.name, a.is_default
+           order by a.is_default desc, a.name"#,
+        branch_id,
+        days.map(|d| d.0),
+        days.map(|d| d.1),
+        since,
+        until
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| BankSplit {
+            account_id: r.account_id,
+            name: r.name,
+            card_tyiyn: r.card,
+            transfer_tyiyn: r.transfer,
+            fee_tyiyn: r.fee,
+            total_tyiyn: r.card.saturating_add(r.transfer),
+        })
+        .collect())
+}
+
 pub async fn noncash_for(
     conn: &mut PgConnection,
     branch_id: Uuid,
@@ -166,6 +250,18 @@ pub async fn account_flows(
     from: NaiveDate,
     to: NaiveDate,
 ) -> AppResult<Vec<AccountFlow>> {
+    flows_of(conn, user, from, to, None).await
+}
+
+/// Кассы за период; `only` — одна касса (история в «Обзоре счетов», SPEC-28 §5). Архивный счёт
+/// попадает в отчёт, если за период по нему были движения: история не теряется (ADR-076).
+pub async fn flows_of(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: NaiveDate,
+    to: NaiveDate,
+    only: Option<Uuid>,
+) -> AppResult<Vec<AccountFlow>> {
     crate::api::cash::ensure_accounts(&mut *conn, user.branch_id).await?;
     let accounts = sqlx::query!(
         r#"select a.id, a.name, a.kind,
@@ -173,11 +269,19 @@ pub async fn account_flows(
                             where m.account_id = a.id
                               and m.created_at < ($3::date)::timestamp at time zone 'Asia/Bishkek'), 0)::bigint as "opening!"
            from cash_accounts a
-           where a.branch_id = $1 and a.active and (not a.owner_only or $2)
-           order by a.is_default desc, a.kind, a.name"#,
+           where a.branch_id = $1 and (not a.owner_only or $2)
+             and ($5::uuid is null or a.id = $5)
+             and (a.active or $5::uuid is not null
+                  or exists (select 1 from cash_movements m
+                             where m.account_id = a.id
+                               and m.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek'
+                               and m.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek'))
+           order by a.active desc, a.kind = 'bank', a.is_default desc, a.kind, a.name"#,
         user.branch_id,
         user.is_owner(),
-        from
+        from,
+        to,
+        only
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -279,10 +383,12 @@ pub(crate) struct BankOut {
 async fn bank(
     State(state): State<AppState>,
     user: CurrentUser,
-    Query(q): Query<Period>,
+    Query(q): Query<BankQuery>,
 ) -> AppResult<Json<BankOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(bank_data(&mut conn, &user, q.from, q.to).await?))
+    Ok(Json(
+        bank_data(&mut conn, &user, q.from, q.to, q.account_id).await?,
+    ))
 }
 
 /// Экран «Счёт» (SPEC-27 §6): только владельцу. Каждая сумма — из движений кассы «Счёт» за
@@ -292,15 +398,33 @@ pub(crate) async fn bank_data(
     user: &CurrentUser,
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    account: Option<Uuid>,
 ) -> AppResult<BankOut> {
     if !user.is_owner() {
         return Err(AppError::Forbidden);
     }
     let (from, to) = resolve_period(&mut *conn, from, to).await?;
     let branch_id = user.branch_id;
-    let account_id = crate::api::cash::bank_account(&mut *conn, branch_id)
-        .await?
-        .ok_or_else(|| invalid("нет кассы «Счёт»"))?;
+    // Любой безналичный счёт, и архивный — его история остаётся (ADR-076); без выбора — основной.
+    let account_id = match account {
+        Some(id) => {
+            let kind = sqlx::query_scalar!(
+                "select kind from cash_accounts where id = $1 and branch_id = $2",
+                id,
+                branch_id
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or(AppError::NotFound)?;
+            if kind != "bank" {
+                return Err(invalid("это не безналичный счёт"));
+            }
+            id
+        }
+        None => crate::api::cash::bank_account(&mut *conn, branch_id)
+            .await?
+            .ok_or_else(|| invalid("нет безналичного счёта"))?,
+    };
     let acc = sqlx::query!(
         r#"select name, balance_tyiyn,
                   coalesce((select sum(m.amount_tyiyn) from cash_movements m
@@ -336,9 +460,10 @@ pub(crate) async fn bank_data(
         .collect();
     let card_of_sale: HashMap<Uuid, i64> = sqlx::query!(
         r#"select sale_id, coalesce(sum(amount_tyiyn), 0)::bigint as "card!"
-           from sale_payments where sale_id = any($1) and method = 'card'
+           from sale_payments where sale_id = any($1) and method = 'card' and account_id = $2
            group by sale_id"#,
-        &sale_ids
+        &sale_ids,
+        account_id
     )
     .fetch_all(&mut *conn)
     .await?
