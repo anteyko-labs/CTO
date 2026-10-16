@@ -211,6 +211,39 @@ pub async fn open_shift_id(
     .await?)
 }
 
+/// Смена кассы, открытая в момент `at` (без времени — сейчас): с учётом закрытий и
+/// переоткрытий до этого момента. Кассир чека — кассир этой смены (ADR-071).
+pub struct ShiftAt {
+    pub id: Uuid,
+    pub number: i64,
+    pub cashier_employee_id: Uuid,
+}
+
+pub async fn shift_open_at(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    account_id: Uuid,
+    at: Option<DateTime<Utc>>,
+) -> AppResult<Option<ShiftAt>> {
+    Ok(sqlx::query_as!(
+        ShiftAt,
+        r#"select s.id, s.number, s.cashier_employee_id from shifts s
+           where s.branch_id = $1 and s.account_id = $2
+             and s.opened_at <= coalesce($3, now())
+             and not exists (
+               select 1 from shift_closes c
+               where c.shift_id = s.id and c.closed_at <= coalesce($3, now())
+                 and not exists (select 1 from shift_reopens r
+                                 where r.close_id = c.id and r.created_at <= coalesce($3, now())))
+           order by s.opened_at desc limit 1"#,
+        branch_id,
+        account_id,
+        at
+    )
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
 /// Деньги через кассу с наличными — только в открытой смене: иначе их не с чем сверить
 /// при закрытии (SPEC-05, SPEC-06, SPEC-07). Продажи и сдача кассы этим не ограничены (ADR-021).
 pub async fn require_open_shift(
@@ -339,12 +372,14 @@ pub(crate) async fn load_shift(
     // Разбивка наличных: касса смены за время смены, без счёта и сейфов. По времени, а не по
     // отметке смены: перевод владельца или чек без сети тоже двигают деньги в этой кассе,
     // и «на начало + движения» должно сходиться с «должно быть». Пересчёт при закрытии
-    // (то же время, что закрытие) не входит: «должно быть» считали до него.
+    // (то же время, что закрытие) не входит: «должно быть» считали до него. Выплаты при
+    // закрытии (та же операция, то же время) входят: «должно быть» считали после них.
     let breakdown: Vec<BreakdownRow> = sqlx::query!(
         r#"select kind as "kind!", sum(amount_tyiyn)::bigint as "sum!"
            from cash_movements
            where account_id = $1 and created_at >= $2
-             and created_at < coalesce($3, 'infinity'::timestamptz)
+             and (created_at < coalesce($3, 'infinity'::timestamptz)
+                  or (created_at = $3 and kind <> 'count_diff'))
            group by kind order by kind"#,
         h.account_id,
         h.opened_at,
@@ -488,7 +523,7 @@ pub(crate) async fn shifts_data(
            where branch_id = $1
              and ($2::date is null or business_date >= $2)
              and ($3::date is null or business_date <= $3)
-           order by business_date desc limit 60"#,
+           order by business_date desc, opened_at desc limit 60"#,
         user.branch_id,
         from,
         q.to
@@ -562,20 +597,8 @@ async fn open_shift(
     let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
         .fetch_one(&mut *tx)
         .await?;
-    let exists = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from shifts
-           where branch_id = $1 and account_id = $2 and business_date = $3"#,
-        branch_id,
-        account_id,
-        today
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    if exists > 0 {
-        return Err(AppError::Conflict(
-            "смена за сегодня уже была: переоткрыть её может владелец".into(),
-        ));
-    }
+    // Смен в день может быть несколько, по очереди (ADR-071): следующий кассир открывает свою
+    // со своим пересчётом; учётный день у всех смен дня общий.
     let number = ops::next_counter(&mut tx, branch_id, "shift").await?;
     let id = new_id();
     sqlx::query!(
@@ -636,6 +659,17 @@ struct CloseReq {
     counted_tyiyn: i64,
     #[serde(default)]
     comment: String,
+    /// Выплаты отмеченным сотрудникам из кассы смены перед пересчётом (SPEC-27, ADR-071).
+    #[serde(default)]
+    payouts: Vec<ClosePayout>,
+}
+
+/// Выплата при закрытии: обычная выплата SPEC-07 со своим `op_id`.
+#[derive(Deserialize)]
+struct ClosePayout {
+    op_id: Uuid,
+    employee_id: Uuid,
+    amount_tyiyn: i64,
 }
 
 async fn close_shift(
@@ -655,13 +689,52 @@ async fn close_shift(
         return Ok(Json(done));
     }
     let shift = sqlx::query!(
-        "select account_id, cashier_employee_id, business_date from shifts where id = $1 and branch_id = $2",
+        "select number, account_id, cashier_employee_id, business_date from shifts where id = $1 and branch_id = $2",
         id,
         branch_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // «Выплатить отмеченным и закрыть»: выплаты из кассы смены и закрытие — одна операция.
+    // Каждая выплата — обычная выплата со своим op_id и правилами SPEC-07 (администратор
+    // выдаёт только заработанное), и «должно быть» считается уже после них.
+    let mut paid_out: i64 = 0;
+    if !req.payouts.is_empty() {
+        if req.payouts.len() > 100 {
+            return Err(invalid("слишком много выплат за раз"));
+        }
+        let mut seen_emp = std::collections::HashSet::new();
+        let mut seen_op = std::collections::HashSet::from([req.op_id]);
+        for p in &req.payouts {
+            if !seen_emp.insert(p.employee_id) || !seen_op.insert(p.op_id) {
+                return Err(invalid("выплата одному сотруднику — одной строкой"));
+            }
+        }
+        if open_shift_id(&mut tx, branch_id, shift.account_id).await? != Some(id) {
+            return Err(AppError::Conflict("смена уже закрыта".into()));
+        }
+        let comment = format!("при закрытии смены № {}", shift.number);
+        for p in &req.payouts {
+            crate::api::payroll::post_payout_tx(
+                &mut tx,
+                &ctx,
+                crate::api::payroll::PayoutReq {
+                    op_id: p.op_id,
+                    employee_id: p.employee_id,
+                    amount_tyiyn: p.amount_tyiyn,
+                    source: Some("account".into()),
+                    account_id: Some(shift.account_id),
+                    advance: false,
+                    comment: comment.clone(),
+                },
+            )
+            .await?;
+            paid_out = paid_out
+                .checked_add(p.amount_tyiyn)
+                .ok_or_else(crate::error::overflow)?;
+        }
+    }
     // Сначала блокировка кассы, потом проверка: два устройства не закроют смену дважды.
     let expected = sqlx::query_scalar!(
         "select balance_tyiyn from cash_accounts where id = $1 for update",
@@ -731,7 +804,13 @@ async fn close_shift(
         KIND,
         "shift",
         Some(id),
-        json!({ "expected": expected, "counted": req.counted_tyiyn, "diff": diff }),
+        json!({
+            "expected": expected,
+            "counted": req.counted_tyiyn,
+            "diff": diff,
+            "payouts": req.payouts.len(),
+            "paid_out": paid_out,
+        }),
     )
     .await?;
     // Повторное закрытие после переоткрытия с излишком, а с кассира уже удержана недостача:
@@ -747,9 +826,7 @@ async fn close_shift(
         .fetch_one(&mut *tx)
         .await?;
         if withheld > 0 {
-            let number = sqlx::query_scalar!("select number from shifts where id = $1", id)
-                .fetch_one(&mut *tx)
-                .await?;
+            let number = shift.number;
             ops::audit(
                 &mut tx,
                 &ctx,
@@ -791,15 +868,34 @@ async fn reopen_shift(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
-    let account_id = sqlx::query_scalar!(
-        "select account_id from shifts where id = $1 and branch_id = $2",
+    let target = sqlx::query!(
+        "select account_id, opened_at from shifts where id = $1 and branch_id = $2",
         id,
         ctx.user.branch_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let account_id = target.account_id;
     lock_accounts(&mut tx, ctx.user.branch_id, &[account_id]).await?;
+    // Смен в день несколько (ADR-071): переоткрыть можно только последнюю. После более поздней
+    // смены её пересчёт уже учёл эти деньги — старая смена снова открытой стать не может.
+    let later = sqlx::query_scalar!(
+        r#"select number from shifts
+           where branch_id = $1 and account_id = $2 and opened_at > $3 and id <> $4
+           order by opened_at limit 1"#,
+        ctx.user.branch_id,
+        account_id,
+        target.opened_at,
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(n) = later {
+        return Err(AppError::Conflict(format!(
+            "после этой смены уже открывали смену № {n}: переоткрыть можно только последнюю"
+        )));
+    }
     // Пока открыта другая смена этой кассы, старую не переоткрыть: открытой бывает одна.
     if open_shift_id(&mut tx, ctx.user.branch_id, account_id)
         .await?

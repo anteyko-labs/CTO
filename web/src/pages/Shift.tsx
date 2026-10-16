@@ -8,7 +8,7 @@ import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../li
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
-import type { CashAccount, CashMovement, Employee, Shift as ShiftRow } from '../lib/types'
+import type { CashAccount, CashMovement, Employee, PayrollRow, Shift as ShiftRow } from '../lib/types'
 
 const KIND_LABELS: Record<string, string> = {
   sale: 'Продажи',
@@ -57,6 +57,18 @@ function Row({ label, value, signed = false, strong = false }: { label: string; 
   )
 }
 
+/** Выплата сотруднику при закрытии смены: галочка, сумма (не больше к выдаче) и свой op_id. */
+type PayLine = { employee_id: string; name: string; owed: number; on: boolean; sum: string; opId: string }
+
+type Closing = {
+  /** null — пересчёт не правили: подставляется «должно быть» после выплат. */
+  counted: string | null
+  comment: string
+  opId: string
+  force: boolean
+  pay: PayLine[]
+}
+
 type MoneyForm = { kind: 'cash_in' | 'cash_out' | 'transfer'; sum: string; comment: string; from: string; to: string; opId: string }
 
 /** Смена и кассы: открыть, внести, изъять, перевести, закрыть с пересчётом и сдать кассу (SPEC-05). */
@@ -71,7 +83,7 @@ export default function Shift() {
   usePolling(accounts.reload)
   const [open, setOpen] = useState<{ cashier: string; counted: string; opId: string } | null>(null)
   const [money, setMoney] = useState<MoneyForm | null>(null)
-  const [closing, setClosing] = useState<{ counted: string; comment: string; opId: string; force: boolean } | null>(null)
+  const [closing, setClosing] = useState<Closing | null>(null)
   // Чеки этого устройства, ещё не ушедшие на сервер: их наличные уже в кассе, а в «должно быть» —
   // ещё нет. Закрыть смену до их отправки — ложная недостача (ADR-059).
   const [unsent, setUnsent] = useState(0)
@@ -131,22 +143,33 @@ export default function Shift() {
       // устройства, и старая сумма дала бы недостачу, которой нет.
       const fresh = await get<ShiftRow | null>('/shifts/current')
       current.reload()
-      setClosing({ counted: somInput(fresh?.expected_tyiyn ?? shift.expected_tyiyn), comment: '', opId: newOpId(), force: false })
+      if (fresh) current.setData(fresh)
+      // Кому сколько к выдаче: заработанное сегодня и невыплаченное за прошлые дни (SPEC-27).
+      const staff = await get<PayrollRow[]>('/payroll/day')
+      const pay = staff
+        .filter((r) => r.balance_tyiyn > 0)
+        .map((r) => ({ employee_id: r.employee_id, name: r.full_name, owed: r.balance_tyiyn, on: false, sum: somInput(r.balance_tyiyn), opId: newOpId() }))
+      setClosing({ counted: null, comment: '', opId: newOpId(), force: false, pay })
     })
 
   const closeShift = () =>
     void act.run(async () => {
       if (!shift || !closing) return
-      const counted = parseSom(closing.counted)
+      const counted = parseSom(countedText)
       if (counted === null) throw new Error('Неверная сумма')
+      // Выплаты и закрытие — одна операция на сервере: либо всё, либо ничего (SPEC-27).
+      const payouts = closing.pay
+        .filter((p) => p.on)
+        .map((p) => ({ op_id: p.opId, employee_id: p.employee_id, amount_tyiyn: parseSom(p.sum) ?? 0 }))
       const res = await post<ShiftRow>(`/shifts/${shift.id}/close`, {
         op_id: closing.opId,
         counted_tyiyn: counted,
         comment: closing.comment,
+        payouts,
       })
       setClosing(null)
       reloadAll()
-      toast('Смена закрыта')
+      toast(payouts.length > 0 ? `Выплачено ${payouts.length}, смена закрыта` : 'Смена закрыта')
       // Деньги сдают сразу: подставляем всё, что пересчитали, кассир оставит размен.
       setHandover({ shift: res, sum: somInput(res.counted_tyiyn ?? 0), opId: newOpId() })
     })
@@ -221,13 +244,27 @@ export default function Shift() {
   // Администратор переводит только из кассы смены (SPEC-05, права).
   const fromAccounts = owner ? accs : accs.filter((a) => a.kind === 'register')
   const openMissing = missingWithFocus([Boolean(open?.cashier), 'кассира', '#shift-cashier'])
+  // Выплаты при закрытии уменьшают «должно быть»: пересчитывают то, что осталось после них.
+  const payLines = closing?.pay ?? []
+  const payBad = payLines.some((p) => {
+    const v = parseSom(p.sum)
+    return p.on && (v === null || v <= 0 || v > p.owed)
+  })
+  const payTotal = payLines.reduce((acc, p) => (p.on ? acc + Math.max(parseSom(p.sum) ?? 0, 0) : acc), 0)
+  const payCount = payLines.filter((p) => p.on).length
+  const expectedAfter = (shift?.expected_tyiyn ?? 0) - payTotal
+  const countedText = closing?.counted ?? somInput(expectedAfter)
+  const setPay = (i: number, patch: Partial<PayLine>) =>
+    closing && setClosing({ ...closing, pay: closing.pay.map((p, j) => (j === i ? { ...p, ...patch } : p)) })
   const closeDiff = (() => {
     if (!closing || !shift) return null
-    const counted = parseSom(closing.counted)
-    return counted === null ? null : counted - shift.expected_tyiyn
+    const counted = parseSom(countedText)
+    return counted === null ? null : counted - expectedAfter
   })()
   const closeMissing = missingWithFocus(
-    [parseSom(closing?.counted ?? '') !== null, 'сколько денег в кассе', '#close-counted'],
+    [!payBad, 'суммы выплат: больше нуля и не больше к выдаче', '#close-pay'],
+    [payTotal <= (shift?.expected_tyiyn ?? 0), 'выплат больше, чем в кассе', '#close-pay'],
+    [parseSom(countedText) !== null, 'сколько денег в кассе', '#close-counted'],
     [!closeDiff || Boolean(closing?.comment.trim()), 'комментарий к расхождению', '#close-comment'],
     [unsent === 0 || Boolean(closing?.force), 'отметку «закрыть всё равно»', '#close-force input'],
   )
@@ -423,7 +460,7 @@ export default function Shift() {
           <Empty>Смен ещё не было</Empty>
         ) : (
           <Table head={['№', 'День', 'Кассир', 'Ожидали', 'Факт', 'Расхождение', 'В сейф', '']}>
-            {(past.data ?? []).map((s) => (
+            {(past.data ?? []).map((s, i) => (
               <tr key={s.id}>
                 <td className="px-2 py-2 font-medium">{s.number}</td>
                 <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(s.business_date)}</td>
@@ -437,7 +474,8 @@ export default function Shift() {
                   {s.handover_pending ? <Badge tone="amber">не сдана</Badge> : s.to_safe_tyiyn === null ? '—' : <Money value={s.to_safe_tyiyn} />}
                 </td>
                 <td className="px-2 py-2 text-right">
-                  {owner && s.counted_tyiyn !== null && !shift && (
+                  {/* Переоткрыть можно только последнюю смену: после более поздней — 409 (ADR-071). */}
+                  {owner && i === 0 && s.counted_tyiyn !== null && !shift && (
                     <Button
                       variant="secondary"
                       className="min-h-9 px-3 py-1"
@@ -503,13 +541,46 @@ export default function Shift() {
                 </div>
               </Notice>
             )}
-            <div className="text-sm text-slate-600">Должно быть в кассе: {formatSom(shift.expected_tyiyn)}</div>
-            <Field label="Факт в кассе, с" required>
+            {closing.pay.length > 0 && (
+              <div id="close-pay" className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+                <div className="text-sm font-medium">Выплатить из кассы</div>
+                {closing.pay.map((p, i) => (
+                  <div key={p.employee_id} className="flex flex-wrap items-center gap-2" data-testid="close-pay-row">
+                    <div className="min-w-0 flex-1">
+                      <Checkbox label={p.name} checked={p.on} onChange={(v) => setPay(i, { on: v })} />
+                      <div className="pl-7 text-xs text-slate-500">к выдаче {formatSom(p.owed)}</div>
+                    </div>
+                    <input
+                      aria-label={`Сумма для ${p.name}`}
+                      className="w-32"
+                      inputMode="decimal"
+                      disabled={!p.on}
+                      value={p.sum}
+                      onChange={(e) => setPay(i, { sum: e.target.value })}
+                    />
+                  </div>
+                ))}
+                <div className="text-xs text-slate-500">
+                  Заработанное сегодня и невыплаченное за прошлые дни. Можно выдать меньше; аванс сверх заработанного — только владелец, в
+                  «Расчёте».
+                </div>
+              </div>
+            )}
+            <div className="text-sm text-slate-600">
+              Должно быть в кассе: {formatSom(shift.expected_tyiyn)}
+              {payTotal > 0 && (
+                <>
+                  {' '}
+                  − выплаты {formatSom(payTotal)} = <b>{formatSom(expectedAfter)}</b>
+                </>
+              )}
+            </div>
+            <Field label="Факт в кассе, с" required hint={payTotal > 0 ? 'Пересчитайте после выдачи денег' : undefined}>
               <input
                 id="close-counted"
                 autoFocus
                 inputMode="decimal"
-                value={closing.counted}
+                value={countedText}
                 onChange={(e) => setClosing({ ...closing, counted: e.target.value })}
               />
             </Field>
@@ -529,7 +600,7 @@ export default function Shift() {
                 Отмена
               </Button>
               <Button disabled={act.busy || closeMissing.length > 0} onClick={closeShift}>
-                Закрыть
+                {payCount > 0 ? 'Выплатить отмеченным и закрыть' : 'Закрыть'}
               </Button>
             </div>
           </div>

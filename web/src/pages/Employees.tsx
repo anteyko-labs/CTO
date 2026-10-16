@@ -1,4 +1,5 @@
 // Справочник сотрудников: кассиры и мастера без входа в систему (SPEC-02, инвариант 15).
+// Владелец меняет в одной карточке всё: ФИО, роли, телефон, активность и правила оплаты (SPEC-27).
 // Карточка сотрудника у владельца — ещё и правила оплаты с историей (SPEC-07) и телефон, по которому
 // работник видит свой заработок в Телеграм-боте (SPEC-23).
 import { useState, type FormEvent } from 'react'
@@ -187,6 +188,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
         active: form.active,
         ...(owner ? { phone: form.phone.trim() } : {}),
       })
+      toast('Сотрудник сохранён')
       onSaved()
     })
 
@@ -236,7 +238,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
 export default function Employees() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Employee[]>('/employees'), [])
-  const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true })
+  const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true, phone: '' })
   const [adding, setAdding] = useState(false)
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<Employee | null>(null)
@@ -246,8 +248,13 @@ export default function Employees() {
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
-      await post<Employee>('/employees', { ...form, is_cashier: owner && form.is_cashier })
-      setForm({ ...form, full_name: '' })
+      await post<Employee>('/employees', {
+        full_name: form.full_name,
+        is_master: form.is_master,
+        is_cashier: owner && form.is_cashier,
+        ...(owner ? { phone: form.phone.trim() } : {}),
+      })
+      setForm({ ...form, full_name: '', phone: '' })
       setAdding(false)
       list.reload()
     })
@@ -263,6 +270,7 @@ export default function Employees() {
   const notFilled = missingWithFocus(
     [Boolean(form.full_name.trim()), 'ФИО', '#employee-name'],
     [form.is_cashier || form.is_master, owner ? 'роль: кассир или мастер' : 'роль: мастер'],
+    [phoneOk(form.phone), 'телефон: не меньше 9 цифр', '#employee-phone'],
   )
   const needle = q.trim().toLowerCase()
   const rows = (list.data ?? []).filter((e) => !needle || e.full_name.toLowerCase().includes(needle))
@@ -335,6 +343,18 @@ export default function Employees() {
             <Field label="ФИО" required>
               <input id="employee-name" autoFocus value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
             </Field>
+            {owner && (
+              <Field label="Телефон для бота" hint="Можно позже, в карточке сотрудника">
+                <input
+                  id="employee-phone"
+                  type="tel"
+                  inputMode="tel"
+                  placeholder="+996 555 12 34 56"
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                />
+              </Field>
+            )}
             <div className="flex flex-wrap gap-4">
               {owner && <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />}
               <Checkbox label="Мастер" checked={form.is_master} onChange={(v) => setForm({ ...form, is_master: v })} />

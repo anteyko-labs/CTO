@@ -115,6 +115,9 @@ struct EmployeeReq {
     is_cashier: bool,
     #[serde(default)]
     is_master: bool,
+    /// Телефон для бота можно указать сразу — только владелец (SPEC-23, SPEC-27).
+    #[serde(default)]
+    phone: String,
 }
 
 async fn create_employee(
@@ -127,15 +130,20 @@ async fn create_employee(
     if req.is_cashier && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    let phone = employee_phone(&req.phone)?;
+    if !phone.is_empty() && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
-        "insert into employees (id, branch_id, full_name, is_cashier, is_master) values ($1, $2, $3, $4, $5)",
+        "insert into employees (id, branch_id, full_name, is_cashier, is_master, phone) values ($1, $2, $3, $4, $5, $6)",
         id,
         ctx.user.branch_id,
         full_name,
         req.is_cashier,
-        req.is_master
+        req.is_master,
+        phone
     )
     .execute(&mut *tx)
     .await?;
@@ -154,6 +162,7 @@ async fn create_employee(
             "full_name": full_name,
             "is_cashier": req.is_cashier,
             "is_master": req.is_master,
+            "phone": phone,
             "pay_rules_added": rules_added,
         }),
     )
@@ -165,7 +174,7 @@ async fn create_employee(
         is_cashier: req.is_cashier,
         is_master: req.is_master,
         active: true,
-        phone: ctx.user.is_owner().then(String::new),
+        phone: ctx.user.is_owner().then_some(phone),
     }))
 }
 
@@ -281,6 +290,13 @@ async fn update_employee(
             "phone_changed": phone_changed,
             "pay_rules_added": rules_added,
             "before": before,
+            "after": {
+                "full_name": out.full_name,
+                "is_cashier": out.is_cashier,
+                "is_master": out.is_master,
+                "active": out.active,
+                "phone": r.phone,
+            },
         }),
     )
     .await?;

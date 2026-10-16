@@ -1,5 +1,6 @@
 // Расчёт сотрудника за день и месяц, ревизия склада сканером (SPEC-07, SPEC-15).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -31,16 +32,26 @@ async function apiPost<T>(request: APIRequestContext, path: string, data: unknow
   return (await res.json()) as T
 }
 
-/** Открытая смена: смена одна в день, при повторном прогоне владелец переоткрывает сегодняшнюю. */
+/** Открытая смена: нет открытой — открываем новую; смен в день может быть несколько (ADR-071). */
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   if (await apiGet<ShiftRow | null>(request, '/shifts/current')) return
   const opened = await request.post('/api/v1/shifts/open', {
     data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId },
     headers: DEVICE,
   })
-  if (opened.ok()) return
-  const today = (await apiGet<ShiftRow[]>(request, '/shifts')).find((s) => s.counted_tyiyn !== null)
-  await apiPost(request, `/shifts/${today?.id}/reopen`, { op_id: crypto.randomUUID(), reason: 'сквозной тест' })
+  expect(opened.ok(), await opened.text()).toBeTruthy()
+}
+
+/** Своя смена кассира: кассир чека — кассир смены (ADR-071). Открытую смену другого кассира
+ *  закрываем без расхождения и открываем следующую — смен в день может быть несколько. */
+async function openOwnShift(request: APIRequestContext, cashierId: string): Promise<void> {
+  const current = await apiGet<{ id: string; expected_tyiyn: number; cashier_employee_id: string } | null>(request, '/shifts/current')
+  if (current?.cashier_employee_id === cashierId) return
+  if (current) {
+    await apiPost(request, `/shifts/${current.id}/close`, { op_id: crypto.randomUUID(), counted_tyiyn: current.expected_tyiyn })
+    await apiPost(request, `/shifts/${current.id}/handover`, { op_id: crypto.randomUUID(), amount_tyiyn: 0 })
+  }
+  await ensureOpenShift(request, cashierId)
 }
 
 async function product(request: APIRequestContext, name: string, code: string, price: number, cost: number, qty: number) {
@@ -60,7 +71,7 @@ test('расчёт кассира: 2 % за день, выплата, оклад
   await login(page)
   const cashier = `Кассир расчёта ${RUN}`
   const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
-  await ensureOpenShift(page.request, emp.id)
+  await openOwnShift(page.request, emp.id)
   const p = await product(page.request, `Щётка расчёт ${RUN}`, `25${RUN}301`, 100_000, 50_000, 5)
   // Чек на 1000 с при закупке 500 с: валовая 500 с, кассиру 2 % = 10 с.
   await apiPost(page.request, '/sales', {
@@ -166,7 +177,7 @@ test('аккумуляторы на вес: приём из кассы и про
   await page.getByRole('button', { name: 'Услуги' }).click()
   await page.getByRole('button', { name: /Аккумуляторы на вес/ }).click()
   await expect(page.getByText(/дешевле не продать/)).toBeVisible()
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.getByLabel('Вес, кг', { exact: true }).last().fill('4')
   await page.getByLabel(/^Цена за кг/).last().fill('150')
   await page.getByRole('button', { name: 'Провести чек' }).click()
@@ -251,7 +262,7 @@ test('аналог фильтра вместо отсутствующего и �
   // Связь в обе стороны: теперь оригинал — аналог для Mann.
   await expect(page.getByRole('button', { name: new RegExp(`Toyota ориг ${RUN} · 0 шт`) })).toBeVisible()
 
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.getByLabel('Доставка (бесплатно)').check()
   await page.locator('#delivery-address').fill('г. Бишкек, ул. Ахунбаева 98')
   await page.getByRole('button', { name: 'Провести чек' }).click()

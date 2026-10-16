@@ -657,7 +657,30 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
         _ => return Err(invalid("тип продажи: takeaway или service")),
     }
-    check_employee(conn, branch_id, req.cashier_id, false, offline, &mut bypass).await?;
+    // Кассир чека — кассир открытой смены (ADR-071): касса при смене кассира не спрашивает,
+    // а присланный другой кассир не учитывается. Чек без сети — по смене, открытой в момент
+    // чека на устройстве; если смены тогда не было, остаётся кассир, выбранный на устройстве.
+    let register = cash::default_account(conn, branch_id).await?;
+    let at_shift = cash::shift_open_at(
+        conn,
+        branch_id,
+        register,
+        if offline { req.client_time } else { None },
+    )
+    .await?;
+    let cashier_id = at_shift
+        .as_ref()
+        .map_or(req.cashier_id, |s| s.cashier_employee_id);
+    // Кассира смены могли отключить посреди смены — чек смены всё равно его.
+    check_employee(
+        conn,
+        branch_id,
+        cashier_id,
+        false,
+        offline || at_shift.is_some(),
+        &mut bypass,
+    )
+    .await?;
 
     let debt_total: i64 = req
         .payments
@@ -826,7 +849,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         branch_id,
         number,
         req.sale_type,
-        req.cashier_id,
+        cashier_id,
         req.master_id,
         total,
         master_fee,
@@ -1009,7 +1032,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         .await?;
     }
     if offline {
-        offline_after_close(conn, ctx, id, number, business_date, &req.payments).await?;
+        offline_after_close(conn, ctx, id, number, req.client_time, &req.payments).await?;
         // Задним числом: учётный день чека раньше сегодняшнего дня сервера (SPEC-08).
         let today =
             sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
@@ -1099,7 +1122,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         payroll::SaleAccrual {
             sale_id: id,
             business_date,
-            cashier_id: req.cashier_id,
+            cashier_id,
             party_id: req.party_id,
             gross,
             total,
@@ -1129,15 +1152,17 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     Ok(out)
 }
 
-/// Наличные чека без сети, чья смена (по учётному дню) уже закрыта: деньги легли в кассу после
-/// пересчёта и дадут расхождение следующей смены. Расчёт недостачи не меняем — владелец получает
-/// уведомление с суммой и понимает, откуда разница (ADR-059).
+/// Наличные чека без сети легли в кассу уже после пересчёта: чек пробит в смену, которую с тех пор
+/// закрыли, или до открытия более поздней смены (её пересчёт при открытии этих денег ещё не знал).
+/// Смен в день несколько (ADR-071), поэтому смена ищется по времени чека, а не по учётному дню.
+/// Расчёт недостачи не меняем — владелец получает уведомление с суммой и понимает, откуда
+/// разница (ADR-059).
 async fn offline_after_close(
     conn: &mut PgConnection,
     ctx: &Ctx,
     sale_id: Uuid,
     number: i64,
-    business_date: NaiveDate,
+    client_time: Option<DateTime<Utc>>,
     payments: &[PaymentReq],
 ) -> AppResult<()> {
     let cash: i64 = payments
@@ -1145,31 +1170,42 @@ async fn offline_after_close(
         .filter(|p| p.method == "cash")
         .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
         .ok_or_else(overflow)?;
+    let Some(at) = client_time else {
+        return Ok(());
+    };
     if cash == 0 {
         return Ok(());
     }
     let register = cash::default_account(conn, ctx.user.branch_id).await?;
-    let closed = sqlx::query_scalar!(
-        r#"select s.number from shifts s
-           where s.branch_id = $1 and s.account_id = $2 and s.business_date = $3
-             and exists (
-               select 1 from shift_closes c
-               where c.shift_id = s.id
-                 and not exists (select 1 from shift_reopens r where r.close_id = c.id))"#,
-        ctx.user.branch_id,
-        register,
-        business_date
-    )
-    .fetch_optional(&mut *conn)
-    .await?;
-    if let Some(shift_number) = closed {
+    let during = cash::shift_open_at(conn, ctx.user.branch_id, register, Some(at)).await?;
+    let now = cash::open_shift_id(conn, ctx.user.branch_id, register).await?;
+    // Смена момента чека всё ещё открыта — деньги войдут в её пересчёт, всё сходится.
+    let shift_number = match during {
+        Some(s) if now == Some(s.id) => None,
+        Some(s) => Some(s.number),
+        // Смены в момент чека не было: важна первая смена, открытая после него. Деньги не
+        // попали в её пересчёт, если при открытии кассу пересчитали или смену уже закрыли.
+        None => sqlx::query!(
+            r#"select id, number, opening_counted_tyiyn from shifts
+               where branch_id = $1 and account_id = $2 and opened_at > $3
+               order by opened_at limit 1"#,
+            ctx.user.branch_id,
+            register,
+            at
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .filter(|s| s.opening_counted_tyiyn.is_some() || now != Some(s.id))
+        .map(|s| s.number),
+    };
+    if let Some(shift_number) = shift_number {
         ops::audit(
             conn,
             ctx,
             "sale.offline_after_close",
             "sale",
             Some(sale_id),
-            json!({ "number": number, "cash": cash, "shift_number": shift_number, "business_date": business_date }),
+            json!({ "number": number, "cash": cash, "shift_number": shift_number }),
         )
         .await?;
     }

@@ -1,5 +1,6 @@
 // Главный путь этапа 1 в браузере: товар → приход → продажа → возврат → остатки, и права администратора.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -24,18 +25,12 @@ async function apiPost<T>(request: APIRequestContext, path: string, data: unknow
   return (await res.json()) as T
 }
 
-/** Открытая смена: возврат наличными без неё не проводится (ADR-065). Смена одна в день —
- *  при повторном прогоне владелец переоткрывает сегодняшнюю. */
+/** Открытая смена: возврат наличными без неё не проводится (ADR-065). Нет открытой — открываем
+ *  новую: смен в день может быть несколько (ADR-071). */
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   const current = await request.get('/api/v1/shifts/current')
   if ((await current.json()) !== null) return
-  const opened = await request.post('/api/v1/shifts/open', { data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId }, headers: DEVICE })
-  if (opened.ok()) return
-  expect(opened.status()).toBe(409)
-  const list = (await (await request.get('/api/v1/shifts')).json()) as { id: string; counted_tyiyn: number | null }[]
-  const today = list.find((s) => s.counted_tyiyn !== null)
-  expect(today, 'сегодняшняя закрытая смена').toBeTruthy()
-  await apiPost(request, `/shifts/${today?.id}/reopen`, { op_id: crypto.randomUUID(), reason: 'сквозной тест' })
+  await apiPost(request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId })
 }
 
 async function scan(page: Page, code: string) {
@@ -79,7 +74,7 @@ test('товар, приход, продажа, возврат и остаток
 
   // Продажа за наличные со сдачей.
   await page.getByRole('link', { name: 'Касса' }).click()
-  await page.getByRole('combobox', { name: /^Кассир/ }).selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await scan(page, code)
   await expect(page.getByText(product)).toBeVisible()
   // Касса с одним кассиром выбирает его сама; быстрая кнопка подставляет купюру.
@@ -156,7 +151,7 @@ test('касса работает без сети, чек уходит при е
 
   await context.setOffline(true)
   await scan(page, code)
-  await page.getByRole('combobox', { name: /^Кассир/ }).selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await expect(page.getByText(/Нет сети/)).toBeVisible()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № Ч-.* проведён/)).toBeVisible()

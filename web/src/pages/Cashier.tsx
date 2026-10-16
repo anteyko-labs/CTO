@@ -23,7 +23,7 @@ import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/
 import { enqueueSale, keepInQueue, markPending, markSent, removeSale, requestPersistentStorage } from '../lib/offline'
 import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
-import { useAction, useLoad } from '../lib/hooks'
+import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
 import { PAYMENT_LABELS, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
 
@@ -173,7 +173,17 @@ const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker
 export default function Cashier() {
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
   // Плашка смены: продавать можно и без неё, но деньги потом не с чем сверить (SPEC-05).
-  const shift = useLoad(() => get<Shift | null>('/shifts/current').catch(() => undefined), [])
+  // Без связи остаётся последняя известная смена: касса не начнёт спрашивать кассира посреди смены.
+  const lastShift = useRef<Shift | null | undefined>(undefined)
+  const shift = useLoad(
+    () =>
+      get<Shift | null>('/shifts/current')
+        .then((s) => (lastShift.current = s))
+        .catch(() => lastShift.current),
+    [],
+  )
+  // Смену могли открыть или закрыть на другом устройстве: кассир чека меняется вместе с ней.
+  usePolling(shift.reload, 30_000)
   const [draft] = useState(loadDraft)
   const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
   const [cashierId, setCashierId] = useState(() => remembered(CASHIER_KEY))
@@ -244,19 +254,28 @@ export default function Cashier() {
     }
   }, [])
 
-  // Открыта смена — кассир чека тот, кто на смене: 2 % не уйдут кассиру с прошлого раза.
+  // Открыта смена — кассир чека тот, кто открыл смену, касса его не спрашивает (ADR-071); сервер
+  // сам ставит кассира смены. Он же запоминается на устройстве: если связь пропадёт, чек без сети
+  // уйдёт с ним. Без смены кассира выбирают один раз, выбор помнится до открытия смены.
   const shiftCashier = shift.data?.cashier_employee_id ?? null
+  // Выбор кассира показывается, только когда уже известно, что смены нет: иначе он мелькнёт
+  // на время загрузки и исчезнет.
+  const [shiftKnown, setShiftKnown] = useState(false)
   useEffect(() => {
-    if (shiftCashier && cashiers.some((c) => c.id === shiftCashier)) setCashierId(shiftCashier)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shiftCashier, employees.data])
+    if (!shift.loading) setShiftKnown(true)
+  }, [shift.loading])
+  useEffect(() => {
+    if (!shiftCashier) return
+    setCashierId(shiftCashier)
+    remember(CASHIER_KEY, shiftCashier)
+  }, [shiftCashier])
 
   // Единственный кассир или мастер выбирается сам; выбор несуществующего сбрасывается.
   useEffect(() => {
     if (!employees.data) return
     const ids = cashiers.map((e) => e.id)
     // По текущему значению, а не по замкнутому: кассира могли выбрать, пока список грузился.
-    setCashierId((cur) => (ids.includes(cur) ? cur : ids.length === 1 ? ids[0] : ''))
+    setCashierId((cur) => (cur === shiftCashier || ids.includes(cur) ? cur : ids.length === 1 ? ids[0] : ''))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees.data])
   useEffect(() => {
@@ -595,7 +614,7 @@ export default function Cashier() {
           number: queued.temp_no,
           kind: 'sale',
           sale_type: saleType,
-          cashier_name: cashiers.find((c) => c.id === cashierId)?.full_name ?? '',
+          cashier_name: (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? '',
           master_name: masters.find((m) => m.id === masterId)?.full_name ?? null,
           total_tyiyn: total,
           created_at: new Date().toISOString(),
@@ -705,11 +724,6 @@ export default function Cashier() {
             <Link to="/shift" className="shrink-0 font-medium underline">
               Открыть смену
             </Link>
-          </div>
-        )}
-        {shift.data && (
-          <div className="text-xs text-slate-500">
-            Смена № {shift.data.number} · кассир {shift.data.cashier_name}
           </div>
         )}
         <Card>
@@ -968,25 +982,30 @@ export default function Cashier() {
               </button>
             ))}
           </div>
-          <Field label="Кассир" required>
-            <select
-              id="cashier-select"
-              value={cashierId}
-              onChange={(e) => {
-                setCashierId(e.target.value)
-                remember(CASHIER_KEY, e.target.value)
-              }}
-            >
-              <option value="">— выберите —</option>
-              {cashiers.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.full_name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {shiftCashier && cashierId && cashierId !== shiftCashier && (
-            <div className="text-xs text-amber-700">На смене {shift.data?.cashier_name}: процент с этого чека получит выбранный кассир.</div>
+          {shift.data ? (
+            <div className="text-sm" data-testid="shift-cashier">
+              Кассир: <b>{shift.data.cashier_name}</b> <span className="text-slate-500">(смена № {shift.data.number})</span>
+            </div>
+          ) : (
+            shiftKnown && (
+              <Field label="Кассир" required hint="Запомнится на этом устройстве до открытия смены">
+                <select
+                  id="cashier-select"
+                  value={cashierId}
+                  onChange={(e) => {
+                    setCashierId(e.target.value)
+                    remember(CASHIER_KEY, e.target.value)
+                  }}
+                >
+                  <option value="">— выберите —</option>
+                  {cashiers.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.full_name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )
           )}
           {saleType === 'service' && (
             <>

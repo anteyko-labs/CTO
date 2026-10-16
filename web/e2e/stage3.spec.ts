@@ -1,6 +1,7 @@
 // Этап 3 в браузере: услуги и мастер, продажа в долг с распиской, оплата долга, подарки,
 // перелив масла, акт сверки и запрет продажи ниже закупки (SPEC-10, SPEC-11, SPEC-14, ADR-043).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -88,20 +89,14 @@ async function apiSend<T>(request: APIRequestContext, method: 'POST' | 'PUT' | '
 
 const apiPost = <T>(request: APIRequestContext, path: string, data: unknown) => apiSend<T>(request, 'POST', path, data)
 
-/** Открытая смена: смена одна в день, при повторном прогоне владелец переоткрывает сегодняшнюю. */
+/** Открытая смена: нет открытой — открываем новую; смен в день может быть несколько (ADR-071). */
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
-  const current = await apiGet<ShiftRow | null>(request, '/shifts/current')
-  if (current) return
+  if (await apiGet<ShiftRow | null>(request, '/shifts/current')) return
   const opened = await request.post('/api/v1/shifts/open', {
     data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId },
     headers: DEVICE,
   })
-  if (opened.ok()) return
-  expect(opened.status()).toBe(409)
-  const list = await apiGet<ShiftRow[]>(request, '/shifts')
-  const today = list.find((s) => s.counted_tyiyn !== null)
-  expect(today, 'сегодняшняя закрытая смена').toBeTruthy()
-  await apiPost(request, `/shifts/${today?.id}/reopen`, { op_id: crypto.randomUUID(), reason: 'сквозной тест' })
+  expect(opened.ok(), await opened.text()).toBeTruthy()
 }
 
 async function employee(request: APIRequestContext, name: string, roles: { is_cashier?: boolean; is_master?: boolean }) {
@@ -194,7 +189,7 @@ test('услуга «масло клиента»: ставка мастера и
   await expect(page.getByRole('heading', { name: 'Услуги' })).toBeHidden()
   await expect(page.getByRole('listitem').filter({ hasText: service })).toBeVisible()
   await expect(page.getByRole('button', { name: 'В сервис' })).toHaveClass(/bg-sky-600/)
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.locator('#master-select').selectOption({ label: master })
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
@@ -229,7 +224,7 @@ test('продажа в долг: ПИН из кассы и печать рас�
   await page.goto('/')
   await scan(page, code)
   await expect(page.getByText(product)).toBeVisible()
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.locator('[data-client-input]').fill(client)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
   await payButton(page, 'В долг').click()
@@ -282,7 +277,7 @@ test('повторный долг: в расписке прежний долг �
   await page.goto('/')
   await scan(page, code)
   await expect(page.getByText(product)).toBeVisible()
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.locator('[data-client-input]').fill(client)
   await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
   await payButton(page, 'В долг').click()
@@ -373,7 +368,7 @@ test('подарок по порогу: 1 л розлива мало, канис
   await expect(giftLine.getByRole('textbox')).toHaveCount(1)
   await expect(giftLine).toContainText(money('0 с'))
 
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
@@ -468,7 +463,7 @@ test('цена ниже закупочной: касса показывает о
   await scan(page, code)
   const line = page.getByRole('listitem').filter({ hasText: product })
   await line.getByRole('textbox').nth(1).fill('100')
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/строка 1: цена ниже закупочной \(300\sс\), дешевле продать нельзя/)).toBeVisible()
@@ -495,7 +490,7 @@ test('замена в сервисе у физлица: машина, обяза
   await page.locator('#service-price').fill('400')
   await page.locator('#service-fee').fill('200')
   await page.getByRole('button', { name: 'Создать и добавить в чек' }).click()
-  await page.locator('#cashier-select').selectOption({ label: cashier })
+  await pickCashier(page, cashier)
   await page.locator('#master-select').selectOption({ label: master })
   await expect(page.getByText(/Масляная книжка: выберите клиента и машину/)).toBeVisible()
 

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number from shifts\n           where branch_id = $1 and account_id = $2 and opened_at > $3 and id <> $4\n           order by opened_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fe8208c0d19591c8eda0dcf1e2df84d72a3856beaa6f232353cee1b51f214df9"
+}

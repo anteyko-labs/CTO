@@ -2352,7 +2352,7 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn offline_sale_after_shift_close_notifies_owner(pool: PgPool) {
-    // Чек без сети с наличными пришёл, когда смена его дня уже закрыта: деньги легли в кассу
+    // Чек без сети с наличными пришёл, когда его смена уже закрыта: деньги легли в кассу
     // после пересчёта — владелец получает уведомление с суммой (ADR-059).
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
@@ -2416,6 +2416,73 @@ async fn offline_sale_after_shift_close_notifies_owner(pool: PgPool) {
     assert_eq!(got[0].0["cash"], 30_000);
     assert_eq!(got[0].0["shift_number"], 7);
     assert_eq!(got[0].0["number"], late.number);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_sale_finds_its_shift_by_time(pool: PgPool) {
+    // Смен в день несколько (ADR-071): чек без сети относится к смене, открытой в момент чека.
+    // Её кассир — кассир чека; смена с тех пор закрыта — владельцу уведомление. Чек между
+    // сменами остаётся за кассиром с устройства и, пока новую смену не открыли, сходится.
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let branch = w.owner.user.branch_id;
+    let mut conn = pool.acquire().await.unwrap();
+    let till = avtodom_server::api::cash::default_account(&mut conn, branch)
+        .await
+        .unwrap();
+    drop(conn);
+    let on_shift = Uuid::now_v7();
+    sqlx::query("insert into employees (id, branch_id, full_name, is_cashier) values ($1, $2, 'Бермет', true)")
+        .bind(on_shift)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let shift = Uuid::now_v7();
+    sqlx::query(
+        "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id, opened_by, opened_device, opening_expected_tyiyn, opened_at)
+         values ($1, $2, 3, (now() at time zone 'Asia/Bishkek')::date, $3, $4, $5, $1, 0, now() - interval '60 minutes')",
+    )
+    .bind(shift)
+    .bind(branch)
+    .bind(till)
+    .bind(on_shift)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into shift_closes (id, shift_id, seq, expected_tyiyn, counted_tyiyn, diff_tyiyn, user_id, device_id, closed_at)
+         values ($1, $2, 1, 0, 0, 0, $3, $1, now() - interval '30 minutes')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(shift)
+    .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let offline = |minutes: i64| {
+        let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 10_000)], cash(10_000));
+        req.offline = true;
+        req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(minutes));
+        req
+    };
+    let events = || {
+        sqlx::query_as::<_, (serde_json::Value,)>(
+            "select data from audit_log where action = 'sale.offline_after_close' order by created_at",
+        )
+        .fetch_all(&pool)
+    };
+    // Пробит в смене № 3 (кассир Бермет), пришёл после её закрытия.
+    let during = sell(&pool, &w.admin, offline(45)).await.unwrap();
+    assert_eq!(during.cashier_id, on_shift);
+    let got = events().await.unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0["shift_number"], 3);
+    // Пробит после закрытия, новой смены нет — кассир с устройства, уведомления нет.
+    let between = sell(&pool, &w.admin, offline(10)).await.unwrap();
+    assert_eq!(between.cashier_id, w.cashier);
+    assert_eq!(events().await.unwrap().len(), 1);
 }
 
 // ---------- Машины клиента в боте (SPEC-22) ----------
