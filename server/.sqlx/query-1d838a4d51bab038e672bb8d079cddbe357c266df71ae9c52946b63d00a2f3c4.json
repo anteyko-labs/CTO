@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.credit_id, s.debit_id, r.id as \"receipt_id?\", r.number as \"number?\",\n                  sum(s.amount_tyiyn)::bigint as \"amount!\",\n                  coalesce(sum(s.amount_tyiyn) filter (where s.amount_tyiyn > 0), 0)::bigint as \"gross!\",\n                  min(s.created_at) as \"first!\"\n           from supplier_allocations s\n           join party_ledger d on d.id = s.debit_id\n           left join receipts r on d.doc_type = 'receipt' and r.id = d.doc_id\n           where s.branch_id = $1 and s.party_id = $2\n           group by s.credit_id, s.debit_id, r.id, r.number\n           order by min(s.created_at)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credit_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "debit_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "receipt_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "gross!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "first!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1d838a4d51bab038e672bb8d079cddbe357c266df71ae9c52946b63d00a2f3c4"
+}

@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { StockBackLink } from '../components/StockBackLink'
+import { ProductFormModal } from '../components/ProductFormModal'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -204,6 +205,8 @@ export default function Categories() {
   const [form, setForm] = useState<{ name: string; kind: CategoryKind }>({ name: '', kind: 'other' })
   const [editing, setEditing] = useState<Category | null>(null)
   const [adding, setAdding] = useState(false)
+  // «+ Товар»: форма товара с уже выбранной категорией (SPEC-27).
+  const [newProductIn, setNewProductIn] = useState<Category | null>(null)
   const { busy, error, setError, run } = useAction()
 
   const create = (e: FormEvent) => {
@@ -246,7 +249,7 @@ export default function Categories() {
             Категорий пока нет. Начните с одной: «Масла» или «Фильтры» — товар заводится внутри категории.
           </Empty>
         ) : (
-          <Table head={['Название', 'Вид', 'Строка книжки', 'Характеристик']}>
+          <Table head={['Название', 'Вид', 'Строка книжки', 'Характеристик', '']}>
             {list.data.map((c) => (
               <tr key={c.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setEditing(c)}>
                 <td className="px-2 py-2 font-medium">{c.name}</td>
@@ -260,6 +263,19 @@ export default function Categories() {
                   )}
                 </td>
                 <td className="px-2 py-2">{c.attributes.length}</td>
+                <td className="px-2 py-2 text-right">
+                  <Button
+                    variant="secondary"
+                    className="px-2 py-1 text-xs"
+                    aria-label={`Новый товар в категории ${c.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setNewProductIn(c)
+                    }}
+                  >
+                    + Товар
+                  </Button>
+                </td>
               </tr>
             ))}
           </Table>
@@ -293,6 +309,17 @@ export default function Categories() {
             </div>
           </form>
         </Modal>
+      )}
+
+      {newProductIn && (
+        <ProductFormModal
+          presetCategoryId={newProductIn.id}
+          onClose={() => setNewProductIn(null)}
+          onSaved={(p) => {
+            setNewProductIn(null)
+            toast(`Товар «${p.name}» заведён в категории «${newProductIn.name}»`)
+          }}
+        />
       )}
 
       {editing && (

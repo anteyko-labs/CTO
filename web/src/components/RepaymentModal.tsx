@@ -24,18 +24,28 @@ const METHOD_HINTS: Record<Method, string> = {
   outside: 'Мимо денег точки: например, владелец заплатил из своих.',
 }
 
+/** Накладная, которую оплачиваем: сумма не больше её остатка (SPEC-27). */
+export interface InvoiceToPay {
+  receipt_id: string
+  number: number
+  left_tyiyn: number
+}
+
 export function RepaymentModal({
   party,
+  invoice,
   onClose,
   onDone,
 }: {
   party: Pick<Party, 'id' | 'name' | 'balance_tyiyn' | 'role'>
+  /** Оплата одной накладной; без неё оплата закрывает самые старые накладные (ADR-073). */
+  invoice?: InvoiceToPay
   onClose: () => void
   onDone: (balance: number) => void
 }) {
   const owner = useUser().role === 'owner'
   const supplier = party.role === 'supplier'
-  const owed = Math.abs(party.balance_tyiyn)
+  const owed = invoice ? invoice.left_tyiyn : Math.abs(party.balance_tyiyn)
   const [sum, setSum] = useState(owed > 0 ? somInput(owed) : '')
   const [method, setMethod] = useState<Method>('cash')
   const [comment, setComment] = useState('')
@@ -45,7 +55,10 @@ export function RepaymentModal({
   // Администратор поставщику платит только из кассы; мимо кассы — только владелец.
   const methods: Method[] = owner ? ['cash', 'card', 'transfer', 'outside'] : supplier ? ['cash'] : ['cash', 'card', 'transfer']
   const value = parseSom(sum)
-  const notFilled = missingWithFocus([value !== null && value > 0, 'сумму', '#repay-sum'])
+  const notFilled = missingWithFocus(
+    [value !== null && value > 0, 'сумму', '#repay-sum'],
+    [!invoice || (value !== null && value <= invoice.left_tyiyn), 'сумму не больше остатка накладной', '#repay-sum'],
+  )
 
   const save = () =>
     void run(async () => {
@@ -56,22 +69,41 @@ export function RepaymentModal({
         amount_tyiyn: value,
         method,
         comment,
+        receipt_id: invoice?.receipt_id,
       })
-      toast(supplier ? 'Оплата поставщику записана' : `Оплата долга принята: ${formatSom(value)}`)
+      toast(
+        invoice
+          ? `Накладная № ${invoice.number}: оплачено ${formatSom(value)}`
+          : supplier
+            ? 'Оплата поставщику записана'
+            : `Оплата долга принята: ${formatSom(value)}`,
+      )
       onDone(res.balance_tyiyn)
     })
 
   return (
-    <Modal title={supplier ? `Оплата поставщику: ${party.name}` : `Оплата долга: ${party.name}`} onClose={onClose}>
+    <Modal
+      title={invoice ? `Оплата накладной № ${invoice.number}: ${party.name}` : supplier ? `Оплата поставщику: ${party.name}` : `Оплата долга: ${party.name}`}
+      onClose={onClose}
+    >
       <div className="flex flex-col gap-3">
         <div className="text-sm text-slate-600">
-          {party.balance_tyiyn > 0 ? 'Должен нам' : party.balance_tyiyn < 0 ? 'Должны мы' : 'Долга нет'}
-          {owed > 0 && `: ${formatSom(owed)}`}
+          {invoice
+            ? `Осталось по накладной: ${formatSom(invoice.left_tyiyn)}. Можно заплатить часть.`
+            : party.balance_tyiyn > 0
+              ? 'Должен нам'
+              : party.balance_tyiyn < 0
+                ? 'Должны мы'
+                : 'Долга нет'}
+          {!invoice && owed > 0 && `: ${formatSom(owed)}`}
         </div>
+        {supplier && !invoice && (
+          <div className="text-xs text-slate-500">Оплата закрывает самые старые неоплаченные накладные.</div>
+        )}
         <Field label="Сумма, с" required>
           <input id="repay-sum" autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
         </Field>
-        {value !== null && value > owed && owed > 0 && (
+        {!invoice && value !== null && value > owed && owed > 0 && (
           <div className="text-xs text-amber-700">Больше долга: разница станет {supplier ? 'нашим авансом поставщику' : 'авансом клиента'}.</div>
         )}
         <div className={`grid overflow-hidden rounded-md border border-slate-300 text-sm`} style={{ gridTemplateColumns: `repeat(${methods.length}, minmax(0, 1fr))` }}>

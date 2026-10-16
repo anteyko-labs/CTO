@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
             routing::get(search_products).post(create_product),
         )
         .route("/products/similar", routing::get(similar_products))
+        .route("/products/list", routing::get(list_products))
         .route(
             "/products/by-barcode/{code}",
             routing::get(product_by_barcode),
@@ -395,6 +396,8 @@ pub struct ProductFilter {
     pub include_archived: bool,
     pub low_only: bool,
     pub limit: i64,
+    /// Без предела 500 строк: список товаров считает итоги по всему отбору (SPEC-27 §4).
+    pub no_limit: bool,
 }
 
 fn escape_like(s: &str) -> String {
@@ -409,6 +412,26 @@ pub async fn query_products(
     user: &CurrentUser,
     f: ProductFilter,
 ) -> AppResult<Vec<ProductOut>> {
+    Ok(query_products_raw(conn, user, f)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect())
+}
+
+/// Пул остатка товара как он есть в базе — для оценки в списке товаров. Наружу не отдаётся.
+#[derive(Clone, Copy, Debug)]
+pub struct RawPool {
+    pub value: i64,
+    pub last_qty: i64,
+    pub last_cost: i64,
+}
+
+async fn query_products_raw(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    f: ProductFilter,
+) -> AppResult<Vec<(ProductOut, RawPool)>> {
     let q =
         f.q.map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -443,7 +466,7 @@ pub async fn query_products(
              and ($5::uuid[] is null or p.id = any($5))
              and (not p.archived or $6)
              and (not $7 or coalesce(bp.stock_qty, 0) < coalesce(bp.min_stock, 0))
-           order by p.name
+           order by p.name, p.id
            limit $8"#,
         user.branch_id,
         q,
@@ -452,7 +475,11 @@ pub async fn query_products(
         f.ids.as_deref(),
         f.include_archived,
         f.low_only,
-        f.limit.clamp(1, 500)
+        if f.no_limit {
+            i64::MAX
+        } else {
+            f.limit.clamp(1, 500)
+        }
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -467,7 +494,12 @@ pub async fn query_products(
                 last_qty: 0,
                 last_cost: 0,
             };
-            ProductOut {
+            let raw = RawPool {
+                value: r.stock_value_tyiyn,
+                last_qty: r.last_cost_qty,
+                last_cost: r.last_cost_tyiyn,
+            };
+            let out = ProductOut {
                 id: r.id,
                 category_id: r.category_id,
                 category_kind: r.category_kind,
@@ -495,7 +527,8 @@ pub async fn query_products(
                     .flatten(),
                 avg_cost_tyiyn: if owner { average(&pool, per) } else { None },
                 stock_value_tyiyn: owner.then_some(r.stock_value_tyiyn),
-            }
+            };
+            (out, raw)
         })
         .collect())
 }
@@ -551,9 +584,209 @@ async fn search_products(
             .get("limit")
             .and_then(|v| v.parse().ok())
             .unwrap_or(50),
+        no_limit: false,
     };
     let mut conn = state.pool.acquire().await?;
     Ok(Json(query_products(&mut conn, &user, f).await?))
+}
+
+/// Оценка строки списка товаров: цена закупки и суммы остатка (SPEC-27 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Valuation {
+    /// Цена закупки за единицу показа: средняя, а без остатка — последняя закупочная.
+    pub purchase_price: Option<i64>,
+    /// Остаток по закупке: стоимость пула; минус — по последней закупочной цене.
+    pub stock_purchase: i64,
+    /// Остаток по цене продажи.
+    pub stock_sale: i64,
+}
+
+/// Единица показа цены: канистра масла (без тары — литр), килограмм, штука.
+pub fn price_unit(unit: &str, container_ml: Option<i64>) -> i64 {
+    match (unit, container_ml) {
+        ("ml", Some(c)) if c > 0 => c,
+        ("ml", _) | ("g", _) => 1000,
+        _ => 1,
+    }
+}
+
+/// Оценка остатка товара. Деление одно на строку, с округлением в одном месте (инвариант 1);
+/// итоги списка складываются из уже округлённых строк, поэтому сходятся с ними до тыйына.
+pub fn valuation(p: &ProductOut, raw: &RawPool) -> Option<Valuation> {
+    let per = price_unit(&p.unit, p.container_ml);
+    let qty = i128::from(p.stock_qty);
+    // Масло без тары продаётся только розливом: цена — за литр.
+    let sale = match (p.unit.as_str(), p.container_ml) {
+        ("ml", None) => p.pour_price_per_l_tyiyn.unwrap_or(0),
+        _ => p.sale_price_tyiyn,
+    };
+    let stock_sale = div_round(qty * i128::from(sale), i128::from(per))?;
+    let last = (raw.last_qty > 0).then(|| {
+        div_round(
+            i128::from(raw.last_cost) * i128::from(per),
+            i128::from(raw.last_qty),
+        )
+    });
+    let purchase_price = if p.stock_qty > 0 && raw.value > 0 {
+        div_round(i128::from(raw.value) * i128::from(per), qty)
+    } else {
+        last.flatten()
+    };
+    let stock_purchase = match p.stock_qty {
+        0 => 0,
+        q if q > 0 => raw.value,
+        // Ушли в минус: недостающее стоит по последней закупочной цене (как себестоимость продажи).
+        q if raw.last_qty > 0 => div_round(
+            i128::from(q) * i128::from(raw.last_cost),
+            i128::from(raw.last_qty),
+        )?,
+        _ => raw.value,
+    };
+    Some(Valuation {
+        purchase_price,
+        stock_purchase,
+        stock_sale,
+    })
+}
+
+/// Строка списка товаров «как в Умаге» (SPEC-27 §4).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProductRow {
+    #[serde(flatten)]
+    pub product: ProductOut,
+    /// Код: артикул, а без него — первый штрихкод.
+    pub code: String,
+    /// Цена закупки за единицу показа — только владельцу.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase_price_tyiyn: Option<i64>,
+    /// Сумма остатка по закупке — только владельцу.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stock_purchase_tyiyn: Option<i64>,
+    /// Сумма остатка по цене продажи.
+    pub stock_sale_tyiyn: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProductListTotals {
+    /// Товаров в отборе (строк может быть показано меньше).
+    pub count: i64,
+    /// По закупке — только владельцу.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase_tyiyn: Option<i64>,
+    pub sale_tyiyn: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ProductList {
+    pub items: Vec<ProductRow>,
+    pub totals: ProductListTotals,
+}
+
+/// Список товаров с суммами остатка и итогами по всему отбору. Итоги считает сервер: клиент
+/// дробей не складывает. Администратору закупка и стоимость остатка не отдаются, и сортировать
+/// по ним он не может (ADR-008).
+pub async fn product_list(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    mut f: ProductFilter,
+    sort: &str,
+    desc: bool,
+) -> AppResult<ProductList> {
+    let owner = user.is_owner();
+    let limit = usize::try_from(f.limit.clamp(1, 2000)).unwrap_or(2000);
+    f.no_limit = true;
+    let rows = query_products_raw(conn, user, f).await?;
+    let mut items = Vec::with_capacity(rows.len());
+    let (mut purchase, mut sale) = (0i64, 0i64);
+    for (mut p, raw) in rows {
+        let v = valuation(&p, &raw).ok_or_else(crate::error::overflow)?;
+        purchase = purchase
+            .checked_add(v.stock_purchase)
+            .ok_or_else(crate::error::overflow)?;
+        sale = sale
+            .checked_add(v.stock_sale)
+            .ok_or_else(crate::error::overflow)?;
+        let code = if p.article.trim().is_empty() {
+            p.barcodes.first().cloned().unwrap_or_default()
+        } else {
+            p.article.clone()
+        };
+        if !owner {
+            p.last_purchase_price_tyiyn = None;
+        }
+        items.push(ProductRow {
+            product: p,
+            code,
+            purchase_price_tyiyn: if owner { v.purchase_price } else { None },
+            stock_purchase_tyiyn: owner.then_some(v.stock_purchase),
+            stock_sale_tyiyn: v.stock_sale,
+        });
+    }
+    let count = i64::try_from(items.len()).unwrap_or(i64::MAX);
+    let by_name = |a: &ProductRow, b: &ProductRow| {
+        a.product
+            .name
+            .to_lowercase()
+            .cmp(&b.product.name.to_lowercase())
+            .then(a.product.id.cmp(&b.product.id))
+    };
+    let sort = if owner {
+        sort
+    } else {
+        match sort {
+            "purchase" | "stock_purchase" => "name",
+            s => s,
+        }
+    };
+    items.sort_by(|a, b| {
+        let o = match sort {
+            "code" => a.code.to_lowercase().cmp(&b.code.to_lowercase()),
+            "stock" => a.product.stock_qty.cmp(&b.product.stock_qty),
+            "purchase" => a.purchase_price_tyiyn.cmp(&b.purchase_price_tyiyn),
+            "sale" => a.product.sale_price_tyiyn.cmp(&b.product.sale_price_tyiyn),
+            "stock_purchase" => a.stock_purchase_tyiyn.cmp(&b.stock_purchase_tyiyn),
+            "stock_sale" => a.stock_sale_tyiyn.cmp(&b.stock_sale_tyiyn),
+            _ => by_name(a, b),
+        };
+        let o = if desc { o.reverse() } else { o };
+        o.then_with(|| by_name(a, b))
+    });
+    items.truncate(limit);
+    Ok(ProductList {
+        items,
+        totals: ProductListTotals {
+            count,
+            purchase_tyiyn: owner.then_some(purchase),
+            sale_tyiyn: sale,
+        },
+    })
+}
+
+async fn list_products(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(params): Query<HashMap<String, String>>,
+) -> AppResult<Json<ProductList>> {
+    let category_id = params
+        .get("category_id")
+        .filter(|s| !s.is_empty())
+        .map(|s| Uuid::parse_str(s).map_err(|_| invalid("неверный category_id")))
+        .transpose()?;
+    let f = ProductFilter {
+        q: params.get("q").cloned(),
+        category_id,
+        attrs: attr_filter(&params),
+        include_archived: params.get("archived").is_some_and(|v| v == "true"),
+        limit: params
+            .get("limit")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(500),
+        ..Default::default()
+    };
+    let sort = params.get("sort").map_or("name", String::as_str);
+    let desc = params.get("dir").is_some_and(|v| v == "desc");
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(product_list(&mut conn, &user, f, sort, desc).await?))
 }
 
 async fn get_product(

@@ -753,6 +753,18 @@ pub struct LedgerEntry<'a> {
 /// Записывает долг или погашение и пересчитывает баланс контрагента.
 /// Вызывается из кассы в той же транзакции, что и чек (инвариант 7).
 pub async fn add_ledger(conn: &mut PgConnection, ctx: &Ctx, e: LedgerEntry<'_>) -> AppResult<i64> {
+    add_ledger_to(conn, ctx, e, None).await.map(|(b, _)| b)
+}
+
+/// То же, что [`add_ledger`], и возвращает id записи. У поставщика запись сразу распределяется
+/// (ADR-073): оплата с `target` сначала ложится на эту запись долга (накладную), остальное —
+/// на самые старые долги.
+pub async fn add_ledger_to(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    e: LedgerEntry<'_>,
+    target: Option<(Uuid, i64)>,
+) -> AppResult<(i64, Uuid)> {
     let LedgerEntry {
         party_id,
         kind,
@@ -762,17 +774,19 @@ pub async fn add_ledger(conn: &mut PgConnection, ctx: &Ctx, e: LedgerEntry<'_>) 
         comment,
     } = e;
     ops::check_amount(amount)?;
-    let balance = sqlx::query_scalar!(
-        "select balance_tyiyn from parties where id = $1 and branch_id = $2 for update",
+    let party = sqlx::query!(
+        "select balance_tyiyn, role from parties where id = $1 and branch_id = $2 for update",
         party_id,
         ctx.user.branch_id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
-    let next = balance
+    let next = party
+        .balance_tyiyn
         .checked_add(amount)
         .ok_or_else(|| AppError::Validation("слишком большая сумма долга".into()))?;
+    let id = new_id();
     sqlx::query!(
         r#"insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,
                                      doc_type, doc_id, comment, user_id, device_id)
@@ -782,7 +796,7 @@ pub async fn add_ledger(conn: &mut PgConnection, ctx: &Ctx, e: LedgerEntry<'_>) 
                              where s.id = $7 and $6 in ('sale', 'sale_return')),
                             (now() at time zone 'Asia/Bishkek')::date),
                    $6, $7, $8, $9, $10)"#,
-        new_id(),
+        id,
         ctx.user.branch_id,
         party_id,
         kind,
@@ -802,7 +816,14 @@ pub async fn add_ledger(conn: &mut PgConnection, ctx: &Ctx, e: LedgerEntry<'_>) 
     )
     .execute(&mut *conn)
     .await?;
-    Ok(next)
+    if party.role == "supplier" {
+        if let Some((debit_id, amount)) = target {
+            crate::api::supplier_debts::allocate_to(conn, ctx, party_id, id, debit_id, amount)
+                .await?;
+        }
+        crate::api::supplier_debts::allocate(conn, party_id).await?;
+    }
+    Ok((next, id))
 }
 
 /// Проверяет, что клиент может брать в долг, и что работник с машиной — его.
@@ -1072,6 +1093,10 @@ pub struct RepaymentReq {
     pub method: Option<String>,
     #[serde(default)]
     pub comment: String,
+    /// Оплата одной накладной поставщика (SPEC-27): сумма не больше её остатка. Без накладной
+    /// оплата закрывает самые старые долги (ADR-073).
+    #[serde(default)]
+    pub receipt_id: Option<Uuid>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1168,6 +1193,36 @@ pub async fn post_repayment_tx(
     if !ctx.user.is_owner() && (method == "outside" || (supplier && method != "cash")) {
         return Err(AppError::Forbidden);
     }
+    // Оплата накладной: остаток считается под блокировкой поставщика, переплатить её нельзя.
+    let target = match req.receipt_id {
+        None => None,
+        Some(_) if !supplier => {
+            return Err(invalid("накладную оплачивают только поставщику"));
+        }
+        Some(receipt_id) => {
+            sqlx::query!(
+                "select id from parties where id = $1 for update",
+                req.party_id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            let inv = crate::api::supplier_debts::invoice_open(
+                &mut *conn,
+                branch_id,
+                req.party_id,
+                receipt_id,
+            )
+            .await?;
+            if req.amount_tyiyn > inv.open_tyiyn {
+                return Err(invalid(format!(
+                    "по накладной № {} осталось {} — больше заплатить нельзя",
+                    inv.number,
+                    crate::domain::money::format_som(inv.open_tyiyn)
+                )));
+            }
+            Some((inv.ledger_id, req.amount_tyiyn))
+        }
+    };
     let rid = new_id();
     let signed = if supplier {
         req.amount_tyiyn
@@ -1224,7 +1279,7 @@ pub async fn post_repayment_tx(
             .await?;
         }
     }
-    let balance = add_ledger(
+    let (balance, _) = add_ledger_to(
         &mut *conn,
         ctx,
         LedgerEntry {
@@ -1235,6 +1290,7 @@ pub async fn post_repayment_tx(
             doc_id: Some(rid),
             comment: req.comment.trim(),
         },
+        target,
     )
     .await?;
     if !supplier {
@@ -1252,6 +1308,7 @@ pub async fn post_repayment_tx(
             "method": method,
             "balance_tyiyn": balance,
             "repayment_id": rid,
+            "receipt_id": req.receipt_id,
         }),
     )
     .await?;
@@ -1568,10 +1625,10 @@ pub(crate) fn ledger_title(kind: &str, amount: i64, reversal: bool) -> &'static 
 }
 
 #[derive(Deserialize)]
-struct LedgerReverseReq {
-    op_id: Uuid,
+pub struct LedgerReverseReq {
+    pub op_id: Uuid,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 /// Сторно погашения или правки долга владельцем (SPEC-10): новая запись с обратным знаком и
@@ -1583,6 +1640,20 @@ async fn reverse_ledger(
     Path(id): Path<Uuid>,
     Json(req): Json<LedgerReverseReq>,
 ) -> AppResult<Json<LedgerResult>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_ledger_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно записи долга одной транзакцией вызывающего. У поставщика распределения сторнированной
+/// оплаты отменяются, освободившиеся суммы ложатся на самые старые долги (ADR-073).
+pub async fn reverse_ledger_tx(
+    tx: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: LedgerReverseReq,
+) -> AppResult<LedgerResult> {
     const KIND: &str = "debt.reverse";
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
@@ -1591,9 +1662,8 @@ async fn reverse_ledger(
         return Err(invalid("укажите причину"));
     }
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let l = sqlx::query!(
         r#"select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.reversal_of, p.role
@@ -1639,10 +1709,10 @@ async fn reverse_ledger(
         .fetch_all(&mut *tx)
         .await?;
         for m in moves {
-            crate::api::cash::require_open_shift(&mut tx, branch_id, m.account_id).await?;
+            crate::api::cash::require_open_shift(&mut *tx, branch_id, m.account_id).await?;
             crate::api::cash::add_movement(
-                &mut tx,
-                &ctx,
+                &mut *tx,
+                ctx,
                 crate::api::cash::CashEntry {
                     account_id: m.account_id,
                     kind: "reversal",
@@ -1656,7 +1726,7 @@ async fn reverse_ledger(
         }
         // Процент кассира, начисленный за это погашение, тоже откатывается (ADR-035).
         if l.role == "customer" {
-            crate::api::payroll::reverse_repayment(&mut tx, &ctx, l.party_id, -l.amount_tyiyn)
+            crate::api::payroll::reverse_repayment(&mut *tx, ctx, l.party_id, -l.amount_tyiyn)
                 .await?;
         }
     }
@@ -1700,9 +1770,12 @@ async fn reverse_ledger(
     )
     .execute(&mut *tx)
     .await?;
+    if l.role == "supplier" {
+        crate::api::supplier_debts::allocate(&mut *tx, l.party_id).await?;
+    }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "party",
         Some(l.party_id),
@@ -1713,9 +1786,8 @@ async fn reverse_ledger(
         party_id: l.party_id,
         balance_tyiyn: next,
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize)]

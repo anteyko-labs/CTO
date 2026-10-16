@@ -46,7 +46,11 @@ export function formatKg(g: number): string {
   return formatLiters(g).replace(/л$/, 'кг')
 }
 
-/** Остаток масла: «14,5 л · 3 кан. по 4 л + 2,5 л» — считаем литрами, тара в расшифровке. */
+/**
+ * Остаток масла: «14,5 л = 3 кан. по 4 л + 2,5 л» — считаем литрами, тара в расшифровке.
+ * Целые канистры и остаток в литрах в сумме дают ровно столько мл, сколько на складе (SPEC-27):
+ * деление целочисленное, ничего не округляется. Так же считает сервер (`domain/qty.rs`).
+ */
 export function formatOilStock(ml: number, containerMl: number): string {
   const total = formatLiters(ml)
   if (ml <= 0 || containerMl <= 0) return total
@@ -55,7 +59,14 @@ export function formatOilStock(ml: number, containerMl: number): string {
   const parts: string[] = []
   if (full > 0) parts.push(`${full} кан. по ${formatLiters(containerMl)}`)
   if (rest > 0) parts.push(formatLiters(rest))
-  return parts.length > 1 || full > 1 ? `${total} · ${parts.join(' + ')}` : total
+  return parts.length > 1 || full > 1 ? `${total} = ${parts.join(' + ')}` : total
+}
+
+/** Миллилитры для поля ввода литров: 12500 → «12,5», −500 → «-0,5» (разбирается parseLiters без знака). */
+export function litersInput(ml: number): string {
+  const abs = Math.abs(ml)
+  const frac = String(abs % 1000).padStart(3, '0').replace(/0+$/, '')
+  return `${ml < 0 ? '-' : ''}${Math.trunc(abs / 1000)}${frac ? ',' + frac : ''}`
 }
 
 /** Разбор десятичной строки в целое с `scale` знаками: «12,5» при scale=2 → 1250. */

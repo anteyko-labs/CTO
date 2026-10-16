@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
-import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
+import { formatDateTime, formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { divRound } from '../lib/money'
@@ -41,11 +41,6 @@ interface TransferRow {
 /** Себестоимость литра для показа: стоимость остатка × 1000 / мл. */
 const perLiter = (value: number, ml: number): number | null => (ml > 0 ? divRound(value * 1000, ml) : null)
 
-/** Миллилитры для поля ввода литров: 12500 → «12,5». */
-function litersInput(ml: number): string {
-  const frac = String(ml % 1000).padStart(3, '0').replace(/0+$/, '')
-  return `${Math.trunc(ml / 1000)}${frac ? ',' + frac : ''}`
-}
 
 export default function OilTransfer() {
   const products = useLoad(() => get<Product[]>('/products?limit=500'), [])

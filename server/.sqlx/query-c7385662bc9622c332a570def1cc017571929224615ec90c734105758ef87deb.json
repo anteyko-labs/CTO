@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, l.doc_type, l.business_date, l.created_at, l.comment,\n                  -l.amount_tyiyn as \"total!\",\n                  coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                            where s.debit_id = l.id), 0)::bigint as \"paid!\",\n                  r.id as \"receipt_id?\", r.number as \"number?\", r.supplier_doc as \"supplier_doc?\"\n           from party_ledger l\n           left join receipts r on l.doc_type = 'receipt' and r.id = l.doc_id\n           where l.branch_id = $1 and l.party_id = $2 and l.amount_tyiyn < 0\n             and supplier_ledger_live(l)\n           order by l.business_date, l.created_at, l.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "total!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "paid!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "receipt_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "supplier_doc?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c7385662bc9622c332a570def1cc017571929224615ec90c734105758ef87deb"
+}

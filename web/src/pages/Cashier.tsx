@@ -23,7 +23,7 @@ import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } 
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, markPending, markSent, removeSale, requestPersistentStorage } from '../lib/offline'
-import { formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
+import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { pourAmount } from '../lib/money'
@@ -453,7 +453,7 @@ export default function Cashier() {
     const q = lineQty(l) ?? 0
     if (l.kind === 'pour' || l.kind === 'weight') {
       const ml = Math.max(500, q + dir * 500)
-      update(l.key, { qtyText: formatLiters(ml).replace(/ л$/, '').replace(/ /g, '') })
+      update(l.key, { qtyText: litersInput(ml) })
     } else {
       update(l.key, { qtyText: String(Math.max(1, q + dir)) })
     }

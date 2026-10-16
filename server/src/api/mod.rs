@@ -30,6 +30,7 @@ pub mod refs;
 pub mod reports;
 pub mod revisions;
 pub mod sales;
+pub mod supplier_debts;
 pub mod telegram;
 
 use axum::Router;
@@ -63,5 +64,6 @@ pub fn routes() -> Router<AppState> {
         .merge(reports::routes())
         .merge(revisions::routes())
         .merge(sales::routes())
+        .merge(supplier_debts::routes())
         .merge(telegram::routes())
 }

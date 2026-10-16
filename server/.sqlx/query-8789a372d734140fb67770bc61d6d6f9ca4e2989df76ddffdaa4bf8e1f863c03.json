@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select supplier_allocate($1) as \"n!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8789a372d734140fb67770bc61d6d6f9ca4e2989df76ddffdaa4bf8e1f863c03"
+}

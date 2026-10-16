@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/receipts", routing::get(list_receipts).post(post_receipt))
         .route("/receipts/{id}", routing::get(get_receipt))
         .route("/receipts/{id}/reverse", routing::post(reverse_receipt))
+        .route("/products/{id}/last-receipt", routing::get(last_receipt))
         .route("/stock", routing::get(stock))
         .route("/stock/verify", routing::get(verify_stock))
         .route("/stock/stale", routing::get(stale_stock))
@@ -91,6 +92,9 @@ pub struct ReceiptOut {
     /// Откуда оплачена: название кассы или `outside`; пусто — в долг или накладная до ADR-062.
     #[serde(default)]
     pub paid_from: Option<String>,
+    /// Накладная в долг: оплачено, осталось, статус и платежи (SPEC-27, ADR-073).
+    #[serde(default)]
+    pub debt: Option<crate::api::supplier_debts::ReceiptDebt>,
 }
 
 async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<ReceiptOut> {
@@ -119,6 +123,7 @@ async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> App
     )
     .fetch_all(&mut *conn)
     .await?;
+    let debt = crate::api::supplier_debts::receipt_debt(&mut *conn, branch_id, id).await?;
     Ok(ReceiptOut {
         id: h.id,
         number: h.number,
@@ -133,6 +138,7 @@ async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> App
         created_at: h.created_at,
         lines,
         paid_from: h.paid_from,
+        debt,
     })
 }
 
@@ -918,6 +924,76 @@ async fn get_receipt(
     Ok(Json(load_receipt(&mut conn, user.branch_id, id).await?))
 }
 
+/// Прошлая закупка товара: «в прошлый раз: 350 с, 12.10, Автоснаб» (SPEC-27 §5).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct LastReceipt {
+    pub receipt_id: Uuid,
+    pub number: i64,
+    /// Цена за штуку, канистру или килограмм — как вводят в приходе.
+    pub price_tyiyn: i64,
+    pub created_at: DateTime<Utc>,
+    pub supplier_name: Option<String>,
+}
+
+async fn last_receipt(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<Option<LastReceipt>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(last_receipt_of(&mut conn, user.branch_id, id).await?))
+}
+
+/// Последний непогашенный приход товара (и влитых в него карточек). Закупочные цены видит и
+/// администратор: он сам вводит их в приходе (ADR-008, ADR-040).
+pub async fn last_receipt_of(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    product_id: Uuid,
+) -> AppResult<Option<LastReceipt>> {
+    let r = sqlx::query!(
+        r#"with recursive fam as (
+             select $2::uuid as id
+             union select p.id from products p join fam on p.merged_into = fam.id
+           )
+           select r.id, r.number, r.created_at, s.name as "supplier_name?", l.qty, l.cost_tyiyn,
+                  p.unit, p.container_ml
+           from receipt_lines l
+           join receipts r on r.id = l.receipt_id
+           join products p on p.id = $2
+           left join suppliers s on s.id = r.supplier_id
+           where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
+             and r.reversal_of is null
+             and not exists (select 1 from receipts x where x.reversal_of = r.id)
+           order by r.created_at desc, l.line_no desc
+           limit 1"#,
+        branch_id,
+        product_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(r) = r else {
+        return Ok(None);
+    };
+    let per = match (r.unit.as_str(), r.container_ml) {
+        ("ml", Some(c)) if c > 0 => c,
+        ("g", _) => 1000,
+        _ => 1,
+    };
+    let price = crate::domain::money::div_round(
+        i128::from(r.cost_tyiyn) * i128::from(per),
+        i128::from(r.qty),
+    )
+    .ok_or_else(overflow)?;
+    Ok(Some(LastReceipt {
+        receipt_id: r.id,
+        number: r.number,
+        price_tyiyn: price,
+        created_at: r.created_at,
+        supplier_name: r.supplier_name,
+    }))
+}
+
 #[derive(Deserialize)]
 pub struct PeriodQuery {
     pub from: Option<NaiveDate>,
@@ -939,6 +1015,8 @@ pub(crate) struct ReceiptListItem {
     pub(crate) created_at: DateTime<Utc>,
     /// Взято в долг у поставщика по этой накладной (0 — оплачено сразу).
     pub(crate) on_debt_tyiyn: i64,
+    /// Осталось заплатить по накладной в долг (ADR-073); 0 — оплачена или не в долг.
+    pub(crate) debt_left_tyiyn: i64,
 }
 
 async fn list_receipts(
@@ -962,7 +1040,13 @@ pub(crate) async fn receipts_data(
                   exists (select 1 from receipts x where x.reversal_of = r.id) as "reversed!",
                   u.full_name as user_name, r.created_at,
                   abs(coalesce((select sum(l.amount_tyiyn) from party_ledger l
-                                where l.doc_type = 'receipt' and l.doc_id = r.id), 0))::bigint as "on_debt_tyiyn!"
+                                where l.doc_type = 'receipt' and l.doc_id = r.id), 0))::bigint as "on_debt_tyiyn!",
+                  coalesce((select sum(-l.amount_tyiyn) - coalesce(sum((select sum(s.amount_tyiyn)
+                                                                         from supplier_allocations s
+                                                                         where s.debit_id = l.id)), 0)
+                            from party_ledger l
+                            where l.doc_type = 'receipt' and l.doc_id = r.id and l.amount_tyiyn < 0
+                              and supplier_ledger_live(l)), 0)::bigint as "debt_left_tyiyn!"
            from receipts r
            join users u on u.id = r.user_id
            left join suppliers s on s.id = r.supplier_id

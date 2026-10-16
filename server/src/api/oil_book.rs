@@ -157,15 +157,7 @@ pub struct VehicleBook {
 
 /// Количество строки для книжки: «1 кан. × 4 л», «1,5 л», «2 шт».
 fn qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
-    let liters = |ml: i64| {
-        let frac = format!("{:03}", ml % 1000);
-        let frac = frac.trim_end_matches('0');
-        if frac.is_empty() {
-            format!("{} л", ml / 1000)
-        } else {
-            format!("{},{} л", ml / 1000, frac)
-        }
-    };
+    let liters = crate::domain::qty::liters;
     match (kind, container_ml) {
         ("container", Some(c)) => format!("{qty} кан. × {}", liters(c)),
         ("pour", _) => liters(qty),

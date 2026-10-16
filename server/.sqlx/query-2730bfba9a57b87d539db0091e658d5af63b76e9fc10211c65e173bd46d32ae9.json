@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into supplier_allocations (id, branch_id, party_id, credit_id, debit_id, amount_tyiyn)\n           values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2730bfba9a57b87d539db0091e658d5af63b76e9fc10211c65e173bd46d32ae9"
+}

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { POLARITY_LABELS } from '../lib/battery'
-import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
+import { litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
@@ -21,11 +21,16 @@ interface Form {
   min_stock: string
 }
 
-function initialForm(p: Product | undefined, presetBarcode: string | undefined, presetName: string | undefined): Form {
+function initialForm(
+  p: Product | undefined,
+  presetBarcode: string | undefined,
+  presetName: string | undefined,
+  presetCategoryId?: string,
+): Form {
   const oil = p?.unit === 'ml'
-  const toLiters = (ml: number) => formatLiters(ml).replace(/ л$/, '').replace(/ /g, '')
+  const toLiters = litersInput
   return {
-    category_id: p?.category_id ?? '',
+    category_id: p?.category_id ?? presetCategoryId ?? '',
     name: p?.name ?? presetName ?? '',
     brand: p?.brand ?? '',
     article: p?.article ?? '',
@@ -43,6 +48,7 @@ export function ProductFormModal({
   product,
   presetBarcode,
   presetName,
+  presetCategoryId,
   onClose,
   onSaved,
 }: {
@@ -50,13 +56,15 @@ export function ProductFormModal({
   presetBarcode?: string
   /** Название, набранное в поиске: товар заводится без повторного ввода. */
   presetName?: string
+  /** «+ Товар» на экране категорий: категория уже выбрана (SPEC-27). */
+  presetCategoryId?: string
   onClose: () => void
   onSaved: (p: Product) => void
 }) {
   const user = useUser()
   const owner = user.role === 'owner'
   const editing = Boolean(product)
-  const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName))
+  const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId))
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
   const [newCategory, setNewCategory] = useState<{ name: string; kind: CategoryKind } | null>(null)

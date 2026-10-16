@@ -1,7 +1,10 @@
-// Просмотр прихода, сторно и печать этикеток (SPEC-03).
+// Просмотр прихода, сторно и печать этикеток (SPEC-03); оплата накладной в долг по частям и история
+// платежей (SPEC-27).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { printLabels } from '../components/labels'
+import { RepaymentModal } from '../components/RepaymentModal'
+import { InvoicePayments, InvoiceStatusBadge } from '../components/SupplierPayments'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom } from '../lib/format'
@@ -33,6 +36,7 @@ export default function ReceiptView() {
   const [reverseOpen, setReverseOpen] = useState(false)
   const [reverseComment, setReverseComment] = useState('')
   const [opId] = useState(newOpId)
+  const [paying, setPaying] = useState(false)
   const reverse = useAction()
   const labels = useAction()
 
@@ -143,6 +147,30 @@ export default function ReceiptView() {
           )}
         </dl>
       </Card>
+      {r.debt && (
+        <Card>
+          <div className="mb-3 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm">
+            <h2 className="font-semibold">Оплата поставщику</h2>
+            <InvoiceStatusBadge status={r.debt.status} />
+            <div>
+              <span className="text-slate-500">В долг: </span>
+              <span className="font-medium tabular-nums">{formatSom(r.debt.total_tyiyn)}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Оплачено: </span>
+              <span className="font-medium tabular-nums" data-testid="invoice-paid">{formatSom(r.debt.paid_tyiyn)}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Осталось: </span>
+              <span className={`font-medium tabular-nums ${r.debt.left_tyiyn > 0 ? 'text-rose-700' : ''}`} data-testid="invoice-left">
+                {formatSom(r.debt.left_tyiyn)}
+              </span>
+            </div>
+            {r.debt.left_tyiyn > 0 && r.supplier_id && <Button onClick={() => setPaying(true)}>Оплатить</Button>}
+          </div>
+          <InvoicePayments payments={r.debt.payments} />
+        </Card>
+      )}
       <Card>
         <Table head={['№', 'Товар', 'Количество', 'Сумма']}>
           {r.lines.map((l) => (
@@ -158,6 +186,18 @@ export default function ReceiptView() {
           Итого: {formatSom(r.total_tyiyn)}
         </div>
       </Card>
+
+      {paying && r.debt && r.supplier_id && (
+        <RepaymentModal
+          party={{ id: r.supplier_id, name: r.supplier_name ?? '', balance_tyiyn: -r.debt.left_tyiyn, role: 'supplier' }}
+          invoice={{ receipt_id: r.id, number: r.number, left_tyiyn: r.debt.left_tyiyn }}
+          onClose={() => setPaying(false)}
+          onDone={() => {
+            setPaying(false)
+            receipt.reload()
+          }}
+        />
+      )}
 
       {reverseOpen && (
         <Modal title={`Сторно прихода № ${r.number}`} onClose={() => setReverseOpen(false)}>

@@ -1,20 +1,28 @@
 // Справочник товаров: поиск, фильтры по характеристикам, карточка, архив, печать этикеток (SPEC-02).
+// Список «как в Умаге» (SPEC-27): остаток, цены и суммы остатка с итогами по отбору — итоги считает
+// сервер; закупку и стоимость остатка видит только владелец (ADR-008).
 import { useMemo, useState } from 'react'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu, Table } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu } from '../components/ui'
 import { get, patch, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
-import type { Category, Product } from '../lib/types'
+import type { Category, Product, ProductList, ProductRow } from '../lib/types'
 
 interface Selected {
   product: Product
   copies: string
 }
+
+type SortKey = 'name' | 'code' | 'stock' | 'purchase' | 'sale' | 'stock_purchase' | 'stock_sale'
+
+/** За что цена: канистра масла, литр розлива, килограмм или штука. */
+const perText = (p: Product): string =>
+  p.unit === 'ml' ? (p.container_ml ? `за ${formatLiters(p.container_ml)}` : 'за л') : p.unit === 'g' ? 'за кг' : ''
 
 export default function Products() {
   const owner = useUser().role === 'owner'
@@ -25,6 +33,7 @@ export default function Products() {
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
   const [selected, setSelected] = useState<Record<string, Selected>>({})
   const [message, setMessage] = useState<string | null>(null)
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'name', desc: false })
   const { busy, error, run } = useAction()
 
   const categories = useLoad(() => get<Category[]>('/categories'), [])
@@ -38,12 +47,28 @@ export default function Products() {
       q: query,
       category_id: categoryId,
       archived: archived || undefined,
-      limit: 200,
+      sort: sort.key,
+      dir: sort.desc ? 'desc' : undefined,
+      limit: 500,
     }
     for (const [k, v] of Object.entries(attrs)) p[`attr.${k}`] = v.trim()
     return qs(p)
-  }, [query, categoryId, archived, attrs])
-  const products = useLoad(() => get<Product[]>(`/products${params}`), [params])
+  }, [query, categoryId, archived, attrs, sort])
+  const list = useLoad(() => get<ProductList>(`/products/list${params}`), [params])
+  const items = list.data?.items
+  const totals = list.data?.totals
+
+  /** Щелчок по заголовку: та же колонка — обратный порядок; числа — сначала большие. */
+  const sortBy = (key: SortKey) =>
+    setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key !== 'name' && key !== 'code' }))
+  const head = (key: SortKey, label: string, right = false) => (
+    <th key={key} className={`px-2 py-2 font-medium ${right ? 'text-right' : ''}`} aria-sort={sort.key === key ? (sort.desc ? 'descending' : 'ascending') : 'none'}>
+      <button type="button" className="inline-flex items-center gap-1 uppercase hover:text-slate-800" onClick={() => sortBy(key)}>
+        {label}
+        <span aria-hidden className="text-[10px]">{sort.key === key ? (sort.desc ? '▼' : '▲') : ''}</span>
+      </button>
+    </th>
+  )
 
   const categoryName = (id: string) => categories.data?.find((c) => c.id === id)?.name ?? '—'
 
@@ -64,7 +89,7 @@ export default function Products() {
   // Свежие данные товара из списка: штрихкод мог появиться после правки
   const selectedList = Object.values(selected).map((s) => ({
     ...s,
-    product: products.data?.find((p) => p.id === s.product.id) ?? s.product,
+    product: items?.find((p) => p.id === s.product.id) ?? s.product,
   }))
   const noBarcode = selectedList.filter((s) => s.product.barcodes.length === 0)
 
@@ -83,13 +108,13 @@ export default function Products() {
   const setArchivedFlag = (p: Product, value: boolean) =>
     run(async () => {
       await patch<Product>(`/products/${p.id}`, { archived: value })
-      products.reload()
+      list.reload()
     })
 
   const onSaved = (p: Product) => {
     setEditing(null)
     setSelected((s) => (s[p.id] ? { ...s, [p.id]: { ...s[p.id], product: p } } : s))
-    products.reload()
+    list.reload()
   }
 
   return (
@@ -192,84 +217,65 @@ export default function Products() {
       </div>
 
       <Card>
-        <ErrorBox error={products.error ?? categories.error} />
-        {products.loading && !products.data ? (
+        <ErrorBox error={list.error ?? categories.error} />
+        {list.loading && !list.data ? (
           <Loading />
-        ) : !products.data?.length ? (
+        ) : !items?.length ? (
           <Empty action={<Button onClick={() => setEditing('new')}>Новый товар</Button>}>Товары не найдены</Empty>
         ) : (
-          <Table
-            head={['', 'Название', 'Артикул', 'Категория', 'Цена', 'Остаток', ...(owner ? ['Себестоимость'] : []), '']}
-          >
-            {products.data.map((p) => {
-              const oil = p.unit === 'ml'
-              return (
-                <tr
-                  key={p.id}
-                  className={`cursor-pointer hover:bg-slate-50 ${p.archived ? 'text-slate-400' : ''}`}
-                  onClick={() => setEditing(p)}
-                >
-                  <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4"
-                      aria-label="Выбрать для этикеток"
-                      checked={Boolean(selected[p.id])}
-                      onChange={(e) => toggle(p, e.target.checked)}
+          <>
+            <div className="overflow-x-auto">
+              <table className="responsive w-full text-sm" aria-label="Список товаров">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-500">
+                    <th className="px-2 py-2" />
+                    {head('name', 'Название')}
+                    {head('code', 'Код')}
+                    {head('stock', 'Остаток', true)}
+                    {owner && head('purchase', 'Закупка', true)}
+                    {head('sale', 'Продажа', true)}
+                    {owner && head('stock_purchase', 'Сумма по закупке', true)}
+                    {head('stock_sale', 'Сумма по продаже', true)}
+                    <th className="px-2 py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {items.map((p) => (
+                    <ProductTableRow
+                      key={p.id}
+                      p={p}
+                      owner={owner}
+                      category={categoryName(p.category_id)}
+                      selected={Boolean(selected[p.id])}
+                      onOpen={() => setEditing(p)}
+                      onToggle={(on) => toggle(p, on)}
+                      onArchive={() => {
+                        if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
+                          void setArchivedFlag(p, !p.archived)
+                        }
+                      }}
                     />
-                  </td>
-                  <td className="px-2 py-2 md:min-w-[18rem]">
-                    <div className="font-medium">{productTitle(p)}</div>
-                    <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
-                      {p.brand}
-                      {p.needs_review && <Badge tone="amber">проверить</Badge>}
-                      {p.archived && <Badge>архив</Badge>}
-                    </div>
-                  </td>
-                  <td className="px-2 py-2 whitespace-nowrap">{p.article || '—'}</td>
-                  <td className="px-2 py-2 text-slate-600 md:max-w-[10rem] md:truncate" title={categoryName(p.category_id)}>
-                    {categoryName(p.category_id)}
-                  </td>
-                  <td className="px-2 py-2 whitespace-nowrap">
-                    {formatSom(p.sale_price_tyiyn)}
-                    {oil && p.container_ml != null && <span className="text-xs text-slate-500"> за {formatLiters(p.container_ml)}</span>}
-                    {oil && p.pour_price_per_l_tyiyn != null && (
-                      <div className="text-xs text-slate-500">розлив {formatSom(p.pour_price_per_l_tyiyn)} за л</div>
-                    )}
-                  </td>
-                  <td className="px-2 py-2">{stockText(p)}</td>
-                  {owner && (
-                    <td className="px-2 py-2 whitespace-nowrap">
-                      {p.avg_cost_tyiyn != null ? formatSom(p.avg_cost_tyiyn) : '—'}
-                      {oil && p.container_ml != null && p.avg_cost_tyiyn != null && (
-                        <span className="text-xs text-slate-500"> за {formatLiters(p.container_ml)}</span>
-                      )}
-                    </td>
-                  )}
-                  <td className="px-2 py-2 text-right" onClick={(e) => e.stopPropagation()}>
-                    <RowMenu
-                      items={[
-                        { label: 'Открыть карточку', onClick: () => setEditing(p) },
-                        {
-                          label: selected[p.id] ? 'Убрать из этикеток' : 'Печать этикетки',
-                          onClick: () => toggle(p, !selected[p.id]),
-                        },
-                        {
-                          label: p.archived ? 'Вернуть из архива' : 'В архив',
-                          danger: !p.archived,
-                          onClick: () => {
-                            if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
-                              void setArchivedFlag(p, !p.archived)
-                            }
-                          },
-                        },
-                      ]}
-                    />
-                  </td>
-                </tr>
-              )
-            })}
-          </Table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {totals && (
+              <div className="mt-3 flex flex-wrap justify-end gap-x-6 gap-y-1 border-t border-slate-200 pt-3 text-sm" data-testid="product-totals">
+                <span className="text-slate-500">
+                  Товаров: <span className="tabular-nums">{totals.count}</span>
+                  {totals.count > items.length && ` (показаны ${items.length})`}
+                </span>
+                {owner && totals.purchase_tyiyn !== undefined && (
+                  <span>
+                    Итого по закупке: <span className="font-semibold tabular-nums">{formatSom(totals.purchase_tyiyn)}</span>
+                  </span>
+                )}
+                <span>
+                  Итого по продаже: <span className="font-semibold tabular-nums">{formatSom(totals.sale_tyiyn)}</span>
+                </span>
+              </div>
+            )}
+          </>
         )}
       </Card>
 
@@ -278,11 +284,84 @@ export default function Products() {
           product={editing === 'new' ? undefined : editing}
           onClose={() => {
             setEditing(null)
-            products.reload()
+            list.reload()
           }}
           onSaved={onSaved}
         />
       )}
     </div>
+  )
+}
+
+/** Строка списка: на телефоне ячейки подписаны (`data-label`), на компьютере — таблица. */
+function ProductTableRow({
+  p,
+  owner,
+  category,
+  selected,
+  onOpen,
+  onToggle,
+  onArchive,
+}: {
+  p: ProductRow
+  owner: boolean
+  category: string
+  selected: boolean
+  onOpen: () => void
+  onToggle: (on: boolean) => void
+  onArchive: () => void
+}) {
+  const oil = p.unit === 'ml'
+  const minus = p.stock_qty < 0
+  return (
+    <tr className={`cursor-pointer hover:bg-slate-50 ${p.archived ? 'text-slate-400' : ''}`} onClick={onOpen}>
+      <td className="px-2 py-2" data-label="" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" className="h-4 w-4" aria-label="Выбрать для этикеток" checked={selected} onChange={(e) => onToggle(e.target.checked)} />
+      </td>
+      <td className="px-2 py-2 md:min-w-[18rem]" data-label="Название">
+        <div className="font-medium">{productTitle(p)}</div>
+        <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
+          {[p.brand, category].filter(Boolean).join(' · ')}
+          {p.needs_review && <Badge tone="amber">проверить</Badge>}
+          {p.archived && <Badge>архив</Badge>}
+        </div>
+      </td>
+      <td className="px-2 py-2 whitespace-nowrap" data-label="Код">
+        {p.code || '—'}
+      </td>
+      <td className={`px-2 py-2 text-right tabular-nums ${minus ? 'font-semibold text-rose-700' : ''}`} data-label="Остаток">
+        {stockText(p)}
+      </td>
+      {owner && (
+        <td className="px-2 py-2 whitespace-nowrap text-right tabular-nums" data-label="Закупка">
+          {p.purchase_price_tyiyn != null ? formatSom(p.purchase_price_tyiyn) : '—'}
+          {p.purchase_price_tyiyn != null && perText(p) && <span className="text-xs text-slate-500"> {perText(p)}</span>}
+        </td>
+      )}
+      <td className="px-2 py-2 whitespace-nowrap text-right tabular-nums" data-label="Продажа">
+        {oil && !p.container_ml ? formatSom(p.pour_price_per_l_tyiyn ?? 0) : formatSom(p.sale_price_tyiyn)}
+        {perText(p) && <span className="text-xs text-slate-500"> {perText(p)}</span>}
+        {oil && p.container_ml != null && p.pour_price_per_l_tyiyn != null && (
+          <div className="text-xs text-slate-500">розлив {formatSom(p.pour_price_per_l_tyiyn)} за л</div>
+        )}
+      </td>
+      {owner && (
+        <td className={`px-2 py-2 whitespace-nowrap text-right tabular-nums ${minus ? 'text-rose-700' : ''}`} data-label="Сумма по закупке">
+          {formatSom(p.stock_purchase_tyiyn ?? 0)}
+        </td>
+      )}
+      <td className={`px-2 py-2 whitespace-nowrap text-right tabular-nums ${minus ? 'text-rose-700' : ''}`} data-label="Сумма по продаже">
+        {formatSom(p.stock_sale_tyiyn)}
+      </td>
+      <td className="px-2 py-2 text-right" data-label="" onClick={(e) => e.stopPropagation()}>
+        <RowMenu
+          items={[
+            { label: 'Открыть карточку', onClick: onOpen },
+            { label: selected ? 'Убрать из этикеток' : 'Печать этикетки', onClick: () => onToggle(!selected) },
+            { label: p.archived ? 'Вернуть из архива' : 'В архив', danger: !p.archived, onClick: onArchive },
+          ]}
+        />
+      </td>
+    </tr>
   )
 }

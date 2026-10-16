@@ -721,21 +721,9 @@ fn receipt_count(s: &str) -> Option<i64> {
         .filter(|v| *v > 0)
 }
 
+/// Количество для текста бота. Знак минуса не теряется и у долей литра: −500 мл → «−0,5 л».
 pub(crate) fn qty_text(qty: i64, unit: &str) -> String {
-    let fixed = |v: i64| {
-        let frac = format!("{:03}", (v % 1000).abs());
-        let frac = frac.trim_end_matches('0');
-        if frac.is_empty() {
-            format!("{}", v / 1000)
-        } else {
-            format!("{},{}", v / 1000, frac)
-        }
-    };
-    match unit {
-        "ml" => format!("{} л", fixed(qty)),
-        "g" => format!("{} кг", fixed(qty)),
-        _ => format!("{qty} шт"),
-    }
+    crate::domain::qty::qty_text(qty, unit)
 }
 
 /// За что цена товара: за штуку, за канистру, за килограмм.
@@ -1155,6 +1143,7 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
             amount_tyiyn: sum,
             method: Some(method.into()),
             comment: text,
+            receipt_id: None,
         }),
         kind: if supplier {
             "supplier_payment"

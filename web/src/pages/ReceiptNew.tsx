@@ -1,4 +1,6 @@
 // Новый приход: сканер, создание незнакомых товаров, цены из прошлого прихода, печать этикеток (SPEC-03).
+// В строке — цена продажи и сумма по ней, внизу итог по закупке и по продаже; при выборе товара —
+// «в прошлый раз: цена, дата, поставщик» (SPEC-27).
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { printLabels } from '../components/labels'
@@ -7,40 +9,21 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
-import { formatLiters, formatSom, parseSom, somInput } from '../lib/format'
+import { formatLiters, formatSom, somInput } from '../lib/format'
+import { isOil, lastText, lineCalc, parseCount } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
 import { defaultPaySource, notEnough, paySources } from '../lib/receiptPay'
-import type { CashAccount, Product, Receipt, Supplier } from '../lib/types'
+import type { CashAccount, LastReceipt, Product, Receipt, Supplier } from '../lib/types'
 
 interface Line {
   key: string
   product: Product
   count: string
   price: string
-}
-
-const isOil = (p: Product): p is Product & { container_ml: number } => p.unit === 'ml' && Boolean(p.container_ml)
-
-/** Целое положительное число из строки или null. */
-function parseCount(s: string): number | null {
-  const t = s.trim()
-  if (!/^\d+$/.test(t)) return null
-  const n = Number(t)
-  return Number.isSafeInteger(n) && n > 0 ? n : null
-}
-
-/** Расчёт строки: количество в единицах учёта и сумма; текст ошибки, если ввод неверен. */
-function lineCalc(l: Line): { n: number; qty: number; cost: number } | string {
-  const n = parseCount(l.count)
-  if (n === null) return isOil(l.product) ? 'укажите число канистр' : 'укажите количество'
-  const price = parseSom(l.price)
-  if (price === null) return 'укажите цену'
-  const qty = isOil(l.product) ? n * l.product.container_ml : n
-  const cost = n * price
-  if (!Number.isSafeInteger(qty) || !Number.isSafeInteger(cost)) return 'слишком большое число'
-  return { n, qty, cost }
+  /** Прошлая закупка: undefined — ещё грузится, null — закупок не было. */
+  last?: LastReceipt | null
 }
 
 export default function ReceiptNew() {
@@ -69,6 +52,12 @@ export default function ReceiptNew() {
   const supplierAction = useAction()
 
   const addProduct = (p: Product) => {
+    // Прошлая закупка: цена, дата и поставщик — подсказка рядом с ценой (SPEC-27).
+    if (!lines.some((l) => l.product.id === p.id)) {
+      void get<LastReceipt | null>(`/products/${p.id}/last-receipt`)
+        .then((last) => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last } : l))))
+        .catch(() => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last: null } : l))))
+    }
     setLines((ls) => {
       const i = ls.findIndex((l) => l.product.id === p.id)
       if (i < 0) {
@@ -96,12 +85,18 @@ export default function ReceiptNew() {
 
   const calcs = lines.map(lineCalc)
   let total: number | null = 0
+  let totalSale: number | null = 0
   for (const c of calcs) {
-    if (typeof c === 'string' || total === null) {
+    if (typeof c === 'string' || total === null || totalSale === null) {
       total = null
+      totalSale = null
     } else {
       total += c.cost
-      if (!Number.isSafeInteger(total)) total = null
+      totalSale += c.sale
+      if (!Number.isSafeInteger(total) || !Number.isSafeInteger(totalSale)) {
+        total = null
+        totalSale = null
+      }
     }
   }
 
@@ -244,7 +239,7 @@ export default function ReceiptNew() {
           {lines.length === 0 ? (
             <Empty>Сканируйте штрихкод или найдите товар по названию — он добавится строкой</Empty>
           ) : (
-            <Table head={['Товар', 'Количество', 'Цена, с', 'Сумма', '']}>
+            <Table head={['Товар', 'Количество', 'Цена, с', 'Сумма', 'По продаже', '']}>
               {lines.map((l, i) => {
                 const oil = isOil(l.product)
                 const c = calcs[i]
@@ -281,9 +276,20 @@ export default function ReceiptNew() {
                           onChange={(e) => updateLine(l.key, { price: e.target.value })}
                         />
                       </label>
+                      {l.last && (
+                        <div className="mt-1 text-xs text-slate-500" data-testid="last-receipt">
+                          {lastText(l.last)}
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-2 py-2 pt-7 text-right">
                       {typeof c === 'string' ? <span className="text-rose-600">{c}</span> : formatSom(c.cost)}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-2 pt-7 text-right text-slate-600">
+                      {typeof c === 'string' ? '—' : formatSom(c.sale)}
+                      <div className="text-xs text-slate-500">
+                        цена {formatSom(l.product.sale_price_tyiyn)} {oil ? 'за кан.' : 'за шт'}
+                      </div>
                     </td>
                     <td className="px-2 py-2 pt-6 text-right">
                       <div className="flex flex-wrap justify-end gap-1">
@@ -339,8 +345,13 @@ export default function ReceiptNew() {
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-4">
-                <div className="text-lg font-semibold">
-                  Итого: <span className="tabular-nums">{total === null ? '—' : formatSom(total)}</span>
+                <div className="text-right">
+                  <div className="text-lg font-semibold">
+                    Итого: <span className="tabular-nums">{total === null ? '—' : formatSom(total)}</span>
+                  </div>
+                  <div className="text-sm text-slate-600">
+                    По цене продажи: <span className="tabular-nums" data-testid="receipt-sale-total">{totalSale === null ? '—' : formatSom(totalSale)}</span>
+                  </div>
                 </div>
                 <div className="hidden md:block">
                   <Button disabled={save.busy || missing.length > 0} onClick={submit}>

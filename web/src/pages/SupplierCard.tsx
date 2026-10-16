@@ -6,23 +6,33 @@ import { useUser } from '../lib/auth'
 import { balanceText, qtyText as unitQty } from '../lib/defects'
 import { formatDateTime, formatSom } from '../lib/format'
 import { useLoad } from '../lib/hooks'
-import type { DeliveryReceipt, DeliveryRow, Party, ReceiptListItem, Supplier, SupplierDeliveries } from '../lib/types'
+import type { DeliveryReceipt, DeliveryRow, InvoiceStatus, Party, ReceiptListItem, Supplier, SupplierDeliveries, SupplierInvoices } from '../lib/types'
 import { ReconciliationButton } from '../components/ReconciliationButton'
-import { RepaymentModal } from '../components/RepaymentModal'
+import { RepaymentModal, type InvoiceToPay } from '../components/RepaymentModal'
+import { InvoiceStatusBadge, SupplierPaymentHistory } from '../components/SupplierPayments'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 
 /** За что последняя цена: канистра масла, килограмм или штука. */
 const perText = (r: { unit: string; container_ml: number | null }): string =>
   r.unit === 'ml' && r.container_ml ? ` / ${unitQty(r.container_ml, 'ml')}` : r.unit === 'g' ? ' / кг' : ' / шт'
 
-/** Карточка поставщика: поставки по товарам с остатком (SPEC-26) и накладные (SPEC-10). */
+/** Статус накладной в долг по списку приходов; null — оплачена сразу или отменена. */
+function invoiceStatus(d: ReceiptListItem): InvoiceStatus | null {
+  const debt = d.on_debt_tyiyn ?? 0
+  if (debt <= 0 || d.reversed || d.reversal_of) return null
+  const left = d.debt_left_tyiyn ?? 0
+  return left <= 0 ? 'paid' : left >= debt ? 'unpaid' : 'partial'
+}
+
+/** Карточка поставщика: поставки по товарам с остатком (SPEC-26), накладные с остатком долга и платежи (SPEC-10, SPEC-27). */
 export default function SupplierCard() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [paying, setPaying] = useState(false)
+  const [payingInvoice, setPayingInvoice] = useState<InvoiceToPay | null>(null)
   const owner = useUser().role === 'owner'
-  const [tab, setTab] = useState<'deliveries' | 'receipts'>('deliveries')
+  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments'>('deliveries')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [opened, setOpened] = useState<DeliveryRow | null>(null)
@@ -30,6 +40,12 @@ export default function SupplierCard() {
   const supplier = useLoad(() => get<Supplier>(`/suppliers/${id}`), [id])
   const deliveries = useLoad(() => get<SupplierDeliveries>(`/suppliers/${id}/deliveries${qs({ from, to })}`), [id, from, to])
   const receipts = useLoad(() => get<ReceiptListItem[]>(`/receipts${qs({ supplier_id: id })}`), [id])
+  const invoices = useLoad(() => get<SupplierInvoices>(`/parties/${id}/invoices`).catch(() => null), [id])
+  const reloadMoney = () => {
+    party.reload()
+    receipts.reload()
+    invoices.reload()
+  }
 
   const owed = party.data ? -Math.min(party.data.balance_tyiyn, 0) : 0
 
@@ -86,6 +102,20 @@ export default function SupplierCard() {
             </div>
           </div>
         )}
+        {(invoices.data?.debt_tyiyn ?? 0) > 0 && (
+          <div>
+            <div className="text-xs text-slate-500">Неоплаченных накладных</div>
+            <div className="font-medium">
+              {invoices.data?.invoices.filter((i) => i.left_tyiyn > 0).length} на {formatSom(invoices.data?.debt_tyiyn ?? 0)}
+            </div>
+          </div>
+        )}
+        {(invoices.data?.advance_tyiyn ?? 0) > 0 && (
+          <div>
+            <div className="text-xs text-slate-500">Аванс поставщику</div>
+            <div className="font-medium">{formatSom(invoices.data?.advance_tyiyn ?? 0)}</div>
+          </div>
+        )}
         {owed > 0 && (
           <Button onClick={() => setPaying(true)}>Оплатить</Button>
         )}
@@ -98,6 +128,7 @@ export default function SupplierCard() {
           [
             ['deliveries', 'Поставки'],
             ['receipts', 'Накладные'],
+            ['payments', 'Платежи'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -199,8 +230,11 @@ export default function SupplierCard() {
             Накладных от этого поставщика нет
           </Empty>
         ) : (
-          <Table head={['Номер', 'Дата', 'Документ', 'Сумма', 'Принял', '']}>
-            {docs.map((d) => (
+          <Table head={['Номер', 'Дата', 'Документ', 'Сумма', 'Оплачено', 'Осталось', 'Статус', 'Принял', '']}>
+            {docs.map((d) => {
+              const st = invoiceStatus(d)
+              const left = d.debt_left_tyiyn ?? 0
+              return (
               <tr key={d.id} className="hover:bg-slate-50">
                 <td className="px-2 py-2 font-medium">
                   № {d.number}
@@ -210,17 +244,59 @@ export default function SupplierCard() {
                 <td className="whitespace-nowrap px-2 py-2">{formatDateTime(d.created_at)}</td>
                 <td className="px-2 py-2">{d.supplier_doc || '—'}</td>
                 <td className="whitespace-nowrap px-2 py-2">{formatSom(d.total_tyiyn)}</td>
+                <td className="whitespace-nowrap px-2 py-2 tabular-nums">
+                  {st ? formatSom((d.on_debt_tyiyn ?? 0) - left) : d.reversal_of || d.reversed ? '—' : 'сразу'}
+                </td>
+                <td className={`whitespace-nowrap px-2 py-2 tabular-nums ${left > 0 && st ? 'font-semibold text-rose-700' : ''}`}>
+                  {st ? formatSom(left) : '—'}
+                </td>
+                <td className="px-2 py-2">{st ? <InvoiceStatusBadge status={st} /> : '—'}</td>
                 <td className="px-2 py-2">{d.user_name}</td>
                 <td className="px-2 py-2 text-right">
-                  <Link className="text-sky-700 underline" to={`/receipts/${d.id}`}>
-                    Открыть
-                  </Link>
+                  <div className="flex items-center justify-end gap-2">
+                    {st && left > 0 && (
+                      <Button
+                        variant="secondary"
+                        className="px-2 py-1 text-xs"
+                        onClick={() => setPayingInvoice({ receipt_id: d.id, number: d.number, left_tyiyn: left })}
+                      >
+                        Оплатить
+                      </Button>
+                    )}
+                    <Link className="text-sky-700 underline" to={`/receipts/${d.id}`}>
+                      Открыть
+                    </Link>
+                  </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </Table>
         )}
       </Card>
+      )}
+
+      {tab === 'payments' && (
+        <Card>
+          <h2 className="mb-1 font-semibold">История платежей</h2>
+          <p className="mb-3 text-xs text-slate-500">
+            Оплата без выбора накладной и зачёт брака закрывают самые старые неоплаченные накладные. Сторно платежа возвращает долг на те же накладные.
+          </p>
+          <ErrorBox error={invoices.error} />
+          {invoices.loading && !invoices.data ? <Loading /> : <SupplierPaymentHistory payments={invoices.data?.payments ?? []} />}
+        </Card>
+      )}
+
+      {payingInvoice && party.data && (
+        <RepaymentModal
+          party={party.data}
+          invoice={payingInvoice}
+          onClose={() => setPayingInvoice(null)}
+          onDone={() => {
+            setPayingInvoice(null)
+            reloadMoney()
+          }}
+        />
       )}
 
       {opened && <ProductReceipts supplierId={id} row={opened} from={from} to={to} onClose={() => setOpened(null)} />}
@@ -231,7 +307,7 @@ export default function SupplierCard() {
           onClose={() => setPaying(false)}
           onDone={() => {
             setPaying(false)
-            party.reload()
+            reloadMoney()
           }}
         />
       )}

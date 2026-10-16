@@ -135,6 +135,107 @@ export interface Receipt {
   lines: ReceiptLine[]
   /** Откуда оплачена: название кассы или `outside`; null — в долг или старая накладная (ADR-062). */
   paid_from?: string | null
+  /** Накладная в долг: оплачено, осталось, статус и платежи (SPEC-27, ADR-073). */
+  debt?: ReceiptDebt | null
+}
+
+export type InvoiceStatus = 'unpaid' | 'partial' | 'paid'
+
+/** Платёж по одной накладной: сколько из него легло на неё. */
+export interface InvoicePayment {
+  ledger_id: string
+  at: string
+  user_name: string
+  /** `payment` — оплата, `defect` — зачёт брака, `adjust` — правка владельца. */
+  kind: 'payment' | 'defect' | 'adjust'
+  /** Касса; `outside` — мимо касс; пусто — зачёт или правка. */
+  source: string
+  amount_tyiyn: number
+  payment_tyiyn: number
+  reversed: boolean
+  comment: string
+}
+
+export interface ReceiptDebt {
+  total_tyiyn: number
+  paid_tyiyn: number
+  left_tyiyn: number
+  status: InvoiceStatus
+  payments: InvoicePayment[]
+}
+
+/** Долг поставщику: накладная в долг или правка владельца. */
+export interface SupplierInvoice {
+  ledger_id: string
+  receipt_id: string | null
+  number: number | null
+  supplier_doc: string
+  business_date: string
+  created_at: string
+  total_tyiyn: number
+  paid_tyiyn: number
+  left_tyiyn: number
+  status: InvoiceStatus
+  comment: string
+}
+
+export interface SupplierPayment {
+  ledger_id: string
+  at: string
+  user_name: string
+  kind: 'payment' | 'defect' | 'adjust'
+  amount_tyiyn: number
+  source: string
+  reversed: boolean
+  comment: string
+  applied: { ledger_id: string; receipt_id: string | null; number: number | null; amount_tyiyn: number; gross_tyiyn: number }[]
+}
+
+export interface SupplierInvoices {
+  invoices: SupplierInvoice[]
+  debt_tyiyn: number
+  advance_tyiyn: number
+  payments: SupplierPayment[]
+}
+
+/** Прошлая закупка товара: «в прошлый раз: 350 с, 12.10, Автоснаб». */
+export interface LastReceipt {
+  receipt_id: string
+  number: number
+  price_tyiyn: number
+  created_at: string
+  supplier_name: string | null
+}
+
+/** Строка списка товаров: суммы остатка считает сервер (SPEC-27). */
+export interface ProductRow extends Product {
+  code: string
+  /** Только владельцу. */
+  purchase_price_tyiyn?: number | null
+  stock_purchase_tyiyn?: number
+  stock_sale_tyiyn: number
+}
+
+export interface ProductList {
+  items: ProductRow[]
+  totals: { count: number; purchase_tyiyn?: number; sale_tyiyn: number }
+}
+
+export interface TopProduct {
+  product_id: string
+  name: string
+  unit: 'piece' | 'ml' | 'g'
+  container_ml: number | null
+  category_id: string
+  qty: number
+  amount_tyiyn: number
+  checks: number
+}
+
+export interface TopProducts {
+  from: string
+  to: string
+  items: TopProduct[]
 }
 
 export interface ReceiptListItem {
@@ -149,6 +250,8 @@ export interface ReceiptListItem {
   created_at: string
   /** Взято в долг у поставщика по накладной; 0 — оплачено сразу. */
   on_debt_tyiyn?: number
+  /** Осталось заплатить по накладной в долг (ADR-073). */
+  debt_left_tyiyn?: number
 }
 
 export interface StockMismatch {

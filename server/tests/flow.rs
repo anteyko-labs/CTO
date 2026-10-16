@@ -8209,3 +8209,726 @@ async fn oil_book_migration_keeps_old_records(pool: PgPool) {
         (Some(10_000), true)
     );
 }
+
+// ---------- SPEC-27 §4–5: список товаров, минус, литры, продаваемые, накладные по частям ----------
+
+mod point_feedback_stock {
+    use super::*;
+    use avtodom_server::api::catalog::{ProductFilter, product_list};
+    use avtodom_server::api::parties::{
+        AdjustReq, LedgerReverseReq, RepaymentReq, post_adjust_tx, post_repayment_tx,
+        reverse_ledger_tx,
+    };
+    use avtodom_server::api::receipts::last_receipt_of;
+    use avtodom_server::api::reports::{TopQuery, top_products_data};
+    use avtodom_server::api::supplier_debts::{receipt_debt, supplier_invoices};
+    use avtodom_server::domain::qty::stock_text;
+
+    async fn sale_cost(pool: &PgPool, sale: Uuid) -> i64 {
+        sqlx::query_scalar("select sum(cost_tyiyn)::bigint from sale_lines where sale_id = $1")
+            .bind(sale)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn product_list_totals_equal_rows_and_admin_sees_no_purchase(pool: PgPool) {
+        let w = seed(&pool).await;
+        receive(&pool, &w.owner, w.filter, 10, 100_000).await;
+        receive(&pool, &w.owner, w.oil, 12_000, 300_000).await;
+        // Розлив 1,5 л: остаток 10,5 л = 2 кан. по 4 л + 2,5 л.
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("pour", w.oil, 1500, 33_333)], cash(50_000)),
+        )
+        .await
+        .unwrap();
+        // Фильтр уходит в минус: 12 из 10.
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("piece", w.filter, 12, 50_000)], cash(600_000)),
+        )
+        .await
+        .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        let f = || ProductFilter {
+            limit: 500,
+            ..Default::default()
+        };
+        let list = product_list(&mut conn, &w.owner.user, f(), "stock_sale", true)
+            .await
+            .unwrap();
+        assert_eq!(list.totals.count, 2);
+        let purchase: i64 = list
+            .items
+            .iter()
+            .map(|r| r.stock_purchase_tyiyn.unwrap())
+            .sum();
+        let sale: i64 = list.items.iter().map(|r| r.stock_sale_tyiyn).sum();
+        assert_eq!(list.totals.purchase_tyiyn, Some(purchase));
+        assert_eq!(list.totals.sale_tyiyn, sale);
+        // По убыванию суммы по продаже: масло (10,5 л × 2000 с / 4 л = 5250 с), потом фильтр в минусе.
+        assert_eq!(list.items[0].product.id, w.oil);
+        let oil = &list.items[0];
+        assert_eq!(oil.stock_sale_tyiyn, 525_000);
+        assert_eq!(oil.purchase_price_tyiyn, Some(100_000));
+        assert_eq!(oil.stock_purchase_tyiyn, Some(262_500));
+        assert_eq!(
+            stock_text(oil.product.stock_qty, "ml", Some(4000)),
+            "10,5 л = 2 кан. по 4 л + 2,5 л"
+        );
+        // Минус 2 фильтра стоит по последней закупочной: −2 × 100 с.
+        let filter = &list.items[1];
+        assert_eq!(filter.product.stock_qty, -2);
+        assert_eq!(filter.stock_purchase_tyiyn, Some(-20_000));
+        assert_eq!(filter.purchase_price_tyiyn, Some(10_000));
+        assert_eq!(filter.stock_sale_tyiyn, -100_000);
+
+        // Администратор: по продаже — те же суммы, закупки и стоимости остатка нет.
+        let admin = product_list(&mut conn, &w.admin.user, f(), "purchase", false)
+            .await
+            .unwrap();
+        assert_eq!(admin.totals.purchase_tyiyn, None);
+        assert_eq!(admin.totals.sale_tyiyn, sale);
+        for r in &admin.items {
+            assert_eq!(r.purchase_price_tyiyn, None);
+            assert_eq!(r.stock_purchase_tyiyn, None);
+            assert_eq!(r.product.stock_value_tyiyn, None);
+            assert_eq!(r.product.avg_cost_tyiyn, None);
+            assert_eq!(r.product.last_purchase_price_tyiyn, None);
+        }
+        // Сортировка «по закупке» администратору не открыта — порядок по названию.
+        let json = serde_json::to_value(&admin).unwrap();
+        let first = &json["items"][0];
+        assert!(first.get("purchase_price_tyiyn").is_none());
+        assert!(first.get("stock_purchase_tyiyn").is_none());
+        assert!(json["totals"].get("purchase_tyiyn").is_none());
+        assert_eq!(admin.items[0].product.name, "Масло 5W-30 4л");
+
+        // Отбор по категории: итоги только по нему.
+        let cat: Uuid = sqlx::query_scalar("select category_id from products where id = $1")
+            .bind(w.filter)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let only = product_list(
+            &mut conn,
+            &w.owner.user,
+            ProductFilter {
+                category_id: Some(cat),
+                limit: 500,
+                ..Default::default()
+            },
+            "name",
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                only.totals.count,
+                only.totals.purchase_tyiyn,
+                only.totals.sale_tyiyn
+            ),
+            (1, Some(-20_000), -100_000)
+        );
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn negative_stock_sale_costs_last_purchase_price(pool: PgPool) {
+        let w = seed(&pool).await;
+        receive(&pool, &w.owner, w.filter, 1, 15_000).await;
+        // 1 есть, 2 — в минус: все три по 150 с.
+        let s = sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("piece", w.filter, 3, 50_000)], cash(150_000)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sale_cost(&pool, s.id).await, 45_000);
+        // Остаток уже в минусе — снова по последней закупочной, не ноль.
+        let s = sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sale_cost(&pool, s.id).await, 15_000);
+        assert_eq!(pool_of(&pool, w.filter).await.0, -3);
+        // Масло розливом из пустой бочки: по цене последней канистры за мл.
+        receive(&pool, &w.owner, w.oil, 4000, 160_000).await;
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(
+                &w,
+                vec![line("container", w.oil, 1, 200_000)],
+                cash(200_000),
+            ),
+        )
+        .await
+        .unwrap();
+        let s = sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("pour", w.oil, 500, 100_000)], cash(50_000)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sale_cost(&pool, s.id).await, 20_000);
+        // Приход закрывает минус: оставшееся стоит по цене этого прихода (ADR-044).
+        receive(&pool, &w.owner, w.filter, 5, 100_000).await;
+        assert_eq!(pool_of(&pool, w.filter).await.0, 2);
+        assert_eq!(pool_of(&pool, w.filter).await.1, 40_000);
+        assert_stock_consistent(&pool, &w).await;
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn canisters_and_pour_take_exact_milliliters(pool: PgPool) {
+        let w = seed(&pool).await;
+        receive(&pool, &w.owner, w.oil, 12_000, 300_000).await;
+        // Канистра — ровно 4000 мл, розлив 1,5 л и 0,001 л — ровно столько мл.
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(
+                &w,
+                vec![line("container", w.oil, 1, 200_000)],
+                cash(200_000),
+            ),
+        )
+        .await
+        .unwrap();
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("pour", w.oil, 1500, 33_333)], cash(50_000)),
+        )
+        .await
+        .unwrap();
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("pour", w.oil, 1, 100_000)], cash(100)),
+        )
+        .await
+        .unwrap();
+        let (qty, _, _) = pool_of(&pool, w.oil).await;
+        assert_eq!(qty, 12_000 - 4000 - 1500 - 1);
+        assert_eq!(
+            stock_text(qty, "ml", Some(4000)),
+            "6,499 л = 1 кан. по 4 л + 2,499 л"
+        );
+        let moved: i64 = sqlx::query_scalar(
+            "select sum(qty_delta)::bigint from stock_movements where product_id = $1",
+        )
+        .bind(w.oil)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(moved, qty);
+        assert_stock_consistent(&pool, &w).await;
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn top_products_by_qty_and_amount_net_of_returns(pool: PgPool) {
+        let w = seed(&pool).await;
+        let till = open_till(&pool, &w).await;
+        fund_till(&pool, &w, till, 1_000_000).await;
+        receive(&pool, &w.owner, w.filter, 20, 200_000).await;
+        receive(&pool, &w.owner, w.oil, 8000, 300_000).await;
+        let client = add_party(&pool, &w, "Бакыт", "customer").await;
+        let mut req = takeaway(&w, vec![line("piece", w.filter, 3, 50_000)], cash(150_000));
+        req.party_id = Some(client);
+        let sold = sell(&pool, &w.owner, req).await.unwrap();
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+        )
+        .await
+        .unwrap();
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(
+                &w,
+                vec![line("container", w.oil, 1, 200_000)],
+                cash(200_000),
+            ),
+        )
+        .await
+        .unwrap();
+        // Возврат одного фильтра клиента: 3 штуки за 150 000 становятся 2 за 100 000.
+        let mut tx = pool.begin().await.unwrap();
+        return_sale_tx(
+            &mut tx,
+            &w.owner,
+            sold.id,
+            ReturnReq {
+                op_id: Uuid::now_v7(),
+                battery_cash: false,
+                comment: String::new(),
+                lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
+                payments: cash(50_000),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        let by_amount = top_products_data(&mut conn, &w.admin.user, TopQuery::default())
+            .await
+            .unwrap();
+        let rows: Vec<_> = by_amount
+            .items
+            .iter()
+            .map(|r| (r.product_id, r.qty, r.amount_tyiyn, r.checks))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(w.oil, 4000, 200_000, 1), (w.filter, 3, 150_000, 2)]
+        );
+        let by_qty = top_products_data(
+            &mut conn,
+            &w.owner.user,
+            TopQuery {
+                sort: Some("qty".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_qty.items[0].product_id, w.oil);
+        // Клиент: что покупает — только его чеки, за всё время.
+        let mine = top_products_data(
+            &mut conn,
+            &w.owner.user,
+            TopQuery {
+                party_id: Some(client),
+                sort: Some("checks".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mine: Vec<_> = mine.items.iter().map(|r| (r.product_id, r.qty)).collect();
+        assert_eq!(mine, vec![(w.filter, 2)]);
+        // Фильтр по категории.
+        let cat: Uuid = sqlx::query_scalar("select category_id from products where id = $1")
+            .bind(w.oil)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let oils = top_products_data(
+            &mut conn,
+            &w.owner.user,
+            TopQuery {
+                category_id: Some(cat),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(oils.items.len(), 1);
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn receipt_shows_last_purchase_price_date_and_supplier(pool: PgPool) {
+        let w = seed(&pool).await;
+        let sid = supplier(&pool, &w, "Автоснаб").await;
+        let mut conn = pool.acquire().await.unwrap();
+        assert!(
+            last_receipt_of(&mut conn, w.owner.user.branch_id, w.oil)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // 3 канистры по 4 л за 1050 с: в прошлый раз — 350 с за канистру.
+        receive_from(&pool, &w, sid, w.oil, 12_000, 105_000, true).await;
+        let last = last_receipt_of(&mut conn, w.owner.user.branch_id, w.oil)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(last.price_tyiyn, 35_000);
+        assert_eq!(last.supplier_name.as_deref(), Some("Автоснаб"));
+        // Сторнированный приход прошлой ценой не считается.
+        let later = receive(&pool, &w.owner, w.oil, 4000, 40_000).await;
+        let r = last_receipt_of(&mut conn, w.owner.user.branch_id, w.oil)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((r.price_tyiyn, r.supplier_name.clone()), (40_000, None));
+        let mut tx = pool.begin().await.unwrap();
+        reverse_receipt_tx(
+            &mut tx,
+            &w.owner,
+            later.id,
+            ReverseReq {
+                op_id: Uuid::now_v7(),
+                comment: "ошибка".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let r = last_receipt_of(&mut conn, w.owner.user.branch_id, w.oil)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.price_tyiyn, 35_000);
+    }
+
+    async fn pay(
+        pool: &PgPool,
+        ctx: &Ctx,
+        sid: Uuid,
+        amount: i64,
+        method: &str,
+        receipt_id: Option<Uuid>,
+    ) -> Result<i64, AppError> {
+        let mut tx = pool.begin().await.unwrap();
+        let r = post_repayment_tx(
+            &mut tx,
+            ctx,
+            RepaymentReq {
+                op_id: Uuid::now_v7(),
+                party_id: sid,
+                amount_tyiyn: amount,
+                method: Some(method.into()),
+                comment: String::new(),
+                receipt_id,
+            },
+        )
+        .await;
+        if r.is_ok() {
+            tx.commit().await.unwrap();
+        }
+        r.map(|r| r.balance_tyiyn)
+    }
+
+    async fn debt_receipts(pool: &PgPool, sid: Uuid) -> Vec<Uuid> {
+        sqlx::query_scalar(
+            "select id from receipts where supplier_id = $1 and reversal_of is null order by number",
+        )
+        .bind(sid)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Распределения сходятся: на долг легло не больше его суммы, с оплаты — не больше её,
+    /// а открытые долги минус аванс — ровно долг поставщику.
+    async fn assert_allocations_consistent(pool: &PgPool, w: &World, sid: Uuid) {
+        let over: i64 = sqlx::query_scalar(
+            r#"select count(*) from party_ledger l
+               where l.party_id = $1 and (
+                 (l.amount_tyiyn < 0 and -l.amount_tyiyn < coalesce((select sum(s.amount_tyiyn) from supplier_allocations s where s.debit_id = l.id), 0))
+                 or (l.amount_tyiyn > 0 and l.amount_tyiyn < coalesce((select sum(s.amount_tyiyn) from supplier_allocations s where s.credit_id = l.id), 0))
+                 or coalesce((select sum(s.amount_tyiyn) from supplier_allocations s where s.debit_id = l.id or s.credit_id = l.id), 0) < 0
+                 or (not supplier_ledger_live(l)
+                     and coalesce((select sum(s.amount_tyiyn) from supplier_allocations s where s.debit_id = l.id or s.credit_id = l.id), 0) <> 0))"#,
+        )
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(over, 0, "распределения вышли за суммы записей");
+        let mut conn = pool.acquire().await.unwrap();
+        let inv = supplier_invoices(&mut conn, w.owner.user.branch_id, sid)
+            .await
+            .unwrap();
+        let balance: i64 = sqlx::query_scalar("select balance_tyiyn from parties where id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(inv.advance_tyiyn - inv.debt_tyiyn, balance);
+        for i in &inv.invoices {
+            assert_eq!(i.total_tyiyn - i.paid_tyiyn, i.left_tyiyn);
+        }
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn partial_invoice_payments_fifo_and_storno(pool: PgPool) {
+        let w = seed(&pool).await;
+        let sid = supplier(&pool, &w, "Автоснаб").await;
+        receive_from(&pool, &w, sid, w.filter, 10, 100_000, true).await;
+        receive_from(&pool, &w, sid, w.filter, 5, 50_000, true).await;
+        let ids = debt_receipts(&pool, sid).await;
+        let (a, b) = (ids[0], ids[1]);
+        let mut conn = pool.acquire().await.unwrap();
+        let status = |d: Option<avtodom_server::api::supplier_debts::ReceiptDebt>| {
+            let d = d.unwrap();
+            (d.paid_tyiyn, d.left_tyiyn, d.status)
+        };
+        let branch = w.owner.user.branch_id;
+
+        // Оплата второй накладной частью: 300 с из 500 с.
+        pay(&pool, &w.owner, sid, 30_000, "outside", Some(b))
+            .await
+            .unwrap();
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, b).await.unwrap()),
+            (30_000, 20_000, "partial".to_string())
+        );
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, a).await.unwrap()),
+            (0, 100_000, "unpaid".to_string())
+        );
+        // Больше остатка по накладной — нельзя.
+        let err = pay(&pool, &w.owner, sid, 20_001, "outside", Some(b))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        // Без накладной — на самые старые: 1000 с первой, 100 с второй.
+        pay(&pool, &w.owner, sid, 110_000, "outside", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, a).await.unwrap()),
+            (100_000, 0, "paid".to_string())
+        );
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, b).await.unwrap()),
+            (40_000, 10_000, "partial".to_string())
+        );
+        assert_allocations_consistent(&pool, &w, sid).await;
+        // Оплаченную накладную ещё раз не оплатить.
+        assert!(
+            pay(&pool, &w.owner, sid, 1, "outside", Some(a))
+                .await
+                .is_err()
+        );
+
+        // История: кто, когда, сколько, откуда — у накладной и у поставщика.
+        let hist = receipt_debt(&mut conn, branch, b)
+            .await
+            .unwrap()
+            .unwrap()
+            .payments;
+        assert_eq!(hist.len(), 2);
+        assert!(
+            hist.iter()
+                .all(|p| p.user_name == "owner" && p.source == "outside")
+        );
+        let amounts: Vec<_> = hist
+            .iter()
+            .map(|p| (p.amount_tyiyn, p.payment_tyiyn))
+            .collect();
+        assert!(amounts.contains(&(30_000, 30_000)) && amounts.contains(&(10_000, 110_000)));
+
+        // Сторно оплаты без накладной: её распределения отменяются, долги возвращаются.
+        let fifo: Uuid = sqlx::query_scalar(
+            "select id from party_ledger where party_id = $1 and amount_tyiyn = 110000",
+        )
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        reverse_ledger_tx(
+            &mut tx,
+            &w.owner,
+            fifo,
+            LedgerReverseReq {
+                op_id: Uuid::now_v7(),
+                comment: "ошиблись суммой".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, a).await.unwrap()),
+            (0, 100_000, "unpaid".to_string())
+        );
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, b).await.unwrap()),
+            (30_000, 20_000, "partial".to_string())
+        );
+        let hist = receipt_debt(&mut conn, branch, b)
+            .await
+            .unwrap()
+            .unwrap()
+            .payments;
+        assert!(hist.iter().any(|p| p.reversed && p.amount_tyiyn == 10_000));
+        assert_allocations_consistent(&pool, &w, sid).await;
+
+        // Правка в нашу пользу и зачёт брака закрывают старые накладные так же.
+        let mut tx = pool.begin().await.unwrap();
+        post_adjust_tx(
+            &mut tx,
+            &w.owner,
+            AdjustReq {
+                op_id: Uuid::now_v7(),
+                party_id: sid,
+                amount_tyiyn: 5_000,
+                comment: "скидка за опт".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, a).await.unwrap()),
+            (5_000, 95_000, "partial".to_string())
+        );
+        // Сторно первой накладной: её распределения снимаются, правка ложится на следующую.
+        let mut tx = pool.begin().await.unwrap();
+        reverse_receipt_tx(
+            &mut tx,
+            &w.owner,
+            a,
+            ReverseReq {
+                op_id: Uuid::now_v7(),
+                comment: "не та накладная".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(receipt_debt(&mut conn, branch, a).await.unwrap().is_none());
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, b).await.unwrap()),
+            (35_000, 15_000, "partial".to_string())
+        );
+        assert_allocations_consistent(&pool, &w, sid).await;
+
+        // Переплата — аванс: ложится на следующую накладную сама.
+        pay(&pool, &w.owner, sid, 20_000, "outside", None)
+            .await
+            .unwrap();
+        let inv = supplier_invoices(&mut conn, branch, sid).await.unwrap();
+        assert_eq!((inv.debt_tyiyn, inv.advance_tyiyn), (0, 5_000));
+        receive_from(&pool, &w, sid, w.filter, 1, 8_000, true).await;
+        let c = *debt_receipts(&pool, sid).await.last().unwrap();
+        assert_eq!(
+            status(receipt_debt(&mut conn, branch, c).await.unwrap()),
+            (5_000, 3_000, "partial".to_string())
+        );
+        assert_allocations_consistent(&pool, &w, sid).await;
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn admin_pays_invoice_only_from_the_till_without_going_negative(pool: PgPool) {
+        let w = seed(&pool).await;
+        let sid = supplier(&pool, &w, "Автоснаб").await;
+        receive_from(&pool, &w, sid, w.filter, 10, 100_000, true).await;
+        let a = debt_receipts(&pool, sid).await[0];
+        // Мимо кассы и со счёта — только владелец.
+        assert!(matches!(
+            pay(&pool, &w.admin, sid, 1_000, "outside", Some(a)).await,
+            Err(AppError::Forbidden)
+        ));
+        let till = open_till(&pool, &w).await;
+        fund_till(&pool, &w, till, 40_000).await;
+        // В кассе 400 с: заплатить 500 с нельзя — касса в минус не уходит.
+        assert!(
+            pay(&pool, &w.admin, sid, 50_000, "cash", Some(a))
+                .await
+                .is_err()
+        );
+        pay(&pool, &w.admin, sid, 40_000, "cash", Some(a))
+            .await
+            .unwrap();
+        assert_eq!(till_balance(&pool, till).await, 0);
+        let mut conn = pool.acquire().await.unwrap();
+        let d = receipt_debt(&mut conn, w.owner.user.branch_id, a)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((d.paid_tyiyn, d.left_tyiyn), (40_000, 60_000));
+        let p = &d.payments[0];
+        assert_eq!(
+            (p.user_name.as_str(), p.source.as_str()),
+            ("admin", "Касса")
+        );
+    }
+
+    #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+    async fn migration_allocates_old_payments_fifo(pool: PgPool) {
+        // Записи долга, как они лежали до миграции 0040: распределений нет. Функция миграции
+        // раскладывает старые оплаты на самые старые накладные.
+        let w = seed(&pool).await;
+        let sid = supplier(&pool, &w, "Старый поставщик").await;
+        let branch = w.owner.user.branch_id;
+        let entry = |amount: i64, doc_type: &'static str, day: &'static str| {
+            let pool = pool.clone();
+            let user = w.owner.user.id;
+            async move {
+                let id = Uuid::now_v7();
+                sqlx::query(
+                    "insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date, doc_type, doc_id, user_id, device_id)
+                     values ($1, $2, $3, case when $5 = 'repayment' then 'repayment' when $5 = 'adjust' then 'adjust' else 'debt' end,
+                             $4, $6::date, $5, $1, $7, $1)",
+                )
+                .bind(id)
+                .bind(branch)
+                .bind(sid)
+                .bind(amount)
+                .bind(doc_type)
+                .bind(day)
+                .bind(user)
+                .execute(&pool)
+                .await
+                .unwrap();
+                sqlx::query("update parties set balance_tyiyn = balance_tyiyn + $2 where id = $1")
+                    .bind(sid)
+                    .bind(amount)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                id
+            }
+        };
+        let old_debt = entry(-20_000, "adjust", "2026-09-01").await;
+        let inv1 = entry(-100_000, "receipt", "2026-09-05").await;
+        let inv2 = entry(-50_000, "receipt", "2026-09-10").await;
+        entry(70_000, "repayment", "2026-09-12").await;
+        entry(60_000, "repayment", "2026-09-20").await;
+        let n: i32 = sqlx::query_scalar("select supplier_allocate($1)")
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(n > 0);
+        // Повторный запуск ничего не меняет.
+        let again: i32 = sqlx::query_scalar("select supplier_allocate($1)")
+            .bind(sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(again, 0);
+        let paid = |id: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "select coalesce(sum(amount_tyiyn), 0)::bigint from supplier_allocations where debit_id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        // 1300 с: 200 с старого долга, 1000 с первой накладной, 100 с второй.
+        assert_eq!(paid(old_debt).await, 20_000);
+        assert_eq!(paid(inv1).await, 100_000);
+        assert_eq!(paid(inv2).await, 10_000);
+        let total: i64 = sqlx::query_scalar(
+            "select sum(amount_tyiyn)::bigint from supplier_allocations where party_id = $1",
+        )
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(total, 130_000);
+        assert_allocations_consistent(&pool, &w, sid).await;
+    }
+}

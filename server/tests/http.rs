@@ -5432,3 +5432,136 @@ async fn book_slot_is_set_on_category_and_overridden_per_vehicle(pool: PgPool) {
     );
     assert_eq!(actions(&pool, "vehicle.oil_interval").await.len(), 3);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
+    // SPEC-27: список товаров с итогами (закупка — только владельцу), оплата накладной частью.
+    let app = setup(pool).await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let (_, _, product) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр W712", "sale_price_tyiyn": 50_000 })),
+    )
+    .await;
+    let (_, _, supplier) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(json!({ "name": "Автоснаб" })),
+    )
+    .await;
+    let (status, _, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&admin),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "supplier_id": supplier["id"], "payment": "debt",
+                     "lines": [{ "product_id": product["id"], "qty": 4, "cost_tyiyn": 120_000 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(receipt["debt"]["status"], "unpaid");
+
+    // Владелец видит закупку и сумму по закупке, итоги совпадают со строками.
+    let (status, _, list) = call(&app, "GET", "/api/v1/products/list", Some(&owner), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["items"][0]["purchase_price_tyiyn"], 30_000);
+    assert_eq!(list["items"][0]["stock_purchase_tyiyn"], 120_000);
+    assert_eq!(list["totals"]["purchase_tyiyn"], 120_000);
+    assert_eq!(list["totals"]["sale_tyiyn"], 200_000);
+    // Администратору — только по продаже.
+    let (status, _, list) = call(&app, "GET", "/api/v1/products/list", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let row = &list["items"][0];
+    for key in [
+        "purchase_price_tyiyn",
+        "stock_purchase_tyiyn",
+        "stock_value_tyiyn",
+        "avg_cost_tyiyn",
+    ] {
+        assert!(row.get(key).is_none(), "администратору отдано {key}");
+    }
+    assert!(row["last_purchase_price_tyiyn"].is_null());
+    assert!(list["totals"].get("purchase_tyiyn").is_none());
+    assert_eq!(list["totals"]["sale_tyiyn"], 200_000);
+
+    // Прошлая закупка видна в приходе и администратору (ADR-008).
+    let (status, _, last) = call(
+        &app,
+        "GET",
+        &format!(
+            "/api/v1/products/{}/last-receipt",
+            product["id"].as_str().unwrap()
+        ),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(last["price_tyiyn"], 30_000);
+    assert_eq!(last["supplier_name"], "Автоснаб");
+
+    // Оплата части накладной владельцем «из своих».
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "party_id": supplier["id"], "amount_tyiyn": 50_000,
+                     "method": "outside", "receipt_id": receipt["id"] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, again) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/receipts/{}", receipt["id"].as_str().unwrap()),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(again["debt"]["status"], "partial");
+    assert_eq!(again["debt"]["left_tyiyn"], 70_000);
+    assert_eq!(again["debt"]["payments"][0]["source"], "outside");
+    let (status, _, inv) = call(
+        &app,
+        "GET",
+        &format!(
+            "/api/v1/parties/{}/invoices",
+            supplier["id"].as_str().unwrap()
+        ),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inv["debt_tyiyn"], 70_000);
+    assert_eq!(inv["payments"][0]["user_name"], "Владелец");
+    // Продаваемые товары открыты и администратору.
+    let (status, _, _) = call(
+        &app,
+        "GET",
+        "/api/v1/reports/top-products",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}

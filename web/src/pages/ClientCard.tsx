@@ -4,13 +4,14 @@ import { Link, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { OilBookList } from '../components/OilBook'
 import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
+import { stockText } from '../components/ProductPicker'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
-import { get, newOpId, patch, post } from '../lib/api'
+import { get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Party, PartyCard, PartyTimelineItem } from '../lib/types'
+import type { Party, PartyCard, PartyTimelineItem, TopProducts } from '../lib/types'
 
 interface CabinetState {
   available: boolean
@@ -471,6 +472,8 @@ export default function ClientCard() {
         <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable partyId={party.id} />
       </section>
 
+      {party.role === 'customer' && <FrequentProducts partyId={party.id} />}
+
       <Card>
         <CardTitle>История</CardTitle>
         <ErrorBox error={card.error ?? row.error} />
@@ -586,5 +589,28 @@ export default function ClientCard() {
         </Modal>
       )}
     </div>
+  )
+}
+
+/** Что клиент покупает чаще всего — за всё время, по числу чеков (SPEC-27 §4). */
+function FrequentProducts({ partyId }: { partyId: string }) {
+  const top = useLoad(() => get<TopProducts>(`/reports/top-products${qs({ party_id: partyId, sort: 'checks', limit: 5 })}`), [partyId])
+  const items = top.data?.items ?? []
+  if (!top.error && items.length === 0) return null
+  return (
+    <Card>
+      <CardTitle>Что покупает чаще всего</CardTitle>
+      <ErrorBox error={top.error} />
+      <ul className="divide-y divide-slate-100 text-sm">
+        {items.map((r) => (
+          <li key={r.product_id} className="flex items-center justify-between gap-3 py-1.5">
+            <span className="min-w-0 flex-1 truncate font-medium">{r.name}</span>
+            <span className="whitespace-nowrap tabular-nums text-slate-600">
+              {stockText({ unit: r.unit, container_ml: r.container_ml, stock_qty: r.qty })} · чеков {r.checks}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   )
 }

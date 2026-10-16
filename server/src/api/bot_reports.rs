@@ -246,8 +246,47 @@ pub async fn sales(
                 crate::api::telegram::staff_lines(&p.staff)
             ))
         }
+        "top" => {
+            let t = crate::api::reports::top_products_data(
+                conn,
+                user,
+                crate::api::reports::TopQuery {
+                    from: Some(from),
+                    to: Some(to),
+                    limit: Some(30),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            if t.items.is_empty() {
+                return Ok(format!(
+                    "Продаж товаров {} не было.",
+                    period_label(t.from, t.to)
+                ));
+            }
+            let mut lines = vec![format!(
+                "Самые продаваемые товары {} (по выручке):",
+                period_label(t.from, t.to)
+            )];
+            capped(
+                &mut lines,
+                t.items
+                    .iter()
+                    .map(|r| {
+                        format!(
+                            "— {}: {}, выручка {}, чеков {}",
+                            r.name,
+                            crate::domain::qty::stock_text(r.qty, &r.unit, r.container_ml),
+                            format_som(r.amount_tyiyn),
+                            r.checks
+                        )
+                    })
+                    .collect(),
+            );
+            Ok(lines.join("\n"))
+        }
         _ => Err(invalid(
-            "report: dashboard, categories, hours, weekdays, checks, gifts или staff",
+            "report: dashboard, categories, hours, weekdays, checks, gifts, staff или top",
         )),
     }
 }
@@ -609,7 +648,7 @@ pub async fn stock(
                         format!(
                             "— {}: {}, стоимость {}, цена продажи {}",
                             p.name,
-                            qty_text(p.stock_qty, &p.unit),
+                            crate::domain::qty::stock_text(p.stock_qty, &p.unit, p.container_ml),
                             format_som(p.stock_value_tyiyn.unwrap_or(0)),
                             format_som(p.sale_price_tyiyn)
                         )

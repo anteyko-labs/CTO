@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, r.number,\n                  (-l.amount_tyiyn - coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                                               where s.debit_id = l.id), 0))::bigint as \"open!\"\n           from party_ledger l join receipts r on r.id = l.doc_id\n           where l.branch_id = $1 and l.party_id = $2 and l.doc_type = 'receipt' and l.doc_id = $3\n             and l.amount_tyiyn < 0 and supplier_ledger_live(l)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "open!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a17cccee49e93b88c79edc4e37a9d0adc5ff28cddff9f87fc0765434a35ca887"
+}

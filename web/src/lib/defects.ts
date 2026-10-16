@@ -1,6 +1,6 @@
 // Брак и поставки (SPEC-25, SPEC-26): ввод количества и подписи. Только показ и ввод —
 // стоимость, возмещение и разницу считает сервер.
-import { formatKg, formatLiters, formatSom, parseLiters } from './format'
+import { formatKg, formatLiters, formatSom, litersInput, parseLiters } from './format'
 
 export type Unit = 'piece' | 'ml' | 'g'
 
@@ -24,8 +24,7 @@ export const qtyText = (qty: number, unit: string): string =>
   unit === 'ml' ? formatLiters(qty) : unit === 'g' ? formatKg(qty) : `${qty} шт`
 
 /** Количество для поля ввода: 1500 мл → «1,5». */
-export const qtyInput = (qty: number, unit: Unit): string =>
-  unit === 'piece' ? String(qty) : qtyText(qty, unit).replace(/ (л|кг)$/, '').replace(/ /g, '')
+export const qtyInput = (qty: number, unit: Unit): string => (unit === 'piece' ? String(qty) : litersInput(qty))
 
 export type ResolutionKind = 'write_off' | 'replace' | 'credit' | 'cash'
 

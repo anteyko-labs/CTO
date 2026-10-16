@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, s.name as \"supplier_name?\", r.supplier_doc, r.total_tyiyn, r.reversal_of,\n                  exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\",\n                  u.full_name as user_name, r.created_at,\n                  abs(coalesce((select sum(l.amount_tyiyn) from party_ledger l\n                                where l.doc_type = 'receipt' and l.doc_id = r.id), 0))::bigint as \"on_debt_tyiyn!\",\n                  coalesce((select sum(-l.amount_tyiyn) - coalesce(sum((select sum(s.amount_tyiyn)\n                                                                         from supplier_allocations s\n                                                                         where s.debit_id = l.id)), 0)\n                            from party_ledger l\n                            where l.doc_type = 'receipt' and l.doc_id = r.id and l.amount_tyiyn < 0\n                              and supplier_ledger_live(l)), 0)::bigint as \"debt_left_tyiyn!\"\n           from receipts r\n           join users u on u.id = r.user_id\n           left join suppliers s on s.id = r.supplier_id\n           where r.branch_id = $1\n             and ($2::date is null or r.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::uuid is null or r.supplier_id = $4)\n           order by r.created_at desc\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "on_debt_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "debt_left_tyiyn!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "a5230778e69aeed4995aa6a2fa26b352cf90fdbd7b3e64d771cb794642c8aaff"
+}

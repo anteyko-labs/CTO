@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
         .route("/owner/dashboard", routing::get(dashboard))
         .route("/reports/gifts", routing::get(gifts))
         .route("/reports/heatmap", routing::get(heatmap))
+        .route("/reports/top-products", routing::get(top_products))
 }
 
 #[derive(Serialize, Default)]
@@ -788,4 +789,108 @@ pub(crate) async fn gifts_data(
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows)
+}
+
+// ---------- Самые продаваемые товары (SPEC-27 §4) ----------
+
+#[derive(Deserialize, Default)]
+pub struct TopQuery {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub category_id: Option<Uuid>,
+    /// Что покупает клиент: без дат — за всё время.
+    pub party_id: Option<Uuid>,
+    /// `qty` — по количеству, `checks` — по числу чеков (как часто покупают), иначе по сумме.
+    pub sort: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TopProduct {
+    pub product_id: Uuid,
+    pub name: String,
+    pub unit: String,
+    pub container_ml: Option<i64>,
+    pub category_id: Uuid,
+    /// Продано за вычетом возвратов: штуки, мл (канистры и розлив вместе) или граммы.
+    pub qty: i64,
+    /// Выручка за вычетом возвратов.
+    pub amount_tyiyn: i64,
+    /// Чеков с этим товаром.
+    pub checks: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TopProducts {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub items: Vec<TopProduct>,
+}
+
+/// Отчёт открыт и администратору: в нём выручка и количество, без себестоимости и маржи
+/// (инвариант 13).
+async fn top_products(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<TopQuery>,
+) -> AppResult<Json<TopProducts>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(top_products_data(&mut conn, &user, q).await?))
+}
+
+/// Самые продаваемые товары за период — экран, карточка клиента и бот владельца.
+pub async fn top_products_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    q: TopQuery,
+) -> AppResult<TopProducts> {
+    let to = match q.to {
+        Some(d) => d,
+        None => today(conn).await?,
+    };
+    let from = match (q.from, q.party_id) {
+        (Some(d), _) => d,
+        // Клиент: за всё время.
+        (None, Some(_)) => NaiveDate::from_ymd_opt(2000, 1, 1).unwrap_or(to),
+        (None, None) => to
+            .checked_sub_signed(chrono::Duration::days(29))
+            .unwrap_or(to),
+    };
+    if from > to {
+        return Err(invalid("начало периода позже конца"));
+    }
+    if q.party_id.is_none() && (to - from).num_days() > 366 {
+        return Err(invalid("период не больше года"));
+    }
+    let sort = q.sort.unwrap_or_default();
+    let items = sqlx::query_as!(
+        TopProduct,
+        r#"select p.id as "product_id!", p.name as "name!", p.unit as "unit!",
+                  p.container_ml as "container_ml?", p.category_id as "category_id!",
+                  coalesce(sum(case when s.kind = 'return' then -l.units else l.units end), 0)::bigint as "qty!",
+                  coalesce(sum(l.amount_tyiyn), 0)::bigint as "amount_tyiyn!",
+                  count(distinct s.id) filter (where s.kind = 'sale') as "checks!"
+           from sale_lines l
+           join sales s on s.id = l.sale_id
+           join products p on p.id = l.product_id
+           where s.branch_id = $1 and s.business_date between $2 and $3 and not l.gift
+             and ($4::uuid is null or p.category_id = $4)
+             and ($5::uuid is null or s.party_id = $5)
+           group by p.id, p.name, p.unit, p.container_ml, p.category_id
+           having sum(case when s.kind = 'return' then -l.units else l.units end) > 0
+           order by case when $6 = 'qty' then sum(case when s.kind = 'return' then -l.units else l.units end) end desc nulls last,
+                    case when $6 = 'checks' then count(distinct s.id) filter (where s.kind = 'sale') end desc nulls last,
+                    sum(l.amount_tyiyn) desc, p.name
+           limit $7"#,
+        user.branch_id,
+        from,
+        to,
+        q.category_id,
+        q.party_id,
+        sort,
+        q.limit.unwrap_or(50).clamp(1, 500)
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(TopProducts { from, to, items })
 }
