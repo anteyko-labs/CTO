@@ -44,6 +44,19 @@ pub fn format_som(t: i64) -> String {
     )
 }
 
+/// Вес для текста сервера: «12 кг», «12,35 кг» (граммы без лишних нулей). Только для сообщений.
+pub fn format_kg(grams: i64) -> String {
+    let sign = if grams < 0 { "−" } else { "" };
+    let g = grams.unsigned_abs();
+    let frac = format!("{:03}", g % 1000);
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() {
+        format!("{sign}{} кг", g / 1000)
+    } else {
+        format!("{sign}{},{frac} кг", g / 1000)
+    }
+}
+
 /// Сумма со знаком: «+300 с», «−1 000 с», «0 с» — недостача и излишек, правки начислений.
 pub fn format_som_signed(t: i64) -> String {
     if t > 0 {
@@ -124,6 +137,13 @@ pub fn parse_spoken_som(input: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kg_text() {
+        assert_eq!(format_kg(12_000), "12 кг");
+        assert_eq!(format_kg(12_350), "12,35 кг");
+        assert_eq!(format_kg(-500), "−0,5 кг");
+    }
 
     #[test]
     fn parses_like_the_screen() {

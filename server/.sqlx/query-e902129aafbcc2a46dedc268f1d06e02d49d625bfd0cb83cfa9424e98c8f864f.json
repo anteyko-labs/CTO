@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(p.amount_tyiyn), 0)::bigint as \"v!\"\n               from sale_payments p join sales s on s.id = p.sale_id\n               where (s.id = $1 or s.reversal_of = $1) and p.method <> 'battery'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e902129aafbcc2a46dedc268f1d06e02d49d625bfd0cb83cfa9424e98c8f864f"
+}

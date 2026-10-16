@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from vehicle_book_intervals where vehicle_id = $1 and slot = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a9f609ceced7e0b3ecb318aadba71eed4f1fb68636f299a3a27b97a2bc69084c"
+}

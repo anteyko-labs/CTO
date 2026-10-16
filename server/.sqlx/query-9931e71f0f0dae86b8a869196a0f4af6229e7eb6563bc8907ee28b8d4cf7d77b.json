@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select method, amount_tyiyn from sale_payments where sale_id = $1 order by amount_tyiyn desc",
+  "query": "select method, amount_tyiyn, grams from sale_payments where sale_id = $1 order by amount_tyiyn desc",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "amount_tyiyn",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "grams",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -21,8 +26,9 @@
     },
     "nullable": [
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "8dc3c327df664adf316dc669f94d79cbc479e99a6fce3a1b5decd2594b7ecb26"
+  "hash": "9931e71f0f0dae86b8a869196a0f4af6229e7eb6563bc8907ee28b8d4cf7d77b"
 }

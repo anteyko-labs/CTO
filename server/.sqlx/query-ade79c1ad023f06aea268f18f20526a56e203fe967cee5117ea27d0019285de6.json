@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into oil_reminders (vehicle_id, slot, due_date, days_before)\n               select $1, $2, $3, unnest($4::int[]) on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Date",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ade79c1ad023f06aea268f18f20526a56e203fe967cee5117ea27d0019285de6"
+}

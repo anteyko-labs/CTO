@@ -1,6 +1,7 @@
 // Печать товарного чека через диалог печати браузера (HTML-шаблон, лента 58–80 мм).
 import { formatDateTime, formatKg, formatLiters, formatSomExact } from '../lib/format'
-import { PAYMENT_LABELS, type Sale, type SaleLine } from '../lib/types'
+import { paymentLabel } from '../lib/battery'
+import type { Sale, SaleLine } from '../lib/types'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -30,7 +31,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     )
     .join('')
   const pays = sale.payments
-    .map((p) => `<tr><td>${PAYMENT_LABELS[p.method]}</td><td class="r">${esc(formatSomExact(p.amount_tyiyn))}</td></tr>`)
+    .map((p) => `<tr><td>${esc(paymentLabel(p))}</td><td class="r">${esc(formatSomExact(p.amount_tyiyn))}</td></tr>`)
     .join('')
   const changeRow = change && change > 0 ? `<tr><td>Сдача</td><td class="r">${esc(formatSomExact(change))}</td></tr>` : ''
   const master = sale.master_name ? `<div>Мастер: ${esc(sale.master_name)}</div>` : ''

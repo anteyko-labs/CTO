@@ -62,9 +62,11 @@ pub async fn scrap_product(conn: &mut PgConnection) -> AppResult<Uuid> {
         Some(c) => c,
         None => {
             let c = new_id();
+            // С характеристиками по умолчанию: полярность нужна и здесь (SPEC-27).
             sqlx::query!(
-                "insert into categories (id, name, kind) values ($1, 'Аккумуляторы', 'battery')",
-                c
+                "insert into categories (id, name, kind, attributes) values ($1, 'Аккумуляторы', 'battery', $2)",
+                c,
+                crate::api::catalog::default_attributes_json("battery")
             )
             .execute(&mut *conn)
             .await?;
@@ -85,7 +87,8 @@ pub async fn scrap_product(conn: &mut PgConnection) -> AppResult<Uuid> {
     Ok(id)
 }
 
-async fn intake_price(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+/// Цена приёма за кг из настроек филиала: по ней же принимается аккумулятор в оплату чека.
+pub async fn intake_price(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
     let v = sqlx::query_scalar!(
         "select value from settings where branch_id = $1 and key = 'batteries'",
         branch_id
@@ -97,6 +100,64 @@ async fn intake_price(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64
             .and_then(serde_json::Value::as_i64)
     })
     .unwrap_or(DEFAULT_INTAKE_PER_KG))
+}
+
+/// Сумма за вес по цене за кг, с округлением до тыйына.
+pub fn amount_for(grams: i64, price_per_kg: i64) -> AppResult<i64> {
+    let amount = div_round(i128::from(grams) * i128::from(price_per_kg), 1000)
+        .ok_or_else(crate::error::overflow)?;
+    ops::check_amount(amount)?;
+    Ok(amount)
+}
+
+/// Вес старого аккумулятора: от 1 г до 10 т.
+pub fn check_grams(grams: i64) -> AppResult<()> {
+    if !(1..=10_000_000).contains(&grams) {
+        return Err(invalid("вес от 1 г до 10 т"));
+    }
+    Ok(())
+}
+
+/// Аккумулятор в оплату чека (SPEC-27): лом приходует на склад по весу со стоимостью зачтённой
+/// суммы, как приём, но без денег из кассы. Возврат чека (`grams < 0`) снимает вес той же
+/// стоимостью. Последняя цена приёма — запасная себестоимость, как у приёма.
+pub async fn tradein_movement(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    sale_id: Uuid,
+    grams: i64,
+    amount: i64,
+) -> AppResult<()> {
+    let product = scrap_product(conn).await?;
+    ops::lock_pool(conn, branch_id, product).await?;
+    ops::apply_movement(
+        conn,
+        Movement {
+            branch_id,
+            product_id: product,
+            qty_delta: grams,
+            value_delta: amount,
+            doc_type: if grams > 0 {
+                "battery_tradein"
+            } else {
+                "battery_tradein_return"
+            },
+            doc_id: sale_id,
+        },
+    )
+    .await?;
+    if grams > 0 {
+        sqlx::query!(
+            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+            branch_id,
+            product,
+            grams,
+            amount
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -166,19 +227,12 @@ pub async fn intake_tx(conn: &mut PgConnection, ctx: &Ctx, req: IntakeReq) -> Ap
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    if !(1..=10_000_000).contains(&req.grams) {
-        return Err(invalid("вес от 1 г до 10 т"));
-    }
+    check_grams(req.grams)?;
     if req.price_per_kg_tyiyn < 0 {
         return Err(invalid("цена не может быть меньше нуля"));
     }
     ops::check_amount(req.price_per_kg_tyiyn)?;
-    let amount = div_round(
-        i128::from(req.grams) * i128::from(req.price_per_kg_tyiyn),
-        1000,
-    )
-    .ok_or_else(crate::error::overflow)?;
-    ops::check_amount(amount)?;
+    let amount = amount_for(req.grams, req.price_per_kg_tyiyn)?;
     let branch_id = ctx.user.branch_id;
     let product = scrap_product(conn).await?;
     let till = cash::default_account(conn, branch_id).await?;

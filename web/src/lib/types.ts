@@ -28,11 +28,27 @@ export interface AttributeDef {
   filterable: boolean
 }
 
+/** Строка масляной книжки (SPEC-27): масло, фильтры по видам, прочие работы; `none` — не в книжку. */
+export type BookSlot = 'oil' | 'oil_filter' | 'air_filter' | 'cabin_filter' | 'fuel_filter' | 'other'
+
+export const BOOK_SLOT_LABELS: Record<BookSlot, string> = {
+  oil: 'Масло двигателя',
+  oil_filter: 'Фильтр масляный',
+  air_filter: 'Фильтр воздушный',
+  cabin_filter: 'Фильтр салонный',
+  fuel_filter: 'Фильтр топливный',
+  other: 'Прочие работы',
+}
+
 export interface Category {
   id: string
   name: string
   kind: CategoryKind
   attributes: AttributeDef[]
+  /** Строка книжки товаров категории и интервал по умолчанию. */
+  book_slot: BookSlot | 'none'
+  book_interval_km: number | null
+  book_interval_days: number | null
 }
 
 export interface Product {
@@ -144,7 +160,7 @@ export interface StockMismatch {
 }
 
 export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service' | 'weight'
-export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt' | 'bonus'
+export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt' | 'bonus' | 'battery'
 
 export interface SaleLine {
   line_no: number
@@ -166,6 +182,8 @@ export interface SaleLine {
 export interface Payment {
   method: PaymentMethod
   amount_tyiyn: number
+  /** Аккумулятор в оплату: вес в граммах (у возврата — с минусом). */
+  grams?: number | null
 }
 
 export interface Sale {
@@ -223,6 +241,7 @@ export interface SalesDay {
     transfer_tyiyn: number
     debt_tyiyn: number
     bonus_tyiyn?: number
+    battery_tyiyn?: number
   }
 }
 
@@ -233,6 +252,7 @@ export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   transfer: 'QR',
   debt: 'В долг',
   bonus: 'Баллы',
+  battery: 'Аккумулятор',
 }
 
 export const KIND_LABELS: Record<CategoryKind, string> = {
@@ -368,6 +388,7 @@ export interface Shift {
   transfer_tyiyn: number
   debt_tyiyn: number
   bonus_tyiyn?: number
+  battery_tyiyn?: number
   bank_fee_tyiyn: number
   sales_count?: number
   sales_total_tyiyn?: number

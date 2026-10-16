@@ -1,6 +1,7 @@
 // Поле сканера и поиска товара для кассы и прихода (SPEC-02, SPEC-04); без сети ищет по снимку каталога (SPEC-09).
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
+import { productTitle } from '../lib/battery'
 import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
@@ -140,7 +141,7 @@ export function ProductPicker({
                 onClick={() => pick(p)}
               >
                 <span>
-                  <span className="font-medium">{p.name}</span>
+                  <span className="font-medium">{productTitle(p)}</span>
                   {p.article && <span className="ml-2 text-slate-500">{p.article}</span>}
                 </span>
                 <span className="shrink-0 text-right text-xs text-slate-500">

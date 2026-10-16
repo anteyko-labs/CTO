@@ -5,6 +5,7 @@ import { lineQtyText, printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { batteryShare, paymentLabel } from '../lib/battery'
 import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
@@ -16,18 +17,32 @@ interface Returned {
   amount: number
 }
 
-/** Возвращённое по строкам исходного чека: количество и сумма (положительные). */
-async function loadReturned(sale: Sale): Promise<Map<number, Returned>> {
+interface ReturnedAll {
+  lines: Map<number, Returned>
+  /** Сколько уже вернули аккумулятором и всем остальным (положительные). */
+  battery: number
+  other: number
+}
+
+/** Возвращённое по строкам исходного чека: количество и сумма (положительные); оплаты возвратов. */
+async function loadReturned(sale: Sale): Promise<ReturnedAll> {
   const map = new Map<number, Returned>()
+  let battery = 0
+  let other = 0
   const returns = await Promise.all(sale.returns.map((r) => get<Sale>(`/sales/${r.id}`)))
   for (const r of returns) {
     for (const l of r.lines) {
       const cur = map.get(l.line_no) ?? { qty: 0, amount: 0 }
       map.set(l.line_no, { qty: cur.qty + l.qty, amount: cur.amount - l.amount_tyiyn })
     }
+    for (const p of r.payments) {
+      if (p.method === 'battery') battery -= p.amount_tyiyn
+      else other -= p.amount_tyiyn
+    }
   }
-  return map
+  return { lines: map, battery, other }
 }
+
 
 /** Сумма возврата строки — то же правило, что на сервере: последняя часть забирает остаток. */
 function refundOf(l: SaleLine, done: Returned, qty: number): number {
@@ -43,14 +58,18 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   const [qty, setQty] = useState<Record<number, string>>({})
   // Возврат — тем же способом, каким платили: долговой чек списывается с долга, а не выдаётся наличными.
   const paidBy = [...sale.payments].sort((a, b) => b.amount_tyiyn - a.amount_tyiyn).map((p) => p.method)
-  const methods: PaymentMethod[] = [...new Set<PaymentMethod>([...paidBy, 'cash', 'card', 'transfer'])]
-  const [method, setMethod] = useState<PaymentMethod>(paidBy[0] ?? 'cash')
+  // Аккумулятор деньгами не возвращается — его часть уходит отдельно (ниже).
+  const methods: PaymentMethod[] = [...new Set<PaymentMethod>([...paidBy, 'cash', 'card', 'transfer'])].filter((m) => m !== 'battery')
+  const [method, setMethod] = useState<PaymentMethod>(paidBy.find((m) => m !== 'battery') ?? 'cash')
   const [comment, setComment] = useState('')
+  // Лом из оплаты уже продан — часть «аккумулятором» владелец возвращает деньгами (SPEC-27).
+  const [batteryCash, setBatteryCash] = useState(false)
+  const owner = useUser().role === 'owner'
   const [opId] = useState(newOpId)
   const { busy, error, run } = useAction()
 
   const rows = sale.lines.map((l) => {
-    const done = returned.data?.get(l.line_no) ?? { qty: 0, amount: 0 }
+    const done = returned.data?.lines.get(l.line_no) ?? { qty: 0, amount: 0 }
     const left = l.qty - done.qty
     const text = qty[l.line_no]?.trim() ?? ''
     // Розлив — в литрах, вес — в килограммах (тысячные: мл и граммы), остальное — штуками.
@@ -62,6 +81,15 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   const total = chosen.reduce((acc, r) => acc + r.refund, 0)
   const invalid = rows.some((r) => !r.ok)
   const noShift = method === 'cash' && total > 0 && shift.data === null
+  const paidBattery = sale.payments.filter((p) => p.method === 'battery').reduce((acc, p) => acc + p.amount_tyiyn, 0)
+  const paidOther = sale.payments.filter((p) => p.method !== 'battery').reduce((acc, p) => acc + p.amount_tyiyn, 0)
+  const batteryPart = batteryCash
+    ? 0
+    : batteryShare(total, paidBattery - (returned.data?.battery ?? 0), paidOther - (returned.data?.other ?? 0))
+  const payments = [
+    ...(total - batteryPart > 0 ? [{ method, amount_tyiyn: total - batteryPart }] : []),
+    ...(batteryPart > 0 ? [{ method: 'battery' as const, amount_tyiyn: batteryPart }] : []),
+  ]
 
   const submit = () =>
     run(async () => {
@@ -69,7 +97,8 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
         op_id: opId,
         comment,
         lines: chosen.map((r) => ({ line_no: r.l.line_no, qty: r.n })),
-        payments: [{ method, amount_tyiyn: total }],
+        payments,
+        battery_cash: batteryCash,
       })
       navigate(`/sales/${res.id}`)
     })
@@ -126,6 +155,26 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
               <input value={comment} onChange={(e) => setComment(e.target.value)} />
             </Field>
           </div>
+          {paidBattery > 0 && (
+            <Notice tone={batteryCash ? 'rose' : 'amber'}>
+              {batteryPart > 0 ? (
+                <>
+                  Часть чека оплачена аккумулятором: <b>{formatSom(batteryPart)}</b> возвращается аккумулятором — вес уйдёт со склада, деньгами
+                  за него не выдаём.
+                </>
+              ) : batteryCash ? (
+                <>Часть «аккумулятором» вернётся деньгами — по решению владельца, отметка уйдёт в журнал.</>
+              ) : (
+                <>Чек частично оплачен аккумулятором: эта часть возвращается аккумулятором, когда деньги по чеку закончатся.</>
+              )}
+              {owner && (
+                <label className="mt-2 flex items-center gap-2">
+                  <input type="checkbox" checked={batteryCash} onChange={(e) => setBatteryCash(e.target.checked)} />
+                  Лом уже продан — вернуть эту часть деньгами
+                </label>
+              )}
+            </Notice>
+          )}
           <div className="text-right text-lg font-semibold">К возврату: {formatSom(total)}</div>
           {noShift && (
             <Notice tone="rose">
@@ -271,7 +320,7 @@ export default function SaleView() {
           <div className="text-lg font-semibold">Итого: {formatSom(sale.total_tyiyn)}</div>
           {sale.payments.map((p) => (
             <div key={p.method}>
-              {PAYMENT_LABELS[p.method]}: {formatSom(p.amount_tyiyn)}
+              {paymentLabel(p)}: {formatSom(p.amount_tyiyn)}
             </div>
           ))}
           {owner && <div className="text-slate-500">Валовая прибыль: {formatSom(sale.total_tyiyn - cost)}</div>}

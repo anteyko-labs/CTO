@@ -340,6 +340,7 @@ export default function Shift() {
               <Row label="QR" value={shift.transfer_tyiyn} />
               {shift.debt_tyiyn !== 0 && <Row label="В долг" value={shift.debt_tyiyn} />}
               {(shift.bonus_tyiyn ?? 0) !== 0 && <Row label="Баллами" value={shift.bonus_tyiyn ?? 0} />}
+              {(shift.battery_tyiyn ?? 0) !== 0 && <Row label="Аккумуляторами" value={shift.battery_tyiyn ?? 0} />}
               {shift.bank_fee_tyiyn > 0 && <Row label="Комиссия банка" value={-shift.bank_fee_tyiyn} signed />}
               {(shift.returns_tyiyn ?? 0) !== 0 && <Row label="Возвраты" value={-(shift.returns_tyiyn ?? 0)} signed />}
             </div>

@@ -6,6 +6,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post, put, qs } from '../lib/api'
+import { polarityMark, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom, formatKg, parseSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -29,6 +30,8 @@ export default function Stock() {
   const [q, setQ] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [filter, setFilter] = useState<'all' | 'low' | 'out' | 'review' | 'stale'>('all')
+  // Полярность аккумуляторов: «Л» прямая, «П» обратная (SPEC-27).
+  const [polarity, setPolarity] = useState<'' | 'Л' | 'П'>('')
   // Залежалый товар: остаток есть, продаж нет дольше срока (ADR-039).
   const staleList = useLoad(
     () => get<{ stale_days: number; items: { product_id: string; days: number; sold_ever: boolean }[] }>('/stock/stale'),
@@ -49,7 +52,9 @@ export default function Stock() {
   const [pricing, setPricing] = useState<{ product: Product; text: string; opId: string } | null>(null)
   const priceAct = useAction()
 
-  const all = stock.data ?? []
+  const loaded = stock.data ?? []
+  const hasPolarity = loaded.some((p) => polarityMark(p.attrs) !== null)
+  const all = polarity ? loaded.filter((p) => polarityMark(p.attrs) === polarity) : loaded
   // «Нет» — остаток ноль или минус; «мало» — есть, но меньше минимума.
   const isOut = (p: Product) => p.stock_qty <= 0
   const isLow = (p: Product) => p.stock_qty > 0 && p.stock_qty < p.min_stock
@@ -205,7 +210,7 @@ export default function Stock() {
         <DefectsTab />
       ) : (
       <Card>
-        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-[2fr_1fr] sm:items-end">
+        <div className={`mb-3 grid grid-cols-1 gap-3 sm:items-end ${hasPolarity || polarity ? 'sm:grid-cols-[2fr_1fr_1fr]' : 'sm:grid-cols-[2fr_1fr]'}`}>
           <Field label="Поиск">
             <input placeholder="Название, бренд, артикул, штрихкод" value={q} onChange={(e) => setQ(e.target.value)} />
           </Field>
@@ -219,6 +224,15 @@ export default function Stock() {
               ))}
             </select>
           </Field>
+          {(hasPolarity || polarity) && (
+            <Field label="Полярность">
+              <select value={polarity} onChange={(e) => setPolarity(e.target.value as '' | 'Л' | 'П')}>
+                <option value="">Все</option>
+                <option value="Л">прямая (+ слева, Л)</option>
+                <option value="П">обратная (+ справа, П)</option>
+              </select>
+            </Field>
+          )}
         </div>
         <div className="-mx-1 mb-4 flex gap-2 overflow-x-auto px-1 pb-1 text-sm">
           {(
@@ -293,7 +307,7 @@ export default function Stock() {
                 <li key={p.id} className={rowTone(p)}>
                   <button type="button" className="flex w-full items-start gap-3 px-4 py-2.5 text-left" onClick={() => setEditing(p)}>
                     <div className="min-w-0 flex-1">
-                      <div className="font-semibold leading-snug">{p.name}</div>
+                      <div className="font-semibold leading-snug">{productTitle(p)}</div>
                       <div className="mt-0.5 truncate text-xs text-slate-500">
                         {[p.article, categoryName.get(p.category_id)].filter(Boolean).join(' · ') || '—'}
                       </div>
@@ -315,7 +329,7 @@ export default function Stock() {
                 {rows.map((p) => (
                   <tr key={p.id} className={`cursor-pointer ${rowTone(p)}`} onClick={() => setEditing(p)}>
                     <td className="px-2 py-2">
-                      <div className="font-medium">{p.name}</div>
+                      <div className="font-medium">{productTitle(p)}</div>
                       <div className="mt-1 flex flex-wrap gap-1">{badges(p)}</div>
                     </td>
                     <td className="px-2 py-2">{p.article || '—'}</td>

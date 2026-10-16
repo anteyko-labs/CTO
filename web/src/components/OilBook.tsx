@@ -1,52 +1,16 @@
-// Масляная книжка: замены по машинам, следующая замена, правка пробега и интервала (SPEC-16).
+// Масляная книжка: замены по машинам, строки по фильтрам, следующая замена по каждой строке,
+// правка пробега и интервала (SPEC-16, SPEC-27).
 import { useState } from 'react'
 import { get, patch, post } from '../lib/api'
 import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNotes'
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { km, nextText, overdueSlots, recordLines, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
+import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
 
-export interface OilRecord {
-  id: string
-  change_date: string
-  mileage_km: number | null
-  oil_text: string
-  filter_text: string
-  comment: string
-  /** Рекомендовали, клиент отказался (ADR-055). */
-  declined?: string
-  sale_id: string | null
-  sale_number: number | null
-  /** Итог чека за вычетом возвратов по нему; у записи из тетради — null (SPEC-22). */
-  sale_total_tyiyn?: number | null
-}
-
-export interface VehicleBook {
-  vehicle_id: string
-  plate: string
-  brand: string
-  model: string
-  /** Машина в списке клиента; убранная клиентом в боте — false (ADR-062). */
-  active?: boolean
-  interval_km: number
-  interval_days: number
-  next_km: number | null
-  next_date: string | null
-  records: OilRecord[]
-  /** Пометки клиента из бота (SPEC-22). */
-  client_notes?: ClientNote[]
-}
-
-const km = (v: number) => `${v.toLocaleString('ru-RU').replace(/ /g, ' ')} км`
-
-/** Следующая замена одной строкой: «на 93 000 км или до 12.04.2027». */
-export function nextText(b: VehicleBook): string {
-  const parts = [b.next_km !== null ? `на ${km(b.next_km)}` : null, b.next_date ? `до ${formatDate(b.next_date)}` : null].filter(Boolean)
-  return parts.length ? parts.join(' или ') : 'пока не с чего считать'
-}
-
-/** Касса: под выбранной машиной — прошлая и следующая замена. */
+/** Касса: под выбранной машиной — прошлая замена и следующая по каждой строке книжки. */
 export function OilHint({ vehicleId }: { vehicleId: string }) {
   const book = useLoad(() => get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`), [vehicleId])
   const b = book.data
@@ -61,11 +25,22 @@ export function OilHint({ vehicleId }: { vehicleId: string }) {
         {notesLine}
       </div>
     )
-  const overdue = b.next_date !== null && b.next_date < todayBishkek()
+  const overdue = overdueSlots(b, todayBishkek())
+  const next = slotsWithNext(b)
   return (
-    <div className={`rounded-md px-3 py-2 text-xs ${overdue ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`}>
-      Прошлая замена {formatDate(last.change_date)}: {last.oil_text || last.filter_text || '—'}
-      {last.mileage_km !== null && `, ${km(last.mileage_km)}`}. Следующая {nextText(b)}.
+    <div className={`rounded-md px-3 py-2 text-xs ${overdue.length ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`} data-testid="oil-hint">
+      Прошлая замена {formatDate(last.change_date)}: {recordText(last) || '—'}
+      {last.mileage_km !== null && `, ${km(last.mileage_km)}`}.
+      {next.length > 0 && (
+        <ul className="mt-1">
+          {next.map((n) => (
+            <li key={n.slot} className={overdue.includes(n) ? 'font-medium' : ''}>
+              {n.label}: следующая {slotNextText(n)}
+              {overdue.includes(n) && ' — пора менять'}
+            </li>
+          ))}
+        </ul>
+      )}
       {last.declined?.trim() && <div className="mt-1 font-medium text-amber-800">В прошлый раз рекомендовали: {last.declined}</div>}
       {notesLine}
     </div>
@@ -92,11 +67,36 @@ function ClientNotes({ notes }: { notes: ClientNote[] }) {
   )
 }
 
+const SLOT_ORDER = Object.keys(BOOK_SLOT_LABELS) as BookSlot[]
+
+type ManualForm = { date: string; mileage: string } & Record<BookSlot, string>
+
+const emptyManual = (): ManualForm => ({
+  date: todayBishkek(),
+  mileage: '',
+  oil: '',
+  oil_filter: '',
+  air_filter: '',
+  cabin_filter: '',
+  fuel_filter: '',
+  other: '',
+})
+
+/** Интервал строки: «каждые 8 000 км или 31 дн.»; у прочих работ без интервала — «срок не задан». */
+function intervalText(n: SlotNext): string {
+  if (n.interval_km === null || n.interval_days === null) return 'срок не задан'
+  return `каждые ${km(n.interval_km)} или ${n.interval_days} дн.${n.own_interval ? ', у этой машины' : ''}`
+}
+
 function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; editable: boolean; partyId?: string; onChanged: () => void }) {
-  const [interval, setInterval] = useState<{ km: string; days: string } | null>(null)
-  const [manual, setManual] = useState<{ date: string; mileage: string; oil: string; filter: string } | null>(null)
+  const [interval, setInterval] = useState<{ slot: BookSlot; km: string; days: string; own: boolean } | null>(null)
+  const [manual, setManual] = useState<ManualForm | null>(null)
   const act = useAction()
   const removed = b.active === false
+  const slots = b.slots ?? []
+  // Строки без замен тоже можно настроить: интервал у машины задают заранее.
+  const unused = SLOT_ORDER.filter((s) => !slots.some((n) => n.slot === s))
+  const manualLines = manual ? SLOT_ORDER.filter((s) => manual[s].trim()).map((s) => ({ slot: s, text: manual[s].trim() })) : []
   return (
     <Card className={`flex flex-col gap-2 ${removed ? 'opacity-75' : ''}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -125,13 +125,49 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
             </Button>
           )}
         </div>
-        <div className="text-sm">
-          Следующая замена: <b>{nextText(b)}</b>
-          <span className="ml-2 text-xs text-slate-500">
-            (каждые {km(b.interval_km)} или {b.interval_days} дн.)
-          </span>
-        </div>
+        {slots.length === 0 && (
+          <div className="text-sm">
+            Следующая замена масла: <b>{nextText(b)}</b>
+          </div>
+        )}
       </div>
+      {slots.length > 0 && (
+        <table className="w-full text-sm" data-testid="book-slots">
+          <tbody className="divide-y divide-slate-100">
+            {slots.map((n) => {
+              const late = n.next_date !== null && n.next_date < todayBishkek()
+              return (
+                <tr key={n.slot}>
+                  <td className="py-1 pr-2 font-medium">{n.label}</td>
+                  <td className={`py-1 pr-2 ${late ? 'font-medium text-amber-800' : ''}`}>
+                    {slotNextText(n) || '—'}
+                    {late && ' — пора менять'}
+                  </td>
+                  <td className="py-1 pr-2 text-xs text-slate-500">{intervalText(n)}</td>
+                  <td className="py-1 text-right">
+                    {editable && !removed && (
+                      <Button
+                        variant="ghost"
+                        className="px-2 py-0.5 text-xs"
+                        onClick={() =>
+                          setInterval({
+                            slot: n.slot,
+                            km: n.interval_km !== null ? String(n.interval_km) : '',
+                            days: n.interval_days !== null ? String(n.interval_days) : '',
+                            own: n.own_interval,
+                          })
+                        }
+                      >
+                        Интервал
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
       {b.records.length === 0 ? (
         <div className="text-sm text-slate-500">Замен ещё не было</div>
       ) : (
@@ -142,13 +178,19 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 <span className="font-medium">{formatDate(r.change_date)}</span>
                 {r.mileage_km !== null && <span className="ml-2">{km(r.mileage_km)}</span>}
                 <span className="ml-2 text-slate-600">{r.sale_total_tyiyn != null ? formatSom(r.sale_total_tyiyn) : '—'}</span>
-                <span className="ml-2 text-slate-600">{[r.oil_text, r.filter_text].filter(Boolean).join(' · ')}</span>
                 {r.comment && <span className="ml-2 text-slate-500">— {r.comment}</span>}
                 {r.sale_number === null && (
                   <span className="ml-2">
                     <Badge tone="slate">из тетради</Badge>
                   </span>
                 )}
+                <span className="block text-slate-600">
+                  {recordLines(r).map((l, i) => (
+                    <span key={i} className="mr-3 inline-block">
+                      <span className="text-slate-500">{slotLabel(l.slot)}:</span> {l.text}
+                    </span>
+                  ))}
+                </span>
               </span>
               {editable && (
                 <Button
@@ -178,18 +220,36 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
         </Button>
         {editable && !removed && (
           <>
-            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setInterval({ km: String(b.interval_km), days: String(b.interval_days) })}>
-              Интервал
-            </Button>
-            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setManual({ date: todayBishkek(), mileage: '', oil: '', filter: '' })}>
+            {unused.length > 0 && (
+              <select
+                aria-label="Интервал другой строки"
+                className="w-auto py-1 text-xs"
+                value=""
+                onChange={(e) => {
+                  const slot = e.target.value as BookSlot
+                  if (slot) setInterval({ slot, km: String(b.interval_km), days: String(b.interval_days), own: false })
+                }}
+              >
+                <option value="">Интервал строки…</option>
+                {unused.map((s) => (
+                  <option key={s} value={s}>
+                    {slotLabel(s)}
+                  </option>
+                ))}
+              </select>
+            )}
+            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setManual(emptyManual())}>
               Запись из тетради
             </Button>
           </>
         )}
       </div>
       {interval && (
-        <Modal title={`Интервал замены · ${b.plate}`} onClose={() => setInterval(null)}>
+        <Modal title={`Интервал · ${slotLabel(interval.slot)} · ${b.plate}`} onClose={() => setInterval(null)}>
           <div className="flex flex-col gap-3">
+            <div className="text-sm text-slate-600">
+              По умолчанию интервал строки задан у категории товара. Здесь — только для этой машины.
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Каждые, км">
                 <input inputMode="numeric" value={interval.km} onChange={(e) => setInterval({ ...interval, km: e.target.value })} />
@@ -199,7 +259,22 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
               </Field>
             </div>
             <ErrorBox error={act.error} />
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
+              {interval.own && (
+                <Button
+                  variant="ghost"
+                  disabled={act.busy}
+                  onClick={() =>
+                    void act.run(async () => {
+                      await patch(`/vehicles/${b.vehicle_id}/oil-settings`, { slot: interval.slot, reset: true })
+                      setInterval(null)
+                      onChanged()
+                    })
+                  }
+                >
+                  Как у категории
+                </Button>
+              )}
               <Button variant="secondary" onClick={() => setInterval(null)}>
                 Отмена
               </Button>
@@ -207,7 +282,11 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 disabled={act.busy || !/^\d+$/.test(interval.km) || !/^\d+$/.test(interval.days)}
                 onClick={() =>
                   void act.run(async () => {
-                    await patch(`/vehicles/${b.vehicle_id}/oil-settings`, { interval_km: Number(interval.km), interval_days: Number(interval.days) })
+                    await patch(`/vehicles/${b.vehicle_id}/oil-settings`, {
+                      slot: interval.slot,
+                      interval_km: Number(interval.km),
+                      interval_days: Number(interval.days),
+                    })
                     setInterval(null)
                     onChanged()
                   })
@@ -230,26 +309,28 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 <input inputMode="numeric" value={manual.mileage} onChange={(e) => setManual({ ...manual, mileage: e.target.value })} />
               </Field>
             </div>
-            <Field label="Какое масло" required>
-              <input value={manual.oil} onChange={(e) => setManual({ ...manual, oil: e.target.value })} placeholder="Totachi 0W-20, 4 л" />
-            </Field>
-            <Field label="Фильтр">
-              <input value={manual.filter} onChange={(e) => setManual({ ...manual, filter: e.target.value })} />
-            </Field>
+            {SLOT_ORDER.map((s) => (
+              <Field key={s} label={slotLabel(s)}>
+                <input
+                  value={manual[s]}
+                  onChange={(e) => setManual({ ...manual, [s]: e.target.value })}
+                  placeholder={s === 'oil' ? 'Totachi 0W-20, 4 л' : s === 'other' ? 'антифриз, свечи…' : ''}
+                />
+              </Field>
+            ))}
             <ErrorBox error={act.error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setManual(null)}>
                 Отмена
               </Button>
               <Button
-                disabled={act.busy || !manual.oil.trim() || (manual.mileage.trim() !== '' && !/^\d+$/.test(manual.mileage.trim()))}
+                disabled={act.busy || manualLines.length === 0 || (manual.mileage.trim() !== '' && !/^\d+$/.test(manual.mileage.trim()))}
                 onClick={() =>
                   void act.run(async () => {
                     await post(`/vehicles/${b.vehicle_id}/oil-changes`, {
                       change_date: manual.date,
                       mileage_km: manual.mileage.trim() ? Number(manual.mileage) : null,
-                      oil_text: manual.oil,
-                      filter_text: manual.filter,
+                      lines: manualLines,
                     })
                     setManual(null)
                     onChanged()

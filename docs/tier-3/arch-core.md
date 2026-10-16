@@ -79,7 +79,7 @@ sales (id, branch_id, number, kind sale|return, sale_type takeaway|service, cash
        total_tyiyn, comment, reversal_of, user_id, device_id, client_time, created_at)
 sale_lines (id, sale_id, line_no, kind piece|container|pour|service, product_id, service_id,
             qty, unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn, master_fee_tyiyn)
-sale_payments (id, sale_id, method cash|card|transfer, amount_tyiyn)
+sale_payments (id, sale_id, method cash|card|transfer|debt|bonus|battery, amount_tyiyn, fee_tyiyn, grams?)  -- grams — аккумулятор в оплату (SPEC-27)
 
 stock_movements (id, branch_id, product_id, qty_delta, value_delta_tyiyn, doc_type, doc_id, created_at)
 settings (branch_id, key, value jsonb)

@@ -5,6 +5,7 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu, Table } from '../components/ui'
 import { get, patch, qs } from '../lib/api'
+import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -126,7 +127,8 @@ export default function Products() {
                   <option value="">Все</option>
                   {a.options?.map((o) => (
                     <option key={o} value={o}>
-                      {o}
+                      {/* Полярность аккумулятора — с подсказкой «+ слева, Л» (SPEC-27). */}
+                      {a.key === 'polarity' ? (POLARITY_LABELS[o] ?? o) : o}
                     </option>
                   ))}
                 </select>
@@ -151,7 +153,7 @@ export default function Products() {
           <ul className="mb-3 flex flex-col gap-2">
             {selectedList.map((s) => (
               <li key={s.product.id} className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="min-w-0 flex-1">{s.product.name}</span>
+                <span className="min-w-0 flex-1">{productTitle(s.product)}</span>
                 <label className="flex items-center gap-1 text-slate-600">
                   копий
                   <input
@@ -217,7 +219,7 @@ export default function Products() {
                     />
                   </td>
                   <td className="px-2 py-2 md:min-w-[18rem]">
-                    <div className="font-medium">{p.name}</div>
+                    <div className="font-medium">{productTitle(p)}</div>
                     <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
                       {p.brand}
                       {p.needs_review && <Badge tone="amber">проверить</Badge>}

@@ -1,6 +1,7 @@
 // Печать этикеток со штрихкодом через диалог печати браузера (SPEC-02, ADR-010).
 import JsBarcode from 'jsbarcode'
 import { get } from '../lib/api'
+import { productTitle } from '../lib/battery'
 import { formatSom } from '../lib/format'
 import type { LabelSettings, Product } from '../lib/types'
 
@@ -41,7 +42,7 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     const code = product.barcodes[0]
     if (!code) continue
     const svg = barcodeSvg(code, s.height_mm)
-    const name = s.show_name ? `<div class="name">${escapeHtml(product.name)}</div>` : ''
+    const name = s.show_name ? `<div class="name">${escapeHtml(productTitle(product))}</div>` : ''
     const article = s.show_article && product.article ? `<div class="small">${escapeHtml(product.article)}</div>` : ''
     const price = s.show_price ? `<div class="price">${escapeHtml(formatSom(product.sale_price_tyiyn))}</div>` : ''
     for (let i = 0; i < copies; i++) {

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select interval_km, interval_days from vehicle_book_intervals where vehicle_id = $1 and slot = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "interval_days",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "968350d49da2b7b506feeb519a465b650cea729b8b6f61c540bc9a297405e659"
+}

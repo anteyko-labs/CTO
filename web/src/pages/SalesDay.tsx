@@ -55,6 +55,7 @@ export default function SalesDay() {
           ['QR', data.totals.transfer_tyiyn],
           ['В долг', data.totals.debt_tyiyn],
           ['Баллами', data.totals.bonus_tyiyn ?? 0],
+          ['Аккумуляторами', data.totals.battery_tyiyn ?? 0],
         ] as [string, number][]
       ).filter(([, v]) => v !== 0)
     : []

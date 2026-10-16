@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update party_vehicles set interval_km = $3, interval_days = $4 where id = $1 and branch_id = $2 returning plate",
+  "query": "select plate from party_vehicles where id = $1 and branch_id = $2 for update",
   "describe": {
     "columns": [
       {
@@ -12,14 +12,12 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Int4",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "96486de05019aa3a355966ce32900828d98a3794050c36669332e91753217ae7"
+  "hash": "747579ae8a6c439a4b5797f941d90e7dfaca2a60ea0b3224b9dc80b04bc6f945"
 }

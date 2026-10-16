@@ -66,6 +66,39 @@ struct CategoryOut {
     name: String,
     kind: String,
     attributes: Value,
+    /// Строка масляной книжки для товаров категории и её интервал по умолчанию (SPEC-27).
+    book_slot: String,
+    book_interval_km: Option<i32>,
+    book_interval_days: Option<i32>,
+}
+
+/// Строка книжки у категории: `none` — товары в книжку не идут. Интервал — оба числа или ничего.
+#[derive(Deserialize)]
+struct BookReq {
+    slot: String,
+    interval_km: Option<i32>,
+    interval_days: Option<i32>,
+}
+
+fn check_book(b: &BookReq) -> AppResult<()> {
+    if b.slot != "none" && !crate::api::oil_book::is_slot(&b.slot) {
+        return Err(invalid("неизвестная строка книжки"));
+    }
+    match (b.interval_km, b.interval_days) {
+        (Some(km), Some(days)) => crate::api::oil_book::check_interval(km, days),
+        (None, None) => Ok(()),
+        _ => Err(invalid("интервал строки книжки — в км и днях вместе")),
+    }
+}
+
+/// Строка книжки по умолчанию для вида категории: масла — масло, фильтры — масляный фильтр
+/// (то же правило в запросах — `coalesce(book_slot, …)`).
+fn default_book_slot(kind: &str) -> &'static str {
+    match kind {
+        "oil" => "oil",
+        "filter" => "oil_filter",
+        _ => "none",
+    }
 }
 
 fn attr(key: &str, label: &str, kind: &str, options: &[&str]) -> AttributeDef {
@@ -115,6 +148,11 @@ fn default_attributes(kind: &str) -> Vec<AttributeDef> {
     }
 }
 
+/// Характеристики по умолчанию для вида категории — JSON для записи в базу.
+pub(crate) fn default_attributes_json(kind: &str) -> Value {
+    serde_json::to_value(default_attributes(kind)).unwrap_or_else(|_| Value::Array(Vec::new()))
+}
+
 fn check_kind(kind: &str) -> AppResult<()> {
     match kind {
         "oil" | "filter" | "battery" | "other" => Ok(()),
@@ -151,7 +189,9 @@ async fn list_categories(
 ) -> AppResult<Json<Vec<CategoryOut>>> {
     let rows = sqlx::query_as!(
         CategoryOut,
-        "select id, name, kind, attributes from categories order by name"
+        r#"select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
+                  c.book_interval_km, c.book_interval_days
+           from categories c order by c.name"#
     )
     .fetch_all(&state.pool)
     .await?;
@@ -163,6 +203,7 @@ struct CategoryReq {
     name: String,
     kind: String,
     attributes: Option<Vec<AttributeDef>>,
+    book: Option<BookReq>,
 }
 
 async fn create_category(
@@ -180,14 +221,35 @@ async fn create_category(
         .unwrap_or_else(|| default_attributes(&req.kind));
     check_attributes(&defs)?;
     let attributes = to_json(&defs)?;
+    // Строку книжки задаёт владелец (SPEC-27); без неё — по виду категории.
+    let explicit = req.book.is_some();
+    let book = match req.book {
+        Some(b) => {
+            if !ctx.user.is_owner() {
+                return Err(AppError::Forbidden);
+            }
+            check_book(&b)?;
+            b
+        }
+        None => BookReq {
+            slot: default_book_slot(&req.kind).into(),
+            interval_km: None,
+            interval_days: None,
+        },
+    };
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
-        "insert into categories (id, name, kind, attributes) values ($1, $2, $3, $4)",
+        r#"insert into categories (id, name, kind, attributes, book_slot, book_interval_km, book_interval_days)
+           values ($1, $2, $3, $4, $5, $6, $7)"#,
         id,
         name,
         req.kind,
-        attributes
+        attributes,
+        // Не задана — пусто: строка берётся по виду категории.
+        explicit.then_some(book.slot.as_str()),
+        book.interval_km,
+        book.interval_days
     )
     .execute(&mut *tx)
     .await?;
@@ -206,6 +268,9 @@ async fn create_category(
         name,
         kind: req.kind,
         attributes,
+        book_slot: book.slot,
+        book_interval_km: book.interval_km,
+        book_interval_days: book.interval_days,
     }))
 }
 
@@ -213,6 +278,7 @@ async fn create_category(
 struct CategoryPatch {
     name: Option<String>,
     attributes: Option<Vec<AttributeDef>>,
+    book: Option<BookReq>,
 }
 
 async fn update_category(
@@ -232,14 +298,38 @@ async fn update_category(
         }
         None => None,
     };
+    if let Some(b) = &req.book {
+        if !ctx.user.is_owner() {
+            return Err(AppError::Forbidden);
+        }
+        check_book(b)?;
+    }
     let mut tx = state.pool.begin().await?;
+    let before = sqlx::query!(
+        r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days
+           from categories c where c.id = $1 for update"#,
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let out = sqlx::query_as!(
         CategoryOut,
-        r#"update categories set name = coalesce($2, name), attributes = coalesce($3, attributes)
-           where id = $1 returning id, name, kind, attributes"#,
+        r#"update categories set name = coalesce($2, name), attributes = coalesce($3, attributes),
+             book_slot = case when $4 then $5 else book_slot end,
+             book_interval_km = case when $4 then $6 else book_interval_km end,
+             book_interval_days = case when $4 then $7 else book_interval_days end
+           where id = $1
+           returning id, name, kind, attributes,
+                     coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
+                     book_interval_km, book_interval_days"#,
         id,
         name,
-        attributes
+        attributes,
+        req.book.is_some(),
+        req.book.as_ref().map_or("none", |b| b.slot.as_str()),
+        req.book.as_ref().and_then(|b| b.interval_km),
+        req.book.as_ref().and_then(|b| b.interval_days)
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -250,7 +340,14 @@ async fn update_category(
         "category.update",
         "category",
         Some(id),
-        json!({ "name": out.name }),
+        json!({
+            "name": out.name,
+            // Строка книжки и интервал: что было и что стало.
+            "book": ops::changes(
+                &json!({ "slot": before.book_slot, "km": before.book_interval_km, "days": before.book_interval_days }),
+                &json!({ "slot": out.book_slot, "km": out.book_interval_km, "days": out.book_interval_days }),
+            ),
+        }),
     )
     .await?;
     tx.commit().await?;

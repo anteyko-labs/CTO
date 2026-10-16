@@ -316,6 +316,9 @@ pub struct ShiftOut {
     pub debt_tyiyn: i64,
     #[serde(default)]
     pub bonus_tyiyn: i64,
+    /// Принято аккумуляторами в оплату чеков смены (SPEC-27).
+    #[serde(default)]
+    pub battery_tyiyn: i64,
     #[serde(default)]
     pub bank_fee_tyiyn: i64,
     /// Смена закрыта, а что сделали с деньгами (сейф или размен) ещё не отмечено.
@@ -402,6 +405,7 @@ pub(crate) async fn load_shift(
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'bonus'), 0)::bigint as "bonus!",
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'battery'), 0)::bigint as "battery!",
              coalesce(sum(p.fee_tyiyn), 0)::bigint as "fee!"
            from sale_payments p
            join sales s on s.id = p.sale_id
@@ -451,6 +455,7 @@ pub(crate) async fn load_shift(
         transfer_tyiyn: pays.transfer,
         debt_tyiyn: pays.debt,
         bonus_tyiyn: pays.bonus,
+        battery_tyiyn: pays.battery,
         bank_fee_tyiyn: pays.fee,
         handover_pending: close.as_ref().is_some_and(|c| c.to_safe.is_none()),
         to_safe_tyiyn: close.as_ref().and_then(|c| c.to_safe),

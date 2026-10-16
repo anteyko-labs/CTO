@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as \"debt!\",\n                  coalesce(sum(p.amount_tyiyn) filter (where p.method not in ('debt', 'bonus', 'battery')), 0)::bigint as \"money!\"\n           from sale_payments p join sales s on s.id = p.sale_id\n           where s.id = $1 or s.reversal_of = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "debt!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "money!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "d65059d4ea533e0803e0a5263ccfc820673dab430df95fd401af2dd099b2ec50"
+}

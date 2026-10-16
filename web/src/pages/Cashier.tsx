@@ -11,7 +11,9 @@ import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
-import { nextText, OilHint, type VehicleBook } from '../components/OilBook'
+import { batteryAmount, productTitle } from '../lib/battery'
+import { OilHint } from '../components/OilBook'
+import { nextText, recordLines, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -192,10 +194,13 @@ export default function Cashier() {
   const [comment, setComment] = useState(draft?.comment ?? '')
   const [payMode, setPayMode] = useState<PayMode>('cash')
   const [received, setReceived] = useState('')
-  const [split, setSplit] = useState<Record<Exclude<PaymentMethod, 'bonus'>, string>>({ cash: '', card: '', transfer: '', debt: '' })
+  const [split, setSplit] = useState<Record<Exclude<PaymentMethod, 'bonus' | 'battery'>, string>>({ cash: '', card: '', transfer: '', debt: '' })
   // Скидка баллами: часть чека оплачивается баллами клиента из бота (SPEC-19).
   const [bonus, setBonus] = useState<BonusUse | null>(null)
   const [bonusOpen, setBonusOpen] = useState(false)
+  // Старый аккумулятор в оплату: вес × цена приёма за кг; сумму считает сервер (SPEC-27).
+  const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKg: number } | null>(null)
+  const batteryLoad = useAction()
   const [confirmClear, setConfirmClear] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
   const attempt = useRef<{ key: string; opId: string } | null>(null)
@@ -293,8 +298,10 @@ export default function Cashier() {
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
   const total = amounts.reduce<number>((acc, a) => acc + (a ?? 0), 0)
   const bonusAmount = bonus?.amount_tyiyn ?? 0
-  // К оплате деньгами или в долг — итог за вычетом баллов.
-  const due = total - bonusAmount
+  const batteryGrams = batteryPay ? parseLiters(batteryPay.kgText) : null
+  const batteryAmt = batteryPay && batteryGrams && batteryGrams > 0 ? batteryAmount(batteryGrams, batteryPay.perKg) : 0
+  // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
+  const due = total - bonusAmount - batteryAmt
 
   const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number }[] | null => {
     if (payMode !== 'mixed') return due > 0 ? [{ method: payMode, amount_tyiyn: due }] : []
@@ -307,11 +314,16 @@ export default function Cashier() {
     }
     return list
   })()
-  const payments =
-    moneyPayments && bonusAmount > 0 ? [...moneyPayments, { method: 'bonus' as const, amount_tyiyn: bonusAmount }] : moneyPayments
+  const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number }[] | null = moneyPayments && [
+    ...moneyPayments,
+    ...(bonusAmount > 0 ? [{ method: 'bonus' as const, amount_tyiyn: bonusAmount }] : []),
+    ...(batteryAmt > 0 && batteryGrams ? [{ method: 'battery' as const, amount_tyiyn: batteryAmt, grams: batteryGrams }] : []),
+  ]
   const paid = payments?.reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? null
-  // Смешанная оплата: сколько ещё не разнесено по способам (баллы уже вычтены из «к оплате»).
-  const mixedLeft = payMode === 'mixed' && paid !== null ? due - (paid - bonusAmount) : null
+  // Не деньгами: баллы и аккумулятор уже вычтены из «к оплате».
+  const offMoney = bonusAmount + batteryAmt
+  // Смешанная оплата: сколько ещё не разнесено по способам.
+  const mixedLeft = payMode === 'mixed' && paid !== null ? due - (paid - offMoney) : null
   const receivedValue = payMode === 'cash' && received.trim() ? parseSom(received) : null
   const change = receivedValue !== null ? receivedValue - due : null
   // Пустой чек — сдачи нет, сколько бы ни ввели.
@@ -453,6 +465,7 @@ export default function Cashier() {
     setReceived('')
     setSplit({ cash: '', card: '', transfer: '', debt: '' })
     setBonus(null)
+    setBatteryPay(null)
     setPayMode('cash')
     setMasterId('')
     setSaleType('takeaway')
@@ -553,12 +566,15 @@ export default function Cashier() {
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select'],
     [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»'],
     [payments !== null, 'сумму оплаты', '[data-pay]'],
-    [payments === null || paid === total, `оплату: разнесено ${formatSom((paid ?? 0) - bonusAmount)} из ${formatSom(due)}`, '[data-pay]'],
+    [payments === null || paid === total, `оплату: разнесено ${formatSom((paid ?? 0) - offMoney)} из ${formatSom(due)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
     [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента'],
     [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново'],
     [!bonus || navigator.onLine, 'баллы списываются только при связи с сервером'],
+    [!batteryPay || (batteryGrams !== null && batteryGrams > 0), 'вес сданного аккумулятора', '#battery-kg'],
+    [!batteryPay || navigator.onLine, 'аккумулятор в оплату — только при связи с сервером'],
+    [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
     [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
@@ -622,7 +638,7 @@ export default function Cashier() {
             line_no: i + 1,
             kind: l.kind,
             gift: Boolean(l.gift),
-            name: l.product?.name ?? l.service?.name ?? '',
+            name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
             container_ml: l.product?.container_ml ?? null,
             qty: lineQty(l) ?? 0,
             amount_tyiyn: lineAmount(l) ?? 0,
@@ -795,21 +811,28 @@ export default function Cashier() {
             {done.book && done.book.records[0]?.sale_id === done.sale.id && (
               <div className="mt-3 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm">
                 <div className="font-medium">Записано в масляную книжку · {done.book.plate}</div>
-                <div className="text-slate-700">
-                  {[
-                    done.book.records[0].mileage_km !== null && `пробег ${done.book.records[0].mileage_km.toLocaleString('ru-RU')} км`,
-                    done.book.records[0].oil_text,
-                    done.book.records[0].filter_text,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-                </div>
+                {done.book.records[0].mileage_km !== null && (
+                  <div className="text-slate-700">пробег {done.book.records[0].mileage_km.toLocaleString('ru-RU')} км</div>
+                )}
+                {recordLines(done.book.records[0]).map((l, i) => (
+                  <div key={i} className="text-slate-700">
+                    {slotLabel(l.slot)}: {l.text}
+                  </div>
+                ))}
                 {done.book.records[0].declined?.trim() && (
                   <div className="text-amber-800">Рекомендовано: {done.book.records[0].declined}</div>
                 )}
-                <div className="text-slate-700">
-                  Следующая замена: <b>{nextText(done.book)}</b>
-                </div>
+                {slotsWithNext(done.book).length > 0 ? (
+                  slotsWithNext(done.book).map((n) => (
+                    <div key={n.slot} className="text-slate-700">
+                      Следующая · {n.label}: <b>{slotNextText(n)}</b>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-slate-700">
+                    Следующая замена: <b>{nextText(done.book)}</b>
+                  </div>
+                )}
               </div>
             )}
           </Card>
@@ -829,7 +852,7 @@ export default function Cashier() {
                   <li key={l.key} className="flex flex-wrap items-center gap-2 p-3">
                     <div className="min-w-48 flex-1">
                       <div className="font-medium">
-                        {l.product?.name ?? l.service?.name}
+                        {l.product ? productTitle(l.product) : l.service?.name}
                         {l.gift && (
                           <span className="ml-2">
                             <Badge tone="green">подарок</Badge>
@@ -1119,12 +1142,58 @@ export default function Cashier() {
               </button>
             ))}
           </div>
-          {!bonus && total > 0 && (
-            <div className="-mt-1 flex justify-end">
-              <button type="button" className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline" onClick={() => setBonusOpen(true)}>
-                <Icon name="star" className="h-3.5 w-3.5" />
-                Баллы клиента
-              </button>
+          {total > 0 && (!bonus || !batteryPay) && (
+            <div className="-mt-1 flex flex-wrap justify-end gap-x-4 gap-y-1">
+              {!batteryPay && (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+                  disabled={batteryLoad.busy || !navigator.onLine}
+                  title={navigator.onLine ? 'Старый аккумулятор в счёт оплаты: вес × цена приёма за кг' : 'Нет связи с сервером: цену приёма считает сервер'}
+                  onClick={() =>
+                    void batteryLoad.run(async () => {
+                      const info = await get<BatteryInfo>('/batteries')
+                      setBatteryPay({ kgText: '', perKg: info.intake_per_kg_tyiyn })
+                      setTimeout(() => document.getElementById('battery-kg')?.focus(), 50)
+                    })
+                  }
+                >
+                  Сдал аккумулятор
+                </button>
+              )}
+              {!bonus && (
+                <button type="button" className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline" onClick={() => setBonusOpen(true)}>
+                  <Icon name="star" className="h-3.5 w-3.5" />
+                  Баллы клиента
+                </button>
+              )}
+            </div>
+          )}
+          <ErrorBox error={batteryLoad.error} />
+          {batteryPay && (
+            <div className="flex flex-col gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="battery-pay">
+              <div className="flex items-end gap-2">
+                <Field label="Сдал аккумулятор, вес кг">
+                  <input
+                    id="battery-kg"
+                    className="w-24"
+                    inputMode="decimal"
+                    value={batteryPay.kgText}
+                    onChange={(e) => setBatteryPay({ ...batteryPay, kgText: e.target.value })}
+                  />
+                </Field>
+                <span className="pb-2">
+                  × {formatSom(batteryPay.perKg)} за кг = <b>{formatSom(batteryAmt)}</b>
+                </span>
+                <Button variant="ghost" className="ml-auto px-2 py-1 text-xs" onClick={() => setBatteryPay(null)}>
+                  Убрать
+                </Button>
+              </div>
+              {batteryAmt > 0 && (
+                <div className="font-semibold">
+                  к оплате <Money value={due} />
+                </div>
+              )}
             </div>
           )}
           {payMode === 'cash' && (
@@ -1318,7 +1387,7 @@ export default function Cashier() {
             {blockers.length > 0 ? (
               <div className="truncate text-xs text-amber-700">Заполните: {blockers.map((x) => x.label).join(', ')}</div>
             ) : (
-              <div className="text-xs text-slate-500">{bonusAmount > 0 ? 'К оплате (с баллами)' : 'Итого'}</div>
+              <div className="text-xs text-slate-500">{bonusAmount > 0 ? 'К оплате (с баллами)' : batteryAmt > 0 ? 'К оплате (с аккумулятором)' : 'Итого'}</div>
             )}
             <div className="truncate text-xl font-bold">
               <Money value={due} />

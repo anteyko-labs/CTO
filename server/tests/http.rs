@@ -5301,3 +5301,134 @@ async fn owner_edits_every_employee_field_with_journal(pool: PgPool) {
     // Стал кассиром — получил правила оплаты по умолчанию.
     assert_eq!(last["pay_rules_added"], true);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn book_slot_is_set_on_category_and_overridden_per_vehicle(pool: PgPool) {
+    // «Строка книжки» и её интервал задаёт владелец у категории; у машины интервал строки
+    // правится и сбрасывается к категории (SPEC-27).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    // Без строки — по виду категории: фильтры — масляный фильтр.
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    assert_eq!(cat["book_slot"], "oil_filter");
+    let uri = format!("/api/v1/categories/{}", cat["id"].as_str().unwrap());
+    let book =
+        json!({ "book": { "slot": "cabin_filter", "interval_km": 15000, "interval_days": 180 } });
+    assert_eq!(
+        call(&app, "PATCH", &uri, Some(&admin), Some(book.clone()))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let bad = json!({ "book": { "slot": "cabin_filter", "interval_km": 15000 } });
+    assert_eq!(
+        call(&app, "PATCH", &uri, Some(&owner), Some(bad)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (s, _, cat) = call(&app, "PATCH", &uri, Some(&owner), Some(book)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (
+            cat["book_slot"].clone(),
+            cat["book_interval_km"].clone(),
+            cat["book_interval_days"].clone()
+        ),
+        (json!("cabin_filter"), json!(15000), json!(180))
+    );
+    assert_eq!(
+        actions(&pool, "category.update").await[0]["book"]["slot"]["new"],
+        "cabin_filter"
+    );
+
+    // Машина: интервал масла и салонного фильтра у машины, сброс — к категории.
+    let (_, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&admin),
+        Some(json!({ "name": "Эрлан" })),
+    )
+    .await;
+    let (_, _, car) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/parties/{}/vehicles", p["id"].as_str().unwrap()),
+        Some(&admin),
+        Some(json!({ "plate": "01KG555BBB" })),
+    )
+    .await;
+    let settings = format!(
+        "/api/v1/vehicles/{}/oil-settings",
+        car["id"].as_str().unwrap()
+    );
+    // Как раньше: без строки — масло.
+    let (s, _, b) = call(
+        &app,
+        "PATCH",
+        &settings,
+        Some(&admin),
+        Some(json!({ "interval_km": 10000, "interval_days": 60 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (b["interval_km"].clone(), b["interval_days"].clone()),
+        (json!(10000), json!(60))
+    );
+    let (_, _, b) = call(
+        &app,
+        "PATCH",
+        &settings,
+        Some(&admin),
+        Some(json!({ "slot": "cabin_filter", "interval_km": 9000, "interval_days": 90 })),
+    )
+    .await;
+    let cabin = b["slots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["slot"] == "cabin_filter")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (cabin["interval_km"].clone(), cabin["own_interval"].clone()),
+        (json!(9000), json!(true))
+    );
+    let (_, _, b) = call(
+        &app,
+        "PATCH",
+        &settings,
+        Some(&admin),
+        Some(json!({ "slot": "cabin_filter", "reset": true })),
+    )
+    .await;
+    // Замен салонного фильтра не было, интервал машины снят — строки в книжке нет.
+    assert!(
+        !b["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["slot"] == "cabin_filter")
+    );
+    assert_eq!(
+        call(
+            &app,
+            "PATCH",
+            &settings,
+            Some(&admin),
+            Some(json!({ "slot": "brakes", "interval_km": 9000, "interval_days": 90 })),
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(actions(&pool, "vehicle.oil_interval").await.len(), 3);
+}

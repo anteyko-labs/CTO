@@ -162,7 +162,7 @@ pub async fn sales(
             let d = crate::api::sales::sales_day(conn, user, Some(to)).await?;
             let t = &d.totals;
             let mut lines = vec![format!(
-                "Чеки {}: продаж {}, итог с возвратами {} (наличными {}, картой {}, переводом {}, в долг {}, баллами {})",
+                "Чеки {}: продаж {}, итог с возвратами {} (наличными {}, картой {}, переводом {}, в долг {}, баллами {}{})",
                 period_label(d.date, d.date),
                 t.count,
                 format_som(t.total_tyiyn),
@@ -170,7 +170,12 @@ pub async fn sales(
                 format_som(t.card_tyiyn),
                 format_som(t.transfer_tyiyn),
                 format_som(t.debt_tyiyn),
-                format_som(t.bonus_tyiyn)
+                format_som(t.bonus_tyiyn),
+                if t.battery_tyiyn != 0 {
+                    format!(", аккумуляторами {}", format_som(t.battery_tyiyn))
+                } else {
+                    String::new()
+                }
             )];
             capped(
                 &mut lines,
@@ -1038,7 +1043,7 @@ pub async fn party(
             let mut lines = vec![format!("Масляная книжка: {}", p.name)];
             for b in books.iter().take(10) {
                 lines.push(format!(
-                    "{} {} {}: следующая замена {}{}",
+                    "{} {} {}: следующая замена масла {}{}",
                     b.plate,
                     b.brand,
                     b.model,
@@ -1047,19 +1052,27 @@ pub async fn party(
                         .map(|k| format!(" или на {k} км"))
                         .unwrap_or_default()
                 ));
+                // Остальные строки книжки со своим сроком (SPEC-27).
+                for n in b.slots.iter().filter(|n| n.slot != "oil") {
+                    let next = crate::api::oil_book::next_text(n);
+                    if !next.is_empty() {
+                        lines.push(format!("  {}: {next}", n.label));
+                    }
+                }
                 for r in b.records.iter().take(3) {
+                    let what = r
+                        .lines
+                        .iter()
+                        .map(|l| l.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ");
                     lines.push(format!(
-                        "  {}{}: {}{}",
+                        "  {}{}: {}",
                         day(r.change_date),
                         r.mileage_km
                             .map(|k| format!(", {k} км"))
                             .unwrap_or_default(),
-                        or_dash(&r.oil_text),
-                        if r.filter_text.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; {}", r.filter_text)
-                        }
+                        or_dash(&what)
                     ));
                 }
                 if b.records.is_empty() {

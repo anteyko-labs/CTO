@@ -287,9 +287,9 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
         Some(0)
     } else if m.qty_delta > 0
         && before_qty < 0
-        && matches!(m.doc_type, "receipt" | "battery_intake")
+        && matches!(m.doc_type, "receipt" | "battery_intake" | "battery_tradein")
     {
-        // Только закупка задаёт цену: возврат по чеку с нулевой себестоимостью не обнуляет минус.
+        // Только закупка (и приём аккумулятора, в том числе в оплату чека) задаёт цену: возврат по чеку с нулевой себестоимостью не обнуляет минус.
         per_unit(m.value_delta, m.qty_delta)
     } else if qty > 0 && value < 0 {
         Some(if after.last_cost_qty > 0 {

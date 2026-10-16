@@ -200,6 +200,7 @@ fn cash(amount: i64) -> Vec<PaymentReq> {
     vec![PaymentReq {
         method: "cash".into(),
         amount_tyiyn: amount,
+        grams: None,
     }]
 }
 
@@ -371,6 +372,7 @@ async fn oil_change_is_a_mark_not_a_service_line(pool: PgPool) {
     // Частичный возврат ставку не снимает, полный — снимает.
     let ret = |qty| ReturnReq {
         op_id: Uuid::now_v7(),
+        battery_cash: false,
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty }],
         payments: cash(50_000 * qty),
@@ -455,6 +457,7 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
     let pay = |method: &str, amount: i64| PaymentReq {
         method: method.into(),
         amount_tyiyn: amount,
+        grams: None,
     };
     let mut req = takeaway(
         &w,
@@ -485,6 +488,7 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
         sale.id,
         ReturnReq {
             op_id: Uuid::now_v7(),
+            battery_cash: false,
             comment: "вернули".into(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments: vec![pay("debt", 1000)],
@@ -541,6 +545,7 @@ async fn cash_follows_payments(pool: PgPool) {
         vec![PaymentReq {
             method: "card".into(),
             amount_tyiyn: 100_000,
+            grams: None,
         }],
     );
     by_card.op_id = Uuid::now_v7();
@@ -588,10 +593,12 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
             PaymentReq {
                 method: "cash".into(),
                 amount_tyiyn: 50_000,
+                grams: None,
             },
             PaymentReq {
                 method: "debt".into(),
                 amount_tyiyn: 50_000,
+                grams: None,
             },
         ],
     );
@@ -637,16 +644,19 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
         sale_id,
         ReturnReq {
             op_id: Uuid::now_v7(),
+            battery_cash: false,
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments: vec![
                 PaymentReq {
                     method: "cash".into(),
                     amount_tyiyn: 25_000,
+                    grams: None,
                 },
                 PaymentReq {
                     method: "debt".into(),
                     amount_tyiyn: 25_000,
+                    grams: None,
                 },
             ],
         },
@@ -696,6 +706,7 @@ async fn full_return_takes_back_master_fee(pool: PgPool) {
             sale.id,
             ReturnReq {
                 op_id: Uuid::now_v7(),
+                battery_cash: false,
                 comment: String::new(),
                 lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
                 payments: cash(5_000),
@@ -757,6 +768,7 @@ async fn partial_returns_restore_exact_cost(pool: PgPool) {
     .unwrap();
     let ret = |qty| ReturnReq {
         op_id: Uuid::now_v7(),
+        battery_cash: false,
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty }],
         payments: cash(100 * qty),
@@ -1079,6 +1091,7 @@ async fn debt_needs_pin_or_inn(pool: PgPool) {
             vec![PaymentReq {
                 method: "debt".into(),
                 amount_tyiyn: 1_000,
+                grams: None,
             }],
         );
         req.party_id = Some(party);
@@ -1162,6 +1175,7 @@ async fn return_after_merge_lands_on_main_card(pool: PgPool) {
         sale.id,
         ReturnReq {
             op_id: Uuid::now_v7(),
+            battery_cash: false,
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments: cash(50_000),
@@ -1547,6 +1561,7 @@ async fn oil_book_records_service_change(pool: PgPool) {
         sale.id,
         ReturnReq {
             op_id: Uuid::now_v7(),
+            battery_cash: false,
             comment: String::new(),
             lines: vec![
                 ReturnLineReq { line_no: 1, qty: 1 },
@@ -1672,6 +1687,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
             .map(|(m, a)| PaymentReq {
                 method: (*m).into(),
                 amount_tyiyn: *a,
+                grams: None,
             })
             .collect()
     };
@@ -1724,6 +1740,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
     // Возврат: баллы обратно, начисленное с этого чека снимается.
     let ret = |payments: Vec<PaymentReq>| ReturnReq {
         op_id: Uuid::now_v7(),
+        battery_cash: false,
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
         payments,
@@ -1770,6 +1787,7 @@ fn pay(list: &[(&str, i64)]) -> Vec<PaymentReq> {
         .map(|(m, a)| PaymentReq {
             method: (*m).into(),
             amount_tyiyn: *a,
+            grams: None,
         })
         .collect()
 }
@@ -1787,6 +1805,7 @@ async fn return_one(
         sale,
         ReturnReq {
             op_id: Uuid::now_v7(),
+            battery_cash: false,
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments,
@@ -2235,7 +2254,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
 
     // Через 31 день — не сегодня; ставим интервал 7 дней: напоминание «за неделю».
     assert!(due_reminders(&mut conn).await.unwrap().is_empty());
-    sqlx::query("update party_vehicles set interval_days = 7 where id = $1")
+    sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) select id, branch_id, 'oil', 8000, 7 from party_vehicles where id = $1 on conflict (vehicle_id, slot) do update set interval_days = excluded.interval_days")
         .bind(vehicle)
         .execute(&pool)
         .await
@@ -2246,7 +2265,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     assert!(due[0].text.contains("через 7 дней"));
     mark_reminded(&mut conn, &due[0]).await.unwrap();
     assert!(due_reminders(&mut conn).await.unwrap().is_empty());
-    sqlx::query("update party_vehicles set interval_days = 1 where id = $1")
+    sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) select id, branch_id, 'oil', 8000, 1 from party_vehicles where id = $1 on conflict (vehicle_id, slot) do update set interval_days = excluded.interval_days")
         .bind(vehicle)
         .execute(&pool)
         .await
@@ -2905,6 +2924,7 @@ async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
         sale,
         ReturnReq {
             op_id: Uuid::now_v7(),
+            battery_cash: false,
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 2, qty: 1 }],
             payments: cash(50_000),
@@ -2936,8 +2956,18 @@ async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
         "{card}"
     );
     assert!(card.contains("10.01.2026 · 70 000 км · —"), "{card}");
-    assert!(card.contains("Масло: Масло 5W-30 4л") && card.contains("Фильтр: Фильтр W712"));
-    assert!(card.contains("Следующая замена: на 93 000 км или до") && card.contains("что раньше"));
+    // Строки книжки по видам и следующая замена по каждой (SPEC-27).
+    assert!(
+        card.contains("Масло двигателя: Масло 5W-30 4л")
+            && card.contains("Фильтр масляный: Фильтр W712"),
+        "{card}"
+    );
+    assert!(
+        card.contains("что наступит раньше")
+            && card.contains("Масло двигателя: на 93 000 км или до")
+            && card.contains("Фильтр масляный: на 93 000 км или до"),
+        "{card}"
+    );
     assert!(!card.contains(&format_som(250_000)));
 
     // Больше 10 замен — кнопка «Ещё» со следующими.
@@ -3795,6 +3825,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         vec![PaymentReq {
             method: "debt".into(),
             amount_tyiyn: 50_000,
+            grams: None,
         }],
     );
     req.party_id = Some(client);
@@ -3806,6 +3837,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         vec![PaymentReq {
             method: "debt".into(),
             amount_tyiyn: 50_000,
+            grams: None,
         }],
     );
     req.party_id = Some(client);
@@ -4647,7 +4679,7 @@ async fn bot_reminders_catch_up_inside_the_window(pool: PgPool) {
     let interval = |days: i32| {
         let pool = pool.clone();
         async move {
-            sqlx::query("update party_vehicles set interval_days = $1 where id = $2")
+            sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) select id, branch_id, 'oil', 8000, $1 from party_vehicles where id = $2 on conflict (vehicle_id, slot) do update set interval_days = excluded.interval_days")
                 .bind(days)
                 .bind(car)
                 .execute(&pool)
@@ -4938,6 +4970,7 @@ async fn cashier_percent_is_only_from_money(pool: PgPool) {
     };
     let ret = |qty: i64, payments: Vec<PaymentReq>| ReturnReq {
         op_id: Uuid::now_v7(),
+        battery_cash: false,
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty }],
         payments,
@@ -7626,4 +7659,553 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
         1
     );
     assert_eq!(draft_status(&pool).await.last().unwrap(), "expired");
+}
+
+// ---------- SPEC-27 §2: аккумуляторы ----------
+
+/// Цена приёма аккумуляторов за кг (настройка SPEC-03, ADR-048).
+async fn battery_price(pool: &PgPool, w: &World, per_kg: i64) {
+    sqlx::query(
+        "insert into settings (branch_id, key, value) values ($1, 'batteries', jsonb_build_object('intake_per_kg_tyiyn', $2::bigint))
+         on conflict (branch_id, key) do update set value = excluded.value",
+    )
+    .bind(w.owner.user.branch_id)
+    .bind(per_kg)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+fn battery(grams: i64, amount: i64) -> PaymentReq {
+    PaymentReq {
+        method: "battery".into(),
+        amount_tyiyn: amount,
+        grams: Some(grams),
+    }
+}
+
+async fn scrap_id(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar(
+        "select id from products where unit = 'g' and not archived order by created_at limit 1",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn percent_rule(pool: &PgPool, w: &World) {
+    sqlx::query(
+        "insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base, rate_bp, user_id)
+         values ($1, $2, $3, 'revenue_percent', 'cashier', 'gross', 200, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .bind(w.cashier)
+    .bind(w.owner.user.id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Чек 10 000 с: два фильтра по 5 000 с, закупка по 2 000 с.
+fn ten_thousand(w: &World, payments: Vec<PaymentReq>) -> SaleReq {
+    takeaway(w, vec![line("piece", w.filter, 2, 500_000)], payments)
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn battery_payment_takes_scrap_by_weight(pool: PgPool) {
+    // Пример заказчика (SPEC-27): чек 10 000 с, аккумулятор 12 кг × 50 с = 600 с — к оплате
+    // 9 400 с, на складе +12 кг лома стоимостью 600 с, выручка 10 000 с; 2 % кассира — со всей
+    // валовой прибыли (аккумулятор — настоящая оплата), комиссии банка нет.
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 2_000_000).await;
+    battery_price(&pool, &w, 5_000).await;
+    percent_rule(&pool, &w).await;
+    // Сумма, которую видела касса, не совпала с ценой приёма — чек не проводится.
+    let stale = sell(
+        &pool,
+        &w.admin,
+        ten_thousand(&w, vec![battery(12_000, 50_000), cash(950_000).remove(0)]),
+    )
+    .await;
+    assert!(
+        matches!(&stale, Err(AppError::Validation(m)) if m.contains("цена приёма изменилась")),
+        "{:?}",
+        stale.err().map(|e| e.to_string())
+    );
+    // Без веса — тоже нет.
+    let mut no_weight = battery(12_000, 60_000);
+    no_weight.grams = None;
+    assert!(matches!(
+        sell(
+            &pool,
+            &w.admin,
+            ten_thousand(&w, vec![no_weight, cash(940_000).remove(0)])
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    let sale = sell(
+        &pool,
+        &w.admin,
+        ten_thousand(&w, vec![battery(12_000, 60_000), cash(940_000).remove(0)]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sale.total_tyiyn, 1_000_000);
+    let bat = sale
+        .payments
+        .iter()
+        .find(|p| p.method == "battery")
+        .unwrap();
+    assert_eq!((bat.amount_tyiyn, bat.grams), (60_000, Some(12_000)));
+    // Лом на складе: 12 кг стоимостью 600 с, движение «аккумулятор в оплату».
+    let scrap = scrap_id(&pool).await;
+    assert_eq!(pool_of(&pool, scrap).await, (12_000, 60_000, false));
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "select doc_type from stock_movements where product_id = $1 and doc_id = $2",
+    )
+    .bind(scrap)
+    .bind(sale.id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(kinds, vec!["battery_tradein".to_string()]);
+    // В кассу — только наличные 9 400 с; комиссии нет.
+    let cash_in: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from cash_movements where doc_id = $1",
+    )
+    .bind(sale.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cash_in, 940_000);
+    let fee: i64 = sqlx::query_scalar(
+        "select coalesce(sum(fee_tyiyn), 0)::bigint from sale_payments where sale_id = $1",
+    )
+    .bind(sale.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(fee, 0);
+    // Выручка — 10 000 с: строки чека не уменьшаются.
+    let revenue: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from sale_lines where sale_id = $1",
+    )
+    .bind(sale.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(revenue, 1_000_000);
+    // 2 % с валовой 6 000 с = 120 с: часть аккумулятором входит в оплаченное.
+    let (base, amount): (i64, i64) = sqlx::query_as(
+        "select base_tyiyn, amount_tyiyn from payroll_accruals where doc_id = $1 and kind = 'revenue_percent'",
+    )
+    .bind(sale.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((base, amount), (600_000, 12_000));
+    // Лента владельцу: «аккумулятор 12 кг — 600 с».
+    let mut conn = pool.acquire().await.unwrap();
+    let (_, text) = avtodom_server::api::telegram::sale_text(&mut conn, sale.id)
+        .await
+        .unwrap();
+    assert!(text.contains("аккумулятор 12 кг — 600 с"), "{text}");
+    drop(conn);
+    // Последняя цена приёма — запасная себестоимость лома.
+    let (last_qty, last_cost): (i64, i64) = sqlx::query_as(
+        "select last_cost_qty, last_cost_tyiyn from branch_products where product_id = $1",
+    )
+    .bind(scrap)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((last_qty, last_cost), (12_000, 60_000));
+    assert_stock_consistent(&pool, &w).await;
+}
+
+async fn give_back(
+    pool: &PgPool,
+    ctx: &Ctx,
+    sale: Uuid,
+    qty: i64,
+    payments: Vec<PaymentReq>,
+    battery_cash: bool,
+) -> Result<avtodom_server::api::sales::SaleOut, AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = return_sale_tx(
+        &mut tx,
+        ctx,
+        sale,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            battery_cash,
+            comment: "вернули".into(),
+            lines: vec![ReturnLineReq { line_no: 1, qty }],
+            payments,
+        },
+    )
+    .await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn battery_payment_returns_by_weight_not_cash(pool: PgPool) {
+    // Возврат чека с аккумулятором в оплату: вес уходит со склада, денег за него не выдают;
+    // лом уже продан — эту часть деньгами возвращает только владелец явной отметкой (SPEC-27).
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w.admin, w.filter, 10, 2_000_000).await;
+    battery_price(&pool, &w, 5_000).await;
+    percent_rule(&pool, &w).await;
+    let pay = || vec![battery(12_000, 60_000), cash(940_000).remove(0)];
+    let sale = sell(&pool, &w.admin, ten_thousand(&w, pay()))
+        .await
+        .unwrap();
+    let scrap = scrap_id(&pool).await;
+    // Весь чек наличными — нельзя: 600 с были аккумулятором.
+    let all_cash = give_back(&pool, &w.admin, sale.id, 2, cash(1_000_000), false).await;
+    assert!(
+        matches!(&all_cash, Err(AppError::Validation(m)) if m.contains("верните аккумулятором")),
+        "{:?}",
+        all_cash.err().map(|e| e.to_string())
+    );
+    // Половина — наличными: денег по чеку платили 9 400 с, хватает.
+    give_back(&pool, &w.admin, sale.id, 1, cash(500_000), false)
+        .await
+        .unwrap();
+    // Вторая половина: 4 400 с деньгами и 600 с аккумулятором — 12 кг уходят со склада.
+    let mut back = cash(440_000);
+    back.push(PaymentReq {
+        method: "battery".into(),
+        amount_tyiyn: 60_000,
+        grams: None,
+    });
+    let r = give_back(&pool, &w.admin, sale.id, 1, back, false)
+        .await
+        .unwrap();
+    let bat = r.payments.iter().find(|p| p.method == "battery").unwrap();
+    assert_eq!((bat.amount_tyiyn, bat.grams), (-60_000, Some(-12_000)));
+    assert_eq!(pool_of(&pool, scrap).await, (0, 0, false));
+    // Процент кассира снят целиком: чек вернули полностью.
+    let percent: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where kind = 'revenue_percent'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(percent, 0);
+
+    // Второй чек: лом из него продали на вес — вернуть вес нельзя.
+    let sale = sell(&pool, &w.admin, ten_thousand(&w, pay()))
+        .await
+        .unwrap();
+    sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![line("weight", scrap, 12_000, 6_000)], cash(72_000)),
+    )
+    .await
+    .unwrap();
+    let mut back = cash(940_000);
+    back.push(PaymentReq {
+        method: "battery".into(),
+        amount_tyiyn: 60_000,
+        grams: None,
+    });
+    let sold = give_back(&pool, &w.admin, sale.id, 2, back, false).await;
+    assert!(
+        matches!(&sold, Err(AppError::Conflict(m)) if m.contains("только владелец")),
+        "{:?}",
+        sold.err().map(|e| e.to_string())
+    );
+    // Деньгами за аккумулятор — администратору нельзя, владельцу с отметкой можно.
+    assert!(matches!(
+        give_back(&pool, &w.admin, sale.id, 2, cash(1_000_000), true).await,
+        Err(AppError::Forbidden)
+    ));
+    give_back(&pool, &w.owner, sale.id, 2, cash(1_000_000), true)
+        .await
+        .unwrap();
+    assert_eq!(audit_data(&pool, "sale.return_battery_cash").await.len(), 1);
+    assert_eq!(pool_of(&pool, scrap).await.0, 0);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn battery_polarity_in_line_name_and_filter(pool: PgPool) {
+    // Полярность — характеристика аккумулятора: «(Л)» прямая, «(П)» обратная — в названии
+    // строки чека; товары фильтруются по ней (SPEC-27).
+    let w = seed(&pool).await;
+    let cat = Uuid::now_v7();
+    sqlx::query("insert into categories (id, name, kind, attributes) values ($1, 'АКБ', 'battery', '[{\"key\": \"polarity\", \"label\": \"Полярность\", \"type\": \"select\", \"options\": [\"прямая\", \"обратная\"], \"filterable\": true}]')")
+        .bind(cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (left, right) = (Uuid::now_v7(), Uuid::now_v7());
+    for (id, name, pol) in [
+        (left, "Varta 60", "прямая"),
+        (right, "Varta 60R", "обратная"),
+    ] {
+        sqlx::query("insert into products (id, category_id, name, unit, attrs) values ($1, $2, $3, 'piece', jsonb_build_object('polarity', $4::text))")
+            .bind(id)
+            .bind(cat)
+            .bind(name)
+            .bind(pol)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    receive(&pool, &w.admin, right, 2, 1_000_000).await;
+    let sale = sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![line("piece", right, 1, 700_000)], cash(700_000)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sale.lines[0].name, "Varta 60R (П)");
+    let mut conn = pool.acquire().await.unwrap();
+    let found = avtodom_server::api::catalog::query_products(
+        &mut conn,
+        &w.admin.user,
+        avtodom_server::api::catalog::ProductFilter {
+            category_id: Some(cat),
+            attrs: Some(serde_json::json!({ "polarity": "прямая" })),
+            limit: 50,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(found.iter().map(|p| p.id).collect::<Vec<_>>(), vec![left]);
+}
+
+// ---------- SPEC-27 §3: книжка по каждому фильтру ----------
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
+    // Чек с маслом, масляным и воздушным фильтром — три строки книжки, у каждой свой
+    // интервал (категории или по умолчанию); интервал правится у машины; напоминания — по
+    // строкам; бот показывает строки (SPEC-27).
+    use avtodom_server::api::telegram::{due_reminders, mark_reminded};
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    // Воздушные фильтры — своя категория со строкой книжки и интервалом 20 000 км / 60 дней.
+    let (air_cat, air) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into categories (id, name, kind, book_slot, book_interval_km, book_interval_days) values ($1, 'Воздушные', 'filter', 'air_filter', 20000, 60)")
+        .bind(air_cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into products (id, category_id, name, unit) values ($1, $2, 'Фильтр воздушный A1', 'piece')")
+        .bind(air)
+        .bind(air_cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Антифриз — «прочие работы» без интервала; категория без строки в книжку не идёт.
+    let (other_cat, antifreeze, none_cat, wiper) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("insert into categories (id, name, kind, book_slot) values ($1, 'Жидкости', 'other', 'other'), ($2, 'Щётки', 'other', null)")
+        .bind(other_cat)
+        .bind(none_cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into products (id, category_id, name, unit) values ($1, $2, 'Антифриз G12', 'piece'), ($3, $4, 'Щётка 60 см', 'piece')")
+        .bind(antifreeze)
+        .bind(other_cat)
+        .bind(wiper)
+        .bind(none_cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for p in [air, antifreeze, wiper] {
+        receive(&pool, &w.admin, p, 2, 20_000).await;
+    }
+    let chat = 990_001i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let car = staff_car(&pool, &w, me, "01KG555AAA", true).await;
+    let mut req = takeaway(
+        &w,
+        vec![
+            line("container", w.oil, 1, 200_000),
+            line("piece", w.filter, 1, 50_000),
+            line("piece", air, 1, 30_000),
+            line("piece", antifreeze, 1, 30_000),
+            line("piece", wiper, 1, 30_000),
+        ],
+        cash(340_000),
+    );
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.party_id = Some(me);
+    req.vehicle_id = Some(car);
+    req.mileage_km = Some(85_000);
+    sell(&pool, &w.owner, req).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let book = avtodom_server::api::oil_book::books(&mut conn, branch, None, Some(car))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let r = &book.records[0];
+    let slots: Vec<&str> = r.lines.iter().map(|l| l.slot.as_str()).collect();
+    assert_eq!(slots, vec!["oil", "oil_filter", "air_filter", "other"]);
+    assert!(r.lines[2].text.contains("Фильтр воздушный A1 · 1 шт"));
+    let next = |slot: &str| {
+        book.slots.iter().find(|n| n.slot == slot).map(|n| {
+            (
+                n.next_km,
+                n.next_date.map(|d| (d - r.change_date).num_days()),
+            )
+        })
+    };
+    assert_eq!(next("oil"), Some((Some(93_000), Some(31))));
+    assert_eq!(next("oil_filter"), Some((Some(93_000), Some(31))));
+    assert_eq!(next("air_filter"), Some((Some(105_000), Some(60))));
+    // У прочих работ интервала нет — строка есть, срока нет.
+    assert_eq!(next("other"), Some((None, None)));
+    assert!(next("cabin_filter").is_none());
+    // Прежние поля записи заполнены, как раньше.
+    assert!(r.oil_text.contains("Масло 5W-30 4л") && r.filter_text.contains("Фильтр W712"));
+
+    // Интервал воздушного фильтра у этой машины — 3 дня: напоминание только по нему.
+    sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) values ($1, $2, 'air_filter', 10000, 3)")
+        .bind(car)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let book = avtodom_server::api::oil_book::books(&mut conn, branch, None, Some(car))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let air_next = book.slots.iter().find(|n| n.slot == "air_filter").unwrap();
+    assert!(air_next.own_interval);
+    assert_eq!(air_next.next_km, Some(95_000));
+    assert_eq!(book.next_km, Some(93_000));
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].slots, vec!["air_filter".to_string()]);
+    assert!(
+        due[0].text.contains("воздушного фильтра"),
+        "{}",
+        due[0].text
+    );
+    mark_reminded(&mut conn, &due[0]).await.unwrap();
+    assert!(due_reminders(&mut conn).await.unwrap().is_empty());
+    // Масло и масляный фильтр подошли в один день — одно сообщение на обе строки.
+    sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) values ($1, $2, 'oil', 8000, 5), ($1, $2, 'oil_filter', 8000, 5)")
+        .bind(car)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let due = due_reminders(&mut conn).await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(
+        due[0].slots,
+        vec!["oil".to_string(), "oil_filter".to_string()]
+    );
+    assert!(
+        due[0].text.contains("замена масла, масляного фильтра"),
+        "{}",
+        due[0].text
+    );
+
+    // Бот: карточка машины — строки книжки и следующая замена по каждой.
+    let card = press(&mut conn, chat, &format!("car:{car}")).await.text;
+    assert!(
+        card.contains("Фильтр воздушный: на 95 000 км или до")
+            && card.contains("Фильтр воздушный: Фильтр воздушный A1")
+            && card.contains("Прочие работы: Антифриз G12")
+            && !card.contains("Щётка"),
+        "{card}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn oil_book_migration_keeps_old_records(pool: PgPool) {
+    // Миграция книжки: прежние записи становятся строками «масло» и «масляный фильтр», тексты
+    // в записи остаются; прежний интервал машины — интервал масла и фильтра этой машины.
+    let mut applied = 0;
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version < 39) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+        applied += 1;
+    }
+    assert!(applied >= 38);
+    let (branch, user, party, car, rec, empty) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::raw_sql(&format!(
+        "insert into branches (id, name) values ('{branch}', 'Тест');
+         insert into users (id, branch_id, login, password_hash, role, full_name) values ('{user}', '{branch}', 'o', 'x', 'owner', 'o');
+         insert into parties (id, branch_id, role, kind, name) values ('{party}', '{branch}', 'customer', 'person', 'Эрлан');
+         insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, interval_km, interval_days)
+           values ('{car}', '{branch}', '{party}', '01KG1', '01KG1', 10000, 45);
+         insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, mileage_km, oil_text, filter_text, user_id)
+           values ('{rec}', '{branch}', '{car}', '{party}', '2026-01-10', 70000, 'Тетрадное масло', 'Фильтр W712', '{user}'),
+                  ('{empty}', '{branch}', '{car}', '{party}', '2025-12-01', null, 'Только масло', '', '{user}');"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version >= 39) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    let items: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "select oil_change_id, slot, text from oil_change_items order by oil_change_id, position",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected = vec![
+        (rec, "oil".to_string(), "Тетрадное масло".to_string()),
+        (rec, "oil_filter".to_string(), "Фильтр W712".to_string()),
+        (empty, "oil".to_string(), "Только масло".to_string()),
+    ];
+    expected.sort_by_key(|x| x.0);
+    assert_eq!(items, expected);
+    let (oil_text, filter_text): (String, String) =
+        sqlx::query_as("select oil_text, filter_text from oil_changes where id = $1")
+            .bind(rec)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (oil_text.as_str(), filter_text.as_str()),
+        ("Тетрадное масло", "Фильтр W712")
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    let book = avtodom_server::api::oil_book::books(&mut conn, branch, None, Some(car))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!((book.interval_km, book.interval_days), (10_000, 45));
+    assert_eq!(book.next_km, Some(80_000));
+    let filter = book.slots.iter().find(|n| n.slot == "oil_filter").unwrap();
+    assert_eq!(
+        (filter.interval_km, filter.own_interval),
+        (Some(10_000), true)
+    );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { POLARITY_LABELS } from '../lib/battery'
 import { formatLiters, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -402,7 +403,7 @@ export function ProductFormModal({
                 <option value="">—</option>
                 {a.options?.map((o) => (
                   <option key={o} value={o}>
-                    {o}
+                    {a.key === 'polarity' ? (POLARITY_LABELS[o] ?? o) : o}
                   </option>
                 ))}
               </select>

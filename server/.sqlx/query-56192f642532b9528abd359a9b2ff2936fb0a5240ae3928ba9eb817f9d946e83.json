@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select oil_change_id, slot, text, category_id from oil_change_items\n           where oil_change_id = any($1) order by oil_change_id, position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oil_change_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "category_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "56192f642532b9528abd359a9b2ff2936fb0a5240ae3928ba9eb817f9d946e83"
+}

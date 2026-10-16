@@ -354,7 +354,7 @@ async fn cars(
     Ok(Reply::with_buttons(with_header(header, text), rows))
 }
 
-/// Замена для карточки: дата, пробег, сумма чека за вычетом возвратов, масло и фильтр.
+/// Замена для карточки: дата, пробег, сумма чека за вычетом возвратов и строки книжки.
 fn record_text(r: &OilRecord) -> String {
     let mut head = vec![r.change_date.format("%d.%m.%Y").to_string()];
     if let Some(m) = r.mileage_km {
@@ -363,12 +363,8 @@ fn record_text(r: &OilRecord) -> String {
     // Запись из тетради — без чека, суммы нет.
     head.push(r.sale_total_tyiyn.map_or_else(|| "—".into(), format_som));
     let mut lines = vec![head.join(" · ")];
-    if !r.oil_text.is_empty() {
-        lines.push(format!("  Масло: {}", r.oil_text));
-    }
-    if !r.filter_text.is_empty() {
-        lines.push(format!("  Фильтр: {}", r.filter_text));
-    }
+    // По строкам книжки: масло, фильтры по видам, прочие работы (SPEC-27).
+    lines.extend(crate::api::oil_book::record_lines(r, "  "));
     lines.join("\n")
 }
 
@@ -405,20 +401,11 @@ async fn card(
     let mut text = Vec::new();
     if offset == 0 {
         text.push(format!("🚗 {name}"));
-        let next: Vec<String> = [
-            b.next_km.map(|k| format!("на {}", km(k))),
-            b.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y"))),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        // Следующая замена по каждой строке книжки (SPEC-27).
+        let next = crate::api::oil_book::next_lines(&b, "  ");
         if !next.is_empty() {
-            let tail = if next.len() > 1 {
-                " — что раньше"
-            } else {
-                ""
-            };
-            text.push(format!("Следующая замена: {}{tail}", next.join(" или ")));
+            text.push("Следующая замена — что наступит раньше:".into());
+            text.extend(next);
         }
         text.push(String::new());
         if page.is_empty() {

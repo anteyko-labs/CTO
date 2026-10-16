@@ -67,6 +67,11 @@ pub struct SaleLineReq {
 pub struct PaymentReq {
     pub method: String,
     pub amount_tyiyn: i64,
+    /// Аккумулятор в оплату (`battery`, SPEC-27): вес в граммах. Сумму считает сервер по цене
+    /// приёма за кг; присланная сумма — то, что видела касса, и должна с ней совпасть. В
+    /// возврате вес не присылается: сервер берёт долю веса исходного чека.
+    #[serde(default)]
+    pub grams: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +127,9 @@ pub struct SaleLineOut {
 pub struct PaymentOut {
     pub method: String,
     pub amount_tyiyn: i64,
+    /// Вес аккумулятора, принятого в оплату (у возврата — с минусом).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grams: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -191,7 +199,11 @@ pub async fn load_sale(
     let owner = user.is_owner();
     let lines = sqlx::query!(
         r#"select l.line_no, l.kind, l.product_id, l.service_id,
-                  coalesce(p.name, sv.name) as "name!", p.container_ml as "container_ml?",
+                  -- Полярность аккумулятора — в названии строки: «(Л)» прямая, «(П)» обратная (SPEC-27).
+                  coalesce(p.name || case p.attrs ->> 'polarity' when 'прямая' then ' (Л)'
+                                                                when 'обратная' then ' (П)' else '' end,
+                           sv.name) as "name!",
+                  p.container_ml as "container_ml?",
                   l.qty, l.units, l.unit_price_tyiyn, l.list_price_tyiyn, l.amount_tyiyn, l.cost_tyiyn,
                   l.master_fee_tyiyn, l.gift
            from sale_lines l
@@ -222,7 +234,7 @@ pub async fn load_sale(
     .collect();
     let payments = sqlx::query_as!(
         PaymentOut,
-        "select method, amount_tyiyn from sale_payments where sale_id = $1 order by method",
+        "select method, amount_tyiyn, grams from sale_payments where sale_id = $1 order by method",
         id
     )
     .fetch_all(&mut *conn)
@@ -395,13 +407,16 @@ fn seen_list(l: &SaleLineReq, offline: bool) -> Option<i64> {
 
 fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     let mut sum: i64 = 0;
+    if payments.iter().filter(|p| p.method == "battery").count() > 1 {
+        return Err(invalid("аккумулятор в оплату — одной строкой"));
+    }
     for p in payments {
         if !matches!(
             p.method.as_str(),
-            "cash" | "card" | "transfer" | "debt" | "bonus"
+            "cash" | "card" | "transfer" | "debt" | "bonus" | "battery"
         ) {
             return Err(invalid(
-                "способ оплаты: cash, card, transfer, debt или bonus",
+                "способ оплаты: cash, card, transfer, debt, bonus или battery",
             ));
         }
         if p.amount_tyiyn <= 0 || p.amount_tyiyn > ops::MAX_AMOUNT_TYIYN {
@@ -413,6 +428,41 @@ fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
         return Err(invalid(format!("сумма оплат {sum} не равна итогу {total}")));
     }
     Ok(())
+}
+
+/// Аккумулятор в оплату чека (SPEC-27): сумма = вес × цена приёма за кг из настроек, считает
+/// сервер. Касса показывает ту же сумму заранее; если цену за это время поменяли, чек не
+/// проводится — касса покажет новую сумму. У остальных способов вес не учитывается.
+async fn price_battery(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    payments: &[PaymentReq],
+) -> AppResult<Vec<PaymentReq>> {
+    let mut out = Vec::with_capacity(payments.len());
+    for p in payments {
+        let mut p = p.clone();
+        if p.method == "battery" {
+            let grams = p.grams.ok_or_else(|| invalid("укажите вес аккумулятора"))?;
+            crate::api::batteries::check_grams(grams)?;
+            let price = crate::api::batteries::intake_price(conn, branch_id).await?;
+            let amount = crate::api::batteries::amount_for(grams, price)?;
+            if amount <= 0 {
+                return Err(invalid("цена приёма аккумуляторов не задана"));
+            }
+            if p.amount_tyiyn != amount {
+                return Err(invalid(format!(
+                    "аккумулятор {} по {} за кг — {}: цена приёма изменилась, проверьте оплату",
+                    crate::domain::money::format_kg(grams),
+                    crate::domain::money::format_som(price),
+                    crate::domain::money::format_som(amount)
+                )));
+            }
+        } else {
+            p.grams = None;
+        }
+        out.push(p);
+    }
+    Ok(out)
 }
 
 /// Сотрудник чека. Чек без сети принимаем и с сотрудником, которого отключили, пока чек лежал
@@ -603,15 +653,31 @@ async fn insert_payments(
                     }
                 }
             }
+            // Аккумулятор в оплату: денег нет, на складе — лом по весу этой стоимостью (SPEC-27).
+            "battery" => {
+                let grams = p
+                    .grams
+                    .ok_or_else(|| invalid("укажите вес аккумулятора"))?
+                    .checked_mul(sign)
+                    .ok_or_else(overflow)?;
+                crate::api::batteries::tradein_movement(conn, branch_id, sale_id, grams, amount)
+                    .await?;
+            }
             _ => {}
         }
+        let grams = if p.method == "battery" {
+            p.grams.map(|g| g.saturating_mul(sign))
+        } else {
+            None
+        };
         sqlx::query!(
-            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn) values ($1, $2, $3, $4, $5)",
+            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams) values ($1, $2, $3, $4, $5, $6)",
             new_id(),
             sale_id,
             p.method,
             amount,
-            fee
+            fee,
+            grams
         )
         .execute(&mut *conn)
         .await?;
@@ -628,6 +694,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.lines.is_empty() {
         return Err(invalid("чек пуст"));
     }
+    // Аккумулятор в оплату: сумму по весу считает сервер (SPEC-27).
+    let mut req = req;
+    req.payments = price_battery(conn, branch_id, &req.payments).await?;
+    let battery_scrap = if req.payments.iter().any(|p| p.method == "battery") {
+        Some(crate::api::batteries::scrap_product(conn).await?)
+    } else {
+        None
+    };
     if req.declined.chars().count() > 300 {
         return Err(invalid("отказанные работы — не длиннее 300 знаков"));
     }
@@ -813,10 +887,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         .try_fold(check_fee, |acc, p| acc.checked_add(p.master_fee))
         .ok_or_else(overflow)?;
 
+    // Лом аккумуляторов из оплаты блокируется вместе с товарами чека, в общем порядке.
     lock_products(
         conn,
         branch_id,
-        prepared.iter().filter_map(|p| p.product_id),
+        prepared
+            .iter()
+            .filter_map(|p| p.product_id)
+            .chain(battery_scrap),
     )
     .await?;
     // Пока ждали блокировку, карточку могли объединить: остаток не должен застрять в архиве.
@@ -1236,6 +1314,10 @@ pub struct ReturnReq {
     pub comment: String,
     pub lines: Vec<ReturnLineReq>,
     pub payments: Vec<PaymentReq>,
+    /// Вернуть деньгами часть, оплаченную аккумулятором (лом уже продан): только владелец,
+    /// явной отметкой (SPEC-27).
+    #[serde(default)]
+    pub battery_cash: bool,
 }
 
 /// Часть величины `part` для `qty` из `orig_qty`; последняя часть забирает точный остаток.
@@ -1357,10 +1439,86 @@ pub async fn return_sale_tx(
         });
     }
     check_payments(&req.payments, total)?;
+    // Часть чека, оплаченная аккумулятором (SPEC-27), возвращается аккумулятором: вес уходит со
+    // склада той же стоимостью, денег за него не выдают. Сколько веса — доля от веса чека по
+    // сумме; последняя часть забирает точный остаток.
+    let bat = sqlx::query!(
+        r#"select coalesce(sum(p.amount_tyiyn) filter (where s.id = $1), 0)::bigint as "paid!",
+                  coalesce(sum(p.grams) filter (where s.id = $1), 0)::bigint as "grams!",
+                  coalesce(-sum(p.amount_tyiyn) filter (where s.id <> $1), 0)::bigint as "back!",
+                  coalesce(-sum(p.grams) filter (where s.id <> $1), 0)::bigint as "grams_back!"
+           from sale_payments p join sales s on s.id = p.sale_id
+           where (s.id = $1 or s.reversal_of = $1) and p.method = 'battery'"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let bat_left = bat.paid.saturating_sub(bat.back).max(0);
+    let battery_req: i64 = req
+        .payments
+        .iter()
+        .filter(|p| p.method == "battery")
+        .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
+        .ok_or_else(overflow)?;
+    if battery_req > bat_left {
+        return Err(invalid(format!(
+            "аккумулятором по этому чеку можно вернуть не больше {}",
+            crate::domain::money::format_som(bat_left)
+        )));
+    }
+    let mut battery_cash = false;
+    if bat_left > 0 {
+        // Всё, что по чеку платили не аккумулятором, за вычетом прежних возвратов.
+        let other_left = sqlx::query_scalar!(
+            r#"select coalesce(sum(p.amount_tyiyn), 0)::bigint as "v!"
+               from sale_payments p join sales s on s.id = p.sale_id
+               where (s.id = $1 or s.reversal_of = $1) and p.method <> 'battery'"#,
+            id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if total.saturating_sub(battery_req) > other_left.max(0) {
+            if !req.battery_cash {
+                return Err(invalid(format!(
+                    "часть чека оплачена аккумулятором: {} верните аккумулятором (вес уйдёт со склада). Деньгами за аккумулятор — только по решению владельца",
+                    crate::domain::money::format_som(
+                        total.saturating_sub(other_left.max(0)).min(bat_left)
+                    )
+                )));
+            }
+            if !ctx.user.is_owner() {
+                return Err(AppError::Forbidden);
+            }
+            battery_cash = true;
+        }
+    }
+    let mut payments = Vec::with_capacity(req.payments.len());
+    let mut battery_grams: i64 = 0;
+    for p in &req.payments {
+        let mut p = p.clone();
+        p.grams = None;
+        if p.method == "battery" {
+            let g = if p.amount_tyiyn == bat_left {
+                bat.grams.saturating_sub(bat.grams_back)
+            } else {
+                div_round(
+                    i128::from(bat.grams) * i128::from(p.amount_tyiyn),
+                    i128::from(bat.paid),
+                )
+                .ok_or_else(overflow)?
+            };
+            if g <= 0 {
+                return Err(invalid("сумма аккумулятором слишком мала: нет даже грамма"));
+            }
+            battery_grams = g;
+            p.grams = Some(g);
+        }
+        payments.push(p);
+    }
     // Сколько по чеку ещё в долгу и сколько заплачено деньгами, за вычетом прежних возвратов.
     let left = sqlx::query!(
         r#"select coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
-                  coalesce(sum(p.amount_tyiyn) filter (where p.method not in ('debt', 'bonus')), 0)::bigint as "money!"
+                  coalesce(sum(p.amount_tyiyn) filter (where p.method not in ('debt', 'bonus', 'battery')), 0)::bigint as "money!"
            from sale_payments p join sales s on s.id = p.sale_id
            where s.id = $1 or s.reversal_of = $1"#,
         id
@@ -1373,7 +1531,7 @@ pub async fn return_sale_tx(
         .try_fold((0i64, 0i64), |(d, m), p| {
             if p.method == "debt" {
                 d.checked_add(p.amount_tyiyn).map(|d| (d, m))
-            } else if p.method == "bonus" {
+            } else if p.method == "bonus" || p.method == "battery" {
                 Some((d, m))
             } else {
                 m.checked_add(p.amount_tyiyn).map(|m| (d, m))
@@ -1459,10 +1617,31 @@ pub async fn return_sale_tx(
         0
     };
 
+    let scrap = if battery_grams > 0 {
+        Some(crate::api::batteries::scrap_product(conn).await?)
+    } else {
+        None
+    };
     let products: BTreeSet<Uuid> = planned.iter().filter_map(|x| x.p.product_id).collect();
     let ids: Vec<Uuid> = products.iter().copied().collect();
-    lock_products(conn, branch_id, products).await?;
+    lock_products(conn, branch_id, products.into_iter().chain(scrap)).await?;
     ops::ensure_not_merged(conn, &ids).await?;
+    // Лом, принятый в оплату, уже продали — вес не вернуть: эту часть деньгами отдаёт владелец.
+    if let Some(scrap) = scrap {
+        let pool = ops::lock_pool(conn, branch_id, scrap).await?;
+        // Возвращаемые строки чека могут сами быть ломом на вес: они вернутся на склад раньше.
+        let coming: i64 = planned
+            .iter()
+            .filter(|x| x.p.product_id == Some(scrap))
+            .fold(0i64, |acc, x| acc.saturating_add(x.p.units));
+        if pool.qty.saturating_add(coming) < battery_grams {
+            return Err(AppError::Conflict(format!(
+                "лома аккумуляторов на складе {}, а вернуть нужно {}: его уже продали. Эту часть может вернуть деньгами только владелец",
+                crate::domain::money::format_kg(pool.qty.max(0)),
+                crate::domain::money::format_kg(battery_grams)
+            )));
+        }
+    }
     let number = ops::next_counter(conn, branch_id, "sale").await?;
     let rid = new_id();
     sqlx::query!(
@@ -1535,7 +1714,7 @@ pub async fn return_sale_tx(
         conn,
         ctx,
         rid,
-        &req.payments,
+        &payments,
         -1,
         Some(FeeBack {
             fee: fb.fee,
@@ -1614,6 +1793,17 @@ pub async fn return_sale_tx(
         },
     )
     .await?;
+    if battery_cash {
+        ops::audit(
+            conn,
+            ctx,
+            "sale.return_battery_cash",
+            "sale",
+            Some(rid),
+            json!({ "number": number, "original": id, "battery_left": bat_left, "refund": total }),
+        )
+        .await?;
+    }
     // Деньгами вернули больше, чем по чеку платили деньгами: законно, если долг уже погашен,
     // но владелец должен это видеть.
     if money_req > left.money.max(0) {
@@ -1693,6 +1883,8 @@ pub(crate) struct DayTotals {
     pub(crate) transfer_tyiyn: i64,
     pub(crate) debt_tyiyn: i64,
     pub(crate) bonus_tyiyn: i64,
+    /// Принято аккумуляторами в оплату (SPEC-27).
+    pub(crate) battery_tyiyn: i64,
 }
 
 #[derive(Serialize)]
@@ -1751,7 +1943,8 @@ pub(crate) async fn sales_day(
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as "card!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
-             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'bonus'), 0)::bigint as "bonus!"
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'bonus'), 0)::bigint as "bonus!",
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'battery'), 0)::bigint as "battery!"
            from sale_payments p join sales s on s.id = p.sale_id
            where s.branch_id = $1
              and s.business_date = $2"#,
@@ -1770,6 +1963,7 @@ pub(crate) async fn sales_day(
         transfer_tyiyn: t.transfer,
         debt_tyiyn: t.debt,
         bonus_tyiyn: t.bonus,
+        battery_tyiyn: t.battery,
     };
     Ok(DayOut {
         date,

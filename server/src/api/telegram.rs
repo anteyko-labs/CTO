@@ -1385,25 +1385,15 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
                         .unwrap_or_default()
                 ),
             ];
-            if !last.oil_text.is_empty() {
-                lines.push(format!("Масло: {}", last.oil_text));
-            }
-            if !last.filter_text.is_empty() {
-                lines.push(format!("Фильтр: {}", last.filter_text));
-            }
+            lines.extend(crate::api::oil_book::record_lines(last, ""));
             if !last.declined.is_empty() {
                 lines.push(format!("Мастер рекомендовал: {}", last.declined));
             }
-            let next = [
-                b.next_km.map(|k| format!("на {}", km(k))),
-                b.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y"))),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" или ");
+            // Следующая замена по каждой строке книжки (SPEC-27).
+            let next = crate::api::oil_book::next_lines(b, "  ");
             if !next.is_empty() {
-                lines.push(format!("Следующая замена: {next}"));
+                lines.push("Следующая замена:".into());
+                lines.extend(next);
             }
             lines.join("\n")
         })
@@ -1422,12 +1412,27 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
 /// Напоминания клиентам: за 7 дней и за 1 день до срока замены, каждое один раз (ADR-051).
 /// Пропущенное (сервер был выключен) догоняется: «за неделю» — пока до срока больше дня,
 /// «за день» — в последний день и в сам день срока; оба сразу не уходят (ADR-063).
+/// Срок считается по каждой строке книжки отдельно (SPEC-27).
 pub struct Reminder {
     pub chat_id: i64,
     pub vehicle_id: Uuid,
     pub due: NaiveDate,
     pub days_before: i32,
+    /// Строки книжки, срок которых подошёл в этот день (SPEC-27): одним сообщением.
+    pub slots: Vec<String>,
     pub text: String,
+}
+
+/// «масла», «масляного фильтра» — что менять, в напоминании.
+fn slot_genitive(slot: &str) -> &'static str {
+    match slot {
+        "oil" => "масла",
+        "oil_filter" => "масляного фильтра",
+        "air_filter" => "воздушного фильтра",
+        "cabin_filter" => "салонного фильтра",
+        "fuel_filter" => "топливного фильтра",
+        _ => "прочих работ",
+    }
 }
 
 /// Напоминания и сообщения о баллах уходят с 09:00 до 20:00 по Бишкеку (ADR-063).
@@ -1458,45 +1463,66 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
     let mut out = Vec::new();
     for l in links {
         for b in crate::api::oil_book::books(conn, l.branch_id, Some(l.party_id), None).await? {
-            let Some(due) = b.next_date else { continue };
-            let left = (due - today).num_days();
-            let days_before = match left {
-                0..=1 => 1,
-                2..=7 => 7,
-                _ => continue,
-            };
-            let sent = sqlx::query_scalar!(
-                r#"select exists (select 1 from oil_reminders
-                                  where vehicle_id = $1 and due_date = $2 and days_before = $3) as "e!""#,
-                b.vehicle_id,
-                due,
-                days_before
-            )
-            .fetch_one(&mut *conn)
-            .await?;
-            if sent {
-                continue;
+            // Каждая строка книжки — своё напоминание; подошедшие в один день — одним сообщением.
+            let mut groups: Vec<(NaiveDate, i32, Vec<&crate::api::oil_book::SlotNext>)> =
+                Vec::new();
+            for n in &b.slots {
+                let Some(due) = n.next_date else { continue };
+                let left = (due - today).num_days();
+                let days_before = match left {
+                    0..=1 => 1,
+                    2..=7 => 7,
+                    _ => continue,
+                };
+                let sent = sqlx::query_scalar!(
+                    r#"select exists (select 1 from oil_reminders
+                                      where vehicle_id = $1 and slot = $2 and due_date = $3
+                                        and days_before = $4) as "e!""#,
+                    b.vehicle_id,
+                    n.slot,
+                    due,
+                    days_before
+                )
+                .fetch_one(&mut *conn)
+                .await?;
+                if sent {
+                    continue;
+                }
+                match groups.iter_mut().find(|g| g.0 == due && g.1 == days_before) {
+                    Some(g) => g.2.push(n),
+                    None => groups.push((due, days_before, vec![n])),
+                }
             }
-            let when = match left {
-                0 => "сегодня".to_string(),
-                1 => "завтра".to_string(),
-                n => format!("через {}", days_word(n)),
-            };
-            let km_part = b
-                .next_km
-                .map(|k| format!(" или на {}", km(k)))
-                .unwrap_or_default();
-            out.push(Reminder {
-                chat_id: l.chat_id,
-                vehicle_id: b.vehicle_id,
-                due,
-                days_before,
-                text: format!(
-                    "Напоминаем: замена масла для {} — {when}, до {}{km_part}. Ждём вас в Avtodom!",
-                    b.plate,
-                    due.format("%d.%m.%Y")
-                ),
-            });
+            for (due, days_before, slots) in groups {
+                let left = (due - today).num_days();
+                let when = match left {
+                    0 => "сегодня".to_string(),
+                    1 => "завтра".to_string(),
+                    n => format!("через {}", days_word(n)),
+                };
+                let what = slots
+                    .iter()
+                    .map(|n| slot_genitive(&n.slot))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let km_part = slots
+                    .iter()
+                    .find_map(|n| n.next_km)
+                    .map(|k| format!(" или на {}", km(k)))
+                    .unwrap_or_default();
+                out.push(Reminder {
+                    chat_id: l.chat_id,
+                    vehicle_id: b.vehicle_id,
+                    due,
+                    days_before,
+                    slots: slots.iter().map(|n| n.slot.clone()).collect(),
+                    text: format!(
+                        "Напоминаем: замена {what} для {} — {when}, до {}{km_part}. Ждём вас в Avtodom!",
+                        b.plate,
+                        due.format("%d.%m.%Y")
+                    ),
+                });
+            }
         }
     }
     Ok(out)
@@ -1509,15 +1535,18 @@ pub async fn mark_reminded(conn: &mut PgConnection, r: &Reminder) -> AppResult<(
     } else {
         vec![r.days_before]
     };
-    sqlx::query!(
-        r#"insert into oil_reminders (vehicle_id, due_date, days_before)
-           select $1, $2, unnest($3::int[]) on conflict do nothing"#,
-        r.vehicle_id,
-        r.due,
-        &days[..]
-    )
-    .execute(&mut *conn)
-    .await?;
+    for slot in &r.slots {
+        sqlx::query!(
+            r#"insert into oil_reminders (vehicle_id, slot, due_date, days_before)
+               select $1, $2, $3, unnest($4::int[]) on conflict do nothing"#,
+            r.vehicle_id,
+            slot,
+            r.due,
+            &days[..]
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
     Ok(())
 }
 
@@ -1948,6 +1977,9 @@ pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult
     }
     if s.bonus_tyiyn != 0 {
         pays.push(format!("  баллами: {}", format_som(s.bonus_tyiyn)));
+    }
+    if s.battery_tyiyn != 0 {
+        pays.push(format!("  аккумуляторами: {}", format_som(s.battery_tyiyn)));
     }
     if s.bank_fee_tyiyn != 0 {
         pays.push(format!(
@@ -2630,7 +2662,7 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
 }
 
 /// Чек для владельца: номер, сумма, как платили, кто продал, клиент и машина.
-async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, String)> {
+pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, String)> {
     let s = sqlx::query!(
         r#"select s.number, s.total_tyiyn, s.sale_type, c.full_name as cashier,
                   m.full_name as "master?", p.name as "party?", v.plate as "plate?",
@@ -2646,7 +2678,7 @@ async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, Stri
     .fetch_one(&mut *conn)
     .await?;
     let pays = sqlx::query!(
-        "select method, amount_tyiyn from sale_payments where sale_id = $1 order by amount_tyiyn desc",
+        "select method, amount_tyiyn, grams from sale_payments where sale_id = $1 order by amount_tyiyn desc",
         id
     )
     .fetch_all(&mut *conn)
@@ -2659,6 +2691,14 @@ async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, Stri
             "transfer" => "QR",
             "debt" => "в долг",
             "bonus" => "баллами",
+            // Аккумулятор в оплату: «аккумулятор 12 кг — 600 с» (SPEC-27).
+            "battery" => {
+                return format!(
+                    "аккумулятор {} — {}",
+                    crate::domain::money::format_kg(p.grams.unwrap_or(0)),
+                    format_som(p.amount_tyiyn)
+                );
+            }
             other => other,
         };
         format!("{how} {}", format_som(p.amount_tyiyn))
