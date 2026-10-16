@@ -5,6 +5,7 @@ import { formatDateTime, formatKg, formatSom, parseLiters, somInput } from '../l
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { divRound } from '../lib/money'
+import { Pager, usePager } from './Pager'
 import { Button, ErrorBox, Field, Loading, Missing, Modal, toast } from './ui'
 
 export interface BatteryInfo {
@@ -43,13 +44,14 @@ function IntakeList({ onChanged }: { onChanged: () => void }) {
       onChanged()
     })
   const rows = list.data ?? []
+  const pager = usePager(rows, 'battery.intakes')
   if (rows.length === 0) return <ErrorBox error={list.error} />
   return (
     <div className="border-t border-slate-200 pt-3">
       <div className="mb-2 text-sm font-semibold">Приёмы этой смены</div>
       <ErrorBox error={act.error ?? list.error} />
       <ul className="flex flex-col gap-1 text-sm">
-        {rows.map((r) => (
+        {pager.shown.map((r) => (
           <li key={r.id} className="flex flex-wrap items-center justify-between gap-2">
             <span className={r.reversed ? 'text-slate-400 line-through' : ''}>
               № {r.number} · {formatDateTime(r.created_at)} · {formatKg(r.grams)} · {formatSom(r.amount_tyiyn)}
@@ -65,6 +67,7 @@ function IntakeList({ onChanged }: { onChanged: () => void }) {
           </li>
         ))}
       </ul>
+      <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы приёмов аккумуляторов" />
     </div>
   )
 }

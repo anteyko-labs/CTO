@@ -8,6 +8,7 @@ import { useAction, useLoad } from '../lib/hooks'
 import { km, nextText, overdueSlots, recordLines, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
+import { Pager, usePager } from './Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
 
 /** Касса: под выбранной машиной — прошлая замена и следующая по каждой строке книжки. */
@@ -92,6 +93,8 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
   const [interval, setInterval] = useState<{ slot: BookSlot; km: string; days: string; own: boolean } | null>(null)
   const [manual, setManual] = useState<ManualForm | null>(null)
   const act = useAction()
+  // Замены машины — по страницам, новые сверху.
+  const records = usePager(b.records, 'oilbook.records', b.vehicle_id)
   const removed = b.active === false
   const slots = b.slots ?? []
   // Строки без замен тоже можно настроить: интервал у машины задают заранее.
@@ -172,7 +175,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
         <div className="text-sm text-slate-500">Замен ещё не было</div>
       ) : (
         <ul className="divide-y divide-slate-100 text-sm">
-          {b.records.map((r) => (
+          {records.shown.map((r) => (
             <li key={r.id} className="flex flex-wrap items-baseline justify-between gap-2 py-1.5">
               <span>
                 <span className="font-medium">{formatDate(r.change_date)}</span>
@@ -212,6 +215,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
           ))}
         </ul>
       )}
+      <Pager page={records.page} size={records.size} total={records.total} onPage={records.setPage} onSize={records.setSize} label={`Страницы замен ${b.plate}`} />
       <ClientNotes notes={b.client_notes ?? []} />
       <ErrorBox error={act.error} />
       <div className="flex flex-wrap gap-2">
@@ -357,6 +361,7 @@ export function OilBookList({ path, editable, partyId }: { path: string; editabl
   const [showRemoved, setShowRemoved] = useState(false)
   const url = partyId && showRemoved ? `${path}?removed=true` : path
   const books = useLoad(() => get<VehicleBook[]>(url), [url])
+  const pager = usePager(books.data ?? [], 'oilbook.vehicles', url)
   const toggle = partyId && (
     <div>
       <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setShowRemoved(!showRemoved)}>
@@ -376,9 +381,10 @@ export function OilBookList({ path, editable, partyId }: { path: string; editabl
     )
   return (
     <div className="flex flex-col gap-3">
-      {list.map((b) => (
+      {pager.shown.map((b) => (
         <VehicleCard key={b.vehicle_id} b={b} editable={editable} partyId={partyId} onChanged={books.reload} />
       ))}
+      <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы машин" />
       {toggle}
     </div>
   )

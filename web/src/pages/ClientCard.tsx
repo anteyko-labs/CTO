@@ -1,8 +1,9 @@
 // Карточка клиента: работники, машины, покупки, долг и погашения (SPEC-10).
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { OilBookList } from '../components/OilBook'
+import { Pager, usePager } from '../components/Pager'
 import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
 import { stockText } from '../components/ProductPicker'
 import { RepaymentModal } from '../components/RepaymentModal'
@@ -264,6 +265,9 @@ export default function ClientCard() {
   const [reconciling, setReconciling] = useState(false)
   const row = useAction()
   const card = useLoad(() => get<PartyCard>(`/parties/${id}/card`), [id])
+  // История — по страницам, новые сверху; другой клиент — первая страница.
+  const history = useMemo(() => mergeDebts(card.data?.timeline ?? []), [card.data])
+  const historyPager = usePager(history, 'client.history', id)
 
   if (card.loading && !card.data) return <Loading />
   if (!card.data) return <ErrorBox error={card.error ?? 'Клиент не найден'} />
@@ -310,7 +314,6 @@ export default function ClientCard() {
     { label: 'Правка баланса', onClick: () => setMoney('adjust'), disabled: !owner },
     toggleItem,
   ]
-  const history = mergeDebts(timeline)
 
   return (
     <div className="flex flex-col gap-4">
@@ -481,7 +484,7 @@ export default function ClientCard() {
           <Empty>Пока ничего не было</Empty>
         ) : (
           <Table head={['Когда', 'Что', 'Сумма', 'Комментарий', '']}>
-            {history.map(({ item: t, debt }, i) => (
+            {historyPager.shown.map(({ item: t, debt }, i) => (
               <tr key={`${t.at}-${i}`} className="hover:bg-slate-50">
                 <td className="whitespace-nowrap px-2 py-2">{formatDateTime(t.at)}</td>
                 <td className="px-2 py-2">
@@ -513,6 +516,7 @@ export default function ClientCard() {
             ))}
           </Table>
         )}
+        <Pager page={historyPager.page} size={historyPager.size} total={historyPager.total} onPage={historyPager.setPage} onSize={historyPager.setSize} label="Страницы истории клиента" />
       </Card>
 
       {reversing && (

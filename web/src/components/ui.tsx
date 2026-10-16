@@ -252,11 +252,14 @@ export function Modal({
   onClose,
   children,
   wide = false,
+  full = false,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   wide?: boolean
+  /** Большое окно: на компьютере почти во всю ширину, на телефоне — весь экран (SPEC-28 §3). */
+  full?: boolean
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -264,21 +267,28 @@ export function Modal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
   return (
-    <div className="no-print fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/50 p-4" onMouseDown={onClose}>
+    <div
+      className={`no-print fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/50 ${full ? 'p-0 md:p-4' : 'p-4'}`}
+      onMouseDown={onClose}
+    >
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`mt-8 w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-lg bg-white shadow-xl`}
+        className={
+          full
+            ? 'min-h-full w-full bg-white shadow-xl md:mt-4 md:min-h-0 md:max-w-6xl md:rounded-lg'
+            : `mt-8 w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-lg bg-white shadow-xl`
+        }
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <h2 className="font-semibold">{title}</h2>
+        <div className={`flex items-center justify-between border-b border-slate-200 px-4 py-3 ${full ? 'sticky top-0 z-10 bg-white md:rounded-t-lg' : ''}`}>
+          <h2 className={`font-semibold ${full ? 'text-lg' : ''}`}>{title}</h2>
           <button type="button" className="text-slate-500 hover:text-slate-800" onClick={onClose} aria-label="Закрыть">
             ✕
           </button>
         </div>
-        <div className="p-4">{children}</div>
+        <div className={full ? 'p-4 md:p-6' : 'p-4'}>{children}</div>
       </div>
     </div>
   )

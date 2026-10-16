@@ -145,6 +145,7 @@ async fn receive(
                 product_id: product,
                 qty,
                 cost_tyiyn: cost,
+                sale_price_tyiyn: None,
             }],
         },
     )
@@ -6223,11 +6224,13 @@ async fn bot_receipt_totals_by_server_and_daily_cap(pool: PgPool) {
                     product_id: w.filter,
                     qty: 10,
                     cost_tyiyn: 350_000,
+                    sale_price_tyiyn: None,
                 },
                 ReceiptLineReq {
                     product_id: w.oil,
                     qty: 8000,
                     cost_tyiyn: 360_100,
+                    sale_price_tyiyn: None,
                 },
             ],
             paid_from: None,
@@ -6679,6 +6682,7 @@ async fn receive_from(
                 product_id: product,
                 qty,
                 cost_tyiyn: cost,
+                sale_price_tyiyn: None,
             }],
         },
     )
@@ -8293,7 +8297,7 @@ mod point_feedback_stock {
             limit: 500,
             ..Default::default()
         };
-        let list = product_list(&mut conn, &w.owner.user, f(), "stock_sale", true)
+        let list = product_list(&mut conn, &w.owner.user, f(), "stock_sale", true, 0)
             .await
             .unwrap();
         assert_eq!(list.totals.count, 2);
@@ -8323,7 +8327,7 @@ mod point_feedback_stock {
         assert_eq!(filter.stock_sale_tyiyn, -100_000);
 
         // Администратор: по продаже — те же суммы, закупки и стоимости остатка нет.
-        let admin = product_list(&mut conn, &w.admin.user, f(), "purchase", false)
+        let admin = product_list(&mut conn, &w.admin.user, f(), "purchase", false, 0)
             .await
             .unwrap();
         assert_eq!(admin.totals.purchase_tyiyn, None);
@@ -8359,6 +8363,7 @@ mod point_feedback_stock {
             },
             "name",
             false,
+            0,
         )
         .await
         .unwrap();
@@ -8540,6 +8545,20 @@ mod point_feedback_stock {
         .await
         .unwrap();
         assert_eq!(by_qty.items[0].product_id, w.oil);
+        // Бот владельца: «больше всех приносят» — по валовой прибыли (SPEC-28 §4).
+        let text = avtodom_server::api::bot_reports::sales(
+            &mut conn,
+            &w.owner.user,
+            "top_profit",
+            (by_qty.from, by_qty.to),
+        )
+        .await
+        .unwrap();
+        assert!(text.starts_with("Больше всех приносят"), "{text}");
+        assert!(text.contains("прибыль"), "{text}");
+        assert!(by_qty.items.iter().all(|r| r.profit_tyiyn.is_some()));
+        // Администратору прибыль не отдаётся, «по прибыли» — отказ.
+        assert!(by_amount.items.iter().all(|r| r.profit_tyiyn.is_none()));
         // Клиент: что покупает — только его чеки, за всё время.
         let mine = top_products_data(
             &mut conn,

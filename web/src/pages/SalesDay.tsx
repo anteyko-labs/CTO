@@ -1,6 +1,7 @@
 // Чеки за день: итоги по способам оплаты, средний чек, возвраты (SPEC-04).
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { Pager, usePager } from '../components/Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { formatSom, formatTime, shiftDate, todayBishkek } from '../lib/format'
@@ -46,6 +47,8 @@ export default function SalesDay() {
   const sold = data?.sales.filter((s) => s.kind === 'sale').reduce((acc, s) => acc + s.total_tyiyn, 0) ?? 0
   const returns = data?.sales.filter((s) => s.kind === 'return') ?? []
   const returnsSum = returns.reduce((acc, s) => acc + s.total_tyiyn, 0)
+  // Чеки дня приходят целиком (итоги по ним), страницы — здесь; другой день — первая страница.
+  const pager = usePager(data?.sales ?? [], 'sales.day', date)
   // Как платили — одной строкой, без нулевых способов.
   const payments = data
     ? (
@@ -120,7 +123,7 @@ export default function SalesDay() {
           <>
             {/* Телефон: компактная карточка — номер и время слева, сумма справа, ниже клиент и мастер. */}
             <ul className="-my-2 divide-y divide-slate-100 md:hidden">
-              {data.sales.map((s) => (
+              {pager.shown.map((s) => (
                 <li key={s.id}>
                   <Link to={`/sales/${s.id}`} className="block py-2.5">
                     <div className="flex items-baseline justify-between gap-3">
@@ -142,7 +145,7 @@ export default function SalesDay() {
             </ul>
             <div className="hidden md:block">
               <Table head={['№', 'Время', 'Тип', 'Клиент', 'Кассир', 'Мастер', 'Сумма']}>
-                {data.sales.map((s) => (
+                {pager.shown.map((s) => (
                   <tr key={s.id} className="cursor-pointer hover:bg-slate-50" onClick={() => navigate(`/sales/${s.id}`)}>
                     <td className="px-2 py-2 font-medium">{s.number}</td>
                     <td className="px-2 py-2 tabular-nums">{formatTime(s.created_at)}</td>
@@ -166,6 +169,7 @@ export default function SalesDay() {
                 ))}
               </Table>
             </div>
+            <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы чеков" />
           </>
         )}
       </Card>

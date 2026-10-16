@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { Icon } from '../components/icons'
+import { Pager, usePager } from '../components/Pager'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table } from '../components/ui'
 import { get, post, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
@@ -36,6 +37,8 @@ export default function Clients() {
   const rows = list.data ?? []
   const owe = rows.filter((p) => p.balance_tyiyn > 0).reduce((a, p) => a + p.balance_tyiyn, 0)
   const advance = rows.filter((p) => p.balance_tyiyn < 0).reduce((a, p) => a - p.balance_tyiyn, 0)
+  // Итоги — по всему отбору, поэтому список приходит целиком; смена отбора — первая страница.
+  const pager = usePager(rows, 'clients', `${query}:${kind}:${onlyDebtors}`)
   const company = form.kind === 'company'
   const notFilled = missingWithFocus(
     [Boolean(form.name.trim()), company ? 'название фирмы' : 'ФИО', '#new-client-name'],
@@ -115,7 +118,7 @@ export default function Clients() {
           </Empty>
         ) : (
           <Table head={['Клиент', 'Вид', 'Телефон', 'ИНН', 'Баланс']}>
-            {rows.map((p) => (
+            {pager.shown.map((p) => (
               <tr
                 key={p.id}
                 className={`cursor-pointer hover:bg-slate-50 ${p.active ? '' : 'text-slate-400'}`}
@@ -141,6 +144,7 @@ export default function Clients() {
             ))}
           </Table>
         )}
+        <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы клиентов" />
       </Card>
 
       {adding && (

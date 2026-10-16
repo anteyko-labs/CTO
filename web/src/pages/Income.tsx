@@ -3,6 +3,7 @@
 // Администратору сервер не отдаёт сейф владельца и накладные (там закупка и заработок).
 import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Pager, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { stockText } from '../components/ProductPicker'
 import { Card, CardTitle, Empty, ErrorBox, Loading, Money, Notice, PageHeader, Table } from '../components/ui'
@@ -27,6 +28,8 @@ export default function Income() {
   const subtitle = range.from === range.to ? `за ${formatDate(range.from)}` : `с ${formatDate(range.from)} по ${formatDate(range.to)}`
   const methods = (data?.methods ?? []).filter((m) => m.sales_tyiyn !== 0 || m.returns_tyiyn !== 0)
   const products = data?.products ?? []
+  // Накладные периода — по страницам; другой период — первая страница.
+  const receiptsPager = usePager(data?.receipts ?? [], 'income.receipts', `${range.from}:${range.to}`)
 
   return (
     <div>
@@ -198,7 +201,7 @@ export default function Income() {
               ) : (
                 <div className="mt-3">
                   <Table head={['Накладная', 'Закупка', 'Продано (по закупке)', 'Осталось (по закупке)', 'Выручка', 'Заработано']}>
-                    {data.receipts.map((x) => (
+                    {receiptsPager.shown.map((x) => (
                       <Fragment key={x.receipt_id}>
                         <tr className="cursor-pointer hover:bg-slate-50" onClick={() => setOpenReceipt(openReceipt === x.receipt_id ? null : x.receipt_id)}>
                           <td className="px-2 py-2">
@@ -253,6 +256,14 @@ export default function Income() {
                       </Fragment>
                     ))}
                   </Table>
+                  <Pager
+                    page={receiptsPager.page}
+                    size={receiptsPager.size}
+                    total={receiptsPager.total}
+                    onPage={receiptsPager.setPage}
+                    onSize={receiptsPager.setSize}
+                    label="Страницы накладных периода"
+                  />
                 </div>
               )}
             </Card>

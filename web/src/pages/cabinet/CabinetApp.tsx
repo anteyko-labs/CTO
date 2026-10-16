@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Table, Toaster, toast } from '../../components/ui'
 import { ApiError, get, post, qs } from '../../lib/api'
 import { OilBookList } from '../../components/OilBook'
+import { Pager, usePager } from '../../components/Pager'
 import { BLANK, printReconciliation, type Reconciliation, type Seller } from '../../lib/debtDocs'
 import { formatDateTime, formatKg, formatLiters, formatSom, todayBishkek } from '../../lib/format'
 import { useAction, useLoad } from '../../lib/hooks'
@@ -143,6 +144,8 @@ function Purchases() {
   const [to, setTo] = useState(todayBishkek())
   const list = useLoad(() => get<ClientSale[]>(`/client/sales${qs({ from, to })}`), [from, to])
   const rows = list.data ?? []
+  // Итог — по всему периоду; чеки — по страницам, другой период — первая страница.
+  const pager = usePager(rows, 'cabinet.sales', `${from}:${to}`)
   return (
     <div className="flex flex-col gap-3">
       <Card className="flex flex-wrap items-end gap-3">
@@ -162,7 +165,7 @@ function Purchases() {
       ) : rows.length === 0 ? (
         <Empty>За этот период покупок нет</Empty>
       ) : (
-        rows.map((s) => (
+        pager.shown.map((s) => (
           <Card key={s.id} className="flex flex-col gap-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div className="font-medium">
@@ -192,6 +195,7 @@ function Purchases() {
           </Card>
         ))
       )}
+      <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы покупок" />
     </div>
   )
 }

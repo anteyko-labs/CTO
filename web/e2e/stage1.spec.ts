@@ -97,7 +97,9 @@ test('товар, приход, продажа, возврат и остаток
 
   // Остаток: 10 пришло, 1 продано, 1 вернули.
   await page.getByRole('link', { name: 'Остатки' }).click()
-  await expect(page.getByRole('row', { name: new RegExp(product) })).toContainText('10 шт')
+  // Остатки по страницам (SPEC-28 §2): товар находим поиском, а не листанием.
+  await page.getByPlaceholder('Название, бренд, артикул, штрихкод').fill(product)
+  await expect(page.getByRole('row', { name: new RegExp(product) }).filter({ hasText: 'В брак' })).toContainText('10 шт')
 
   // Сверка остатков с движениями.
   await page.getByRole('button', { name: 'Сверить остатки' }).click()

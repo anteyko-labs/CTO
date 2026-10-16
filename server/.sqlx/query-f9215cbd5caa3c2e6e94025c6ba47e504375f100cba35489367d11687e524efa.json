@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into receipt_lines (id, receipt_id, line_no, product_id, qty, cost_tyiyn, sale_price_tyiyn)\n               values ($1, $2, $3, $4, $5, $6,\n                       (select sale_price_tyiyn from branch_products where branch_id = $7 and product_id = $4))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9215cbd5caa3c2e6e94025c6ba47e504375f100cba35489367d11687e524efa"
+}

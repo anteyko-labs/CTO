@@ -31,6 +31,30 @@ pub fn pour_price_per_l(unit: &str, container_ml: Option<i64>, sale_price: i64) 
     }
 }
 
+/// Наценка цены продажи над ценой по накладной в десятых долях процента: (продажа − закупка) /
+/// закупка, до 0,1 % половиной от нуля (SPEC-28 §1, ADR-075). 250 — это 25,0 %. Обе цены — за одну
+/// единицу цены товара (штуку, канистру). `None` при закупке не больше нуля (наценки нет) или
+/// переполнении. На экране то же правило — `markupPermille` в `web/src/lib/money.ts`.
+pub fn markup_permille(cost: i64, sale: i64) -> Option<i64> {
+    if cost <= 0 {
+        return None;
+    }
+    div_round(
+        (i128::from(sale) - i128::from(cost)) * 1000,
+        i128::from(cost),
+    )
+}
+
+/// Цена продажи из наценки: закупка × (1000 + наценка в десятых процента) / 1000, до тыйына
+/// половиной от нуля (SPEC-28 §1, ADR-075). Наценка меньше −100 % или переполнение — `None`.
+/// На экране то же правило — `saleFromMarkup` в `web/src/lib/money.ts`.
+pub fn sale_from_markup(cost: i64, permille: i64) -> Option<i64> {
+    if cost < 0 || permille < -1000 {
+        return None;
+    }
+    div_round(i128::from(cost) * (1000 + i128::from(permille)), 1000)
+}
+
 /// Произведение двух целых без переполнения `i64`.
 pub fn mul(a: i64, b: i64) -> Option<i64> {
     a.checked_mul(b)
@@ -239,6 +263,28 @@ mod tests {
         assert_eq!(pour_price_per_l("ml", Some(4000), 200_000), Some(50_000));
         assert_eq!(pour_price_per_l("piece", None, 50_000), None);
         assert_eq!(pour_price_per_l("g", None, 50_000), None);
+    }
+
+    #[test]
+    fn markup_and_sale_price_are_linked() {
+        // Те же случаи, что web/src/lib/money.test.ts.
+        // Закупка 1 600 с, продажа 2 000 с — наценка 25,0 %; обратно 25,0 % → 2 000 с.
+        assert_eq!(markup_permille(160_000, 200_000), Some(250));
+        assert_eq!(sale_from_markup(160_000, 250), Some(200_000));
+        // 300 с → 350 с: 16,666… % → 16,7 %; из 16,7 % — 350,10 с (до тыйына).
+        assert_eq!(markup_permille(30_000, 35_000), Some(167));
+        assert_eq!(sale_from_markup(30_000, 167), Some(35_010));
+        // Продажа ниже закупки — наценка отрицательная.
+        assert_eq!(markup_permille(10_000, 9_000), Some(-100));
+        assert_eq!(sale_from_markup(10_000, -100), Some(9_000));
+        // Половина тыйына — от нуля: 333,33 с × 1,105 = 368,330 65 с → 36 833 тыйына.
+        assert_eq!(sale_from_markup(33_333, 105), Some(36_833));
+        // 0,05 % — половина десятой: от нуля, 0,1 %.
+        assert_eq!(markup_permille(200_000, 200_100), Some(1));
+        // Без закупки наценки нет; меньше −100 % не бывает.
+        assert_eq!(markup_permille(0, 100), None);
+        assert_eq!(sale_from_markup(100, -1001), None);
+        assert_eq!(sale_from_markup(100, -1000), Some(0));
     }
 
     #[test]

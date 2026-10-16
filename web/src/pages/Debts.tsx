@@ -2,6 +2,7 @@
 // ширину: таблица с сортировкой и страницами, срок и последняя оплата — с сервера (SPEC-27 §6).
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Pager, usePager } from '../components/Pager'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Button, Card, Empty, ErrorBox, Loading, Money, PageHeader } from '../components/ui'
 import { get } from '../lib/api'
@@ -12,9 +13,6 @@ import type { DebtRow, Party } from '../lib/types'
 
 /** Долги обновляются сами, пока экран открыт (ADR-028). */
 const REFRESH_MS = 10_000
-/** Строк на странице. */
-const PAGE = 50
-
 /** Клиента без имени касса записывает по телефону или ИНН — такое имя показываем как «Без имени». */
 const named = (p: Party) => {
   const name = p.name.trim()
@@ -32,6 +30,7 @@ const COLS: { key: DebtSortKey; label: string; right?: boolean }[] = [
 
 function Side({
   title,
+  pageKey,
   rows,
   owedToUs,
   empty,
@@ -40,6 +39,8 @@ function Side({
   onPay,
 }: {
   title: string
+  /** Ключ размера страницы этого списка. */
+  pageKey: string
   rows: DebtRow[]
   /** Нам должны — янтарный; мы должны — нейтральный; просрочка — красный. */
   owedToUs: boolean
@@ -50,15 +51,13 @@ function Side({
 }) {
   // Крупные долги сверху; щелчок по заголовку — своя сортировка.
   const [sort, setSort] = useState<{ key: DebtSortKey; desc: boolean }>({ key: 'debt', desc: true })
-  const [page, setPage] = useState(0)
   const sorted = useMemo(() => sortDebts(rows, sort.key, sort.desc), [rows, sort])
-  const pages = Math.max(1, Math.ceil(sorted.length / PAGE))
-  const current = Math.min(page, pages - 1)
-  const shown = sorted.slice(current * PAGE, current * PAGE + PAGE)
+  // Смена сортировки — снова первая страница.
+  const pager = usePager(sorted, pageKey, `${sort.key}:${sort.desc}`)
+  const shown = pager.shown
   const total = rows.reduce((a, p) => a + Math.abs(p.balance_tyiyn), 0)
   const overdue = rows.reduce((a, p) => a + p.overdue_tyiyn, 0)
   const sortBy = (key: DebtSortKey) => {
-    setPage(0)
     setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: key !== 'name' && key !== 'phone' }))
   }
   return (
@@ -154,19 +153,7 @@ function Side({
               </tbody>
             </table>
           </div>
-          {pages > 1 && (
-            <div className="mt-3 flex flex-wrap items-center justify-end gap-2 text-sm">
-              <Button variant="secondary" disabled={current === 0} onClick={() => setPage(current - 1)}>
-                ← Назад
-              </Button>
-              <span className="tabular-nums text-slate-600">
-                {current * PAGE + 1}–{Math.min(sorted.length, current * PAGE + PAGE)} из {sorted.length}
-              </span>
-              <Button variant="secondary" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>
-                Дальше →
-              </Button>
-            </div>
-          )}
+          <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label={`Страницы: ${title.toLowerCase()}`} />
         </>
       )}
     </Card>
@@ -200,6 +187,7 @@ export default function Debts() {
         <>
           <Side
             title="Должны нам"
+            pageKey="debts.to_us"
             rows={toUs}
             owedToUs
             empty="Никто не должен. Долг появляется, когда в кассе выбирают оплату «В долг»."
@@ -209,6 +197,7 @@ export default function Debts() {
           />
           <Side
             title="Должны мы"
+            pageKey="debts.from_us"
             rows={fromUs}
             owedToUs={false}
             empty="Мы никому не должны. Долг появляется, когда приход проводят с расчётом «В долг»."

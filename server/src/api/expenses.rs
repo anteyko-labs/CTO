@@ -239,9 +239,11 @@ async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<ListQuery>,
-) -> AppResult<Json<Vec<ExpenseOut>>> {
+    Query(page): Query<crate::api::paging::PageQuery>,
+) -> AppResult<crate::api::paging::Paged<ExpenseOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(list_data(&mut conn, &user, q).await?))
+    let (items, total) = page.slice(list_data(&mut conn, &user, q).await?, 500);
+    Ok(crate::api::paging::paged(items, total))
 }
 
 /// Список расходов экрана «Расходы» — и для отчёта бота владельцу (SPEC-24).
@@ -270,12 +272,13 @@ pub(crate) async fn list_data(
                          and c.kind = 'register' and not c.owner_only
                          and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))
            order by e.expense_date desc, e.created_at desc
-           limit 500"#,
+           limit $6"#,
         user.branch_id,
         q.from,
         q.to,
         q.article_id,
-        owner
+        owner,
+        crate::api::paging::MAX_ROWS
     )
     .fetch_all(&mut *conn)
     .await?;

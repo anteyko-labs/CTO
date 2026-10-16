@@ -1,5 +1,6 @@
 // Перелив масла: остаток из одного масла в другое, себестоимость получателя — средневзвешенная (SPEC-14).
 import { useState } from 'react'
+import { Pager, usePager } from '../components/Pager'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
@@ -45,6 +46,7 @@ const perLiter = (value: number, ml: number): number | null => (ml > 0 ? divRoun
 export default function OilTransfer() {
   const products = useLoad(() => get<Product[]>('/products?limit=500'), [])
   const history = useLoad(() => get<TransferRow[]>('/oil/transfers'), [])
+  const historyPager = usePager(history.data ?? [], 'oil.transfers')
   const [form, setForm] = useState({ from: '', to: '', liters: '', comment: '' })
   const [opId, setOpId] = useState(newOpId)
   const [done, setDone] = useState<TransferOut | null>(null)
@@ -248,7 +250,7 @@ export default function OilTransfer() {
           <Empty>Переливов ещё не было</Empty>
         ) : (
           <Table head={['№', 'Когда', 'Откуда', 'Куда', 'Сколько', 'Стоимость', 'Кто', '']}>
-            {(history.data ?? []).map((t) => (
+            {historyPager.shown.map((t) => (
               <tr key={t.id} className={t.reversed ? 'text-slate-400 line-through' : ''}>
                 <td className="px-2 py-2 font-medium">{t.number}</td>
                 <td className="whitespace-nowrap px-2 py-2">{formatDateTime(t.created_at)}</td>
@@ -270,6 +272,7 @@ export default function OilTransfer() {
             ))}
           </Table>
         )}
+        <Pager page={historyPager.page} size={historyPager.size} total={historyPager.total} onPage={historyPager.setPage} onSize={historyPager.setSize} label="Страницы переливов" />
       </Card>
       {reversing && (
         <Modal title={`Отменить перелив № ${reversing.row.number}`} onClose={() => setReversing(null)}>

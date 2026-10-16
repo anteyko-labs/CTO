@@ -52,6 +52,10 @@ export function noServerAnswer(e: unknown): boolean {
 const TIMEOUT_MS = 20_000
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return (await request<T>(method, path, body)).data
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<{ data: T; headers: Headers }> {
   let res: Response
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), TIMEOUT_MS)
@@ -92,7 +96,22 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
     throw new ApiError(res.status, err?.code ?? 'error', err?.message ?? statusMessage(res.status))
   }
   if (!parsed) throw new ApiError(res.status, 'bad_response', 'Сервер прислал непонятный ответ, попробуйте ещё раз')
-  return data as T
+  return { data: data as T, headers: res.headers }
+}
+
+/** Страница списка (SPEC-28 §2): строки и сколько их во всём отборе (заголовок `X-Total-Count`). */
+export interface Page<T> {
+  items: T[]
+  total: number
+}
+
+/** Страница длинного списка: `limit`/`offset` добавляются к адресу, число строк — из заголовка ответа. */
+export async function getPage<T>(path: string, page: { limit: number; offset: number }): Promise<Page<T>> {
+  const sep = path.includes('?') ? '&' : '?'
+  const { data, headers } = await request<T[]>('GET', `${path}${sep}limit=${page.limit}&offset=${page.offset}`)
+  const items = Array.isArray(data) ? data : []
+  const total = Number(headers.get('X-Total-Count'))
+  return { items, total: Number.isSafeInteger(total) && total >= 0 ? total : items.length }
 }
 
 export const get = <T>(path: string) => api<T>('GET', path)

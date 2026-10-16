@@ -1,17 +1,18 @@
 // Список приходов за период (SPEC-03).
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Pager, usePagedLoad } from '../components/Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
-import { get, qs } from '../lib/api'
+import { qs } from '../lib/api'
 import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
-import { useLoad } from '../lib/hooks'
 import type { ReceiptListItem } from '../lib/types'
 
 export default function Receipts() {
   const navigate = useNavigate()
   const [to, setTo] = useState(todayBishkek)
   const [from, setFrom] = useState(() => shiftDate(todayBishkek(), -30))
-  const list = useLoad(() => get<ReceiptListItem[]>(`/receipts${qs({ from, to })}`), [from, to])
+  // Страницу режет сервер; смена периода — снова первая страница.
+  const list = usePagedLoad<ReceiptListItem>(`/receipts${qs({ from, to })}`, 'receipts')
 
   return (
     <div>
@@ -28,7 +29,7 @@ export default function Receipts() {
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
-        ) : list.data && list.data.length === 0 ? (
+        ) : list.data && list.total === 0 ? (
           <Empty icon="incoming" action={<Button onClick={() => navigate('/receipts/new')}>Новый приход</Button>}>
             Приходов за период нет
           </Empty>
@@ -36,7 +37,7 @@ export default function Receipts() {
           list.data && (
             <>
               <ul className="-mx-4 divide-y divide-slate-100 border-y border-slate-100 md:hidden">
-                {list.data.map((r) => (
+                {list.items.map((r) => (
                   <li key={r.id}>
                     <button type="button" className="flex w-full items-start gap-3 px-4 py-2.5 text-left hover:bg-slate-50" onClick={() => navigate(`/receipts/${r.id}`)}>
                       <div className="min-w-0 flex-1">
@@ -60,7 +61,7 @@ export default function Receipts() {
               </ul>
               <div className="hidden md:block">
                 <Table head={['№', 'Дата', 'Поставщик', 'Сумма', 'Принял', '']}>
-                  {list.data.map((r) => (
+                  {list.items.map((r) => (
                     <tr key={r.id} className="cursor-pointer hover:bg-slate-50" onClick={() => navigate(`/receipts/${r.id}`)}>
                       <td className="px-2 py-2 font-medium">{r.number}</td>
                       <td className="whitespace-nowrap px-2 py-2">{formatDateTime(r.created_at)}</td>
@@ -79,6 +80,7 @@ export default function Receipts() {
                   ))}
                 </Table>
               </div>
+              <Pager page={list.page} size={list.size} total={list.total} onPage={list.setPage} onSize={list.setSize} label="Страницы приходов" />
             </>
           )
         )}

@@ -7,7 +7,9 @@ import { RepaymentModal } from '../components/RepaymentModal'
 import { InvoicePayments, InvoiceStatusBadge } from '../components/SupplierPayments'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
-import { formatDateTime, formatLiters, formatSom } from '../lib/format'
+import { formatDateTime, formatLiters, formatPermille, formatSom } from '../lib/format'
+import { markupPermille } from '../lib/money'
+import { unitCost } from '../lib/receiptLines'
 import { useAction, useLoad } from '../lib/hooks'
 import { paidFromText } from '../lib/receiptPay'
 import type { Product, Receipt, ReceiptLine } from '../lib/types'
@@ -172,15 +174,24 @@ export default function ReceiptView() {
         </Card>
       )}
       <Card>
-        <Table head={['№', 'Товар', 'Количество', 'Сумма']}>
-          {r.lines.map((l) => (
-            <tr key={l.line_no}>
-              <td className="px-2 py-2">{l.line_no}</td>
-              <td className="px-2 py-2">{l.product_name}</td>
-              <td className="whitespace-nowrap px-2 py-2">{qtyText(l)}</td>
-              <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(l.cost_tyiyn)}</td>
-            </tr>
-          ))}
+        {/* Как в старой программе: цена по накладной, наценка, цена продажи, сумма (SPEC-28 §1). */}
+        <Table head={['№', 'Товар', 'Количество', 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма']}>
+          {r.lines.map((l) => {
+            const cost = unitCost(l)
+            const sale = l.sale_price_tyiyn ?? null
+            const markup = cost !== null && sale !== null ? markupPermille(cost, sale) : null
+            return (
+              <tr key={l.line_no}>
+                <td className="px-2 py-2">{l.line_no}</td>
+                <td className="px-2 py-2">{l.product_name}</td>
+                <td className="whitespace-nowrap px-2 py-2">{qtyText(l)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{cost === null ? '—' : formatSom(cost)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{markup === null ? '—' : formatPermille(markup)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{sale === null ? '—' : formatSom(sale)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(l.cost_tyiyn)}</td>
+              </tr>
+            )
+          })}
         </Table>
         <div className="mt-3 border-t border-slate-200 pt-3 text-right text-lg font-semibold">
           Итого: {formatSom(r.total_tyiyn)}

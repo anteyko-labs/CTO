@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { Pager, usePager } from './Pager'
 import { Button, Empty, ErrorBox, Field, Loading, Modal, Money, toast } from './ui'
 
 interface AccrualRow {
@@ -75,6 +76,8 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
   const done = () => onClose(changed)
   const accruals = data.data?.accruals ?? []
   const payouts = data.data?.payouts ?? []
+  const accPager = usePager(accruals, 'payroll.accruals')
+  const payPager = usePager(payouts, 'payroll.payouts')
   const struck = (r: { reversed: boolean }) => (r.reversed ? 'text-slate-400 line-through' : '')
 
   return (
@@ -118,7 +121,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                 <Empty>Начислений за период нет</Empty>
               ) : (
                 <ul className="divide-y divide-slate-100">
-                  {accruals.map((a) => (
+                  {accPager.shown.map((a) => (
                     <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                       <span className={struck(a)}>
                         {formatDate(a.business_date)} · {a.reversal_of ? 'Сторно: ' : ''}
@@ -145,6 +148,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                   ))}
                 </ul>
               )}
+              <Pager page={accPager.page} size={accPager.size} total={accPager.total} onPage={accPager.setPage} onSize={accPager.setSize} label="Страницы начислений" />
             </section>
             <section>
               <h3 className="mb-1 font-semibold">Выплаты</h3>
@@ -152,7 +156,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                 <Empty>Выплат за период нет</Empty>
               ) : (
                 <ul className="divide-y divide-slate-100">
-                  {payouts.map((p) => (
+                  {payPager.shown.map((p) => (
                     <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                       <span className={struck(p)}>
                         № {p.number} · {formatDateTime(p.created_at)} · {p.reversal_of ? 'Сторно: ' : ''}
@@ -177,6 +181,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                   ))}
                 </ul>
               )}
+              <Pager page={payPager.page} size={payPager.size} total={payPager.total} onPage={payPager.setPage} onSize={payPager.setSize} label="Страницы выплат" />
             </section>
           </>
         )}

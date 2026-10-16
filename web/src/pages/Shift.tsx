@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, Notice, PageHeader, Table, toast } from '../components/ui'
 import { Icon } from '../components/icons'
-import { get, newOpId, post } from '../lib/api'
+import { Pager, usePageState, usePager } from '../components/Pager'
+import { get, getPage, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { StaffPayList } from '../components/StaffPayList'
 import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
@@ -79,7 +80,8 @@ export default function Shift() {
   const [reopen, setReopen] = useState<{ shift: ShiftRow; reason: string; opId: string } | null>(null)
   const [history, setHistory] = useState<string>('')
   const [reverse, setReverse] = useState<{ m: CashMovement; comment: string; opId: string } | null>(null)
-  const moves = useLoad(() => (history ? get<CashMovement[]>(`/cash/accounts/${history}`) : Promise.resolve([])), [history])
+  // Движения открытой кассы перечитываются по счётчику: после любой операции на экране.
+  const [movesTick, setMovesTick] = useState(0)
   const act = useAction()
 
   const shift = current.data ?? null
@@ -92,8 +94,9 @@ export default function Shift() {
     current.reload()
     accounts.reload()
     past.reload()
-    moves.reload()
+    setMovesTick((t) => t + 1)
   }
+  const pastPager = usePager(past.data ?? [], 'shift.past')
   const closeDialogs = () => {
     act.setError(null)
     setOpen(null)
@@ -403,41 +406,14 @@ export default function Shift() {
         )}
         {!history && accs.length > 0 && <div className="mt-2 text-xs text-slate-400">Нажмите на кассу, чтобы увидеть её движения.</div>}
         {history && (
-          <div className="mt-4">
-            <ErrorBox error={moves.error} />
-            {moves.loading && !moves.data ? (
-              <Loading />
-            ) : (moves.data ?? []).length === 0 ? (
-              <Empty>Движений ещё не было</Empty>
-            ) : (
-              <Table head={['Когда', 'Что', 'Сумма', 'Комментарий', 'Кто', '']}>
-                {(moves.data ?? []).map((m) => (
-                  <tr key={m.id}>
-                    <td className="whitespace-nowrap px-2 py-2">{formatDateTime(m.created_at)}</td>
-                    <td className="px-2 py-2">{KIND_LABELS[m.kind] ?? m.kind}</td>
-                    <td className="px-2 py-2 text-right">
-                      <Money value={m.amount_tyiyn} tone="negative" className="font-medium" />
-                    </td>
-                    <td className="px-2 py-2 text-slate-600">{m.comment}</td>
-                    <td className="px-2 py-2">{m.user_name}</td>
-                    <td className="px-2 py-2 text-right">
-                      {m.reversible && (
-                        <Button
-                          variant="ghost"
-                          onClick={() => {
-                            closeDialogs()
-                            setReverse({ m, comment: '', opId: newOpId() })
-                          }}
-                        >
-                          Сторно
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </Table>
-            )}
-          </div>
+          <AccountMoves
+            id={history}
+            tick={movesTick}
+            onReverse={(m) => {
+              closeDialogs()
+              setReverse({ m, comment: '', opId: newOpId() })
+            }}
+          />
         )}
       </Card>
 
@@ -448,7 +424,7 @@ export default function Shift() {
           <Empty>Смен ещё не было</Empty>
         ) : (
           <Table head={['№', 'День', 'Кассир', 'Ожидали', 'Факт', 'Расхождение', 'В сейф', '']}>
-            {(past.data ?? []).map((s, i) => (
+            {pastPager.shown.map((s, i) => (
               <tr key={s.id}>
                 <td className="px-2 py-2 font-medium">{s.number}</td>
                 <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(s.business_date)}</td>
@@ -463,7 +439,7 @@ export default function Shift() {
                 </td>
                 <td className="px-2 py-2 text-right">
                   {/* Переоткрыть можно только последнюю смену: после более поздней — 409 (ADR-071). */}
-                  {owner && i === 0 && s.counted_tyiyn !== null && !shift && (
+                  {owner && pastPager.page === 0 && i === 0 && s.counted_tyiyn !== null && !shift && (
                     <Button
                       variant="secondary"
                       className="min-h-9 px-3 py-1"
@@ -480,6 +456,7 @@ export default function Shift() {
             ))}
           </Table>
         )}
+        <Pager page={pastPager.page} size={pastPager.size} total={pastPager.total} onPage={pastPager.setPage} onSize={pastPager.setSize} label="Страницы смен" />
       </Card>
 
       {open && (
@@ -730,6 +707,47 @@ export default function Shift() {
       )}
 
       {!owner && <div className="text-xs text-slate-400">Сейф владельца и его остаток администратору не показываются.</div>}
+    </div>
+  )
+}
+
+/** Движения выбранной кассы, новые сверху; страницу режет сервер. `tick` — перечитать после операции. */
+function AccountMoves({ id, tick, onReverse }: { id: string; tick: number; onReverse: (m: CashMovement) => void }) {
+  const pager = usePageState('shift.movements', id)
+  const moves = useLoad(() => getPage<CashMovement>(`/cash/accounts/${id}`, { limit: pager.size, offset: pager.page * pager.size }), [id, pager.page, pager.size, tick])
+  const rows = moves.data?.items ?? []
+  return (
+    <div className="mt-4">
+      <ErrorBox error={moves.error} />
+      {moves.loading && !moves.data ? (
+        <Loading />
+      ) : (moves.data?.total ?? 0) === 0 ? (
+        <Empty>Движений ещё не было</Empty>
+      ) : (
+        <>
+          <Table head={['Когда', 'Что', 'Сумма', 'Комментарий', 'Кто', '']}>
+            {rows.map((m) => (
+              <tr key={m.id}>
+                <td className="whitespace-nowrap px-2 py-2">{formatDateTime(m.created_at)}</td>
+                <td className="px-2 py-2">{KIND_LABELS[m.kind] ?? m.kind}</td>
+                <td className="px-2 py-2 text-right">
+                  <Money value={m.amount_tyiyn} tone="negative" className="font-medium" />
+                </td>
+                <td className="px-2 py-2 text-slate-600">{m.comment}</td>
+                <td className="px-2 py-2">{m.user_name}</td>
+                <td className="px-2 py-2 text-right">
+                  {m.reversible && (
+                    <Button variant="ghost" onClick={() => onReverse(m)}>
+                      Сторно
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </Table>
+          <Pager page={pager.page} size={pager.size} total={moves.data?.total ?? 0} onPage={pager.setPage} onSize={pager.setSize} label="Страницы движений кассы" />
+        </>
+      )}
     </div>
   )
 }

@@ -38,6 +38,7 @@ pub fn routes() -> Router<AppState> {
         .route("/debts/repayments", routing::post(post_repayment))
         .route("/debts/adjust", routing::post(post_adjust))
         .route("/debts/list", routing::get(debts_list))
+        .route("/parties/{id}/open-debts", routing::get(open_debts))
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -92,9 +93,11 @@ async fn list_parties(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(f): Query<ListQuery>,
-) -> AppResult<Json<Vec<PartyOut>>> {
+    Query(page): Query<crate::api::paging::PageQuery>,
+) -> AppResult<crate::api::paging::Paged<PartyOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(search_parties(&mut conn, user.branch_id, f).await?))
+    let (items, total) = page.slice(search_parties(&mut conn, user.branch_id, f).await?, 500);
+    Ok(crate::api::paging::paged(items, total))
 }
 
 /// Поиск контрагентов филиала с долгом и просрочкой — для экрана и для вопросов боту (SPEC-21).
@@ -134,12 +137,13 @@ pub(crate) async fn search_parties(
                                and upper(replace(v.plate, ' ', '')) like '%' || upper(replace($4, ' ', '')) || '%'))
              and (not $5 or balance_tyiyn <> 0)
            order by (balance_tyiyn <> 0) desc, name
-           limit 500"#,
+           limit $6"#,
         branch_id,
         f.role,
         f.kind,
         q,
-        f.only_debtors
+        f.only_debtors,
+        crate::api::paging::MAX_ROWS
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -1954,4 +1958,95 @@ pub(crate) async fn debts_list_data(
             }
         })
         .collect())
+}
+
+/// Неоплаченный долг клиента: запись долга (чек в долг или правка) и сколько по ней осталось.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OpenDebt {
+    pub ledger_id: Uuid,
+    pub business_date: NaiveDate,
+    pub created_at: DateTime<Utc>,
+    pub kind: String,
+    pub sale_id: Option<Uuid>,
+    pub sale_number: Option<i64>,
+    pub comment: String,
+    pub amount_tyiyn: i64,
+    pub left_tyiyn: i64,
+    /// Срок этой записи прошёл (есть срок оплаты у клиента).
+    pub overdue: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OpenDebts {
+    pub balance_tyiyn: i64,
+    pub overdue_tyiyn: i64,
+    pub due_date: Option<NaiveDate>,
+    pub overdue_days: i64,
+    /// Неоплаченные долги, старые сверху.
+    pub items: Vec<OpenDebt>,
+}
+
+/// Окно приёма долга (SPEC-28 §3): долг клиента, просрочка и неоплаченные чеки с остатком. Те же
+/// записи и тот же порядок погашения, что у просрочки `overdue_tyiyn`: оплата гасит старые долги
+/// первыми, неоплаченными остаются самые новые на сумму долга.
+async fn open_debts(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<OpenDebts>> {
+    let mut conn = state.pool.acquire().await?;
+    let party = load_party(&mut conn, user.branch_id, id).await?;
+    let rows = sqlx::query!(
+        r#"select l.id, l.business_date, l.created_at, l.kind, l.amount_tyiyn, l.comment,
+                  s.id as "sale_id?", s.number as "sale_number?"
+           from party_ledger l
+           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
+           where l.party_id = $1 and l.branch_id = $2 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+           order by l.business_date desc, l.created_at desc"#,
+        id,
+        user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let amounts: Vec<i64> = rows.iter().map(|r| r.amount_tyiyn).collect();
+    let left = crate::domain::debt::unpaid_parts(party.balance_tyiyn, &amounts);
+    let dues = debt_dues(
+        &mut conn,
+        &[(party.id, party.balance_tyiyn, party.due_days)],
+    )
+    .await?;
+    let due = dues.get(&party.id);
+    let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    let mut items: Vec<OpenDebt> = rows
+        .into_iter()
+        .zip(left)
+        .filter(|(_, left)| *left > 0)
+        .map(|(r, left)| OpenDebt {
+            ledger_id: r.id,
+            business_date: r.business_date,
+            created_at: r.created_at,
+            kind: r.kind,
+            sale_id: r.sale_id,
+            sale_number: r.sale_number,
+            comment: r.comment,
+            amount_tyiyn: r.amount_tyiyn,
+            left_tyiyn: left,
+            overdue: party.due_days.is_some_and(|d| {
+                crate::domain::debt::overdue_days(
+                    crate::domain::debt::due_date(r.business_date, d),
+                    today,
+                ) > 0
+            }),
+        })
+        .collect();
+    items.reverse();
+    Ok(Json(OpenDebts {
+        balance_tyiyn: party.balance_tyiyn,
+        overdue_tyiyn: party.overdue_tyiyn,
+        due_date: due.and_then(|d| d.due_date),
+        overdue_days: due.map_or(0, |d| d.overdue_days),
+        items,
+    }))
 }

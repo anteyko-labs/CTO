@@ -2,6 +2,7 @@
 // Вкладка «Брак» и кнопка «В брак» в строке товара — SPEC-25.
 import { useState } from 'react'
 import { DefectMarkModal, DefectsTab } from '../components/Defects'
+import { Pager, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
@@ -73,7 +74,9 @@ export default function Stock() {
             ? all.filter((p) => stale.has(p.id))
             : all
   const categoryName = new Map((categories.data ?? []).map((c) => [c.id, c.name]))
+  // Стоимость — по всему отбору; на экране — страница. Смена отбора — первая страница.
   const totalValue = rows.reduce((acc, p) => acc + (p.stock_value_tyiyn ?? 0), 0)
+  const pager = usePager(rows, 'stock', `${query}:${categoryId}:${filter}:${polarity}`)
 
   const runVerify = () => {
     void verify.run(async () => {
@@ -303,7 +306,7 @@ export default function Stock() {
         ) : (
           <>
             <ul className="-mx-4 divide-y divide-slate-100 border-y border-slate-100 md:hidden">
-              {rows.map((p) => (
+              {pager.shown.map((p) => (
                 <li key={p.id} className={rowTone(p)}>
                   <button type="button" className="flex w-full items-start gap-3 px-4 py-2.5 text-left" onClick={() => setEditing(p)}>
                     <div className="min-w-0 flex-1">
@@ -326,7 +329,7 @@ export default function Stock() {
             </ul>
             <div className="hidden md:block">
               <Table head={head}>
-                {rows.map((p) => (
+                {pager.shown.map((p) => (
                   <tr key={p.id} className={`cursor-pointer ${rowTone(p)}`} onClick={() => setEditing(p)}>
                     <td className="px-2 py-2">
                       <div className="font-medium">{productTitle(p)}</div>
@@ -363,6 +366,7 @@ export default function Stock() {
                 ))}
               </Table>
             </div>
+            <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы остатков" />
             {owner && (
               <div className="mt-3 border-t border-slate-200 pt-3 text-right font-semibold">
                 Стоимость остатка по списку: {formatSom(totalValue)}
@@ -443,20 +447,24 @@ export default function Stock() {
 }
 
 function MismatchTable({ rows }: { rows: Mismatch[] }) {
+  const pager = usePager(rows, 'stock.mismatches')
   return (
-    <Table head={['Товар', 'Остаток в учёте', 'По движениям', 'Стоимость в учёте', 'По движениям']}>
-      {rows.map((m) => {
-        const p = m.product
-        return (
-          <tr key={m.product_id}>
-            <td className="px-2 py-2">{p?.name ?? m.product_id}</td>
-            <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.cached_qty)}</td>
-            <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.moved_qty)}</td>
-            <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.cached_value_tyiyn)}</td>
-            <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.moved_value_tyiyn)}</td>
-          </tr>
-        )
-      })}
-    </Table>
+    <>
+      <Table head={['Товар', 'Остаток в учёте', 'По движениям', 'Стоимость в учёте', 'По движениям']}>
+        {pager.shown.map((m) => {
+          const p = m.product
+          return (
+            <tr key={m.product_id}>
+              <td className="px-2 py-2">{p?.name ?? m.product_id}</td>
+              <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.cached_qty)}</td>
+              <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.moved_qty)}</td>
+              <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.cached_value_tyiyn)}</td>
+              <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.moved_value_tyiyn)}</td>
+            </tr>
+          )
+        })}
+      </Table>
+      <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы расхождений" />
+    </>
   )
 }

@@ -688,6 +688,7 @@ pub async fn product_list(
     mut f: ProductFilter,
     sort: &str,
     desc: bool,
+    offset: usize,
 ) -> AppResult<ProductList> {
     let owner = user.is_owner();
     let limit = usize::try_from(f.limit.clamp(1, 2000)).unwrap_or(2000);
@@ -748,6 +749,8 @@ pub async fn product_list(
         let o = if desc { o.reverse() } else { o };
         o.then_with(|| by_name(a, b))
     });
+    // Страница отбора (SPEC-28 §2): итоги — по всему отбору, строки — только страницы.
+    items.drain(..offset.min(items.len()));
     items.truncate(limit);
     Ok(ProductList {
         items,
@@ -782,8 +785,14 @@ async fn list_products(
     };
     let sort = params.get("sort").map_or("name", String::as_str);
     let desc = params.get("dir").is_some_and(|v| v == "desc");
+    let offset = params
+        .get("offset")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(product_list(&mut conn, &user, f, sort, desc).await?))
+    Ok(Json(
+        product_list(&mut conn, &user, f, sort, desc, offset).await?,
+    ))
 }
 
 async fn get_product(
@@ -1300,6 +1309,61 @@ pub async fn update_prices_tx(
     .await?;
     let out = product_by_id(&mut *conn, &ctx.user, id).await?;
     Ok(out)
+}
+
+/// Новая цена продажи из строки прихода (SPEC-28 §1, ADR-075): ставят и владелец, и администратор
+/// — в той же транзакции, что приход (одна операция). Пул товара уже заблокирован приходом.
+/// В журнал — обычная смена цены «было / стало» с источником «приход № N»: владелец получает её
+/// в ленту, как любую смену цены (SPEC-13). Цена та же — ничего не пишется, `false`.
+pub(crate) async fn set_price_from_receipt(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    sale: i64,
+    receipt: (Uuid, i64),
+    markup_permille: Option<i64>,
+) -> AppResult<bool> {
+    let p = sqlx::query!(
+        r#"select p.name, p.unit, p.container_ml, bp.sale_price_tyiyn
+           from products p join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
+           where p.id = $1"#,
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("товар не найден"))?;
+    if p.sale_price_tyiyn == sale {
+        return Ok(false);
+    }
+    sqlx::query!(
+        "update branch_products set sale_price_tyiyn = $3 where branch_id = $1 and product_id = $2",
+        ctx.user.branch_id,
+        id,
+        sale
+    )
+    .execute(&mut *conn)
+    .await?;
+    let pour = |v: i64| pour_price_per_l(&p.unit, p.container_ml, v);
+    ops::audit(
+        &mut *conn,
+        ctx,
+        "product.prices",
+        "product",
+        Some(id),
+        json!({
+            "name": p.name,
+            "old_sale_price_tyiyn": p.sale_price_tyiyn,
+            "sale_price_tyiyn": sale,
+            "old": { "sale": p.sale_price_tyiyn, "pour": pour(p.sale_price_tyiyn) },
+            "new": { "sale": sale, "pour": pour(sale) },
+            "receipt_id": receipt.0,
+            "receipt_number": receipt.1,
+            "markup_permille": markup_permille,
+        }),
+    )
+    .await?;
+    Ok(true)
 }
 
 #[derive(Deserialize)]

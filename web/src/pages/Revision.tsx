@@ -1,5 +1,6 @@
 // Ревизия склада: пересчёт сканером по категориям, проведение владельцем (SPEC-15).
 import { useState } from 'react'
+import { Pager, usePager } from '../components/Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
 import { del, get, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -91,7 +92,12 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
       onChanged()
     })
 
-  // Скан: штучный товар +1, у масла — фокус на поле литров.
+  const q = filter.trim().toLowerCase()
+  const lines = q ? rev.lines.filter((l) => l.name.toLowerCase().includes(q) || l.article.toLowerCase().includes(q)) : rev.lines
+  // Длинный склад — по страницам; поиск в списке возвращает на первую.
+  const pager = usePager(lines, 'revision.lines', q)
+
+  // Скан: штучный товар +1, у масла — фокус на поле литров (на его странице).
   const onScan = () => {
     const code = scan.trim()
     if (!code) return
@@ -103,11 +109,14 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
     }
     act.setError(null)
     if (l.unit === 'piece') save(l, (l.counted_qty ?? 0) + 1)
-    else document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus()
+    else {
+      const at = lines.indexOf(l)
+      if (at >= 0) pager.setPage(Math.floor(at / pager.size))
+      // Поле появится после перехода на страницу.
+      setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 0)
+    }
   }
 
-  const q = filter.trim().toLowerCase()
-  const lines = q ? rev.lines.filter((l) => l.name.toLowerCase().includes(q) || l.article.toLowerCase().includes(q)) : rev.lines
   const counted = rev.lines.filter((l) => l.counted_qty !== null)
   const diffs = counted.filter((l) => l.counted_qty !== l.expected_qty)
   const overs = counted.filter((l) => overNorm(l, rev.oil_norm_bp))
@@ -145,7 +154,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
           <Empty>Товаров нет</Empty>
         ) : (
           <Table head={['Товар', 'Должно быть', 'Пересчитано', 'Разница', ...(owner && !draft ? ['В деньгах'] : [])]}>
-            {lines.map((l) => {
+            {pager.shown.map((l) => {
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
               return (
@@ -197,6 +206,9 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
             })}
           </Table>
         )}
+        <div className="px-4 pb-3 empty:hidden">
+          <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы товаров ревизии" />
+        </div>
       </Card>
       {owner && !draft && rev.head.status === 'posted' && (
         <div className="text-right font-semibold">Итог ревизии в деньгах: {formatSom(valueTotal)}</div>
@@ -262,6 +274,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
 
 export default function Revision() {
   const list = useLoad(() => get<Head[]>('/revisions'), [])
+  const listPager = usePager(list.data ?? [], 'revisions')
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const [openId, setOpenId] = useState<string | null>(null)
   const rev = useLoad(() => (openId ? get<RevisionOut>(`/revisions/${openId}`) : Promise.resolve(null)), [openId])
@@ -390,7 +403,7 @@ export default function Revision() {
           </Empty>
         ) : (
           <Table head={['№', 'Что', 'Начал', 'Пересчитано', 'Статус', '']}>
-            {(list.data ?? []).map((h) => (
+            {listPager.shown.map((h) => (
               <tr key={h.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setOpenId(h.id)}>
                 <td className="px-2 py-2 font-medium">{h.number}</td>
                 <td className="px-2 py-2">{h.category_name ?? 'Весь склад'}</td>
@@ -406,6 +419,9 @@ export default function Revision() {
             ))}
           </Table>
         )}
+        <div className="px-4 pb-3 empty:hidden">
+          <Pager page={listPager.page} size={listPager.size} total={listPager.total} onPage={listPager.setPage} onSize={listPager.setSize} label="Страницы ревизий" />
+        </div>
       </Card>
     </div>
   )

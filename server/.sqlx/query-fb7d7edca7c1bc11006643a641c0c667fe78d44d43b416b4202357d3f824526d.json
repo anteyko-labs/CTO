@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, p.unit, p.container_ml, bp.sale_price_tyiyn\n           from products p join branch_products bp on bp.product_id = p.id and bp.branch_id = $2\n           where p.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale_price_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "fb7d7edca7c1bc11006643a641c0c667fe78d44d43b416b4202357d3f824526d"
+}

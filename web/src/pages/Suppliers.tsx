@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 import { Icon } from '../components/icons'
+import { Pager, usePager } from '../components/Pager'
 import { StockBackLink } from '../components/StockBackLink'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, post } from '../lib/api'
@@ -12,6 +13,7 @@ import type { Supplier } from '../lib/types'
 
 export default function Suppliers() {
   const list = useLoad(() => get<Supplier[]>('/suppliers'), [])
+  const pager = usePager(list.data ?? [], 'suppliers')
   const [form, setForm] = useState({ name: '', phone: '', comment: '' })
   const [editing, setEditing] = useState<Supplier | null>(null)
   const [adding, setAdding] = useState(false)
@@ -59,7 +61,7 @@ export default function Suppliers() {
           </Empty>
         ) : (
           <Table head={['Название', 'Телефон', 'Комментарий', 'Статус', '']}>
-            {list.data.map((s) => (
+            {pager.shown.map((s) => (
               <tr
                 key={s.id}
                 className={`cursor-pointer hover:bg-slate-50 ${s.active ? '' : 'text-slate-400'}`}
@@ -81,6 +83,7 @@ export default function Suppliers() {
             ))}
           </Table>
         )}
+        <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы поставщиков" />
       </Card>
 
       {adding && (

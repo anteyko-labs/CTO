@@ -25,6 +25,7 @@ pub mod offline;
 pub mod oil;
 pub mod oil_book;
 pub mod old_catalog;
+pub mod paging;
 pub mod parties;
 pub mod payroll;
 pub mod receipts;

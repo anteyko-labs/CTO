@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Pager, usePagedLoad, usePager } from '../components/Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -39,7 +40,8 @@ export default function SupplierCard() {
   const party = useLoad(() => get<Party>(`/parties/${id}`).catch(() => null), [id])
   const supplier = useLoad(() => get<Supplier>(`/suppliers/${id}`), [id])
   const deliveries = useLoad(() => get<SupplierDeliveries>(`/suppliers/${id}/deliveries${qs({ from, to })}`), [id, from, to])
-  const receipts = useLoad(() => get<ReceiptListItem[]>(`/receipts${qs({ supplier_id: id })}`), [id])
+  // Накладные режет на страницы сервер; поставки — здесь (пришли целиком за период).
+  const receipts = usePagedLoad<ReceiptListItem>(`/receipts${qs({ supplier_id: id })}`, 'supplier.receipts')
   const invoices = useLoad(() => get<SupplierInvoices>(`/parties/${id}/invoices`).catch(() => null), [id])
   const reloadMoney = () => {
     party.reload()
@@ -50,7 +52,8 @@ export default function SupplierCard() {
   const owed = party.data ? -Math.min(party.data.balance_tyiyn, 0) : 0
 
   const rows = deliveries.data?.rows ?? []
-  const docs = receipts.data ?? []
+  const docs = receipts.items
+  const delivPager = usePager(rows, 'supplier.deliveries', `${id}:${from}:${to}`)
   const last = rows.reduce<string | null>((acc, r) => (r.last_at !== null && (acc === null || r.last_at > acc) ? r.last_at : acc), null)
 
   if (supplier.loading && !supplier.data) return <Loading />
@@ -79,7 +82,7 @@ export default function SupplierCard() {
         </div>
         <div>
           <div className="text-xs text-slate-500">Поставок</div>
-          <div className="font-medium">{docs.length}</div>
+          <div className="font-medium">{receipts.total}</div>
         </div>
         <div>
           <div className="text-xs text-slate-500">Привезено на сумму{from || to ? ' за период' : ''}</div>
@@ -184,7 +187,7 @@ export default function SupplierCard() {
                   ...(owner ? ['Себестоимость оценки'] : []),
                 ]}
               >
-                {rows.map((r) => (
+                {delivPager.shown.map((r) => (
                   <tr key={r.product_id} className="cursor-pointer hover:bg-slate-50" onClick={() => setOpened(r)}>
                     <td className="px-2 py-2 font-medium text-sky-700 underline">{r.name}</td>
                     <td className="whitespace-nowrap px-2 py-2">{unitQty(r.delivered_qty, r.unit)}</td>
@@ -207,6 +210,7 @@ export default function SupplierCard() {
                   </tr>
                 ))}
               </Table>
+              <Pager page={delivPager.page} size={delivPager.size} total={delivPager.total} onPage={delivPager.setPage} onSize={delivPager.setSize} label="Страницы поставок" />
               <p className="mt-2 text-xs text-slate-500">
                 Склад ведётся по средней цене без партий, поэтому «из его поставок» — оценка: первым продаётся пришедшее раньше.
               </p>
@@ -221,7 +225,7 @@ export default function SupplierCard() {
         <ErrorBox error={receipts.error} />
         {receipts.loading && !receipts.data ? (
           <Loading />
-        ) : docs.length === 0 ? (
+        ) : receipts.total === 0 ? (
           <Empty
             action={
               <Button onClick={() => navigate('/receipts/new')}>Новый приход</Button>
@@ -273,6 +277,7 @@ export default function SupplierCard() {
             })}
           </Table>
         )}
+        <Pager page={receipts.page} size={receipts.size} total={receipts.total} onPage={receipts.setPage} onSize={receipts.setSize} label="Страницы накладных" />
       </Card>
       )}
 
@@ -328,13 +333,14 @@ export default function SupplierCard() {
 /** Накладные поставщика с одним товаром: дата, номер, количество, цена (SPEC-26). */
 function ProductReceipts({ supplierId, row, from, to, onClose }: { supplierId: string; row: DeliveryRow; from: string; to: string; onClose: () => void }) {
   const list = useLoad(() => get<DeliveryReceipt[]>(`/suppliers/${supplierId}/deliveries/${row.product_id}${qs({ from, to })}`), [supplierId, row.product_id, from, to])
-  const items = list.data ?? []
+  const pager = usePager(list.data ?? [], 'supplier.product_receipts')
+  const items = pager.shown
   return (
     <Modal title={row.name} wide onClose={onClose}>
       <ErrorBox error={list.error} />
       {list.loading && !list.data ? (
         <Loading />
-      ) : items.length === 0 ? (
+      ) : pager.total === 0 ? (
         <Empty>Накладных нет</Empty>
       ) : (
         <Table head={['Дата', 'Номер', 'Количество', 'Цена', 'Сумма', '']}>
@@ -359,6 +365,7 @@ function ProductReceipts({ supplierId, row, from, to, onClose }: { supplierId: s
           ))}
         </Table>
       )}
+      <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы накладных товара" />
     </Modal>
   )
 }

@@ -54,9 +54,9 @@ test('список товаров: итоги по отбору, сортиро�
   await expect(table.getByRole('row')).toHaveCount(3)
   const totals = page.getByTestId('product-totals')
   // Итоги — сумма строк: по закупке 300 + 400 с, по продаже 450 + 500 с.
-  await expect(totals).toContainText('Товаров: 2')
-  await expect(totals).toContainText(money('Итого по закупке: 700 с'))
-  await expect(totals).toContainText(money('Итого по продаже: 950 с'))
+  await expect(totals).toContainText('Итого по отбору: 2 товара')
+  await expect(totals).toContainText(money('по закупке 700 с'))
+  await expect(totals).toContainText(money('по продаже 950 с'))
   const rowA = table.getByRole('row', { name: new RegExp(`Свеча А ${RUN}`) })
   await expect(rowA).toContainText(money('100 с'))
   await expect(rowA).toContainText(money('450 с'))
@@ -108,6 +108,9 @@ test('приход: цена продажи и прошлая закупка; ч
   await dialog.getByLabel('Сумма, с').fill('400')
   await dialog.getByRole('button', { name: 'Вне кассы' }).click()
   await dialog.getByRole('button', { name: 'Оплатить' }).click()
+  // Окно показывает итог оплаты (SPEC-28 §3) и закрывается кнопкой «Готово».
+  await expect(dialog.getByTestId('repay-result')).toContainText(money('400 с'))
+  await dialog.getByRole('button', { name: 'Готово' }).click()
   await expect(dialog).toBeHidden()
   await expect(row).toContainText('частично')
   await expect(row).toContainText(money('600 с'))

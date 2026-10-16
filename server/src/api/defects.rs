@@ -107,7 +107,7 @@ pub(crate) async fn load_defects(
                   or ($3 = 'pending' and d.status = 'pending')
                   or ($3 = 'resolved' and d.status <> 'pending'))
            order by d.created_at desc
-           limit 500"#,
+           limit 10000"#,
         user.branch_id,
         id,
         status
@@ -173,14 +173,16 @@ async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<ListQuery>,
-) -> AppResult<Json<Vec<DefectOut>>> {
+    Query(page): Query<crate::api::paging::PageQuery>,
+) -> AppResult<crate::api::paging::Paged<DefectOut>> {
     let status = match q.status.as_deref() {
         None | Some("") | Some("all") => None,
         Some(s @ ("pending" | "resolved")) => Some(s),
         Some(_) => return Err(invalid("status: pending, resolved или all")),
     };
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(load_defects(&mut conn, &user, None, status).await?))
+    let (items, total) = page.slice(load_defects(&mut conn, &user, None, status).await?, 500);
+    Ok(crate::api::paging::paged(items, total))
 }
 
 /// Поставщик последнего непогашенного прихода товара — его предлагаем по умолчанию.

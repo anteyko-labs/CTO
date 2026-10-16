@@ -121,3 +121,17 @@ export function formatPercentBp(bp: number): string {
 
 /** «0,5» процента → 50 базисных пунктов; не больше двух знаков после запятой, иначе null. */
 export const parsePercentBp = (input: string): number | null => parseFixed(input.replace('%', ''), 2)
+
+/** Наценка «25,5» / «-10» / «12 %» → десятые доли процента (255, −100); null при ошибке (SPEC-28 §1). */
+export function parsePermille(input: string): number | null {
+  const t = input.trim().replace('%', '').replace('−', '-').trim()
+  const neg = t.startsWith('-')
+  const v = parseFixed(neg ? t.slice(1) : t, 1)
+  return v === null ? null : neg ? -v : v
+}
+
+/** Десятые доли процента для показа: 250 → «25,0 %», −5 → «−0,5 %». */
+export function formatPermille(p: number): string {
+  const abs = Math.abs(p)
+  return `${p < 0 ? '−' : ''}${Math.trunc(abs / 10)},${abs % 10}\u00a0%`
+}

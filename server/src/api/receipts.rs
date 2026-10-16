@@ -11,6 +11,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::catalog::{ProductFilter, ProductOut, query_products};
+use crate::api::paging::{MAX_ROWS, PageQuery, Paged, paged};
 use crate::auth::{Ctx, CurrentUser, Owner};
 use crate::error::{AppError, AppResult, invalid, overflow};
 use crate::ops::{self, Movement, new_id};
@@ -44,6 +45,10 @@ pub struct ReceiptLineReq {
     pub product_id: Uuid,
     pub qty: i64,
     pub cost_tyiyn: i64,
+    /// Новая цена продажи товара — за штуку, канистру (тару) или килограмм, как цена товара
+    /// (SPEC-28 §1). Пусто — цена не меняется. Ставят владелец и администратор (ADR-075).
+    #[serde(default)]
+    pub sale_price_tyiyn: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -73,6 +78,9 @@ pub struct ReceiptLineOut {
     pub container_ml: Option<i64>,
     pub qty: i64,
     pub cost_tyiyn: i64,
+    /// Цена продажи товара после этого прихода; пусто — приход до SPEC-28.
+    #[serde(default)]
+    pub sale_price_tyiyn: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -116,7 +124,8 @@ async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> App
     .ok_or(AppError::NotFound)?;
     let lines = sqlx::query_as!(
         ReceiptLineOut,
-        r#"select l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml, l.qty, l.cost_tyiyn
+        r#"select l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml, l.qty, l.cost_tyiyn,
+                  l.sale_price_tyiyn
            from receipt_lines l join products p on p.id = l.product_id
            where l.receipt_id = $1 order by l.line_no"#,
         id
@@ -390,7 +399,24 @@ pub async fn post_receipt_tx(
             return Err(invalid("слишком большое количество — проверьте ввод"));
         }
         ops::check_amount(l.cost_tyiyn)?;
+        if let Some(p) = l.sale_price_tyiyn {
+            if p < 0 {
+                return Err(invalid("цена продажи не отрицательна"));
+            }
+            ops::check_amount(p)?;
+        }
         total = total.checked_add(l.cost_tyiyn).ok_or_else(overflow)?;
+    }
+    // Одна цена продажи на товар: две строки одного товара с разными новыми ценами — ошибка ввода.
+    let mut prices: std::collections::BTreeMap<Uuid, i64> = std::collections::BTreeMap::new();
+    for l in &req.lines {
+        if let Some(p) = l.sale_price_tyiyn
+            && *prices.entry(l.product_id).or_insert(p) != p
+        {
+            return Err(invalid(
+                "у одного товара в приходе две разные цены продажи — оставьте одну",
+            ));
+        }
     }
     let ids: Vec<Uuid> = req.lines.iter().map(|l| l.product_id).collect();
     let known = sqlx::query_scalar!(
@@ -466,16 +492,52 @@ pub async fn post_receipt_tx(
     )
     .execute(&mut *conn)
     .await?;
+    // Новые цены продажи — до строк: строка запоминает цену, с которой товар вышел из прихода,
+    // а проверка «закупка дороже цены» ниже видит уже новую цену (SPEC-28 §1, ADR-075).
+    for (product_id, sale) in &prices {
+        // Наценка — к цене по накладной первой строки товара, за единицу цены товара (канистру,
+        // штуку, килограмм): только для журнала и ленты владельца.
+        let unit = sqlx::query!(
+            "select unit, container_ml from products where id = $1",
+            product_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let per = crate::api::catalog::price_unit(&unit.unit, unit.container_ml);
+        let markup = req
+            .lines
+            .iter()
+            .find(|l| l.product_id == *product_id)
+            .and_then(|l| {
+                crate::domain::money::div_round(
+                    i128::from(l.cost_tyiyn) * i128::from(per),
+                    i128::from(l.qty),
+                )
+            })
+            .and_then(|cost| crate::domain::money::markup_permille(cost, *sale));
+        crate::api::catalog::set_price_from_receipt(
+            conn,
+            ctx,
+            *product_id,
+            *sale,
+            (id, number),
+            markup,
+        )
+        .await?;
+    }
     for (i, l) in req.lines.iter().enumerate() {
         let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
         sqlx::query!(
-            "insert into receipt_lines (id, receipt_id, line_no, product_id, qty, cost_tyiyn) values ($1, $2, $3, $4, $5, $6)",
+            r#"insert into receipt_lines (id, receipt_id, line_no, product_id, qty, cost_tyiyn, sale_price_tyiyn)
+               values ($1, $2, $3, $4, $5, $6,
+                       (select sale_price_tyiyn from branch_products where branch_id = $7 and product_id = $4))"#,
             new_id(),
             id,
             line_no,
             l.product_id,
             l.qty,
-            l.cost_tyiyn
+            l.cost_tyiyn,
+            branch_id
         )
         .execute(&mut *conn)
         .await?;
@@ -1020,9 +1082,11 @@ async fn list_receipts(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<PeriodQuery>,
-) -> AppResult<Json<Vec<ReceiptListItem>>> {
+    Query(page): Query<PageQuery>,
+) -> AppResult<Paged<ReceiptListItem>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(receipts_data(&mut conn, &user, q).await?))
+    let (items, total) = page.slice(receipts_data(&mut conn, &user, q).await?, 500);
+    Ok(paged(items, total))
 }
 
 /// Приходы за период — экран «Приход» и бот владельца (SPEC-24).
@@ -1052,11 +1116,12 @@ pub(crate) async fn receipts_data(
              and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')
              and ($4::uuid is null or r.supplier_id = $4)
            order by r.created_at desc
-           limit 500"#,
+           limit $5"#,
         user.branch_id,
         q.from,
         q.to,
-        q.supplier_id
+        q.supplier_id,
+        MAX_ROWS
     )
     .fetch_all(&mut *conn)
     .await?;

@@ -119,6 +119,8 @@ export interface ReceiptLine {
   container_ml: number | null
   qty: number
   cost_tyiyn: number
+  /** Цена продажи товара после этого прихода (SPEC-28 §1); null — приход до этой версии. */
+  sale_price_tyiyn?: number | null
 }
 
 export interface Receipt {
@@ -231,6 +233,8 @@ export interface TopProduct {
   qty: number
   amount_tyiyn: number
   checks: number
+  /** Валовая прибыль строк — только владельцу (SPEC-28 §4). */
+  profit_tyiyn?: number
 }
 
 export interface TopProducts {
@@ -859,4 +863,26 @@ export interface DeliveryReceipt {
   cost_tyiyn: number
   price_tyiyn: number | null
   reversed: boolean
+}
+
+/** Неоплаченный долг клиента в окне приёма долга (SPEC-28 §3). */
+export interface OpenDebt {
+  ledger_id: string
+  business_date: string
+  created_at: string
+  kind: 'debt' | 'adjust'
+  sale_id: string | null
+  sale_number: number | null
+  comment: string
+  amount_tyiyn: number
+  left_tyiyn: number
+  overdue: boolean
+}
+
+export interface OpenDebts {
+  balance_tyiyn: number
+  overdue_tyiyn: number
+  due_date: string | null
+  overdue_days: number
+  items: OpenDebt[]
 }

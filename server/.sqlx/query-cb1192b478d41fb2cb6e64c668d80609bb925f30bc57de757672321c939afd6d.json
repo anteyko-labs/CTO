@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as \"user_name?\"\n           from audit_log a\n           left join users u on u.id = a.user_id\n           where a.branch_id = $1 and a.action = any($2)\n           order by a.created_at desc\n           limit $3",
+  "query": "select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as \"user_name?\"\n           from audit_log a\n           left join users u on u.id = a.user_id\n           where a.branch_id = $1 and a.action = any($2)\n           order by a.created_at desc, a.id desc\n           limit $3 offset $4",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,7 @@
       "Left": [
         "Uuid",
         "TextArray",
+        "Int8",
         "Int8"
       ]
     },
@@ -50,5 +51,5 @@
       false
     ]
   },
-  "hash": "44b1b646b92090a15934aa87309059e1ea3d942c1b5e937ffb949b1294678b11"
+  "hash": "cb1192b478d41fb2cb6e64c668d80609bb925f30bc57de757672321c939afd6d"
 }

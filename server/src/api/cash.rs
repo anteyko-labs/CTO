@@ -1570,9 +1570,12 @@ async fn account_movements(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
-) -> AppResult<Json<Vec<MovementOut>>> {
+    Query(page): Query<crate::api::paging::PageQuery>,
+) -> AppResult<crate::api::paging::Paged<MovementOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(movements_data(&mut conn, &user, id).await?))
+    let rows = movements_between(&mut conn, &user, id, None, crate::api::paging::MAX_ROWS).await?;
+    let (items, total) = page.slice(rows, 200);
+    Ok(crate::api::paging::paged(items, total))
 }
 
 /// Последние 200 движений кассы — экран и бот владельца (SPEC-24).

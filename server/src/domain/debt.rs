@@ -25,6 +25,21 @@ pub fn oldest_unpaid(balance: i64, entries: &[(NaiveDate, i64)]) -> Option<Naive
     last
 }
 
+/// Сколько не оплачено по каждому долгу (SPEC-28 §3): `amounts` — долги от новых к старым, баланс
+/// гасит сначала старые, поэтому неоплаченная часть — самые новые долги на сумму баланса. Тот же
+/// обход, что [`oldest_unpaid`]. Результат — по одному числу на долг, в том же порядке.
+pub fn unpaid_parts(balance: i64, amounts: &[i64]) -> Vec<i64> {
+    let mut rest = balance.max(0);
+    amounts
+        .iter()
+        .map(|&a| {
+            let left = a.max(0).min(rest);
+            rest -= left;
+            left
+        })
+        .collect()
+}
+
 /// Последний день оплаты: долг, взятый в день `oldest`, платят в течение `due_days` дней
 /// (день долга — первый). На следующий день долг просрочен — ровно когда `overdue_tyiyn > 0`.
 pub fn due_date(oldest: NaiveDate, due_days: i32) -> NaiveDate {
@@ -42,6 +57,14 @@ mod tests {
 
     fn d(day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, day).unwrap_or_default()
+    }
+
+    #[test]
+    fn unpaid_parts_take_newest_debts() {
+        // Долги 300 (новый), 500, 200; баланс 600: новый целиком, 300 из 500, старый оплачен.
+        assert_eq!(unpaid_parts(600, &[300, 500, 200]), vec![300, 300, 0]);
+        assert_eq!(unpaid_parts(0, &[300]), vec![0]);
+        assert_eq!(unpaid_parts(5000, &[300, 200]), vec![300, 200]);
     }
 
     #[test]

@@ -69,7 +69,8 @@ fn movement_kind(kind: &str) -> &str {
 
 // ---------- Продажи ----------
 
-/// Продажи: `dashboard`, `categories`, `hours`, `weekdays`, `checks`, `gifts`, `staff`.
+/// Продажи: `dashboard`, `categories`, `hours`, `weekdays`, `checks`, `gifts`, `staff`, `top`,
+/// `top_profit`.
 pub async fn sales(
     conn: &mut PgConnection,
     user: &CurrentUser,
@@ -246,7 +247,9 @@ pub async fn sales(
                 crate::api::telegram::staff_lines(&p.staff)
             ))
         }
-        "top" => {
+        // «Чаще берут» — по выручке, «больше приносят» — по валовой прибыли (SPEC-28 §4).
+        "top" | "top_profit" => {
+            let by_profit = report == "top_profit";
             let t = crate::api::reports::top_products_data(
                 conn,
                 user,
@@ -254,6 +257,7 @@ pub async fn sales(
                     from: Some(from),
                     to: Some(to),
                     limit: Some(30),
+                    sort: by_profit.then(|| "profit".to_string()),
                     ..Default::default()
                 },
             )
@@ -264,20 +268,28 @@ pub async fn sales(
                     period_label(t.from, t.to)
                 ));
             }
-            let mut lines = vec![format!(
-                "Самые продаваемые товары {} (по выручке):",
-                period_label(t.from, t.to)
-            )];
+            let mut lines = vec![if by_profit {
+                format!(
+                    "Больше всех приносят {} (по валовой прибыли):",
+                    period_label(t.from, t.to)
+                )
+            } else {
+                format!(
+                    "Самые продаваемые товары {} (по выручке):",
+                    period_label(t.from, t.to)
+                )
+            }];
             capped(
                 &mut lines,
                 t.items
                     .iter()
                     .map(|r| {
                         format!(
-                            "— {}: {}, выручка {}, чеков {}",
+                            "— {}: {}, выручка {}, прибыль {}, чеков {}",
                             r.name,
                             crate::domain::qty::stock_text(r.qty, &r.unit, r.container_ml),
                             format_som(r.amount_tyiyn),
+                            r.profit_tyiyn.map_or_else(|| "—".to_string(), format_som),
                             r.checks
                         )
                     })
@@ -286,7 +298,7 @@ pub async fn sales(
             Ok(lines.join("\n"))
         }
         _ => Err(invalid(
-            "report: dashboard, categories, hours, weekdays, checks, gifts, staff или top",
+            "report: dashboard, categories, hours, weekdays, checks, gifts, staff, top или top_profit",
         )),
     }
 }

@@ -929,6 +929,10 @@ pub struct TopProduct {
     pub amount_tyiyn: i64,
     /// Чеков с этим товаром.
     pub checks: i64,
+    /// Валовая прибыль: выручка минус себестоимость строк, за вычетом возвратов (SPEC-28 §4).
+    /// Только владельцу: администратору поле не отдаётся вовсе (инвариант 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_tyiyn: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -939,7 +943,7 @@ pub struct TopProducts {
 }
 
 /// Отчёт открыт и администратору: в нём выручка и количество, без себестоимости и маржи
-/// (инвариант 13).
+/// (инвариант 13). «Больше приносят» (`sort=profit`) и прибыль строк — только владельцу.
 async fn top_products(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -974,13 +978,18 @@ pub async fn top_products_data(
         return Err(invalid("период не больше года"));
     }
     let sort = q.sort.unwrap_or_default();
-    let items = sqlx::query_as!(
+    let owner = user.is_owner();
+    if sort == "profit" && !owner {
+        return Err(AppError::Forbidden);
+    }
+    let mut items = sqlx::query_as!(
         TopProduct,
         r#"select p.id as "product_id!", p.name as "name!", p.unit as "unit!",
                   p.container_ml as "container_ml?", p.category_id as "category_id!",
                   coalesce(sum(case when s.kind = 'return' then -l.units else l.units end), 0)::bigint as "qty!",
                   coalesce(sum(l.amount_tyiyn), 0)::bigint as "amount_tyiyn!",
-                  count(distinct s.id) filter (where s.kind = 'sale') as "checks!"
+                  count(distinct s.id) filter (where s.kind = 'sale') as "checks!",
+                  coalesce(sum(l.amount_tyiyn - l.cost_tyiyn), 0)::bigint as "profit_tyiyn?"
            from sale_lines l
            join sales s on s.id = l.sale_id
            join products p on p.id = l.product_id
@@ -991,6 +1000,7 @@ pub async fn top_products_data(
            having sum(case when s.kind = 'return' then -l.units else l.units end) > 0
            order by case when $6 = 'qty' then sum(case when s.kind = 'return' then -l.units else l.units end) end desc nulls last,
                     case when $6 = 'checks' then count(distinct s.id) filter (where s.kind = 'sale') end desc nulls last,
+                    case when $6 = 'profit' then sum(l.amount_tyiyn - l.cost_tyiyn) end desc nulls last,
                     sum(l.amount_tyiyn) desc, p.name
            limit $7"#,
         user.branch_id,
@@ -1003,5 +1013,10 @@ pub async fn top_products_data(
     )
     .fetch_all(&mut *conn)
     .await?;
+    if !owner {
+        for i in &mut items {
+            i.profit_tyiyn = None;
+        }
+    }
     Ok(TopProducts { from, to, items })
 }

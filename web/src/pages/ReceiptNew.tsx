@@ -1,6 +1,7 @@
 // Новый приход: сканер, создание незнакомых товаров, цены из прошлого прихода, печать этикеток (SPEC-03).
-// В строке — цена продажи и сумма по ней, внизу итог по закупке и по продаже; при выборе товара —
-// «в прошлый раз: цена, дата, поставщик» (SPEC-27).
+// Строка как в старой программе: цена по накладной, наценка %, цена продажи, сумма; наценка и цена
+// продажи связаны, новая цена продажи ставится товару при проведении (SPEC-28 §1, ADR-075). Внизу
+// итог по закупке и по продаже; при выборе товара — «в прошлый раз: цена, дата, поставщик» (SPEC-27).
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { printLabels } from '../components/labels'
@@ -9,8 +10,8 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
-import { formatLiters, formatSom, somInput } from '../lib/format'
-import { isOil, lastText, lineCalc, parseCount } from '../lib/receiptLines'
+import { formatLiters, formatSom } from '../lib/format'
+import { initialPrices, isOil, lastText, lineCalc, parseCount, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
@@ -21,7 +22,12 @@ interface Line {
   key: string
   product: Product
   count: string
+  /** Цена по накладной за штуку или канистру. */
   price: string
+  /** Наценка над ценой по накладной, %, с одним знаком. */
+  markup: string
+  /** Цена продажи за штуку или канистру; по умолчанию — текущая цена товара. */
+  salePrice: string
   /** Прошлая закупка: undefined — ещё грузится, null — закупок не было. */
   last?: LastReceipt | null
 }
@@ -61,9 +67,8 @@ export default function ReceiptNew() {
     setLines((ls) => {
       const i = ls.findIndex((l) => l.product.id === p.id)
       if (i < 0) {
-        // Цена подставляется из прошлого прихода; её можно изменить.
-        const price = p.last_purchase_price_tyiyn != null ? somInput(p.last_purchase_price_tyiyn) : ''
-        return [...ls, { key: crypto.randomUUID(), product: p, count: '1', price }]
+        // Цена подставляется из прошлого прихода, цена продажи — текущая; их можно изменить.
+        return [...ls, { key: crypto.randomUUID(), product: p, count: '1', ...initialPrices(p) }]
       }
       return ls.map((l, j) => {
         if (j !== i) return l
@@ -122,7 +127,7 @@ export default function ReceiptNew() {
     [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
     [onDebt || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
     [onDebt || !notEnough(sources, source, total), 'денег в выбранной кассе меньше суммы накладной', '#receipt-paid-from'],
-    [badLine < 0, `количество и цену в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+    [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
   )
 
   const submit = () => {
@@ -130,7 +135,7 @@ export default function ReceiptNew() {
       save.setError('Добавьте хотя бы один товар')
       return
     }
-    const body: { product_id: string; qty: number; cost_tyiyn: number }[] = []
+    const body: { product_id: string; qty: number; cost_tyiyn: number; sale_price_tyiyn?: number }[] = []
     const copies: { product: Product; copies: number }[] = []
     for (let i = 0; i < lines.length; i++) {
       const c = calcs[i]
@@ -138,7 +143,9 @@ export default function ReceiptNew() {
         save.setError(`Строка ${i + 1} (${lines[i].product.name}): ${c}`)
         return
       }
-      body.push({ product_id: lines[i].product.id, qty: c.qty, cost_tyiyn: c.cost })
+      // Новая цена продажи уходит, только если её поменяли: товар получит её при проведении.
+      const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
+      body.push({ product_id: lines[i].product.id, qty: c.qty, cost_tyiyn: c.cost, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
       copies.push({ product: lines[i].product, copies: c.n })
     }
     if (total === null) {
@@ -239,7 +246,7 @@ export default function ReceiptNew() {
           {lines.length === 0 ? (
             <Empty>Сканируйте штрихкод или найдите товар по названию — он добавится строкой</Empty>
           ) : (
-            <Table head={['Товар', 'Количество', 'Цена, с', 'Сумма', 'По продаже', '']}>
+            <Table head={['Товар', 'Количество', 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма', 'По продаже', '']}>
               {lines.map((l, i) => {
                 const oil = isOil(l.product)
                 const c = calcs[i]
@@ -270,10 +277,11 @@ export default function ReceiptNew() {
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
                         {oil ? 'Цена канистры, с' : 'Цена за шт, с'}
                         <input
-                          className={`w-32 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
+                          id={`line-${i + 1}-price`}
+                          className={`w-28 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
                           inputMode="decimal"
                           value={l.price}
-                          onChange={(e) => updateLine(l.key, { price: e.target.value })}
+                          onChange={(e) => updateLine(l.key, withCost(l, e.target.value))}
                         />
                       </label>
                       {l.last && (
@@ -282,14 +290,42 @@ export default function ReceiptNew() {
                         </div>
                       )}
                     </td>
+                    <td className="px-2 py-2">
+                      <label className="flex flex-col gap-1 text-xs text-slate-500">
+                        %
+                        <input
+                          id={`line-${i + 1}-markup`}
+                          aria-label="Наценка, %"
+                          className="w-20"
+                          inputMode="decimal"
+                          value={l.markup}
+                          onChange={(e) => updateLine(l.key, withMarkup(l, e.target.value))}
+                        />
+                      </label>
+                    </td>
+                    <td className="px-2 py-2">
+                      <label className="flex flex-col gap-1 text-xs text-slate-500">
+                        {oil ? 'Продажа канистры, с' : 'Продажа за шт, с'}
+                        <input
+                          id={`line-${i + 1}-sale`}
+                          aria-label="Цена продажи"
+                          className={`w-28 ${typeof c !== 'string' && c.salePrice !== l.product.sale_price_tyiyn ? 'border-amber-500 bg-amber-50' : ''}`}
+                          inputMode="decimal"
+                          value={l.salePrice}
+                          onChange={(e) => updateLine(l.key, withSalePrice(l, e.target.value))}
+                        />
+                      </label>
+                      {typeof c !== 'string' && c.salePrice !== l.product.sale_price_tyiyn && (
+                        <div className="mt-1 text-xs text-amber-700" data-testid="new-sale-price">
+                          было {formatSom(l.product.sale_price_tyiyn)} — новая цена с проведением
+                        </div>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-2 py-2 pt-7 text-right">
                       {typeof c === 'string' ? <span className="text-rose-600">{c}</span> : formatSom(c.cost)}
                     </td>
                     <td className="whitespace-nowrap px-2 py-2 pt-7 text-right text-slate-600">
                       {typeof c === 'string' ? '—' : formatSom(c.sale)}
-                      <div className="text-xs text-slate-500">
-                        цена {formatSom(l.product.sale_price_tyiyn)} {oil ? 'за кан.' : 'за шт'}
-                      </div>
                     </td>
                     <td className="px-2 py-2 pt-6 text-right">
                       <div className="flex flex-wrap justify-end gap-1">

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Pager, usePager } from '../components/Pager'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -26,7 +27,9 @@ export default function Expenses() {
     [Boolean(form.article), 'статью', '#expense-article'],
     [Boolean(form.sum.trim()), 'сумму', '#expense-sum'],
   )
+  // Итог — по всему периоду, поэтому список приходит целиком и режется на страницы здесь.
   const total = (list.data ?? []).reduce((acc, e) => acc + e.amount_tyiyn, 0)
+  const pager = usePager(list.data ?? [], 'expenses', `${from}:${to}`)
 
   const save = () =>
     void act.run(async () => {
@@ -143,7 +146,7 @@ export default function Expenses() {
           <Empty>Расходов за период нет</Empty>
         ) : (
           <Table head={['№', 'День', 'Статья', 'Из кассы', 'Сумма', 'Комментарий', '']}>
-            {(list.data ?? []).map((e) => (
+            {pager.shown.map((e) => (
               <tr key={e.id} className={e.reversal_of ? 'text-slate-400' : ''}>
                 <td className="px-2 py-2 font-medium">{e.number}</td>
                 <td className="whitespace-nowrap px-2 py-2">{e.expense_date}</td>
@@ -176,6 +179,7 @@ export default function Expenses() {
             ))}
           </Table>
         )}
+        <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы расходов" />
       </Card>
     </div>
   )

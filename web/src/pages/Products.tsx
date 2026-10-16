@@ -3,6 +3,7 @@
 // сервер; закупку и стоимость остатка видит только владелец (ADR-008).
 import { useMemo, useState } from 'react'
 import { printLabels } from '../components/labels'
+import { Pager, usePageState } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu } from '../components/ui'
@@ -20,6 +21,16 @@ interface Selected {
 }
 
 type SortKey = 'name' | 'code' | 'stock' | 'purchase' | 'sale' | 'stock_purchase' | 'stock_sale'
+
+/** «1 товар», «2 товара», «5 товаров». */
+function goodsWord(n: number): string {
+  const n10 = n % 10
+  const n100 = n % 100
+  if (n100 >= 11 && n100 <= 19) return 'товаров'
+  if (n10 === 1) return 'товар'
+  if (n10 >= 2 && n10 <= 4) return 'товара'
+  return 'товаров'
+}
 
 /** За что цена: канистра масла, килограмм или штука. */
 const perText = (p: Product): string =>
@@ -50,12 +61,16 @@ export default function Products() {
       archived: archived || undefined,
       sort: sort.key,
       dir: sort.desc ? 'desc' : undefined,
-      limit: 500,
     }
     for (const [k, v] of Object.entries(attrs)) p[`attr.${k}`] = v.trim()
     return qs(p)
   }, [query, categoryId, archived, attrs, sort])
-  const list = useLoad(() => get<ProductList>(`/products/list${params}`), [params])
+  // Страницу режет сервер, итоги — по всему отбору; смена отбора или сортировки — снова первая страница.
+  const pager = usePageState('products', params)
+  const list = useLoad(
+    () => get<ProductList>(`/products/list${params}${params ? '&' : '?'}limit=${pager.size}&offset=${pager.page * pager.size}`),
+    [params, pager.page, pager.size],
+  )
   const items = list.data?.items
   const totals = list.data?.totals
 
@@ -221,7 +236,7 @@ export default function Products() {
         <ErrorBox error={list.error ?? categories.error} />
         {list.loading && !list.data ? (
           <Loading />
-        ) : !items?.length ? (
+        ) : !items || (items.length === 0 && !totals?.count) ? (
           <Empty action={<Button onClick={() => setEditing('new')}>Новый товар</Button>}>Товары не найдены</Empty>
         ) : (
           <>
@@ -260,22 +275,25 @@ export default function Products() {
                 </tbody>
               </table>
             </div>
-            {totals && (
-              <div className="mt-3 flex flex-wrap justify-end gap-x-6 gap-y-1 border-t border-slate-200 pt-3 text-sm" data-testid="product-totals">
-                <span className="text-slate-500">
-                  Товаров: <span className="tabular-nums">{totals.count}</span>
-                  {totals.count > items.length && ` (показаны ${items.length})`}
-                </span>
-                {owner && totals.purchase_tyiyn !== undefined && (
+            {/* Итоги — по всему отбору (все страницы), считает сервер; на компьютере прижаты к низу экрана. */}
+            <div className="-mx-4 -mb-4 mt-3 rounded-b-lg border-t-2 border-slate-300 bg-white px-4 pb-3 pt-2 md:sticky md:bottom-0 md:z-10 md:shadow-[0_-6px_12px_-10px_rgba(15,23,42,0.35)]">
+              {totals && (
+                <div className="flex flex-wrap items-baseline justify-end gap-x-2 gap-y-1 text-base font-semibold" data-testid="product-totals">
                   <span>
-                    Итого по закупке: <span className="font-semibold tabular-nums">{formatSom(totals.purchase_tyiyn)}</span>
+                    Итого по отбору: <span className="tabular-nums">{totals.count}</span> {goodsWord(totals.count)}
                   </span>
-                )}
-                <span>
-                  Итого по продаже: <span className="font-semibold tabular-nums">{formatSom(totals.sale_tyiyn)}</span>
-                </span>
-              </div>
-            )}
+                  {owner && totals.purchase_tyiyn !== undefined && (
+                    <span>
+                      · по закупке <span className="tabular-nums">{formatSom(totals.purchase_tyiyn)}</span>
+                    </span>
+                  )}
+                  <span>
+                    · по продаже <span className="tabular-nums">{formatSom(totals.sale_tyiyn)}</span>
+                  </span>
+                </div>
+              )}
+              <Pager page={pager.page} size={pager.size} total={totals?.count ?? items.length} onPage={pager.setPage} onSize={pager.setSize} label="Страницы товаров" />
+            </div>
           </>
         )}
       </Card>

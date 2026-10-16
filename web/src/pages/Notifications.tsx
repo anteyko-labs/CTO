@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Pager, usePageState, usePager } from '../components/Pager'
 import { Badge, Card, Empty, ErrorBox, Loading, PageHeader } from '../components/ui'
-import { get, post } from '../lib/api'
+import { get, post, qs } from '../lib/api'
 import { formatDateTime } from '../lib/format'
+import { PAGE_SIZES } from '../lib/paging'
 import { useLoad } from '../lib/hooks'
 import type { NotificationItem, NotificationsOut } from '../lib/types'
 
@@ -64,19 +66,30 @@ function linkOf(n: NotificationItem): { to: string; label: string } | null {
 
 /** Что происходило без владельца: цены, возвраты, сторно, долги, доступы. */
 export default function Notifications() {
-  const data = useLoad(() => get<NotificationsOut>('/notifications'), [])
   const [filter, setFilter] = useState<Filter>('all')
+  const grouped = filter !== 'all'
+  // «Все» — страницу режет сервер, число событий — в ответе. Разделы сервер не различает: для них
+  // берём последние 500 событий и режем на страницы здесь.
+  const paged = usePageState('notifications', 'all')
+  const data = useLoad(() => get<NotificationsOut & { total?: number }>(`/notifications${qs({ limit: paged.size, offset: paged.page * paged.size })}`), [paged.page, paged.size])
+  const recent = useLoad(() => (grouped ? get<NotificationsOut>('/notifications?limit=500') : Promise.resolve(null)), [grouped])
 
   // Открыли экран — значит прочитали.
   useEffect(() => {
     if (data.data) void post('/notifications/seen').catch(() => undefined)
   }, [data.data])
 
-  const all = data.data?.items ?? []
-  const items = all.filter((n) =>
-    filter === 'all' ? true : filter === 'important' ? toneOf(n) !== 'slate' : kindOf(n).group === filter,
-  )
-  const count = (f: Filter) => (f === 'all' ? all.length : all.filter((n) => (f === 'important' ? toneOf(n) !== 'slate' : kindOf(n).group === f)).length)
+  const last = recent.data?.items ?? []
+  const inGroup = (n: NotificationItem, f: Filter) => (f === 'important' ? toneOf(n) !== 'slate' : kindOf(n).group === f)
+  const filtered = grouped ? last.filter((n) => inGroup(n, filter)) : []
+  const groupPager = usePager(filtered, 'notifications', filter)
+  const allTotal = data.data?.total ?? data.data?.items.length ?? 0
+  const items = grouped ? groupPager.shown : (data.data?.items ?? [])
+  const total = grouped ? groupPager.total : allTotal
+  const pager = grouped ? groupPager : paged
+  const loading = grouped ? recent.loading && !recent.data : data.loading && !data.data
+  /** Число на кнопке раздела: у «Всех» — весь журнал, у разделов — среди последних 500. */
+  const count = (f: Filter): number | null => (f === 'all' ? allTotal : recent.data ? last.filter((n) => inGroup(n, f)).length : null)
 
   return (
     <div>
@@ -91,18 +104,18 @@ export default function Notifications() {
             onClick={() => setFilter(key)}
           >
             {label}
-            {data.data && <span className={`ml-1 tabular-nums ${filter === key ? 'text-sky-100' : 'text-slate-400'}`}>{count(key)}</span>}
+            {count(key) !== null && <span className={`ml-1 tabular-nums ${filter === key ? 'text-sky-100' : 'text-slate-400'}`}>{count(key)}</span>}
           </button>
         ))}
       </div>
       <Card>
-        <ErrorBox error={data.error} />
-        {data.loading && !data.data ? (
+        <ErrorBox error={data.error ?? recent.error} />
+        {loading ? (
           <Loading />
-        ) : items.length === 0 ? (
-          <Empty icon="bell">{all.length === 0 ? 'Пока ничего важного не происходило' : 'В этом разделе уведомлений нет'}</Empty>
+        ) : total === 0 ? (
+          <Empty icon="bell">{allTotal === 0 ? 'Пока ничего важного не происходило' : 'В этом разделе уведомлений нет'}</Empty>
         ) : (
-          <ul className="-m-4 divide-y divide-slate-100 overflow-hidden rounded-lg">
+          <ul className={`-mx-4 -mt-4 divide-y divide-slate-100 overflow-hidden rounded-lg ${total > PAGE_SIZES[0] ? '' : '-mb-4'}`}>
             {items.map((n) => {
               const tone = toneOf(n)
               const link = linkOf(n)
@@ -136,6 +149,7 @@ export default function Notifications() {
             })}
           </ul>
         )}
+        <Pager page={pager.page} size={pager.size} total={total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы уведомлений" />
       </Card>
     </div>
   )

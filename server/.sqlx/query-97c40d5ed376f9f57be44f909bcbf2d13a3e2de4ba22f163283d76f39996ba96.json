@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml, l.qty, l.cost_tyiyn\n           from receipt_lines l join products p on p.id = l.product_id\n           where l.receipt_id = $1 order by l.line_no",
+  "query": "select l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml, l.qty, l.cost_tyiyn,\n                  l.sale_price_tyiyn\n           from receipt_lines l join products p on p.id = l.product_id\n           where l.receipt_id = $1 order by l.line_no",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,11 @@
         "ordinal": 6,
         "name": "cost_tyiyn",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "sale_price_tyiyn",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -51,8 +56,9 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "ef4641580eb49ac007b027770c844d64bedaaacafb30cb8af6f183567513dc6c"
+  "hash": "97c40d5ed376f9f57be44f909bcbf2d13a3e2de4ba22f163283d76f39996ba96"
 }

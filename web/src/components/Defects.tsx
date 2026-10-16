@@ -1,5 +1,6 @@
 // Брак (SPEC-25): отметка из остатков, вкладка «Брак» с решением владельца и сторно.
 import { useState } from 'react'
+import { Pager, usePagedLoad } from './Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, Table, toast } from './ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -216,7 +217,8 @@ function resolutionText(d: Defect): string {
 export function DefectsTab() {
   const owner = useUser().role === 'owner'
   const [view, setView] = useState<'pending' | 'resolved'>('pending')
-  const list = useLoad(() => get<Defect[]>(`/defects${qs({ status: view })}`), [view])
+  // Страницу режет сервер; другая вкладка — первая страница.
+  const list = usePagedLoad<Defect>(`/defects${qs({ status: view })}`, 'defects')
   const [resolving, setResolving] = useState<Defect | null>(null)
   const act = useAction()
   const unmark = (d: Defect) => {
@@ -236,7 +238,7 @@ export function DefectsTab() {
       list.reload()
     })
   }
-  const rows = list.data ?? []
+  const rows = list.items
   const head = ['№', 'Товар', 'Количество', ...(owner ? ['Стоимость'] : []), 'Причина', 'Поставщик', 'Отметил', view === 'pending' ? '' : 'Решение', '']
   return (
     <Card>
@@ -261,7 +263,7 @@ export function DefectsTab() {
       <ErrorBox error={list.error ?? act.error} />
       {list.loading && !list.data ? (
         <Loading />
-      ) : rows.length === 0 ? (
+      ) : list.total === 0 ? (
         <Empty icon="stock">{view === 'pending' ? 'Брака, ждущего решения, нет. Отметить брак — кнопка «В брак» в строке товара.' : 'Решённого брака пока нет'}</Empty>
       ) : (
         <Table head={head}>
@@ -310,6 +312,7 @@ export function DefectsTab() {
           ))}
         </Table>
       )}
+      <Pager page={list.page} size={list.size} total={list.total} onPage={list.setPage} onSize={list.setSize} label="Страницы брака" />
       {resolving && (
         <ResolveModal
           defect={resolving}

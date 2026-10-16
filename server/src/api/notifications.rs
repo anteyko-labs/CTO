@@ -87,13 +87,17 @@ pub(crate) struct NotificationOut {
 
 #[derive(Serialize)]
 struct NotificationsOut {
+    /// Новых событий (после «просмотрено») во всём журнале.
     unseen: i64,
+    /// Всего событий — для страниц (SPEC-28 §2).
+    total: i64,
     items: Vec<NotificationOut>,
 }
 
 #[derive(Deserialize)]
 struct ListQuery {
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 fn money(v: Option<i64>) -> String {
@@ -173,6 +177,20 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     money(num("old_sale_price_tyiyn")),
                     money(num("sale_price_tyiyn"))
                 ));
+            }
+            // Цену поставили в приходе (SPEC-28 §1): откуда и с какой наценкой.
+            if let Some(n) = num("receipt_number") {
+                let markup = num("markup_permille")
+                    .map(|m| {
+                        format!(
+                            ", наценка {}{},{} %",
+                            if m < 0 { "−" } else { "" },
+                            m.unsigned_abs() / 10,
+                            m.unsigned_abs() % 10
+                        )
+                    })
+                    .unwrap_or_default();
+                parts.push(format!("приход № {n}{markup}"));
             }
             (
                 format!(
@@ -768,10 +786,26 @@ async fn list(
     }
     let seen = seen_at(&state, &user).await?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let offset = q.offset.unwrap_or(0).max(0);
     let mut conn = state.pool.acquire().await?;
-    let items = latest(&mut conn, user.branch_id, limit, seen).await?;
-    let unseen = i64::try_from(items.iter().filter(|i| i.new).count()).unwrap_or(i64::MAX);
-    Ok(Json(NotificationsOut { unseen, items }))
+    let items = page(&mut conn, user.branch_id, limit, offset, seen).await?;
+    let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
+    let c = sqlx::query!(
+        r#"select count(*) as "total!",
+                  count(*) filter (where $3::timestamptz is null or a.created_at > $3) as "unseen!"
+           from audit_log a
+           where a.branch_id = $1 and a.action = any($2)"#,
+        user.branch_id,
+        &watched,
+        seen
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Json(NotificationsOut {
+        unseen: c.unseen,
+        total: c.total,
+        items,
+    }))
 }
 
 /// Последние важные события филиала: для экрана и для вопросов боту (SPEC-21).
@@ -781,17 +815,29 @@ pub(crate) async fn latest(
     limit: i64,
     seen: Option<DateTime<Utc>>,
 ) -> AppResult<Vec<NotificationOut>> {
+    page(conn, branch_id, limit, 0, seen).await
+}
+
+/// Страница событий, новые сверху (SPEC-28 §2).
+async fn page(
+    conn: &mut sqlx::PgConnection,
+    branch_id: Uuid,
+    limit: i64,
+    offset: i64,
+    seen: Option<DateTime<Utc>>,
+) -> AppResult<Vec<NotificationOut>> {
     let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as "user_name?"
            from audit_log a
            left join users u on u.id = a.user_id
            where a.branch_id = $1 and a.action = any($2)
-           order by a.created_at desc
-           limit $3"#,
+           order by a.created_at desc, a.id desc
+           limit $3 offset $4"#,
         branch_id,
         &watched,
-        limit
+        limit,
+        offset
     )
     .fetch_all(&mut *conn)
     .await?;

@@ -1,5 +1,6 @@
 // Экран «Счёт» (SPEC-27 §6): безнал отдельно — поступления картой и переводом, комиссия банка,
 // списания и все движения кассы «Счёт» за период. Только владелец; суммы считает сервер.
+import { Pager, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
@@ -22,6 +23,8 @@ export default function Bank() {
   const [range, today, setRange] = useRangeParam()
   const b = useLoad(() => get<BankReport>(`/cash/bank${qs({ from: range.from, to: range.to })}`), [range.from, range.to])
   const data = b.data
+  // Движения за период приходят вместе с итогами; страницы — здесь, смена периода — первая страница.
+  const moves = usePager(data?.movements ?? [], 'bank.movements', `${range.from}:${range.to}`)
   const subtitle = range.from === range.to ? `за ${formatDate(range.from)}` : `с ${formatDate(range.from)} по ${formatDate(range.to)}`
 
   return (
@@ -108,7 +111,7 @@ export default function Bank() {
               <Empty>За период движений нет</Empty>
             ) : (
               <Table head={['Когда', 'Что', 'Комментарий', 'Кто', 'Сумма']}>
-                {data.movements.map((m) => (
+                {moves.shown.map((m) => (
                   <tr key={m.id} data-testid="bank-movement">
                     <td className="whitespace-nowrap px-2 py-2 text-slate-500">{formatDateTime(m.created_at)}</td>
                     <td className="px-2 py-2">{MOVEMENT_LABELS[m.kind] ?? m.kind}</td>
@@ -121,6 +124,7 @@ export default function Bank() {
                 ))}
               </Table>
             )}
+            <Pager page={moves.page} size={moves.size} total={moves.total} onPage={moves.setPage} onSize={moves.setSize} label="Страницы движений" />
           </Card>
         </div>
       ) : null}
