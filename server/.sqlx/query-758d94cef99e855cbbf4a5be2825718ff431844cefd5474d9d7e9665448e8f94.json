@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select case $1\n                 when 'expense' then (select number from expenses where id = $2)::bigint\n                 when 'sale' then (select number from sales where id = $2)::bigint\n                 when 'receipt' then (select number from receipts where id = $2)::bigint\n                 when 'payout' then (select number from payouts where id = $2)::bigint\n                 when 'transfer' then (select number from cash_transfers where id = $2)::bigint\n                 when 'shift' then (select number from shifts where id = $2)::bigint\n                 when 'battery_intake' then (select number from battery_intakes where id = $2)::bigint\n                 when 'defect' then (select number from defects where id = $2)::bigint\n               end as \"n?\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "758d94cef99e855cbbf4a5be2825718ff431844cefd5474d9d7e9665448e8f94"
+}

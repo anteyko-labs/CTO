@@ -639,13 +639,14 @@ async fn pay_supplier(
             // Касса с наличными — только в открытой смене: иначе расход не с чем сверить (SPEC-10).
             crate::api::cash::require_open_shift(conn, branch_id, account_id).await?;
             let acc = sqlx::query!(
-                "select name, balance_tyiyn from cash_accounts where id = $1 and branch_id = $2 for update",
+                "select name, balance_tyiyn, allow_negative from cash_accounts where id = $1 and branch_id = $2 for update",
                 account_id,
                 branch_id
             )
             .fetch_one(&mut *conn)
             .await?;
-            if acc.balance_tyiyn < total {
+            // Минус по факту разрешён признаком счёта (ADR-077): тогда касса уходит ниже нуля.
+            if acc.balance_tyiyn < total && !acc.allow_negative {
                 return Err(AppError::Conflict(format!(
                     "в «{}» не хватает денег на оплату накладной: оформите её в долг или выберите другую кассу",
                     acc.name

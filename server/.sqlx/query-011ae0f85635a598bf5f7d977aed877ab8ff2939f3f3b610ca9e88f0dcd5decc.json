@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update cash_accounts set default_transfer = false where branch_id = $1 and default_transfer",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "011ae0f85635a598bf5f7d977aed877ab8ff2939f3f3b610ca9e88f0dcd5decc"
+}

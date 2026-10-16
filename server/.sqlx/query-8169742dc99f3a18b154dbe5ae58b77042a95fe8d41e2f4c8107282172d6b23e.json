@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name, kind, owner_only, is_default, default_card, default_transfer, allow_negative,\n                  active, balance_tyiyn,\n                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as \"fee_rate_bp!\"\n           from cash_accounts\n           where branch_id = $1 and (active or $3) and (not owner_only or $2)\n           order by active desc, kind = 'bank', is_default desc, default_card desc,\n                    default_transfer desc, kind, name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "default_card",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "default_transfer",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "allow_negative",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "fee_rate_bp!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "8169742dc99f3a18b154dbe5ae58b77042a95fe8d41e2f4c8107282172d6b23e"
+}

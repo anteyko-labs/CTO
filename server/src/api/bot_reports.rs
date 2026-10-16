@@ -632,7 +632,7 @@ pub async fn money(
             Ok(lines.join("\n"))
         }
         "bank" => {
-            // Безналичный счёт по названию; без него — основной (ADR-076).
+            // Безналичный счёт по названию; без него — по умолчанию для карты (ADR-077).
             let id = match account {
                 None => None,
                 Some(q) => {
@@ -723,15 +723,28 @@ async fn accounts_text(conn: &mut PgConnection, user: &CurrentUser) -> AppResult
         } else {
             "наличный"
         }];
-        if a.is_default {
-            marks.push(if a.kind == "bank" {
-                "основной"
-            } else {
-                "касса смены"
-            });
+        if a.is_default && a.kind == "register" {
+            marks.push("касса смены");
         }
-        if a.allow_negative {
-            marks.push("минус разрешён");
+        // Счета по умолчанию для карты и перевода и ставка банка (ADR-077).
+        if a.default_card {
+            marks.push("по умолчанию для карты");
+        }
+        if a.default_transfer {
+            marks.push("по умолчанию для перевода");
+        }
+        let fee = (a.kind == "bank" && a.fee_rate_bp > 0).then(|| {
+            format!(
+                "комиссия {},{:02} %",
+                a.fee_rate_bp / 100,
+                a.fee_rate_bp % 100
+            )
+        });
+        if let Some(f) = &fee {
+            marks.push(f);
+        }
+        if !a.allow_negative {
+            marks.push("минус не разрешён");
         }
         if a.owner_only {
             marks.push("только владелец");

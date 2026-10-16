@@ -37,7 +37,7 @@ struct Period {
 struct BankQuery {
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
-    /// Безналичный счёт; без него — основной (ADR-076).
+    /// Безналичный счёт; без него — счёт по умолчанию для карты (ADR-076, ADR-077).
     account_id: Option<Uuid>,
 }
 
@@ -175,8 +175,8 @@ pub async fn bank_split(
              and ($3::date is null or s.business_date <= $3)
              and ($4::timestamptz is null or s.created_at >= $4)
              and ($4::timestamptz is null or s.created_at <= coalesce($5, now()))
-           group by p.account_id, a.name, a.is_default
-           order by a.is_default desc, a.name"#,
+           group by p.account_id, a.name, a.default_card
+           order by a.default_card desc, a.name"#,
         branch_id,
         days.map(|d| d.0),
         days.map(|d| d.1),
@@ -276,7 +276,8 @@ pub async fn flows_of(
                              where m.account_id = a.id
                                and m.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek'
                                and m.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek'))
-           order by a.active desc, a.kind = 'bank', a.is_default desc, a.kind, a.name"#,
+           order by a.active desc, a.kind = 'bank', a.is_default desc, a.default_card desc,
+                    a.default_transfer desc, a.kind, a.name"#,
         user.branch_id,
         user.is_owner(),
         from,
@@ -405,7 +406,8 @@ pub(crate) async fn bank_data(
     }
     let (from, to) = resolve_period(&mut *conn, from, to).await?;
     let branch_id = user.branch_id;
-    // Любой безналичный счёт, и архивный — его история остаётся (ADR-076); без выбора — основной.
+    // Любой безналичный счёт, и архивный — его история остаётся (ADR-076); без выбора — счёт по
+    // умолчанию для карты (ADR-077).
     let account_id = match account {
         Some(id) => {
             let kind = sqlx::query_scalar!(
@@ -421,7 +423,7 @@ pub(crate) async fn bank_data(
             }
             id
         }
-        None => crate::api::cash::bank_account(&mut *conn, branch_id)
+        None => crate::api::cash::bank_account(&mut *conn, branch_id, "card")
             .await?
             .ok_or_else(|| invalid("нет безналичного счёта"))?,
     };

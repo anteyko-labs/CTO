@@ -23,7 +23,7 @@ import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } 
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
-import { bankChoices } from '../lib/accounts'
+import { bankChoices, defaultBankId, type NoncashMethod } from '../lib/accounts'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
@@ -45,19 +45,19 @@ interface CartLine {
 type PayMode = PaymentMethod | 'mixed'
 
 const CASHIER_KEY = 'avtodom.cashier_id'
-/** Банк для карты и перевода, выбранный на этом устройстве (ADR-076). */
-const BANK_KEY = 'avtodom.bank_id'
+type BankChoice = Pick<CashAccount, 'id' | 'name' | 'kind' | 'default_card' | 'default_transfer'>
 
-type BankChoice = Pick<CashAccount, 'id' | 'name' | 'is_default'>
-
-/** Безналичные счета: с сервера, без связи — из снимка кассы. */
+/** Безналичные счета с отметками «по умолчанию для карты / перевода» (ADR-077): с сервера, без
+ * связи — из снимка кассы. */
 async function loadBanks(): Promise<BankChoice[]> {
   try {
     return bankChoices(await get<CashAccount[]>('/cash/accounts'))
   } catch {
-    return (await readSnapshot())?.bank_accounts ?? []
+    return ((await readSnapshot())?.bank_accounts ?? []).map((b) => ({ ...b, kind: 'bank' as const }))
   }
 }
+
+const NO_BANK_PICK: Record<NoncashMethod, string> = { card: '', transfer: '' }
 
 function remembered(key: string): string {
   try {
@@ -189,11 +189,13 @@ const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker
 
 export default function Cashier() {
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
-  // Куда идут карта и QR: выбор кассира, по умолчанию основной счёт (ADR-076).
+  // Куда идут карта и QR: у каждого способа свой счёт по умолчанию, кассир может выбрать другой
+  // банк для этого чека (ADR-076, ADR-077).
   const banks = useLoad(loadBanks, [])
-  const [bankPick, setBankPick] = useState(() => remembered(BANK_KEY))
+  const [bankPick, setBankPick] = useState(NO_BANK_PICK)
   const bankList = banks.data ?? []
-  const bankId = bankList.some((b) => b.id === bankPick) ? bankPick : (bankList[0]?.id ?? '')
+  const bankFor = (method: NoncashMethod): string =>
+    bankList.some((b) => b.id === bankPick[method]) ? bankPick[method] : defaultBankId(bankList, method)
   // Плашка смены: продавать можно и без неё, но деньги потом не с чем сверить (SPEC-05).
   // Без связи остаётся последняя известная смена: касса не начнёт спрашивать кассира посреди смены.
   const lastShift = useRef<Shift | null | undefined>(undefined)
@@ -323,9 +325,9 @@ export default function Cashier() {
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
 
-  // Карта и QR — с выбранным банком; без выбора сервер возьмёт основной счёт.
+  // Карта и QR — с выбранным банком; без выбора сервер возьмёт счёт по умолчанию для способа.
   const withBank = (method: PaymentMethod, amount_tyiyn: number): { method: PaymentMethod; amount_tyiyn: number; account_id?: string } =>
-    (method === 'card' || method === 'transfer') && bankId ? { method, amount_tyiyn, account_id: bankId } : { method, amount_tyiyn }
+    (method === 'card' || method === 'transfer') && bankFor(method) ? { method, amount_tyiyn, account_id: bankFor(method) } : { method, amount_tyiyn }
   const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] | null => {
     if (payMode !== 'mixed') return due > 0 ? [withBank(payMode, due)] : []
     const list: { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] = []
@@ -337,7 +339,8 @@ export default function Cashier() {
     }
     return list
   })()
-  const noncashInCheck = (moneyPayments ?? []).some((p) => p.method === 'card' || p.method === 'transfer')
+  // Способы безнала в чеке: для каждого — строка выбора банка.
+  const noncashMethods = (['card', 'transfer'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m))
   const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number; account_id?: string }[] | null = moneyPayments && [
     ...moneyPayments,
     ...(bonusAmount > 0 ? [{ method: 'bonus' as const, amount_tyiyn: bonusAmount }] : []),
@@ -491,6 +494,7 @@ export default function Cashier() {
     setBonus(null)
     setBatteryPay(null)
     setPayMode('cash')
+    setBankPick(NO_BANK_PICK)
     setMasterId('')
     setSaleType('takeaway')
     setParty(null)
@@ -1338,22 +1342,23 @@ export default function Cashier() {
               <ErrorBox error={innSave.error} />
             </div>
           )}
-          {bankList.length > 1 && (payMode === 'card' || payMode === 'transfer' || (payMode === 'mixed' && noncashInCheck)) && (
-            <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="pay-bank">
-              <span className="text-slate-600">Банк:</span>
-              {bankList.map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  aria-pressed={bankId === b.id}
-                  className={`min-h-9 rounded-md border px-3 py-1 ${bankId === b.id ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:border-sky-500'}`}
-                  onClick={() => {
-                    setBankPick(b.id)
-                    remember(BANK_KEY, b.id)
-                  }}
-                >
-                  {b.name}
-                </button>
+          {bankList.length > 1 && noncashMethods.length > 0 && (
+            <div className="flex flex-col gap-2 text-sm" data-testid="pay-bank">
+              {noncashMethods.map((m) => (
+                <div key={m} className="flex flex-wrap items-center gap-2" data-testid={`pay-bank-${m}`}>
+                  <span className="text-slate-600">{noncashMethods.length > 1 ? `Банк (${PAYMENT_LABELS[m]}):` : 'Банк:'}</span>
+                  {bankChoices(bankList, m).map((b) => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      aria-pressed={bankFor(m) === b.id}
+                      className={`min-h-9 rounded-md border px-3 py-1 ${bankFor(m) === b.id ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:border-sky-500'}`}
+                      onClick={() => setBankPick({ ...bankPick, [m]: b.id })}
+                    >
+                      {b.name}
+                    </button>
+                  ))}
+                </div>
               ))}
             </div>
           )}

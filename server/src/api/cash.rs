@@ -50,8 +50,17 @@ pub struct AccountOut {
     /// `register` — касса смены, `safe`, `other` — наличные без смены, `bank` — безналичный счёт.
     pub kind: String,
     pub owner_only: bool,
-    /// Основная касса смены (`register`) или основной безналичный счёт (`bank`).
+    /// Основная касса смены (`register`); у безналичных счетов — всегда `false` (ADR-077).
     pub is_default: bool,
+    /// Безналичный счёт по умолчанию для оплаты картой (ADR-077).
+    #[serde(default)]
+    pub default_card: bool,
+    /// Безналичный счёт по умолчанию для оплаты переводом (ADR-077).
+    #[serde(default)]
+    pub default_transfer: bool,
+    /// Ставка комиссии банка на сегодня, сотые доли процента (ADR-077); у наличных — 0.
+    #[serde(default)]
+    pub fee_rate_bp: i32,
     /// Можно уйти ниже нуля (ADR-076).
     #[serde(default)]
     pub allow_negative: bool,
@@ -99,10 +108,13 @@ pub(crate) async fn accounts_list(
     // Сейф владельца администратору не показываем, перевести в него он может (SPEC-05).
     let rows = sqlx::query_as!(
         AccountOut,
-        r#"select id, name, kind, owner_only, is_default, allow_negative, active, balance_tyiyn
+        r#"select id, name, kind, owner_only, is_default, default_card, default_transfer, allow_negative,
+                  active, balance_tyiyn,
+                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as "fee_rate_bp!"
            from cash_accounts
            where branch_id = $1 and (active or $3) and (not owner_only or $2)
-           order by active desc, kind = 'bank', is_default desc, kind, name"#,
+           order by active desc, kind = 'bank', is_default desc, default_card desc,
+                    default_transfer desc, kind, name"#,
         user.branch_id,
         user.is_owner(),
         archived
@@ -113,7 +125,8 @@ pub(crate) async fn accounts_list(
 }
 
 /// Новый филиал получает свои кассы при первом обращении: касса, счёт и два сейфа (ADR-037).
-/// «Касса» — основная касса смены, «Счёт» — основной безналичный счёт (ADR-076).
+/// «Касса» — касса смены, «Счёт» — счёт по умолчанию для карты и перевода со ставкой 0,5 %
+/// (ADR-022, ADR-077).
 pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
     let have = sqlx::query_scalar!(
         r#"select count(*) as "n!" from cash_accounts where branch_id = $1"#,
@@ -126,25 +139,28 @@ pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
     }
     for (name, kind, owner_only, is_default) in [
         ("Касса", "register", false, true),
-        ("Счёт", "bank", false, true),
+        ("Счёт", "bank", false, false),
         ("Сейф магазина", "safe", false, false),
         ("Сейф владельца", "safe", true, false),
     ] {
+        let bank = kind == "bank";
         sqlx::query!(
-            r#"insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default)
-               values ($1, $2, $3, $4, $5, $6)
+            r#"insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default,
+                                          default_card, default_transfer)
+               values ($1, $2, $3, $4, $5, $6, $7, $7)
                on conflict do nothing"#,
             new_id(),
             branch_id,
             name,
             kind,
             owner_only,
-            is_default
+            is_default,
+            bank
         )
         .execute(&mut *conn)
         .await?;
     }
-    crate::api::fees::ensure_fees(conn, branch_id).await
+    crate::api::fees::ensure_default_fee(conn, branch_id).await
 }
 
 /// Касса по умолчанию: в неё идут наличные чека, к ней привязана смена.
@@ -161,29 +177,39 @@ pub async fn default_account(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
     .ok_or_else(|| AppError::Internal("нет кассы по умолчанию".into()))
 }
 
-/// Основной безналичный счёт: туда по умолчанию приходят карта и перевод (ADR-024, ADR-076).
-pub async fn bank_account(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Option<Uuid>> {
+/// Безналичный счёт по умолчанию для способа оплаты: карта — отмеченный «по умолчанию для
+/// карты», перевод — «по умолчанию для перевода» (ADR-077). Без отметки — первый действующий.
+pub async fn bank_account(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    method: &str,
+) -> AppResult<Option<Uuid>> {
     ensure_accounts(conn, branch_id).await?;
+    let transfer = method == "transfer";
     Ok(sqlx::query_scalar!(
         r#"select id from cash_accounts where branch_id = $1 and kind = 'bank' and active
-           order by is_default desc, created_at limit 1"#,
-        branch_id
+           order by (case when $2 then default_transfer else default_card end) desc,
+                    default_card desc, created_at limit 1"#,
+        branch_id,
+        transfer
     )
     .fetch_optional(&mut *conn)
     .await?)
 }
 
-/// Счёт оплаты картой или переводом (ADR-076): выбранный кассиром безналичный счёт или
-/// основной. Чек без сети уже состоялся: счёт, который за это время убрали в архив или которого
-/// нет, не отклоняет его — деньги ложатся на основной счёт, причина уходит владельцу.
+/// Счёт оплаты картой или переводом (ADR-076, ADR-077): выбранный кассиром безналичный счёт или
+/// счёт по умолчанию для этого способа. Чек без сети уже состоялся: счёт, который за это время
+/// убрали в архив или которого нет, не отклоняет его — деньги ложатся на счёт по умолчанию,
+/// причина уходит владельцу.
 pub async fn sale_bank_account(
     conn: &mut PgConnection,
     user: &CurrentUser,
+    method: &str,
     requested: Option<Uuid>,
     offline: bool,
     bypass: &mut Vec<String>,
 ) -> AppResult<Uuid> {
-    let default = bank_account(&mut *conn, user.branch_id)
+    let default = bank_account(&mut *conn, user.branch_id, method)
         .await?
         .ok_or_else(|| invalid("нет безналичного счёта: заведите его в «Обзоре счетов»"))?;
     let Some(id) = requested else {
@@ -271,7 +297,8 @@ pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) 
         .checked_add(e.amount)
         .ok_or_else(|| AppError::Validation("слишком большая сумма".into()))?;
     // Любой расход проверяется здесь, в одном месте: ниже нуля — только если у счёта это
-    // разрешено (ADR-076). Поступление не отклоняется, даже если остаток всё ещё меньше нуля.
+    // разрешено (ADR-076; по умолчанию разрешено у всех — ADR-077). Поступление не отклоняется,
+    // даже если остаток всё ещё меньше нуля.
     if next < 0 && e.amount < 0 && !acc.allow_negative {
         return Err(invalid(format!(
             "на счёте «{}» только {}",
@@ -280,6 +307,26 @@ pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) 
         )));
     }
     ops::check_balance(next)?;
+    // Счёт ушёл в минус — владельцу один раз на каждый переход через ноль (SPEC-13, ADR-077).
+    if balance >= 0 && next < 0 {
+        let doc = doc_label(&mut *conn, e.kind, e.doc_type, e.doc_id).await?;
+        ops::audit(
+            &mut *conn,
+            ctx,
+            "cash.negative",
+            "cash_account",
+            Some(e.account_id),
+            json!({
+                "account": acc.name,
+                "balance": next,
+                "amount": e.amount,
+                "doc": doc,
+                "doc_type": e.doc_type,
+                "doc_id": e.doc_id,
+            }),
+        )
+        .await?;
+    }
     let shift_id = open_shift_id(conn, ctx.user.branch_id, e.account_id).await?;
     sqlx::query!(
         r#"insert into cash_movements (id, branch_id, account_id, shift_id, kind, amount_tyiyn,
@@ -307,6 +354,55 @@ pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) 
     .execute(&mut *conn)
     .await?;
     Ok(next)
+}
+
+/// Документ движения словами для уведомления: «расход № 15», «чек № 42», «изъятие».
+async fn doc_label(
+    conn: &mut PgConnection,
+    kind: &str,
+    doc_type: &str,
+    doc_id: Option<Uuid>,
+) -> AppResult<String> {
+    let number = match doc_id {
+        None => None,
+        Some(id) => sqlx::query_scalar!(
+            r#"select case $1
+                 when 'expense' then (select number from expenses where id = $2)::bigint
+                 when 'sale' then (select number from sales where id = $2)::bigint
+                 when 'receipt' then (select number from receipts where id = $2)::bigint
+                 when 'payout' then (select number from payouts where id = $2)::bigint
+                 when 'transfer' then (select number from cash_transfers where id = $2)::bigint
+                 when 'shift' then (select number from shifts where id = $2)::bigint
+                 when 'battery_intake' then (select number from battery_intakes where id = $2)::bigint
+                 when 'defect' then (select number from defects where id = $2)::bigint
+               end as "n?""#,
+            doc_type,
+            id
+        )
+        .fetch_one(&mut *conn)
+        .await?,
+    };
+    let word = match (doc_type, kind) {
+        (_, "bank_fee") => "комиссия банка",
+        (_, "reversal") => "сторно",
+        ("expense", _) => "расход",
+        ("sale", "sale_return") => "возврат по чеку",
+        ("sale", _) => "чек",
+        ("receipt", _) => "оплата накладной",
+        ("payout", _) => "выплата",
+        ("transfer", _) => "перемещение",
+        ("shift", _) => "пересчёт смены",
+        ("battery_intake", _) => "приём аккумуляторов",
+        ("defect", _) => "возврат денег поставщику",
+        ("repayment", _) => "оплата долга",
+        (_, "cash_out") => "изъятие",
+        (_, "cash_in") => "внесение",
+        _ => "движение денег",
+    };
+    Ok(match number {
+        Some(n) => format!("{word} № {n}"),
+        None => word.to_string(),
+    })
 }
 
 /// Открытая смена кассы: последнее закрытие переоткрыто или закрытий нет.
@@ -1149,6 +1245,20 @@ async fn handover_shift(
     if close.done {
         return Err(AppError::Conflict("касса по этой смене уже сдана".into()));
     }
+    // В сейф перекладывают пересчитанные наличные: больше, чем лежит в кассе, не переложить —
+    // минус кассы (ADR-077) бывает только от проведённых операций, не от сдачи.
+    let in_till = sqlx::query_scalar!(
+        "select balance_tyiyn from cash_accounts where id = $1",
+        shift.account_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if req.amount_tyiyn > in_till.max(0) {
+        return Err(invalid(format!(
+            "в кассе только {}",
+            crate::domain::money::format_som(in_till.max(0))
+        )));
+    }
     let transfer_id = if req.amount_tyiyn > 0 {
         let comment = format!("сдача кассы, смена № {}", shift.number);
         let (tid, _) = transfer_tx(
@@ -1778,10 +1888,14 @@ pub struct AccountCreateReq {
     pub name: String,
     /// `bank` — безналичный, `safe` или `other` — наличный. Касса смены одна, новую не заводят.
     pub kind: String,
-    #[serde(default)]
+    /// Можно уйти ниже нуля: по умолчанию — да (ADR-077).
+    #[serde(default = "yes")]
     pub allow_negative: bool,
     #[serde(default)]
     pub owner_only: bool,
+    /// Ставка комиссии банка с сегодняшнего дня, сотые доли процента (только `bank`; нет — 0 %).
+    #[serde(default)]
+    pub fee_rate_bp: Option<i32>,
 }
 
 fn account_name(name: &str) -> AppResult<String> {
@@ -1835,37 +1949,55 @@ pub async fn create_account_tx(
         return Ok(done);
     }
     ensure_accounts(&mut *conn, ctx.user.branch_id).await?;
-    // Первый безналичный счёт филиала сразу становится основным.
-    let first_bank = req.kind == "bank"
-        && sqlx::query_scalar!(
+    if req.kind != "bank" && req.fee_rate_bp.is_some_and(|r| r != 0) {
+        return Err(invalid("комиссия банка — только у безналичного счёта"));
+    }
+    // Первый безналичный счёт филиала сразу становится счётом по умолчанию для карты и перевода.
+    let (for_card, for_transfer) = if req.kind == "bank" {
+        let d = sqlx::query!(
             r#"select not exists (select 1 from cash_accounts
-                                  where branch_id = $1 and kind = 'bank' and is_default) as "e!""#,
+                                  where branch_id = $1 and default_card) as "card!",
+                      not exists (select 1 from cash_accounts
+                                  where branch_id = $1 and default_transfer) as "transfer!""#,
             ctx.user.branch_id
         )
         .fetch_one(&mut *conn)
         .await?;
-    if first_bank && req.owner_only {
+        (d.card, d.transfer)
+    } else {
+        (false, false)
+    };
+    if (for_card || for_transfer) && req.owner_only {
         return Err(invalid(
-            "основной безналичный счёт видит администратор: «только владелец» для него нельзя",
+            "счёт по умолчанию для карты и перевода видит администратор: «только владелец» для него нельзя",
         ));
     }
     let id = new_id();
-    let out = sqlx::query_as!(
+    let mut out = sqlx::query_as!(
         AccountOut,
-        r#"insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default, allow_negative)
-           values ($1, $2, $3, $4, $5, $6, $7)
-           returning id, name, kind, owner_only, is_default, allow_negative, active, balance_tyiyn"#,
+        r#"insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default, allow_negative,
+                                      default_card, default_transfer)
+           values ($1, $2, $3, $4, $5, false, $6, $7, $8)
+           returning id, name, kind, owner_only, is_default, default_card, default_transfer, allow_negative,
+                  active, balance_tyiyn,
+                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as "fee_rate_bp!""#,
         id,
         ctx.user.branch_id,
         name,
         req.kind,
         req.owner_only,
-        first_bank,
-        req.allow_negative
+        req.allow_negative,
+        for_card,
+        for_transfer
     )
     .fetch_one(&mut *conn)
     .await
     .map_err(unique_name)?;
+    if let Some(rate) = req.fee_rate_bp.filter(|r| *r != 0) {
+        let today = crate::api::fees::today(&mut *conn).await?;
+        crate::api::fees::set_rate(&mut *conn, ctx, id, &out.name, rate, today).await?;
+        out.fee_rate_bp = rate;
+    }
     ops::audit(
         &mut *conn,
         ctx,
@@ -1877,7 +2009,9 @@ pub async fn create_account_tx(
             "kind": out.kind,
             "owner_only": out.owner_only,
             "allow_negative": out.allow_negative,
-            "is_default": out.is_default,
+            "default_card": out.default_card,
+            "default_transfer": out.default_transfer,
+            "fee_rate_bp": out.fee_rate_bp,
         }),
     )
     .await?;
@@ -1896,9 +2030,18 @@ pub struct AccountPatch {
     /// `false` — в архив (только с нулевым остатком), `true` — вернуть из архива.
     #[serde(default)]
     pub active: Option<bool>,
-    /// Сделать основным безналичным счётом (только `true`: прежний основной перестаёт им быть).
+    /// Сделать счётом по умолчанию для карты (только `true`: прежний перестаёт им быть).
     #[serde(default)]
-    pub is_default: Option<bool>,
+    pub default_card: Option<bool>,
+    /// Сделать счётом по умолчанию для перевода (только `true`: прежний перестаёт им быть).
+    #[serde(default)]
+    pub default_transfer: Option<bool>,
+    /// Новая ставка комиссии банка, сотые доли процента (только `bank`).
+    #[serde(default)]
+    pub fee_rate_bp: Option<i32>,
+    /// С какого дня действует новая ставка; без даты — с сегодняшнего.
+    #[serde(default)]
+    pub fee_from: Option<NaiveDate>,
 }
 
 async fn update_account(
@@ -1913,9 +2056,41 @@ async fn update_account(
     Ok(Json(out))
 }
 
-/// Правка счёта владельцем (SPEC-28 §5, ADR-076): название, «отрицательный баланс разрешён»,
-/// «только владелец», архив и основной безналичный счёт. Тип не меняется: у счёта уже есть
-/// история. Удаления нет — только архив. В журнал — «было / стало».
+/// Отметка «по умолчанию» для способа оплаты: `Some(true)` — сделать этим счётом, снять
+/// напрямую нельзя — только выбором другого (ADR-077).
+fn default_mark(
+    want: Option<bool>,
+    was: bool,
+    kind: &str,
+    active: bool,
+    owner_only: bool,
+    what: &str,
+) -> AppResult<bool> {
+    match want {
+        Some(true) if !was => {
+            if kind != "bank" {
+                return Err(invalid(format!(
+                    "по умолчанию для {what} — только безналичный счёт"
+                )));
+            }
+            if !active || owner_only {
+                return Err(invalid(format!(
+                    "счёт по умолчанию для {what} — действующий и не «только владелец»"
+                )));
+            }
+            Ok(true)
+        }
+        Some(false) if was => Err(invalid(format!(
+            "счёт по умолчанию для {what} меняется выбором другого счёта"
+        ))),
+        _ => Ok(false),
+    }
+}
+
+/// Правка счёта владельцем (SPEC-28 §5, ADR-076, ADR-077): название, «отрицательный баланс
+/// разрешён», «только владелец», архив, счёт по умолчанию для карты и для перевода, ставка
+/// комиссии банка. Тип не меняется: у счёта уже есть история. Удаления нет — только архив.
+/// В журнал — «было / стало».
 pub async fn update_account_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -1926,10 +2101,12 @@ pub async fn update_account_tx(
         return Err(AppError::Forbidden);
     }
     let branch_id = ctx.user.branch_id;
-    // Под блокировкой: остаток для архива и основной счёт не меняются, пока правим.
+    // Под блокировкой: остаток для архива и отметки по умолчанию не меняются, пока правим.
     let before = sqlx::query_as!(
         AccountOut,
-        r#"select id, name, kind, owner_only, is_default, allow_negative, active, balance_tyiyn
+        r#"select id, name, kind, owner_only, is_default, default_card, default_transfer, allow_negative,
+                  active, balance_tyiyn,
+                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as "fee_rate_bp!"
            from cash_accounts where id = $1 and branch_id = $2 for update"#,
         id,
         branch_id
@@ -1945,23 +2122,33 @@ pub async fn update_account_tx(
     let owner_only = req.owner_only.unwrap_or(before.owner_only);
     let active = req.active.unwrap_or(before.active);
     let till = before.kind == "register" && before.is_default;
-    let main_bank = before.kind == "bank" && before.is_default;
-    // Касса смены: наличных в ящике не бывает меньше нуля, пересчёт сверяет её с фактом.
-    if till && allow_negative {
+    let make_card = default_mark(
+        req.default_card,
+        before.default_card,
+        &before.kind,
+        active,
+        owner_only,
+        "карты",
+    )?;
+    let make_transfer = default_mark(
+        req.default_transfer,
+        before.default_transfer,
+        &before.kind,
+        active,
+        owner_only,
+        "перевода",
+    )?;
+    let pay_default = before.default_card || before.default_transfer;
+    if (till || pay_default) && owner_only {
         return Err(invalid(
-            "в кассе смены наличных не может быть меньше нуля: отрицательный остаток для неё не разрешается",
+            "с кассой смены и счетами по умолчанию для карты и перевода работает администратор: «только владелец» для них нельзя",
         ));
     }
-    if (till || main_bank) && owner_only {
-        return Err(invalid(
-            "с основной кассой и основным безналичным счётом работает администратор: «только владелец» для них нельзя",
-        ));
-    }
-    if (till || main_bank) && !active {
+    if (till || pay_default) && !active {
         return Err(invalid(if till {
             "кассу смены в архив не убрать"
         } else {
-            "основной безналичный счёт в архив не убрать: сначала сделайте основным другой"
+            "счёт по умолчанию для карты или перевода в архив не убрать: сначала отметьте другой"
         }));
     }
     if !active && before.active && before.balance_tyiyn != 0 {
@@ -1971,59 +2158,68 @@ pub async fn update_account_tx(
             crate::domain::money::format_som(before.balance_tyiyn)
         )));
     }
-    let mut make_default = false;
-    match req.is_default {
-        Some(true) if !before.is_default => {
-            if before.kind != "bank" {
-                return Err(invalid(
-                    "основным можно сделать только безналичный счёт: касса смены одна",
-                ));
-            }
-            if !active || owner_only {
-                return Err(invalid(
-                    "основной безналичный счёт — действующий и не «только владелец»",
-                ));
-            }
-            make_default = true;
-        }
-        Some(false) if before.is_default => {
-            return Err(invalid("основной счёт меняется выбором другого основного"));
-        }
-        _ => {}
+    if req.fee_rate_bp.is_some() && before.kind != "bank" {
+        return Err(invalid("комиссия банка — только у безналичного счёта"));
     }
-    if make_default {
+    if make_card {
         sqlx::query!(
-            "update cash_accounts set is_default = false where branch_id = $1 and kind = 'bank' and is_default",
+            "update cash_accounts set default_card = false where branch_id = $1 and default_card",
             branch_id
         )
         .execute(&mut *conn)
         .await?;
     }
-    let out = sqlx::query_as!(
-        AccountOut,
+    if make_transfer {
+        sqlx::query!(
+            "update cash_accounts set default_transfer = false where branch_id = $1 and default_transfer",
+            branch_id
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query!(
         r#"update cash_accounts
            set name = $3, allow_negative = $4, owner_only = $5, active = $6,
-               is_default = is_default or $7
-           where id = $1 and branch_id = $2
-           returning id, name, kind, owner_only, is_default, allow_negative, active, balance_tyiyn"#,
+               default_card = default_card or $7, default_transfer = default_transfer or $8
+           where id = $1 and branch_id = $2"#,
         id,
         branch_id,
         name,
         allow_negative,
         owner_only,
         active,
-        make_default
+        make_card,
+        make_transfer
     )
-    .fetch_one(&mut *conn)
+    .execute(&mut *conn)
     .await
     .map_err(unique_name)?;
+    // Ставка комиссии — своя история с датой начала (SPEC-08): прошлые дни сохраняют свою.
+    if let Some(rate) = req.fee_rate_bp {
+        let from = match req.fee_from {
+            Some(d) => d,
+            None => crate::api::fees::today(&mut *conn).await?,
+        };
+        crate::api::fees::set_rate(&mut *conn, ctx, id, &name, rate, from).await?;
+    }
+    let out = sqlx::query_as!(
+        AccountOut,
+        r#"select id, name, kind, owner_only, is_default, default_card, default_transfer, allow_negative,
+                  active, balance_tyiyn,
+                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as "fee_rate_bp!"
+           from cash_accounts where id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let view = |a: &AccountOut| {
         json!({
             "name": a.name,
             "allow_negative": a.allow_negative,
             "owner_only": a.owner_only,
             "active": a.active,
-            "is_default": a.is_default,
+            "default_card": a.default_card,
+            "default_transfer": a.default_transfer,
         })
     };
     let changes = ops::changes(&view(&before), &view(&out));

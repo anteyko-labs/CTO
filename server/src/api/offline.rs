@@ -74,12 +74,14 @@ struct SnapEmployee {
     is_master: bool,
 }
 
-/// Безналичный счёт для выбора на кассе без сети (ADR-076).
+/// Безналичный счёт для выбора на кассе без сети (ADR-076) с отметками «по умолчанию для
+/// карты» и «по умолчанию для перевода» (ADR-077).
 #[derive(Serialize)]
 struct SnapBank {
     id: Uuid,
     name: String,
-    is_default: bool,
+    default_card: bool,
+    default_transfer: bool,
 }
 
 #[derive(Serialize)]
@@ -146,9 +148,9 @@ async fn snapshot(
     crate::api::cash::ensure_accounts(&mut conn, user.branch_id).await?;
     let bank_accounts = sqlx::query_as!(
         SnapBank,
-        r#"select id, name, is_default from cash_accounts
+        r#"select id, name, default_card, default_transfer from cash_accounts
            where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)
-           order by is_default desc, name"#,
+           order by default_card desc, default_transfer desc, name"#,
         user.branch_id,
         user.is_owner()
     )

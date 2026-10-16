@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default, allow_negative)\n           values ($1, $2, $3, $4, $5, $6, $7)\n           returning id, name, kind, owner_only, is_default, allow_negative, active, balance_tyiyn",
+  "query": "insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default, allow_negative,\n                                      default_card, default_transfer)\n           values ($1, $2, $3, $4, $5, false, $6, $7, $8)\n           returning id, name, kind, owner_only, is_default, default_card, default_transfer, allow_negative,\n                  active, balance_tyiyn,\n                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as \"fee_rate_bp!\"",
   "describe": {
     "columns": [
       {
@@ -30,18 +30,33 @@
       },
       {
         "ordinal": 5,
-        "name": "allow_negative",
+        "name": "default_card",
         "type_info": "Bool"
       },
       {
         "ordinal": 6,
-        "name": "active",
+        "name": "default_transfer",
         "type_info": "Bool"
       },
       {
         "ordinal": 7,
+        "name": "allow_negative",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
         "name": "balance_tyiyn",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "fee_rate_bp!",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
@@ -50,6 +65,7 @@
         "Uuid",
         "Text",
         "Text",
+        "Bool",
         "Bool",
         "Bool",
         "Bool"
@@ -63,8 +79,11 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      false,
+      null
     ]
   },
-  "hash": "7e8f007dd9d43de0f24d6e1a12c853d93bb61c0d1ae131e63856efd470e0c459"
+  "hash": "15e6a229abedc4a36ddd52186c65cc5454b8e5d0f90709ffba0c75e464911b1d"
 }

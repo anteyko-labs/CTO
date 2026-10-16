@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select not exists (select 1 from cash_accounts\n                                  where branch_id = $1 and default_card) as \"card!\",\n                      not exists (select 1 from cash_accounts\n                                  where branch_id = $1 and default_transfer) as \"transfer!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "card!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "transfer!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "ab243e3c67389753d079487b79ab202608a9eddf2fbe979a56cfb5cf82335b91"
+}

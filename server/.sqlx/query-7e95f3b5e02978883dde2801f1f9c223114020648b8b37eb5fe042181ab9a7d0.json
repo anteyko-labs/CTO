@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select account_fee_on($1, $2) as \"r!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "r!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7e95f3b5e02978883dde2801f1f9c223114020648b8b37eb5fe042181ab9a7d0"
+}

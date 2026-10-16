@@ -23,7 +23,7 @@ function Tile({ label, value, hint, tone = '' }: { label: string; value: number;
 
 export default function Bank() {
   const [range, today, setRange] = useRangeParam()
-  // Любой безналичный счёт, и архивный; без выбора — основной (ADR-076).
+  // Любой безналичный счёт, и архивный; без выбора — счёт по умолчанию для карты (ADR-076, ADR-077).
   const [params] = useSearchParams()
   const [account, setAccount] = useState(() => params.get('account') ?? '')
   const banks = useLoad(() => get<CashAccount[]>('/cash/accounts?archived=true').then((all) => all.filter((a) => a.kind === 'bank')), [])

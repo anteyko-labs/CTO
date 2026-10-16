@@ -1,5 +1,6 @@
-// Свои счета (SPEC-28 §5, ADR-076): кассы и безналичные счета, итоги «Обзора счетов», выбор банка
-// для карты и перевода. Права и остатки проверяет сервер; здесь — только показ и выбор.
+// Свои счета (SPEC-28 §5, ADR-076, ADR-077): кассы и безналичные счета, итоги «Обзора счетов», выбор
+// банка для карты и перевода (свой счёт по умолчанию у каждого способа). Права и остатки проверяет
+// сервер; здесь — только показ и выбор.
 import type { CashAccount } from './types'
 
 /** Касса смены: к ней привязана смена, в неё идут наличные чеков. Одна на филиал. */
@@ -16,10 +17,25 @@ export function accountType(a: Pick<CashAccount, 'kind'>): 'Наличный' | 
   return isBank(a) ? 'Безналичный' : 'Наличный'
 }
 
-/** Пометка рядом с названием: касса смены, основной безналичный, сейф. */
-export function accountNote(a: Pick<CashAccount, 'kind' | 'is_default'>): string {
+/** Способ безналичной оплаты, у которого свой счёт по умолчанию (ADR-077). */
+export type NoncashMethod = 'card' | 'transfer'
+
+type DefaultMarks = { default_card?: boolean; default_transfer?: boolean }
+
+/** Счёт по умолчанию для способа оплаты. */
+export function isDefaultFor(a: DefaultMarks, method: NoncashMethod): boolean {
+  return Boolean(method === 'card' ? a.default_card : a.default_transfer)
+}
+
+/** Пометка рядом с названием: касса смены, «по умолчанию для карты / перевода», сейф. */
+export function accountNote(a: Pick<CashAccount, 'kind' | 'is_default'> & DefaultMarks): string {
   if (isTill(a)) return 'касса смены'
-  if (isBank(a) && a.is_default) return 'основной'
+  if (isBank(a)) {
+    if (a.default_card && a.default_transfer) return 'по умолчанию для карты и перевода'
+    if (a.default_card) return 'по умолчанию для карты'
+    if (a.default_transfer) return 'по умолчанию для перевода'
+    return ''
+  }
   if (a.kind === 'safe') return 'сейф'
   return ''
 }
@@ -36,14 +52,22 @@ export function accountTotals(accounts: readonly CashAccount[]): { cash: number;
   return { cash, bank, total: cash + bank }
 }
 
-/** Безналичные счета для выбора: действующие, основной первым. */
-export function bankChoices<T extends Pick<CashAccount, 'id' | 'kind' | 'is_default'> & { active?: boolean }>(accounts: readonly T[]): T[] {
-  return accounts.filter((a) => isBank(a) && a.active !== false).sort((x, y) => Number(y.is_default) - Number(x.is_default))
+/** Безналичные счета для выбора: действующие; счёт по умолчанию для способа — первым. */
+export function bankChoices<T extends Pick<CashAccount, 'id' | 'kind'> & DefaultMarks & { active?: boolean }>(
+  accounts: readonly T[],
+  method: NoncashMethod = 'card',
+): T[] {
+  return accounts
+    .filter((a) => isBank(a) && a.active !== false)
+    .sort((x, y) => Number(isDefaultFor(y, method)) - Number(isDefaultFor(x, method)))
 }
 
-/** Основной безналичный счёт (или первый действующий). */
-export function defaultBankId(accounts: readonly (Pick<CashAccount, 'id' | 'kind' | 'is_default'> & { active?: boolean })[]): string {
-  return bankChoices(accounts)[0]?.id ?? ''
+/** Счёт по умолчанию для способа оплаты (или первый действующий); нет банков — ''. */
+export function defaultBankId(
+  accounts: readonly (Pick<CashAccount, 'id' | 'kind'> & DefaultMarks & { active?: boolean })[],
+  method: NoncashMethod = 'card',
+): string {
+  return bankChoices(accounts, method)[0]?.id ?? ''
 }
 
 /** Хватит ли на счёте денег на расход: с разрешённым минусом — всегда. */

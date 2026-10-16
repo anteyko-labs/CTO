@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into cash_account_fees (id, branch_id, account_id, rate_bp, active_from, user_id)\n           values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40f7495dab0f06c88eafd9401b0cf3deb0d2920b15e4b1ad1b51db73bf78ce79"
+}

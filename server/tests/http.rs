@@ -2627,10 +2627,28 @@ async fn paid_receipt_takes_money_from_chosen_register(pool: PgPool) {
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, _, _) = receipt(&admin, 1_000, Some("outside")).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    // В минус касса не уходит.
+    // Владелец запретил кассе минус (по умолчанию разрешён, ADR-077) — сверх остатка нельзя.
+    let negative = |on: bool| {
+        let app = app.clone();
+        let owner = owner.clone();
+        let uri = format!("/api/v1/cash/accounts/{till}");
+        async move {
+            call(
+                &app,
+                "PATCH",
+                &uri,
+                Some(&owner),
+                Some(json!({ "allow_negative": on })),
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(negative(false).await, StatusCode::OK);
     let (s, _, _) = receipt(&admin, 1_000_000, Some(&till)).await;
     assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(balance_of(&pool, &till).await, 400_000);
+    assert_eq!(negative(true).await, StatusCode::OK);
 
     // Владелец обязан выбрать источник; «из своих» кассы не трогает.
     let (s, _, _) = receipt(&owner, 1_000, None).await;
@@ -3655,16 +3673,17 @@ async fn bank_fee_rate_has_history_by_business_date(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    let uri = "/api/v1/settings/payment-fees";
+    // Ставка — у безналичного счёта (ADR-077): у «Счёта» прежние 0,5 %.
+    let (till, bank, _) = accounts_of(&app, &owner).await;
+    let uri = format!("/api/v1/cash/accounts/{bank}/fees");
     assert_eq!(
-        call(&app, "GET", uri, Some(&admin), None).await.0,
+        call(&app, "GET", &uri, Some(&admin), None).await.0,
         StatusCode::FORBIDDEN
     );
-    let (s, _, fees) = call(&app, "GET", uri, Some(&owner), None).await;
+    let (s, _, fees) = call(&app, "GET", &uri, Some(&owner), None).await;
     assert_eq!(s, StatusCode::OK, "{fees}");
-    let current = fees["current"].as_array().unwrap();
-    assert_eq!(current.len(), 2);
-    assert!(current.iter().all(|f| f["rate_bp"] == 50));
+    assert_eq!(fees["current_bp"], 50);
+    assert_eq!(fees["history"].as_array().unwrap().len(), 1);
     let today: String =
         sqlx::query_scalar("select ((now() at time zone 'Asia/Bishkek')::date)::text")
             .fetch_one(&pool)
@@ -3675,19 +3694,28 @@ async fn bank_fee_rate_has_history_by_business_date(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    let set = |who: &str, rate: i64, from: &str| {
+    let set = |who: &str, acc: &str, rate: i64, from: &str| {
         let app = app.clone();
         let who = who.to_string();
-        let body = json!({ "op_id": Uuid::now_v7(), "method": "card", "rate_bp": rate, "active_from": from });
-        async move { call(&app, "POST", uri, Some(&who), Some(body)).await }
+        let account = format!("/api/v1/cash/accounts/{acc}");
+        let body = json!({ "fee_rate_bp": rate, "fee_from": from });
+        async move { call(&app, "PATCH", &account, Some(&who), Some(body)).await }
     };
-    assert_eq!(set(&admin, 100, &today).await.0, StatusCode::FORBIDDEN);
     assert_eq!(
-        set(&owner, 10_001, &today).await.0,
+        set(&admin, &bank, 100, &today).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        set(&owner, &bank, 10_001, &today).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Комиссия — только у безналичного счёта.
+    assert_eq!(
+        set(&owner, &till, 100, &today).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     // Задним числом ставку не поставить: комиссия проведённых чеков не меняется (ADR-070).
-    let (s, _, err) = set(&owner, 100, &yesterday).await;
+    let (s, _, err) = set(&owner, &bank, 100, &yesterday).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(
         err["error"]["message"]
@@ -3697,30 +3725,26 @@ async fn bank_fee_rate_has_history_by_business_date(pool: PgPool) {
         "{err}"
     );
     // 1 % с сегодняшнего дня: прежняя ставка закрыта этим днём.
-    let (s, _, fees) = set(&owner, 100, &today).await;
-    assert_eq!(s, StatusCode::OK, "{fees}");
-    let card: Vec<&Value> = fees["history"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|f| f["method"] == "card")
-        .collect();
-    assert_eq!(card.len(), 2);
-    assert_eq!(card[0]["rate_bp"], 100);
-    assert_eq!(card[1]["active_to"], json!(today));
-    assert!(
-        fees["current"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| f["method"] == "card" && f["rate_bp"] == 100)
-    );
+    let (s, _, acc) = set(&owner, &bank, 100, &today).await;
+    assert_eq!(s, StatusCode::OK, "{acc}");
+    assert_eq!(acc["fee_rate_bp"], 100);
+    // Повтор той же правки историю не множит.
+    assert_eq!(set(&owner, &bank, 100, &today).await.0, StatusCode::OK);
+    let (_, _, fees) = call(&app, "GET", &uri, Some(&owner), None).await;
+    let history = fees["history"].as_array().unwrap();
+    assert_eq!(history.len(), 2, "{fees}");
+    assert_eq!(history[0]["rate_bp"], 100);
+    assert!(history[0]["user_name"].is_string(), "{fees}");
+    assert_eq!(history[1]["active_to"], json!(today));
+    assert_eq!(fees["current_bp"], 100);
     // Раньше действующей ставки новую не поставить: история только дописывается.
     assert_eq!(
-        set(&owner, 70, &yesterday).await.0,
+        set(&owner, &bank, 70, &yesterday).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    assert_eq!(actions(&pool, "settings.payment_fee").await.len(), 1);
+    let notes = actions(&pool, "settings.payment_fee").await;
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["account"], "Счёт");
 
     let sale = |offline: bool, client_time: Option<String>| {
         let app = app.clone();
@@ -6732,18 +6756,37 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::OK, "{e}");
     assert_eq!(balance_of(&pool, &cabinet).await, -15_000);
-    // Касса смены — по-прежнему не ниже нуля, и разрешить ей минус нельзя.
-    assert_eq!(
-        req(
+    // У кассы смены минус по факту разрешён по умолчанию (ADR-077); владелец может выключить.
+    let (_, _, accs) = req(&owner, "GET", "/api/v1/cash/accounts", None).await;
+    let till_row = accs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == json!(till))
+        .unwrap()
+        .clone();
+    assert_eq!(till_row["allow_negative"], true);
+    for on in [false, true] {
+        let (s, _, t) = req(
             &owner,
             "PATCH",
             &format!("/api/v1/cash/accounts/{till}"),
-            Some(json!({ "allow_negative": true }))
+            Some(json!({ "allow_negative": on })),
         )
-        .await
-        .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+        .await;
+        assert_eq!(s, StatusCode::OK, "{t}");
+        assert_eq!(t["allow_negative"], on);
+    }
+    // Новый счёт без признака — минус разрешён.
+    let (s, _, plain) = req(
+        &owner,
+        "POST",
+        "/api/v1/cash/accounts",
+        Some(json!({ "op_id": Uuid::now_v7(), "name": "Ящик", "kind": "other" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{plain}");
+    assert_eq!(plain["allow_negative"], true);
 
     // Архив — только с нулевым остатком; основной счёт и кассу смены в архив не убрать.
     let archive = |acc: &str| {
@@ -6788,17 +6831,20 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
     // Из архивного не платят.
     assert_eq!(out(&lead, 1).await.0, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // Правка названия — в журнал «было / стало»; основной безналичный счёт меняется выбором другого.
+    // Правка названия — в журнал «было / стало»; счёт по умолчанию для карты меняется выбором
+    // другого, для перевода остаётся прежний (ADR-077).
     let opt = optima["id"].as_str().unwrap().to_string();
     let (s, _, renamed) = req(
         &owner,
         "PATCH",
         &format!("/api/v1/cash/accounts/{opt}"),
-        Some(json!({ "name": "Оптима", "is_default": true })),
+        Some(json!({ "name": "Оптима", "default_card": true })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{renamed}");
-    assert_eq!(renamed["is_default"], true);
+    assert_eq!(renamed["default_card"], true);
+    assert_eq!(renamed["default_transfer"], false);
+    assert_eq!(renamed["is_default"], false);
     let (_, _, accs) = req(&owner, "GET", "/api/v1/cash/accounts", None).await;
     let old_bank = accs
         .as_array()
@@ -6807,7 +6853,20 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
         .find(|a| a["id"] == json!(bank))
         .unwrap()
         .clone();
-    assert_eq!(old_bank["is_default"], false);
+    assert_eq!(old_bank["default_card"], false);
+    assert_eq!(old_bank["default_transfer"], true);
+    // Отметку «по умолчанию» получает только безналичный счёт.
+    assert_eq!(
+        req(
+            &owner,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{cabinet}"),
+            Some(json!({ "default_transfer": true }))
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let audit: Value = sqlx::query_scalar(
         "select data from audit_log where action = 'cash.account_update' and entity_id = $1::uuid order by created_at desc limit 1",
     )
@@ -6817,8 +6876,8 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
     .unwrap();
     assert_eq!(audit["before"]["name"], "ОПТИМА БИЗНЕС");
     assert_eq!(audit["after"]["name"], "Оптима");
-    assert_eq!(audit["changes"]["is_default"]["new"], true);
-    // «Только владелец» основному счёту нельзя; снять «основной» напрямую — тоже.
+    assert_eq!(audit["changes"]["default_card"]["new"], true);
+    // «Только владелец» счёту по умолчанию нельзя; снять отметку напрямую — тоже.
     assert_eq!(
         req(
             &owner,
@@ -6835,12 +6894,14 @@ async fn own_accounts_created_edited_archived_with_negative_flag(pool: PgPool) {
             &owner,
             "PATCH",
             &format!("/api/v1/cash/accounts/{opt}"),
-            Some(json!({ "is_default": false }))
+            Some(json!({ "default_card": false }))
         )
         .await
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+    // Прежний счёт — по умолчанию для перевода: в архив не убрать.
+    assert_eq!(archive(&bank).await.0, StatusCode::UNPROCESSABLE_ENTITY);
     // Итоги истории за период сходятся с остатком: на конец = сумма движений.
     let (s, _, sum) = req(
         &owner,
@@ -6901,7 +6962,18 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
         )
     };
     let (_, _, optima) = new_bank("Оптима", false).await;
+    assert_eq!(optima["fee_rate_bp"], 0);
     let optima = optima["id"].as_str().unwrap().to_string();
+    // Новый банк — 0 %; ставку терминала владелец ставит в карточке счёта (ADR-077).
+    let (s, _, o) = req(
+        &owner,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{optima}"),
+        Some(json!({ "fee_rate_bp": 50 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+    assert_eq!(o["fee_rate_bp"], 50);
     let sale = |pays: Value, qty: i64| {
         json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
                 "lines": [{ "kind": "piece", "product_id": item, "qty": qty, "unit_price_tyiyn": 50_000 }],
@@ -6923,7 +6995,7 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
     assert_eq!(sold["payments"][0]["account_name"], "Оптима");
     assert_eq!(balance_of(&pool, &optima).await, 99_500);
     assert_eq!(balance_of(&pool, &bank).await, 0);
-    // Перевод без выбора — на основной «Счёт».
+    // Перевод без выбора — на счёт по умолчанию для перевода, «Счёт».
     let (s, _, _) = req(
         &admin,
         "POST",
@@ -7082,5 +7154,313 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(banks, vec!["Счёт", "Оптима"]);
+    balances_match_movements(&pool).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn expense_over_balance_goes_negative_with_one_notice(pool: PgPool) {
+    // Деньги уходят в минус, когда так было на деле (ADR-077): расход больше остатка кассы
+    // проводится, владельцу — одно уведомление на переход через ноль; признак выключен — 422.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let (till, _, _) = accounts_of(&app, &owner).await;
+    let (s, _, shift) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{shift}");
+    let cash_in = |amount: i64| {
+        let app = app.clone();
+        let admin = admin.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/cash/movements",
+                Some(&admin),
+                Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": amount, "comment": "размен" })),
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(cash_in(100_000).await, StatusCode::OK);
+    let (_, _, articles) = call(&app, "GET", "/api/v1/expense-articles", Some(&admin), None).await;
+    let household = articles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == json!("Хозтовары"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expense = |amount: i64| {
+        let app = app.clone();
+        let admin = admin.clone();
+        let body = json!({ "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": amount, "comment": "ремонт" });
+        async move { call(&app, "POST", "/api/v1/expenses", Some(&admin), Some(body)).await }
+    };
+    // В кассе 1 000 с, расход 5 000 с — проводится, касса −4 000 с.
+    let (s, _, exp) = expense(500_000).await;
+    assert_eq!(s, StatusCode::OK, "{exp}");
+    assert_eq!(balance_of(&pool, &till).await, -400_000);
+    let number: i64 = sqlx::query_scalar("select number from expenses where id = $1::uuid")
+        .bind(exp["id"].as_str().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    // Ещё расход ниже нуля — уведомление не повторяется.
+    assert_eq!(expense(10_000).await.0, StatusCode::OK);
+    assert_eq!(actions(&pool, "cash.negative").await.len(), 1);
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let titles: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["title"].as_str().unwrap())
+        .collect();
+    let want = format!("Счёт «Касса» ушёл в минус: −4 000 с (расход № {number})");
+    assert!(titles.contains(&want.as_str()), "{titles:?}");
+
+    // Закрытие смены с отрицательным «должно быть»: пересчитали 0 — излишек 4 100 с.
+    let sid = shift["id"].as_str().unwrap();
+    let (s, _, closed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/shifts/{sid}/close"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": 0, "comment": "расход из своих" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{closed}");
+    let close: (i64, i64, i64) = sqlx::query_as(
+        "select expected_tyiyn, counted_tyiyn, diff_tyiyn from shift_closes where shift_id = $1::uuid",
+    )
+    .bind(sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(close, (-410_000, 0, 410_000));
+    assert_eq!(balance_of(&pool, &till).await, 0);
+    // Сдать в сейф больше, чем лежит в кассе, нельзя.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/shifts/{sid}/handover"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": 1_000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Новая смена: снова в минус — новое уведомление (новый переход через ноль).
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(expense(1_000).await.0, StatusCode::OK);
+    assert_eq!(actions(&pool, "cash.negative").await.len(), 2);
+
+    // Владелец выключил минус у кассы — расход сверх остатка 422, касса не тронута.
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{till}"),
+        Some(&owner),
+        Some(json!({ "allow_negative": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, e) = expense(1_000).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert!(
+        e.to_string().contains("на счёте «Касса» только −10 с"),
+        "{e}"
+    );
+    assert_eq!(balance_of(&pool, &till).await, -1_000);
+    balances_match_movements(&pool).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bank_fee_per_account_and_default_bank_per_method(pool: PgPool) {
+    // Комиссия — по ставке счёта, куда пришли деньги; карта и перевод по умолчанию идут на свои
+    // счета, снимок кассы знает обе отметки, погашение долга — тоже (ADR-077).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let req = |cookie: &str, method: &str, uri: &str, body: Option<Value>| {
+        let app = app.clone();
+        let (cookie, method, uri) = (cookie.to_string(), method.to_string(), uri.to_string());
+        async move { call(&app, &method, &uri, Some(&cookie), body).await }
+    };
+    let (s, _, _) = req(
+        &owner,
+        "POST",
+        "/api/v1/receipts",
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
+                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 10_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, old_bank, _) = accounts_of(&app, &owner).await;
+    // «Оптима» — терминал с комиссией 1 % сразу при заведении, «Карта владельца» — 0 %.
+    let (s, _, optima) = req(
+        &owner,
+        "POST",
+        "/api/v1/cash/accounts",
+        Some(json!({ "op_id": Uuid::now_v7(), "name": "Оптима", "kind": "bank", "fee_rate_bp": 100 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{optima}");
+    assert_eq!(optima["fee_rate_bp"], 100);
+    assert_eq!(optima["default_card"], false);
+    let optima = optima["id"].as_str().unwrap().to_string();
+    let (_, _, card) = req(
+        &owner,
+        "POST",
+        "/api/v1/cash/accounts",
+        Some(json!({ "op_id": Uuid::now_v7(), "name": "Карта владельца", "kind": "bank" })),
+    )
+    .await;
+    assert_eq!(card["fee_rate_bp"], 0);
+    let owner_card = card["id"].as_str().unwrap().to_string();
+    for (acc, mark) in [(&optima, "default_card"), (&owner_card, "default_transfer")] {
+        let (s, _, a) = req(
+            &owner,
+            "PATCH",
+            &format!("/api/v1/cash/accounts/{acc}"),
+            Some(json!({ mark: true })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{a}");
+        assert_eq!(a[mark], true);
+    }
+    let sale = |pays: Value| {
+        json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+                "payments": pays })
+    };
+    // Картой без выбора — на «Оптиму» с её 1 %; переводом — на карту владельца без комиссии.
+    let (s, _, by_card) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(json!([{ "method": "card", "amount_tyiyn": 50_000 }]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{by_card}");
+    assert_eq!(by_card["payments"][0]["account_id"], json!(optima));
+    assert_eq!(balance_of(&pool, &optima).await, 49_500);
+    let (s, _, by_transfer) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(
+            json!([{ "method": "transfer", "amount_tyiyn": 50_000 }]),
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{by_transfer}");
+    assert_eq!(by_transfer["payments"][0]["account_id"], json!(owner_card));
+    assert_eq!(balance_of(&pool, &owner_card).await, 50_000);
+    // Карта на выбранный другой банк — по ставке того банка («Счёт», 0,5 %).
+    let (s, _, chosen) = req(
+        &admin,
+        "POST",
+        "/api/v1/sales",
+        Some(sale(
+            json!([{ "method": "card", "amount_tyiyn": 50_000, "account_id": old_bank }]),
+        )),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{chosen}");
+    assert_eq!(balance_of(&pool, &old_bank).await, 49_750);
+    let fees: Vec<(String, i64)> = sqlx::query_as(
+        "select a.name, p.fee_tyiyn from sale_payments p join cash_accounts a on a.id = p.account_id
+         order by p.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(fees.contains(&("Оптима".into(), 500)), "{fees:?}");
+    assert!(fees.contains(&("Карта владельца".into(), 0)), "{fees:?}");
+    assert!(fees.contains(&("Счёт".into(), 250)), "{fees:?}");
+
+    // Погашение долга переводом без выбора — на счёт по умолчанию для перевода, без комиссии;
+    // картой — на «Оптиму» с 1 %.
+    let (_, _, party) = req(
+        &owner,
+        "POST",
+        "/api/v1/parties",
+        Some(json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" })),
+    )
+    .await;
+    let pid = party["id"].as_str().unwrap().to_string();
+    let (s, _, _) = req(
+        &owner,
+        "POST",
+        "/api/v1/debts/adjust",
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 100_000, "comment": "из тетради" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    for method in ["transfer", "card"] {
+        let (s, _, r) = req(
+            &admin,
+            "POST",
+            "/api/v1/debts/repayments",
+            Some(json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 20_000, "method": method })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    assert_eq!(balance_of(&pool, &owner_card).await, 70_000);
+    assert_eq!(balance_of(&pool, &optima).await, 49_500 + 20_000 - 200);
+
+    // Снимок кассы без сети: обе отметки; без сети касса выбирает тот же счёт.
+    let (_, _, snap) = req(&admin, "GET", "/api/v1/offline/snapshot", None).await;
+    let banks = snap["bank_accounts"].as_array().unwrap();
+    let flag = |name: &str, key: &str| {
+        banks.iter().find(|b| b["name"] == name).unwrap()[key]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(flag("Оптима", "default_card") && !flag("Оптима", "default_transfer"));
+    assert!(
+        flag("Карта владельца", "default_transfer") && !flag("Карта владельца", "default_card")
+    );
+    assert!(!flag("Счёт", "default_card") && !flag("Счёт", "default_transfer"));
+    // Счёт по умолчанию в архив не убрать и «только владелец» не сделать.
+    for body in [json!({ "active": false }), json!({ "owner_only": true })] {
+        assert_eq!(
+            req(
+                &owner,
+                "PATCH",
+                &format!("/api/v1/cash/accounts/{owner_card}"),
+                Some(body)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    // В журнале — смена отметок и ставка «Оптимы» при заведении.
+    let fee_notes = actions(&pool, "settings.payment_fee").await;
+    assert_eq!(fee_notes.len(), 1);
+    assert_eq!(fee_notes[0]["account"], "Оптима");
     balances_match_movements(&pool).await;
 }

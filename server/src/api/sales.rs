@@ -72,7 +72,8 @@ pub struct PaymentReq {
     /// возврате вес не присылается: сервер берёт долю веса исходного чека.
     #[serde(default)]
     pub grams: Option<i64>,
-    /// Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076); без него — основной.
+    /// Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076); без него — счёт по
+    /// умолчанию для этого способа (ADR-077).
     /// У возврата не учитывается: деньги уходят со счёта исходной оплаты.
     #[serde(default)]
     pub account_id: Option<Uuid>,
@@ -604,16 +605,22 @@ async fn insert_payments(
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let register = cash::default_account(conn, branch_id).await?;
-    let default_bank = cash::bank_account(conn, branch_id).await?;
     let movement_kind = if sign > 0 { "sale" } else { "sale_return" };
     for p in payments {
         let amount = sign * p.amount_tyiyn;
-        let fee = match (p.method.as_str(), back.as_mut()) {
-            ("card" | "transfer", Some(b)) => -b.take(p.amount_tyiyn),
-            ("card" | "transfer", None) => {
-                let rate = crate::api::fees::rate_on(conn, branch_id, &p.method, on).await?;
-                div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0)
-            }
+        // Счёт выбран и проверен до проведения (ADR-076); без него — счёт по умолчанию для
+        // этого способа (ADR-077).
+        let bank = match p.method.as_str() {
+            "card" | "transfer" => match p.account_id {
+                Some(id) => Some(id),
+                None => cash::bank_account(conn, branch_id, &p.method).await?,
+            },
+            _ => None,
+        };
+        // Ставка — того счёта, куда легли деньги, в учётный день чека (ADR-077).
+        let fee = match (bank, back.as_mut()) {
+            (Some(_), Some(b)) => -b.take(p.amount_tyiyn),
+            (Some(bank_id), None) => crate::api::fees::fee_on(conn, bank_id, on, amount).await?,
             _ => 0,
         };
         match p.method.as_str() {
@@ -633,8 +640,8 @@ async fn insert_payments(
                 .await?;
             }
             "card" | "transfer" => {
-                // Счёт выбран и проверен до проведения (ADR-076); комиссия — на тот же счёт.
-                if let Some(bank_id) = p.account_id.or(default_bank) {
+                // Комиссия — на тот же счёт.
+                if let Some(bank_id) = bank {
                     let money = CashEntry {
                         account_id: bank_id,
                         kind: movement_kind,
@@ -681,11 +688,7 @@ async fn insert_payments(
         } else {
             None
         };
-        let account_id = if matches!(p.method.as_str(), "card" | "transfer") {
-            p.account_id.or(default_bank)
-        } else {
-            None
-        };
+        let account_id = bank;
         sqlx::query!(
             "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams, account_id) values ($1, $2, $3, $4, $5, $6, $7)",
             new_id(),
@@ -891,13 +894,21 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     }
     ops::check_amount(total)?;
     check_payments(&req.payments, total)?;
-    // Карта и перевод — на выбранный безналичный счёт или основной (ADR-076). Чек без сети со
-    // счётом, который за это время убрали в архив, ложится на основной, владелец узнает.
+    // Карта и перевод — на выбранный безналичный счёт или счёт по умолчанию для способа (ADR-076,
+    // ADR-077). Чек без сети со счётом, который за это время убрали в архив, ложится на счёт по
+    // умолчанию, владелец узнает.
     for p in req.payments.iter_mut() {
         p.account_id = if matches!(p.method.as_str(), "card" | "transfer") {
             Some(
-                cash::sale_bank_account(conn, &ctx.user, p.account_id, offline, &mut bypass)
-                    .await?,
+                cash::sale_bank_account(
+                    conn,
+                    &ctx.user,
+                    &p.method,
+                    p.account_id,
+                    offline,
+                    &mut bypass,
+                )
+                .await?,
             )
         } else {
             None
@@ -1352,7 +1363,7 @@ pub struct ReturnReq {
 /// Счёт возврата на карту или переводом (ADR-076): деньги уходят с того безналичного счёта,
 /// куда пришла исходная оплата этим способом (если счетов было несколько — с того, куда пришло
 /// больше), иначе — с любого счёта исходного безнала. Чек был оплачен не безналом — выбранный
-/// счёт или основной. Счёт исходной оплаты уже в архиве — основной.
+/// счёт или счёт по умолчанию для способа. Счёт исходной оплаты уже в архиве — по умолчанию.
 async fn refund_account(
     conn: &mut PgConnection,
     user: &CurrentUser,
@@ -1375,7 +1386,7 @@ async fn refund_account(
         Some(id) => Ok(id),
         None => {
             let mut ignored = Vec::new();
-            cash::sale_bank_account(conn, user, p.account_id, false, &mut ignored).await
+            cash::sale_bank_account(conn, user, &p.method, p.account_id, false, &mut ignored).await
         }
     }
 }

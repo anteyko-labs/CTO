@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, rate_bp, active_from from payment_method_fees\n           where branch_id = $1 and method = $2 and active_to is null",
+  "query": "select id, rate_bp, active_from from cash_account_fees\n           where account_id = $1 and active_to is null for update",
   "describe": {
     "columns": [
       {
@@ -21,8 +21,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -31,5 +30,5 @@
       false
     ]
   },
-  "hash": "544e3dea8ac7d6b64a569d3db50e8255271f7655ef7d4f768633ab2d9527ee20"
+  "hash": "d0841330b95fe8aaa43a368ea4e051cdf5b277283c6cd8a9c13cfe6f8d5e09c0"
 }

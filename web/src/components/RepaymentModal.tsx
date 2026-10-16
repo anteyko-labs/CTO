@@ -58,13 +58,14 @@ export function RepaymentModal({
   const owed = invoice ? invoice.left_tyiyn : Math.abs(party.balance_tyiyn)
   const [sum, setSum] = useState(owed > 0 ? somInput(owed) : '')
   const [method, setMethod] = useState<Method>('cash')
-  // Касса или счёт (ADR-076): карта и QR — безналичный счёт, наличные у владельца — любая касса.
+  // Касса или счёт (ADR-076): карта и QR — безналичный счёт (по умолчанию — свой для способа,
+  // ADR-077), наличные у владельца — любая касса.
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const [accountPick, setAccountPick] = useState('')
   const accountOptions = (accounts.data ?? []).filter((a) =>
     method === 'card' || method === 'transfer' ? bankChoices([a]).length > 0 : method === 'cash' && !isBank(a) && (owner || isTill(a)),
   )
-  const accountOrdered = method === 'cash' ? accountOptions : bankChoices(accountOptions)
+  const accountOrdered = method === 'card' || method === 'transfer' ? bankChoices(accountOptions, method) : accountOptions
   const accountId = accountOrdered.some((a) => a.id === accountPick) ? accountPick : (accountOrdered[0]?.id ?? '')
   const [comment, setComment] = useState('')
   const [done, setDone] = useState<{ paid: number; before: number; after: number } | null>(null)
@@ -175,7 +176,11 @@ export function RepaymentModal({
                     key={m}
                     type="button"
                     className={`min-h-[42px] py-2 ${method === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
-                    onClick={() => setMethod(m)}
+                    onClick={() => {
+                      setMethod(m)
+                      // Новый способ — снова его счёт по умолчанию.
+                      setAccountPick('')
+                    }}
                   >
                     {METHOD_LABELS[m]}
                   </button>

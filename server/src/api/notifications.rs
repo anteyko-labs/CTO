@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 51] = [
+pub(crate) const WATCHED: [&str; 52] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -71,6 +71,7 @@ pub(crate) const WATCHED: [&str; 51] = [
     "defect.resolve_reverse",
     "defect.reverse_negative",
     "shift.reclose_surplus",
+    "cash.negative",
 ];
 
 #[derive(Serialize)]
@@ -287,15 +288,32 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 comment(data)
             ),
         ),
-        "settings.payment_fee" => (
+        // Счёт ушёл ниже нуля — один раз на переход через ноль (ADR-077).
+        "cash.negative" => (
             format!(
-                "Комиссия банка: {}",
-                if text("method") == "card" {
-                    "карта"
-                } else {
-                    "перевод"
-                }
+                "Счёт «{}» ушёл в минус: {} ({})",
+                text("account"),
+                money(num("balance")),
+                text("doc")
             ),
+            format!(
+                "операция {}; деньги учтены по факту — пополните счёт или проверьте операцию",
+                money(num("amount"))
+            ),
+        ),
+        "settings.payment_fee" => (
+            // Ставка — у безналичного счёта (ADR-077); прежние записи — по способу оплаты.
+            match data.get("account").and_then(Value::as_str) {
+                Some(a) => format!("Комиссия банка: «{a}»"),
+                None => format!(
+                    "Комиссия банка: {}",
+                    if text("method") == "card" {
+                        "карта"
+                    } else {
+                        "перевод"
+                    }
+                ),
+            },
             format!(
                 "{}стало {} с {}",
                 data.get("before")
@@ -912,6 +930,17 @@ mod tests {
             &json!({ "method": "card", "before": { "rate_bp": 50 }, "after": { "rate_bp": 100, "active_from": "2026-10-20" } }),
         );
         assert_eq!(text, "было 0,50 %, стало 1,00 % с 2026-10-20");
+        let (title, _) = describe(
+            "settings.payment_fee",
+            &json!({ "account": "Оптима", "after": { "rate_bp": 50, "active_from": "2026-10-20" } }),
+        );
+        assert_eq!(title, "Комиссия банка: «Оптима»");
+        let (title, text) = describe(
+            "cash.negative",
+            &json!({ "account": "Касса", "balance": -120_000, "amount": -500_000, "doc": "расход № 15" }),
+        );
+        assert_eq!(title, "Счёт «Касса» ушёл в минус: −1 200 с (расход № 15)");
+        assert!(text.contains("−5 000 с"), "{text}");
         for action in WATCHED {
             assert_ne!(
                 describe(action, &json!({})).0,

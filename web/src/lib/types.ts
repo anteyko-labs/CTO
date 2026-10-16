@@ -474,9 +474,15 @@ export interface CashAccount {
   /** `register` — касса смены, `safe`/`other` — наличные без смены, `bank` — безналичный счёт. */
   kind: 'register' | 'bank' | 'safe' | 'other'
   owner_only: boolean
-  /** Касса смены или основной безналичный счёт. */
+  /** Касса смены (у безналичных счетов — всегда false, ADR-077). */
   is_default: boolean
-  /** Отрицательный баланс разрешён (ADR-076). */
+  /** Безналичный счёт по умолчанию для карты (ADR-077). */
+  default_card?: boolean
+  /** Безналичный счёт по умолчанию для перевода / QR (ADR-077). */
+  default_transfer?: boolean
+  /** Ставка комиссии банка на сегодня, сотые доли процента (ADR-077). */
+  fee_rate_bp?: number
+  /** Отрицательный баланс разрешён (ADR-076; по умолчанию — да, ADR-077). */
   allow_negative: boolean
   /** В архиве — false. */
   active: boolean

@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.account_id as \"account_id!\", a.name,\n                  coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as \"card!\",\n                  coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as \"transfer!\",\n                  coalesce(sum(p.fee_tyiyn), 0)::bigint as \"fee!\"\n           from sale_payments p\n           join sales s on s.id = p.sale_id\n           join cash_accounts a on a.id = p.account_id\n           where s.branch_id = $1 and p.method in ('card', 'transfer')\n             and ($2::date is null or s.business_date >= $2)\n             and ($3::date is null or s.business_date <= $3)\n             and ($4::timestamptz is null or s.created_at >= $4)\n             and ($4::timestamptz is null or s.created_at <= coalesce($5, now()))\n           group by p.account_id, a.name, a.default_card\n           order by a.default_card desc, a.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "card!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "transfer!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "bba4edf0ceda513d79dd7f958a0bfa0020477577fa2e746b7d69ee54bd035e67"
+}

@@ -548,7 +548,7 @@ async fn account(
     .fetch_all(&mut *conn)
     .await?;
     let found: Vec<_> = match q {
-        // Без названия — касса смены (основной безналичный счёт тоже `is_default`, ADR-076).
+        // Без названия — касса смены (`is_default` — только у неё, ADR-077).
         None => all
             .into_iter()
             .filter(|a| a.is_default && a.kind == "register")
@@ -1099,12 +1099,15 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
         ));
     };
     // Касса — ровно та, которую возьмёт проведение (та же функция), с комиссией банка.
-    let src = match crate::api::parties::repayment_account(conn, user, method, None).await {
-        Ok(Some(id)) => account_by_id(conn, id).await?,
-        Ok(None) => Source::Outside,
+    // Карта и перевод — на счёт по умолчанию для этого способа, комиссия — по его ставке (ADR-077).
+    let (src, fee) = match crate::api::parties::repayment_account(conn, user, method, None).await {
+        Ok(Some(id)) => (
+            account_by_id(conn, id).await?,
+            crate::api::parties::repayment_fee(conn, id, method, supplier, sum).await?,
+        ),
+        Ok(None) => (Source::Outside, 0),
         Err(e) => return Ok(Err(reason(e)?)),
     };
-    let fee = crate::api::parties::repayment_fee(conn, branch_id, method, supplier, sum).await?;
     let method_word = match method {
         "cash" => "наличные",
         "card" => "карта",

@@ -1,6 +1,7 @@
-// «Обзор счетов» (SPEC-28 §5, ADR-076): кассы и безналичные счета как в старой программе — счёт,
-// тип, сумма, отрицательный баланс, правка и история. Заводит и правит счета только владелец;
-// администратор видит счета без «только владелец», без правки. Остатки и права — на сервере.
+// «Обзор счетов» (SPEC-28 §5, ADR-076, ADR-077): кассы и безналичные счета как в старой программе —
+// счёт, тип, сумма, отрицательный баланс, комиссия банка, правка и история. Заводит и правит счета
+// только владелец: у банка — ставка комиссии с датой и отметки «по умолчанию для карты / перевода».
+// Администратор видит счета без «только владелец», без правки. Остатки и права — на сервере.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../components/icons'
@@ -10,7 +11,7 @@ import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing
 import { accountNote, accountTotals, accountType, isBank, isTill } from '../lib/accounts'
 import { get, getPage, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
+import { formatDate, formatDateTime, formatPercentBp, formatSom, parsePercentBp, shiftDate, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { MOVEMENT_LABELS, type Range } from '../lib/income'
@@ -33,9 +34,28 @@ type Form = {
   allow_negative: boolean
   owner_only: boolean
   active: boolean
-  is_default: boolean
+  default_card: boolean
+  default_transfer: boolean
+  /** Ставка комиссии банка, «0,5» (только у безналичного). */
+  fee: string
+  /** С какого дня действует ставка. */
+  feeFrom: string
   opId: string
 }
+
+interface FeeRow {
+  id: string
+  rate_bp: number
+  active_from: string
+  active_to: string | null
+  user_name: string | null
+}
+
+/** Ставка «как в поле ввода»: 50 → «0,50». */
+const feeInput = (bp: number) => formatPercentBp(bp).replace(/ %$/, '')
+
+/** «с 01.01.2000» у ставки, заведённой при установке, не несёт смысла — пишем «с начала учёта». */
+const since = (d: string) => (d <= '2000-01-01' ? 'с начала учёта' : `с ${formatDate(d)}`)
 
 export default function Accounts() {
   const owner = useUser().role === 'owner'
@@ -50,16 +70,49 @@ export default function Accounts() {
 
   const edit = (a: CashAccount) => {
     act.setError(null)
-    setForm({ id: a.id, name: a.name, kind: a.kind, allow_negative: a.allow_negative, owner_only: a.owner_only, active: a.active, is_default: a.is_default, opId: newOpId() })
+    setForm({
+      id: a.id,
+      name: a.name,
+      kind: a.kind,
+      allow_negative: a.allow_negative,
+      owner_only: a.owner_only,
+      active: a.active,
+      default_card: Boolean(a.default_card),
+      default_transfer: Boolean(a.default_transfer),
+      fee: feeInput(a.fee_rate_bp ?? 0),
+      feeFrom: todayBishkek(),
+      opId: newOpId(),
+    })
   }
   const create = () => {
     act.setError(null)
-    setForm({ id: '', name: '', kind: 'other', allow_negative: false, owner_only: false, active: true, is_default: false, opId: newOpId() })
+    // Новый счёт: минус по факту разрешён, комиссия 0 % (ADR-077).
+    setForm({
+      id: '',
+      name: '',
+      kind: 'other',
+      allow_negative: true,
+      owner_only: false,
+      active: true,
+      default_card: false,
+      default_transfer: false,
+      fee: '0',
+      feeFrom: todayBishkek(),
+      opId: newOpId(),
+    })
   }
   const current = form?.id ? rows.find((a) => a.id === form.id) : undefined
   const till = current ? isTill(current) : false
-  const mainBank = current ? isBank(current) && current.is_default : false
-  const missing = form ? missingWithFocus([Boolean(form.name.trim()), 'название', '#account-name']) : []
+  // Счёт по умолчанию для карты или перевода: в архив и «только владелец» нельзя.
+  const payDefault = Boolean(current?.default_card || current?.default_transfer)
+  const formBank = form ? isBank({ kind: form.kind as CashAccount['kind'] }) : false
+  const feeBp = form && formBank ? parsePercentBp(form.fee) : null
+  const missing = form
+    ? missingWithFocus(
+        [Boolean(form.name.trim()), 'название', '#account-name'],
+        [!formBank || (feeBp !== null && feeBp <= 10_000), 'комиссию банка от 0 до 100 %', '#account-fee'],
+      )
+    : []
 
   const save = () =>
     void act.run(async () => {
@@ -71,8 +124,13 @@ export default function Accounts() {
           allow_negative: form.allow_negative,
           owner_only: form.owner_only,
           active: form.active,
-          // Основным счёт делают отметкой; снять её можно только выбором другого основного.
-          is_default: form.is_default && !before?.is_default ? true : undefined,
+          // Отметку «по умолчанию» ставят у другого счёта; снять её прямо нельзя (ADR-077).
+          default_card: form.default_card && !before?.default_card ? true : undefined,
+          default_transfer: form.default_transfer && !before?.default_transfer ? true : undefined,
+          // Ставка — с даты; прежние дни сохраняют свою ставку (SPEC-08).
+          ...(formBank && feeBp !== null && (feeBp !== (before?.fee_rate_bp ?? 0) || form.feeFrom > todayBishkek())
+            ? { fee_rate_bp: feeBp, fee_from: form.feeFrom }
+            : {}),
         })
         toast('Счёт сохранён')
       } else {
@@ -82,6 +140,7 @@ export default function Accounts() {
           kind: form.kind,
           allow_negative: form.allow_negative,
           owner_only: form.owner_only,
+          fee_rate_bp: formBank && feeBp ? feeBp : undefined,
         })
         toast('Счёт заведён')
       }
@@ -93,7 +152,7 @@ export default function Accounts() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title="Обзор счетов"
-        subtitle="Кассы, сейфы и банковские счета: остатки, отрицательный баланс, история движений"
+        subtitle="Кассы, сейфы и банковские счета: остатки, отрицательный баланс, комиссия банка, история движений"
         actions={
           owner && (
             <Button onClick={create}>
@@ -115,7 +174,7 @@ export default function Accounts() {
           <Empty>Счетов нет</Empty>
         ) : (
           <>
-            <Table head={['Счёт', 'Тип', 'Сумма, сом', 'Отрицательный баланс', '']}>
+            <Table head={['Счёт', 'Тип', 'Сумма, сом', 'Отрицательный баланс', 'Комиссия банка', '']}>
               {pager.shown.map((a) => (
                 <tr key={a.id} data-testid="account-row" className={a.active ? '' : 'text-slate-400'}>
                   <td className="px-2 py-2">
@@ -137,6 +196,7 @@ export default function Accounts() {
                     <Money value={a.balance_tyiyn} tone="negative" className="font-semibold" />
                   </td>
                   <td className="px-2 py-2">{a.allow_negative ? 'Разрешён' : 'Не разрешён'}</td>
+                  <td className="px-2 py-2 tabular-nums">{isBank(a) ? formatPercentBp(a.fee_rate_bp ?? 0) : '—'}</td>
                   <td className="whitespace-nowrap px-2 py-2 text-right">
                     {owner && (
                       <Button variant="ghost" className="px-2" aria-label={`Изменить «${a.name}»`} title="Изменить" onClick={() => edit(a)}>
@@ -191,20 +251,42 @@ export default function Accounts() {
                 </select>
               </Field>
             )}
-            {!till && (
-              <Checkbox label="Отрицательный баланс разрешён" checked={form.allow_negative} onChange={(v) => setForm({ ...form, allow_negative: v })} />
-            )}
-            {!till && !mainBank && (
+            <Checkbox label="Отрицательный баланс разрешён" checked={form.allow_negative} onChange={(v) => setForm({ ...form, allow_negative: v })} />
+            {!till && !payDefault && (
               <Checkbox label="Только владелец (администратор не видит)" checked={form.owner_only} onChange={(v) => setForm({ ...form, owner_only: v })} />
             )}
-            {form.id && isBank({ kind: form.kind as CashAccount['kind'] }) && !mainBank && form.active && !form.owner_only && (
-              <Checkbox label="Основной безналичный (по умолчанию для карты и QR)" checked={form.is_default} onChange={(v) => setForm({ ...form, is_default: v })} />
+            {formBank && (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Комиссия банка, %" required hint="Терминал — ставка банка, перевод на свою карту — 0">
+                  <input id="account-fee" inputMode="decimal" value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
+                </Field>
+                {form.id && (
+                  <Field label="Действует с" hint="Задним числом не меняется">
+                    <input id="account-fee-from" type="date" min={todayBishkek()} value={form.feeFrom} onChange={(e) => setForm({ ...form, feeFrom: e.target.value })} />
+                  </Field>
+                )}
+              </div>
             )}
-            {form.id && !till && !mainBank && (
+            {form.id && formBank && form.active && !form.owner_only && (
+              <>
+                {!current?.default_card && (
+                  <Checkbox label="По умолчанию для карты" checked={form.default_card} onChange={(v) => setForm({ ...form, default_card: v })} />
+                )}
+                {!current?.default_transfer && (
+                  <Checkbox label="По умолчанию для перевода / QR" checked={form.default_transfer} onChange={(v) => setForm({ ...form, default_transfer: v })} />
+                )}
+              </>
+            )}
+            {form.id && !till && !payDefault && (
               <Checkbox label="В архиве (только с нулевым остатком)" checked={!form.active} onChange={(v) => setForm({ ...form, active: !v })} />
             )}
-            {till && <div className="text-xs text-slate-500">Касса смены: наличных в ней не бывает меньше нуля, в архив и «только владелец» её не убрать.</div>}
-            {mainBank && <div className="text-xs text-slate-500">Основной безналичный счёт: чтобы убрать его в архив, сделайте основным другой.</div>}
+            {till && <div className="text-xs text-slate-500">Касса смены: в архив и «только владелец» её не убрать. Минус по факту владельцу приходит уведомлением.</div>}
+            {payDefault && current && (
+              <div className="text-xs text-slate-500">
+                Счёт {accountNote(current)}: чтобы убрать его в архив, отметьте по умолчанию другой счёт.
+              </div>
+            )}
+            {form.id && formBank && <FeeHistory accountId={form.id} />}
             <Missing items={missing} />
             <ErrorBox error={act.error} />
             <div className="flex justify-end gap-2">
@@ -220,6 +302,28 @@ export default function Accounts() {
       )}
 
       {history && <AccountHistory account={history} onClose={() => setHistory(null)} owner={owner} />}
+    </div>
+  )
+}
+
+/** История ставок комиссии банка счёта: новые сверху (SPEC-08, ADR-077). */
+function FeeHistory({ accountId }: { accountId: string }) {
+  const fees = useLoad(() => get<{ current_bp: number; history: FeeRow[] }>(`/cash/accounts/${accountId}/fees`), [accountId])
+  const rows = fees.data?.history ?? []
+  if (fees.error) return <ErrorBox error={fees.error} />
+  if (rows.length === 0) return null
+  return (
+    <div className="text-sm" data-testid="fee-history">
+      <div className="mb-1 font-medium text-slate-700">История ставок</div>
+      <ul className="flex flex-col gap-1 text-slate-600">
+        {rows.map((f) => (
+          <li key={f.id}>
+            {formatPercentBp(f.rate_bp)} {since(f.active_from)}
+            {f.active_to ? ` по ${formatDate(f.active_to)}` : ''}
+            {f.user_name ? ` · ${f.user_name}` : ''}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

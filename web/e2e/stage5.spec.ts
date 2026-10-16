@@ -23,10 +23,10 @@ async function apiPost<T>(request: APIRequestContext, path: string, data: unknow
 test('комиссия банка и статьи расходов в настройках', async ({ page }) => {
   await login(page)
   await page.goto('/settings')
+  // Ставка комиссии — у банковского счёта, в «Обзоре счетов» (ADR-077).
   await page.getByRole('link', { name: /Комиссия банка/ }).click()
-  await expect(page.getByRole('heading', { name: 'Действует сегодня' })).toBeVisible()
-  await expect(page.getByText('Карта', { exact: true }).first()).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'История ставок' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Обзор счетов' })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: 'Комиссия банка' })).toBeVisible()
 
   const name = `Реклама ${RUN}`
   await page.goto('/settings/expense-articles')

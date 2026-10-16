@@ -6081,6 +6081,12 @@ async fn bot_draft_refuses_ambiguous_and_impossible(pool: PgPool) {
     let w = seed(&pool).await;
     let till = open_till(&pool, &w).await;
     fund_till(&pool, &w, till, 10_000).await;
+    // Минус по факту разрешён у всех счетов (ADR-077); владелец выключил его у кассы.
+    sqlx::query("update cash_accounts set allow_negative = false where id = $1")
+        .bind(till)
+        .execute(&pool)
+        .await
+        .unwrap();
     add_party(&pool, &w, "Азамат Осмонов", "customer").await;
     add_party(&pool, &w, "Азамат Бекович", "customer").await;
     let chat = 970_201i64;
@@ -7221,7 +7227,7 @@ async fn returns_refund_exactly_the_original_bank_fee(pool: PgPool) {
     open_till(&pool, &w).await;
     let bank = {
         let mut conn = pool.acquire().await.unwrap();
-        avtodom_server::api::cash::bank_account(&mut conn, w.owner.user.branch_id)
+        avtodom_server::api::cash::bank_account(&mut conn, w.owner.user.branch_id, "card")
             .await
             .unwrap()
             .unwrap()
@@ -7524,7 +7530,7 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
     let till = open_till(&pool, &w).await;
     fund_till(&pool, &w, till, 100_000).await;
     let mut conn = pool.acquire().await.unwrap();
-    avtodom_server::api::fees::ensure_fees(&mut conn, w.owner.user.branch_id)
+    avtodom_server::api::cash::ensure_accounts(&mut conn, w.owner.user.branch_id)
         .await
         .unwrap();
     add_party(&pool, &w, "Азамат", "customer").await;
@@ -7564,6 +7570,51 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
         text.contains("Комиссия банка: 5 с (на счёт придёт 995 с)"),
         "{text}"
     );
+    // Перевод — на счёт по умолчанию для перевода, без комиссии его банка (ADR-077).
+    {
+        use avtodom_server::api::cash::{
+            AccountCreateReq, AccountPatch, create_account_tx, update_account_tx,
+        };
+        let mut tx = pool.begin().await.unwrap();
+        let card = create_account_tx(
+            &mut tx,
+            &w.owner,
+            AccountCreateReq {
+                op_id: Uuid::now_v7(),
+                name: "Карта владельца".into(),
+                kind: "bank".into(),
+                allow_negative: true,
+                owner_only: false,
+                fee_rate_bp: None,
+            },
+        )
+        .await
+        .unwrap();
+        update_account_tx(
+            &mut tx,
+            &w.owner,
+            card.id,
+            AccountPatch {
+                default_transfer: Some(true),
+                ..AccountPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_debt",
+        serde_json::json!({ "operation": "погашение долга клиентом", "party": "Азамат", "amount": "1 000", "method": "перевод" }),
+    )
+    .await;
+    let text = r.follow.unwrap().text;
+    assert!(text.contains("Куда: Карта владельца"), "{text}");
+    assert!(!text.contains("Комиссия банка"), "{text}");
 
     // Оклад без суммы: показанная по ставке сумма записана в черновик и проводится она.
     sqlx::query("insert into employee_pay_rules (id, branch_id, employee_id, kind, amount_tyiyn, user_id) values ($1, $2, $3, 'monthly_salary', 2500000, $4)")
@@ -8898,7 +8949,13 @@ mod point_feedback_stock {
         ));
         let till = open_till(&pool, &w).await;
         fund_till(&pool, &w, till, 40_000).await;
-        // В кассе 400 с: заплатить 500 с нельзя — касса в минус не уходит.
+        // Владелец запретил кассе минус (по умолчанию он разрешён, ADR-077): в кассе 400 с —
+        // заплатить 500 с нельзя.
+        sqlx::query("update cash_accounts set allow_negative = false where id = $1")
+            .bind(till)
+            .execute(&pool)
+            .await
+            .unwrap();
         assert!(
             pay(&pool, &w.admin, sid, 50_000, "cash", Some(a))
                 .await
@@ -9157,6 +9214,7 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
             kind: "bank".into(),
             allow_negative: true,
             owner_only: false,
+            fee_rate_bp: None,
         },
     )
     .await
@@ -9170,6 +9228,7 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
             kind: "other".into(),
             allow_negative: false,
             owner_only: false,
+            fee_rate_bp: None,
         },
     )
     .await
@@ -9204,7 +9263,7 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
     .await
     .unwrap();
     assert!(
-        text.contains("— ОПТИМА БИЗНЕС: 0 с (безналичный, минус разрешён)"),
+        text.contains("— ОПТИМА БИЗНЕС: 0 с (безналичный)"),
         "{text}"
     );
     assert!(
@@ -9212,7 +9271,9 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
         "{text}"
     );
     assert!(
-        text.contains("— Счёт: 0 с (безналичный, основной)"),
+        text.contains(
+            "— Счёт: 0 с (безналичный, по умолчанию для карты, по умолчанию для перевода, комиссия 0,50 %)"
+        ),
         "{text}"
     );
     assert!(

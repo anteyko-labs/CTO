@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, is_default from cash_accounts\n           where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)\n           order by is_default desc, name",
+  "query": "select id, name, default_card, default_transfer from cash_accounts\n           where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)\n           order by default_card desc, default_transfer desc, name",
   "describe": {
     "columns": [
       {
@@ -15,7 +15,12 @@
       },
       {
         "ordinal": 2,
-        "name": "is_default",
+        "name": "default_card",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "default_transfer",
         "type_info": "Bool"
       }
     ],
@@ -28,8 +33,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "e202d615227e16ea521c79fbdd2a2386cebcc8732a0382d6ed0c9d49322e21ee"
+  "hash": "574d24d97008505c5d475734b842f2003fb6735ce4c1a9379afc179b66d725d5"
 }

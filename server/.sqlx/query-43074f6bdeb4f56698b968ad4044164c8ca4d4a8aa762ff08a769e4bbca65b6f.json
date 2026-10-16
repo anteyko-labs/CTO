@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update payment_method_fees set active_to = $2 where id = $1",
+  "query": "update cash_account_fees set active_to = $2 where id = $1",
   "describe": {
     "columns": [],
     "parameters": {
@@ -11,5 +11,5 @@
     },
     "nullable": []
   },
-  "hash": "c964f2a00f639017b5028314f714837de9f8f04642438d90262f64cbe2771614"
+  "hash": "43074f6bdeb4f56698b968ad4044164c8ca4d4a8aa762ff08a769e4bbca65b6f"
 }

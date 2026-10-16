@@ -1103,7 +1103,8 @@ pub struct RepaymentReq {
     #[serde(default)]
     pub receipt_id: Option<Uuid>,
     /// Касса или счёт (ADR-076): наличные — касса (администратору — только касса смены), карта
-    /// и перевод — безналичный счёт. Без него — касса смены или основной безналичный счёт.
+    /// и перевод — безналичный счёт. Без него — касса смены или безналичный счёт по умолчанию
+    /// для способа (ADR-077).
     #[serde(default)]
     pub account_id: Option<Uuid>,
 }
@@ -1130,7 +1131,8 @@ async fn post_repayment(
 
 /// Погашение долга клиентом или оплата поставщику.
 /// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
-/// Касса погашения по способу оплаты: наличные — касса по умолчанию, карта и перевод — «Счёт»,
+/// Касса погашения по способу оплаты: наличные — касса по умолчанию, карта и перевод — счёт по
+/// умолчанию для способа (ADR-077),
 /// мимо касс — никакой (`None`). Одна функция и для проведения, и для черновика бота (ADR-070).
 pub(crate) async fn repayment_account(
     conn: &mut PgConnection,
@@ -1154,25 +1156,35 @@ pub(crate) async fn repayment_account(
             }
             Ok(Some(id))
         }
-        ("card" | "transfer", None) => crate::api::cash::bank_account(&mut *conn, branch_id)
-            .await?
-            .ok_or_else(|| invalid("нет безналичного счёта"))
-            .map(Some),
+        ("card" | "transfer", None) => {
+            crate::api::cash::bank_account(&mut *conn, branch_id, method)
+                .await?
+                .ok_or_else(|| invalid("нет безналичного счёта"))
+                .map(Some)
+        }
         ("card" | "transfer", Some(id)) => {
             let mut ignored = Vec::new();
-            crate::api::cash::sale_bank_account(&mut *conn, user, Some(id), false, &mut ignored)
-                .await
-                .map(Some)
+            crate::api::cash::sale_bank_account(
+                &mut *conn,
+                user,
+                method,
+                Some(id),
+                false,
+                &mut ignored,
+            )
+            .await
+            .map(Some)
         }
         _ => Ok(None),
     }
 }
 
-/// Комиссия банка с погашения клиентом по карте или переводу — по ставке, действующей в день
-/// погашения, как с чека (ADR-022, SPEC-08). Оплата поставщику и наличные — без комиссии.
+/// Комиссия банка с погашения клиентом по карте или переводу — по ставке счёта, куда пришли
+/// деньги, действующей в день погашения, как с чека (ADR-022, SPEC-08, ADR-077). Оплата
+/// поставщику и наличные — без комиссии.
 pub(crate) async fn repayment_fee(
     conn: &mut PgConnection,
-    branch_id: Uuid,
+    account_id: Uuid,
     method: &str,
     supplier: bool,
     amount: i64,
@@ -1180,11 +1192,8 @@ pub(crate) async fn repayment_fee(
     if supplier || !matches!(method, "card" | "transfer") {
         return Ok(0);
     }
-    let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
-        .fetch_one(&mut *conn)
-        .await?;
-    let rate = crate::api::fees::rate_on(&mut *conn, branch_id, method, today).await?;
-    Ok(crate::domain::money::div_round(i128::from(amount) * i128::from(rate), 10_000).unwrap_or(0))
+    let today = crate::api::fees::today(&mut *conn).await?;
+    crate::api::fees::fee_on(&mut *conn, account_id, today, amount).await
 }
 
 pub async fn post_repayment_tx(
@@ -1292,7 +1301,8 @@ pub async fn post_repayment_tx(
             },
         )
         .await?;
-        let fee = repayment_fee(&mut *conn, branch_id, &method, supplier, req.amount_tyiyn).await?;
+        let fee =
+            repayment_fee(&mut *conn, account_id, &method, supplier, req.amount_tyiyn).await?;
         if fee != 0 {
             crate::api::cash::add_movement(
                 &mut *conn,
