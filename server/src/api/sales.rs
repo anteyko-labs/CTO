@@ -72,6 +72,10 @@ pub struct PaymentReq {
     /// возврате вес не присылается: сервер берёт долю веса исходного чека.
     #[serde(default)]
     pub grams: Option<i64>,
+    /// Аккумулятор в оплату: цена приёма за кг, которую кассир поставил в этом чеке (ADR-078);
+    /// без неё — цена из настроек.
+    #[serde(default)]
+    pub price_per_kg_tyiyn: Option<i64>,
     /// Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076); без него — счёт по
     /// умолчанию для этого способа (ADR-077).
     /// У возврата не учитывается: деньги уходят со счёта исходной оплаты.
@@ -442,8 +446,8 @@ fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     Ok(())
 }
 
-/// Аккумулятор в оплату чека (SPEC-27): сумма = вес × цена приёма за кг из настроек, считает
-/// сервер. Касса показывает ту же сумму заранее; если цену за это время поменяли, чек не
+/// Аккумулятор в оплату чека (SPEC-27): сумма = вес × цена приёма за кг — из чека, если кассир
+/// её поменял (ADR-078), иначе из настроек; считает сервер. Касса показывает ту же сумму заранее; если цену за это время поменяли, чек не
 /// проводится — касса покажет новую сумму. У остальных способов вес не учитывается.
 async fn price_battery(
     conn: &mut PgConnection,
@@ -456,7 +460,16 @@ async fn price_battery(
         if p.method == "battery" {
             let grams = p.grams.ok_or_else(|| invalid("укажите вес аккумулятора"))?;
             crate::api::batteries::check_grams(grams)?;
-            let price = crate::api::batteries::intake_price(conn, branch_id).await?;
+            let price = match p.price_per_kg_tyiyn {
+                Some(v) if v <= 0 => {
+                    return Err(invalid("цена приёма за кг должна быть больше нуля"));
+                }
+                Some(v) => {
+                    crate::ops::check_amount(v)?;
+                    v
+                }
+                None => crate::api::batteries::intake_price(conn, branch_id).await?,
+            };
             let amount = crate::api::batteries::amount_for(grams, price)?;
             if amount <= 0 {
                 return Err(invalid("цена приёма аккумуляторов не задана"));

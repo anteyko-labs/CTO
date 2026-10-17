@@ -95,6 +95,11 @@ test('аккумулятор в оплату: 10 000 с − 12 кг × 50 с, в
     await page.locator('#battery-kg').fill('12')
     const box = page.getByTestId('battery-pay')
     await expect(box).toContainText(money('= 600 с'))
+    // Цену за кг кассир меняет в чеке (ADR-078): 12 кг × 70 с = 840 с; вернём 50 с.
+    await page.locator('#battery-per-kg').fill('70')
+    await expect(box).toContainText(money('= 840 с'))
+    await page.locator('#battery-per-kg').fill('50')
+    await expect(box).toContainText(money('= 600 с'))
     await expect(box).toContainText(money('к оплате 9 400 с'))
     await page.getByRole('button', { name: 'Без сдачи' }).click()
     await expect(page.getByLabel('Получено, с')).toHaveValue('9400')

@@ -221,7 +221,7 @@ export default function Cashier() {
   const [bonus, setBonus] = useState<BonusUse | null>(null)
   const [bonusOpen, setBonusOpen] = useState(false)
   // Старый аккумулятор в оплату: вес × цена приёма за кг; сумму считает сервер (SPEC-27).
-  const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKg: number } | null>(null)
+  const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKgText: string } | null>(null)
   const batteryLoad = useAction()
   const [confirmClear, setConfirmClear] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
@@ -321,7 +321,9 @@ export default function Cashier() {
   const total = amounts.reduce<number>((acc, a) => acc + (a ?? 0), 0)
   const bonusAmount = bonus?.amount_tyiyn ?? 0
   const batteryGrams = batteryPay ? parseLiters(batteryPay.kgText) : null
-  const batteryAmt = batteryPay && batteryGrams && batteryGrams > 0 ? batteryAmount(batteryGrams, batteryPay.perKg) : 0
+  // Цену за кг кассир может поменять в чеке: по умолчанию — цена приёма из настроек (ADR-078).
+  const batteryPerKg = batteryPay ? parseSom(batteryPay.perKgText) : null
+  const batteryAmt = batteryPay && batteryGrams && batteryGrams > 0 && batteryPerKg && batteryPerKg > 0 ? batteryAmount(batteryGrams, batteryPerKg) : 0
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
 
@@ -341,10 +343,10 @@ export default function Cashier() {
   })()
   // Способы безнала в чеке: для каждого — строка выбора банка.
   const noncashMethods = (['card', 'transfer'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m))
-  const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number; account_id?: string }[] | null = moneyPayments && [
+  const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number; price_per_kg_tyiyn?: number; account_id?: string }[] | null = moneyPayments && [
     ...moneyPayments,
     ...(bonusAmount > 0 ? [{ method: 'bonus' as const, amount_tyiyn: bonusAmount }] : []),
-    ...(batteryAmt > 0 && batteryGrams ? [{ method: 'battery' as const, amount_tyiyn: batteryAmt, grams: batteryGrams }] : []),
+    ...(batteryAmt > 0 && batteryGrams ? [{ method: 'battery' as const, amount_tyiyn: batteryAmt, grams: batteryGrams, price_per_kg_tyiyn: batteryPerKg ?? undefined }] : []),
   ]
   const paid = payments?.reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? null
   // Не деньгами: баллы и аккумулятор уже вычтены из «к оплате».
@@ -601,6 +603,7 @@ export default function Cashier() {
     [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново'],
     [!bonus || navigator.onLine, 'баллы списываются только при связи с сервером'],
     [!batteryPay || (batteryGrams !== null && batteryGrams > 0), 'вес сданного аккумулятора', '#battery-kg'],
+    [!batteryPay || (batteryPerKg !== null && batteryPerKg > 0), 'цена аккумулятора за кг', '#battery-per-kg'],
     [!batteryPay || navigator.onLine, 'аккумулятор в оплату — только при связи с сервером'],
     [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
@@ -1181,7 +1184,7 @@ export default function Cashier() {
                   onClick={() =>
                     void batteryLoad.run(async () => {
                       const info = await get<BatteryInfo>('/batteries')
-                      setBatteryPay({ kgText: '', perKg: info.intake_per_kg_tyiyn })
+                      setBatteryPay({ kgText: '', perKgText: somInput(info.intake_per_kg_tyiyn) })
                       setTimeout(() => document.getElementById('battery-kg')?.focus(), 50)
                     })
                   }
@@ -1210,8 +1213,18 @@ export default function Cashier() {
                     onChange={(e) => setBatteryPay({ ...batteryPay, kgText: e.target.value })}
                   />
                 </Field>
+                <span className="pb-2">×</span>
+                <Field label="Цена за кг, с">
+                  <input
+                    id="battery-per-kg"
+                    className="w-24"
+                    inputMode="decimal"
+                    value={batteryPay.perKgText}
+                    onChange={(e) => setBatteryPay({ ...batteryPay, perKgText: e.target.value })}
+                  />
+                </Field>
                 <span className="pb-2">
-                  × {formatSom(batteryPay.perKg)} за кг = <b>{formatSom(batteryAmt)}</b>
+                  = <b>{formatSom(batteryAmt)}</b>
                 </span>
                 <Button variant="ghost" className="ml-auto px-2 py-1 text-xs" onClick={() => setBatteryPay(null)}>
                   Убрать
