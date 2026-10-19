@@ -26,8 +26,8 @@ updated: 2026-10-08
 | 01 | Вход, роли, журнал, идемпотентность | `auth.rs`, `api/auth.rs`, `ops.rs`, `bootstrap.rs` | `pages/Login.tsx`, `pages/Users.tsx`, `lib/auth.tsx`, `lib/api.ts` |
 | 02 | Каталог, штрихкоды, этикетки, справочники | `api/catalog.rs`, `api/refs.rs`, `domain/barcode.rs` | `pages/Products.tsx`, `Categories.tsx`, `Employees.tsx`, `Services.tsx`, `Suppliers.tsx`, `LabelSettings.tsx`, `components/ProductFormModal.tsx`, `ProductPicker.tsx`, `UnknownCodeModal.tsx`, `labels.ts` |
 | 03 | Приход и остатки | `api/receipts.rs`, `domain/costing.rs` | `pages/Receipts.tsx`, `ReceiptNew.tsx`, `ReceiptView.tsx`, `Stock.tsx` |
-| 04 | Касса: продажа и возврат | `api/sales.rs`, `domain/money.rs` | `pages/Cashier.tsx`, `SalesDay.tsx`, `SaleView.tsx`, `components/salePrint.ts`, `ServicePicker.tsx`, `lib/money.ts` |
-| 05 | Смена, кассы, наличные | `api/cash.rs` | `pages/Shift.tsx`, `Bank.tsx` |
+| 04 | Касса: продажа и возврат; режим кассы (SPEC-29) | `api/sales.rs`, `domain/money.rs` | `pages/Cashier.tsx`, `SalesDay.tsx`, `SaleView.tsx`, `components/salePrint.ts`, `ServicePicker.tsx`, `CashierModeBar.tsx`, `Keypad.tsx`, `lib/money.ts`, `lib/cashierMode.ts`, `lib/keypad.ts` |
+| 05 | Смена, кассы, наличные | `api/cash.rs` | `pages/Shift.tsx`, `Bank.tsx`, `components/ShiftOpen.tsx` |
 | 06 | Операционные расходы | `api/expenses.rs` | `pages/Expenses.tsx`, `components/QuickExpense.tsx` |
 | 07 | Начисления и выплаты сотрудникам | `api/payroll.rs` | `pages/Payroll.tsx` |
 | 08 | Прибыль, сводка владельца | `api/reports.rs`, `api/income.rs` | `pages/Owner.tsx`, `Income.tsx`, `components/PeriodPicker.tsx`, `lib/income.ts` |

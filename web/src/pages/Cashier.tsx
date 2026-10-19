@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
+import { CashierModeBar } from '../components/CashierModeBar'
+import { ShiftOpenModal } from '../components/ShiftOpen'
 import { CorrectionBanner } from '../components/Correction'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
@@ -26,7 +28,9 @@ import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, t
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
-import { bankChoices, defaultBankId, type NoncashMethod } from '../lib/accounts'
+import { bankChoices, defaultBankId, isTill, type NoncashMethod } from '../lib/accounts'
+import { useUser } from '../lib/auth'
+import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../lib/cashierMode'
 import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
@@ -207,6 +211,12 @@ export interface CashierFix {
 
 export default function Cashier({ fix }: { fix?: CashierFix }) {
   const navigate = useNavigate()
+  const owner = useUser().role === 'owner'
+  // Режим кассы для сенсорного моноблока (SPEC-29): без меню, всё крупнее, цифры — экранной
+  // клавиатурой. В исправлении чека владельцем режима нет.
+  const touch = useTouchMode() && !fix
+  const num = useNumField()
+  const [shiftOpen, setShiftOpen] = useState<{ till: CashAccount | undefined } | null>(null)
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
   // Куда идут карта и QR: у каждого способа свой счёт по умолчанию, кассир может выбрать другой
   // банк для этого чека (ADR-076, ADR-077).
@@ -827,8 +837,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     return () => window.removeEventListener('keydown', onKey)
   })
 
+  const startShift = () =>
+    void get<CashAccount[]>('/cash/accounts')
+      .then((accs) => setShiftOpen({ till: accs.find((a) => isTill(a)) }))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Нет связи с сервером: смена открывается только при связи'))
+
   return (
-    <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
+    <div className={`grid gap-4 ${touch ? 'lg:grid-cols-[1fr_27rem]' : 'lg:grid-cols-[1fr_380px]'}`}>
+      {touch && (
+        <div className="lg:col-span-2">
+          <CashierModeBar shift={shift.loading && !shiftKnown ? undefined : shift.data} onOpenShift={startShift} />
+        </div>
+      )}
       <div className="flex min-w-0 flex-col gap-4">
         {fix && (
           <div className="flex flex-col gap-2">
@@ -870,7 +890,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             (или установите программу на рабочий стол).
           </div>
         )}
-        {!fix && shift.data === null && (
+        {!fix && !touch && shift.data === null && (
           <div
             className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
             title="Продавать можно, но наличные будет не с чем сверить"
@@ -903,13 +923,38 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <Icon name="expenses" className="h-4 w-4" />
               Мелкий расход из кассы
             </button>
-            <RowMenu
-              label="Ещё действия кассы"
-              items={[
-                { label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) },
-                { label: 'Аккумуляторы на вес', onClick: sellBatteries },
-              ]}
-            />
+            {touch ? (
+              // В режиме кассы всё на виду: без скрытого меню «…».
+              <>
+                <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 active:bg-slate-100" onClick={() => setBatteryIntake(true)}>
+                  Приём аккумуляторов
+                </button>
+                <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 active:bg-slate-100" onClick={sellBatteries}>
+                  Аккумуляторы на вес
+                </button>
+              </>
+            ) : (
+              <>
+                <RowMenu
+                  label="Ещё действия кассы"
+                  items={[
+                    { label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) },
+                    { label: 'Аккумуляторы на вес', onClick: sellBatteries },
+                  ]}
+                />
+                <button
+                  type="button"
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  onClick={() => {
+                    setCashierMode(true)
+                    enterFullscreen()
+                  }}
+                >
+                  <Icon name="cashier" className="h-4 w-4" />
+                  Режим кассы
+                </button>
+              </>
+            )}
           </div>
         </Card>
 
@@ -1058,11 +1103,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                           −
                         </button>
                         <input
-                          className="min-h-12 w-16 rounded-none text-center text-lg"
+                          className={`min-h-12 rounded-none text-center text-lg ${touch ? 'w-20 text-xl font-semibold' : 'w-16'}`}
                           data-weight={l.kind === 'weight' ? '' : undefined}
                           // Подпись вокруг поля относится к первой кнопке «−», поэтому у поля своя.
                           aria-label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
-                          inputMode={l.kind === 'pour' || l.kind === 'weight' ? 'decimal' : 'numeric'}
+                          {...(l.kind === 'pour' || l.kind === 'weight'
+                            ? num('decimal', { decimals: 3, quick: l.kind === 'pour' ? ['1', '4', '5'] : undefined })
+                            : num('int'))}
                           value={l.qtyText}
                           onChange={(e) => update(l.key, { qtyText: e.target.value })}
                         />
@@ -1093,7 +1140,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                                   ? ''
                                   : 'cursor-pointer border-transparent bg-transparent text-right font-medium text-slate-800 shadow-none'
                             }`}
-                            inputMode="decimal"
+                            {...num('decimal')}
                             value={l.priceText}
                             onFocus={(e) => {
                               setPriceEdit(l.key)
@@ -1112,6 +1159,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                             <Icon name="edit" className="h-3.5 w-3.5" />
                           </button>
                         </span>
+                        {/* В режиме кассы подсказок по наведению нет — прайс виден подписью. */}
+                        {touch && changed && <span className="text-amber-700">прайс {formatSom(listPrice(l))}</span>}
                       </div>
                     )}
                     <div className="w-24 text-right text-base font-semibold">{amount === null ? '—' : <Money value={amount} />}</div>
@@ -1131,14 +1180,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Card>
       </div>
 
+      {/* В режиме кассы оплата и «Провести чек» — сверху колонки, клиент и мастер — под ними. */}
       <div className="flex flex-col gap-4">
-        <Card className="flex flex-col gap-3">
+        <Card className={`flex flex-col gap-3 ${touch ? 'order-2' : ''}`}>
           <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-base">
             {(['takeaway', 'service'] as const).map((t) => (
               <button
                 key={t}
                 type="button"
-                className={`min-h-12 py-2 text-base ${saleType === t ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                className={`${touch ? 'min-h-16 text-xl' : 'min-h-12 text-base'} py-2 ${saleType === t ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => changeType(t)}
               >
                 {t === 'takeaway' ? 'На вынос' : 'В сервис'}
@@ -1146,7 +1196,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             ))}
           </div>
           {shift.data && !fix ? (
-            <div className="text-sm" data-testid="shift-cashier">
+            <div className={`text-sm ${touch ? 'hidden' : ''}`} data-testid="shift-cashier">
               Кассир: <b>{shift.data.cashier_name}</b> <span className="text-slate-500">(смена № {shift.data.number})</span>
             </div>
           ) : (
@@ -1215,7 +1265,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   required
                   hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку"
                 >
-                  <input id="mileage" inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
+                  <input id="mileage" {...num('int')} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
                   {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
                 </Field>
                 {every && (
@@ -1226,7 +1276,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         id="next-every-dist"
                         aria-label={`Через, ${unitLabel(carUnit)}`}
                         className="w-24"
-                        inputMode="numeric"
+                        {...num('int')}
                         value={every.dist}
                         onChange={(e) => setNextEvery({ ...every, dist: e.target.value.replace(/\D/g, '') })}
                       />
@@ -1235,7 +1285,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         id="next-every-days"
                         aria-label="Через, дней"
                         className="w-20"
-                        inputMode="numeric"
+                        {...num('int')}
                         value={every.days}
                         onChange={(e) => setNextEvery({ ...every, days: e.target.value.replace(/\D/g, '') })}
                       />
@@ -1286,7 +1336,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
         </Card>
 
-        <Card className="flex flex-col gap-3">
+        <Card className={`flex flex-col gap-3 ${touch ? 'order-1' : ''}`}>
           <div className="flex items-baseline justify-between">
             <span className="text-sm text-slate-500">Итого</span>
             <Money value={total} className="text-3xl font-bold" />
@@ -1310,7 +1360,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 key={m}
                 type="button"
                 // 3 + 2: наличные, карта, QR сверху — частые; долг и смешанная ниже.
-                className={`min-h-12 py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                className={`${touch ? 'min-h-16 text-xl font-medium' : 'min-h-12'} py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => setPayMode(m)}
               >
                 {m === 'mixed' ? 'Смешанная' : PAYMENT_LABELS[m]}
@@ -1334,6 +1384,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   }
                 >
                   Сдал аккумулятор
+                  {touch && !navigator.onLine && <span className="text-slate-500">(нет связи)</span>}
                 </button>
               )}
               {!bonus && (
@@ -1352,7 +1403,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   <input
                     id="battery-kg"
                     className="w-24"
-                    inputMode="decimal"
+                    {...num('decimal', { decimals: 3 })}
                     value={batteryPay.kgText}
                     onChange={(e) => setBatteryPay({ ...batteryPay, kgText: e.target.value })}
                   />
@@ -1362,7 +1413,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   <input
                     id="battery-per-kg"
                     className="w-24"
-                    inputMode="decimal"
+                    {...num('decimal')}
                     value={batteryPay.perKgText}
                     onChange={(e) => setBatteryPay({ ...batteryPay, perKgText: e.target.value })}
                   />
@@ -1386,8 +1437,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <Field label="Получено, с">
                 <input
                   data-received
-                  className="min-h-12 text-lg"
-                  inputMode="decimal"
+                  className={touch ? 'min-h-16 text-2xl font-semibold' : 'min-h-12 text-lg'}
+                  {...num('decimal', { quick: due > 0 ? [somInput(due), ...NOTES.filter((n) => n > due).slice(0, 2).map(somInput)] : undefined })}
                   value={received}
                   onChange={(e) => setReceived(e.target.value)}
                   onKeyDown={(e) => {
@@ -1477,7 +1528,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <input
                   id="debt-inn"
                   className="min-w-0 flex-1"
-                  inputMode="numeric"
+                  {...num('int')}
                   placeholder={party.kind === 'company' ? 'ИНН' : 'ПИН'}
                   value={innText}
                   onChange={(e) => setInnText(e.target.value)}
@@ -1525,7 +1576,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
                   <Field key={m} label={PAYMENT_LABELS[m]}>
-                    <input inputMode="decimal" value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
+                    <input {...num('decimal')} aria-label={PAYMENT_LABELS[m]} value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
                   </Field>
                 ))}
               </div>
@@ -1556,10 +1607,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
           <ErrorBox error={error} />
           <Missing items={blockers} />
-          <Button className="min-h-14 py-3 text-lg" disabled={!canSubmit} onClick={trySubmit}>
+          <Button className={touch ? 'min-h-20! py-3 text-2xl!' : 'min-h-14! py-3 text-lg!'} disabled={!canSubmit} onClick={trySubmit}>
             {fix ? 'Сохранить исправление' : 'Провести чек'}
           </Button>
-          <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
+          <div className={`hidden text-center text-xs text-slate-400 ${touch ? '' : 'lg:block'}`}>Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
           {!fix && lines.length > 0 && (
             <div className="flex gap-2">
               <Button variant="secondary" className="flex-1" onClick={park}>
@@ -1588,7 +1639,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Card>
       </div>
       {lines.length > 0 && (
-        <div className="no-print fixed inset-x-0 bottom-[52px] z-20 flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden">
+        <div className={`no-print fixed inset-x-0 z-20 ${touch ? 'bottom-0' : 'bottom-[52px]'} flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden`}>
           <div className="min-w-0 flex-1">
             {blockers.length > 0 ? (
               <div className="truncate text-xs text-amber-700">Заполните: {blockers.map((x) => x.label).join(', ')}</div>
@@ -1613,7 +1664,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button
-                className="min-h-14 text-lg"
+                className="min-h-14! text-lg!"
                 onClick={() => {
                   setOilAsked(true)
                   setOilQuestion(false)
@@ -1626,7 +1677,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </Button>
               <Button
                 variant="secondary"
-                className="min-h-14 text-lg"
+                className="min-h-14! text-lg!"
                 onClick={() => {
                   setOilAsked(true)
                   setOilQuestion(false)
@@ -1638,6 +1689,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           </div>
         </Modal>
+      )}
+      {shiftOpen && (
+        <ShiftOpenModal
+          owner={owner}
+          cashiers={(employees.data ?? []).filter((e) => e.active && e.is_cashier)}
+          till={shiftOpen.till}
+          onClose={() => setShiftOpen(null)}
+          onOpened={() => {
+            setShiftOpen(null)
+            shift.reload()
+          }}
+        />
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {expense && <QuickExpense onClose={() => setExpense(false)} />}

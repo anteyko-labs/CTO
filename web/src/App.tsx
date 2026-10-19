@@ -6,6 +6,8 @@ import { AuthProvider, useAuth } from './lib/auth'
 import { can } from './lib/permissions'
 import type { Permission } from './lib/types'
 import { startOfflineLoop } from './lib/offline'
+import { useTouchMode } from './lib/cashierMode'
+import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
 import { UpdateBanner } from './components/UpdateBanner'
 import { startUpdates } from './lib/updates'
@@ -179,6 +181,12 @@ function Shell() {
   const unseen = useUnseen(user?.role === 'owner')
   // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
   useEffect(() => (user ? startOfflineLoop() : undefined), [user])
+  // Режим кассы (SPEC-29): на экране «Касса» — без меню, всё крупнее, цифры экранной клавиатурой.
+  const touch = useTouchMode()
+  useEffect(() => {
+    document.documentElement.classList.toggle('cashier-mode', touch)
+    return () => document.documentElement.classList.remove('cashier-mode')
+  }, [touch])
   if (!user) return <Navigate to="/login" replace />
   const owner = user.role === 'owner'
   const roleLabel = owner ? 'Владелец' : 'Администратор'
@@ -229,6 +237,7 @@ function Shell() {
 
   return (
     <div className="min-h-screen md:flex">
+      {!touch && (
       <aside className="keep-dark no-print hidden bg-slate-900 p-4 md:block md:w-56 md:shrink-0">
         <div className="mb-6 hidden px-3 text-lg font-bold text-white md:block">Avtodom</div>
         {nav}
@@ -246,14 +255,17 @@ function Shell() {
           </div>
         </div>
       </aside>
-      <div className="keep-dark no-print flex items-center justify-between bg-slate-900 px-4 py-3 text-white md:hidden">
-        <span className="font-bold">Avtodom</span>
-        <span className="text-xs text-slate-300">{user.full_name}</span>
-      </div>
-      <main className="min-w-0 flex-1 pb-24">
+      )}
+      {!touch && (
+        <div className="keep-dark no-print flex items-center justify-between bg-slate-900 px-4 py-3 text-white md:hidden">
+          <span className="font-bold">Avtodom</span>
+          <span className="text-xs text-slate-300">{user.full_name}</span>
+        </div>
+      )}
+      <main className={`min-w-0 flex-1 ${touch ? 'pb-4' : 'pb-24'}`}>
         <UpdateBanner />
         <OfflineBar />
-        <div className="p-4 md:p-6">
+        <div className={touch ? 'px-3 pb-3 md:px-4' : 'p-4 md:p-6'}>
         <Routes>
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />
@@ -297,6 +309,7 @@ function Shell() {
         </Routes>
         </div>
       </main>
+      {!touch && (
       <nav className="no-print fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] text-[11px] md:hidden">
         {MOBILE_TABS[owner ? 'owner' : 'admin'].map((t) => (
           <NavLink
@@ -323,7 +336,8 @@ function Shell() {
           Ещё
         </button>
       </nav>
-      {open && (
+      )}
+      {open && !touch && (
         <div className="no-print fixed inset-0 z-40 md:hidden" role="dialog" aria-label="Все разделы">
           <button type="button" aria-label="Закрыть" className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} />
           <div className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto rounded-t-2xl bg-white px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] pt-3 shadow-2xl">
@@ -377,6 +391,7 @@ function Shell() {
           </div>
         </div>
       )}
+      {touch && <Keypad />}
       <Toaster />
     </div>
   )

@@ -132,6 +132,18 @@ test('«Счёт»: поступления картой и переводом с
   await expect(tile('Переводом (QR)')).toContainText(money(bank.transfer.total_tyiyn))
   await expect(tile('Комиссия банка')).toContainText(money(bank.fee_tyiyn))
   await expect(tile('Остаток сейчас')).toContainText(money(bank.balance_tyiyn))
-  await expect(page.getByTestId('bank-movement')).toHaveCount(bank.movements.length)
   await expect(page.getByText(`Движения: ${bank.movements_count}`)).toBeVisible()
+  // Движения идут страницами по 50 (SPEC-28 §2): на первой — первые 50, на последней — остаток,
+  // а вместе страницы дают все движения за период.
+  const PAGE = 50
+  const all = bank.movements.length
+  await expect(page.getByTestId('bank-movement')).toHaveCount(Math.min(all, PAGE))
+  if (all > PAGE) {
+    const pager = page.getByRole('navigation', { name: 'Страницы движений' })
+    await expect(pager.getByTestId('pager-range')).toHaveText(`1–${PAGE} / ${all}`)
+    await pager.getByRole('button', { name: 'Последняя страница' }).click()
+    const lastStart = Math.floor((all - 1) / PAGE) * PAGE
+    await expect(pager.getByTestId('pager-range')).toHaveText(`${lastStart + 1}–${all} / ${all}`)
+    await expect(page.getByTestId('bank-movement')).toHaveCount(all - lastStart)
+  }
 })

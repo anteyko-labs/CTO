@@ -199,3 +199,41 @@
     display: none;
   }
 }
+
+/* Режим кассы на сенсорном моноблоке (SPEC-29, «Режим кассы»; ui-rules §9). Класс на html ставит
+   каркас только на экране «Касса»: шрифт и все размеры в rem крупнее, цели касания не ниже 56 точек. */
+html.cashier-mode {
+  font-size: 118.75%; /* 19 px вместо 16 */
+}
+@layer base {
+  html.cashier-mode button,
+  html.cashier-mode select,
+  html.cashier-mode input:not([type='checkbox']):not([type='radio']) {
+    min-height: 56px;
+  }
+  html.cashier-mode button {
+    min-width: 56px;
+  }
+  html.cashier-mode input,
+  html.cashier-mode select,
+  html.cashier-mode textarea {
+    font-size: 1.125rem;
+  }
+}
+/* Отметки вне слоя: размер из утилит (h-3.5) для пальца мал. */
+html.cashier-mode input[type='checkbox'],
+html.cashier-mode input[type='radio'] {
+  width: 28px;
+  height: 28px;
+}
+/* Мелкие подписи и поиск товара в режиме — крупнее (вне слоя: перекрывают утилиты text-xs/sm). */
+html.cashier-mode main .text-xs {
+  font-size: 0.875rem;
+}
+html.cashier-mode main .text-sm {
+  font-size: 1rem;
+}
+html.cashier-mode [data-picker] {
+  min-height: 64px;
+  font-size: 1.25rem;
+}
