@@ -1,9 +1,13 @@
-//! Оприходование без поставщика (SPEC-29 §8): товар пришёл без накладной и без денег.
+//! Оприходование без поставщика (SPEC-29 §8, ADR-086): товар пришёл без накладной и без денег.
 //!
-//! Количество ложится на склад по цене закупки, которую вписали (за штуку, канистру масла или
-//! килограмм), — как приход, но без поставщика и без движения денег. Комментарий обязателен.
-//! Проводят владелец и администратор (цены закупки администратор видит и вводит, ADR-008);
-//! владелец получает уведомление. Исправление — только сторно со ссылкой (инвариант 4).
+//! Вариант прихода: на экране «Новый приход» — «Оприходование (без поставщика)», строки как у
+//! прихода. Количество ложится на склад по цене закупки, которую вписали (за штуку, канистру масла
+//! или килограмм), — как приход, но без поставщика и без движения денег. Комментарий обязателен.
+//! Один документ — одна операция, одна транзакция, несколько строк. Проводят владелец и
+//! администратор (цены закупки администратор видит и вводит, ADR-008); владелец получает
+//! уведомление. Исправление — только сторно со ссылкой (инвариант 4) или «Исправить» (ADR-085).
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
@@ -13,10 +17,10 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::api::catalog::price_unit;
+use crate::api::catalog::{PriceDoc, price_unit};
 use crate::api::paging::{MAX_ROWS, PageQuery, Paged, paged};
 use crate::auth::{Ctx, CurrentUser};
-use crate::domain::money::div_round;
+use crate::domain::money::{div_round, markup_permille};
 use crate::error::{AppError, AppResult, invalid, overflow};
 use crate::ops::{self, Movement, new_id};
 use crate::state::AppState;
@@ -29,9 +33,8 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct StockInOut {
-    pub id: Uuid,
-    pub number: i64,
+pub struct StockInLineOut {
+    pub line_no: i32,
     pub product_id: Uuid,
     pub product_name: String,
     pub unit: String,
@@ -40,40 +43,51 @@ pub struct StockInOut {
     pub qty: i64,
     /// Цена закупки за штуку, канистру или килограмм.
     pub price_tyiyn: i64,
-    /// Стоимость всего количества.
+    /// Стоимость строки.
+    pub cost_tyiyn: i64,
+    /// Цена продажи товара после оприходования; пусто — документ до ADR-086 или сторно.
+    #[serde(default)]
+    pub sale_price_tyiyn: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StockInOut {
+    pub id: Uuid,
+    pub number: i64,
+    /// Итог документа; у сторно — с минусом.
     pub cost_tyiyn: i64,
     pub comment: String,
     pub reversal_of: Option<Uuid>,
     pub reversed_by: Option<Uuid>,
     pub user_name: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub lines: Vec<StockInLineOut>,
 }
 
 /// Отбор списка оприходований: товар и период по дню Бишкека (оба края включительно).
 #[derive(Deserialize, Default, Clone, Copy)]
-struct Filter {
-    product_id: Option<Uuid>,
-    from: Option<NaiveDate>,
-    to: Option<NaiveDate>,
+pub(crate) struct Filter {
+    pub(crate) product_id: Option<Uuid>,
+    pub(crate) from: Option<NaiveDate>,
+    pub(crate) to: Option<NaiveDate>,
 }
 
-async fn load(
+pub(crate) async fn load(
     conn: &mut PgConnection,
     branch_id: Uuid,
     id: Option<Uuid>,
     f: Filter,
 ) -> AppResult<Vec<StockInOut>> {
-    Ok(sqlx::query_as!(
-        StockInOut,
-        r#"select s.id, s.number, s.product_id, p.name as product_name, p.unit, p.container_ml,
-                  s.qty, s.price_tyiyn, s.cost_tyiyn, s.comment, s.reversal_of,
+    let heads = sqlx::query!(
+        r#"select s.id, s.number, s.cost_tyiyn, s.comment, s.reversal_of,
                   (select x.id from stock_ins x where x.reversal_of = s.id) as reversed_by,
                   u.full_name as user_name, s.created_at
            from stock_ins s
-           join products p on p.id = s.product_id
            join users u on u.id = s.user_id
            where s.branch_id = $1 and ($2::uuid is null or s.id = $2)
-             and ($3::uuid is null or s.product_id = $3)
+             and ($3::uuid is null
+                  or exists (select 1 from stock_in_lines l where l.stock_in_id = s.id and l.product_id = $3))
              and ($4::date is null or s.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')
              and ($5::date is null or s.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')
            order by s.created_at desc
@@ -86,7 +100,49 @@ async fn load(
         MAX_ROWS
     )
     .fetch_all(&mut *conn)
-    .await?)
+    .await?;
+    let ids: Vec<Uuid> = heads.iter().map(|h| h.id).collect();
+    let rows = sqlx::query!(
+        r#"select l.stock_in_id, l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml,
+                  l.qty, l.price_tyiyn, l.cost_tyiyn, l.sale_price_tyiyn
+           from stock_in_lines l join products p on p.id = l.product_id
+           where l.stock_in_id = any($1)
+           order by l.stock_in_id, l.line_no"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut lines: HashMap<Uuid, Vec<StockInLineOut>> = HashMap::new();
+    for r in rows {
+        lines
+            .entry(r.stock_in_id)
+            .or_default()
+            .push(StockInLineOut {
+                line_no: r.line_no,
+                product_id: r.product_id,
+                product_name: r.product_name,
+                unit: r.unit,
+                container_ml: r.container_ml,
+                qty: r.qty,
+                price_tyiyn: r.price_tyiyn,
+                cost_tyiyn: r.cost_tyiyn,
+                sale_price_tyiyn: r.sale_price_tyiyn,
+            });
+    }
+    Ok(heads
+        .into_iter()
+        .map(|h| StockInOut {
+            lines: lines.remove(&h.id).unwrap_or_default(),
+            id: h.id,
+            number: h.number,
+            cost_tyiyn: h.cost_tyiyn,
+            comment: h.comment,
+            reversal_of: h.reversal_of,
+            reversed_by: h.reversed_by,
+            user_name: h.user_name,
+            created_at: h.created_at,
+        })
+        .collect())
 }
 
 pub(crate) async fn load_one(
@@ -101,8 +157,8 @@ pub(crate) async fn load_one(
         .ok_or(AppError::NotFound)
 }
 
-/// Список оприходований (SPEC-29 §25): экран «Оприходование» — период и страницы, окно товара —
-/// по `product_id`. Без `limit` — как раньше, до 500 строк.
+/// Список оприходований: период, товар и страницы. Экран «Приход» показывает их вместе с
+/// приходами (`GET /receipts?kind=`); без `limit` — как раньше, до 500 строк.
 async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -124,14 +180,47 @@ async fn get_one(
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct StockInReq {
-    pub op_id: Uuid,
+pub struct StockInLineReq {
     pub product_id: Uuid,
     /// В единицах учёта: штуки, миллилитры (масло), граммы (на вес).
     pub qty: i64,
     /// Цена закупки за штуку, канистру масла или килограмм.
     pub price_tyiyn: i64,
+    /// Новая цена продажи товара — как у строки прихода (SPEC-28 §1); пусто — не меняется.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale_price_tyiyn: Option<i64>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct StockInReq {
+    pub op_id: Uuid,
+    #[serde(default)]
     pub comment: String,
+    #[serde(default)]
+    pub lines: Vec<StockInLineReq>,
+    /// Прежний вид запроса — один товар без `lines` (до ADR-086): принимается как одна строка.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qty: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_tyiyn: Option<i64>,
+}
+
+impl StockInReq {
+    /// Строки документа: `lines` или прежний один товар.
+    fn into_lines(self) -> AppResult<Vec<StockInLineReq>> {
+        match (self.product_id, self.lines.is_empty()) {
+            (None, _) => Ok(self.lines),
+            (Some(product_id), true) => Ok(vec![StockInLineReq {
+                product_id,
+                qty: self.qty.unwrap_or(0),
+                price_tyiyn: self.price_tyiyn.unwrap_or(-1),
+                sale_price_tyiyn: None,
+            }]),
+            (Some(_), false) => Err(invalid("товар — либо строками, либо одним товаром")),
+        }
+    }
 }
 
 async fn post(
@@ -145,17 +234,12 @@ async fn post(
     Ok(Json(out))
 }
 
-/// Оприходование — одна транзакция: документ, движение склада, последняя закупочная цена, журнал.
+/// Оприходование — одна транзакция: документ и строки, движения склада, последняя закупочная
+/// цена и новая цена продажи по строкам, журнал.
 pub async fn post_tx(conn: &mut PgConnection, ctx: &Ctx, req: StockInReq) -> AppResult<StockInOut> {
     const KIND: &str = "stock_in.post";
-    if req.qty <= 0 || req.qty > 1_000_000_000 {
-        return Err(invalid("количество больше нуля"));
-    }
-    if req.price_tyiyn < 0 {
-        return Err(invalid("цена закупки не отрицательна"));
-    }
-    ops::check_amount(req.price_tyiyn)?;
-    let comment = req.comment.trim();
+    let op_id = req.op_id;
+    let comment = req.comment.trim().to_string();
     if comment.is_empty() {
         return Err(invalid(
             "напишите, откуда товар: без накладной оприходование только с комментарием",
@@ -164,93 +248,182 @@ pub async fn post_tx(conn: &mut PgConnection, ctx: &Ctx, req: StockInReq) -> App
     if comment.chars().count() > 500 {
         return Err(invalid("комментарий не длиннее 500 знаков"));
     }
-    if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
+    let lines = req.into_lines()?;
+    if lines.is_empty() {
+        return Err(invalid("в оприходовании нет строк"));
+    }
+    if lines.len() > 500 {
+        return Err(invalid("слишком много строк"));
+    }
+    for l in &lines {
+        if l.qty <= 0 || l.qty > 1_000_000_000 {
+            return Err(invalid("количество больше нуля"));
+        }
+        if l.price_tyiyn < 0 {
+            return Err(invalid("цена закупки не отрицательна"));
+        }
+        ops::check_amount(l.price_tyiyn)?;
+        if let Some(p) = l.sale_price_tyiyn {
+            if p < 0 {
+                return Err(invalid("цена продажи не отрицательна"));
+            }
+            ops::check_amount(p)?;
+        }
+    }
+    // Одна цена продажи на товар — как у прихода.
+    let mut prices: BTreeMap<Uuid, (i64, i64)> = BTreeMap::new();
+    for l in &lines {
+        if let Some(p) = l.sale_price_tyiyn
+            && prices.entry(l.product_id).or_insert((p, l.price_tyiyn)).0 != p
+        {
+            return Err(invalid(
+                "у одного товара в оприходовании две разные цены продажи — оставьте одну",
+            ));
+        }
+    }
+    if let Some(done) = ops::begin_op(conn, ctx, op_id, KIND).await? {
         return Ok(done);
     }
     let branch_id = ctx.user.branch_id;
-    let p = sqlx::query!(
-        "select name, unit, container_ml, archived from products where id = $1",
-        req.product_id
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or(AppError::NotFound)?;
-    if p.archived {
-        return Err(invalid(
-            "товар в архиве: если карточку объединили, оприходуйте на основную",
-        ));
+    let distinct: BTreeSet<Uuid> = lines.iter().map(|l| l.product_id).collect();
+    let mut products = HashMap::new();
+    for id in &distinct {
+        let p = sqlx::query!(
+            "select name, unit, container_ml, archived from products where id = $1",
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| invalid("товар не найден"))?;
+        if p.archived {
+            return Err(invalid(
+                "товар в архиве: если карточку объединили, оприходуйте на основную",
+            ));
+        }
+        products.insert(*id, p);
     }
-    let per = price_unit(&p.unit, p.container_ml);
-    let cost = div_round(
-        i128::from(req.price_tyiyn) * i128::from(req.qty),
-        i128::from(per),
-    )
-    .ok_or_else(overflow)?;
-    ops::check_amount(cost)?;
-    ops::lock_pool(conn, branch_id, req.product_id).await?;
-    ops::ensure_not_merged(conn, &[req.product_id]).await?;
+    let mut costs = Vec::with_capacity(lines.len());
+    let mut total: i64 = 0;
+    for l in &lines {
+        let p = products
+            .get(&l.product_id)
+            .ok_or_else(|| AppError::Internal("нет товара строки".into()))?;
+        let per = price_unit(&p.unit, p.container_ml);
+        let cost = div_round(
+            i128::from(l.price_tyiyn) * i128::from(l.qty),
+            i128::from(per),
+        )
+        .ok_or_else(overflow)?;
+        ops::check_amount(cost)?;
+        total = total.checked_add(cost).ok_or_else(overflow)?;
+        costs.push(cost);
+    }
+    ops::check_amount(total)?;
+    crate::api::receipts::lock_products(conn, branch_id, distinct.iter().copied()).await?;
+    let ids: Vec<Uuid> = distinct.iter().copied().collect();
+    ops::ensure_not_merged(conn, &ids).await?;
     let number = ops::next_counter(conn, branch_id, "stock_in").await?;
     let id = new_id();
     sqlx::query!(
-        r#"insert into stock_ins (id, branch_id, number, product_id, qty, price_tyiyn, cost_tyiyn, comment,
-                                  user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+        r#"insert into stock_ins (id, branch_id, number, cost_tyiyn, comment, user_id, device_id)
+           values ($1, $2, $3, $4, $5, $6, $7)"#,
         id,
         branch_id,
         number,
-        req.product_id,
-        req.qty,
-        req.price_tyiyn,
-        cost,
+        total,
         comment,
         ctx.user.id,
         ctx.device_id
     )
     .execute(&mut *conn)
     .await?;
-    ops::apply_movement(
-        conn,
-        Movement {
-            branch_id,
-            product_id: req.product_id,
-            qty_delta: req.qty,
-            value_delta: cost,
-            doc_type: "stock_in",
-            doc_id: id,
-        },
-    )
-    .await?;
-    // Цена закупки — последняя закупочная: по ней пойдёт продажа в минус и излишек ревизии.
-    if req.price_tyiyn > 0 {
+    // Новые цены продажи — до строк: строка запоминает цену, с которой товар вышел из документа.
+    for (product_id, (sale, price)) in &prices {
+        crate::api::catalog::set_price_from_receipt(
+            conn,
+            ctx,
+            *product_id,
+            *sale,
+            PriceDoc::StockIn(id, number),
+            markup_permille(*price, *sale),
+        )
+        .await?;
+    }
+    for (i, (l, cost)) in lines.iter().zip(&costs).enumerate() {
+        let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
         sqlx::query!(
-            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
-            branch_id,
-            req.product_id,
-            req.qty,
-            cost
+            r#"insert into stock_in_lines (id, stock_in_id, line_no, product_id, qty, price_tyiyn, cost_tyiyn,
+                                           sale_price_tyiyn)
+               values ($1, $2, $3, $4, $5, $6, $7,
+                       (select sale_price_tyiyn from branch_products where branch_id = $8 and product_id = $4))"#,
+            new_id(),
+            id,
+            line_no,
+            l.product_id,
+            l.qty,
+            l.price_tyiyn,
+            cost,
+            branch_id
         )
         .execute(&mut *conn)
         .await?;
+        ops::apply_movement(
+            conn,
+            Movement {
+                branch_id,
+                product_id: l.product_id,
+                qty_delta: l.qty,
+                value_delta: *cost,
+                doc_type: "stock_in",
+                doc_id: id,
+            },
+        )
+        .await?;
+        // Цена закупки — последняя закупочная: по ней пойдёт продажа в минус и излишек ревизии.
+        if l.price_tyiyn > 0 {
+            sqlx::query!(
+                "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+                branch_id,
+                l.product_id,
+                l.qty,
+                cost
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
     }
+    let audit_lines: Vec<_> = lines
+        .iter()
+        .zip(&costs)
+        .filter_map(|(l, cost)| {
+            products.get(&l.product_id).map(|p| {
+                json!({
+                    "product_id": l.product_id,
+                    "name": p.name,
+                    "qty_text": crate::api::bot_drafts::qty_text(l.qty, &p.unit),
+                    "price": l.price_tyiyn,
+                    "cost": cost,
+                })
+            })
+        })
+        .collect();
     ops::audit(
         conn,
         ctx,
         KIND,
-        "product",
-        Some(req.product_id),
+        "stock_in",
+        Some(id),
         json!({
             "number": number,
             "stock_in": id,
-            "name": p.name,
-            "qty_text": crate::api::bot_drafts::qty_text(req.qty, &p.unit),
-            "price": req.price_tyiyn,
-            "cost": cost,
+            "lines": audit_lines,
+            "cost": total,
             "comment": comment,
         }),
     )
     .await?;
     let out = load_one(conn, branch_id, id).await?;
-    ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
+    ops::finish_op(conn, ctx, op_id, KIND, &out).await?;
     Ok(out)
 }
 
@@ -273,8 +446,9 @@ async fn reverse(
     Ok(Json(out))
 }
 
-/// Сторно оприходования: товар уходит со склада по той же стоимости. Если его уже продали и
-/// остаток уйдёт в минус — так исправляют только ошибку, и решает владелец (как у прихода, ADR-065).
+/// Сторно оприходования целиком: товар всех строк уходит со склада по той же стоимости. Если его
+/// уже продали и остаток уйдёт в минус — так исправляют только ошибку, и решает владелец (как у
+/// прихода, ADR-065).
 pub async fn reverse_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -303,25 +477,51 @@ pub async fn reverse_tx(
     if orig.reversed_by.is_some() {
         return Err(AppError::Conflict("оприходование уже сторнировано".into()));
     }
-    let target = ops::live_product(conn, orig.product_id).await?;
-    let pool = ops::lock_pool(conn, branch_id, target).await?;
-    ops::ensure_not_merged(conn, &[target]).await?;
-    let negative = pool.qty < orig.qty;
-    if negative && !ctx.user.is_owner() {
+    // Карточку могли объединить с другой: товар уходит с той, в которую её влили.
+    let mut targets = Vec::with_capacity(orig.lines.len());
+    for l in &orig.lines {
+        targets.push(ops::live_product(conn, l.product_id).await?);
+    }
+    let mut leaving: BTreeMap<Uuid, i64> = BTreeMap::new();
+    for (l, t) in orig.lines.iter().zip(&targets) {
+        let q = leaving.entry(*t).or_insert(0);
+        *q = q.checked_add(l.qty).ok_or_else(overflow)?;
+    }
+    let mut pools = HashMap::new();
+    for t in leaving.keys() {
+        pools.insert(*t, ops::lock_pool(conn, branch_id, *t).await?);
+    }
+    let live: Vec<Uuid> = leaving.keys().copied().collect();
+    ops::ensure_not_merged(conn, &live).await?;
+    let mut negative = Vec::new();
+    for (t, qty) in &leaving {
+        let have = pools.get(t).map_or(0, |p| p.qty);
+        if have < *qty {
+            let unit = orig
+                .lines
+                .iter()
+                .zip(&targets)
+                .find(|(_, x)| *x == t)
+                .map(|(l, _)| (l.product_name.clone(), l.unit.clone()))
+                .unwrap_or_default();
+            negative.push(format!(
+                "{} {}",
+                unit.0,
+                crate::api::bot_drafts::qty_text(have - qty, &unit.1)
+            ));
+        }
+    }
+    if !negative.is_empty() && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
     let number = ops::next_counter(conn, branch_id, "stock_in").await?;
     let rid = new_id();
     sqlx::query!(
-        r#"insert into stock_ins (id, branch_id, number, product_id, qty, price_tyiyn, cost_tyiyn, comment,
-                                  reversal_of, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+        r#"insert into stock_ins (id, branch_id, number, cost_tyiyn, comment, reversal_of, user_id, device_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
         rid,
         branch_id,
         number,
-        orig.product_id,
-        -orig.qty,
-        orig.price_tyiyn,
         -orig.cost_tyiyn,
         comment,
         id,
@@ -330,34 +530,68 @@ pub async fn reverse_tx(
     )
     .execute(&mut *conn)
     .await?;
+    for (l, target) in orig.lines.iter().zip(&targets) {
+        sqlx::query!(
+            r#"insert into stock_in_lines (id, stock_in_id, line_no, product_id, qty, price_tyiyn, cost_tyiyn)
+               values ($1, $2, $3, $4, $5, $6, $7)"#,
+            new_id(),
+            rid,
+            l.line_no,
+            l.product_id,
+            -l.qty,
+            l.price_tyiyn,
+            -l.cost_tyiyn
+        )
+        .execute(&mut *conn)
+        .await?;
+        ops::apply_movement(
+            conn,
+            Movement {
+                branch_id,
+                product_id: *target,
+                qty_delta: -l.qty,
+                value_delta: -l.cost_tyiyn,
+                doc_type: "stock_in_reversal",
+                doc_id: rid,
+            },
+        )
+        .await?;
+    }
     // Ошибочная цена не остаётся «последней закупочной»: берём последнюю живую закупку —
     // приход или другое оприходование; не было — ноль (как при сторно прихода, SPEC-03).
-    let last = sqlx::query!(
-        r#"with recursive fam as (
-             select $2::uuid as id
-             union select p.id from products p join fam on p.merged_into = fam.id
-           )
-           select qty as "qty!", cost as "cost!" from (
-             select l.qty, l.cost_tyiyn as cost, r.created_at as at
-             from receipt_lines l join receipts r on r.id = l.receipt_id
-             where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
-               and r.reversal_of is null
-               and not exists (select 1 from receipts x where x.reversal_of = r.id)
-             union all
-             select s.qty, s.cost_tyiyn, s.created_at
-             from stock_ins s
-             where s.branch_id = $1 and s.product_id in (select id from fam) and s.qty > 0
-               and s.id <> $3 and s.price_tyiyn > 0
-               and not exists (select 1 from stock_ins x where x.reversal_of = s.id)
-           ) u
-           order by at desc limit 1"#,
-        branch_id,
-        target,
-        id
-    )
-    .fetch_optional(&mut *conn)
-    .await?;
-    if orig.price_tyiyn > 0 {
+    let priced: BTreeSet<Uuid> = orig
+        .lines
+        .iter()
+        .zip(&targets)
+        .filter(|(l, _)| l.price_tyiyn > 0)
+        .map(|(_, t)| *t)
+        .collect();
+    for target in priced {
+        let last = sqlx::query!(
+            r#"with recursive fam as (
+                 select $2::uuid as id
+                 union select p.id from products p join fam on p.merged_into = fam.id
+               )
+               select qty as "qty!", cost as "cost!" from (
+                 select l.qty, l.cost_tyiyn as cost, r.created_at as at, l.line_no
+                 from receipt_lines l join receipts r on r.id = l.receipt_id
+                 where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
+                   and r.reversal_of is null
+                   and not exists (select 1 from receipts x where x.reversal_of = r.id)
+                 union all
+                 select l.qty, l.cost_tyiyn, s.created_at, l.line_no
+                 from stock_in_lines l join stock_ins s on s.id = l.stock_in_id
+                 where s.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
+                   and s.id <> $3 and l.price_tyiyn > 0 and s.reversal_of is null
+                   and not exists (select 1 from stock_ins x where x.reversal_of = s.id)
+               ) u
+               order by at desc, line_no desc limit 1"#,
+            branch_id,
+            target,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
         sqlx::query!(
             "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
             branch_id,
@@ -368,33 +602,32 @@ pub async fn reverse_tx(
         .execute(&mut *conn)
         .await?;
     }
-    ops::apply_movement(
-        conn,
-        Movement {
-            branch_id,
-            product_id: target,
-            qty_delta: -orig.qty,
-            value_delta: -orig.cost_tyiyn,
-            doc_type: "stock_in_reversal",
-            doc_id: rid,
-        },
-    )
-    .await?;
+    let audit_lines: Vec<_> = orig
+        .lines
+        .iter()
+        .map(|l| {
+            json!({
+                "product_id": l.product_id,
+                "name": l.product_name,
+                "qty_text": crate::api::bot_drafts::qty_text(l.qty, &l.unit),
+                "cost": l.cost_tyiyn,
+            })
+        })
+        .collect();
     ops::audit(
         conn,
         ctx,
         KIND,
-        "product",
-        Some(target),
+        "stock_in",
+        Some(rid),
         json!({
             "number": orig.number,
             "stock_in": id,
             "reversal": rid,
-            "name": orig.product_name,
-            "qty_text": crate::api::bot_drafts::qty_text(orig.qty, &orig.unit),
+            "lines": audit_lines,
             "cost": orig.cost_tyiyn,
             "comment": comment,
-            "negative": negative.then_some(pool.qty - orig.qty),
+            "negative": (!negative.is_empty()).then(|| negative.join(", ")),
         }),
     )
     .await?;

@@ -528,7 +528,7 @@ pub async fn post_receipt_tx(
             ctx,
             *product_id,
             *sale,
-            (id, number),
+            crate::api::catalog::PriceDoc::Receipt(id, number),
             markup,
         )
         .await?;
@@ -1086,6 +1086,8 @@ pub struct PeriodQuery {
 
 #[derive(Serialize)]
 pub(crate) struct ReceiptListItem {
+    /// `receipt` — приход от поставщика, `stock_in` — оприходование без поставщика (ADR-086).
+    pub(crate) kind: String,
     pub(crate) id: Uuid,
     pub(crate) number: i64,
     pub(crate) supplier_name: Option<String>,
@@ -1099,16 +1101,73 @@ pub(crate) struct ReceiptListItem {
     pub(crate) on_debt_tyiyn: i64,
     /// Осталось заплатить по накладной в долг (ADR-073); 0 — оплачена или не в долг.
     pub(crate) debt_left_tyiyn: i64,
+    pub(crate) comment: String,
+    /// Товары оприходования словами («Хомут, Шайба»); у прихода — пусто.
+    pub(crate) goods: String,
+}
+
+/// Что показывать на экране «Приход» (ADR-086): `all` — приходы и оприходования вместе,
+/// `receipt` — только от поставщиков, `stock_in` — только оприходования. Без отбора — только
+/// приходы, как раньше (карточка поставщика, бот).
+#[derive(Deserialize, Default)]
+pub struct KindQuery {
+    pub kind: Option<String>,
 }
 
 async fn list_receipts(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<PeriodQuery>,
+    Query(k): Query<KindQuery>,
     Query(page): Query<PageQuery>,
 ) -> AppResult<Paged<ReceiptListItem>> {
+    let (receipts, stock_ins) = match k.kind.as_deref() {
+        None | Some("receipt") => (true, false),
+        Some("all") => (true, q.supplier_id.is_none()),
+        Some("stock_in") => (false, q.supplier_id.is_none()),
+        Some(_) => return Err(invalid("вид: all, receipt или stock_in")),
+    };
     let mut conn = state.pool.acquire().await?;
-    let (items, total) = page.slice(receipts_data(&mut conn, &user, q).await?, 500);
+    let mut rows = Vec::new();
+    if stock_ins {
+        let filter = crate::api::stock_in::Filter {
+            product_id: None,
+            from: q.from,
+            to: q.to,
+        };
+        let docs = crate::api::stock_in::load(&mut conn, user.branch_id, None, filter).await?;
+        rows.extend(docs.into_iter().map(|d| {
+            let mut names: Vec<&str> = Vec::new();
+            for l in &d.lines {
+                if !names.contains(&l.product_name.as_str()) {
+                    names.push(&l.product_name);
+                }
+            }
+            ReceiptListItem {
+                kind: "stock_in".into(),
+                goods: names.join(", "),
+                id: d.id,
+                number: d.number,
+                supplier_name: None,
+                supplier_doc: String::new(),
+                total_tyiyn: d.cost_tyiyn,
+                reversal_of: d.reversal_of,
+                reversed: d.reversed_by.is_some(),
+                user_name: d.user_name,
+                created_at: d.created_at,
+                on_debt_tyiyn: 0,
+                debt_left_tyiyn: 0,
+                comment: d.comment,
+            }
+        }));
+    }
+    if receipts {
+        rows.extend(receipts_data(&mut conn, &user, q).await?);
+    }
+    // Вместе — по дате, новые сверху; дальше отбора сервер не перебирает.
+    rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+    rows.truncate(usize::try_from(MAX_ROWS).unwrap_or(usize::MAX));
+    let (items, total) = page.slice(rows, 500);
     Ok(paged(items, total))
 }
 
@@ -1120,7 +1179,7 @@ pub(crate) async fn receipts_data(
 ) -> AppResult<Vec<ReceiptListItem>> {
     let rows = sqlx::query_as!(
         ReceiptListItem,
-        r#"select r.id, r.number, s.name as "supplier_name?", r.supplier_doc, r.total_tyiyn, r.reversal_of,
+        r#"select 'receipt' as "kind!", r.id, r.number, s.name as "supplier_name?", r.supplier_doc, r.total_tyiyn, r.reversal_of,
                   exists (select 1 from receipts x where x.reversal_of = r.id) as "reversed!",
                   u.full_name as user_name, r.created_at,
                   abs(coalesce((select sum(l.amount_tyiyn) from party_ledger l
@@ -1130,7 +1189,8 @@ pub(crate) async fn receipts_data(
                                                                          where s.debit_id = l.id)), 0)
                             from party_ledger l
                             where l.doc_type = 'receipt' and l.doc_id = r.id and l.amount_tyiyn < 0
-                              and supplier_ledger_live(l)), 0)::bigint as "debt_left_tyiyn!"
+                              and supplier_ledger_live(l)), 0)::bigint as "debt_left_tyiyn!",
+                  r.comment, '' as "goods!"
            from receipts r
            join users u on u.id = r.user_id
            left join suppliers s on s.id = r.supplier_id

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with recursive fam as (\n                 select $2::uuid as id\n                 union select p.id from products p join fam on p.merged_into = fam.id\n               )\n               select qty as \"qty!\", cost as \"cost!\" from (\n                 select l.qty, l.cost_tyiyn as cost, r.created_at as at, l.line_no\n                 from receipt_lines l join receipts r on r.id = l.receipt_id\n                 where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0\n                   and r.reversal_of is null\n                   and not exists (select 1 from receipts x where x.reversal_of = r.id)\n                 union all\n                 select l.qty, l.cost_tyiyn, s.created_at, l.line_no\n                 from stock_in_lines l join stock_ins s on s.id = l.stock_in_id\n                 where s.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0\n                   and s.id <> $3 and l.price_tyiyn > 0 and s.reversal_of is null\n                   and not exists (select 1 from stock_ins x where x.reversal_of = s.id)\n               ) u\n               order by at desc, line_no desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cost!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "0a9438e2554947cd2c2fbb549a85d6f7e3491a33f6e97839e05d6fd3a2b23b62"
+}

@@ -3,8 +3,10 @@
 // продажи связаны, новая цена продажи ставится товару при проведении (SPEC-28 §1, ADR-075). Внизу
 // итог по закупке и по продаже; при выборе товара — «в прошлый раз: цена, дата, поставщик» (SPEC-27).
 // Ввод подряд с клавиатуры и подсказки из старой программы, часть оплаты сразу, фото накладной (SPEC-29).
-import { useState, type KeyboardEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+// Вверху — вид документа: «От поставщика» или «Оприходование (без поставщика)» (SPEC-29 §8, ADR-086):
+// те же строки, но без поставщика и оплаты, с обязательным комментарием; количество — как на складе.
+import { useEffect, useState, type KeyboardEvent } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
@@ -26,7 +28,11 @@ import { useAction, useLoad } from '../lib/hooks'
 import { presetFromHit, type CardPreset } from '../lib/oldCatalog'
 import { nextField, type LineField } from '../lib/receiptKeys'
 import { defaultPaySource, notEnough, paidNow, partProblem, paySources, type PayMode } from '../lib/receiptPay'
-import type { CashAccount, Category, LastReceipt, OldCatalogHit, Product, Receipt, Supplier } from '../lib/types'
+import { convertCount, stockInFirstCount, stockInLineCalc, stockInNextCount } from '../lib/stockIn'
+import type { CashAccount, Category, LastReceipt, OldCatalogHit, Product, Receipt, StockIn, Supplier } from '../lib/types'
+
+/** Вид документа на экране: приход от поставщика или оприходование без поставщика. */
+export type ReceiptKind = 'receipt' | 'stock_in'
 
 interface Line {
   key: string
@@ -44,6 +50,8 @@ interface Line {
 
 /** Исправление прихода владельцем (SPEC-29 §24): тот же экран, заполненный исходной накладной. */
 export interface ReceiptFix {
+  /** Что исправляют: накладную или оприходование; по умолчанию — накладную. */
+  kind?: ReceiptKind
   originalId: string
   number: number | null
   state: ReceiptFixState
@@ -51,7 +59,11 @@ export interface ReceiptFix {
 
 export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const navigate = useNavigate()
+  const [params] = useSearchParams()
   const [opId] = useState(newOpId)
+  const [kind, setKind] = useState<ReceiptKind>(fix?.kind ?? (params.get('kind') === 'stock_in' ? 'stock_in' : 'receipt'))
+  const stockIn = kind === 'stock_in'
+  const calcOf = stockIn ? stockInLineCalc : lineCalc
   const suppliers = useLoad(() => get<Supplier[]>('/suppliers'), [])
   const [supplierId, setSupplierId] = useState(fix?.state.supplierId ?? '')
   const [supplierDoc, setSupplierDoc] = useState(fix?.state.supplierDoc ?? '')
@@ -111,19 +123,45 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
         // Цена подставляется из прошлого прихода, цена продажи — текущая; их можно изменить.
         // Карточка из старой программы — закупка оттуда, пока своих приходов нет.
         const prices = initialPrices(p)
-        return [...ls, { key: crypto.randomUUID(), product: p, count: '1', ...(cost && !prices.price ? withCost(prices, cost) : prices) }]
+        const count = stockIn ? stockInFirstCount(p) : '1'
+        return [...ls, { key: crypto.randomUUID(), product: p, count, ...(cost && !prices.price ? withCost(prices, cost) : prices) }]
       }
       return ls.map((l, j) => {
         if (j !== i) return l
+        if (stockIn) return { ...l, count: stockInNextCount(p, l.count) }
         const n = parseCount(l.count)
         return { ...l, count: String(n === null ? 1 : n + 1) }
       })
     })
   }
 
+  // «+ Оприходовать» у товара: экран открывается оприходованием с этим товаром в первой строке.
+  const prefill = fix ? null : params.get('product')
+  useEffect(() => {
+    if (!prefill) return
+    let alive = true
+    void get<Product>(`/products/${prefill}`)
+      .then((p) => {
+        if (alive) addProduct(p)
+      })
+      .catch((e: unknown) => save.setError(e instanceof Error ? e.message : String(e)))
+    return () => {
+      alive = false
+    }
+    // Только при открытии экрана: товар из адреса добавляется один раз.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill])
+
+  /** Смена вида: строки остаются, количество масла — канистрами в приходе, литрами в оприходовании. */
+  const switchKind = (k: ReceiptKind) => {
+    if (k === kind) return
+    setKind(k)
+    setLines((ls) => ls.map((l) => ({ ...l, count: convertCount(l.product, l.count, k === 'stock_in') })))
+  }
+
   /** Этикетки на товар строки: столько же, сколько принимаем. */
   const printLine = (l: Line) => {
-    const c = lineCalc(l)
+    const c = calcOf(l)
     const copies = typeof c === 'string' ? 1 : c.n
     void labels.run(() => printLabels([{ product: l.product, copies }]))
   }
@@ -131,7 +169,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const updateLine = (key: string, patch: Partial<Line>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 
-  const calcs = lines.map(lineCalc)
+  const calcs = lines.map(calcOf)
   let total: number | null = 0
   let totalSale: number | null = 0
   for (const c of calcs) {
@@ -169,16 +207,23 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const partError = payMode === 'part' ? partProblem(part, total) : null
   const paying = payMode !== 'debt'
   const now = paidNow(payMode, total, part)
-  const missing = missingWithFocus(
-    [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
-    [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
-    [partError === null, partError ?? '', '#receipt-paid-now'],
-    [!paying || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
-    // Исправление: исходная оплата вернётся на счёт, остаток проверит сервер.
-    [Boolean(fix) || !paying || !notEnough(sources, source, now), 'денег на выбранном счёте меньше оплаты', '#receipt-paid-from'],
-    [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
-    [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
-  )
+  const missing = stockIn
+    ? missingWithFocus(
+        [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
+        [Boolean(comment.trim()), 'комментарий — откуда товар', '#receipt-comment'],
+        [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+        [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
+      )
+    : missingWithFocus(
+        [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
+        [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
+        [partError === null, partError ?? '', '#receipt-paid-now'],
+        [!paying || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
+        // Исправление: исходная оплата вернётся на счёт, остаток проверит сервер.
+        [Boolean(fix) || !paying || !notEnough(sources, source, now), 'денег на выбранном счёте меньше оплаты', '#receipt-paid-from'],
+        [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+        [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
+      )
 
   const addPhotos = (files: FileList) =>
     void photoAction.run(async () => {
@@ -211,6 +256,10 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
       save.setError('Слишком большая сумма документа')
       return
     }
+    if (stockIn) {
+      submitStockIn(copies)
+      return
+    }
     void save.run(async () => {
       const doc = {
         supplier_id: supplierId || null,
@@ -241,14 +290,41 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
     })
   }
 
+  /** Оприходование: одна операция, один документ строками; цена — за штуку, канистру или кг. */
+  const submitStockIn = (copies: { product: Product; copies: number }[]) => {
+    const body: { product_id: string; qty: number; price_tyiyn: number; sale_price_tyiyn?: number }[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const c = calcs[i]
+      const price = parseSom(lines[i].price)
+      if (typeof c === 'string' || price === null) return
+      const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
+      body.push({ product_id: lines[i].product.id, qty: c.qty, price_tyiyn: price, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
+    }
+    void save.run(async () => {
+      const doc = { comment: comment.trim(), lines: body }
+      const id = fix
+        ? (await postCorrection({ op_id: opId, kind: 'stock_in', original_id: fix.originalId, comment: fixComment.trim(), doc })).new_id
+        : (await post<StockIn>('/stock-ins', { op_id: opId, ...doc })).id
+      if (print) {
+        try {
+          await printLabels(copies)
+        } catch (err) {
+          console.error(err)
+        }
+      }
+      navigate(`/stock-ins/${id}`)
+    })
+  }
+
   const activeSuppliers = (suppliers.data ?? []).filter((s) => s.active)
+  const submitText = fix ? 'Сохранить исправление' : stockIn ? 'Провести оприходование' : 'Провести приход'
 
   return (
     <div className={lines.length > 0 ? 'pb-20 md:pb-0' : ''}>
       <PageHeader
-        title={fix ? `Исправление прихода${fix.number ? ` № ${fix.number}` : ''}` : 'Новый приход'}
+        title={fix ? `Исправление ${stockIn ? 'оприходования' : 'прихода'}${fix.number ? ` № ${fix.number}` : ''}` : 'Новый приход'}
         actions={
-          <Button variant="secondary" onClick={() => navigate(fix ? `/receipts/${fix.originalId}` : '/receipts')}>
+          <Button variant="secondary" onClick={() => navigate(fix ? `/${stockIn ? 'stock-ins' : 'receipts'}/${fix.originalId}` : '/receipts')}>
             {fix ? 'Отменить' : 'К списку'}
           </Button>
         }
@@ -256,7 +332,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
       <div className="flex flex-col gap-4">
         {fix && (
           <>
-            <CorrectionBanner label="приход" number={fix.number} comment={fixComment} onComment={setFixComment} />
+            <CorrectionBanner label={stockIn ? 'оприходование' : 'приход'} number={fix.number} comment={fixComment} onComment={setFixComment} />
             {fix.state.rounded.length > 0 && (
               <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 Цена за штуку округлена до тыйына — проверьте сумму строк: {fix.state.rounded.join(', ')}
@@ -264,6 +340,37 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
             )}
           </>
         )}
+        {!fix && (
+          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Вид прихода">
+            {(
+              [
+                ['receipt', 'От поставщика'],
+                ['stock_in', 'Оприходование (без поставщика)'],
+              ] as [ReceiptKind, string][]
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={kind === k}
+                className={`rounded-md border px-4 py-2 text-sm font-medium ${kind === k ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+                onClick={() => switchKind(k)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {stockIn ? (
+          <Card>
+            <p className="mb-3 text-sm text-slate-600">
+              Товар пришёл без накладной и без денег: ляжет на склад по цене закупки, цена станет последней закупочной; владелец получит уведомление.
+            </p>
+            <Field label="Комментарий: откуда товар" required>
+              <input id="receipt-comment" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Например: привёз владелец со склада" />
+            </Field>
+          </Card>
+        ) : (
         <Card>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <Field label="Поставщик">
@@ -285,7 +392,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
               <input value={supplierDoc} onChange={(e) => setSupplierDoc(e.target.value)} />
             </Field>
             <Field label="Комментарий">
-              <input value={comment} onChange={(e) => setComment(e.target.value)} />
+              <input id="receipt-comment" value={comment} onChange={(e) => setComment(e.target.value)} />
             </Field>
           </div>
           <ErrorBox error={suppliers.error} />
@@ -316,6 +423,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
             </div>
           )}
         </Card>
+        )}
 
         <Card>
           <div className="mb-3">
@@ -331,7 +439,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
           {lines.length === 0 ? (
             <Empty>Сканируйте штрихкод или найдите товар по названию — он добавится строкой</Empty>
           ) : (
-            <Table head={['Товар', 'Количество', 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма', 'По продаже', '']}>
+            <Table head={['Товар', 'Количество', stockIn ? 'Цена закупки' : 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма', 'По продаже', '']}>
               {lines.map((l, i) => {
                 const oil = isOil(l.product)
                 const c = calcs[i]
@@ -348,11 +456,17 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {oil ? `Канистр (по ${formatLiters(l.product.container_ml ?? 0)})` : 'Кол-во, шт'}
+                        {stockIn && l.product.unit === 'ml'
+                          ? 'Литров'
+                          : stockIn && l.product.unit === 'g'
+                            ? 'Кг'
+                            : oil
+                              ? `Канистр (по ${formatLiters(l.product.container_ml ?? 0)})`
+                              : 'Кол-во, шт'}
                         <input
                           id={`line-${i + 1}-count`}
                           className={`w-24 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
-                          inputMode="numeric"
+                          inputMode={stockIn && l.product.unit !== 'piece' ? 'decimal' : 'numeric'}
                           value={l.count}
                           onKeyDown={onFieldKey(i + 1, 'count')}
                           onChange={(e) => updateLine(l.key, { count: e.target.value })}
@@ -361,7 +475,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {oil ? 'Цена канистры, с' : 'Цена за шт, с'}
+                        {oil ? 'Цена канистры, с' : stockIn && l.product.unit === 'g' ? 'Цена за кг, с' : 'Цена за шт, с'}
                         <input
                           id={`line-${i + 1}-price`}
                           className={`w-28 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
@@ -393,7 +507,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {oil ? 'Продажа канистры, с' : 'Продажа за шт, с'}
+                        {oil ? 'Продажа канистры, с' : stockIn && l.product.unit === 'g' ? 'Продажа за кг, с' : 'Продажа за шт, с'}
                         <input
                           id={`line-${i + 1}-sale`}
                           aria-label="Цена продажи"
@@ -454,6 +568,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-4">
                 <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
+                {!stockIn && (
                 <div className="flex flex-wrap items-center gap-3 text-sm" role="radiogroup" aria-label="Расчёт с поставщиком">
                   {(
                     [
@@ -468,7 +583,8 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                     </label>
                   ))}
                 </div>
-                {payMode === 'part' && (
+                )}
+                {!stockIn && payMode === 'part' && (
                   <label className="flex items-center gap-2 text-sm">
                     Оплачено сейчас, с
                     <input id="receipt-paid-now" className="w-28" inputMode="decimal" value={partText} onChange={(e) => setPartText(e.target.value)} />
@@ -479,7 +595,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                     )}
                   </label>
                 )}
-                {paying && (
+                {!stockIn && paying && (
                   <label className="flex items-center gap-2 text-sm">
                     {payMode === 'part' ? 'Со счёта' : 'Оплачено'}
                     <select id="receipt-paid-from" value={source} onChange={(e) => setPaidFrom(e.target.value)}>
@@ -496,7 +612,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
               <div className="flex flex-wrap items-center justify-end gap-4">
                 <div className="text-right">
                   <div className="text-lg font-semibold">
-                    Итого: <span className="tabular-nums">{total === null ? '—' : formatSom(total)}</span>
+                    Итого: <span className="tabular-nums" data-testid="receipt-total">{total === null ? '—' : formatSom(total)}</span>
                   </div>
                   <div className="text-sm text-slate-600">
                     По цене продажи: <span className="tabular-nums" data-testid="receipt-sale-total">{totalSale === null ? '—' : formatSom(totalSale)}</span>
@@ -504,11 +620,12 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                 </div>
                 <div className="hidden md:block">
                   <Button disabled={save.busy || missing.length > 0} onClick={submit}>
-                    {fix ? 'Сохранить исправление' : 'Провести приход'}
+                    {submitText}
                   </Button>
                 </div>
               </div>
             </div>
+            {!stockIn && (
             <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 <span className="font-medium">Фото накладной</span>
@@ -526,7 +643,8 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                 }
               />
             </div>
-            <ErrorBox error={save.error ?? labels.error ?? accounts.error ?? photoAction.error} />
+            )}
+            <ErrorBox error={save.error ?? labels.error ?? (stockIn ? null : accounts.error) ?? photoAction.error} />
             <Missing items={missing} className="md:self-end" />
           </div>
         </Card>
@@ -535,11 +653,13 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
       {lines.length > 0 && (
         <div className="no-print fixed inset-x-0 bottom-[52px] z-20 flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden">
           <div className="min-w-0 flex-1">
-            <div className="text-xs text-slate-500">{payMode === 'debt' ? 'Итого · в долг поставщику' : payMode === 'part' ? 'Итого · часть в долг' : 'Итого'}</div>
+            <div className="text-xs text-slate-500">
+              {stockIn ? 'Итого · оприходование' : payMode === 'debt' ? 'Итого · в долг поставщику' : payMode === 'part' ? 'Итого · часть в долг' : 'Итого'}
+            </div>
             <div className="truncate text-xl font-bold tabular-nums">{total === null ? '—' : formatSom(total)}</div>
           </div>
           <Button className="shrink-0 px-6 py-3 text-base" disabled={save.busy || missing.length > 0} onClick={submit}>
-            {fix ? 'Сохранить' : 'Провести приход'}
+            {fix ? 'Сохранить' : stockIn ? 'Провести' : 'Провести приход'}
           </Button>
         </div>
       )}

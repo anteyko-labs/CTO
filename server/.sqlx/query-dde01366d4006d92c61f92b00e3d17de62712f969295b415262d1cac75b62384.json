@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select entity_id as \"id!\" from audit_log\n                   where branch_id = $1 and action = 'product.prices' and entity_id is not null\n                     and data ->> 'stock_in_id' = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "dde01366d4006d92c61f92b00e3d17de62712f969295b415262d1cac75b62384"
+}

@@ -2,11 +2,11 @@
 // Список «как в Умаге» (SPEC-27): остаток, цены и суммы остатка с итогами по отбору — итоги считает
 // сервер; закупку и стоимость остатка видит только владелец (ADR-008).
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { printLabels } from '../components/labels'
 import { Pager, usePageState } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
-import { StockInModal } from '../components/StockInModal'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu } from '../components/ui'
 import { get, patch, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
@@ -45,7 +45,8 @@ export default function Products() {
   const [archived, setArchived] = useState(false)
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
   /** «+ Оприходовать» у товара (SPEC-29 §8). */
-  const [stockIn, setStockIn] = useState<Product | null>(null)
+  // «+ Оприходовать» — экран «Новый приход» в виде оприходования с этим товаром (ADR-086).
+  const navigate = useNavigate()
   const [selected, setSelected] = useState<Record<string, Selected>>({})
   const [message, setMessage] = useState<string | null>(null)
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'name', desc: false })
@@ -275,7 +276,7 @@ export default function Products() {
                       selected={Boolean(selected[p.id])}
                       onOpen={() => setEditing(p)}
                       onToggle={(on) => toggle(p, on)}
-                      onStockIn={() => setStockIn(p)}
+                      onStockIn={() => navigate(`/receipts/new?kind=stock_in&product=${p.id}`)}
                       onArchive={() => {
                         if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
                           void setArchivedFlag(p, !p.archived)
@@ -309,7 +310,6 @@ export default function Products() {
         )}
       </Card>
 
-      {stockIn && <StockInModal product={stockIn} onClose={() => setStockIn(null)} onDone={() => list.reload()} />}
       {/* «+» внизу экрана на телефоне: добавить товар (SPEC-29 §7). */}
       <button
         type="button"

@@ -1326,16 +1326,24 @@ pub async fn update_prices_tx(
     Ok(out)
 }
 
-/// Новая цена продажи из строки прихода (SPEC-28 §1, ADR-075): ставят и владелец, и администратор
-/// — в той же транзакции, что приход (одна операция). Пул товара уже заблокирован приходом.
-/// В журнал — обычная смена цены «было / стало» с источником «приход № N»: владелец получает её
-/// в ленту, как любую смену цены (SPEC-13). Цена та же — ничего не пишется, `false`.
+/// Документ, строкой которого поставили цену продажи: приход или оприходование (ADR-086).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PriceDoc {
+    Receipt(Uuid, i64),
+    StockIn(Uuid, i64),
+}
+
+/// Новая цена продажи из строки прихода или оприходования (SPEC-28 §1, ADR-075, ADR-086): ставят
+/// и владелец, и администратор — в той же транзакции, что документ (одна операция). Пул товара
+/// уже заблокирован документом. В журнал — обычная смена цены «было / стало» с источником
+/// «приход № N» / «оприходование № N»: владелец получает её в ленту, как любую смену цены
+/// (SPEC-13). Цена та же — ничего не пишется, `false`.
 pub(crate) async fn set_price_from_receipt(
     conn: &mut PgConnection,
     ctx: &Ctx,
     id: Uuid,
     sale: i64,
-    receipt: (Uuid, i64),
+    doc: PriceDoc,
     markup_permille: Option<i64>,
 ) -> AppResult<bool> {
     let p = sqlx::query!(
@@ -1360,24 +1368,23 @@ pub(crate) async fn set_price_from_receipt(
     .execute(&mut *conn)
     .await?;
     let pour = |v: i64| pour_price_per_l(&p.unit, p.container_ml, v);
-    ops::audit(
-        &mut *conn,
-        ctx,
-        "product.prices",
-        "product",
-        Some(id),
-        json!({
-            "name": p.name,
-            "old_sale_price_tyiyn": p.sale_price_tyiyn,
-            "sale_price_tyiyn": sale,
-            "old": { "sale": p.sale_price_tyiyn, "pour": pour(p.sale_price_tyiyn) },
-            "new": { "sale": sale, "pour": pour(sale) },
-            "receipt_id": receipt.0,
-            "receipt_number": receipt.1,
-            "markup_permille": markup_permille,
-        }),
-    )
-    .await?;
+    let mut data = json!({
+        "name": p.name,
+        "old_sale_price_tyiyn": p.sale_price_tyiyn,
+        "sale_price_tyiyn": sale,
+        "old": { "sale": p.sale_price_tyiyn, "pour": pour(p.sale_price_tyiyn) },
+        "new": { "sale": sale, "pour": pour(sale) },
+        "markup_permille": markup_permille,
+    });
+    let (id_key, number_key, doc_id, number) = match doc {
+        PriceDoc::Receipt(d, n) => ("receipt_id", "receipt_number", d, n),
+        PriceDoc::StockIn(d, n) => ("stock_in_id", "stock_in_number", d, n),
+    };
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert(id_key.into(), json!(doc_id));
+        obj.insert(number_key.into(), json!(number));
+    }
+    ops::audit(&mut *conn, ctx, "product.prices", "product", Some(id), data).await?;
     Ok(true)
 }
 

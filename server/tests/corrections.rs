@@ -818,7 +818,7 @@ async fn money_debt_and_payroll_corrections_are_as_if(pool: PgPool) {
     .await;
     let siid = si["id"].as_str().unwrap().to_string();
     let mut draft = w.draft("stock_in", &siid).await;
-    draft["doc"]["qty"] = json!(2);
+    draft["doc"]["lines"][0]["qty"] = json!(2);
     let right_in = draft["doc"].clone();
     let (s, fixed) = w
         .correct(Uuid::now_v7(), "stock_in", &siid, right_in.clone())
@@ -1028,4 +1028,74 @@ async fn goods_and_salary_corrections_are_as_if(pool: PgPool) {
         }
     })
     .await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn multi_line_stock_in_correction_is_as_if(pool: PgPool) {
+    // Оприходование строками (ADR-086): исправление меняет количество одной строки, убирает
+    // другую и добавляет третью — как будто сразу провели верное; цена продажи, поставленная
+    // документом, остаётся в форме.
+    let w = World::new(pool).await;
+    let a = w.product("Хомут", 30_000).await;
+    let b = w.product("Шайба", 5_000).await;
+    let c = w.product("Болт", 2_000).await;
+    let s0 = w.snapshot().await;
+    let si = ok(
+        &w.app,
+        "POST",
+        "/api/v1/stock-ins",
+        &w.admin,
+        json!({ "op_id": Uuid::now_v7(), "comment": "нашли", "lines": [
+            { "product_id": a, "qty": 3, "price_tyiyn": 20_000, "sale_price_tyiyn": 32_000 },
+            { "product_id": b, "qty": 2, "price_tyiyn": 1_000 },
+        ] }),
+    )
+    .await;
+    let id = si["id"].as_str().unwrap().to_string();
+    let draft = w.draft("stock_in", &id).await;
+    assert_eq!(draft["doc"]["lines"][0]["sale_price_tyiyn"], 32_000);
+    assert_eq!(draft["doc"]["lines"][1]["sale_price_tyiyn"], Value::Null);
+    let mut doc = draft["doc"].clone();
+    doc["lines"] = json!([
+        doc["lines"][0].clone(),
+        { "product_id": c, "qty": 5, "price_tyiyn": 1_500 },
+    ]);
+    doc["lines"][0]["qty"] = json!(4);
+    let right = doc.clone();
+    // Администратору исправление недоступно.
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        "/api/v1/corrections",
+        Some(&w.admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "stock_in", "original_id": id, "comment": "x", "doc": doc })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, fixed) = w
+        .correct(Uuid::now_v7(), "stock_in", &id, right.clone())
+        .await;
+    assert_eq!(s, StatusCode::OK, "{fixed}");
+    let diff = fixed["diff"].to_string();
+    assert!(
+        diff.contains("Хомут: количество")
+            && diff.contains("Шайба: строка")
+            && diff.contains("Болт: строка"),
+        "{diff}"
+    );
+    let new_doc = get(
+        &w.app,
+        &format!("/api/v1/stock-ins/{}", fixed["new_id"].as_str().unwrap()),
+        &w.owner,
+    )
+    .await;
+    assert_eq!(new_doc["lines"].as_array().unwrap().len(), 2);
+    assert_eq!(new_doc["cost_tyiyn"], 87_500);
+    assert_as_if(&w, &s0, || async {
+        let mut body = right.clone();
+        body["op_id"] = json!(Uuid::now_v7());
+        ok(&w.app, "POST", "/api/v1/stock-ins", &w.owner, body).await;
+    })
+    .await;
+    w.verify_stock().await;
 }

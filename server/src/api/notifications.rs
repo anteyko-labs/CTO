@@ -143,6 +143,20 @@ fn pay_rule(data: &Value) -> String {
 }
 
 /// « — комментарий» или ничего.
+/// Товары оприходования словами: «Хомут × 3 шт, Шайба × 2 шт» (ADR-086); прежняя запись — один
+/// товар в `name` и `qty_text`.
+fn stock_in_goods(data: &Value) -> String {
+    let text = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    match data.get("lines").and_then(Value::as_array) {
+        Some(lines) => lines
+            .iter()
+            .map(|l| format!("{} × {}", text(l, "name"), text(l, "qty_text")))
+            .collect::<Vec<_>>()
+            .join(", "),
+        None => format!("{} × {}", text(data, "name"), text(data, "qty_text")),
+    }
+}
+
 fn comment(data: &Value) -> String {
     data.get("comment")
         .and_then(Value::as_str)
@@ -186,8 +200,12 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     money(num("sale_price_tyiyn"))
                 ));
             }
-            // Цену поставили в приходе (SPEC-28 §1): откуда и с какой наценкой.
-            if let Some(n) = num("receipt_number") {
+            // Цену поставили в приходе или оприходовании (SPEC-28 §1, ADR-086): откуда и с какой
+            // наценкой.
+            let source = num("receipt_number")
+                .map(|n| format!("приход № {n}"))
+                .or_else(|| num("stock_in_number").map(|n| format!("оприходование № {n}")));
+            if let Some(source) = source {
                 let markup = num("markup_permille")
                     .map(|m| {
                         format!(
@@ -198,7 +216,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                         )
                     })
                     .unwrap_or_default();
-                parts.push(format!("приход № {n}{markup}"));
+                parts.push(format!("{source}{markup}"));
             }
             (
                 format!(
@@ -871,28 +889,43 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             },
             String::new(),
         ),
-        "stock_in.post" => (
-            format!(
-                "Оприходовано без поставщика № {}: {} × {}",
-                num("number").unwrap_or(0),
-                text("name"),
-                text("qty_text")
-            ),
-            format!(
-                "по цене закупки {}, на {}{}",
-                money(num("price")),
-                money(num("cost")),
-                comment(data)
-            ),
-        ),
+        // Оприходование — несколько строк (ADR-086); у прежних записей журнала товар один, в
+        // `name` и `qty_text`.
+        "stock_in.post" => {
+            let lines = stock_in_goods(data);
+            let price = match data.get("lines").and_then(Value::as_array) {
+                Some(l) if l.len() == 1 => l[0].get("price").and_then(Value::as_i64),
+                Some(_) => None,
+                None => num("price"),
+            };
+            (
+                format!(
+                    "Оприходовано без поставщика № {}: {lines}",
+                    num("number").unwrap_or(0)
+                ),
+                match price {
+                    Some(p) => format!(
+                        "по цене закупки {}, на {}{}",
+                        money(Some(p)),
+                        money(num("cost")),
+                        comment(data)
+                    ),
+                    None => format!("на {}{}", money(num("cost")), comment(data)),
+                },
+            )
+        }
         "stock_in.reverse" => (
             format!(
-                "Сторно оприходования № {}: {} × {}",
+                "Сторно оприходования № {}: {}",
                 num("number").unwrap_or(0),
-                text("name"),
-                text("qty_text")
+                stock_in_goods(data)
             ),
-            match num("negative") {
+            // В минус: у прежних записей — остаток числом, у новых — товары словами.
+            match data.get("negative").and_then(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(str::to_string))
+            }) {
                 Some(after) => format!(
                     "{}{} — товар уже продан, остаток ушёл в минус: {after}",
                     money(num("cost")),

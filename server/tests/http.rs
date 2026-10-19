@@ -7971,18 +7971,19 @@ async fn stock_in_without_supplier_and_its_storno(pool: PgPool) {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     let (s, _, back) = rev(&admin, "ошиблись количеством").await;
     assert_eq!(s, StatusCode::OK, "{back}");
-    assert_eq!(back["qty"], -3);
+    assert_eq!(back["lines"][0]["qty"], -3);
     assert_eq!(back["reversal_of"], si["id"]);
     assert_eq!(stock_of(&pool, &item).await, (0, 0));
     let (s, _, _) = rev(&owner, "ещё раз").await;
     assert_eq!(s, StatusCode::CONFLICT);
     // Оприходование и его сторно не правятся.
-    assert!(
-        sqlx::query("update stock_ins set qty = 1")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
+    for sql in [
+        "update stock_ins set comment = 'x'",
+        "update stock_in_lines set qty = 1",
+        "delete from stock_in_lines",
+    ] {
+        assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
+    }
     // Часть ушла со склада (недостача) — сторно уведёт остаток в минус: только владелец.
     let (_, _, si2) = call(
         &app,
@@ -9173,7 +9174,10 @@ async fn stock_in_and_supplier_return_lists_by_period_and_pages(pool: PgPool) {
     assert_eq!(page.len(), 2);
     // Новые сверху: № 3, потом № 2; цена закупки видна администратору (ADR-008).
     assert_eq!(
-        (page[0]["number"].as_i64(), page[0]["qty"].as_i64()),
+        (
+            page[0]["number"].as_i64(),
+            page[0]["lines"][0]["qty"].as_i64()
+        ),
         (Some(3), Some(3))
     );
     assert_eq!(page[0]["cost_tyiyn"], 30_000);
@@ -9335,4 +9339,295 @@ async fn new_account_takes_default_marks_on_create(pool: PgPool) {
             .await
             .unwrap();
     assert!(still);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn stock_in_is_a_receipt_variant_with_lines(pool: PgPool) {
+    // Оприходование — вариант прихода (ADR-086): несколько строк одним документом, одной операцией;
+    // в списке «Приход» вместе с накладными; сторно — всего документа.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let a = product(&app, &owner, "Хомут", 30_000, 0).await;
+    let b = product(&app, &owner, "Шайба", 5_000, 0).await;
+    // Прошлая закупка хомута — приход по 150 с: после сторно оприходования она снова последняя.
+    let safe = owner_safe(&app, &owner).await;
+    let (s, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": safe,
+                     "lines": [{ "product_id": a, "qty": 1, "cost_tyiyn": 15_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let op = Uuid::now_v7();
+    let body = json!({ "op_id": op, "comment": "привёз владелец со склада", "lines": [
+        { "product_id": a, "qty": 3, "price_tyiyn": 20_000, "sale_price_tyiyn": 32_000 },
+        { "product_id": b, "qty": 2, "price_tyiyn": 1_000 },
+    ] });
+    // Без комментария или без строк — 422; две цены продажи у одного товара — 422.
+    let mut bad = body.clone();
+    bad["comment"] = json!(" ");
+    let (s, _, _) = call(&app, "POST", "/api/v1/stock-ins", Some(&admin), Some(bad)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut bad = body.clone();
+    bad["lines"] = json!([]);
+    let (s, _, _) = call(&app, "POST", "/api/v1/stock-ins", Some(&admin), Some(bad)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut bad = body.clone();
+    bad["lines"] = json!([
+        { "product_id": a, "qty": 1, "price_tyiyn": 20_000, "sale_price_tyiyn": 32_000 },
+        { "product_id": a, "qty": 1, "price_tyiyn": 20_000, "sale_price_tyiyn": 33_000 },
+    ]);
+    let (s, _, _) = call(&app, "POST", "/api/v1/stock-ins", Some(&admin), Some(bad)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, si) = call(
+        &app,
+        "POST",
+        "/api/v1/stock-ins",
+        Some(&admin),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{si}");
+    // Повтор с тем же op_id — тот же документ, склад не меняется второй раз.
+    let (s, _, again) = call(&app, "POST", "/api/v1/stock-ins", Some(&admin), Some(body)).await;
+    assert_eq!((s, &again["id"]), (StatusCode::OK, &si["id"]));
+    assert_eq!(si["cost_tyiyn"], 62_000);
+    assert_eq!(si["lines"].as_array().unwrap().len(), 2);
+    assert_eq!(si["lines"][0]["sale_price_tyiyn"], 32_000);
+    assert_eq!(stock_of(&pool, &a).await, (4, 75_000));
+    assert_eq!(stock_of(&pool, &b).await, (2, 2_000));
+    let (_, _, p) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{a}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (&p["last_purchase_price_tyiyn"], &p["sale_price_tyiyn"]),
+        (&json!(20_000), &json!(32_000))
+    );
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let items = list["items"].as_array().unwrap();
+    assert!(
+        items.iter().any(|i| i["action"] == "stock_in.post"
+            && i["title"]
+                .as_str()
+                .unwrap()
+                .contains("Хомут × 3 шт, Шайба × 2 шт")),
+        "{list}"
+    );
+    assert!(
+        items.iter().any(|i| i["action"] == "product.prices"
+            && i["details"].as_str().unwrap().contains("оприходование № 1")),
+        "{list}"
+    );
+
+    // «Приход»: вместе по дате, с видом; отбор по виду; без отбора — только накладные, как раньше.
+    let (s, total, all) =
+        call_total(&app, "/api/v1/receipts?kind=all&limit=25&offset=0", &admin).await;
+    assert_eq!((s, total), (StatusCode::OK, Some(2)));
+    assert_eq!(all[0]["kind"], "stock_in");
+    assert_eq!(all[0]["goods"], "Хомут, Шайба");
+    assert_eq!(all[0]["comment"], "привёз владелец со склада");
+    assert_eq!(all[1]["kind"], "receipt");
+    let (_, total, only) = call_total(&app, "/api/v1/receipts?kind=stock_in", &admin).await;
+    assert_eq!((total, &only[0]["id"]), (Some(1), &si["id"]));
+    let (_, total, _) = call_total(&app, "/api/v1/receipts?kind=receipt", &admin).await;
+    assert_eq!(total, Some(1));
+    let (_, total, _) = call_total(&app, "/api/v1/receipts", &admin).await;
+    assert_eq!(total, Some(1));
+    let (s, _, _) = call(&app, "GET", "/api/v1/receipts?kind=x", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Шайбу частью списали — сторно уведёт её в минус: администратору 403, владельцу можно.
+    sqlx::query(
+        "insert into stock_movements (id, branch_id, product_id, qty_delta, value_delta_tyiyn, doc_type, doc_id)
+         select $1, branch_id, product_id, -1, -1000, 'revision', $1 from branch_products where product_id = $2::uuid",
+    )
+    .bind(Uuid::now_v7())
+    .bind(&b)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update branch_products set stock_qty = stock_qty - 1, stock_value_tyiyn = stock_value_tyiyn - 1000 where product_id = $1::uuid")
+        .bind(&b)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id = si["id"].as_str().unwrap();
+    let uri = format!("/api/v1/stock-ins/{id}/reverse");
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &uri,
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, back) = call(
+        &app,
+        "POST",
+        &uri,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert_eq!(back["cost_tyiyn"], -62_000);
+    assert_eq!(
+        (
+            back["lines"][0]["qty"].as_i64(),
+            back["lines"][1]["qty"].as_i64()
+        ),
+        (Some(-3), Some(-2))
+    );
+    assert_eq!(stock_of(&pool, &a).await, (1, 15_000));
+    assert_eq!(stock_of(&pool, &b).await.0, -1);
+    let (_, _, p) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{a}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(p["last_purchase_price_tyiyn"], 15_000);
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    assert!(
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["action"] == "stock_in.reverse"
+                && i["details"]
+                    .as_str()
+                    .unwrap()
+                    .contains("остаток ушёл в минус: Шайба")),
+        "{list}"
+    );
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &uri,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ещё" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (_, _, all) = call(
+        &app,
+        "GET",
+        "/api/v1/receipts?kind=stock_in",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    assert_eq!(all[0]["reversal_of"], si["id"]);
+    assert_eq!(all[1]["reversed"], true);
+    assert_stock_matches_movements(&app, &owner).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn old_single_line_stock_ins_survive_migration(pool: PgPool) {
+    // Миграция 0049: прежнее оприходование одного товара — документ с одной строкой; читается,
+    // показывается в «Приходе», исправляется и сторнируется, как новое (ADR-086).
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version < 49) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let (old, rev_old) = (Uuid::now_v7(), Uuid::now_v7());
+    // Как проводила прежняя версия: документ, движение, остаток и последняя закупочная; второе —
+    // сторнированное, со своим сторно.
+    sqlx::raw_sql(&format!(
+        "insert into stock_ins (id, branch_id, number, product_id, qty, price_tyiyn, cost_tyiyn, comment, user_id, device_id)
+           select '{old}', branch_id, 1, '{item}', 3, 20000, 60000, 'нашли', id, gen_random_uuid() from users where login = 'admin';
+         insert into stock_ins (id, branch_id, number, product_id, qty, price_tyiyn, cost_tyiyn, comment, user_id, device_id)
+           select '{rev_old}', branch_id, 2, '{item}', 1, 20000, 20000, 'лишнее', id, gen_random_uuid() from users where login = 'admin';
+         insert into stock_ins (id, branch_id, number, product_id, qty, price_tyiyn, cost_tyiyn, comment, reversal_of, user_id, device_id)
+           select gen_random_uuid(), branch_id, 3, '{item}', -1, 20000, -20000, 'ошибка', '{rev_old}', id, gen_random_uuid() from users where login = 'admin';
+         insert into branch_products (branch_id, product_id) select branch_id, '{item}' from users where login = 'admin'
+           on conflict do nothing;
+         insert into stock_movements (id, branch_id, product_id, qty_delta, value_delta_tyiyn, doc_type, doc_id)
+           select gen_random_uuid(), branch_id, '{item}', 3, 60000, 'stock_in', '{old}' from users where login = 'admin';
+         update branch_products set stock_qty = 3, stock_value_tyiyn = 60000, last_cost_qty = 3, last_cost_tyiyn = 60000
+           where product_id = '{item}';
+         insert into counters (branch_id, name, value) select branch_id, 'stock_in', 3 from users where login = 'admin';"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version >= 49) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    let (s, _, doc) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/stock-ins/{old}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{doc}");
+    assert_eq!(doc["cost_tyiyn"], 60_000);
+    assert_eq!(doc["lines"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        (
+            &doc["lines"][0]["product_id"],
+            &doc["lines"][0]["qty"],
+            &doc["lines"][0]["price_tyiyn"]
+        ),
+        (&json!(item), &json!(3), &json!(20_000))
+    );
+    let (_, total, list) = call_total(&app, "/api/v1/receipts?kind=all", &admin).await;
+    assert_eq!(total, Some(3));
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["goods"] == "Фильтр")
+    );
+    // Сторнированное прежнее — уже сторнировано.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/stock-ins/{rev_old}/reverse"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ещё раз" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // Форма исправления — строками; сторно прежнего документа — администратором, как раньше.
+    let (s, _, draft) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/corrections/draft/stock_in/{old}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{draft}");
+    assert_eq!(draft["doc"]["lines"][0]["qty"], 3);
+    let (s, _, back) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/stock-ins/{old}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert_eq!(back["lines"][0]["qty"], -3);
+    assert_eq!(stock_of(&pool, &item).await, (0, 0));
+    assert_stock_matches_movements(&app, &owner).await;
 }

@@ -256,6 +256,8 @@ export interface TopProducts {
 }
 
 export interface ReceiptListItem {
+  /** `receipt` — от поставщика, `stock_in` — оприходование (ADR-086). */
+  kind?: 'receipt' | 'stock_in'
   id: string
   number: number
   supplier_name: string | null
@@ -269,6 +271,9 @@ export interface ReceiptListItem {
   on_debt_tyiyn?: number
   /** Осталось заплатить по накладной в долг (ADR-073). */
   debt_left_tyiyn?: number
+  comment?: string
+  /** Товары оприходования словами; у прихода — пусто. */
+  goods?: string
 }
 
 export interface StockMismatch {
@@ -960,9 +965,8 @@ export interface ReceiptFile {
 }
 
 /** Оприходование без поставщика (SPEC-29 §8). */
-export interface StockIn {
-  id: string
-  number: number
+export interface StockInLine {
+  line_no: number
   product_id: string
   product_name: string
   unit: 'piece' | 'ml' | 'g'
@@ -972,11 +976,22 @@ export interface StockIn {
   /** Цена закупки за штуку, канистру или килограмм. */
   price_tyiyn: number
   cost_tyiyn: number
+  /** Цена продажи после оприходования; пусто — документ до ADR-086 или сторно. */
+  sale_price_tyiyn: number | null
+}
+
+/** Оприходование без поставщика — вариант прихода, строками (SPEC-29 §8, ADR-086). */
+export interface StockIn {
+  id: string
+  number: number
+  /** Итог документа; у сторно — с минусом. */
+  cost_tyiyn: number
   comment: string
   reversal_of: string | null
   reversed_by: string | null
   user_name: string
   created_at: string
+  lines: StockInLine[]
 }
 
 /** Возврат товара поставщику, не брак (SPEC-29 §9). */

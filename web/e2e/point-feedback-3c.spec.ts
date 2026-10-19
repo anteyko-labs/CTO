@@ -1,5 +1,5 @@
-// Удобный доступ и подписи оплат (SPEC-29 §25): «Оприходование» и «Возврат поставщику» в меню
-// «Склад», «Внести / Изъять» в меню «Деньги», подписи кнопок оплаты на кассе — куда идут деньги.
+// Удобный доступ и подписи оплат (SPEC-29 §25): оприходование — в «Приходе» (ADR-086), «Возврат
+// поставщику» в меню «Склад», «Внести / Изъять» в меню «Деньги», подписи кнопок оплаты на кассе — куда идут деньги.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -32,29 +32,14 @@ async function product(request: APIRequestContext, category: string, name: strin
   return apiPost<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: category, name, barcodes: [code], sale_price_tyiyn: price })
 }
 
-test('меню «Склад» → «Оприходование» → «+ Оприходовать»: документ в списке', async ({ page }) => {
+test('меню «Склад»: оприходование — в «Приходе», прежний адрес ведёт к списку оприходований', async ({ page }) => {
+  // Решение заказчика 19.10.2026 (ADR-086): отдельного пункта «Оприходование» нет.
   await login(page)
-  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Меню ${RUN}`, kind: 'other' })
-  const name = `Шайба ${RUN}`
-  const code = `51${RUN}505`
-  const p = await product(page.request, cat.id, name, code, 5_000)
-  await page.getByRole('link', { name: 'Оприходование' }).click()
-  await expect(page.getByRole('heading', { name: 'Оприходование' })).toBeVisible()
-  await page.getByRole('button', { name: 'Оприходовать' }).first().click()
-  const picker = page.getByPlaceholder(/товар, который оприходуем/)
-  await picker.fill(code)
-  await picker.press('Enter')
-  const dialog = page.getByRole('dialog', { name: `Оприходовать: ${name}` })
-  await dialog.locator('#stockin-qty').fill('2')
-  await dialog.locator('#stockin-price').fill('30')
-  await dialog.locator('#stockin-comment').fill(`из меню ${RUN}`)
-  await dialog.getByRole('button', { name: 'Оприходовать' }).click()
-  await expect(page.getByText(/Оприходовано № \d+: 2 шт/)).toBeVisible()
-  await dialog.getByRole('button', { name: 'Закрыть' }).first().click()
-  const row = page.getByTestId('stock-in-row').filter({ hasText: name })
-  await expect(row).toContainText(`из меню ${RUN}`)
-  await expect(row).toContainText(money('60 с'))
-  expect((await apiGet<{ stock_qty: number }>(page.request, `/products/${p.id}`)).stock_qty).toBe(2)
+  await expect(page.getByRole('link', { name: 'Приход', exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Оприходование', exact: true })).toHaveCount(0)
+  await page.goto('/stock-ins')
+  await expect(page).toHaveURL(/\/receipts\?kind=stock_in$/)
+  await expect(page.locator('#receipts-kind')).toHaveValue('stock_in')
 })
 
 test('меню «Склад» → «Возврат поставщику» → «+»: возврат в общем списке', async ({ page }) => {

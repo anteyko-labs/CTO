@@ -46,7 +46,8 @@ import DebtDocsSettings from './pages/DebtDocsSettings'
 import OilTransfer from './pages/OilTransfer'
 import Revision from './pages/Revision'
 import Stock from './pages/Stock'
-import StockIns from './pages/StockIns'
+import StockInCorrect from './pages/StockInCorrect'
+import StockInView from './pages/StockInView'
 import SupplierReturnsPage from './pages/SupplierReturns'
 import TelegramSettings from './pages/TelegramSettings'
 import ExpenseArticles from './pages/ExpenseArticles'
@@ -93,7 +94,6 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     title: 'Склад',
     items: [
       { to: '/receipts', label: 'Приход', icon: 'incoming' },
-      { to: '/stock-ins', label: 'Оприходование', icon: 'plus' },
       { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'back' },
       { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/products', label: 'Товары', icon: 'products' },
@@ -293,7 +293,10 @@ function Shell() {
           <Route path="/income" element={<Income />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/money" element={<Accounts key="money" openMoney />} />
-          <Route path="/stock-ins" element={<StockIns />} />
+          {/* Оприходование — вариант прихода (ADR-086): список — «Приход» с отбором. */}
+          <Route path="/stock-ins" element={<Navigate to="/receipts?kind=stock_in" replace />} />
+          <Route path="/stock-ins/:id" element={<ByParam><StockInView /></ByParam>} />
+          {owner && <Route path="/stock-ins/:id/correct" element={<ByParam><StockInCorrect /></ByParam>} />}
           <Route path="/supplier-returns" element={<SupplierReturnsPage />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}

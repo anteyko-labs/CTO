@@ -112,7 +112,7 @@ test('приход: подсказка из старой программы, в�
   await expect(page.getByTestId('receipt-photos').locator('img')).toHaveCount(2)
 })
 
-test('оприходование без поставщика: количество, цена закупки, комментарий; сторно', async ({ page }) => {
+test('оприходование без поставщика: из строки товара — экран прихода, комментарий; сторно', async ({ page }) => {
   await login(page)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Найдено ${RUN}`, kind: 'other' })
   const name = `Хомут ${RUN}`
@@ -123,21 +123,27 @@ test('оприходование без поставщика: количеств
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: 'Ещё действия' }).click()
   await page.getByRole('menuitem', { name: '+ Оприходовать' }).click()
-  const dialog = page.getByRole('dialog', { name: `Оприходовать: ${name}` })
-  await dialog.locator('#stockin-qty').fill('3')
-  await dialog.locator('#stockin-price').fill('50')
-  await expect(dialog.getByRole('button', { name: 'Оприходовать' })).toBeDisabled()
-  await dialog.locator('#stockin-comment').fill('нашли на складе')
-  await expect(dialog.getByTestId('stockin-total')).toHaveText(money('На сумму 150 с'))
-  await dialog.getByRole('button', { name: 'Оприходовать' }).click()
-  await expect(dialog.getByText('нашли на складе')).toBeVisible()
+  // «Новый приход» в виде оприходования, товар — первой строкой.
+  await expect(page.getByRole('radio', { name: 'Оприходование (без поставщика)' })).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByText(`1. ${name}`)).toBeVisible()
+  await page.locator('#line-1-count').fill('3')
+  await page.locator('#line-1-price').fill('50')
+  const submit = page.getByRole('button', { name: 'Провести оприходование' })
+  await expect(submit).toBeDisabled()
+  await page.locator('#receipt-comment').fill('нашли на складе')
+  await expect(page.getByTestId('receipt-total')).toHaveText(money('150 с'))
+  await submit.click()
+  await expect(page.getByRole('heading', { name: /^Оприходование № \d+$/ })).toBeVisible()
+  await expect(page.getByTestId('stock-in-comment')).toHaveText('нашли на складе')
   let stock = await apiGet<{ stock_qty: number }>(page.request, `/products/${p.id}`)
   expect(stock.stock_qty).toBe(3)
   // Сторно — с причиной; товар уходит со склада.
-  await dialog.getByRole('button', { name: 'Сторно' }).click()
-  await dialog.getByLabel('Причина').fill('ошиблись')
-  await dialog.getByRole('button', { name: 'Сторнировать' }).click()
-  await expect(dialog.getByText('сторнировано')).toBeVisible()
+  await page.getByRole('button', { name: 'Сторно' }).click()
+  await page.getByLabel('Причина').fill('ошиблись')
+  await page.getByRole('button', { name: 'Сторнировать' }).click()
+  // Окно сторно закрылось — открыт документ сторно (у окна тот же заголовок).
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: /^Сторно оприходования № \d+$/ })).toBeVisible()
   stock = await apiGet<{ stock_qty: number }>(page.request, `/products/${p.id}`)
   expect(stock.stock_qty).toBe(0)
   // Склад сходится с движениями.

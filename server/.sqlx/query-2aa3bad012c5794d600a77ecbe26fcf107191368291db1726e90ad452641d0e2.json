@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.stock_in_id, l.line_no, l.product_id, p.name as product_name, p.unit, p.container_ml,\n                  l.qty, l.price_tyiyn, l.cost_tyiyn, l.sale_price_tyiyn\n           from stock_in_lines l join products p on p.id = l.product_id\n           where l.stock_in_id = any($1)\n           order by l.stock_in_id, l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stock_in_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "product_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "sale_price_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "2aa3bad012c5794d600a77ecbe26fcf107191368291db1726e90ad452641d0e2"
+}

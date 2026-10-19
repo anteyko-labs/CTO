@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into stock_in_lines (id, stock_in_id, line_no, product_id, qty, price_tyiyn, cost_tyiyn)\n               values ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61daf103a2e5052a5655244ea08c0322d2faf01c90a55d08cdf72e07730f6c84"
+}

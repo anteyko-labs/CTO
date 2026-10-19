@@ -451,19 +451,51 @@ async fn load_doc(
         }
         Kind::StockIn => {
             let s = crate::api::stock_in::load_one(conn, branch_id, id).await?;
+            // Цену продажи ставило само оприходование — только у таких товаров она в форме (как у
+            // прихода: иначе исправление вернуло бы старую цену поверх поставленной позже).
+            let priced: Vec<Uuid> = sqlx::query_scalar!(
+                r#"select entity_id as "id!" from audit_log
+                   where branch_id = $1 and action = 'product.prices' and entity_id is not null
+                     and data ->> 'stock_in_id' = $2"#,
+                branch_id,
+                id.to_string()
+            )
+            .fetch_all(&mut *conn)
+            .await?;
             let mut desc = Desc::default();
-            desc.field("Товар", s.product_name.clone());
-            desc.field("Количество", qty_text(s.qty, &s.unit));
-            desc.field("Цена закупки", format_som(s.price_tyiyn));
             desc.field("Стоимость", format_som(s.cost_tyiyn));
             desc.field("Комментарий", or_none(Some(s.comment.clone())));
+            desc.lines = s
+                .lines
+                .iter()
+                .map(|l| {
+                    let mut parts = vec![
+                        ("количество".into(), qty_text(l.qty, &l.unit)),
+                        ("цена закупки".into(), format_som(l.price_tyiyn)),
+                        ("сумма".into(), format_som(l.cost_tyiyn)),
+                    ];
+                    if priced.contains(&l.product_id)
+                        && let Some(p) = l.sale_price_tyiyn
+                    {
+                        parts.push(("цена продажи".into(), format_som(p)));
+                    }
+                    DescLine {
+                        key: l.product_id.to_string(),
+                        name: l.product_name.clone(),
+                        parts,
+                    }
+                })
+                .collect();
             Ok(Doc {
                 number: Some(s.number),
                 draft: json!({
-                    "product_id": s.product_id,
-                    "qty": s.qty,
-                    "price_tyiyn": s.price_tyiyn,
                     "comment": s.comment,
+                    "lines": s.lines.iter().map(|l| json!({
+                        "product_id": l.product_id,
+                        "qty": l.qty,
+                        "price_tyiyn": l.price_tyiyn,
+                        "sale_price_tyiyn": if priced.contains(&l.product_id) { l.sale_price_tyiyn } else { None },
+                    })).collect::<Vec<_>>(),
                 }),
                 desc,
             })

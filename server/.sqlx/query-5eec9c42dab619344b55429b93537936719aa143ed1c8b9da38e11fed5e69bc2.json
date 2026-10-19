@@ -1,0 +1,69 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.cost_tyiyn, s.comment, s.reversal_of,\n                  (select x.id from stock_ins x where x.reversal_of = s.id) as reversed_by,\n                  u.full_name as user_name, s.created_at\n           from stock_ins s\n           join users u on u.id = s.user_id\n           where s.branch_id = $1 and ($2::uuid is null or s.id = $2)\n             and ($3::uuid is null\n                  or exists (select 1 from stock_in_lines l where l.stock_in_id = s.id and l.product_id = $3))\n             and ($4::date is null or s.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($5::date is null or s.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by s.created_at desc\n           limit $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "reversed_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "5eec9c42dab619344b55429b93537936719aa143ed1c8b9da38e11fed5e69bc2"
+}
