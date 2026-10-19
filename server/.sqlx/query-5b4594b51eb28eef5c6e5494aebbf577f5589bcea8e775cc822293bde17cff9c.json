@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select content_type, data, hidden_at from receipt_files where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "data",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "hidden_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5b4594b51eb28eef5c6e5494aebbf577f5589bcea8e775cc822293bde17cff9c"
+}

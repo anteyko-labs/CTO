@@ -21,12 +21,12 @@ const SAMPLE: Product = {
   id: 'sample',
   category_id: 'sample',
   category_kind: 'oil',
-  name: 'Mobil Super 3000 5W-30 4л',
+  name: 'Super 3000 5W-30',
   brand: 'Mobil',
   article: '152566',
   unit: 'ml',
   container_ml: 4000,
-  attrs: {},
+  attrs: { viscosity: '5W-30' },
   archived: false,
   barcodes: ['2200000000019'],
   sale_price_tyiyn: 245000,
@@ -43,6 +43,8 @@ interface Form {
   show_name: boolean
   show_price: boolean
   show_article: boolean
+  show_brand: boolean
+  show_spec: boolean
 }
 
 const toForm = (s: LabelSettings): Form => ({
@@ -51,6 +53,8 @@ const toForm = (s: LabelSettings): Form => ({
   show_name: s.show_name,
   show_price: s.show_price,
   show_article: s.show_article,
+  show_brand: s.show_brand !== false,
+  show_spec: s.show_spec !== false,
 })
 
 function parseMm(v: string): number | null {
@@ -63,7 +67,15 @@ function toSettings(f: Form): LabelSettings | null {
   const width_mm = parseMm(f.width)
   const height_mm = parseMm(f.height)
   if (width_mm === null || height_mm === null) return null
-  return { width_mm, height_mm, show_name: f.show_name, show_price: f.show_price, show_article: f.show_article }
+  return {
+    width_mm,
+    height_mm,
+    show_name: f.show_name,
+    show_price: f.show_price,
+    show_article: f.show_article,
+    show_brand: f.show_brand,
+    show_spec: f.show_spec,
+  }
 }
 
 /** Для предпросмотра берём настоящий товар со штрихкодом и ценой; нет товаров — образец. */
@@ -134,7 +146,13 @@ function Editor({ initial }: { initial: LabelSettings }) {
             </div>
           )}
           <div className="flex flex-col gap-2">
+            <Checkbox label="Бренд" checked={form.show_brand} onChange={(v) => update({ show_brand: v })} />
             <Checkbox label="Название" checked={form.show_name} onChange={(v) => update({ show_name: v })} />
+            <Checkbox
+              label="Характеристики: вязкость и объём масла, тип фильтра, ёмкость аккумулятора"
+              checked={form.show_spec}
+              onChange={(v) => update({ show_spec: v })}
+            />
             <Checkbox label="Цена" checked={form.show_price} onChange={(v) => update({ show_price: v })} />
             <Checkbox label="Артикул" checked={form.show_article} onChange={(v) => update({ show_article: v })} />
           </div>

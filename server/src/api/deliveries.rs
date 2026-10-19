@@ -113,7 +113,7 @@ pub struct DeliveryRow {
     pub receipts: i64,
     /// «Привёз»: проведённые накладные без сторнированных, в единицах товара.
     pub delivered_qty: i64,
-    /// «Вернули (брак)»: возвраты брака этому поставщику (SPEC-25).
+    /// «Вернули»: возвраты брака этому поставщику (SPEC-25) и возвраты товара (SPEC-29 §9).
     pub returned_qty: i64,
     /// «Сумма поставок» — закупка, её видит и администратор (ADR-008).
     pub amount_tyiyn: i64,
@@ -236,7 +236,7 @@ pub(crate) async fn deliveries_data(
     )
     .fetch_all(&mut *conn)
     .await?;
-    // Возвраты брака этому поставщику: решения, которые не отменены.
+    // Возвраты брака этому поставщику (решения, которые не отменены) и возвраты товара.
     let returns = sqlx::query!(
         r#"with recursive fam (id, root, depth) as (
              select id, id, 0 from products where merged_into is null
@@ -244,7 +244,8 @@ pub(crate) async fn deliveries_data(
              select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
              where fam.depth < 8
            )
-           select fam.root as "product_id!", p.name, p.unit, p.container_ml, d.qty, x.replace_qty,
+           select fam.root as "product_id!", p.name as "name!", p.unit as "unit!", p.container_ml,
+                  d.qty as "qty!", x.replace_qty,
                   (($1::date is null or x.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')
                    and ($2::date is null or x.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))
                     as "in_period!"
@@ -254,7 +255,18 @@ pub(crate) async fn deliveries_data(
            join products p on p.id = fam.root
            where x.branch_id = $3 and x.supplier_id = $4 and x.reversal_of is null
              and x.kind in ('replace', 'credit', 'cash')
-             and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)"#,
+             and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)
+           union all
+           -- Возвраты товара поставщику, не брак (SPEC-29 §9): без сторнированных.
+           select fam.root, p.name, p.unit, p.container_ml, l.qty, null::bigint,
+                  (($1::date is null or r.created_at >= ($1::date)::timestamp at time zone 'Asia/Bishkek')
+                   and ($2::date is null or r.created_at < ($2::date + 1)::timestamp at time zone 'Asia/Bishkek'))
+           from supplier_return_lines l
+           join supplier_returns r on r.id = l.return_id
+           join fam on fam.id = l.product_id
+           join products p on p.id = fam.root
+           where r.branch_id = $3 and r.supplier_id = $4 and r.reversal_of is null
+             and not exists (select 1 from supplier_returns y where y.reversal_of = r.id)"#,
         from,
         to,
         branch_id,

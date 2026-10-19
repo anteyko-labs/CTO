@@ -6,6 +6,7 @@ import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { canisterPourPrice } from '../lib/money'
+import type { CardPreset } from '../lib/oldCatalog'
 import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
 import { Badge, Button, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
@@ -26,18 +27,19 @@ function initialForm(
   presetBarcode: string | undefined,
   presetName: string | undefined,
   presetCategoryId?: string,
+  preset?: CardPreset,
 ): Form {
   const oil = p?.unit === 'ml'
   const toLiters = litersInput
   return {
-    category_id: p?.category_id ?? presetCategoryId ?? '',
-    name: p?.name ?? presetName ?? '',
+    category_id: p?.category_id ?? (preset?.categoryId || presetCategoryId) ?? '',
+    name: p?.name ?? preset?.name ?? presetName ?? '',
     brand: p?.brand ?? '',
-    article: p?.article ?? '',
-    container_l: p?.container_ml ? toLiters(p.container_ml) : '',
+    article: p?.article ?? preset?.article ?? '',
+    container_l: p?.container_ml ? toLiters(p.container_ml) : (preset?.liters ?? ''),
     attrs: { ...(p?.attrs ?? {}) },
-    barcode: presetBarcode ?? '',
-    sale_price: p ? somInput(p.sale_price_tyiyn) : '',
+    barcode: presetBarcode ?? preset?.barcode ?? '',
+    sale_price: p ? somInput(p.sale_price_tyiyn) : (preset?.price ?? ''),
     min_stock: p ? (oil ? toLiters(p.min_stock) : String(p.min_stock)) : '0',
   }
 }
@@ -48,6 +50,7 @@ export function ProductFormModal({
   presetBarcode,
   presetName,
   presetCategoryId,
+  preset,
   onClose,
   onSaved,
 }: {
@@ -57,15 +60,19 @@ export function ProductFormModal({
   presetName?: string
   /** «+ Товар» на экране категорий: категория уже выбрана (SPEC-27). */
   presetCategoryId?: string
+  /** Данные из списка старой программы (SPEC-20, SPEC-29 §1): карточка заполнена, человек проверяет. */
+  preset?: CardPreset
   onClose: () => void
   onSaved: (p: Product) => void
 }) {
   const user = useUser()
   const owner = user.role === 'owner'
   const editing = Boolean(product)
-  const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId))
+  const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId, preset))
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
+  /** Новый товар: заводские коды, отсканированные один за другим (SPEC-29 §2). */
+  const [newCodes, setNewCodes] = useState<string[]>([])
   const [newCategory, setNewCategory] = useState<{ name: string; kind: CategoryKind } | null>(null)
   const [merging, setMerging] = useState(false)
   const [mergeQuery, setMergeQuery] = useState('')
@@ -156,7 +163,7 @@ export function ProductFormModal({
           article: form.article,
           container_ml: v.container,
           attrs: form.attrs,
-          barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
+          barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
           sale_price_tyiyn: v.sale,
           min_stock: v.min,
         })
@@ -276,6 +283,11 @@ export function ProductFormModal({
 
   return (
     <Modal title={editing ? 'Товар' : 'Новый товар'} onClose={onClose} wide>
+      {preset && !editing && (
+        <div className="mb-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+          Данные взяты из старой программы: {preset.name}. Проверьте категорию, цену и характеристики.
+        </div>
+      )}
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2">
           <Field
@@ -283,7 +295,7 @@ export function ProductFormModal({
             hint={
               editing
                 ? 'Кодов может быть несколько: привязывайте сюда заводские коды разных поставок'
-                : 'Сканируйте заводской код; без кода система создаст свой при сохранении'
+                : 'Сканируйте заводские коды один за другим (Enter — следующий); без кода система создаст свой'
             }
           >
             <div className="flex gap-2">
@@ -295,11 +307,16 @@ export function ProductFormModal({
                 value={form.barcode}
                 onChange={(e) => set('barcode', e.target.value)}
                 onKeyDown={(e) => {
-                  // Сканер завершает код Enter: у нового товара переходим к категории, у карточки — привязываем код.
+                  // Сканер завершает код Enter: у карточки — привязываем код; у нового товара код
+                  // ложится в список (можно отсканировать ещё), пустой Enter — к категории.
                   if (e.key !== 'Enter') return
                   e.preventDefault()
+                  const code = form.barcode.trim()
                   if (editing) {
-                    if (form.barcode.trim()) void addCode(false)
+                    if (code) void addCode(false)
+                  } else if (code) {
+                    setNewCodes((c) => (c.includes(code) ? c : [...c, code]))
+                    set('barcode', '')
                   } else document.getElementById('product-category')?.focus()
                 }}
               />
@@ -315,6 +332,23 @@ export function ProductFormModal({
               )}
             </div>
           </Field>
+          {!editing && newCodes.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="new-codes">
+              {newCodes.map((c) => (
+                <span key={c} className="inline-flex items-center gap-1">
+                  <Badge>{c}</Badge>
+                  <button
+                    type="button"
+                    className="text-xs text-slate-400 hover:text-rose-600"
+                    aria-label={`Убрать код ${c}`}
+                    onClick={() => setNewCodes((list) => list.filter((x) => x !== c))}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           {codes.length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {codes.map((c) => (

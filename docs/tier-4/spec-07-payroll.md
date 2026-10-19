@@ -91,7 +91,7 @@ payouts (id, branch_id, number, employee_id, amount_tyiyn, source account | outs
          account_id?, comment, reversal_of, user_id, device_id, created_at)   -- неизменяемая
 ```
 
-`POST /payouts {op_id, employee_id, amount_tyiyn, source, account_id?, advance?, comment?}` — `source = account`: наличными из кассы или переводом со счёта; `outside` — владелец отдал свои деньги.
+`POST /payouts {op_id, employee_id, amount_tyiyn, source, account_id?, advance?, comment?}` — `source = account`: наличными из кассы или переводом со счёта; `outside` (владелец отдал свои деньги) больше не принимается — 422 (SPEC-29 §5, ADR-079); прежние выплаты «мимо касс» остаются в истории.
 
 ```
 в run_operation:

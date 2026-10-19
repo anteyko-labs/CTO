@@ -906,27 +906,31 @@ fn clean_attrs(attrs: Option<Value>, defs: &[AttributeDef]) -> AppResult<Value> 
     Ok(Value::Object(out))
 }
 
-#[derive(Deserialize)]
-struct CreateProductReq {
-    op_id: Uuid,
-    category_id: Uuid,
-    name: String,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct CreateProductReq {
+    pub op_id: Uuid,
+    pub category_id: Uuid,
+    pub name: String,
     #[serde(default)]
-    brand: String,
+    pub brand: String,
     #[serde(default)]
-    article: String,
-    container_ml: Option<i64>,
-    attrs: Option<Value>,
+    pub article: String,
     #[serde(default)]
-    barcodes: Vec<String>,
+    pub container_ml: Option<i64>,
     #[serde(default)]
-    sale_price_tyiyn: i64,
-    pour_price_per_l_tyiyn: Option<i64>,
+    pub attrs: Option<Value>,
     #[serde(default)]
-    min_stock: i64,
+    pub barcodes: Vec<String>,
+    #[serde(default)]
+    pub sale_price_tyiyn: i64,
+    #[serde(default)]
+    pub pour_price_per_l_tyiyn: Option<i64>,
+    #[serde(default)]
+    pub min_stock: i64,
     /// Закупка за штуку или канистру, если товар заводят без прихода (из списка старой программы):
     /// по ней ревизия оценит найденный на полке остаток (SPEC-20).
-    initial_cost_tyiyn: Option<i64>,
+    #[serde(default)]
+    pub initial_cost_tyiyn: Option<i64>,
 }
 
 pub(crate) async fn insert_barcode(
@@ -970,12 +974,24 @@ async fn create_product(
     ctx: Ctx,
     Json(req): Json<CreateProductReq>,
 ) -> AppResult<Json<ProductOut>> {
-    const KIND: &str = "product.create";
     let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    let out = create_product_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Новый товар — одна транзакция вызывающего: экран «Товары», приход и ревизия (SPEC-29 §10)
+/// заводят карточку одной функцией.
+pub async fn create_product_tx(
+    tx: &mut PgConnection,
+    ctx: &Ctx,
+    req: CreateProductReq,
+) -> AppResult<ProductOut> {
+    const KIND: &str = "product.create";
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
-    let (kind, defs) = category_info(&mut tx, req.category_id).await?;
+    let (kind, defs) = category_info(&mut *tx, req.category_id).await?;
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(invalid("название обязательно"));
@@ -1053,27 +1069,26 @@ async fn create_product(
         if !barcode::is_acceptable(code) {
             return Err(invalid("недопустимый штрихкод"));
         }
-        insert_barcode(&mut tx, id, code, false).await?;
+        insert_barcode(&mut *tx, id, code, false).await?;
         codes += 1;
     }
     if codes == 0 {
         // Товара без штрихкода не бывает: заводского кода нет — выдаём свой.
-        let code = next_internal_code(&mut tx).await?;
-        insert_barcode(&mut tx, id, &code, true).await?;
+        let code = next_internal_code(&mut *tx).await?;
+        insert_barcode(&mut *tx, id, &code, true).await?;
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "product",
         Some(id),
         json!({ "name": name }),
     )
     .await?;
-    let out = product_by_id(&mut tx, &ctx.user, id).await?;
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    let out = product_by_id(&mut *tx, &ctx.user, id).await?;
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 /// Поля карточки, которые правятся запросом `PATCH /products/{id}`, — для журнала.

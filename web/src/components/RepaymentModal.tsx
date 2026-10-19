@@ -10,20 +10,19 @@ import type { CashAccount, OpenDebt, OpenDebts, Party, SupplierInvoice, Supplier
 import { bankChoices, isBank, isTill } from '../lib/accounts'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
-type Method = 'cash' | 'card' | 'transfer' | 'outside'
+// «Вне кассы» (из своих) больше нет — сервер отвечает 422 (ADR-079).
+type Method = 'cash' | 'card' | 'transfer'
 
 const METHOD_LABELS: Record<Method, string> = {
   cash: 'Наличные',
   card: 'Карта',
   transfer: 'QR',
-  outside: 'Вне кассы',
 }
 
 const METHOD_HINTS: Record<Method, string> = {
   cash: 'Деньги в кассе смены: смена должна быть открыта.',
   card: 'Оплата картой через терминал: деньги на безналичный счёт, банк возьмёт комиссию.',
   transfer: 'Оплата QR через терминал: деньги на безналичный счёт, банк возьмёт комиссию.',
-  outside: 'Мимо денег точки: например, владелец заплатил из своих.',
 }
 
 /** Накладная, которую оплачиваем: сумма не больше её остатка (SPEC-27). */
@@ -72,8 +71,8 @@ export function RepaymentModal({
   const { busy, error, run } = useAction()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит оплату.
   const [opId] = useState(newOpId)
-  // Администратор поставщику платит только из кассы; мимо кассы — только владелец.
-  const methods: Method[] = owner ? ['cash', 'card', 'transfer', 'outside'] : supplier ? ['cash'] : ['cash', 'card', 'transfer']
+  // Администратор поставщику платит только из кассы смены.
+  const methods: Method[] = owner || !supplier ? ['cash', 'card', 'transfer'] : ['cash']
   const value = parseSom(sum)
   const notFilled = missingWithFocus(
     [value !== null && value > 0, 'сумму', '#repay-sum'],
@@ -94,7 +93,7 @@ export function RepaymentModal({
         party_id: party.id,
         amount_tyiyn: value,
         method,
-        account_id: method !== 'outside' && accountId ? accountId : undefined,
+        account_id: accountId || undefined,
         comment,
         receipt_id: invoice?.receipt_id,
       })

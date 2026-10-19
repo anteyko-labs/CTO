@@ -1,6 +1,7 @@
 // Этап 3 в браузере: услуги и мастер, продажа в долг с распиской, оплата долга, подарки,
 // перелив масла, акт сверки и запрет продажи ниже закупки (SPEC-10, SPEC-11, SPEC-14, ADR-043).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -113,7 +114,7 @@ async function pieceProduct(request: APIRequestContext, name: string, code: stri
     barcodes: [code],
     sale_price_tyiyn: price,
   })
-  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
+  await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(request), lines: [{ product_id: p.id, qty, cost_tyiyn: cost * qty }] })
   return p
 }
 
@@ -134,8 +135,8 @@ async function oilProduct(
   })
   await apiPost(request, '/receipts', {
     op_id: crypto.randomUUID(),
-    // Владелец платит «из своих, мимо касс» — кассы в проверке не участвуют (ADR-062).
-    paid_from: 'outside',
+    // Владелец платит из «Сейфа владельца» — касса смены в проверке не участвует (ADR-079).
+    paid_from: await ownerSafe(request),
     lines: [{ product_id: p.id, qty: opts.ml, cost_tyiyn: (opts.cost_per_l * opts.ml) / 1000 }],
   })
   return p

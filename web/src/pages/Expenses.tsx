@@ -15,7 +15,7 @@ export default function Expenses() {
   const owner = useUser().role === 'owner'
   const [from, setFrom] = useState(todayBishkek())
   const [to, setTo] = useState(todayBishkek())
-  const [form, setForm] = useState({ article: '', sum: '', account: '', outside: false, date: todayBishkek(), comment: '' })
+  const [form, setForm] = useState({ article: '', sum: '', account: '', date: todayBishkek(), comment: '' })
   const articles = useLoad(() => get<ExpenseArticle[]>('/expense-articles'), [])
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const list = useLoad(() => get<Expense[]>(`/expenses${qs({ from, to })}`), [from, to])
@@ -40,8 +40,8 @@ export default function Expenses() {
         op_id: opId,
         article_id: form.article,
         amount_tyiyn: sum,
-        source: form.outside ? 'outside' : 'account',
-        account_id: form.outside ? null : form.account || null,
+        source: 'account',
+        account_id: form.account || null,
         expense_date: owner ? form.date : null,
         comment: form.comment,
       })
@@ -91,12 +91,7 @@ export default function Expenses() {
             <input id="expense-sum" inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
           </Field>
           <Field label="Из какой кассы">
-            <select
-              value={form.outside ? 'outside' : form.account}
-              onChange={(e) =>
-                setForm({ ...form, outside: e.target.value === 'outside', account: e.target.value === 'outside' ? '' : e.target.value })
-              }
-            >
+            <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })}>
               <option value="">Касса</option>
               {(accounts.data ?? [])
                 .filter((a) => !isTill(a))
@@ -105,7 +100,6 @@ export default function Expenses() {
                     {a.name}
                   </option>
                 ))}
-              {owner && <option value="outside">Не из денег точки</option>}
             </select>
           </Field>
         </div>

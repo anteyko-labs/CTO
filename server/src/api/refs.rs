@@ -619,6 +619,16 @@ struct LabelSettings {
     show_name: bool,
     show_price: bool,
     show_article: bool,
+    /// Бренд отдельной строкой над названием (SPEC-29 §6). У прежних настроек — да.
+    #[serde(default = "yes")]
+    show_brand: bool,
+    /// Характеристики: вязкость и объём масла, тип фильтра, ёмкость и ток аккумулятора.
+    #[serde(default = "yes")]
+    show_spec: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for LabelSettings {
@@ -629,6 +639,8 @@ impl Default for LabelSettings {
             show_name: true,
             show_price: true,
             show_article: false,
+            show_brand: true,
+            show_spec: true,
         }
     }
 }

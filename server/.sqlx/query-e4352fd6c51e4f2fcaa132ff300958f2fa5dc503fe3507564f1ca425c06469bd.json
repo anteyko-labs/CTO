@@ -1,0 +1,108 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, r.supplier_id, s.name as supplier_name, r.settle, r.account_id,\n                  a.name as \"account_name?\", r.amount_tyiyn, r.cost_tyiyn, r.diff_tyiyn, r.comment,\n                  r.reversal_of, (select x.id from supplier_returns x where x.reversal_of = r.id) as reversed_by,\n                  u.full_name as user_name, r.created_at\n           from supplier_returns r\n           join suppliers s on s.id = r.supplier_id\n           join users u on u.id = r.user_id\n           left join cash_accounts a on a.id = r.account_id\n           where r.branch_id = $1 and ($2::uuid is null or r.id = $2)\n             and ($3::uuid is null or r.supplier_id = $3)\n           order by r.created_at desc\n           limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "settle",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "reversed_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "e4352fd6c51e4f2fcaa132ff300958f2fa5dc503fe3507564f1ca425c06469bd"
+}

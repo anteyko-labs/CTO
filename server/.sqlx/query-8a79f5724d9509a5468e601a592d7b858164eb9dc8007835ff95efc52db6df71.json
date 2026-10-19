@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(diff_tyiyn), 0)::bigint as \"v!\" from supplier_returns\n           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8a79f5724d9509a5468e601a592d7b858164eb9dc8007835ff95efc52db6df71"
+}

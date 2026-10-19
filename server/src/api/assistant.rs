@@ -785,7 +785,7 @@ fn tools() -> Value {
                 "properties": {
                     "article": { "type": "string", "description": "Статья расхода словами владельца" },
                     "amount": { "type": "string", "description": "Сумма строкой, как сказал владелец: «1 500», «350,50»" },
-                    "source": { "type": "string", "description": "Откуда: «Касса» (по умолчанию), «Счёт», «Сейф владельца», «Сейф магазина» или «из своих»" },
+                    "source": { "type": "string", "description": "Откуда: «Касса» (по умолчанию), «Счёт», «Сейф владельца» или «Сейф магазина»" },
                     "date": { "type": "string", "description": "День расхода ГГГГ-ММ-ДД, если не сегодня (не раньше 31 дня назад)" },
                     "comment": { "type": "string", "description": "Комментарий" }
                 },
@@ -819,7 +819,7 @@ fn tools() -> Value {
                     "operation": { "type": "string", "enum": ["погашение долга клиентом", "оплата поставщику", "перенос долга из тетради"] },
                     "party": { "type": "string", "description": "Клиент или поставщик: название, имя, телефон или госномер" },
                     "amount": { "type": "string", "description": "Сумма строкой, как сказал владелец" },
-                    "method": { "type": "string", "enum": ["наличные", "карта", "перевод", "из своих"], "description": "Чем платят; по умолчанию наличные" },
+                    "method": { "type": "string", "enum": ["наличные", "карта", "перевод"], "description": "Чем платят; по умолчанию наличные" },
                     "comment": { "type": "string", "description": "Комментарий" }
                 },
                 "required": ["operation", "party", "amount"],
@@ -836,7 +836,7 @@ fn tools() -> Value {
                     "employee": { "type": "string", "description": "Имя сотрудника" },
                     "amount": { "type": "string", "description": "Сумма строкой; для оклада можно не указывать — возьмётся ставка" },
                     "comment": { "type": "string", "description": "Причина премии или удержания, комментарий к выплате" },
-                    "source": { "type": "string", "description": "Откуда выплата или аванс: «Касса» (по умолчанию), «Счёт», сейф или «из своих»" },
+                    "source": { "type": "string", "description": "Откуда выплата или аванс: «Касса» (по умолчанию), «Счёт» или сейф" },
                     "month": { "type": "string", "description": "Месяц оклада ГГГГ-ММ, по умолчанию текущий" }
                 },
                 "required": ["operation", "employee"],
@@ -865,7 +865,7 @@ fn tools() -> Value {
                 "properties": {
                     "supplier": { "type": "string", "description": "Поставщик (обязателен для прихода в долг)" },
                     "payment": { "type": "string", "enum": ["оплачено", "в долг"] },
-                    "paid_from": { "type": "string", "description": "Откуда оплачено: «Касса», «Счёт», «Сейф владельца» или «из своих»" },
+                    "paid_from": { "type": "string", "description": "Откуда оплачено: «Касса», «Счёт» или «Сейф владельца»" },
                     "supplier_doc": { "type": "string", "description": "Номер накладной поставщика" },
                     "comment": { "type": "string", "description": "Комментарий" },
                     "lines": {
@@ -1162,7 +1162,7 @@ async fn totals_text(
     let t = crate::api::reports::totals_for(conn, branch_id, from, to).await?;
     let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
     Ok(format!(
-        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nЧистая прибыль: {}",
+        "Итоги {} (дни учёта, Бишкек)\nЧеков: {}\nВыручка: {} (товары {}, работы {})\nЗакупка проданного: {}\nВаловая прибыль: {}\nОплата труда: {}\nКомиссия банка: {}\nРасходы: {}\nСкидки баллами: {}\nНедостача / излишек кассы: {}\nСписание брака: {}\nБрак: разница возмещения: {}\nВозврат поставщику: разница: {}\nЧистая прибыль: {}",
         period_label(from, to),
         t.sales_count,
         format_som(revenue),
@@ -1177,6 +1177,7 @@ async fn totals_text(
         format_som_signed(t.cash_diff_tyiyn),
         format_som(t.defect_writeoff_tyiyn),
         format_som_signed(t.defect_diff_tyiyn),
+        format_som_signed(t.return_diff_tyiyn),
         format_som(t.net_tyiyn),
     ))
 }
@@ -1193,7 +1194,7 @@ async fn by_day_text(
         let t = crate::api::reports::totals_for(conn, branch_id, day, day).await?;
         let revenue = t.goods_tyiyn.saturating_add(t.services_tyiyn);
         lines.push(format!(
-            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, чистая прибыль {}",
+            "{} ({}): чеков {}, выручка {}, валовая {}, оплата труда {}, комиссия банка {}, расходы {}, скидки баллами {}, недостача / излишек кассы {}, списание брака {}, брак: разница возмещения {}, возврат поставщику: разница {}, чистая прибыль {}",
             day.format("%d.%m.%Y"),
             weekday(day),
             t.sales_count,
@@ -1206,6 +1207,7 @@ async fn by_day_text(
             format_som_signed(t.cash_diff_tyiyn),
             format_som(t.defect_writeoff_tyiyn),
             format_som_signed(t.defect_diff_tyiyn),
+            format_som_signed(t.return_diff_tyiyn),
             format_som(t.net_tyiyn),
         ));
         let Some(next) = day.succ_opt() else { break };

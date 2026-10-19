@@ -1,6 +1,7 @@
 // Доработки по проверке на точке в браузере (SPEC-27 §4–5): список товаров с итогами, «+ Товар»
 // из категории, цена продажи и прошлая закупка в приходе, частичная оплата накладной.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -41,7 +42,7 @@ test('список товаров: итоги по отбору, сортиро�
   // А: 3 шт по 100 с (продажа 150 с), Б: 2 шт по 200 с (продажа 250 с).
   await apiPost(page.request, '/receipts', {
     op_id: crypto.randomUUID(),
-    paid_from: 'outside',
+    paid_from: await ownerSafe(page.request),
     lines: [
       { product_id: a.id, qty: 3, cost_tyiyn: 30_000 },
       { product_id: b.id, qty: 2, cost_tyiyn: 40_000 },
@@ -106,7 +107,8 @@ test('приход: цена продажи и прошлая закупка; ч
   const dialog = page.getByRole('dialog', { name: new RegExp(`Оплата накладной № ${receipt.number}`) })
   await expect(dialog).toBeVisible()
   await dialog.getByLabel('Сумма, с').fill('400')
-  await dialog.getByRole('button', { name: 'Вне кассы' }).click()
+  // «Вне кассы» больше нет (ADR-079): владелец платит переводом со «Счёта».
+  await dialog.getByRole('button', { name: 'QR' }).click()
   await dialog.getByRole('button', { name: 'Оплатить' }).click()
   // Окно показывает итог оплаты (SPEC-28 §3) и закрывается кнопкой «Готово».
   await expect(dialog.getByTestId('repay-result')).toContainText(money('400 с'))
@@ -119,7 +121,7 @@ test('приход: цена продажи и прошлая закупка; ч
   await page.getByRole('tab', { name: 'Платежи' }).click()
   const pay = page.getByRole('row', { name: new RegExp(`№ ${receipt.number}`) })
   await expect(pay).toContainText(money('400 с'))
-  await expect(pay).toContainText('вне кассы')
+  await expect(pay).toContainText('Счёт')
 
   // В накладной — оплачено и осталось, платёж в истории.
   await pay.getByRole('link', { name: `№ ${receipt.number}` }).click()

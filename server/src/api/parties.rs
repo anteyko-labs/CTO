@@ -1092,8 +1092,8 @@ pub struct RepaymentReq {
     pub op_id: Uuid,
     pub party_id: Uuid,
     pub amount_tyiyn: i64,
-    /// Чем платят: `cash` — касса смены, `card` / `transfer` — счёт, `outside` — мимо денег
-    /// точки (владелец заплатил из своих). По умолчанию наличные.
+    /// Чем платят: `cash` — касса смены, `card` / `transfer` — счёт. По умолчанию наличные.
+    /// `outside` (мимо денег точки) больше не принимается — 422 (ADR-079).
     #[serde(default)]
     pub method: Option<String>,
     #[serde(default)]
@@ -1207,10 +1207,11 @@ pub async fn post_repayment_tx(
     }
     crate::ops::check_amount(req.amount_tyiyn)?;
     let method = req.method.clone().unwrap_or_else(|| "cash".into());
-    if !matches!(method.as_str(), "cash" | "card" | "transfer" | "outside") {
-        return Err(invalid(
-            "чем платят: наличные, карта, перевод или вне кассы",
-        ));
+    if method == "outside" {
+        return Err(invalid(crate::api::receipts::NO_OUTSIDE));
+    }
+    if !matches!(method.as_str(), "cash" | "card" | "transfer") {
+        return Err(invalid("чем платят: наличные, карта или перевод"));
     }
     let branch_id = ctx.user.branch_id;
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
@@ -1226,8 +1227,8 @@ pub async fn post_repayment_tx(
     .await?
     .ok_or(AppError::NotFound)?;
     let supplier = party.role == "supplier";
-    // Мимо кассы — только владелец; со счёта поставщику платит тоже он (SPEC-10, права).
-    if !ctx.user.is_owner() && (method == "outside" || (supplier && method != "cash")) {
+    // Со счёта поставщику платит владелец (SPEC-10, права).
+    if !ctx.user.is_owner() && supplier && method != "cash" {
         return Err(AppError::Forbidden);
     }
     // Оплата накладной: остаток считается под блокировкой поставщика, переплатить её нельзя.

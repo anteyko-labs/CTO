@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.number, r.supplier_id, r.settle, r.account_id, r.amount_tyiyn, r.cost_tyiyn,\n                  r.diff_tyiyn, r.reversal_of, s.name as supplier_name,\n                  exists (select 1 from supplier_returns x where x.reversal_of = r.id) as \"reversed!\"\n           from supplier_returns r join suppliers s on s.id = r.supplier_id\n           where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "settle",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "supplier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "48724af45474e153681671d08409f2305e6d1fe3ce8c626ca3d53e8c6418d97b"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update receipt_files set hidden_at = now(), hidden_by = $2, hidden_reason = $3 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6e117da9ecbc4a5aa1baa2f74ebe74a83001f3fd5c2f48bd63af52360aba6acc"
+}

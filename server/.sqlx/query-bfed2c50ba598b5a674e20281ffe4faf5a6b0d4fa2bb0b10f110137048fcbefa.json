@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.id, f.receipt_id, f.name, f.content_type, f.size_bytes, u.full_name as user_name,\n                  f.created_at, f.hidden_at, h.full_name as \"hidden_by?\", f.hidden_reason\n           from receipt_files f\n           join users u on u.id = f.user_id\n           left join users h on h.id = f.hidden_by\n           where f.receipt_id = $1 and f.branch_id = $2 and ($3 or f.hidden_at is null)\n           order by f.created_at, f.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "receipt_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "size_bytes",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "hidden_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "hidden_by?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "hidden_reason",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "bfed2c50ba598b5a674e20281ffe4faf5a6b0d4fa2bb0b10f110137048fcbefa"
+}

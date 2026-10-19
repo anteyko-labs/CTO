@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/revisions", routing::get(list).post(create))
         .route("/revisions/{id}", routing::get(get_one))
         .route("/revisions/{id}/lines", routing::put(put_line))
+        .route("/revisions/{id}/new-product", routing::post(new_product))
         .route(
             "/revisions/{id}/lines/{product_id}",
             routing::get(get_line).delete(delete_line),
@@ -391,6 +392,63 @@ async fn put_line(
     if let Some(op_id) = req.op_id {
         ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
     }
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct NewProductReq {
+    /// Найдено на полке: штуки, миллилитры (масло), граммы.
+    counted_qty: i64,
+    /// Карточка товара — те же поля, что `POST /products`; `op_id` — операции целиком.
+    #[serde(flatten)]
+    product: crate::api::catalog::CreateProductReq,
+}
+
+/// Товара нет в программе, а на полке он есть (SPEC-29 §10): карточка заводится и сразу
+/// попадает в черновик ревизии с найденным количеством — одна операция, одна транзакция.
+/// Излишек при проведении оценивается по закупке из карточки (`initial_cost_tyiyn`, SPEC-20).
+async fn new_product(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<NewProductReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    const KIND: &str = "revision.new_product";
+    if !(0..=1_000_000_000).contains(&req.counted_qty) {
+        return Err(invalid("найдено: от 0"));
+    }
+    let op_id = req.product.op_id;
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    lock_draft(&mut tx, ctx.user.branch_id, id).await?;
+    let mut product = req.product;
+    // Своя операция карточки: повтор всей операции отсекает `op_id` выше.
+    product.op_id = new_id();
+    let p = crate::api::catalog::create_product_tx(&mut tx, &ctx, product).await?;
+    sqlx::query!(
+        r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
+           values ($1, $2, $3, $4, 0)"#,
+        id,
+        p.id,
+        req.counted_qty,
+        ctx.user.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "revision",
+        Some(id),
+        json!({ "product_id": p.id, "name": p.name, "counted_qty": req.counted_qty }),
+    )
+    .await?;
+    let out = json!({ "ok": true, "product": p, "counted_qty": req.counted_qty });
+    ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
 }

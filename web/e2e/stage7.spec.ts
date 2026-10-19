@@ -1,6 +1,7 @@
 // Доработки по проверке на точке в браузере (SPEC-27): аккумулятор в оплату чека и масляная
 // книжка по каждому фильтру.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -67,7 +68,7 @@ async function goods(request: APIRequestContext, categoryId: string, name: strin
     ...extra,
   })
   const qty = extra.container_ml ? 8000 : 5
-  await api(request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: p.id, qty, cost_tyiyn: cost * (extra.container_ml ? 2 : qty) }] })
+  await api(request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(request), lines: [{ product_id: p.id, qty, cost_tyiyn: cost * (extra.container_ml ? 2 : qty) }] })
   return p
 }
 

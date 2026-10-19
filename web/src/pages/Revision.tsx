@@ -1,12 +1,17 @@
-// Ревизия склада: пересчёт сканером по категориям, проведение владельцем (SPEC-15).
+// Ревизия склада: пересчёт сканером по категориям, проведение владельцем (SPEC-15). Один экран с
+// «Работой с товарами» (SPEC-20): вкладки «Ревизия» и «Сканер товаров»; в ревизию вписывают и
+// товар, которого нет в программе — карточка заводится с найденным количеством (SPEC-29 §10).
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
-import { del, get, newOpId, post, put } from '../lib/api'
+import { ApiError, del, get, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Category } from '../lib/types'
+import type { Category, Product } from '../lib/types'
+import ProductIntake from './ProductIntake'
 
 interface Head {
   id: string
@@ -77,8 +82,22 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   const [filter, setFilter] = useState('')
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [posting, setPosting] = useState<{ comment: string; opId: string } | null>(null)
+  /** «Товар не из программы»: окно новой карточки, с кодом, если его отсканировали. */
+  const [adding, setAdding] = useState<{ barcode?: string } | null>(null)
   const act = useAction()
   const draft = rev.head.status === 'draft'
+
+  /** Товар уже есть в программе: показать его строку и поставить курсор в поле пересчёта. */
+  const goTo = (p: Pick<Product, 'id' | 'name'>) => {
+    setAdding(null)
+    const l = rev.lines.find((x) => x.product_id === p.id)
+    if (!l) {
+      act.setError(`«${p.name}» не входит в эту ревизию${rev.head.category_name ? ` (категория «${rev.head.category_name}»)` : ''}`)
+      return
+    }
+    setFilter(l.name)
+    setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
+  }
 
   const save = (l: Line, qty: number | null) =>
     void act.run(async () => {
@@ -104,7 +123,15 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
     const l = rev.lines.find((x) => x.barcodes.includes(code))
     setScan('')
     if (!l) {
-      act.setError(`Код ${code} не найден в этой ревизии${rev.head.category_name ? ` (категория «${rev.head.category_name}»)` : ''}`)
+      // Нет в ревизии: товара нет и в программе — предлагаем завести с найденным количеством.
+      void get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+        .then((p) => goTo(p))
+        .catch((e) => {
+          if (e instanceof ApiError && e.status === 404) {
+            act.setError(null)
+            setAdding({ barcode: code })
+          } else act.setError(e instanceof Error ? e.message : 'Ошибка')
+        })
       return
     }
     act.setError(null)
@@ -140,6 +167,11 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
             <Field label="Найти в списке">
               <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название или артикул" />
             </Field>
+          </div>
+          <div>
+            <Button variant="secondary" onClick={() => setAdding({})}>
+              + Товар не из программы
+            </Button>
           </div>
           <div className="text-sm text-slate-600">
             Пересчитано {counted.length} из {rev.lines.length}, расхождений {diffs.length}
@@ -236,6 +268,19 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
           )}
         </div>
       )}
+      {adding && (
+        <RevisionNewProduct
+          revisionId={rev.head.id}
+          categoryId={rev.head.category_id}
+          presetBarcode={adding.barcode}
+          onClose={() => setAdding(null)}
+          onExisting={goTo}
+          onDone={() => {
+            setAdding(null)
+            onChanged()
+          }}
+        />
+      )}
       {posting && (
         <Modal title={`Провести ревизию № ${rev.head.number}`} onClose={() => setPosting(null)}>
           <div className="flex flex-col gap-3">
@@ -272,7 +317,37 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   )
 }
 
-export default function Revision() {
+/** Один экран: ревизии и сканер товаров («Работа с товарами»). Вкладка — в адресе (`?tab=scan`). */
+export default function RevisionAndGoods() {
+  const [params, setParams] = useSearchParams()
+  const tab = params.get('tab') === 'scan' ? 'scan' : 'revision'
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex gap-2" role="tablist" aria-label="Ревизия и товары">
+        {(
+          [
+            ['revision', 'Ревизия'],
+            ['scan', 'Сканер товаров'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={`min-h-[38px] rounded-md border px-4 py-2 text-sm font-medium ${tab === key ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+            onClick={() => setParams(key === 'scan' ? { tab: 'scan' } : {}, { replace: true })}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === 'scan' ? <ProductIntake /> : <Revision />}
+    </div>
+  )
+}
+
+function Revision() {
   const list = useLoad(() => get<Head[]>('/revisions'), [])
   const listPager = usePager(list.data ?? [], 'revisions')
   const categories = useLoad(() => get<Category[]>('/categories'), [])

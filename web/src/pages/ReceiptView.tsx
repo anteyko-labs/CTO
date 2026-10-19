@@ -1,8 +1,9 @@
 // Просмотр прихода, сторно и печать этикеток (SPEC-03); оплата накладной в долг по частям и история
-// платежей (SPEC-27).
+// платежей (SPEC-27); фото накладной (SPEC-29 §3).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { printLabels } from '../components/labels'
+import { ReceiptPhotos } from '../components/ReceiptPhotos'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { InvoicePayments, InvoiceStatusBadge } from '../components/SupplierPayments'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
@@ -197,6 +198,12 @@ export default function ReceiptView() {
           Итого: {formatSom(r.total_tyiyn)}
         </div>
       </Card>
+
+      {!isReversal && (
+        <Card>
+          <ReceiptPhotos receiptId={r.id} canAdd />
+        </Card>
+      )}
 
       {paying && r.debt && r.supplier_id && (
         <RepaymentModal

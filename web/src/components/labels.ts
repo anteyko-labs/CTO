@@ -1,8 +1,8 @@
 // Печать этикеток со штрихкодом через диалог печати браузера (SPEC-02, ADR-010).
 import JsBarcode from 'jsbarcode'
 import { get } from '../lib/api'
-import { productTitle } from '../lib/battery'
 import { formatSom } from '../lib/format'
+import { labelText } from '../lib/labelText'
 import type { LabelSettings, Product } from '../lib/types'
 
 export interface LabelItem {
@@ -42,11 +42,15 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     const code = product.barcodes[0]
     if (!code) continue
     const svg = barcodeSvg(code, s.height_mm)
-    const name = s.show_name ? `<div class="name">${escapeHtml(productTitle(product))}</div>` : ''
+    // Бренд, название и характеристики — вязкость и объём масла, тип фильтра (SPEC-29 §6).
+    const t = labelText(product, s)
+    const brand = t.brand ? `<div class="brand">${escapeHtml(t.brand)}</div>` : ''
+    const name = t.name ? `<div class="name">${escapeHtml(t.name)}</div>` : ''
+    const spec = t.spec ? `<div class="spec">${escapeHtml(t.spec)}</div>` : ''
     const article = s.show_article && product.article ? `<div class="small">${escapeHtml(product.article)}</div>` : ''
     const price = s.show_price ? `<div class="price">${escapeHtml(formatSom(product.sale_price_tyiyn))}</div>` : ''
     for (let i = 0; i < copies; i++) {
-      labels.push(`<div class="label">${name}${article}<div class="code">${svg}</div>${price}</div>`)
+      labels.push(`<div class="label">${brand}${name}${spec}${article}<div class="code">${svg}</div>${price}</div>`)
     }
   }
   return `<!doctype html><html><head><meta charset="utf-8"><title>Этикетки</title><style>
@@ -55,7 +59,9 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     body { margin: 0; font-family: Arial, sans-serif; }
     .label { width: ${s.width_mm}mm; height: ${s.height_mm}mm; padding: 1.5mm; overflow: hidden;
              display: flex; flex-direction: column; justify-content: space-between; page-break-after: always; }
+    .brand { font-size: 7pt; font-weight: bold; text-transform: uppercase; line-height: 1.1; }
     .name { font-size: 8pt; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
+    .spec { font-size: 8pt; font-weight: bold; line-height: 1.1; }
     .small { font-size: 7pt; }
     .code { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
     .code svg { width: 100%; height: 100%; }

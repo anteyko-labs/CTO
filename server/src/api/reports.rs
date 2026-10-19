@@ -42,6 +42,9 @@ pub struct Totals {
     /// «Брак: разница возмещения»: возмещение поставщика минус стоимость брака — минус убыток,
     /// плюс доход (SPEC-25).
     pub defect_diff_tyiyn: i64,
+    /// «Возврат поставщику: разница»: сумма возврата минус себестоимость возвращённого товара —
+    /// минус убыток, плюс доход (SPEC-29 §9).
+    pub return_diff_tyiyn: i64,
     pub net_tyiyn: i64,
     pub margin_bp: Option<i64>,
     pub sales_count: i64,
@@ -70,6 +73,8 @@ pub(crate) struct DayRow {
     /// Списание брака и разница возмещения (SPEC-25).
     pub(crate) defect_writeoff_tyiyn: i64,
     pub(crate) defect_diff_tyiyn: i64,
+    /// Возврат поставщику: разница (SPEC-29 §9).
+    pub(crate) return_diff_tyiyn: i64,
     pub(crate) net_tyiyn: i64,
 }
 
@@ -249,6 +254,16 @@ pub async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Возврат поставщику (SPEC-29 §9) — по дню документа; сторно входит со своим знаком.
+    let return_diff = sqlx::query_scalar!(
+        r#"select coalesce(sum(diff_tyiyn), 0)::bigint as "v!" from supplier_returns
+           where branch_id = $1 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     // Суммы из базы; насыщение вместо паники на заведомо нереальных значениях.
     let revenue = lines.goods.saturating_add(lines.services);
     let cost = lines.cost.saturating_add(revaluation);
@@ -266,6 +281,7 @@ pub async fn totals_for(
         cash_diff_tyiyn: cash_diff,
         defect_writeoff_tyiyn: defects.writeoff,
         defect_diff_tyiyn: defects.diff,
+        return_diff_tyiyn: return_diff,
         net_tyiyn: gross
             .saturating_sub(payroll)
             .saturating_sub(fee)
@@ -273,7 +289,8 @@ pub async fn totals_for(
             .saturating_sub(bonus)
             .saturating_add(cash_diff)
             .saturating_sub(defects.writeoff)
-            .saturating_add(defects.diff),
+            .saturating_add(defects.diff)
+            .saturating_add(return_diff),
         margin_bp: (revenue != 0)
             .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
             .flatten(),
@@ -395,7 +412,10 @@ pub(crate) async fn profit_data(
                          and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_writeoff!",
              coalesce((select sum(x.diff_tyiyn) from defect_resolutions x
                        where x.branch_id = $1
-                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_diff!"
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_diff!",
+             coalesce((select sum(x.diff_tyiyn) from supplier_returns x
+                       where x.branch_id = $1
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "return_diff!"
            from d order by d.day desc"#,
         branch_id,
         from,
@@ -415,6 +435,7 @@ pub(crate) async fn profit_data(
         cash_diff_tyiyn: r.cash_diff,
         defect_writeoff_tyiyn: r.defect_writeoff,
         defect_diff_tyiyn: r.defect_diff,
+        return_diff_tyiyn: r.return_diff,
         net_tyiyn: r
             .gross
             .saturating_sub(r.payroll)
@@ -423,7 +444,8 @@ pub(crate) async fn profit_data(
             .saturating_sub(r.bonus)
             .saturating_add(r.cash_diff)
             .saturating_sub(r.defect_writeoff)
-            .saturating_add(r.defect_diff),
+            .saturating_add(r.defect_diff)
+            .saturating_add(r.return_diff),
     })
     .collect();
 

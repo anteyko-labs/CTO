@@ -1,6 +1,7 @@
 // Брак и поставки в браузере (SPEC-25, SPEC-26): отметить брак из остатков, решить его
 // возвратом поставщику со скидкой и увидеть возврат в карточке поставщика.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -36,7 +37,7 @@ test('брак: отметка, возврат поставщику со ски�
     op_id: crypto.randomUUID(),
     supplier_id: supplier.id,
     payment: 'paid',
-    paid_from: 'outside',
+    paid_from: await ownerSafe(page.request),
     lines: [{ product_id: product.id, qty: 5, cost_tyiyn: 150_000 }],
   })
 

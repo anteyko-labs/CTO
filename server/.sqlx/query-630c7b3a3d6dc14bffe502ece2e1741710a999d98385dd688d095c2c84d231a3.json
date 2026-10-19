@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into supplier_returns (id, branch_id, number, supplier_id, settle, account_id,\n                                         amount_tyiyn, cost_tyiyn, diff_tyiyn, comment, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "630c7b3a3d6dc14bffe502ece2e1741710a999d98385dd688d095c2c84d231a3"
+}

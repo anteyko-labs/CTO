@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.receipt_id, f.name, f.hidden_at, r.number\n           from receipt_files f join receipts r on r.id = f.receipt_id\n           where f.id = $1 and f.branch_id = $2 for update of f",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "receipt_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "hidden_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "76f48538a2b528f8290d88980dd826a1db7117c7ef96b3f7019e0b9beb7f7f82"
+}

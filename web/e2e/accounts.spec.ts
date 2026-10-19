@@ -2,6 +2,7 @@
 // комиссии, кассир продаёт картой на этот банк, счёт виден в обзоре с остатком и в истории — с
 // продажей и комиссией банка; ставка меняется в карточке счёта с историей.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -56,7 +57,7 @@ test('свой банк: завести, продать картой на нег
     sale_price_tyiyn: 100_000,
     barcodes: [code],
   })
-  await api(page.request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines: [{ product_id: p.id, qty: 3, cost_tyiyn: 150_000 }] })
+  await api(page.request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(page.request), lines: [{ product_id: p.id, qty: 3, cost_tyiyn: 150_000 }] })
 
   // «+ Счёт»: безналичный, комиссия 1 %; минус по факту разрешён по умолчанию.
   await page.getByRole('link', { name: 'Счета', exact: true }).first().click()

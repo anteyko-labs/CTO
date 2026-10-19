@@ -2,21 +2,26 @@
 // Строка как в старой программе: цена по накладной, наценка %, цена продажи, сумма; наценка и цена
 // продажи связаны, новая цена продажи ставится товару при проведении (SPEC-28 §1, ADR-075). Внизу
 // итог по закупке и по продаже; при выборе товара — «в прошлый раз: цена, дата, поставщик» (SPEC-27).
-import { useState } from 'react'
+// Ввод подряд с клавиатуры и подсказки из старой программы, часть оплаты сразу, фото накладной (SPEC-29).
+import { useState, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
-import { ProductPicker, stockText } from '../components/ProductPicker'
-import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table } from '../components/ui'
+import { ProductPicker, stockText, type PickHow } from '../components/ProductPicker'
+import { PendingPhotos, PhotoButtons } from '../components/ReceiptPhotos'
+import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUpload'
+import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
-import { formatLiters, formatSom } from '../lib/format'
+import { formatLiters, formatSom, parseSom } from '../lib/format'
 import { initialPrices, isOil, lastText, lineCalc, parseCount, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
-import { defaultPaySource, notEnough, paySources } from '../lib/receiptPay'
-import type { CashAccount, LastReceipt, Product, Receipt, Supplier } from '../lib/types'
+import { presetFromHit, type CardPreset } from '../lib/oldCatalog'
+import { nextField, type LineField } from '../lib/receiptKeys'
+import { defaultPaySource, notEnough, paidNow, partProblem, paySources, type PayMode } from '../lib/receiptPay'
+import type { CashAccount, Category, LastReceipt, OldCatalogHit, Product, Receipt, Supplier } from '../lib/types'
 
 interface Line {
   key: string
@@ -39,7 +44,14 @@ export default function ReceiptNew() {
   const [supplierId, setSupplierId] = useState('')
   const [supplierDoc, setSupplierDoc] = useState('')
   const [comment, setComment] = useState('')
-  const [onDebt, setOnDebt] = useState(false)
+  // Сразу целиком, часть сейчас и остаток в долг, всё в долг (SPEC-29 §4).
+  const [payMode, setPayMode] = useState<PayMode>('paid')
+  const [partText, setPartText] = useState('')
+  const onDebt = payMode !== 'paid'
+  const [photos, setPhotos] = useState<PendingPhoto[]>([])
+  const photoAction = useAction()
+  const categories = useLoad(() => get<Category[]>('/categories'), [])
+  const [oldPreset, setOldPreset] = useState<CardPreset | null>(null)
   // Оплачена сразу — деньги уходят из выбранной кассы (ADR-062); администратору — только «Касса».
   const owner = useUser().role === 'owner'
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
@@ -57,7 +69,25 @@ export default function ReceiptNew() {
   const save = useAction()
   const supplierAction = useAction()
 
-  const addProduct = (p: Product) => {
+  /** Перейти к полю: выделить текст, чтобы ввод сразу заменил подставленное. */
+  const focusId = (id: string | null) =>
+    setTimeout(() => {
+      const el = document.getElementById(id ?? 'receipt-picker') as HTMLInputElement | null
+      el?.focus()
+      el?.select?.()
+    }, 30)
+
+  /** Enter в поле строки — следующее поле, потом следующая строка, потом поиск (SPEC-29 §1). */
+  const onFieldKey = (lineNo: number, field: LineField) => (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    focusId(nextField(lineNo, field, lines.length))
+  }
+
+  const addProduct = (p: Product, how: PickHow = 'search', cost?: string) => {
+    // Скан — фокус остаётся в поиске (сканируют подряд); выбор из списка — сразу к количеству строки.
+    const at = lines.findIndex((l) => l.product.id === p.id)
+    if (how === 'search') focusId(`line-${at < 0 ? lines.length + 1 : at + 1}-count`)
     // Прошлая закупка: цена, дата и поставщик — подсказка рядом с ценой (SPEC-27).
     if (!lines.some((l) => l.product.id === p.id)) {
       void get<LastReceipt | null>(`/products/${p.id}/last-receipt`)
@@ -68,7 +98,9 @@ export default function ReceiptNew() {
       const i = ls.findIndex((l) => l.product.id === p.id)
       if (i < 0) {
         // Цена подставляется из прошлого прихода, цена продажи — текущая; их можно изменить.
-        return [...ls, { key: crypto.randomUUID(), product: p, count: '1', ...initialPrices(p) }]
+        // Карточка из старой программы — закупка оттуда, пока своих приходов нет.
+        const prices = initialPrices(p)
+        return [...ls, { key: crypto.randomUUID(), product: p, count: '1', ...(cost && !prices.price ? withCost(prices, cost) : prices) }]
       }
       return ls.map((l, j) => {
         if (j !== i) return l
@@ -122,13 +154,27 @@ export default function ReceiptNew() {
 
   // Чего не хватает для проведения: кнопка заблокирована, пока список не пуст.
   const badLine = calcs.findIndex((c) => typeof c === 'string')
+  const part = partText.trim() ? parseSom(partText) : null
+  const partError = payMode === 'part' ? partProblem(part, total) : null
+  const paying = payMode !== 'debt'
+  const now = paidNow(payMode, total, part)
   const missing = missingWithFocus(
     [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
     [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
-    [onDebt || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
-    [onDebt || !notEnough(sources, source, total), 'денег в выбранной кассе меньше суммы накладной', '#receipt-paid-from'],
+    [partError === null, partError ?? '', '#receipt-paid-now'],
+    [!paying || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
+    [!paying || !notEnough(sources, source, now), 'денег на выбранном счёте меньше оплаты', '#receipt-paid-from'],
     [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
   )
+
+  const addPhotos = (files: FileList) =>
+    void photoAction.run(async () => {
+      const ready = await preparePhotos(files)
+      setPhotos((p) => [...p, ...ready])
+    })
+
+  /** Позиция старой программы: карточка с её данными, проверить и сохранить (SPEC-29 §1–2). */
+  const fromOld = (h: OldCatalogHit, code: string) => setOldPreset(presetFromHit(h, categories.data ?? [], '', code))
 
   const submit = () => {
     if (lines.length === 0) {
@@ -157,11 +203,17 @@ export default function ReceiptNew() {
         op_id: opId,
         supplier_id: supplierId || null,
         payment: onDebt ? 'debt' : 'paid',
-        paid_from: onDebt ? null : source,
+        paid_from: paying ? source : null,
+        ...(payMode === 'part' ? { paid_now_tyiyn: part } : {}),
         supplier_doc: supplierDoc.trim(),
         comment: comment.trim(),
         lines: body,
       })
+      // Фото — после проведения: накладная уже есть, не загрузившееся можно прикрепить в ней.
+      if (photos.length) {
+        const failed = await uploadPhotos(r.id, photos)
+        if (failed.length) toast(`Приход проведён, но фото не загрузились — прикрепите в накладной: ${failed.join('; ')}`, 'error')
+      }
       if (print) {
         try {
           await printLabels(copies)
@@ -241,7 +293,14 @@ export default function ReceiptNew() {
 
         <Card>
           <div className="mb-3">
-            <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
+            <ProductPicker
+              inputId="receipt-picker"
+              onPick={(p, how) => addProduct(p, how)}
+              onUnknownCode={setUnknownCode}
+              onCreate={setNewProductName}
+              onPickOld={fromOld}
+              placeholder="Сканируйте штрихкод или пишите название — подскажем и из старой программы"
+            />
           </div>
           {lines.length === 0 ? (
             <Empty>Сканируйте штрихкод или найдите товар по названию — он добавится строкой</Empty>
@@ -269,6 +328,7 @@ export default function ReceiptNew() {
                           className={`w-24 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
                           inputMode="numeric"
                           value={l.count}
+                          onKeyDown={onFieldKey(i + 1, 'count')}
                           onChange={(e) => updateLine(l.key, { count: e.target.value })}
                         />
                       </label>
@@ -281,6 +341,7 @@ export default function ReceiptNew() {
                           className={`w-28 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
                           inputMode="decimal"
                           value={l.price}
+                          onKeyDown={onFieldKey(i + 1, 'price')}
                           onChange={(e) => updateLine(l.key, withCost(l, e.target.value))}
                         />
                       </label>
@@ -299,6 +360,7 @@ export default function ReceiptNew() {
                           className="w-20"
                           inputMode="decimal"
                           value={l.markup}
+                          onKeyDown={onFieldKey(i + 1, 'markup')}
                           onChange={(e) => updateLine(l.key, withMarkup(l, e.target.value))}
                         />
                       </label>
@@ -312,6 +374,7 @@ export default function ReceiptNew() {
                           className={`w-28 ${typeof c !== 'string' && c.salePrice !== l.product.sale_price_tyiyn ? 'border-amber-500 bg-amber-50' : ''}`}
                           inputMode="decimal"
                           value={l.salePrice}
+                          onKeyDown={onFieldKey(i + 1, 'sale')}
                           onChange={(e) => updateLine(l.key, withSalePrice(l, e.target.value))}
                         />
                       </label>
@@ -365,15 +428,39 @@ export default function ReceiptNew() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-4">
                 <Checkbox label="Печатать этикетки" checked={print} onChange={setPrint} />
-                <Checkbox label="Остались должны поставщику" checked={onDebt} onChange={setOnDebt} />
-                {!onDebt && (
+                <div className="flex flex-wrap items-center gap-3 text-sm" role="radiogroup" aria-label="Расчёт с поставщиком">
+                  {(
+                    [
+                      ['paid', 'Оплачена сразу'],
+                      ['part', 'Часть сейчас, остаток в долг'],
+                      ['debt', 'Вся в долг'],
+                    ] as [PayMode, string][]
+                  ).map(([m, label]) => (
+                    <label key={m} className="flex items-center gap-1">
+                      <input type="radio" name="receipt-pay" value={m} checked={payMode === m} onChange={() => setPayMode(m)} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                {payMode === 'part' && (
                   <label className="flex items-center gap-2 text-sm">
-                    Оплачено
+                    Оплачено сейчас, с
+                    <input id="receipt-paid-now" className="w-28" inputMode="decimal" value={partText} onChange={(e) => setPartText(e.target.value)} />
+                    {total !== null && part !== null && partError === null && (
+                      <span className="text-slate-600" data-testid="receipt-debt-rest">
+                        в долг {formatSom(total - part)}
+                      </span>
+                    )}
+                  </label>
+                )}
+                {paying && (
+                  <label className="flex items-center gap-2 text-sm">
+                    {payMode === 'part' ? 'Со счёта' : 'Оплачено'}
                     <select id="receipt-paid-from" value={source} onChange={(e) => setPaidFrom(e.target.value)}>
                       {owner && <option value="">— откуда —</option>}
                       {sources.map((s) => (
                         <option key={s.value} value={s.value}>
-                          {s.balance_tyiyn === null ? s.label : `${s.label} (${formatSom(s.balance_tyiyn)})`}
+                          {`${s.label} (${formatSom(s.balance_tyiyn)})`}
                         </option>
                       ))}
                     </select>
@@ -396,7 +483,24 @@ export default function ReceiptNew() {
                 </div>
               </div>
             </div>
-            <ErrorBox error={save.error ?? labels.error ?? accounts.error} />
+            <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <span className="font-medium">Фото накладной</span>
+                <PhotoButtons busy={photoAction.busy} onPicked={addPhotos} />
+                <span className="text-xs text-slate-500">прикрепятся при проведении; можно и позже — в накладной</span>
+              </div>
+              <PendingPhotos
+                photos={photos}
+                onRemove={(key) =>
+                  setPhotos((list) => {
+                    const gone = list.find((p) => p.key === key)
+                    if (gone) URL.revokeObjectURL(gone.url)
+                    return list.filter((p) => p.key !== key)
+                  })
+                }
+              />
+            </div>
+            <ErrorBox error={save.error ?? labels.error ?? accounts.error ?? photoAction.error} />
             <Missing items={missing} className="md:self-end" />
           </div>
         </Card>
@@ -405,7 +509,7 @@ export default function ReceiptNew() {
       {lines.length > 0 && (
         <div className="no-print fixed inset-x-0 bottom-[52px] z-20 flex items-center gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-2px_8px_rgba(15,23,42,0.08)] md:hidden">
           <div className="min-w-0 flex-1">
-            <div className="text-xs text-slate-500">{onDebt ? 'Итого · в долг поставщику' : 'Итого'}</div>
+            <div className="text-xs text-slate-500">{payMode === 'debt' ? 'Итого · в долг поставщику' : payMode === 'part' ? 'Итого · часть в долг' : 'Итого'}</div>
             <div className="truncate text-xl font-bold tabular-nums">{total === null ? '—' : formatSom(total)}</div>
           </div>
           <Button className="shrink-0 px-6 py-3 text-base" disabled={save.busy || missing.length > 0} onClick={submit}>
@@ -446,6 +550,17 @@ export default function ReceiptNew() {
           onSaved={(p) => {
             setNewProductName(null)
             addProduct(p)
+          }}
+        />
+      )}
+      {oldPreset && (
+        <ProductFormModal
+          preset={oldPreset}
+          onClose={() => setOldPreset(null)}
+          onSaved={(p) => {
+            const cost = oldPreset.cost
+            setOldPreset(null)
+            addProduct(p, 'search', cost)
           }}
         />
       )}

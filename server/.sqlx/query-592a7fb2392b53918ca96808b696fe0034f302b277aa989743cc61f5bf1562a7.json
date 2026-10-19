@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.return_id, l.line_no, l.product_id, p.name, p.unit, p.container_ml, l.qty,\n                  l.amount_tyiyn, l.cost_tyiyn\n           from supplier_return_lines l join products p on p.id = l.product_id\n           where l.return_id = any($1)\n           order by l.return_id, l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "return_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "592a7fb2392b53918ca96808b696fe0034f302b277aa989743cc61f5bf1562a7"
+}

@@ -8,5 +8,6 @@ describe('оплата накладных', () => {
     expect(paymentSource({ kind: 'payment', source: 'outside' })).toBe('вне кассы (из своих)')
     expect(paymentSource({ kind: 'defect', source: '' })).toBe('зачёт брака (скидка)')
     expect(paymentSource({ kind: 'adjust', source: '' })).toBe('правка владельца')
+    expect(paymentSource({ kind: 'return', source: '' })).toBe('возврат товара поставщику')
   })
 })

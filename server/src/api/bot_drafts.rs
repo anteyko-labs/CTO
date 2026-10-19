@@ -496,7 +496,7 @@ fn choose<T>(
     Err(lines.join("\n"))
 }
 
-/// Откуда деньги: касса филиала или «из своих, мимо касс».
+/// Откуда деньги: касса или счёт филиала. «Из своих, мимо касс» больше нет (ADR-079).
 #[derive(Debug, Clone)]
 enum Source {
     Account {
@@ -504,7 +504,6 @@ enum Source {
         name: String,
         balance: i64,
     },
-    Outside,
 }
 
 impl Source {
@@ -513,7 +512,6 @@ impl Source {
             Source::Account { name, balance, .. } => {
                 format!("{} (сейчас {})", one_line(name), format_som(*balance))
             }
-            Source::Outside => "из своих, мимо касс".into(),
         }
     }
 }
@@ -524,21 +522,17 @@ fn is_outside(q: &str) -> bool {
 }
 
 /// Касса по названию («Касса», «Счёт», «Сейф владельца»); пусто — касса по умолчанию.
+/// «Из своих» — отказ с объяснением: так больше не платят (ADR-079).
 async fn account(
     conn: &mut PgConnection,
     branch_id: Uuid,
     q: Option<&str>,
-    outside_ok: bool,
 ) -> AppResult<Result<Source, String>> {
     crate::api::cash::ensure_accounts(conn, branch_id).await?;
     if let Some(q) = q
         && is_outside(q)
     {
-        return Ok(if outside_ok {
-            Ok(Source::Outside)
-        } else {
-            Err("здесь нужна касса: «Касса», «Счёт» или сейф".into())
-        });
+        return Ok(Err(crate::api::receipts::NO_OUTSIDE.into()));
     }
     let all = sqlx::query!(
         r#"select id, name, kind, balance_tyiyn, is_default from cash_accounts
@@ -571,7 +565,9 @@ async fn account(
         found,
         |a| format!("{}: {}", a.name, format_som(a.balance_tyiyn)),
         |_| false,
-        format!("Касса «{asked}» не найдена. Кассы: «Касса», «Счёт», «Сейф магазина», «Сейф владельца» или «из своих»."),
+        format!(
+            "Касса «{asked}» не найдена. Кассы: «Касса», «Счёт», «Сейф магазина», «Сейф владельца»."
+        ),
         format!("По «{asked}» подходит несколько касс"),
     )
     .map(|a| Source::Account {
@@ -869,7 +865,6 @@ fn balance_hint(src: &Source) -> String {
         Source::Account { name, balance, .. } => {
             format!(" В «{name}» сейчас {}.", format_som(*balance))
         }
-        Source::Outside => String::new(),
     }
 }
 
@@ -878,7 +873,7 @@ async fn expense(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
     let article_q = take!(need(input, "article", "статья расхода"));
     let sum = take!(amount(input, "amount"));
     let src_q = take!(field(input, "source"));
-    let src = take!(account(conn, branch_id, src_q.as_deref(), true).await?);
+    let src = take!(account(conn, branch_id, src_q.as_deref()).await?);
     let today = today(conn).await?;
     let date = match take!(field(input, "date")) {
         None => today,
@@ -921,7 +916,6 @@ async fn expense(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
     let text = comment(input, "comment");
     let (source, account_id) = match &src {
         Source::Account { id, .. } => ("account", Some(*id)),
-        Source::Outside => ("outside", None),
     };
     let summary = format!(
         "Расход\nСтатья: {}\nСумма: {}\nОткуда: {}\nДата: {}\nКомментарий: {}",
@@ -955,10 +949,8 @@ async fn money(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
     if operation.starts_with("внес") || operation.starts_with("изъ") {
         let cash_in = operation.starts_with("внес");
         let acc_q = take!(field(input, "account"));
-        let src = take!(account(conn, branch_id, acc_q.as_deref(), false).await?);
-        let Source::Account { id, .. } = &src else {
-            return Ok(Err("нужна касса".into()));
-        };
+        let src = take!(account(conn, branch_id, acc_q.as_deref()).await?);
+        let Source::Account { id, .. } = &src;
         let summary = format!(
             "{}\nКасса: {}\nСумма: {}\nКомментарий: {}",
             if cash_in {
@@ -989,15 +981,12 @@ async fn money(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
     {
         let from_q = take!(field(input, "from"));
         let to_q = take!(field(input, "to"));
-        let from = take!(account(conn, branch_id, from_q.as_deref(), false).await?);
+        let from = take!(account(conn, branch_id, from_q.as_deref()).await?);
         let Some(to_q) = to_q else {
             return Ok(Err("не указано, куда перевести (поле to)".into()));
         };
-        let to = take!(account(conn, branch_id, Some(&to_q), false).await?);
-        let (Source::Account { id: from_id, .. }, Source::Account { id: to_id, .. }) = (&from, &to)
-        else {
-            return Ok(Err("перевод — только между кассами".into()));
-        };
+        let to = take!(account(conn, branch_id, Some(&to_q)).await?);
+        let (Source::Account { id: from_id, .. }, Source::Account { id: to_id, .. }) = (&from, &to);
         let summary = format!(
             "Перемещение денег\nОткуда: {}\nКуда: {}\nСумма: {}\nКомментарий: {}",
             from.line(),
@@ -1092,11 +1081,9 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
     } else if method_q.starts_with("перев") || method_q.contains("сч") {
         "transfer"
     } else if is_outside(&method_q) {
-        "outside"
+        return Ok(Err(crate::api::receipts::NO_OUTSIDE.into()));
     } else {
-        return Ok(Err(
-            "чем платят: «наличные», «карта», «перевод» или «из своих»".into(),
-        ));
+        return Ok(Err("чем платят: «наличные», «карта» или «перевод»".into()));
     };
     // Касса — ровно та, которую возьмёт проведение (та же функция), с комиссией банка.
     // Карта и перевод — на счёт по умолчанию для этого способа, комиссия — по его ставке (ADR-077).
@@ -1105,14 +1092,13 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
             account_by_id(conn, id).await?,
             crate::api::parties::repayment_fee(conn, id, method, supplier, sum).await?,
         ),
-        Ok(None) => (Source::Outside, 0),
+        Ok(None) => return Ok(Err(crate::api::receipts::NO_OUTSIDE.into())),
         Err(e) => return Ok(Err(reason(e)?)),
     };
     let method_word = match method {
         "cash" => "наличные",
         "card" => "карта",
-        "transfer" => "перевод",
-        _ => "из своих, мимо касс",
+        _ => "перевод",
     };
     let fee_line = if fee != 0 {
         format!(
@@ -1212,7 +1198,7 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
         let advance = operation.starts_with("аванс");
         let sum = take!(amount(input, "amount"));
         let src_q = take!(field(input, "source"));
-        let src = take!(account(conn, branch_id, src_q.as_deref(), true).await?);
+        let src = take!(account(conn, branch_id, src_q.as_deref()).await?);
         let earned = sqlx::query_scalar!(
             r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
                     - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,
@@ -1222,7 +1208,6 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
         .await?;
         let (source, account_id) = match &src {
             Source::Account { id, .. } => ("account", Some(*id)),
-            Source::Outside => ("outside", None),
         };
         let summary = format!(
             "{}\nСотрудник: {} (к выплате сейчас {})\nСумма: {}\nОткуда: {}\nКомментарий: {}",
@@ -1434,10 +1419,10 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
         let q = take!(field(input, "paid_from"));
         let Some(q) = q else {
             return Ok(Err(
-                "откуда оплачен приход: «Касса», «Счёт», сейф, «из своих» — или «в долг»".into(),
+                "откуда оплачен приход: «Касса», «Счёт», сейф — или «в долг»".into(),
             ));
         };
-        Some(take!(account(conn, branch_id, Some(&q), true).await?))
+        Some(take!(account(conn, branch_id, Some(&q)).await?))
     };
     let Some(lines_in) = input.get("lines").and_then(Value::as_array) else {
         return Ok(Err("нет строк прихода (поле lines)".into()));
@@ -1513,8 +1498,7 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
     let text = comment(input, "comment");
     let pay_line = match &src {
         None => "в долг поставщику".to_string(),
-        Some(s @ Source::Account { .. }) => format!("оплачено из «{}»", s.line()),
-        Some(Source::Outside) => "оплачено из своих, мимо касс".to_string(),
+        Some(s) => format!("оплачено из «{}»", s.line()),
     };
     let summary = format!(
         "Приход товара\nПоставщик: {}\n{}\nИтого: {}\nРасчёт: {pay_line}\nДокумент поставщика: {}\nКомментарий: {}",
@@ -1526,11 +1510,9 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
         quoted(&doc),
         quoted(&text)
     );
-    let paid_from = match &src {
-        None => None,
-        Some(Source::Account { id, .. }) => Some(id.to_string()),
-        Some(Source::Outside) => Some("outside".to_string()),
-    };
+    let paid_from = src
+        .as_ref()
+        .map(|Source::Account { id, .. }| id.to_string());
     let hint = src.as_ref().map(balance_hint).unwrap_or_default();
     Ok(Ok(Built {
         op: DraftOp::Receipt(ReceiptReq {
@@ -1541,6 +1523,7 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
             comment: text,
             lines,
             paid_from,
+            paid_now_tyiyn: None,
         }),
         kind: "receipt",
         summary,

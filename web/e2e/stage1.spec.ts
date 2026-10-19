@@ -1,5 +1,6 @@
 // Главный путь этапа 1 в браузере: товар → приход → продажа → возврат → остатки, и права администратора.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 import { pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -67,7 +68,7 @@ test('товар, приход, продажа, возврат и остаток
   const print = page.getByLabel('Печатать этикетки')
   if (await print.isChecked()) await print.uncheck()
   // Оплачена сразу: владелец выбирает, откуда деньги (ADR-062).
-  await page.locator('#receipt-paid-from').selectOption('outside')
+  await page.locator('#receipt-paid-from').selectOption(await ownerSafe(page.request))
   await page.getByRole('button', { name: 'Провести приход' }).click()
   await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
   await expect(page.getByText(money('3 000 с')).first()).toBeVisible()
@@ -140,8 +141,8 @@ test('касса работает без сети, чек уходит при е
   })
   await apiPost(page.request, '/receipts', {
     op_id: crypto.randomUUID(),
-    // Владелец платит «из своих, мимо касс» — кассы в проверке не участвуют (ADR-062).
-    paid_from: 'outside',
+    // Владелец платит из «Сейфа владельца» — касса смены в проверке не участвует (ADR-079).
+    paid_from: await ownerSafe(page.request),
     lines: [{ product_id: prod.id, qty: 5, cost_tyiyn: 150000 }],
   })
   await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true })

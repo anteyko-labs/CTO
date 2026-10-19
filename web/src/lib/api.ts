@@ -129,3 +129,39 @@ export function qs(params: Record<string, string | number | boolean | undefined 
   const s = p.toString()
   return s ? `?${s}` : ''
 }
+
+/**
+ * Файл телом запроса как есть (фото накладной, SPEC-29 §3): тип — в заголовке, повтор той же
+ * загрузки сервер узнаёт по `op_id` в адресе. Ответ — JSON, ошибки — как у остальных запросов.
+ */
+export async function upload<T>(path: string, data: Blob, contentType: string): Promise<T> {
+  let res: Response
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(), 120_000)
+  try {
+    res = await fetch(`/api/v1${path}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      signal: abort.signal,
+      headers: { 'X-Device-Id': deviceId, 'Content-Type': contentType },
+      body: data,
+    })
+  } catch {
+    clearTimeout(timer)
+    throw new ApiError(0, 'network', 'Нет связи с сервером')
+  }
+  clearTimeout(timer)
+  const text = await res.text().catch(() => '')
+  let body: unknown = null
+  try {
+    body = text ? JSON.parse(text) : null
+  } catch {
+    body = null
+  }
+  if (!res.ok) {
+    if (res.status === 401) onUnauthorized()
+    const err = (body as { error?: { code?: string; message?: string } } | null)?.error
+    throw new ApiError(res.status, err?.code ?? 'error', err?.message ?? (res.status === 413 ? 'Файл слишком большой' : statusMessage(res.status)))
+  }
+  return body as T
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.id, l.doc_type, l.amount_tyiyn, l.created_at, l.comment, u.full_name as user_name,\n                  (select a.name from cash_movements m join cash_accounts a on a.id = m.account_id\n                    where l.doc_type = 'repayment' and m.doc_type = 'repayment' and m.doc_id = l.doc_id\n                      and m.kind = 'supplier_payment'\n                    order by m.created_at limit 1) as \"account?\",\n                  supplier_ledger_live(l) as \"live!\",\n                  (l.amount_tyiyn - coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                                              where s.credit_id = l.id), 0))::bigint as \"open!\"\n           from party_ledger l join users u on u.id = l.user_id\n           where l.branch_id = $1 and l.party_id = $2 and l.amount_tyiyn > 0 and l.reversal_of is null\n             and l.doc_type in ('repayment', 'defect', 'adjust')\n           order by l.created_at desc, l.id desc",
+  "query": "select l.id, l.doc_type, l.amount_tyiyn, l.created_at, l.comment, u.full_name as user_name,\n                  (select a.name from cash_movements m join cash_accounts a on a.id = m.account_id\n                    where l.doc_type = 'repayment' and m.doc_type = 'repayment' and m.doc_id = l.doc_id\n                      and m.kind = 'supplier_payment'\n                    order by m.created_at limit 1) as \"account?\",\n                  supplier_ledger_live(l) as \"live!\",\n                  (l.amount_tyiyn - coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                                              where s.credit_id = l.id), 0))::bigint as \"open!\"\n           from party_ledger l join users u on u.id = l.user_id\n           where l.branch_id = $1 and l.party_id = $2 and l.amount_tyiyn > 0 and l.reversal_of is null\n             and l.doc_type in ('repayment', 'defect', 'adjust', 'supplier_return')\n           order by l.created_at desc, l.id desc",
   "describe": {
     "columns": [
       {
@@ -67,5 +67,5 @@
       null
     ]
   },
-  "hash": "80272b5bf5f37c84c992cf2e58cba2ad90f3eb8e2d6155f088ad22be125ce0b0"
+  "hash": "fd5614c1b2a8b5b3204ad3dee46872140ee5304b1c603e81861ef27fe1db6eff"
 }

@@ -29,7 +29,6 @@ import Profit, { OwnerDashboard } from './pages/Owner'
 import Payroll from './pages/Payroll'
 import Products from './pages/Products'
 import TopProducts from './pages/TopProducts'
-import ProductIntake from './pages/ProductIntake'
 import ReceiptNew from './pages/ReceiptNew'
 import ReceiptView from './pages/ReceiptView'
 import Receipts from './pages/Receipts'
@@ -86,8 +85,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/products', label: 'Товары', icon: 'products' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },
-      { to: '/intake', label: 'Работа с товарами', icon: 'scan' },
-      { to: '/revision', label: 'Ревизия', icon: 'revision' },
+      { to: '/revision', label: 'Ревизия и товары', icon: 'revision' },
       { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', ownerOnly: true },
     ],
   },
@@ -259,7 +257,7 @@ function Shell() {
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
           <Route path="/top-products" element={<TopProducts />} />
-          <Route path="/intake" element={<ProductIntake />} />
+          <Route path="/intake" element={<Navigate to="/revision?tab=scan" replace />} />
           <Route path="/shift" element={<Shift />} />
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/payroll" element={<Payroll />} />

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { OUTSIDE, defaultPaySource, notEnough, paidFromText, paySources } from './receiptPay'
+import { OUTSIDE, defaultPaySource, notEnough, paidFromText, paidNow, partProblem, paySources } from './receiptPay'
 import type { CashAccount } from './types'
 
 const acc = (id: string, name: string, kind: CashAccount['kind'], owner_only: boolean, balance: number): CashAccount =>
@@ -14,17 +14,17 @@ describe('откуда оплачена накладная', () => {
     expect(defaultPaySource(s, false)).toBe('till')
   })
 
-  it('владелец выбирает сам из всех касс и «из своих»', () => {
+  it('владелец выбирает сам из касс и счетов; «из своих» больше нет (ADR-079)', () => {
     const s = paySources(accounts, true)
-    expect(s.map((x) => x.value)).toEqual(['till', 'bank', 'safe', OUTSIDE])
+    expect(s.map((x) => x.value)).toEqual(['till', 'bank', 'safe'])
+    expect(s.some((x) => x.value === OUTSIDE)).toBe(false)
     expect(defaultPaySource(s, true)).toBe('')
   })
 
-  it('не хватает денег — только у кассы, у «из своих» предела нет', () => {
+  it('не хватает денег на счёте', () => {
     const s = paySources(accounts, true)
     expect(notEnough(s, 'till', 60_000)).toBe(true)
     expect(notEnough(s, 'till', 50_000)).toBe(false)
-    expect(notEnough(s, OUTSIDE, 1_000_000)).toBe(false)
   })
 
   it('счёт с разрешённым минусом — хватает всегда (ADR-076)', () => {
@@ -32,7 +32,17 @@ describe('откуда оплачена накладная', () => {
     expect(notEnough(s, 'opt', 1_000_000)).toBe(false)
   })
 
-  it('в документе', () => {
+  it('часть сейчас — больше нуля и меньше суммы (SPEC-29 §4)', () => {
+    expect(paidNow('paid', 100_000, null)).toBe(100_000)
+    expect(paidNow('part', 100_000, 30_000)).toBe(30_000)
+    expect(paidNow('debt', 100_000, 30_000)).toBe(0)
+    expect(partProblem(30_000, 100_000)).toBeNull()
+    expect(partProblem(0, 100_000)).toContain('больше нуля')
+    expect(partProblem(100_000, 100_000)).toContain('меньше суммы')
+    expect(partProblem(null, 100_000)).toContain('числом')
+  })
+
+  it('в документе: прежние «из своих» читаются', () => {
     expect(paidFromText('Касса')).toBe('из «Касса»')
     expect(paidFromText(OUTSIDE)).toBe('из своих, мимо касс')
     expect(paidFromText(null)).toBe('—')

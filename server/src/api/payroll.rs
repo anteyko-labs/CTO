@@ -1875,13 +1875,13 @@ pub async fn post_payout_tx(
     }
     crate::ops::check_amount(req.amount_tyiyn)?;
     let source = req.source.unwrap_or_else(|| "account".into());
-    if !matches!(source.as_str(), "account" | "outside") {
-        return Err(invalid("откуда платим: account или outside"));
+    if source == "outside" {
+        return Err(invalid(crate::api::receipts::NO_OUTSIDE));
+    }
+    if source != "account" {
+        return Err(invalid("откуда платим: из кассы или со счёта"));
     }
     let owner = ctx.user.is_owner();
-    if source == "outside" && !owner {
-        return Err(AppError::Forbidden);
-    }
     let branch_id = ctx.user.branch_id;
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);

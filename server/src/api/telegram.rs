@@ -1898,6 +1898,12 @@ async fn day_report(
             format_som_signed(t.defect_diff_tyiyn)
         ));
     }
+    if t.return_diff_tyiyn != 0 {
+        minus.push(format!(
+            "  ± возврат поставщику: разница: {}",
+            format_som_signed(t.return_diff_tyiyn)
+        ));
+    }
     let (head, earned) = if is_today {
         ("📊 Сегодня", "👥 Заработали сегодня")
     } else {

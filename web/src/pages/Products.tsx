@@ -6,6 +6,7 @@ import { printLabels } from '../components/labels'
 import { Pager, usePageState } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
+import { StockInModal } from '../components/StockInModal'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu } from '../components/ui'
 import { get, patch, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
@@ -43,6 +44,8 @@ export default function Products() {
   const [attrFilters, setAttrFilters] = useState<Record<string, string>>({})
   const [archived, setArchived] = useState(false)
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
+  /** «+ Оприходовать» у товара (SPEC-29 §8). */
+  const [stockIn, setStockIn] = useState<Product | null>(null)
   const [selected, setSelected] = useState<Record<string, Selected>>({})
   const [message, setMessage] = useState<string | null>(null)
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'name', desc: false })
@@ -135,7 +138,14 @@ export default function Products() {
 
   return (
     <div>
-      <PageHeader title="Товары" actions={<Button onClick={() => setEditing('new')}>Новый товар</Button>} />
+      <PageHeader
+        title="Товары"
+        actions={
+          <Button onClick={() => setEditing('new')} aria-label="Добавить товар" title="Добавить товар: полная карточка">
+            + Товар
+          </Button>
+        }
+      />
 
       <Card className="mb-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -265,6 +275,7 @@ export default function Products() {
                       selected={Boolean(selected[p.id])}
                       onOpen={() => setEditing(p)}
                       onToggle={(on) => toggle(p, on)}
+                      onStockIn={() => setStockIn(p)}
                       onArchive={() => {
                         if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
                           void setArchivedFlag(p, !p.archived)
@@ -298,6 +309,16 @@ export default function Products() {
         )}
       </Card>
 
+      {stockIn && <StockInModal product={stockIn} onClose={() => setStockIn(null)} onDone={() => list.reload()} />}
+      {/* «+» внизу экрана на телефоне: добавить товар (SPEC-29 §7). */}
+      <button
+        type="button"
+        className="fixed bottom-20 right-4 z-20 flex h-14 w-14 items-center justify-center rounded-full bg-sky-600 text-3xl text-white shadow-lg md:hidden"
+        aria-label="Добавить товар"
+        onClick={() => setEditing('new')}
+      >
+        +
+      </button>
       {editing && (
         <ProductFormModal
           product={editing === 'new' ? undefined : editing}
@@ -321,6 +342,7 @@ function ProductTableRow({
   onOpen,
   onToggle,
   onArchive,
+  onStockIn,
 }: {
   p: ProductRow
   owner: boolean
@@ -329,6 +351,7 @@ function ProductTableRow({
   onOpen: () => void
   onToggle: (on: boolean) => void
   onArchive: () => void
+  onStockIn: () => void
 }) {
   // Розлив за литр — от цены канистры (ADR-074).
   const pour = pourPricePerL(p)
@@ -375,6 +398,7 @@ function ProductTableRow({
         <RowMenu
           items={[
             { label: 'Открыть карточку', onClick: onOpen },
+            ...(p.archived ? [] : [{ label: '+ Оприходовать', onClick: onStockIn }]),
             { label: selected ? 'Убрать из этикеток' : 'Печать этикетки', onClick: () => onToggle(!selected) },
             { label: p.archived ? 'Вернуть из архива' : 'В архив', danger: !p.archived, onClick: onArchive },
           ]}

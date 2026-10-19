@@ -1,6 +1,7 @@
 // Страницы длинных списков (SPEC-28 §2): «⏮ ◀ 1 2 … ▶ ⏭  1–25 / N  по 25/50/100», смена отбора
 // возвращает на первую страницу, итоги товаров — по всему отбору, а не по странице.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -82,7 +83,7 @@ test('товары по страницам: страницу режет серв
     })
     lines.push({ product_id: p.id, qty: 1, cost_tyiyn: 10_000 })
   }
-  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), paid_from: 'outside', lines })
+  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(page.request), lines })
 
   await page.goto('/products')
   await page.getByLabel('Категория').selectOption({ label: category })

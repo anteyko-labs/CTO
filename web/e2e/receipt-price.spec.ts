@@ -2,6 +2,7 @@
 // сумма. Наценка и цена продажи связаны; новая цена ставится товару при проведении прихода,
 // владелец видит смену цены в уведомлениях. «Чаще берут» / «Больше приносят» (SPEC-28 §4).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -54,7 +55,7 @@ test('приход: наценка и цена продажи связаны, н
   await expect(markup).toHaveValue('31,3')
   await expect(page.getByTestId('new-sale-price')).toContainText(money('было 1 800 с'))
   await expect(page.getByTestId('receipt-sale-total')).toHaveText(money('21 000 с'))
-  await page.locator('#receipt-paid-from').selectOption('outside')
+  await page.locator('#receipt-paid-from').selectOption(await ownerSafe(page.request))
   await page.getByRole('button', { name: 'Провести приход' }).first().click()
   await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
   // В накладной — цена по накладной, наценка и цена продажи.

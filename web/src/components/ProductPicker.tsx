@@ -1,42 +1,56 @@
 // Поле сканера и поиска товара для кассы и прихода (SPEC-02, SPEC-04); без сети ищет по снимку каталога (SPEC-09).
+// В приходе и ревизии подсказывает и позиции старой программы (SPEC-20, SPEC-29 §1).
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
 import { productTitle } from '../lib/battery'
 import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
-import type { Product } from '../lib/types'
+import type { OldCatalogHit, Product } from '../lib/types'
+
+/** Как выбрали товар: сканом (код целиком) или из списка найденных. */
+export type PickHow = 'scan' | 'search'
+
+type Entry = { kind: 'own'; p: Product } | { kind: 'old'; h: OldCatalogHit }
 
 /**
  * Поле для сканера и поиска. Enter со строкой из цифр — точный поиск по штрихкоду,
  * иначе — выбор из списка найденных. Набранный или вставленный код ищется и без Enter:
  * сервер ищет его среди кодов товара наравне с названием и артикулом.
- * Незнакомый код передаётся в `onUnknownCode`.
+ * Незнакомый код передаётся в `onUnknownCode`; с `onPickOld` сначала ищется в списке старой программы.
  */
 export function ProductPicker({
   onPick,
   onUnknownCode,
   onCreate,
+  onPickOld,
   autoFocus = true,
   placeholder = 'Сканируйте штрихкод, введите название или бренд',
+  inputId,
 }: {
-  onPick: (p: Product) => void
+  onPick: (p: Product, how: PickHow) => void
   onUnknownCode?: (code: string) => void
   /** «Новый товар» прямо из списка: передаётся набранный текст. */
   onCreate?: (text: string) => void
+  /** Позиция старой программы (SPEC-20): по ней заводят карточку. Без него — подсказок оттуда нет. */
+  onPickOld?: (hit: OldCatalogHit, code: string) => void
   autoFocus?: boolean
   placeholder?: string
+  inputId?: string
 }) {
   const [text, setText] = useState('')
   const [results, setResults] = useState<Product[]>([])
+  const [old, setOld] = useState<OldCatalogHit[]>([])
   const [active, setActive] = useState(0)
   const [message, setMessage] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const query = useDebounced(text.trim(), 200)
+  const withOld = Boolean(onPickOld)
 
   useEffect(() => {
     if (query.length < 2) {
       setResults([])
+      setOld([])
       return
     }
     let alive = true
@@ -55,40 +69,74 @@ export function ProductPicker({
           setActive(0)
         }
       })
+    if (withOld && !/^\d{6,}$/.test(query)) {
+      get<OldCatalogHit[]>(`/old-catalog/search${qs({ q: query })}`)
+        .then((h) => alive && setOld(h.filter((x) => !x.linked_product_id).slice(0, 8)))
+        .catch(() => alive && setOld([]))
+    } else {
+      setOld([])
+    }
     return () => {
       alive = false
     }
-  }, [query])
+  }, [query, withOld])
 
-  const pick = (p: Product) => {
-    onPick(p)
+  const entries: Entry[] = [...results.map((p) => ({ kind: 'own' as const, p })), ...old.map((h) => ({ kind: 'old' as const, h }))]
+
+  const clear = () => {
     setText('')
     setResults([])
+    setOld([])
     setMessage(null)
+  }
+
+  const pick = (p: Product, how: PickHow) => {
+    onPick(p, how)
+    clear()
     input.current?.focus()
+  }
+
+  const pickOld = (h: OldCatalogHit, code: string) => {
+    clear()
+    onPickOld?.(h, code)
+  }
+
+  const choose = (e: Entry | undefined) => {
+    if (!e) return
+    if (e.kind === 'own') pick(e.p, 'search')
+    else pickOld(e.h, '')
   }
 
   const submit = async () => {
     const code = text.trim()
     if (!code) return
-    if (results.length > 0 && !/^\d{6,}$/.test(code)) {
-      pick(results[active] ?? results[0])
+    if (entries.length > 0 && !/^\d{6,}$/.test(code)) {
+      choose(entries[active] ?? entries[0])
       return
     }
     try {
-      pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`))
+      pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`), 'scan')
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
         const snap = await readSnapshot()
         const found = snap ? findByBarcode(snap, code) : undefined
         if (found) {
-          pick(found)
+          pick(found, 'scan')
           return
         }
         setMessage(`Без сети: код ${code} в снимке каталога не найден`)
         return
       }
       if (e instanceof ApiError && e.status === 404) {
+        // Нет у нас — может, есть в списке старой программы: карточка заполнится оттуда.
+        if (onPickOld) {
+          const hits = await get<OldCatalogHit[]>(`/old-catalog/search${qs({ barcode: code })}`).catch(() => [])
+          const exact = hits.find((h) => h.exact)
+          if (exact) {
+            pickOld(exact, code)
+            return
+          }
+        }
         setText('')
         if (onUnknownCode) onUnknownCode(code)
         else setMessage(`Код ${code} не найден`)
@@ -102,6 +150,7 @@ export function ProductPicker({
     <div className="relative">
       <input
         ref={input}
+        id={inputId}
         data-picker
         autoFocus={autoFocus}
         className="w-full text-base"
@@ -117,28 +166,27 @@ export function ProductPicker({
             void submit()
           } else if (e.key === 'ArrowDown') {
             e.preventDefault()
-            setActive((a) => Math.min(a + 1, results.length - 1))
+            setActive((a) => Math.min(a + 1, entries.length - 1))
           } else if (e.key === 'ArrowUp') {
             e.preventDefault()
             setActive((a) => Math.max(a - 1, 0))
           } else if (e.key === 'Escape') {
             setResults([])
+            setOld([])
           }
         }}
       />
       {message && <div className="mt-1 text-sm text-rose-600">{message}</div>}
-      {query.length >= 2 && (results.length > 0 || Boolean(onCreate)) && (
-        <ul className="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
-          {results.length === 0 && (
-            <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{query}»</li>
-          )}
+      {query.length >= 2 && (entries.length > 0 || Boolean(onCreate)) && (
+        <ul className="absolute z-30 mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+          {results.length === 0 && <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{query}»</li>}
           {results.map((p, i) => (
             <li key={p.id}>
               <button
                 type="button"
                 className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm ${i === active ? 'bg-sky-50' : 'hover:bg-slate-50'}`}
                 onMouseEnter={() => setActive(i)}
-                onClick={() => pick(p)}
+                onClick={() => pick(p, 'search')}
               >
                 <span>
                   <span className="font-medium">{productTitle(p)}</span>
@@ -152,16 +200,40 @@ export function ProductPicker({
               </button>
             </li>
           ))}
+          {old.length > 0 && (
+            <li className="border-t border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium uppercase text-slate-500">
+              Из старой программы — завести карточку
+            </li>
+          )}
+          {old.map((h, j) => {
+            const i = results.length + j
+            return (
+              <li key={h.id}>
+                <button
+                  type="button"
+                  data-old-hit
+                  className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm ${i === active ? 'bg-sky-50' : 'hover:bg-slate-50'}`}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => pickOld(h, '')}
+                >
+                  <span>
+                    <span className="font-medium">{h.name}</span>
+                    <span className="ml-2 text-xs text-slate-500">{[h.barcode && `код ${h.barcode}`, h.article].filter(Boolean).join(' · ')}</span>
+                  </span>
+                  <span className="shrink-0 text-right text-xs text-slate-500">{h.price_tyiyn ? formatSom(h.price_tyiyn) : ''}</span>
+                </button>
+              </li>
+            )
+          })}
           {onCreate && (
             <li className="border-t border-slate-200">
               <button
                 type="button"
                 className="w-full px-3 py-2 text-left text-sm font-medium text-sky-700 hover:bg-sky-50"
                 onClick={() => {
-                  const text = query
-                  setText('')
-                  setResults([])
-                  onCreate(text)
+                  const t = query
+                  clear()
+                  onCreate(t)
                 }}
               >
                 + Завести товар «{query}»

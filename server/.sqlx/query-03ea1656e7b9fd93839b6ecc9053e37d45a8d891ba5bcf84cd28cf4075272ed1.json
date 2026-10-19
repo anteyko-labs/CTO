@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select line_no, product_id, qty, cost_tyiyn, amount_tyiyn from supplier_return_lines where return_id = $1 order by line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "03ea1656e7b9fd93839b6ecc9053e37d45a8d891ba5bcf84cd28cf4075272ed1"
+}

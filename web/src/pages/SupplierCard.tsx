@@ -12,6 +12,7 @@ import { ReconciliationButton } from '../components/ReconciliationButton'
 import { RepaymentModal, type InvoiceToPay } from '../components/RepaymentModal'
 import { InvoiceStatusBadge, SupplierPaymentHistory } from '../components/SupplierPayments'
 import { SupplierEditModal } from '../components/SupplierFormModal'
+import { SupplierReturnList, SupplierReturnModal } from '../components/SupplierReturns'
 
 /** За что последняя цена: канистра масла, килограмм или штука. */
 const perText = (r: { unit: string; container_ml: number | null }): string =>
@@ -25,7 +26,7 @@ function invoiceStatus(d: ReceiptListItem): InvoiceStatus | null {
   return left <= 0 ? 'paid' : left >= debt ? 'unpaid' : 'partial'
 }
 
-/** Карточка поставщика: поставки по товарам с остатком (SPEC-26), накладные с остатком долга и платежи (SPEC-10, SPEC-27). */
+/** Карточка поставщика: поставки по товарам с остатком (SPEC-26), накладные с остатком долга и платежи (SPEC-10, SPEC-27), возвраты товара (SPEC-29 §9). */
 export default function SupplierCard() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
@@ -33,7 +34,9 @@ export default function SupplierCard() {
   const [paying, setPaying] = useState(false)
   const [payingInvoice, setPayingInvoice] = useState<InvoiceToPay | null>(null)
   const owner = useUser().role === 'owner'
-  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments'>('deliveries')
+  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments' | 'returns'>('deliveries')
+  const [returning, setReturning] = useState(false)
+  const [returnsKey, setReturnsKey] = useState(0)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [opened, setOpened] = useState<DeliveryRow | null>(null)
@@ -47,6 +50,7 @@ export default function SupplierCard() {
     party.reload()
     receipts.reload()
     invoices.reload()
+    deliveries.reload()
   }
 
   const owed = party.data ? -Math.min(party.data.balance_tyiyn, 0) : 0
@@ -70,6 +74,9 @@ export default function SupplierCard() {
               К списку
             </Button>
             <ReconciliationButton partyId={id} />
+            <Button variant="secondary" onClick={() => setReturning(true)}>
+              Возврат поставщику
+            </Button>
             <Button onClick={() => setEditing(true)}>Изменить</Button>
           </>
         }
@@ -132,6 +139,7 @@ export default function SupplierCard() {
             ['deliveries', 'Поставки'],
             ['receipts', 'Накладные'],
             ['payments', 'Платежи'],
+            ['returns', 'Возвраты'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -179,7 +187,7 @@ export default function SupplierCard() {
                 head={[
                   'Товар',
                   'Привёз',
-                  'Вернули (брак)',
+                  'Вернули',
                   'Сумма поставок',
                   'Последняя цена',
                   'На складе сейчас',
@@ -290,6 +298,28 @@ export default function SupplierCard() {
           <ErrorBox error={invoices.error} />
           {invoices.loading && !invoices.data ? <Loading /> : <SupplierPaymentHistory payments={invoices.data?.payments ?? []} />}
         </Card>
+      )}
+
+      {tab === 'returns' && (
+        <Card>
+          <h2 className="mb-1 font-semibold">Возвраты товара</h2>
+          <p className="mb-3 text-xs text-slate-500">Возврат не брака: товар уходит со склада, наш долг меньше или поставщик отдаёт деньги. Брак — на экране «Брак».</p>
+          <SupplierReturnList key={returnsKey} supplierId={id} onChanged={reloadMoney} />
+        </Card>
+      )}
+
+      {returning && (
+        <SupplierReturnModal
+          supplierId={id}
+          supplierName={s.name}
+          onClose={() => setReturning(false)}
+          onDone={() => {
+            setReturning(false)
+            setReturnsKey((k) => k + 1)
+            setTab('returns')
+            reloadMoney()
+          }}
+        />
       )}
 
       {payingInvoice && party.data && (

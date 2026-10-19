@@ -290,7 +290,8 @@ pub struct ExpenseReq {
     pub op_id: Uuid,
     pub article_id: Uuid,
     pub amount_tyiyn: i64,
-    /// `account` — из кассы или со счёта, `outside` — не из денег точки.
+    /// `account` — из кассы или со счёта. `outside` (не из денег точки) больше не принимается —
+    /// 422 (ADR-079); прежние расходы «не из денег точки» остаются в истории.
     pub source: Option<String>,
     pub account_id: Option<Uuid>,
     pub expense_date: Option<NaiveDate>,
@@ -342,13 +343,13 @@ pub async fn post_expense_tx(
     }
     crate::ops::check_amount(req.amount_tyiyn)?;
     let source = req.source.unwrap_or_else(|| "account".into());
-    if !matches!(source.as_str(), "account" | "outside") {
-        return Err(invalid("откуда платим: из кассы или не из денег точки"));
+    if source == "outside" {
+        return Err(invalid(crate::api::receipts::NO_OUTSIDE));
+    }
+    if source != "account" {
+        return Err(invalid("откуда платим: из кассы или со счёта"));
     }
     let owner = ctx.user.is_owner();
-    if source == "outside" && !owner {
-        return Err(AppError::Forbidden);
-    }
     let branch_id = ctx.user.branch_id;
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);

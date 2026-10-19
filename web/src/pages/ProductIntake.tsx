@@ -6,26 +6,15 @@ import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money, Notice, PageHeader, toast } from '../components/ui'
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
+import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { canisterPourPrice, divRound } from '../lib/money'
-import type { Category, Product } from '../lib/types'
-import { containerFromName, readXlsx, somToTyiyn } from '../lib/xlsx'
+import { canisterPourPrice } from '../lib/money'
+import { presetFromHit } from '../lib/oldCatalog'
+import type { Category, OldCatalogHit, Product } from '../lib/types'
+import { readXlsx, somToTyiyn } from '../lib/xlsx'
 
-interface Hit {
-  id: string
-  name: string
-  barcode: string
-  article: string
-  cost_tyiyn: number
-  price_tyiyn: number
-  unit: string
-  supplier: string
-  category: string
-  exact: boolean
-  linked_product_id: string | null
-}
+type Hit = OldCatalogHit
 
 interface Form {
   barcode: string
@@ -119,7 +108,6 @@ export default function ProductIntake() {
   const upload = useAction()
 
   const cats = categories.data ?? []
-  const oilCat = cats.find((x) => x.kind === 'oil')?.id ?? ''
   const category = cats.find((x) => x.id === form?.categoryId)
   const isOil = category?.kind === 'oil'
 
@@ -139,22 +127,8 @@ export default function ProductIntake() {
 
   /** Карточка из позиции старого списка: масло — литры из названия, цена за литр → за канистру. */
   const fromHit = (h: Hit, barcode: string): Form => {
-    const liter = /литр|л$/i.test(h.unit)
-    const ml = liter ? containerFromName(h.name) : null
-    const sticky = read(CAT_KEY)
-    const byName = cats.find((x) => h.category && x.name.toLowerCase() === h.category.toLowerCase())?.id
-    const categoryId = liter ? oilCat || sticky : byName || (cats.some((x) => x.id === sticky) ? sticky : '')
-    const per = (v: number) => (ml ? (divRound(v * ml, 1000) ?? 0) : v)
-    return {
-      barcode: barcode || h.barcode,
-      name: h.name,
-      categoryId,
-      liters: ml ? formatLiters(ml).replace(/\s*л$/, '') : '',
-      price: h.price_tyiyn ? somInput(per(h.price_tyiyn)) : '',
-      cost: h.cost_tyiyn ? somInput(per(h.cost_tyiyn)) : '',
-      count: '',
-      from: h,
-    }
+    const p = presetFromHit(h, cats, read(CAT_KEY), barcode)
+    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', from: h }
   }
 
   const loadSimilar = (name: string) => {

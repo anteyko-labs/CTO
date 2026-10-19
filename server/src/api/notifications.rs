@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 52] = [
+pub(crate) const WATCHED: [&str; 56] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -72,6 +72,10 @@ pub(crate) const WATCHED: [&str; 52] = [
     "defect.reverse_negative",
     "shift.reclose_surplus",
     "cash.negative",
+    "stock_in.post",
+    "stock_in.reverse",
+    "supplier_return.post",
+    "supplier_return.reverse",
 ];
 
 #[derive(Serialize)]
@@ -508,6 +512,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 "Оплата поставщику: накладная № {}",
                 num("number").unwrap_or(0)
             ),
+            // «Из своих» — только в записях до ADR-079.
             if data.get("outside").and_then(Value::as_bool) == Some(true) {
                 format!("{} — из своих, мимо касс", money(num("amount")))
             } else {
@@ -768,6 +773,86 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "defect.resolve_reverse" => (
             format!("Отменено решение по браку № {}", num("number").unwrap_or(0)),
             format!("{}{}", text("name"), comment(data)),
+        ),
+        "stock_in.post" => (
+            format!(
+                "Оприходовано без поставщика № {}: {} × {}",
+                num("number").unwrap_or(0),
+                text("name"),
+                text("qty_text")
+            ),
+            format!(
+                "по цене закупки {}, на {}{}",
+                money(num("price")),
+                money(num("cost")),
+                comment(data)
+            ),
+        ),
+        "stock_in.reverse" => (
+            format!(
+                "Сторно оприходования № {}: {} × {}",
+                num("number").unwrap_or(0),
+                text("name"),
+                text("qty_text")
+            ),
+            match num("negative") {
+                Some(after) => format!(
+                    "{}{} — товар уже продан, остаток ушёл в минус: {after}",
+                    money(num("cost")),
+                    comment(data)
+                ),
+                None => format!("{}{}", money(num("cost")), comment(data)),
+            },
+        ),
+        "supplier_return.post" => (
+            format!(
+                "Возврат поставщику № {}: {}",
+                num("number").unwrap_or(0),
+                text("supplier")
+            ),
+            {
+                let goods = data
+                    .get("lines")
+                    .and_then(Value::as_array)
+                    .map(|l| {
+                        l.iter()
+                            .map(|x| {
+                                format!(
+                                    "{} × {}",
+                                    x.get("name").and_then(Value::as_str).unwrap_or("товар"),
+                                    x.get("qty_text").and_then(Value::as_str).unwrap_or("")
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                let how = if text("settle") == "money" {
+                    "деньгами"
+                } else {
+                    "в счёт долга"
+                };
+                let diff = match num("diff") {
+                    Some(d) if d != 0 => format!(
+                        ", разница {}",
+                        crate::domain::money::format_som_signed(d)
+                    ),
+                    _ => String::new(),
+                };
+                format!(
+                    "{goods}; {} {how}{diff}{}",
+                    money(num("amount")),
+                    comment(data)
+                )
+            },
+        ),
+        "supplier_return.reverse" => (
+            format!(
+                "Сторно возврата поставщику № {}: {}",
+                num("number").unwrap_or(0),
+                text("supplier")
+            ),
+            format!("{}{}", money(num("amount")), comment(data)),
         ),
         "telegram.employee_link" => (
             format!("Работник {} подключился к боту", text("name")),

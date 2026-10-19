@@ -126,10 +126,12 @@ async fn receive(
     qty: i64,
     cost: i64,
 ) -> avtodom_server::api::receipts::ReceiptOut {
-    // Приход для проверок склада: оплачен «из своих, мимо касс», кассы не трогает (ADR-062).
-    // Так платит только владелец, поэтому документ проводится от того же пользователя с ролью владельца.
+    // Приход для проверок склада: оплачен из «Сейфа владельца» — касса смены не трогается.
+    // «Из своих» больше нет (ADR-079); сейф платит только владелец, поэтому документ проводится
+    // от того же пользователя с ролью владельца.
     let mut payer = ctx.clone();
     payer.user.role = Role::Owner;
+    let safe = owner_safe(pool, ctx.user.branch_id).await;
     let mut tx = pool.begin().await.unwrap();
     let r = post_receipt_tx(
         &mut tx,
@@ -137,7 +139,8 @@ async fn receive(
         ReceiptReq {
             op_id: Uuid::now_v7(),
             payment: None,
-            paid_from: Some("outside".into()),
+            paid_from: Some(safe.to_string()),
+            paid_now_tyiyn: None,
             supplier_id: None,
             supplier_doc: String::new(),
             comment: String::new(),
@@ -153,6 +156,67 @@ async fn receive(
     .unwrap();
     tx.commit().await.unwrap();
     r
+}
+
+/// Приход в долг новому поставщику — без денег, его сторнирует и администратор.
+async fn receive_on_debt(
+    pool: &PgPool,
+    ctx: &Ctx,
+    product: Uuid,
+    qty: i64,
+    cost: i64,
+) -> avtodom_server::api::receipts::ReceiptOut {
+    let sid = Uuid::now_v7();
+    sqlx::query("insert into suppliers (id, name) values ($1, 'Поставщик в долг')")
+        .bind(sid)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name) values ($1, $2, 'supplier', 'company', 'Поставщик в долг')")
+        .bind(sid)
+        .bind(ctx.user.branch_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let r = post_receipt_tx(
+        &mut tx,
+        ctx,
+        ReceiptReq {
+            op_id: Uuid::now_v7(),
+            payment: Some("debt".into()),
+            paid_from: None,
+            paid_now_tyiyn: None,
+            supplier_id: Some(sid),
+            supplier_doc: String::new(),
+            comment: String::new(),
+            lines: vec![ReceiptLineReq {
+                product_id: product,
+                qty,
+                cost_tyiyn: cost,
+                sale_price_tyiyn: None,
+            }],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    r
+}
+
+/// «Сейф владельца» филиала: из него тесты оплачивают приходы для склада.
+async fn owner_safe(pool: &PgPool, branch: Uuid) -> Uuid {
+    let mut conn = pool.acquire().await.unwrap();
+    avtodom_server::api::cash::ensure_accounts(&mut conn, branch)
+        .await
+        .unwrap();
+    sqlx::query_scalar(
+        "select id from cash_accounts where branch_id = $1 and name = 'Сейф владельца'",
+    )
+    .bind(branch)
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap()
 }
 
 /// Открытая смена на «Кассе»: возврат наличными без неё не проводится (ADR-065).
@@ -842,7 +906,7 @@ async fn partial_returns_restore_exact_cost(pool: PgPool) {
 async fn receipt_reversal(pool: PgPool) {
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 5, 1000).await;
-    let r = receive(&pool, &w.admin, w.filter, 5, 3000).await;
+    let r = receive_on_debt(&pool, &w.admin, w.filter, 5, 3000).await;
     let rev = |op| ReverseReq {
         op_id: op,
         comment: "ошибка".into(),
@@ -5239,8 +5303,8 @@ async fn battery_intake_can_be_reversed_once(pool: PgPool) {
 async fn receipt_reversal_of_sold_goods_is_owner_only(pool: PgPool) {
     // Сторно прихода, товар которого уже продан, — только владелец, и ему уведомление (ADR-065).
     let w = seed(&pool).await;
-    let sold = receive(&pool, &w.admin, w.filter, 5, 5_000).await;
-    let intact = receive(&pool, &w.admin, w.oil, 4000, 100_000).await;
+    let sold = receive_on_debt(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let intact = receive_on_debt(&pool, &w.admin, w.oil, 4000, 100_000).await;
     sell(
         &pool,
         &w.admin,
@@ -6248,6 +6312,7 @@ async fn bot_receipt_totals_by_server_and_daily_cap(pool: PgPool) {
             supplier_id: Some(supplier),
             payment: Some("debt".into()),
             supplier_doc: "Н-77".into(),
+            paid_now_tyiyn: None,
             comment: String::new(),
             lines: vec![
                 ReceiptLineReq {
@@ -6687,7 +6752,7 @@ async fn supplier(pool: &PgPool, w: &World, name: &str) -> Uuid {
     id
 }
 
-/// Приход от поставщика: в долг или «из своих».
+/// Приход от поставщика: в долг или оплаченный из «Сейфа владельца».
 async fn receive_from(
     pool: &PgPool,
     w: &World,
@@ -6697,6 +6762,7 @@ async fn receive_from(
     cost: i64,
     debt: bool,
 ) {
+    let safe = owner_safe(pool, w.owner.user.branch_id).await;
     let mut tx = pool.begin().await.unwrap();
     post_receipt_tx(
         &mut tx,
@@ -6704,7 +6770,8 @@ async fn receive_from(
         ReceiptReq {
             op_id: Uuid::now_v7(),
             payment: Some(if debt { "debt" } else { "paid" }.into()),
-            paid_from: (!debt).then(|| "outside".into()),
+            paid_from: (!debt).then(|| safe.to_string()),
+            paid_now_tyiyn: None,
             supplier_id: Some(sid),
             supplier_doc: String::new(),
             comment: String::new(),
@@ -7698,7 +7765,7 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
         &fake,
         chat,
         "draft_receipt",
-        serde_json::json!({ "paid_from": "из своих", "lines": [{ "product": "Фильтр W712", "quantity": "10к", "price": "100" }] }),
+        serde_json::json!({ "paid_from": "Сейф владельца", "lines": [{ "product": "Фильтр W712", "quantity": "10к", "price": "100" }] }),
     )
     .await;
     assert!(r.follow.is_none());
@@ -7714,6 +7781,22 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
         chat,
         "draft_receipt",
         serde_json::json!({ "paid_from": "из своих", "lines": [{ "product": "Фильтр W712", "quantity": "10 шт", "price": "100" }] }),
+    )
+    .await;
+    // «Из своих, мимо касс» больше нет (ADR-079): черновика нет, объяснение в ответе.
+    assert!(r.follow.is_none());
+    assert!(
+        last_tool_result(&fake).contains("«из своих, мимо касс» больше нет"),
+        "{}",
+        last_tool_result(&fake)
+    );
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_receipt",
+        serde_json::json!({ "paid_from": "Сейф владельца", "lines": [{ "product": "Фильтр W712", "quantity": "10 шт", "price": "100" }] }),
     )
     .await;
     assert!(r.follow.is_some(), "{}", last_tool_result(&fake));
@@ -8806,7 +8889,7 @@ mod point_feedback_stock {
         let branch = w.owner.user.branch_id;
 
         // Оплата второй накладной частью: 300 с из 500 с.
-        pay(&pool, &w.owner, sid, 30_000, "outside", Some(b))
+        pay(&pool, &w.owner, sid, 30_000, "transfer", Some(b))
             .await
             .unwrap();
         assert_eq!(
@@ -8818,12 +8901,12 @@ mod point_feedback_stock {
             (0, 100_000, "unpaid".to_string())
         );
         // Больше остатка по накладной — нельзя.
-        let err = pay(&pool, &w.owner, sid, 20_001, "outside", Some(b))
+        let err = pay(&pool, &w.owner, sid, 20_001, "transfer", Some(b))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
         // Без накладной — на самые старые: 1000 с первой, 100 с второй.
-        pay(&pool, &w.owner, sid, 110_000, "outside", None)
+        pay(&pool, &w.owner, sid, 110_000, "transfer", None)
             .await
             .unwrap();
         assert_eq!(
@@ -8837,7 +8920,7 @@ mod point_feedback_stock {
         assert_allocations_consistent(&pool, &w, sid).await;
         // Оплаченную накладную ещё раз не оплатить.
         assert!(
-            pay(&pool, &w.owner, sid, 1, "outside", Some(a))
+            pay(&pool, &w.owner, sid, 1, "transfer", Some(a))
                 .await
                 .is_err()
         );
@@ -8851,7 +8934,7 @@ mod point_feedback_stock {
         assert_eq!(hist.len(), 2);
         assert!(
             hist.iter()
-                .all(|p| p.user_name == "owner" && p.source == "outside")
+                .all(|p| p.user_name == "owner" && p.source == "Счёт")
         );
         let amounts: Vec<_> = hist
             .iter()
@@ -8937,7 +9020,7 @@ mod point_feedback_stock {
         assert_allocations_consistent(&pool, &w, sid).await;
 
         // Переплата — аванс: ложится на следующую накладную сама.
-        pay(&pool, &w.owner, sid, 20_000, "outside", None)
+        pay(&pool, &w.owner, sid, 20_000, "transfer", None)
             .await
             .unwrap();
         let inv = supplier_invoices(&mut conn, branch, sid).await.unwrap();
@@ -8957,9 +9040,17 @@ mod point_feedback_stock {
         let sid = supplier(&pool, &w, "Автоснаб").await;
         receive_from(&pool, &w, sid, w.filter, 10, 100_000, true).await;
         let a = debt_receipts(&pool, sid).await[0];
-        // Мимо кассы и со счёта — только владелец.
+        // «Из своих» больше нет ни у кого (ADR-079); со счёта — только владелец.
         assert!(matches!(
             pay(&pool, &w.admin, sid, 1_000, "outside", Some(a)).await,
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            pay(&pool, &w.owner, sid, 1_000, "outside", Some(a)).await,
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            pay(&pool, &w.admin, sid, 1_000, "transfer", Some(a)).await,
             Err(AppError::Forbidden)
         ));
         let till = open_till(&pool, &w).await;

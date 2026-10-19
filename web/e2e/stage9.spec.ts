@@ -1,5 +1,6 @@
 // Деньги и отчёты в браузере (SPEC-27 §6): сводка за любой день и период, экран «Счёт».
 import { expect, type APIRequestContext, type Page } from '@playwright/test'
+import { ownerSafe } from './safe'
 import { test } from '@playwright/test'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -56,7 +57,7 @@ async function sellNoncash(request: APIRequestContext) {
   })
   await apiPost(request, '/receipts', {
     op_id: crypto.randomUUID(),
-    paid_from: 'outside',
+    paid_from: await ownerSafe(request),
     lines: [{ product_id: p.id, qty: 4, cost_tyiyn: 80_000 }],
   })
   const cashier = await apiPost<{ id: string }>(request, '/employees', { full_name: `Кассир отчётов ${RUN}`, is_cashier: true })

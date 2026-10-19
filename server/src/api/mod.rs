@@ -28,12 +28,15 @@ pub mod old_catalog;
 pub mod paging;
 pub mod parties;
 pub mod payroll;
+pub mod receipt_files;
 pub mod receipts;
 pub mod refs;
 pub mod reports;
 pub mod revisions;
 pub mod sales;
+pub mod stock_in;
 pub mod supplier_debts;
+pub mod supplier_returns;
 pub mod telegram;
 
 use axum::Router;
@@ -65,9 +68,12 @@ pub fn routes() -> Router<AppState> {
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())
+        .merge(receipt_files::routes())
         .merge(reports::routes())
         .merge(revisions::routes())
         .merge(sales::routes())
+        .merge(stock_in::routes())
         .merge(supplier_debts::routes())
+        .merge(supplier_returns::routes())
         .merge(telegram::routes())
 }

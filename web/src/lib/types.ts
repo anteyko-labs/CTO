@@ -109,6 +109,10 @@ export interface LabelSettings {
   show_name: boolean
   show_price: boolean
   show_article: boolean
+  /** Бренд строкой над названием (SPEC-29 §6). */
+  show_brand?: boolean
+  /** Характеристики: вязкость и объём масла, тип фильтра, ёмкость и ток аккумулятора. */
+  show_spec?: boolean
 }
 
 export interface ReceiptLine {
@@ -149,9 +153,9 @@ export interface InvoicePayment {
   ledger_id: string
   at: string
   user_name: string
-  /** `payment` — оплата, `defect` — зачёт брака, `adjust` — правка владельца. */
-  kind: 'payment' | 'defect' | 'adjust'
-  /** Касса; `outside` — мимо касс; пусто — зачёт или правка. */
+  /** `payment` — оплата, `defect` — зачёт брака, `return` — возврат товара (SPEC-29), `adjust` — правка владельца. */
+  kind: 'payment' | 'defect' | 'return' | 'adjust'
+  /** Касса; `outside` — мимо касс (до ADR-079); пусто — зачёт, возврат или правка. */
   source: string
   amount_tyiyn: number
   payment_tyiyn: number
@@ -186,7 +190,7 @@ export interface SupplierPayment {
   ledger_id: string
   at: string
   user_name: string
-  kind: 'payment' | 'defect' | 'adjust'
+  kind: 'payment' | 'defect' | 'return' | 'adjust'
   amount_tyiyn: number
   source: string
   reversed: boolean
@@ -608,6 +612,8 @@ export interface ProfitTotals {
   defect_writeoff_tyiyn?: number
   /** «Брак: разница возмещения»: минус — убыток, плюс — доход (SPEC-25). */
   defect_diff_tyiyn?: number
+  /** «Возврат поставщику: разница»: минус — убыток, плюс — доход (SPEC-29 §9). */
+  return_diff_tyiyn?: number
   net_tyiyn: number
   margin_bp: number | null
   sales_count: number
@@ -629,6 +635,7 @@ export interface ProfitReport {
     cash_diff_tyiyn?: number
     defect_writeoff_tyiyn?: number
     defect_diff_tyiyn?: number
+    return_diff_tyiyn?: number
     net_tyiyn: number
   }[]
   articles: { name: string; amount_tyiyn: number }[]
@@ -914,4 +921,86 @@ export interface OpenDebts {
   due_date: string | null
   overdue_days: number
   items: OpenDebt[]
+}
+
+/** Фото накладной (SPEC-29 §3, ADR-080). */
+export interface ReceiptFile {
+  id: string
+  receipt_id: string
+  name: string
+  content_type: string
+  size_bytes: number
+  user_name: string
+  created_at: string
+  /** Скрыт владельцем; администратор скрытых не видит. */
+  hidden_at: string | null
+  hidden_by: string | null
+  hidden_reason: string | null
+}
+
+/** Оприходование без поставщика (SPEC-29 §8). */
+export interface StockIn {
+  id: string
+  number: number
+  product_id: string
+  product_name: string
+  unit: 'piece' | 'ml' | 'g'
+  container_ml: number | null
+  /** В единицах учёта; у сторно — с минусом. */
+  qty: number
+  /** Цена закупки за штуку, канистру или килограмм. */
+  price_tyiyn: number
+  cost_tyiyn: number
+  comment: string
+  reversal_of: string | null
+  reversed_by: string | null
+  user_name: string
+  created_at: string
+}
+
+/** Возврат товара поставщику, не брак (SPEC-29 §9). */
+export interface SupplierReturn {
+  id: string
+  number: number
+  supplier_id: string
+  supplier_name: string
+  settle: 'debt' | 'money'
+  account_id: string | null
+  account_name: string | null
+  amount_tyiyn: number
+  /** Себестоимость и разница — только владельцу. */
+  cost_tyiyn?: number
+  diff_tyiyn?: number
+  comment: string
+  reversal_of: string | null
+  reversed_by: string | null
+  user_name: string
+  created_at: string
+  lines: {
+    line_no: number
+    product_id: string
+    product_name: string
+    unit: 'piece' | 'ml' | 'g'
+    container_ml: number | null
+    qty: number
+    amount_tyiyn: number
+    cost_tyiyn?: number
+  }[]
+}
+
+/** Позиция списка старой программы (SPEC-20). */
+export interface OldCatalogHit {
+  id: string
+  name: string
+  barcode: string
+  article: string
+  cost_tyiyn: number
+  price_tyiyn: number
+  unit: string
+  supplier: string
+  category: string
+  /** Совпал штрихкод. */
+  exact: boolean
+  /** Товар учёта с этим штрихкодом уже заведён. */
+  linked_product_id: string | null
 }

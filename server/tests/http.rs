@@ -65,6 +65,20 @@ async fn call(
     (status, cookie, json)
 }
 
+/// «Сейф владельца»: из него тесты платят за приходы для склада — «из своих» больше нет (ADR-079).
+async fn owner_safe(app: &Router, owner: &str) -> String {
+    let (s, _, list) = call(app, "GET", "/api/v1/cash/accounts", Some(owner), None).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Сейф владельца")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 async fn login(app: &Router, login: &str, password: &str) -> String {
     let (status, cookie, _) = call(
         app,
@@ -531,7 +545,7 @@ async fn supplier_debt_is_tracked_and_paid(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    // Мимо кассы платит только владелец.
+    // «Из своих, мимо касс» больше нет ни у кого (ADR-079); со счёта платит только владелец.
     let outside = json!({ "op_id": Uuid::now_v7(), "party_id": sid, "amount_tyiyn": 20_000, "method": "outside" });
     let (status, _, _) = call(
         &app,
@@ -541,15 +555,34 @@ async fn supplier_debt_is_tracked_and_paid(pool: PgPool) {
         Some(outside.clone()),
     )
     .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let transfer = json!({ "op_id": Uuid::now_v7(), "party_id": sid, "amount_tyiyn": 20_000, "method": "transfer" });
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(&admin),
+        Some(transfer.clone()),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    // Частичная оплата уменьшает наш долг.
     let owner = login(&app, "owner", "owner-pass-1").await;
-    let (status, _, r) = call(
+    let (status, _, _) = call(
         &app,
         "POST",
         "/api/v1/debts/repayments",
         Some(&owner),
         Some(outside),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Частичная оплата уменьшает наш долг.
+    let (status, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(&owner),
+        Some(transfer),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -824,7 +857,7 @@ async fn duplicate_products_can_be_merged(pool: PgPool) {
         "POST",
         "/api/v1/receipts",
         Some(&owner),
-        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside", "lines": [{ "product_id": dup, "qty": 4, "cost_tyiyn": 20_000 }] })),
+        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await, "lines": [{ "product_id": dup, "qty": 4, "cost_tyiyn": 20_000 }] })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1636,11 +1669,12 @@ async fn hostile_inputs_and_payroll_reversals(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // Выплата мимо кассы и её сторно: долг перед сотрудником вернулся.
+    // Выплата из сейфа и её сторно: долг перед сотрудником вернулся.
     let (s, _, paid) = post(
         &owner,
         "/api/v1/payouts",
-        json!({ "op_id": Uuid::now_v7(), "employee_id": eid, "amount_tyiyn": 5_000, "source": "outside", "advance": true }),
+        json!({ "op_id": Uuid::now_v7(), "employee_id": eid, "amount_tyiyn": 5_000, "source": "account",
+                "account_id": owner_safe(&app, &owner).await, "advance": true }),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -2622,11 +2656,11 @@ async fn paid_receipt_takes_money_from_chosen_register(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{paid}");
     assert_eq!(paid["paid_from"], "Касса");
     assert_eq!(balance_of(&pool, &till).await, 400_000);
-    // Сейф, счёт и «из своих» администратору недоступны.
+    // Сейф и счёт администратору недоступны; «из своих» больше нет ни у кого (ADR-079).
     let (s, _, _) = receipt(&admin, 1_000, Some(&safe)).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, _, _) = receipt(&admin, 1_000, Some("outside")).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     // Владелец запретил кассе минус (по умолчанию разрешён, ADR-077) — сверх остатка нельзя.
     let negative = |on: bool| {
         let app = app.clone();
@@ -2650,12 +2684,18 @@ async fn paid_receipt_takes_money_from_chosen_register(pool: PgPool) {
     assert_eq!(balance_of(&pool, &till).await, 400_000);
     assert_eq!(negative(true).await, StatusCode::OK);
 
-    // Владелец обязан выбрать источник; «из своих» кассы не трогает.
+    // Владелец обязан выбрать источник; «из своих» — 422 и кассы не трогает (ADR-079).
     let (s, _, _) = receipt(&owner, 1_000, None).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     let (s, _, outside) = receipt(&owner, 70_000, Some("outside")).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(outside["paid_from"], "outside");
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        outside["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("больше нет"),
+        "{outside}"
+    );
     assert_eq!(balance_of(&pool, &till).await, 400_000);
     assert_eq!(balance_of(&pool, &safe).await, 0);
 
@@ -2717,8 +2757,11 @@ async fn paid_receipt_takes_money_from_chosen_register(pool: PgPool) {
         .filter(|i| i["action"] == "receipt.supplier_payment")
         .map(|i| i["details"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(titles.len(), 3);
-    assert!(titles.iter().any(|t| t.contains("мимо касс")), "{titles:?}");
+    assert_eq!(titles.len(), 2);
+    assert!(
+        titles.iter().all(|t| !t.contains("мимо касс")),
+        "{titles:?}"
+    );
     let (_, _, profit) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
     assert_eq!(profit["totals"]["expenses_tyiyn"], 0);
     assert_eq!(profit["totals"]["net_tyiyn"], 0);
@@ -2739,7 +2782,7 @@ async fn sale_without_purchase_price_waits_for_owner(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": known, "qty": 10, "cost_tyiyn": 200_000 }]
         })),
     )
@@ -3598,7 +3641,7 @@ async fn cash_refund_needs_open_shift(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": item, "qty": 5, "cost_tyiyn": 50_000 }]
         })),
     )
@@ -3667,7 +3710,7 @@ async fn bank_fee_rate_has_history_by_business_date(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": item, "qty": 5, "cost_tyiyn": 50_000 }]
         })),
     )
@@ -3987,7 +4030,7 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
     let (s, _, _) = post(
         &owner,
         "/api/v1/receipts".into(),
-        json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
+        json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
                 "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 30_000 }] }),
     )
     .await;
@@ -4041,7 +4084,8 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
     let (s, _, p) = post(
         &owner,
         "/api/v1/payouts".into(),
-        json!({ "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 1_000, "source": "outside" }),
+        json!({ "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 1_000, "source": "account",
+                "account_id": owner_safe(&app, &owner).await }),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{p}");
@@ -4290,7 +4334,7 @@ async fn bot_operations_and_reports_match_the_screens(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": pid, "qty": 4, "cost_tyiyn": 120_000 }]
         })),
     )
@@ -4866,7 +4910,7 @@ async fn product_with_pending_defect_is_not_archived(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": pid, "qty": 1, "cost_tyiyn": 10_000 }]
         })),
     )
@@ -5018,7 +5062,7 @@ async fn several_shifts_a_day_each_with_own_count(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": item, "qty": 5, "cost_tyiyn": 30_000 }]
         })),
     )
@@ -5152,7 +5196,7 @@ async fn sale_takes_the_cashier_of_the_open_shift(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [{ "product_id": item, "qty": 5, "cost_tyiyn": 30_000 }]
         })),
     )
@@ -5651,7 +5695,7 @@ async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
         Some(&owner),
         Some(
             json!({ "op_id": Uuid::now_v7(), "party_id": supplier["id"], "amount_tyiyn": 50_000,
-                     "method": "outside", "receipt_id": receipt["id"] }),
+                     "method": "transfer", "receipt_id": receipt["id"] }),
         ),
     )
     .await;
@@ -5666,7 +5710,7 @@ async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
     .await;
     assert_eq!(again["debt"]["status"], "partial");
     assert_eq!(again["debt"]["left_tyiyn"], 70_000);
-    assert_eq!(again["debt"]["payments"][0]["source"], "outside");
+    assert_eq!(again["debt"]["payments"][0]["source"], "Счёт");
     let (status, _, inv) = call(
         &app,
         "GET",
@@ -5726,7 +5770,7 @@ async fn bank_screen_income_report_and_dashboard_period(pool: PgPool) {
     let (s, _, _) = post(
         &owner,
         "/api/v1/receipts",
-        json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
+        json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
                 "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 100_000 }] }),
     )
     .await;
@@ -6040,7 +6084,8 @@ async fn debts_list_has_overdue_days_last_payment_and_same_numbers(pool: PgPool)
         "POST",
         "/api/v1/debts/repayments",
         Some(&owner),
-        Some(json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 10_000, "method": "outside" })),
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": pid, "amount_tyiyn": 10_000, "method": "cash",
+                     "account_id": owner_safe(&app, &owner).await })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{r}");
@@ -6096,8 +6141,10 @@ async fn bot_customer_debt_matches_client_card(pool: PgPool) {
         "POST",
         "/api/v1/receipts",
         Some(&owner),
-        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
-                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 100_000 }] })),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
+                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 100_000 }] }),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -6409,7 +6456,8 @@ async fn long_lists_come_in_pages_with_total(pool: PgPool) {
             "POST",
             "/api/v1/expenses",
             Some(&owner),
-            Some(json!({ "op_id": Uuid::now_v7(), "article_id": article, "amount_tyiyn": 1_000, "source": "outside" })),
+            Some(json!({ "op_id": Uuid::now_v7(), "article_id": article, "amount_tyiyn": 1_000, "source": "account",
+                         "account_id": owner_safe(&app, &owner).await })),
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{e}");
@@ -6483,7 +6531,7 @@ async fn top_products_by_profit_is_owner_only(pool: PgPool) {
         "/api/v1/receipts",
         Some(&owner),
         Some(json!({
-            "op_id": Uuid::now_v7(), "paid_from": "outside",
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
             "lines": [
                 { "product_id": cheap, "qty": 10, "cost_tyiyn": 90_000 },
                 { "product_id": rich, "qty": 1, "cost_tyiyn": 200_000 }
@@ -6945,8 +6993,10 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
         &owner,
         "POST",
         "/api/v1/receipts",
-        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
-                     "lines": [{ "product_id": item, "qty": 20, "cost_tyiyn": 10_000 }] })),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
+                     "lines": [{ "product_id": item, "qty": 20, "cost_tyiyn": 10_000 }] }),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -7311,8 +7361,10 @@ async fn bank_fee_per_account_and_default_bank_per_method(pool: PgPool) {
         &owner,
         "POST",
         "/api/v1/receipts",
-        Some(json!({ "op_id": Uuid::now_v7(), "paid_from": "outside",
-                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 10_000 }] })),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
+                     "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 10_000 }] }),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -7463,4 +7515,830 @@ async fn bank_fee_per_account_and_default_bank_per_method(pool: PgPool) {
     assert_eq!(fee_notes.len(), 1);
     assert_eq!(fee_notes[0]["account"], "Оптима");
     balances_match_movements(&pool).await;
+}
+
+// ---------- SPEC-29: доработки по проверке на точке, часть 3 ----------
+
+/// Запрос с телом как есть (фото накладной): тип файла — в заголовке.
+async fn call_raw(
+    app: &Router,
+    uri: &str,
+    cookie: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("x-device-id", Uuid::now_v7().to_string())
+        .header(header::COOKIE, cookie)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Скачать файл: статус, тип и байты.
+async fn get_raw(app: &Router, uri: &str, cookie: &str) -> (StatusCode, String, Vec<u8>) {
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header(header::COOKIE, cookie)
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let ct = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, ct, bytes)
+}
+
+async fn new_supplier(app: &Router, owner: &str, name: &str) -> String {
+    let (s, _, sup) = call(
+        app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(owner),
+        Some(json!({ "name": name })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sup}");
+    sup["id"].as_str().unwrap().to_string()
+}
+
+async fn stock_of(pool: &PgPool, product: &str) -> (i64, i64) {
+    sqlx::query_as(
+        "select stock_qty, stock_value_tyiyn from branch_products where product_id = $1::uuid",
+    )
+    .bind(product)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn assert_stock_matches_movements(app: &Router, owner: &str) {
+    let (s, _, bad) = call(app, "GET", "/api/v1/stock/verify", Some(owner), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(bad, json!([]), "остаток разошёлся с движениями");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipt_part_paid_now_rest_on_debt(pool: PgPool) {
+    // Приход: часть оплачена сразу из выбранного счёта, остаток — долг поставщику (SPEC-29 §4).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (till, bank, safe) = accounts_of(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let sid = new_supplier(&app, &owner, "Автоснаб").await;
+    let receipt = |who: &str, body: Value| {
+        let app = app.clone();
+        let who = who.to_string();
+        async move { call(&app, "POST", "/api/v1/receipts", Some(&who), Some(body)).await }
+    };
+    let body = |paid_now: i64, from: &str| {
+        json!({
+            "op_id": Uuid::now_v7(), "supplier_id": sid, "payment": "debt",
+            "paid_now_tyiyn": paid_now, "paid_from": from,
+            "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": 100_000 }]
+        })
+    };
+    // Часть — больше нуля и меньше суммы; у оплаченной сразу части не бывает.
+    for bad in [100_000, 150_000, -1] {
+        let (s, _, e) = receipt(&owner, body(bad, &bank)).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {e}");
+    }
+    let (s, _, _) = receipt(
+        &owner,
+        json!({ "op_id": Uuid::now_v7(), "payment": "paid", "paid_from": bank, "paid_now_tyiyn": 1_000,
+                "lines": [{ "product_id": item, "qty": 1, "cost_tyiyn": 10_000 }] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    // «Из своих» — 422 и здесь.
+    let (s, _, _) = receipt(&owner, body(30_000, "outside")).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    // Владелец: 30 000 со «Счёта», 70 000 — в долг.
+    let (s, _, r) = receipt(&owner, body(30_000, &bank)).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["debt"]["status"], "partial");
+    assert_eq!(r["debt"]["paid_tyiyn"], 30_000);
+    assert_eq!(r["debt"]["left_tyiyn"], 70_000);
+    assert_eq!(r["debt"]["payments"][0]["source"], "Счёт");
+    assert_eq!(balance_of(&pool, &bank).await, -30_000);
+    let (_, _, party) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(party["balance_tyiyn"], -70_000);
+    // Администратор: только из кассы смены, и только в открытой смене.
+    let (s, _, _) = receipt(&admin, body(10_000, &safe)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = receipt(&admin, body(10_000, &till)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let cashier = cashier_employee(&app, &owner).await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, r2) = receipt(&admin, body(10_000, &till)).await;
+    assert_eq!(s, StatusCode::OK, "{r2}");
+    assert_eq!(r2["debt"]["left_tyiyn"], 90_000);
+    assert_eq!(balance_of(&pool, &till).await, -10_000);
+    // Сторно частично оплаченной: долг снят, оплата осталась авансом поставщику.
+    let rid = r["id"].as_str().unwrap();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/receipts/{rid}/reverse"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, party) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(party["balance_tyiyn"], -60_000);
+    assert_stock_matches_movements(&app, &owner).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn outside_money_is_refused_everywhere(pool: PgPool) {
+    // «Из своих, мимо касс» убрано (ADR-079): расход, выплата и погашение — 422, история читается.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, articles) = call(&app, "GET", "/api/v1/expense-articles", Some(&owner), None).await;
+    let article = articles.as_array().unwrap()[0]["id"].clone();
+    let (s, _, e) = call(
+        &app,
+        "POST",
+        "/api/v1/expenses",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "article_id": article, "amount_tyiyn": 1_000, "source": "outside" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    let (_, _, emp) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&owner),
+        Some(json!({ "full_name": "Мастер", "is_master": true })),
+    )
+    .await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": emp["id"], "amount_tyiyn": 1_000,
+                     "source": "outside", "advance": true }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let sid = new_supplier(&app, &owner, "Поставщик").await;
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": sid, "amount_tyiyn": 1_000, "method": "outside" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn invoice_photos_are_kept_and_hidden_only_by_owner(pool: PgPool) {
+    // Фото накладной: загрузка, просмотр, повтор без дубля, скрытие владельцем (SPEC-29 §3, ADR-080).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let (s, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
+                     "lines": [{ "product_id": item, "qty": 1, "cost_tyiyn": 10_000 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let rid = r["id"].as_str().unwrap().to_string();
+    let jpeg: Vec<u8> = [&[0xFF, 0xD8, 0xFF, 0xE0][..], &[7u8; 2000][..]].concat();
+    let op = Uuid::now_v7();
+    let uri = format!("/api/v1/receipts/{rid}/files?op_id={op}&name=page1.jpg");
+    let (s, f) = call_raw(&app, &uri, &admin, "image/jpeg", jpeg.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{f}");
+    assert_eq!(f["content_type"], "image/jpeg");
+    assert_eq!(f["size_bytes"], 2004);
+    // Повтор той же загрузки — тот же файл.
+    let (s, again) = call_raw(&app, &uri, &admin, "image/jpeg", jpeg.clone()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["id"], f["id"]);
+    // Не снимок и не PDF, или тип не совпал с содержимым — 422; больше 5 МБ — отказ.
+    let bad = format!("/api/v1/receipts/{rid}/files?op_id={}", Uuid::now_v7());
+    let (s, _) = call_raw(&app, &bad, &owner, "text/html", b"<html></html>".to_vec()).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = call_raw(&app, &bad, &owner, "application/pdf", jpeg.clone()).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let big: Vec<u8> = [
+        &[0xFF, 0xD8, 0xFF][..],
+        &vec![0u8; 5 * 1024 * 1024 + 10][..],
+    ]
+    .concat();
+    let (s, _) = call_raw(&app, &bad, &owner, "image/jpeg", big).await;
+    assert!(s.is_client_error(), "{s}");
+    let pdf = format!(
+        "/api/v1/receipts/{rid}/files?op_id={}&name=scan.pdf",
+        Uuid::now_v7()
+    );
+    let (s, p) = call_raw(
+        &app,
+        &pdf,
+        &owner,
+        "application/pdf",
+        b"%PDF-1.4 test".to_vec(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    // Список и скачивание: байты те же, тип — из содержимого.
+    let (_, _, list) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/receipts/{rid}/files"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    let fid = f["id"].as_str().unwrap();
+    let (s, ct, bytes) = get_raw(&app, &format!("/api/v1/receipt-files/{fid}"), &admin).await;
+    assert_eq!((s, ct.as_str()), (StatusCode::OK, "image/jpeg"));
+    assert_eq!(bytes, jpeg);
+    // Скрыть — только владелец и с причиной; запись остаётся, администратор её не видит.
+    let hide = format!("/api/v1/receipt-files/{fid}/hide");
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &hide,
+        Some(&admin),
+        Some(json!({ "reason": "не та" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &hide,
+        Some(&owner),
+        Some(json!({ "reason": " " })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, h) = call(
+        &app,
+        "POST",
+        &hide,
+        Some(&owner),
+        Some(json!({ "reason": "не та накладная" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{h}");
+    assert_eq!(h["hidden_reason"], "не та накладная");
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &hide,
+        Some(&owner),
+        Some(json!({ "reason": "ещё раз" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (_, _, list) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/receipts/{rid}/files"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    let (_, _, list) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/receipts/{rid}/files"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    let (s, _, _) = get_raw(&app, &format!("/api/v1/receipt-files/{fid}"), &admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // Файл не удаляется и не правится даже в базе.
+    assert!(
+        sqlx::query("delete from receipt_files")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("update receipt_files set name = 'x'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    // Сторно прихода — без своих фото: прикрепляют к самой накладной.
+    let (_, _, rev) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/receipts/{rid}/reverse"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    let rev_id = rev["id"].as_str().unwrap();
+    let uri = format!("/api/v1/receipts/{rev_id}/files?op_id={}", Uuid::now_v7());
+    let (s, _) = call_raw(&app, &uri, &owner, "image/jpeg", jpeg).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(actions(&pool, "receipt.file_hide").await.len(), 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn stock_in_without_supplier_and_its_storno(pool: PgPool) {
+    // Оприходование без поставщика: количество и цена закупки, комментарий обязателен (SPEC-29 §8).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let body = |qty: i64, price: i64, comment: &str| json!({ "op_id": Uuid::now_v7(), "product_id": item, "qty": qty, "price_tyiyn": price, "comment": comment });
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/stock-ins",
+        Some(&admin),
+        Some(body(3, 20_000, "  ")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/stock-ins",
+        Some(&admin),
+        Some(body(0, 20_000, "нашли")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, si) = call(
+        &app,
+        "POST",
+        "/api/v1/stock-ins",
+        Some(&admin),
+        Some(body(3, 20_000, "принёс владелец со склада")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{si}");
+    assert_eq!(
+        (si["number"].as_i64(), si["cost_tyiyn"].as_i64()),
+        (Some(1), Some(60_000))
+    );
+    assert_eq!(stock_of(&pool, &item).await, (3, 60_000));
+    // Цена закупки видна в товаре обеим ролям (ADR-008); владельцу — уведомление.
+    let (_, _, p) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/products/{item}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(p["last_purchase_price_tyiyn"], 20_000);
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    assert!(
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["action"] == "stock_in.post"
+                && i["title"].as_str().unwrap().contains("Фильтр")),
+        "{list}"
+    );
+    // Непроданное администратор сторнирует сам.
+    let id = si["id"].as_str().unwrap();
+    let rev = |who: &str, comment: &str| {
+        let app = app.clone();
+        let who = who.to_string();
+        let uri = format!("/api/v1/stock-ins/{id}/reverse");
+        let body = json!({ "op_id": Uuid::now_v7(), "comment": comment });
+        async move { call(&app, "POST", &uri, Some(&who), Some(body)).await }
+    };
+    let (s, _, _) = rev(&admin, "").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, back) = rev(&admin, "ошиблись количеством").await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert_eq!(back["qty"], -3);
+    assert_eq!(back["reversal_of"], si["id"]);
+    assert_eq!(stock_of(&pool, &item).await, (0, 0));
+    let (s, _, _) = rev(&owner, "ещё раз").await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // Оприходование и его сторно не правятся.
+    assert!(
+        sqlx::query("update stock_ins set qty = 1")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    // Часть ушла со склада (недостача) — сторно уведёт остаток в минус: только владелец.
+    let (_, _, si2) = call(
+        &app,
+        "POST",
+        "/api/v1/stock-ins",
+        Some(&owner),
+        Some(body(2, 20_000, "нашли на складе")),
+    )
+    .await;
+    sqlx::query(
+        "insert into stock_movements (id, branch_id, product_id, qty_delta, value_delta_tyiyn, doc_type, doc_id)
+         select $1, branch_id, product_id, -1, -20000, 'revision', $1 from branch_products where product_id = $2::uuid",
+    )
+    .bind(Uuid::now_v7())
+    .bind(&item)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update branch_products set stock_qty = stock_qty - 1, stock_value_tyiyn = stock_value_tyiyn - 20000 where product_id = $1::uuid")
+        .bind(&item)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id2 = si2["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/stock-ins/{id2}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/stock-ins/{id2}/reverse"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(stock_of(&pool, &item).await.0, -1);
+    assert_stock_matches_movements(&app, &owner).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn supplier_return_reduces_debt_or_brings_money(pool: PgPool) {
+    // Возврат поставщику, не брак: по средней себестоимости, итог — долг или деньги, разница —
+    // в прибыль; сторно возвращает всё (SPEC-29 §9).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (till, bank, safe) = accounts_of(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let sid = new_supplier(&app, &owner, "Автоснаб").await;
+    let other = new_supplier(&app, &owner, "Другой").await;
+    // 10 шт в долг Автоснабу по 1 000 с, 10 шт другому по 2 000 с: средняя 1 500 с.
+    for (sup, cost) in [(&sid, 100_000), (&other, 200_000)] {
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/receipts",
+            Some(&owner),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": sup, "payment": "debt",
+                         "lines": [{ "product_id": item, "qty": 10, "cost_tyiyn": cost }] }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    let (_, _, hint) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/supplier-returns/price?supplier_id={sid}&product_id={item}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(hint["price_tyiyn"], 10_000);
+    let ret = |who: &str, body: Value| {
+        let app = app.clone();
+        let who = who.to_string();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/supplier-returns",
+                Some(&who),
+                Some(body),
+            )
+            .await
+        }
+    };
+    // Больше, чем на складе, — 422.
+    let (s, _, _) = ret(
+        &admin,
+        json!({ "op_id": Uuid::now_v7(), "supplier_id": sid, "settle": "debt",
+                "lines": [{ "product_id": item, "qty": 21 }] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    // Администратор: 4 шт в счёт долга по цене последнего прихода — 4 000 с; себестоимость 6 000 с.
+    let (s, _, r) = ret(
+        &admin,
+        json!({ "op_id": Uuid::now_v7(), "supplier_id": sid, "settle": "debt", "comment": "не пошёл",
+                "lines": [{ "product_id": item, "qty": 4 }] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["amount_tyiyn"], 40_000);
+    assert!(
+        r.get("cost_tyiyn").is_none() && r.get("diff_tyiyn").is_none(),
+        "{r}"
+    );
+    assert!(r["lines"][0].get("cost_tyiyn").is_none());
+    assert_eq!(stock_of(&pool, &item).await, (16, 240_000));
+    let (_, _, party) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(party["balance_tyiyn"], -60_000);
+    let (_, _, inv) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}/invoices"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(inv["invoices"][0]["status"], "partial");
+    assert_eq!(inv["payments"][0]["kind"], "return");
+    let (_, _, full) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/supplier-returns/{}", r["id"].as_str().unwrap()),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (full["cost_tyiyn"].as_i64(), full["diff_tyiyn"].as_i64()),
+        (Some(60_000), Some(-20_000))
+    );
+    // Деньгами: администратору — только касса смены; владелец — на «Счёт» с договорной суммой.
+    let money = |acc: &str, amount: i64| {
+        json!({ "op_id": Uuid::now_v7(), "supplier_id": other, "settle": "money", "account_id": acc,
+                "lines": [{ "product_id": item, "qty": 2, "amount_tyiyn": amount }] })
+    };
+    let (s, _, _) = ret(&admin, money(&safe, 40_000)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = ret(&admin, money(&till, 40_000)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _, m) = ret(&owner, money(&bank, 40_000)).await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert_eq!(m["diff_tyiyn"], 10_000);
+    assert_eq!(balance_of(&pool, &bank).await, 40_000);
+    // Прибыль: −20 000 + 10 000; поставки поставщика показывают «Вернули».
+    let (_, _, profit) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
+    assert_eq!(profit["totals"]["return_diff_tyiyn"], -10_000);
+    assert_eq!(profit["totals"]["net_tyiyn"], -10_000);
+    let (_, _, d) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{sid}/deliveries"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(d["rows"][0]["returned_qty"], 4);
+    // Сторно: товар назад по той же стоимости, долг и деньги — обратно, разница снята.
+    let rid = r["id"].as_str().unwrap();
+    let (s, _, back) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/supplier-returns/{rid}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "поставщик не принял" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    let (_, _, party) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(party["balance_tyiyn"], -100_000);
+    let (_, _, inv) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/parties/{sid}/invoices"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(inv["invoices"][0]["status"], "unpaid");
+    let mid = m["id"].as_str().unwrap();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/supplier-returns/{mid}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/supplier-returns/{mid}/reverse"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(balance_of(&pool, &bank).await, 0);
+    let (_, _, profit) = call(&app, "GET", "/api/v1/reports/profit", Some(&owner), None).await;
+    assert_eq!(profit["totals"]["return_diff_tyiyn"], 0);
+    assert_eq!(stock_of(&pool, &item).await.0, 20);
+    let (_, _, d) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{sid}/deliveries"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(d["rows"][0]["returned_qty"], 0);
+    assert_eq!(actions(&pool, "supplier_return.post").await.len(), 2);
+    assert_stock_matches_movements(&app, &owner).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn revision_takes_a_product_not_in_the_program(pool: PgPool) {
+    // В ревизию вписывают товар, которого нет в программе: карточка заводится с найденным
+    // количеством, излишек оценивается по закупке (SPEC-29 §10).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Масла", "kind": "oil" })),
+    )
+    .await;
+    let (_, _, rev) = call(
+        &app,
+        "POST",
+        "/api/v1/revisions",
+        Some(&admin),
+        Some(json!({ "category_id": null })),
+    )
+    .await;
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    let op = Uuid::now_v7();
+    let body = json!({
+        "op_id": op, "counted_qty": 8000, "category_id": cat["id"], "name": "Mobil 5W-30 4л",
+        "brand": "Mobil", "container_ml": 4000, "attrs": { "viscosity": "5W-30" },
+        "barcodes": ["4600000000999"], "sale_price_tyiyn": 200_000, "initial_cost_tyiyn": 150_000
+    });
+    let uri = format!("/api/v1/revisions/{rid}/new-product");
+    let (s, _, out) = call(&app, "POST", &uri, Some(&admin), Some(body.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Повтор той же операции — без второй карточки.
+    let (s, _, again) = call(&app, "POST", &uri, Some(&admin), Some(body)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["product"]["id"], out["product"]["id"]);
+    let pid = out["product"]["id"].as_str().unwrap().to_string();
+    let (_, _, draft) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/revisions/{rid}"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    let line = draft["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["product_id"] == json!(pid))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (line["expected_qty"].as_i64(), line["counted_qty"].as_i64()),
+        (Some(0), Some(8000))
+    );
+    // Проводит владелец: остаток 8 л по 1 500 с за канистру.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/revisions/{rid}/post"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(stock_of(&pool, &pid).await, (8000, 300_000));
+    // В проведённую ревизию новый товар не вписать.
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &uri,
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "counted_qty": 1, "category_id": cat["id"], "name": "Ещё",
+                     "container_ml": 1000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_stock_matches_movements(&app, &owner).await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn label_settings_have_brand_and_spec(pool: PgPool) {
+    // Этикетка: бренд и характеристики (SPEC-29 §6); прежние настройки получают их включёнными.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, l) = call(&app, "GET", "/api/v1/settings/labels", Some(&owner), None).await;
+    assert_eq!(
+        (l["show_brand"].as_bool(), l["show_spec"].as_bool()),
+        (Some(true), Some(true))
+    );
+    let old = json!({ "width_mm": 58, "height_mm": 40, "show_name": true, "show_price": true, "show_article": true });
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/labels",
+        Some(&owner),
+        Some(old),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, l) = call(&app, "GET", "/api/v1/settings/labels", Some(&owner), None).await;
+    assert_eq!(
+        (l["width_mm"].as_i64(), l["show_spec"].as_bool()),
+        (Some(58), Some(true))
+    );
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/labels",
+        Some(&owner),
+        Some(
+            json!({ "width_mm": 58, "height_mm": 40, "show_name": true, "show_price": true,
+                     "show_article": false, "show_brand": false, "show_spec": false }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, l) = call(&app, "GET", "/api/v1/settings/labels", Some(&owner), None).await;
+    assert_eq!(l["show_brand"], false);
 }

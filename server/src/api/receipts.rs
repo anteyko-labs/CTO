@@ -62,11 +62,15 @@ pub struct ReceiptReq {
     #[serde(default)]
     pub comment: String,
     pub lines: Vec<ReceiptLineReq>,
-    /// Откуда оплачена накладная `paid` (ADR-062): id кассы («Касса», «Счёт», «Сейф владельца»)
-    /// или `outside` — из своих, мимо касс. Без поля (старый клиент): администратор платит
-    /// из «Кассы» — другого ему нельзя, владельцу нужно выбрать явно.
+    /// Откуда оплачена накладная `paid` или её часть (ADR-062): id кассы или счёта. «Из своих,
+    /// мимо касс» (`outside`) больше не принимается — 422 (ADR-079). Без поля (старый клиент):
+    /// администратор платит из «Кассы» — другого ему нельзя, владельцу нужно выбрать явно.
     #[serde(default)]
     pub paid_from: Option<String>,
+    /// Накладная в долг, часть оплачена сразу (SPEC-29 §4): сколько заплатили сейчас из
+    /// `paid_from`; остаток — долг поставщику. Больше нуля и меньше суммы накладной.
+    #[serde(default)]
+    pub paid_now_tyiyn: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -332,20 +336,17 @@ pub async fn lock_products(
     Ok(())
 }
 
-/// Откуда платим за накладную (ADR-062).
-#[derive(Clone, Copy)]
-enum PaidFrom {
-    Account(Uuid),
-    Outside,
-}
+/// Ответ на «из своих, мимо касс» в новых операциях (ADR-079): так больше не платят — деньги
+/// сначала вносят на счёт, потом платят с него, и остаток каждого счёта сходится с деньгами.
+pub const NO_OUTSIDE: &str = "«из своих, мимо касс» больше нет: выберите кассу или счёт — если платили свои деньги, сначала внесите их на счёт";
 
-/// Источник оплаты накладной: касса филиала или «из своих, мимо касс». Администратор платит
-/// только из «Кассы» (как и выдаёт из неё деньги, SPEC-05); счёт, сейфы и свои деньги — владелец.
+/// Счёт, из которого платят за накладную: касса или счёт филиала. Администратор платит
+/// только из «Кассы» (как и выдаёт из неё деньги, SPEC-05); счёт и сейфы — владелец.
 async fn resolve_paid_from(
     conn: &mut PgConnection,
     ctx: &Ctx,
     paid_from: Option<&str>,
-) -> AppResult<PaidFrom> {
+) -> AppResult<Uuid> {
     let branch_id = ctx.user.branch_id;
     let owner = ctx.user.is_owner();
     let id = match paid_from.map(str::trim) {
@@ -353,17 +354,16 @@ async fn resolve_paid_from(
         // мог платить откуда угодно, и угадывать нельзя: остаток кассы разошёлся бы с деньгами.
         None | Some("") if owner => {
             return Err(invalid(
-                "укажите, откуда оплачена накладная: касса, счёт, сейф или из своих",
+                "укажите, откуда оплачена накладная: касса, счёт или сейф",
             ));
         }
         None | Some("") => crate::api::cash::default_account(conn, branch_id).await?,
-        Some("outside") if owner => return Ok(PaidFrom::Outside),
-        Some("outside") => return Err(AppError::Forbidden),
+        Some("outside") => return Err(invalid(NO_OUTSIDE)),
         Some(s) => Uuid::parse_str(s).map_err(|_| invalid("неизвестная касса"))?,
     };
     // Администратор — только из кассы смены, архивный счёт не выбирается (ADR-076).
     crate::api::cash::check_pay_account(conn, &ctx.user, id).await?;
-    Ok(PaidFrom::Account(id))
+    Ok(id)
 }
 
 pub async fn post_receipt_tx(
@@ -433,7 +433,23 @@ pub async fn post_receipt_tx(
     if on_debt && req.supplier_id.is_none() {
         return Err(invalid("для накладной в долг укажите поставщика"));
     }
-    let paid_from = if on_debt {
+    // Часть сразу, остаток в долг (SPEC-29 §4): только у накладной в долг и меньше её суммы.
+    let paid_now = match req.paid_now_tyiyn {
+        None | Some(0) => None,
+        Some(_) if !on_debt => {
+            return Err(invalid(
+                "часть суммы платят только у накладной в долг: оплаченная сразу оплачивается целиком",
+            ));
+        }
+        Some(p) if p < 0 => return Err(invalid("оплачено сейчас — не меньше нуля")),
+        Some(p) if p >= total => {
+            return Err(invalid(
+                "оплачено сейчас не меньше суммы накладной — отметьте её оплаченной сразу",
+            ));
+        }
+        Some(p) => Some(p),
+    };
+    let paid_from = if on_debt && paid_now.is_none() {
         if req.paid_from.is_some() {
             return Err(invalid("накладная в долг ничем не оплачивается"));
         }
@@ -457,10 +473,10 @@ pub async fn post_receipt_tx(
     }
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let id = new_id();
+    // Частично оплаченная — накладная в долг: откуда платили часть, видно в её платежах.
     let (paid_kind, paid_account) = match paid_from {
-        Some(PaidFrom::Account(a)) => (Some("account"), Some(a)),
-        Some(PaidFrom::Outside) => (Some("outside"), None),
-        None => (None, None),
+        Some(a) if !on_debt => (Some("account"), Some(a)),
+        _ => (None, None),
     };
     sqlx::query!(
         r#"insert into receipts (id, branch_id, number, supplier_id, supplier_doc, comment, total_tyiyn, user_id, device_id,
@@ -615,61 +631,76 @@ pub async fn post_receipt_tx(
     }
     // Оплачена сразу: деньги уходят из выбранной кассы в той же транзакции (SPEC-10). Это не
     // расход в прибыли — товар лёг в стоимость остатка и уйдёт в себестоимость при продаже.
-    if let Some(source) = paid_from {
-        pay_supplier(conn, ctx, id, number, total, source).await?;
+    match (paid_from, paid_now) {
+        (Some(account), Some(part)) => {
+            // Часть сразу — оплата этой накладной той же функцией, что окно оплаты (ADR-073):
+            // ложится на неё, деньги уходят с выбранного счёта, остаток — долг (SPEC-29 §4).
+            let sid = req.supplier_id.ok_or_else(|| invalid("нужен поставщик"))?;
+            let kind = crate::api::cash::check_pay_account(conn, &ctx.user, account).await?;
+            crate::api::parties::post_repayment_tx(
+                conn,
+                ctx,
+                crate::api::parties::RepaymentReq {
+                    op_id: new_id(),
+                    party_id: sid,
+                    amount_tyiyn: part,
+                    method: Some(if kind == "bank" { "transfer" } else { "cash" }.into()),
+                    comment: format!("накладная № {number}, оплачено при приходе"),
+                    receipt_id: Some(id),
+                    account_id: Some(account),
+                },
+            )
+            .await?;
+        }
+        (Some(account), None) => pay_supplier(conn, ctx, id, number, total, account).await?,
+        _ => {}
     }
     let out = load_receipt(conn, branch_id, id).await?;
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }
 
-/// Оплата накладной: `supplier_payment` из кассы или отметка «из своих» в журнале (ADR-062).
+/// Оплата накладной: `supplier_payment` из кассы или со счёта (ADR-062).
 async fn pay_supplier(
     conn: &mut PgConnection,
     ctx: &Ctx,
     receipt_id: Uuid,
     number: i64,
     total: i64,
-    source: PaidFrom,
+    account_id: Uuid,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
-    let account = match source {
-        PaidFrom::Outside => None,
-        PaidFrom::Account(account_id) => {
-            // Касса с наличными — только в открытой смене: иначе расход не с чем сверить (SPEC-10).
-            crate::api::cash::require_open_shift(conn, branch_id, account_id).await?;
-            let acc = sqlx::query!(
-                "select name, balance_tyiyn, allow_negative from cash_accounts where id = $1 and branch_id = $2 for update",
+    // Касса с наличными — только в открытой смене: иначе расход не с чем сверить (SPEC-10).
+    crate::api::cash::require_open_shift(conn, branch_id, account_id).await?;
+    let acc = sqlx::query!(
+        "select name, balance_tyiyn, allow_negative from cash_accounts where id = $1 and branch_id = $2 for update",
+        account_id,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    // Минус по факту разрешён признаком счёта (ADR-077): тогда касса уходит ниже нуля.
+    if acc.balance_tyiyn < total && !acc.allow_negative {
+        return Err(AppError::Conflict(format!(
+            "в «{}» не хватает денег на оплату накладной: оформите её в долг или выберите другую кассу",
+            acc.name
+        )));
+    }
+    if total > 0 {
+        crate::api::cash::add_movement(
+            conn,
+            ctx,
+            crate::api::cash::CashEntry {
                 account_id,
-                branch_id
-            )
-            .fetch_one(&mut *conn)
-            .await?;
-            // Минус по факту разрешён признаком счёта (ADR-077): тогда касса уходит ниже нуля.
-            if acc.balance_tyiyn < total && !acc.allow_negative {
-                return Err(AppError::Conflict(format!(
-                    "в «{}» не хватает денег на оплату накладной: оформите её в долг или выберите другую кассу",
-                    acc.name
-                )));
-            }
-            if total > 0 {
-                crate::api::cash::add_movement(
-                    conn,
-                    ctx,
-                    crate::api::cash::CashEntry {
-                        account_id,
-                        kind: "supplier_payment",
-                        amount: -total,
-                        doc_type: "receipt",
-                        doc_id: Some(receipt_id),
-                        comment: &format!("накладная № {number}"),
-                    },
-                )
-                .await?;
-            }
-            Some(acc.name)
-        }
-    };
+                kind: "supplier_payment",
+                amount: -total,
+                doc_type: "receipt",
+                doc_id: Some(receipt_id),
+                comment: &format!("накладная № {number}"),
+            },
+        )
+        .await?;
+    }
     ops::audit(
         conn,
         ctx,
@@ -679,8 +710,7 @@ async fn pay_supplier(
         json!({
             "number": number,
             "amount": total,
-            "account": account,
-            "outside": account.is_none(),
+            "account": acc.name,
         }),
     )
     .await?;

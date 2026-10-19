@@ -142,10 +142,11 @@ pub struct PaymentOut {
     pub ledger_id: Uuid,
     pub at: DateTime<Utc>,
     pub user_name: String,
-    /// `payment` — оплата, `defect` — зачёт брака скидкой, `adjust` — правка владельца.
+    /// `payment` — оплата, `defect` — зачёт брака скидкой, `return` — возврат товара в счёт
+    /// долга (SPEC-29 §9), `adjust` — правка владельца.
     pub kind: String,
     pub amount_tyiyn: i64,
-    /// Касса, из которой платили; `outside` — мимо касс; пусто — зачёт или правка.
+    /// Касса, из которой платили; `outside` — мимо касс (до ADR-079); пусто — зачёт, возврат или правка.
     pub source: String,
     /// Платёж сторнирован: его распределения отменены.
     pub reversed: bool,
@@ -267,7 +268,7 @@ pub async fn supplier_invoices(
                                               where s.credit_id = l.id), 0))::bigint as "open!"
            from party_ledger l join users u on u.id = l.user_id
            where l.branch_id = $1 and l.party_id = $2 and l.amount_tyiyn > 0 and l.reversal_of is null
-             and l.doc_type in ('repayment', 'defect', 'adjust')
+             and l.doc_type in ('repayment', 'defect', 'adjust', 'supplier_return')
            order by l.created_at desc, l.id desc"#,
         branch_id,
         party_id
@@ -284,6 +285,7 @@ pub async fn supplier_invoices(
             let kind = match c.doc_type.as_str() {
                 "repayment" => "payment",
                 "defect" => "defect",
+                "supplier_return" => "return",
                 _ => "adjust",
             };
             PaymentOut {
