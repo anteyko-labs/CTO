@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name from car_models where make_id = $1 and lower(name) = lower($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1f417ffcc0d77eabfa4253bea322700fa11ea746bbe4dc9b6c7dfb3e59447c64"
+}

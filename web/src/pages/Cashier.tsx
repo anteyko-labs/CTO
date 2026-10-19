@@ -13,13 +13,15 @@ import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
-import { nextText, recordLines, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
+import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
+import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
+import { hasEngineOil, nextChangeProblem } from '../lib/oilChange'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon } from '../components/icons'
-import { Badge, Button, Card, ErrorBox, Field, Missing, Money, RowMenu, toast } from '../components/ui'
+import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, toast } from '../components/ui'
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
@@ -122,7 +124,12 @@ interface Parked {
   mileage?: string
   delivery?: string | null
   declined?: string
+  /** «Через сколько менять» масло: в единице машины и днях (SPEC-29 §23). */
+  nextEvery?: NextEvery | null
 }
+
+/** Интервал следующей замены масла из чека: как ввёл кассир (единица машины) и дни. */
+type NextEvery = { dist: string; days: string }
 
 function loadParked(): Parked[] {
   try {
@@ -155,6 +162,7 @@ interface Draft {
   mileage?: string
   delivery?: string | null
   declined?: string
+  nextEvery?: NextEvery | null
 }
 
 function loadDraft(): Draft | null {
@@ -254,6 +262,11 @@ export default function Cashier() {
   const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
   // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
   const [declined, setDeclined] = useState(draft?.declined ?? '')
+  // «Через сколько менять» (SPEC-29 §23): null — как в книжке, не трогали.
+  const [nextEvery, setNextEvery] = useState<NextEvery | null>(draft?.nextEvery ?? null)
+  // «Это замена масла?» (SPEC-29 §18): для этого чека уже спросили — больше не спрашиваем.
+  const [oilAsked, setOilAsked] = useState(false)
+  const [oilQuestion, setOilQuestion] = useState(false)
   const [commentOpen, setCommentOpen] = useState(false)
   // Строка, у которой сейчас правят цену: в остальных цена видна текстом.
   const [priceEdit, setPriceEdit] = useState<string | null>(null)
@@ -265,8 +278,8 @@ export default function Cashier() {
   const masters = employees.data?.filter((e) => e.active && e.is_master) ?? []
 
   useEffect(
-    () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined }),
-    [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined],
+    () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery }),
+    [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery],
   )
 
   // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
@@ -505,6 +518,9 @@ export default function Cashier() {
     setMileage('')
     setDelivery(null)
     setDeclined('')
+    setNextEvery(null)
+    setOilAsked(false)
+    setOilQuestion(false)
     setCommentOpen(false)
     setPriceEdit(null)
     setError(null)
@@ -514,14 +530,33 @@ export default function Cashier() {
 
   // Прошлый пробег машины: лишний ноль уйдёт в книжку, на печать и клиенту в бот.
   const book = useLoad(() => (vehicleId ? get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`) : Promise.resolve(null)), [vehicleId])
-  const lastKm = book.data?.records.find((r) => r.mileage_km !== null)?.mileage_km ?? null
+  // Пробег — в единице машины (км или мили, ADR-084); прошлый — переведён в неё же.
+  const carUnit: MileageUnit = book.data?.mileage_unit ?? 'km'
+  const lastKmRaw = book.data?.records.find((r) => r.mileage_km !== null)?.mileage_km ?? null
+  const lastKm = lastKmRaw === null ? null : fromKm(lastKmRaw, carUnit)
   const mileageWarning = (() => {
     const m = mileage ? Number(mileage) : null
     if (m === null || lastKm === null) return null
-    if (m < lastKm) return `Меньше, чем в прошлый раз (${lastKm.toLocaleString('ru-RU')} км) — проверьте.`
-    if (m > lastKm + 50_000) return `В прошлый раз было ${lastKm.toLocaleString('ru-RU')} км — точно ${m.toLocaleString('ru-RU')}?`
+    if (m < lastKm) return `Меньше, чем в прошлый раз (${mileageText(lastKm, carUnit)}) — проверьте.`
+    if (m > lastKm + 50_000) return `В прошлый раз было ${mileageText(lastKm, carUnit)} — точно ${mileageText(m, carUnit)}?`
     return null
   })()
+  // Интервал масла этой машины сейчас (машины, категории или по умолчанию) — в её единице.
+  const oilSlot = book.data?.slots?.find((n) => n.slot === 'oil')
+  const curEvery: NextEvery | null =
+    oilSlot && oilSlot.interval_km !== null && oilSlot.interval_days !== null
+      ? { dist: String(fromKm(oilSlot.interval_km, carUnit)), days: String(oilSlot.interval_days) }
+      : book.data
+        ? { dist: String(fromKm(book.data.interval_km, carUnit)), days: String(book.data.interval_days) }
+        : null
+  const every = nextEvery ?? curEvery
+  const bookService = saleType === 'service' && Boolean(party) && Boolean(vehicleId)
+  const everyProblem = bookService && nextEvery ? nextChangeProblem(nextEvery.dist, nextEvery.days, carUnit) : null
+  // В чек уходит, только если кассир поменял интервал: иначе остаётся интервал книжки.
+  const bookIntervals =
+    bookService && nextEvery && !everyProblem && (nextEvery.dist !== curEvery?.dist || nextEvery.days !== curEvery?.days)
+      ? [{ slot: 'oil', interval_km: toKm(Number(nextEvery.dist), carUnit), interval_days: Number(nextEvery.days) }]
+      : []
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
@@ -547,6 +582,7 @@ export default function Cashier() {
       mileage,
       delivery,
       declined,
+      nextEvery,
     }
     return [...list.filter((p) => p.id !== id), item]
   }
@@ -577,6 +613,7 @@ export default function Cashier() {
     setMileage(p.mileage ?? '')
     setDelivery(p.delivery ?? null)
     setDeclined(p.declined ?? '')
+    setNextEvery(p.nextEvery ?? null)
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -608,6 +645,7 @@ export default function Cashier() {
     [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
     [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
+    [!everyProblem, everyProblem ?? '', '#next-every-dist'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
   )
 
@@ -620,7 +658,10 @@ export default function Cashier() {
         party_id: party?.id ?? bonus?.party_id ?? null,
         contact_id: party && contactId ? contactId : null,
         vehicle_id: party && vehicleId ? vehicleId : null,
-        mileage_km: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
+        // Пробег — как вписали, в единице машины (ADR-084); сервер переведёт в км для интервалов.
+        mileage: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
+        mileage_unit: party && vehicleId && saleType === 'service' && mileage ? carUnit : null,
+        book_intervals: bookIntervals,
         delivery_address: delivery?.trim() ?? '',
         declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
         comment,
@@ -716,13 +757,22 @@ export default function Cashier() {
     })
 
   const canSubmit = !busy && blockers.length === 0
+  // На вынос с моторным маслом — сначала «Это замена масла?» (SPEC-29 §18): один раз на чек.
+  const askOil = saleType === 'takeaway' && !oilAsked && hasEngineOil(lines)
+  const trySubmit = () => {
+    if (askOil) {
+      setOilQuestion(true)
+      return
+    }
+    void submit()
+  }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Открыто окно (подарок, баллы, клиент, услуги…) — сочетание относится к нему, не к чеку.
       const dialog = Boolean(document.querySelector('[role="dialog"]'))
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmit && !dialog) {
         e.preventDefault()
-        void submit()
+        trySubmit()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -842,8 +892,8 @@ export default function Cashier() {
             {done.book && done.book.records[0]?.sale_id === done.sale.id && (
               <div className="mt-3 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm">
                 <div className="font-medium">Записано в масляную книжку · {done.book.plate}</div>
-                {done.book.records[0].mileage_km !== null && (
-                  <div className="text-slate-700">пробег {done.book.records[0].mileage_km.toLocaleString('ru-RU')} км</div>
+                {recordMileage(done.book.records[0]) !== null && (
+                  <div className="text-slate-700">пробег {recordMileage(done.book.records[0])}</div>
                 )}
                 {recordLines(done.book.records[0]).map((l, i) => (
                   <div key={i} className="text-slate-700">
@@ -882,7 +932,7 @@ export default function Cashier() {
                 return (
                   <li key={l.key} className="flex flex-wrap items-center gap-2 p-3">
                     <div className="min-w-48 flex-1">
-                      <div className="font-medium">
+                      <div className="text-base font-medium">
                         {l.product ? productTitle(l.product) : l.service?.name}
                         {l.gift && (
                           <span className="ml-2">
@@ -942,14 +992,14 @@ export default function Cashier() {
                       <span className="flex items-stretch">
                         <button
                           type="button"
-                          className="rounded-l-md border border-r-0 border-slate-300 px-2.5 text-base text-slate-700 hover:bg-slate-50"
+                          className="min-h-12 min-w-12 rounded-l-md border border-r-0 border-slate-300 px-3 text-xl text-slate-700 hover:bg-slate-50 active:bg-slate-100"
                           aria-label="Меньше"
                           onClick={() => step(l, -1)}
                         >
                           −
                         </button>
                         <input
-                          className="w-16 rounded-none text-center"
+                          className="min-h-12 w-16 rounded-none text-center text-lg"
                           data-weight={l.kind === 'weight' ? '' : undefined}
                           // Подпись вокруг поля относится к первой кнопке «−», поэтому у поля своя.
                           aria-label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
@@ -959,7 +1009,7 @@ export default function Cashier() {
                         />
                         <button
                           type="button"
-                          className="rounded-r-md border border-l-0 border-slate-300 px-2.5 text-base text-slate-700 hover:bg-slate-50"
+                          className="min-h-12 min-w-12 rounded-r-md border border-l-0 border-slate-300 px-3 text-xl text-slate-700 hover:bg-slate-50 active:bg-slate-100"
                           aria-label="Больше"
                           onClick={() => step(l, 1)}
                         >
@@ -1005,10 +1055,10 @@ export default function Cashier() {
                         </span>
                       </div>
                     )}
-                    <div className="w-20 text-right font-medium">{amount === null ? '—' : <Money value={amount} />}</div>
+                    <div className="w-24 text-right text-base font-semibold">{amount === null ? '—' : <Money value={amount} />}</div>
                     <button
                       type="button"
-                      className="text-slate-400 hover:text-rose-600"
+                      className="flex min-h-12 min-w-12 items-center justify-center rounded-md text-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"
                       aria-label="Удалить строку"
                       onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}
                     >
@@ -1024,12 +1074,12 @@ export default function Cashier() {
 
       <div className="flex flex-col gap-4">
         <Card className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-sm">
+          <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-base">
             {(['takeaway', 'service'] as const).map((t) => (
               <button
                 key={t}
                 type="button"
-                className={`min-h-[42px] py-2 ${saleType === t ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                className={`min-h-12 py-2 text-base ${saleType === t ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => changeType(t)}
               >
                 {t === 'takeaway' ? 'На вынос' : 'В сервис'}
@@ -1093,16 +1143,51 @@ export default function Cashier() {
               onVehicle={(v) => {
                 setVehicleId(v)
                 setMileage('')
+                setNextEvery(null)
               }}
             />
           </div>
           {party && vehicleId && <OilHint vehicleId={vehicleId} />}
           {saleType === 'service' &&
             (party && vehicleId ? (
-              <Field label="Пробег сейчас, км" required hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку">
-                <input id="mileage" inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
-                {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
-              </Field>
+              <>
+                <Field
+                  label={`Пробег сейчас, ${unitLabel(carUnit)}`}
+                  required
+                  hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку"
+                >
+                  <input id="mileage" inputMode="numeric" value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
+                  {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
+                </Field>
+                {every && (
+                  <div className="flex flex-col gap-1" data-testid="next-every">
+                    <span className="text-sm font-medium text-slate-700">Следующая замена масла через</span>
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <input
+                        id="next-every-dist"
+                        aria-label={`Через, ${unitLabel(carUnit)}`}
+                        className="w-24"
+                        inputMode="numeric"
+                        value={every.dist}
+                        onChange={(e) => setNextEvery({ ...every, dist: e.target.value.replace(/\D/g, '') })}
+                      />
+                      <span>{unitLabel(carUnit)} или</span>
+                      <input
+                        id="next-every-days"
+                        aria-label="Через, дней"
+                        className="w-20"
+                        inputMode="numeric"
+                        value={every.days}
+                        onChange={(e) => setNextEvery({ ...every, days: e.target.value.replace(/\D/g, '') })}
+                      />
+                      <span>дней</span>
+                    </div>
+                    <span className="text-xs text-slate-500">
+                      {bookIntervals.length > 0 ? 'Запишется интервалом этой машины.' : 'Как в книжке этой машины; поменяйте, если мастер советует другое.'}
+                    </span>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900">
                 Масляная книжка: {party ? 'выберите машину клиента (или «+ новая машина»)' : 'выберите клиента и машину'} — замена, масло, фильтр и пробег
@@ -1160,13 +1245,13 @@ export default function Cashier() {
               </Button>
             </div>
           )}
-          <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-px overflow-hidden rounded-md border border-slate-300 bg-slate-300 text-sm">
+          <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-px overflow-hidden rounded-md border border-slate-300 bg-slate-300 text-base">
             {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m, i) => (
               <button
                 key={m}
                 type="button"
                 // 3 + 2: наличные, карта, QR сверху — частые; долг и смешанная ниже.
-                className={`min-h-[44px] py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                className={`min-h-12 py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => setPayMode(m)}
               >
                 {m === 'mixed' ? 'Смешанная' : PAYMENT_LABELS[m]}
@@ -1242,11 +1327,12 @@ export default function Cashier() {
               <Field label="Получено, с">
                 <input
                   data-received
+                  className="min-h-12 text-lg"
                   inputMode="decimal"
                   value={received}
                   onChange={(e) => setReceived(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && canSubmit) void submit()
+                    if (e.key === 'Enter' && canSubmit) trySubmit()
                   }}
                 />
               </Field>
@@ -1270,7 +1356,7 @@ export default function Cashier() {
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
-                    className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
+                    className="min-h-12 rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
                     onClick={() => setReceived(somInput(due))}
                   >
                     Без сдачи
@@ -1281,7 +1367,7 @@ export default function Cashier() {
                       <button
                         key={n}
                         type="button"
-                        className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
+                        className="min-h-12 rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
                         onClick={() => setReceived(somInput(n))}
                       >
                         {formatSom(n)}
@@ -1411,7 +1497,7 @@ export default function Cashier() {
           )}
           <ErrorBox error={error} />
           <Missing items={blockers} />
-          <Button className="py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
+          <Button className="min-h-14 py-3 text-lg" disabled={!canSubmit} onClick={trySubmit}>
             Провести чек
           </Button>
           <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — провести</div>
@@ -1454,10 +1540,45 @@ export default function Cashier() {
               <Money value={due} />
             </div>
           </div>
-          <Button className="shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={() => void submit()}>
+          <Button className="min-h-12 shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={trySubmit}>
             Провести чек
           </Button>
         </div>
+      )}
+      {oilQuestion && (
+        <Modal title="Это замена масла?" onClose={() => setOilQuestion(false)}>
+          <div className="flex flex-col gap-4" data-testid="oil-question">
+            <div className="text-base text-slate-700">
+              В чеке моторное масло, а продажа — на вынос. Если масло меняют здесь, оформите замену: мастер получит ставку, а замена
+              запишется в масляную книжку машины.
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button
+                className="min-h-14 text-lg"
+                onClick={() => {
+                  setOilAsked(true)
+                  setOilQuestion(false)
+                  setSaleType('service')
+                  toast('Замена масла: выберите мастера, клиента и машину')
+                  setTimeout(() => document.getElementById('master-select')?.focus(), 50)
+                }}
+              >
+                Да, замена
+              </Button>
+              <Button
+                variant="secondary"
+                className="min-h-14 text-lg"
+                onClick={() => {
+                  setOilAsked(true)
+                  setOilQuestion(false)
+                  void submit()
+                }}
+              >
+                Нет, на вынос
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {expense && <QuickExpense onClose={() => setExpense(false)} />}

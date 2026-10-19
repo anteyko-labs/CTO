@@ -2,12 +2,17 @@
 
 export type Role = 'owner' | 'admin'
 
+/** Права сверх роли, которые владелец выдаёт пользователю (ADR-082). */
+export type Permission = 'oil_transfer'
+
 export interface User {
   id: string
   branch_id: string
   login: string
   full_name: string
   role: Role
+  /** Права сверх роли (ADR-082); у старого ответа сервера — нет. */
+  permissions?: Permission[]
 }
 
 export interface UserRow {
@@ -16,6 +21,7 @@ export interface UserRow {
   full_name: string
   role: Role
   active: boolean
+  permissions?: Permission[]
 }
 
 export type CategoryKind = 'oil' | 'filter' | 'battery' | 'other'
@@ -85,6 +91,8 @@ export interface Employee {
   active: boolean
   /** Телефон для кабинета в боте (SPEC-23); сервер отдаёт его только владельцу. */
   phone?: string
+  /** PIN кассира задан (ADR-081); сам PIN сервер не отдаёт. */
+  has_pin?: boolean
 }
 
 export interface Service {
@@ -384,6 +392,9 @@ export interface Party {
   role: 'customer' | 'supplier'
   kind: 'person' | 'company'
   name: string
+  /** Имя и фамилия человека (ADR-083); у прежних записей — пусто. */
+  first_name?: string
+  last_name?: string
   phone: string
   inn: string
   comment: string
@@ -412,6 +423,15 @@ export interface PartyVehicle {
   model: string
   comment: string
   active: boolean
+  /** Пробег в км или милях (ADR-084). */
+  mileage_unit?: 'km' | 'mi'
+}
+
+/** Справочник марок и моделей (ADR-083). */
+export interface CarMake {
+  id: string
+  name: string
+  models: { id: string; name: string }[]
 }
 
 export interface PartyTimelineItem {

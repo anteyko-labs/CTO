@@ -7,7 +7,7 @@ import { formatDate, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { CashAccount, OpenDebt, OpenDebts, Party, SupplierInvoice, SupplierInvoices } from '../lib/types'
-import { bankChoices, isBank, isTill } from '../lib/accounts'
+import { accountLabel, bankChoices, isBank, isTill } from '../lib/accounts'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 // «Вне кассы» (из своих) больше нет — сервер отвечает 422 (ADR-079).
@@ -190,11 +190,18 @@ export function RepaymentModal({
                   <select id="repay-account" value={accountId} onChange={(e) => setAccountPick(e.target.value)}>
                     {accountOrdered.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name}
+                        {accountLabel(a)}
                       </option>
                     ))}
                   </select>
                 </Field>
+              )}
+              {/* Один счёт на выбор (администратору — касса смены): остаток всё равно виден (SPEC-29 §12). */}
+              {accountOrdered.length === 1 && (
+                <div className="text-sm text-slate-600" data-testid="repay-account-one">
+                  {supplier ? 'Платим из: ' : 'Деньги в: '}
+                  <b>{accountLabel(accountOrdered[0])}</b>
+                </div>
               )}
               <div className="text-xs text-slate-500">
                 {METHOD_HINTS[method]} В прибыль оплата долга не идёт: выручка и прибыль по чеку учтены в день продажи.

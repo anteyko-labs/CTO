@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { accountNote, accountTotals, accountType, bankChoices, defaultBankId, enoughOn, isDefaultFor, isTill } from './accounts'
+import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, enoughOn, handoverChoices, isDefaultFor, isTill, payAccounts } from './accounts'
+import { formatSom } from './format'
 import type { CashAccount } from './types'
 
 const acc = (id: string, kind: CashAccount['kind'], balance: number, extra: Partial<CashAccount> = {}): CashAccount => ({
@@ -66,5 +67,22 @@ describe('обзор счетов', () => {
     expect(enoughOn(list[0], 50_001)).toBe(false)
     expect(enoughOn({ balance_tyiyn: 0, allow_negative: true }, 1_000_000)).toBe(true)
     expect(enoughOn(undefined, 1)).toBe(true)
+  })
+})
+
+describe('выбор счёта с остатком (SPEC-29 §12–14)', () => {
+  it('подпись счёта — с остатком', () => {
+    expect(accountLabel(acc('Касса', 'register', 1_230_000))).toBe(`Касса — ${formatSom(1_230_000)}`)
+  })
+
+  it('откуда платить: владелец — любой действующий, касса первой; администратор — только касса', () => {
+    expect(payAccounts(list, true).map((a) => a.id)).toEqual(['Касса', 'Сейф-1', 'СВИНЕЦ', 'Оптима', 'Счёт'])
+    expect(payAccounts(list, false).map((a) => a.id)).toEqual(['Касса'])
+  })
+
+  it('куда сдать кассу: не сама касса, первым — предложенный, иначе сейф', () => {
+    expect(handoverChoices(list, 'Оптима')).toMatchObject({ pick: 'Оптима' })
+    expect(handoverChoices(list, 'Касса').pick).toBe('Сейф-1')
+    expect(handoverChoices(list, null).list.map((a) => a.id)).toEqual(['Сейф-1', 'СВИНЕЦ', 'Оптима', 'Счёт'])
   })
 })

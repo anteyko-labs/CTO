@@ -12,6 +12,7 @@ import { ProductPicker, stockText, type PickHow } from '../components/ProductPic
 import { PendingPhotos, PhotoButtons } from '../components/ReceiptPhotos'
 import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUpload'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table, toast } from '../components/ui'
+import { accountLabel } from '../lib/accounts'
 import { get, newOpId, post } from '../lib/api'
 import { formatLiters, formatSom, parseSom } from '../lib/format'
 import { initialPrices, isOil, lastText, lineCalc, parseCount, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
@@ -460,7 +461,7 @@ export default function ReceiptNew() {
                       {owner && <option value="">— откуда —</option>}
                       {sources.map((s) => (
                         <option key={s.value} value={s.value}>
-                          {`${s.label} (${formatSom(s.balance_tyiyn)})`}
+                          {accountLabel({ name: s.label, balance_tyiyn: s.balance_tyiyn })}
                         </option>
                       ))}
                     </select>

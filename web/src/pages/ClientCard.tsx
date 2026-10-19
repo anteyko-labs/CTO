@@ -6,6 +6,7 @@ import { OilBookList } from '../components/OilBook'
 import { Pager, usePager } from '../components/Pager'
 import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
 import { stockText } from '../components/ProductPicker'
+import { VehicleFormModal } from '../components/VehicleFormModal'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post, qs } from '../lib/api'
@@ -261,6 +262,8 @@ export default function ClientCard() {
   const revAct = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const [limits, setLimits] = useState<{ limit: string; days: string } | null>(null)
+  // Имя и фамилия человека (ADR-083): у прежних записей их нет — дописывают здесь.
+  const [naming, setNaming] = useState<{ first: string; last: string } | null>(null)
   const [value, setValue] = useState('')
   const [reconciling, setReconciling] = useState(false)
   const row = useAction()
@@ -277,11 +280,19 @@ export default function ClientCard() {
     void row.run(async () => {
       const v = value.trim()
       if (!v) throw new Error('Заполните поле')
-      if (adding === 'contact') await post(`/parties/${party.id}/contacts`, { full_name: v })
-      else await post(`/parties/${party.id}/vehicles`, { plate: v })
+      await post(`/parties/${party.id}/contacts`, { full_name: v })
       setAdding(null)
       setValue('')
       card.reload()
+    })
+
+  const saveName = () =>
+    void row.run(async () => {
+      if (!naming) return
+      await patch<Party>(`/parties/${party.id}`, { first_name: naming.first.trim(), last_name: naming.last.trim() })
+      setNaming(null)
+      card.reload()
+      toast('Имя сохранено')
     })
 
   /** Лимит долга и срок оплаты правит только владелец (SPEC-10). */
@@ -375,6 +386,21 @@ export default function ClientCard() {
           <div className="text-xs text-slate-500">Погасил</div>
           <div className="font-medium">{formatSom(card.data.repaid_tyiyn)}</div>
         </div>
+        {party.kind === 'person' && (
+          <div>
+            <div className="text-xs text-slate-500">Имя и фамилия</div>
+            <div className="font-medium" data-testid="party-person-name">
+              {party.first_name ? `${party.first_name} ${party.last_name ?? ''}` : <span className="text-amber-700">не заполнены</span>}
+            </div>
+            <button
+              type="button"
+              className="mt-1 text-xs text-sky-700 underline"
+              onClick={() => setNaming({ first: party.first_name ?? '', last: party.last_name ?? '' })}
+            >
+              {party.first_name ? 'изменить' : 'заполнить'}
+            </button>
+          </div>
+        )}
         <div>
           <div className="text-xs text-slate-500">Телефон</div>
           <div className="font-medium">{party.phone || '—'}</div>
@@ -574,10 +600,44 @@ export default function ClientCard() {
           }}
         />
       )}
-      {adding && (
-        <Modal title={adding === 'contact' ? 'Новый работник' : 'Новая машина'} onClose={() => setAdding(null)}>
+      {adding === 'vehicle' && (
+        <VehicleFormModal
+          partyId={party.id}
+          onClose={() => setAdding(null)}
+          onSaved={() => {
+            setAdding(null)
+            card.reload()
+          }}
+        />
+      )}
+      {naming && (
+        <Modal title="Имя и фамилия клиента" onClose={() => setNaming(null)}>
           <div className="flex flex-col gap-3">
-            <Field label={adding === 'contact' ? 'ФИО' : 'Госномер'} required>
+            {!party.first_name && <div className="text-sm text-slate-600">Сейчас записан как «{party.name}».</div>}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Имя" required>
+                <input id="party-first" autoFocus value={naming.first} onChange={(e) => setNaming({ ...naming, first: e.target.value })} />
+              </Field>
+              <Field label="Фамилия" required>
+                <input id="party-last" value={naming.last} onChange={(e) => setNaming({ ...naming, last: e.target.value })} />
+              </Field>
+            </div>
+            <ErrorBox error={row.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setNaming(null)}>
+                Отмена
+              </Button>
+              <Button disabled={row.busy || !naming.first.trim() || !naming.last.trim()} onClick={saveName}>
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {adding === 'contact' && (
+        <Modal title="Новый работник" onClose={() => setAdding(null)}>
+          <div className="flex flex-col gap-3">
+            <Field label="ФИО" required>
               <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
             </Field>
             <ErrorBox error={row.error} />

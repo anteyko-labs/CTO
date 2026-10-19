@@ -27,7 +27,13 @@ function RoleSelect({ value, onChange }: { value: Role; onChange: (r: Role) => v
 }
 
 function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ full_name: user.full_name, role: user.role, active: user.active, password: '' })
+  const [form, setForm] = useState({
+    full_name: user.full_name,
+    role: user.role,
+    active: user.active,
+    password: '',
+    oilTransfer: (user.permissions ?? []).includes('oil_transfer'),
+  })
   const { busy, error, run } = useAction()
 
   const save = () =>
@@ -38,6 +44,8 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
         role: form.role,
         active: form.active,
         ...(form.password ? { password: form.password } : {}),
+        // Права сверх роли — целиком (ADR-082); владельцу они не нужны.
+        permissions: form.role === 'admin' && form.oilTransfer ? ['oil_transfer'] : [],
       })
       onSaved()
     })
@@ -59,6 +67,15 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
             onChange={(e) => setForm({ ...form, password: e.target.value })}
           />
         </Field>
+        {form.role === 'admin' && (
+          <div className="flex flex-col gap-1 rounded-md border border-slate-200 p-3">
+            <div className="text-sm font-medium">Права</div>
+            <Checkbox label="Перелив масла" checked={form.oilTransfer} onChange={(v) => setForm({ ...form, oilTransfer: v })} />
+            <div className="text-xs text-slate-500">
+              Администратор переливает масло без себестоимости; о каждом переливе вам придёт уведомление, отменяете перелив только вы.
+            </div>
+          </div>
+        )}
         <Checkbox label="Активен" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
@@ -138,6 +155,11 @@ export default function Users() {
                 <td className="px-2 py-2">{u.full_name}</td>
                 <td className="px-2 py-2">
                   <Badge tone={u.role === 'owner' ? 'amber' : 'sky'}>{ROLE_LABELS[u.role].toLowerCase()}</Badge>
+                  {u.role === 'admin' && (u.permissions ?? []).includes('oil_transfer') && (
+                    <span className="ml-1">
+                      <Badge>перелив</Badge>
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 py-2">{u.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
                 <td className="overflow-visible! px-2 py-1 text-right" onClick={(ev) => ev.stopPropagation()}>

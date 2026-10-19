@@ -1,6 +1,7 @@
 // Масляная книжка: типы ответа и тексты строк книжки (SPEC-16, SPEC-27).
 import type { ClientNote } from './clientNotes'
 import { formatDate } from './format'
+import { mileageText, type MileageUnit } from './mileage'
 import { BOOK_SLOT_LABELS, type BookSlot } from './types'
 
 /** Строка замены по книжке: масло, фильтр по виду, прочие работы. */
@@ -22,12 +23,19 @@ export interface SlotNext {
   last_text: string | null
   next_km: number | null
   next_date: string | null
+  /** Единица пробега машины и пробег последней и следующей замены в ней (ADR-084). */
+  unit?: MileageUnit
+  last_mileage?: number | null
+  next_mileage?: number | null
 }
 
 export interface OilRecord {
   id: string
   change_date: string
   mileage_km: number | null
+  /** Пробег, как его вписали, и единица (ADR-084). */
+  mileage?: number | null
+  mileage_unit?: MileageUnit
   oil_text: string
   filter_text: string
   /** Строки по книжке (SPEC-27); у старого ответа сервера их нет — тогда масло и фильтр. */
@@ -46,8 +54,14 @@ export interface VehicleBook {
   plate: string
   brand: string
   model: string
+  /** Пометка точки к машине. */
+  comment?: string
   /** Машина в списке клиента; убранная клиентом в боте — false (ADR-062). */
   active?: boolean
+  /** Пробег машины — в км или милях (ADR-084). */
+  mileage_unit?: MileageUnit
+  /** Следующая замена масла в единице машины. */
+  next_mileage?: number | null
   /** Интервал и следующая замена масла. */
   interval_km: number
   interval_days: number
@@ -80,14 +94,21 @@ export function recordText(r: OilRecord): string {
 
 export const slotLabel = (slot: BookSlot): string => BOOK_SLOT_LABELS[slot] ?? slot
 
-/** «на 93 000 км или до 12.04.2027»; пусто — срока нет. */
-export function slotNextText(n: Pick<SlotNext, 'next_km' | 'next_date'>): string {
-  return [n.next_km !== null ? `на ${km(n.next_km)}` : null, n.next_date ? `до ${formatDate(n.next_date)}` : null].filter(Boolean).join(' или ')
+/** Пробег записи, как его вписали: «57 790 миль»; без пробега — null. */
+export function recordMileage(r: Pick<OilRecord, 'mileage' | 'mileage_unit' | 'mileage_km'>): string | null {
+  if (r.mileage !== undefined && r.mileage !== null) return mileageText(r.mileage, r.mileage_unit)
+  return r.mileage_km !== null ? mileageText(r.mileage_km, 'km') : null
+}
+
+/** «на 93 000 км или до 12.04.2027» (в милях — у машины в милях); пусто — срока нет. */
+export function slotNextText(n: Pick<SlotNext, 'next_km' | 'next_date' | 'next_mileage' | 'unit'>): string {
+  const at = n.next_mileage !== undefined && n.next_mileage !== null ? mileageText(n.next_mileage, n.unit) : n.next_km !== null ? km(n.next_km) : null
+  return [at !== null ? `на ${at}` : null, n.next_date ? `до ${formatDate(n.next_date)}` : null].filter(Boolean).join(' или ')
 }
 
 /** Следующая замена масла одной строкой: «на 93 000 км или до 12.04.2027». */
 export function nextText(b: VehicleBook): string {
-  return slotNextText(b) || 'пока не с чего считать'
+  return slotNextText({ ...b, unit: b.mileage_unit }) || 'пока не с чего считать'
 }
 
 /** Строки книжки со сроком следующей замены: масло первым. */

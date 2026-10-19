@@ -155,14 +155,67 @@ function PayRules({ employee }: { employee: Employee }) {
   )
 }
 
-/** Роли сотрудника значками: «кассир», «мастер». */
+/** Роли сотрудника значками: «кассир», «мастер»; у кассира без PIN — «без PIN» (ADR-081). */
 function Roles({ e }: { e: Employee }) {
   if (!e.is_cashier && !e.is_master) return <span className="text-slate-400">—</span>
   return (
     <span className="flex flex-wrap gap-1">
       {e.is_cashier && <Badge tone="sky">кассир</Badge>}
+      {e.is_cashier && e.has_pin === false && <Badge tone="rose">без PIN</Badge>}
       {e.is_master && <Badge tone="amber">мастер</Badge>}
     </span>
+  )
+}
+
+/** PIN кассира — 4 цифры (ADR-081). */
+const pinOk = (pin: string): boolean => /^\d{4}$/.test(pin)
+
+/** PIN кассира: задаёт, меняет и снимает только владелец; сам PIN нигде не показывается (ADR-081).
+ *  Без PIN смену на кассира откроет только владелец своим паролем. */
+function PinBox({ employee }: { employee: Employee }) {
+  const [pin, setPin] = useState('')
+  const [has, setHas] = useState(Boolean(employee.has_pin))
+  const act = useAction()
+  const save = (value: string | null) =>
+    void act.run(async () => {
+      const e = await post<Employee>(`/employees/${employee.id}/pin`, { pin: value })
+      setHas(Boolean(e.has_pin))
+      setPin('')
+      toast(value ? 'PIN сохранён' : 'PIN снят')
+    })
+  return (
+    <div className="flex flex-col gap-2 border-t border-slate-200 pt-3" data-testid="pin-box">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold">PIN кассира</h3>
+        {has ? <Badge tone="green">задан</Badge> : <Badge tone="rose">не задан</Badge>}
+      </div>
+      <div className="text-xs text-slate-500">
+        Кассир вводит PIN при открытии смены. 5 неверных подряд — блокировка на 15 минут; новый PIN снимает её.
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label={has ? 'Новый PIN' : 'PIN, 4 цифры'}>
+          <input
+            id="employee-pin"
+            className="w-28 text-center tracking-[0.4em]"
+            type="password"
+            inputMode="numeric"
+            autoComplete="new-password"
+            maxLength={4}
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+          />
+        </Field>
+        <Button disabled={act.busy || !pinOk(pin)} onClick={() => save(pin)}>
+          {has ? 'Сменить PIN' : 'Задать PIN'}
+        </Button>
+        {has && (
+          <Button variant="ghost" disabled={act.busy} onClick={() => save(null)}>
+            Снять
+          </Button>
+        )}
+      </div>
+      <ErrorBox error={act.error} />
+    </div>
   )
 }
 
@@ -229,6 +282,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
             Сохранить
           </Button>
         </div>
+        {owner && employee.is_cashier && <PinBox employee={employee} />}
         {owner && <PayRules employee={employee} />}
       </div>
     </Modal>
@@ -238,7 +292,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
 export default function Employees() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Employee[]>('/employees'), [])
-  const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true, phone: '' })
+  const [form, setForm] = useState({ full_name: '', is_cashier: false, is_master: true, phone: '', pin: '' })
   const [adding, setAdding] = useState(false)
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<Employee | null>(null)
@@ -253,8 +307,9 @@ export default function Employees() {
         is_master: form.is_master,
         is_cashier: owner && form.is_cashier,
         ...(owner ? { phone: form.phone.trim() } : {}),
+        ...(owner && form.is_cashier && form.pin ? { pin: form.pin } : {}),
       })
-      setForm({ ...form, full_name: '', phone: '' })
+      setForm({ ...form, full_name: '', phone: '', pin: '' })
       setAdding(false)
       list.reload()
     })
@@ -271,6 +326,7 @@ export default function Employees() {
     [Boolean(form.full_name.trim()), 'ФИО', '#employee-name'],
     [form.is_cashier || form.is_master, owner ? 'роль: кассир или мастер' : 'роль: мастер'],
     [phoneOk(form.phone), 'телефон: не меньше 9 цифр', '#employee-phone'],
+    [!form.is_cashier || form.pin === '' || pinOk(form.pin), 'PIN кассира: 4 цифры', '#employee-new-pin'],
   )
   const needle = q.trim().toLowerCase()
   const rows = (list.data ?? []).filter((e) => !needle || e.full_name.toLowerCase().includes(needle))
@@ -359,6 +415,20 @@ export default function Employees() {
               {owner && <Checkbox label="Кассир" checked={form.is_cashier} onChange={(v) => setForm({ ...form, is_cashier: v })} />}
               <Checkbox label="Мастер" checked={form.is_master} onChange={(v) => setForm({ ...form, is_master: v })} />
             </div>
+            {owner && form.is_cashier && (
+              <Field label="PIN кассира, 4 цифры" hint="Вводится при открытии смены. Можно задать позже в карточке">
+                <input
+                  id="employee-new-pin"
+                  className="w-28 text-center tracking-[0.4em]"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  maxLength={4}
+                  value={form.pin}
+                  onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                />
+              </Field>
+            )}
             {!owner && <p className="text-xs text-slate-500">Кассира заводит владелец: вместе с ним назначается оплата.</p>}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -377,7 +447,11 @@ export default function Employees() {
       {editing && (
         <EditModal
           employee={editing}
-          onClose={() => setEditing(null)}
+          onClose={() => {
+            // PIN мог смениться в карточке — значок «без PIN» в списке обновится.
+            setEditing(null)
+            list.reload()
+          }}
           onSaved={() => {
             setEditing(null)
             list.reload()

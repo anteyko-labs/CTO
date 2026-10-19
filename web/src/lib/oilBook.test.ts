@@ -41,3 +41,13 @@ describe('масляная книжка по строкам', () => {
     expect(overdueSlots(b, '2026-10-16').map((n) => n.slot)).toEqual(['air_filter'])
   })
 })
+
+describe('пробег в милях в книжке (ADR-084)', () => {
+  it('запись и следующая замена — в единице машины', async () => {
+    const { recordMileage } = await import('./oilBook')
+    expect(recordMileage(rec({ mileage: 50_000, mileage_unit: 'mi', mileage_km: 80_467 }))).toBe('50 000 миль')
+    expect(recordMileage(rec({ mileage_km: 85_000 }))).toBe('85 000 км')
+    expect(recordMileage(rec({ mileage_km: null }))).toBeNull()
+    expect(slotNextText({ next_km: 85_295, next_mileage: 53_000, unit: 'mi', next_date: null })).toBe('на 53 000 миль')
+  })
+})

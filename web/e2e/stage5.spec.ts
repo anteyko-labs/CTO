@@ -43,7 +43,7 @@ test('комиссия банка и статьи расходов в настр
 test('правила оплаты в карточке сотрудника и прощение недостачи', async ({ page }) => {
   await login(page)
   const name = `Кассир ${RUN}`
-  const employee = await apiPost<{ id: string }>(page.request, '/employees', { full_name: name, is_cashier: true, is_master: false })
+  const employee = await apiPost<{ id: string }>(page.request, '/employees', { full_name: name, is_cashier: true, pin: '1234', is_master: false })
   // Удержание на 50 с — его владелец отменит из расчёта за день.
   await apiPost(page.request, '/payroll/accruals', {
     op_id: crypto.randomUUID(),

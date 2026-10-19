@@ -3,7 +3,7 @@
 import QRCode from 'qrcode'
 import { get } from './api'
 import { formatDate } from './format'
-import { km, recordLines, recordText, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from './oilBook'
+import { recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from './oilBook'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -25,7 +25,7 @@ export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null
     .slice(1, 4)
     .map(
       (r) =>
-        `<tr><td>${esc(formatDate(r.change_date))}</td><td>${r.mileage_km !== null ? esc(km(r.mileage_km)) : ''}</td><td>${esc(recordText(r))}</td></tr>`,
+        `<tr><td>${esc(formatDate(r.change_date))}</td><td>${esc(recordMileage(r) ?? '')}</td><td>${esc(recordText(r))}</td></tr>`,
     )
     .join('')
   return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title><style>
@@ -52,7 +52,7 @@ export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null
     ${
       last
         ? `<div class="row"><span>Замена</span><b>${esc(formatDate(last.change_date))}</b></div>
-    ${last.mileage_km !== null ? `<div class="row"><span>Пробег</span><b>${esc(km(last.mileage_km))}</b></div>` : ''}
+    ${recordMileage(last) !== null ? `<div class="row"><span>Пробег</span><b>${esc(recordMileage(last) ?? '')}</b></div>` : ''}
     ${recordLines(last)
       .map((l) => `<div class="row"><span>${esc(slotLabel(l.slot))}</span><b>${esc(l.text)}</b></div>`)
       .join('')}

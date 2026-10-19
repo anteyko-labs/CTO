@@ -3,6 +3,8 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
+import { can } from './lib/permissions'
+import type { Permission } from './lib/types'
 import { startOfflineLoop } from './lib/offline'
 import { OfflineBar } from './components/OfflineBar'
 import { UpdateBanner } from './components/UpdateBanner'
@@ -52,6 +54,8 @@ interface NavItem {
   icon: IconName
   ownerOnly?: boolean
   adminOnly?: boolean
+  /** Пункт для владельца и администратора с этим правом (ADR-082). */
+  permission?: Permission
 }
 
 // Меню: рабочие экраны сверху, справочники и настройки ниже. Категории живут внутри «Товаров»,
@@ -86,7 +90,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/products', label: 'Товары', icon: 'products' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },
       { to: '/revision', label: 'Ревизия и товары', icon: 'revision' },
-      { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', ownerOnly: true },
+      { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', permission: 'oil_transfer' },
     ],
   },
   {
@@ -177,7 +181,8 @@ function Shell() {
   const owner = user.role === 'owner'
   const roleLabel = owner ? 'Владелец' : 'Администратор'
 
-  const items = (list: NavItem[]) => list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly))
+  const items = (list: NavItem[]) =>
+    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.permission || can(user, it.permission)))
   const badge = (to: string) =>
     to === '/notifications' && unseen > 0 ? (
       <span className="ml-auto rounded-full bg-rose-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{unseen > 99 ? '99+' : unseen}</span>
@@ -275,7 +280,7 @@ function Shell() {
           <Route path="/services" element={<Services />} />
           {owner && <Route path="/gifts" element={<Gifts />} />}
           <Route path="/revision" element={<Revision />} />
-          {owner && <Route path="/oil-transfer" element={<OilTransfer />} />}
+          {can(user, 'oil_transfer') && <Route path="/oil-transfer" element={<OilTransfer />} />}
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}

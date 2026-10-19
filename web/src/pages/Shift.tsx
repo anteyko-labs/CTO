@@ -9,7 +9,7 @@ import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../li
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { MOVEMENT_LABELS } from '../lib/income'
-import { isTill } from '../lib/accounts'
+import { accountLabel, handoverChoices, isTill, payAccounts } from '../lib/accounts'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
 import type { CashAccount, CashMovement, Employee, PayrollRow, Shift as ShiftRow } from '../lib/types'
 
@@ -56,7 +56,13 @@ type Closing = {
   opId: string
   force: boolean
   pay: PayLine[]
+  /** Откуда выплатить отмеченным: касса смены или, у владельца, любой счёт (SPEC-29 §13). */
+  payFrom: string
 }
+
+/** Открытие смены: кассир, пересчёт (по умолчанию — остаток кассы), PIN кассира или пароль
+ *  владельца (ADR-081). */
+type Opening = { cashier: string; counted: string; opId: string; pin: string; byOwner: boolean; password: string }
 
 type MoneyForm = { kind: 'cash_in' | 'cash_out' | 'transfer'; sum: string; comment: string; from: string; to: string; opId: string }
 
@@ -70,14 +76,14 @@ export default function Shift() {
   // «Должно быть в кассе» и остатки касс живые: продажи с другого устройства видны сразу.
   usePolling(current.reload)
   usePolling(accounts.reload)
-  const [open, setOpen] = useState<{ cashier: string; counted: string; opId: string } | null>(null)
+  const [open, setOpen] = useState<Opening | null>(null)
   const [money, setMoney] = useState<MoneyForm | null>(null)
   const [closing, setClosing] = useState<Closing | null>(null)
   // Чеки этого устройства, ещё не ушедшие на сервер: их наличные уже в кассе, а в «должно быть» —
   // ещё нет. Закрыть смену до их отправки — ложная недостача (ADR-059).
   const [unsent, setUnsent] = useState(0)
   useEffect(() => watchOutbox((items) => setUnsent(pendingCount(items))), [])
-  const [handover, setHandover] = useState<{ shift: ShiftRow; sum: string; opId: string } | null>(null)
+  const [handover, setHandover] = useState<{ shift: ShiftRow; sum: string; opId: string; to: string } | null>(null)
   const [reopen, setReopen] = useState<{ shift: ShiftRow; reason: string; opId: string } | null>(null)
   const [history, setHistory] = useState<string>('')
   const [reverse, setReverse] = useState<{ m: CashMovement; comment: string; opId: string } | null>(null)
@@ -117,6 +123,8 @@ export default function Shift() {
         op_id: open.opId,
         cashier_employee_id: open.cashier,
         counted_tyiyn: counted,
+        // Кассир подтверждает PIN; владелец может открыть своим паролем (ADR-081).
+        ...(open.byOwner ? { owner_password: open.password } : { cashier_pin: open.pin }),
       })
       setOpen(null)
       reloadAll()
@@ -140,7 +148,7 @@ export default function Shift() {
       const pay = staff
         .filter((r) => r.balance_tyiyn > 0)
         .map((r) => ({ employee_id: r.employee_id, name: r.full_name, owed: r.balance_tyiyn, on: false, sum: somInput(r.balance_tyiyn), opId: newOpId() }))
-      setClosing({ counted: null, comment: '', opId: newOpId(), force: false, pay })
+      setClosing({ counted: null, comment: '', opId: newOpId(), force: false, pay, payFrom: fresh?.account_id ?? shift.account_id })
     })
 
   const closeShift = () =>
@@ -151,7 +159,7 @@ export default function Shift() {
       // Выплаты и закрытие — одна операция на сервере: либо всё, либо ничего (SPEC-27).
       const payouts = closing.pay
         .filter((p) => p.on)
-        .map((p) => ({ op_id: p.opId, employee_id: p.employee_id, amount_tyiyn: parseSom(p.sum) ?? 0 }))
+        .map((p) => ({ op_id: p.opId, employee_id: p.employee_id, amount_tyiyn: parseSom(p.sum) ?? 0, account_id: closing.payFrom || undefined }))
       const res = await post<ShiftRow>(`/shifts/${shift.id}/close`, {
         op_id: closing.opId,
         counted_tyiyn: counted,
@@ -162,16 +170,28 @@ export default function Shift() {
       reloadAll()
       toast(payouts.length > 0 ? `Выплачено ${payouts.length}, смена закрыта` : 'Смена закрыта')
       // Деньги сдают сразу: подставляем всё, что пересчитали, кассир оставит размен.
-      setHandover({ shift: res, sum: somInput(res.counted_tyiyn ?? 0), opId: newOpId() })
+      startHandover(res)
     })
+
+  /** Окно «Сдать кассу»: куда — предлагает сервер (куда сдавали в прошлый раз или сейф магазина). */
+  const startHandover = (s: ShiftRow) => {
+    setHandover({ shift: s, sum: somInput(s.counted_tyiyn ?? 0), opId: newOpId(), to: '' })
+    void get<{ account_id: string | null }>('/shifts/handover-target')
+      .then((t) => setHandover((h) => (h && h.shift.id === s.id && !h.to ? { ...h, to: t.account_id ?? '' } : h)))
+      .catch(() => undefined)
+  }
 
   const submitHandover = (amount: number) =>
     void act.run(async () => {
       if (!handover) return
-      await post(`/shifts/${handover.shift.id}/handover`, { op_id: handover.opId, amount_tyiyn: amount })
+      await post(`/shifts/${handover.shift.id}/handover`, {
+        op_id: handover.opId,
+        amount_tyiyn: amount,
+        ...(amount > 0 && handoverTo ? { to_account_id: handoverTo } : {}),
+      })
       setHandover(null)
       reloadAll()
-      toast(amount > 0 ? 'Выручка в сейфе' : 'Отмечено: деньги остались в кассе')
+      toast(amount > 0 ? `Касса сдана: ${formatSom(amount)} → ${handoverAcc?.name ?? 'сейф'}` : 'Отмечено: деньги остались в кассе')
     })
 
   const submitReopen = () =>
@@ -236,7 +256,21 @@ export default function Shift() {
 
   // Администратор переводит только из кассы смены (SPEC-05, права).
   const fromAccounts = owner ? accs : accs.filter((a) => isTill(a))
-  const openMissing = missingWithFocus([Boolean(open?.cashier), 'кассира', '#shift-cashier'])
+  const openMissing = missingWithFocus(
+    [Boolean(open?.cashier), 'кассира', '#shift-cashier'],
+    [!open || open.byOwner || /^\d{4}$/.test(open.pin), 'PIN кассира — 4 цифры', '#shift-pin'],
+    [!open || !open.byOwner || Boolean(open.password), 'ваш пароль', '#shift-owner-password'],
+    [!open || !open.counted.trim() || parseSom(open.counted) !== null, 'сумму пересчёта числом', '#shift-counted'],
+  )
+  const openCashier = cashiers.find((e) => e.id === open?.cashier)
+  // Касса смены: её остаток — «должно быть» на начало новой смены (SPEC-29 §16).
+  const till = accs.find((a) => isTill(a))
+  // Выплаты при закрытии: владелец — с любого счёта, администратор — из кассы смены (SPEC-29 §13).
+  const payFromList = payAccounts(accs, owner)
+  const fromTill = !closing || !shift || closing.payFrom === shift.account_id || !closing.payFrom
+  const { list: handoverList, pick: handoverPick } = handoverChoices(accs, handover?.to)
+  const handoverTo = handover?.to && handoverList.some((a) => a.id === handover.to) ? handover.to : handoverPick
+  const handoverAcc = accs.find((a) => a.id === handoverTo)
   // Выплаты при закрытии уменьшают «должно быть»: пересчитывают то, что осталось после них.
   const payLines = closing?.pay ?? []
   const payBad = payLines.some((p) => {
@@ -245,7 +279,9 @@ export default function Shift() {
   })
   const payTotal = payLines.reduce((acc, p) => (p.on ? acc + Math.max(parseSom(p.sum) ?? 0, 0) : acc), 0)
   const payCount = payLines.filter((p) => p.on).length
-  const expectedAfter = (shift?.expected_tyiyn ?? 0) - payTotal
+  // «Должно быть» уменьшают только выплаты из кассы смены.
+  const tillPay = fromTill ? payTotal : 0
+  const expectedAfter = (shift?.expected_tyiyn ?? 0) - tillPay
   const countedText = closing?.counted ?? somInput(expectedAfter)
   const setPay = (i: number, patch: Partial<PayLine>) =>
     closing && setClosing({ ...closing, pay: closing.pay.map((p, j) => (j === i ? { ...p, ...patch } : p)) })
@@ -256,7 +292,7 @@ export default function Shift() {
   })()
   const closeMissing = missingWithFocus(
     [!payBad, 'суммы выплат: больше нуля и не больше к выдаче', '#close-pay'],
-    [payTotal <= (shift?.expected_tyiyn ?? 0), 'выплат больше, чем в кассе', '#close-pay'],
+    [tillPay <= (shift?.expected_tyiyn ?? 0), 'выплат больше, чем в кассе', '#close-pay'],
     [parseSom(countedText) !== null, 'сколько денег в кассе', '#close-counted'],
     [!closeDiff || Boolean(closing?.comment.trim()), 'комментарий к расхождению', '#close-comment'],
     [unsent === 0 || Boolean(closing?.force), 'отметку «закрыть всё равно»', '#close-force input'],
@@ -289,7 +325,7 @@ export default function Shift() {
           <Button
             onClick={() => {
               closeDialogs()
-              setHandover({ shift: pending, sum: somInput(pending.counted_tyiyn ?? 0), opId: newOpId() })
+              startHandover(pending)
             }}
           >
             Сдать кассу
@@ -372,7 +408,16 @@ export default function Shift() {
             <Button
               onClick={() => {
                 closeDialogs()
-                setOpen({ cashier: cashiers.length === 1 ? cashiers[0].id : '', counted: '', opId: newOpId() })
+                // Пересчёт по умолчанию — остаток кассы: что оставили с прошлой смены и что было
+                // после её закрытия (SPEC-29 §16); кассир правит, если насчитал другое.
+                setOpen({
+                  cashier: cashiers.length === 1 ? cashiers[0].id : '',
+                  counted: till ? somInput(Math.max(till.balance_tyiyn, 0)) : '',
+                  opId: newOpId(),
+                  pin: '',
+                  byOwner: false,
+                  password: '',
+                })
               }}
             >
               Открыть смену
@@ -477,8 +522,52 @@ export default function Shift() {
                 ))}
               </select>
             </Field>
-            <Field label="Пересчитал, с" hint="Если не пересчитывали — оставьте пустым">
-              <input inputMode="decimal" value={open.counted} onChange={(e) => setOpen({ ...open, counted: e.target.value })} />
+            {open.byOwner ? (
+              <Field label="Ваш пароль" required hint="Владелец открывает смену своим паролем вместо PIN кассира">
+                <input
+                  id="shift-owner-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={open.password}
+                  onChange={(e) => setOpen({ ...open, password: e.target.value })}
+                />
+              </Field>
+            ) : (
+              <Field
+                label="PIN кассира"
+                required
+                hint={openCashier && openCashier.has_pin === false ? 'У кассира нет PIN — его задаёт владелец в карточке сотрудника' : '4 цифры'}
+              >
+                <input
+                  id="shift-pin"
+                  className="w-32 text-center text-lg tracking-[0.4em]"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  maxLength={4}
+                  value={open.pin}
+                  onChange={(e) => setOpen({ ...open, pin: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                />
+              </Field>
+            )}
+            {owner && (
+              <button
+                type="button"
+                className="-mt-1 self-start text-xs text-sky-700 underline"
+                onClick={() => setOpen({ ...open, byOwner: !open.byOwner, pin: '', password: '' })}
+              >
+                {open.byOwner ? 'Ввести PIN кассира' : 'Открыть своим паролем'}
+              </button>
+            )}
+            <Field
+              label="Пересчитал, с"
+              hint={
+                till
+                  ? `По остатку кассы: ${formatSom(till.balance_tyiyn)}. Насчитали другое — исправьте; пусто — без пересчёта`
+                  : 'Если не пересчитывали — оставьте пустым'
+              }
+            >
+              <input id="shift-counted" inputMode="decimal" value={open.counted} onChange={(e) => setOpen({ ...open, counted: e.target.value })} />
             </Field>
             <Missing items={openMissing} />
             <ErrorBox error={act.error} />
@@ -513,7 +602,7 @@ export default function Shift() {
             )}
             {closing.pay.length > 0 && (
               <div id="close-pay" className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
-                <div className="text-sm font-medium">Выплатить из кассы</div>
+                <div className="text-sm font-medium">{fromTill ? 'Выплатить из кассы' : 'Выплатить сотрудникам'}</div>
                 {closing.pay.map((p, i) => (
                   <div key={p.employee_id} className="flex flex-wrap items-center gap-2" data-testid="close-pay-row">
                     <div className="min-w-0 flex-1">
@@ -530,6 +619,17 @@ export default function Shift() {
                     />
                   </div>
                 ))}
+                {owner && payFromList.length > 1 && (
+                  <Field label="Выплатить из">
+                    <select id="close-pay-from" value={closing.payFrom} onChange={(e) => setClosing({ ...closing, payFrom: e.target.value })}>
+                      {payFromList.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {accountLabel(a)}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
                 <div className="text-xs text-slate-500">
                   Заработанное сегодня и невыплаченное за прошлые дни. Можно выдать меньше; аванс сверх заработанного — только владелец, в
                   «Расчёте».
@@ -552,14 +652,14 @@ export default function Shift() {
             </div>
             <div className="text-sm text-slate-600">
               Должно быть в кассе: {formatSom(shift.expected_tyiyn)}
-              {payTotal > 0 && (
+              {tillPay > 0 && (
                 <>
                   {' '}
-                  − выплаты {formatSom(payTotal)} = <b>{formatSom(expectedAfter)}</b>
+                  − выплаты {formatSom(tillPay)} = <b>{formatSom(expectedAfter)}</b>
                 </>
               )}
             </div>
-            <Field label="Факт в кассе, с" required hint={payTotal > 0 ? 'Пересчитайте после выдачи денег' : undefined}>
+            <Field label="Факт в кассе, с" required hint={tillPay > 0 ? 'Пересчитайте после выдачи денег' : undefined}>
               <input
                 id="close-counted"
                 autoFocus
@@ -594,10 +694,17 @@ export default function Shift() {
       {handover && (
         <Modal title={`Сдать кассу · смена № ${handover.shift.number}`} onClose={closeDialogs}>
           <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">
-              В кассе {formatSom(handoverMax)}. Сколько переложить в {shopSafe?.name ?? 'сейф магазина'}? Остальное останется на размен.
-            </div>
-            <Field label="В сейф, с" required>
+            <div className="text-sm text-slate-600">В кассе {formatSom(handoverMax)}. Сколько сдать? Остальное останется на размен.</div>
+            <Field label="Куда сдать" required>
+              <select id="handover-to" value={handoverTo} onChange={(e) => setHandover({ ...handover, to: e.target.value })}>
+                {handoverList.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {accountLabel(a)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Сдать, с" required>
               <input autoFocus inputMode="decimal" value={handover.sum} onChange={(e) => setHandover({ ...handover, sum: e.target.value })} />
             </Field>
             {handoverSum !== null && handoverSum >= 0 && handoverSum <= handoverMax && (
@@ -612,13 +719,13 @@ export default function Shift() {
                 Деньги остались в кассе
               </Button>
               <Button
-                disabled={act.busy || handoverSum === null || handoverSum <= 0 || handoverSum > handoverMax}
+                disabled={act.busy || handoverSum === null || handoverSum <= 0 || handoverSum > handoverMax || !handoverTo}
                 onClick={() => handoverSum !== null && submitHandover(handoverSum)}
               >
-                Перевести в сейф
+                Сдать в «{handoverAcc?.name ?? '…'}»
               </Button>
             </div>
-            <div className="text-xs text-slate-400">Владелец получит уведомление: сколько было, сколько пересчитали, что ушло в сейф.</div>
+            <div className="text-xs text-slate-400">Владелец получит уведомление: сколько сдали, куда и кто кассир.</div>
           </div>
         </Modal>
       )}
@@ -683,7 +790,7 @@ export default function Shift() {
                     <option value="">—</option>
                     {fromAccounts.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name}
+                        {accountLabel(a)}
                       </option>
                     ))}
                   </select>
@@ -693,7 +800,7 @@ export default function Shift() {
                     <option value="">—</option>
                     {accs.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name}
+                        {accountLabel(a)}
                       </option>
                     ))}
                   </select>
@@ -708,7 +815,7 @@ export default function Shift() {
                     .filter((a) => !isTill(a))
                     .map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.name}
+                        {accountLabel(a)}
                       </option>
                     ))}
                 </select>

@@ -60,7 +60,7 @@ async function sellNoncash(request: APIRequestContext) {
     paid_from: await ownerSafe(request),
     lines: [{ product_id: p.id, qty: 4, cost_tyiyn: 80_000 }],
   })
-  const cashier = await apiPost<{ id: string }>(request, '/employees', { full_name: `Кассир отчётов ${RUN}`, is_cashier: true })
+  const cashier = await apiPost<{ id: string }>(request, '/employees', { full_name: `Кассир отчётов ${RUN}`, is_cashier: true, pin: '1234' })
   await apiPost(request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'takeaway',

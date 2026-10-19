@@ -5,11 +5,13 @@ import { get, patch, post } from '../lib/api'
 import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNotes'
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
-import { km, nextText, overdueSlots, recordLines, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
+import { nextText, overdueSlots, recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
+import { VehicleFormModal } from './VehicleFormModal'
 
 /** Касса: под выбранной машиной — прошлая замена и следующая по каждой строке книжки. */
 export function OilHint({ vehicleId }: { vehicleId: string }) {
@@ -31,7 +33,7 @@ export function OilHint({ vehicleId }: { vehicleId: string }) {
   return (
     <div className={`rounded-md px-3 py-2 text-xs ${overdue.length ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`} data-testid="oil-hint">
       Прошлая замена {formatDate(last.change_date)}: {recordText(last) || '—'}
-      {last.mileage_km !== null && `, ${km(last.mileage_km)}`}.
+      {recordMileage(last) !== null && `, ${recordMileage(last)}`}.
       {next.length > 0 && (
         <ul className="mt-1">
           {next.map((n) => (
@@ -83,16 +85,20 @@ const emptyManual = (): ManualForm => ({
   other: '',
 })
 
-/** Интервал строки: «каждые 8 000 км или 31 дн.»; у прочих работ без интервала — «срок не задан». */
-function intervalText(n: SlotNext): string {
+/** Интервал строки в единице машины: «каждые 8 000 км или 31 дн.», «каждые 3 000 миль …»;
+ *  у прочих работ без интервала — «срок не задан». Интервал хранится в км (ADR-084). */
+function intervalText(n: SlotNext, unit: MileageUnit): string {
   if (n.interval_km === null || n.interval_days === null) return 'срок не задан'
-  return `каждые ${km(n.interval_km)} или ${n.interval_days} дн.${n.own_interval ? ', у этой машины' : ''}`
+  return `каждые ${mileageText(fromKm(n.interval_km, unit), unit)} или ${n.interval_days} дн.${n.own_interval ? ', у этой машины' : ''}`
 }
 
 function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; editable: boolean; partyId?: string; onChanged: () => void }) {
   const [interval, setInterval] = useState<{ slot: BookSlot; km: string; days: string; own: boolean } | null>(null)
   const [manual, setManual] = useState<ManualForm | null>(null)
+  const [editing, setEditing] = useState(false)
   const act = useAction()
+  // Пробег машины — в км или милях; интервалы в книжке хранятся в км (ADR-084).
+  const unit: MileageUnit = b.mileage_unit ?? 'km'
   // Замены машины — по страницам, новые сверху.
   const records = usePager(b.records, 'oilbook.records', b.vehicle_id)
   const removed = b.active === false
@@ -106,6 +112,16 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
         <div>
           <span className="font-semibold">{b.plate}</span>
           {(b.brand || b.model) && <span className="ml-2 text-slate-500">{[b.brand, b.model].filter(Boolean).join(' ')}</span>}
+          {unit === 'mi' && (
+            <span className="ml-2">
+              <Badge tone="sky">пробег в милях</Badge>
+            </span>
+          )}
+          {editable && partyId && !removed && (
+            <Button variant="ghost" className="ml-1 px-2 py-0.5 text-xs" onClick={() => setEditing(true)}>
+              Изменить
+            </Button>
+          )}
           {removed && (
             <span className="ml-2">
               <Badge tone="slate">убрана из списка</Badge>
@@ -146,7 +162,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                     {slotNextText(n) || '—'}
                     {late && ' — пора менять'}
                   </td>
-                  <td className="py-1 pr-2 text-xs text-slate-500">{intervalText(n)}</td>
+                  <td className="py-1 pr-2 text-xs text-slate-500">{intervalText(n, unit)}</td>
                   <td className="py-1 text-right">
                     {editable && !removed && (
                       <Button
@@ -155,7 +171,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                         onClick={() =>
                           setInterval({
                             slot: n.slot,
-                            km: n.interval_km !== null ? String(n.interval_km) : '',
+                            km: n.interval_km !== null ? String(fromKm(n.interval_km, unit)) : '',
                             days: n.interval_days !== null ? String(n.interval_days) : '',
                             own: n.own_interval,
                           })
@@ -179,7 +195,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
             <li key={r.id} className="flex flex-wrap items-baseline justify-between gap-2 py-1.5">
               <span>
                 <span className="font-medium">{formatDate(r.change_date)}</span>
-                {r.mileage_km !== null && <span className="ml-2">{km(r.mileage_km)}</span>}
+                {recordMileage(r) !== null && <span className="ml-2">{recordMileage(r)}</span>}
                 <span className="ml-2 text-slate-600">{r.sale_total_tyiyn != null ? formatSom(r.sale_total_tyiyn) : '—'}</span>
                 {r.comment && <span className="ml-2 text-slate-500">— {r.comment}</span>}
                 {r.sale_number === null && (
@@ -200,10 +216,11 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                   variant="ghost"
                   className="px-2 py-1 text-xs"
                   onClick={() => {
-                    const v = window.prompt('Пробег, км', r.mileage_km !== null ? String(r.mileage_km) : '')
+                    const before = r.mileage ?? r.mileage_km
+                    const v = window.prompt(`Пробег, ${unitLabel(unit)}`, before !== null && before !== undefined && (r.mileage_unit ?? 'km') === unit ? String(before) : '')
                     if (v === null || !/^\d+$/.test(v.trim())) return
                     void act.run(async () => {
-                      await patch(`/oil-changes/${r.id}`, { mileage_km: Number(v.trim()) })
+                      await patch(`/oil-changes/${r.id}`, { mileage: Number(v.trim()), mileage_unit: unit })
                       onChanged()
                     })
                   }}
@@ -231,7 +248,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 value=""
                 onChange={(e) => {
                   const slot = e.target.value as BookSlot
-                  if (slot) setInterval({ slot, km: String(b.interval_km), days: String(b.interval_days), own: false })
+                  if (slot) setInterval({ slot, km: String(fromKm(b.interval_km, unit)), days: String(b.interval_days), own: false })
                 }}
               >
                 <option value="">Интервал строки…</option>
@@ -255,7 +272,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
               По умолчанию интервал строки задан у категории товара. Здесь — только для этой машины.
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Каждые, км">
+              <Field label={`Каждые, ${unitLabel(unit)}`}>
                 <input inputMode="numeric" value={interval.km} onChange={(e) => setInterval({ ...interval, km: e.target.value })} />
               </Field>
               <Field label="Или каждые, дней">
@@ -288,7 +305,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                   void act.run(async () => {
                     await patch(`/vehicles/${b.vehicle_id}/oil-settings`, {
                       slot: interval.slot,
-                      interval_km: Number(interval.km),
+                      interval_km: toKm(Number(interval.km), unit),
                       interval_days: Number(interval.days),
                     })
                     setInterval(null)
@@ -302,6 +319,17 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
           </div>
         </Modal>
       )}
+      {editing && partyId && (
+        <VehicleFormModal
+          partyId={partyId}
+          vehicle={{ id: b.vehicle_id, plate: b.plate, brand: b.brand, model: b.model, comment: b.comment ?? '', mileage_unit: unit }}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false)
+            onChanged()
+          }}
+        />
+      )}
       {manual && (
         <Modal title={`Запись из тетради · ${b.plate}`} onClose={() => setManual(null)}>
           <div className="flex flex-col gap-3">
@@ -309,7 +337,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
               <Field label="Когда меняли">
                 <input type="date" value={manual.date} onChange={(e) => setManual({ ...manual, date: e.target.value })} />
               </Field>
-              <Field label="Пробег, км">
+              <Field label={`Пробег, ${unitLabel(unit)}`}>
                 <input inputMode="numeric" value={manual.mileage} onChange={(e) => setManual({ ...manual, mileage: e.target.value })} />
               </Field>
             </div>
@@ -333,7 +361,8 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                   void act.run(async () => {
                     await post(`/vehicles/${b.vehicle_id}/oil-changes`, {
                       change_date: manual.date,
-                      mileage_km: manual.mileage.trim() ? Number(manual.mileage) : null,
+                      mileage: manual.mileage.trim() ? Number(manual.mileage) : null,
+                      mileage_unit: unit,
                       lines: manualLines,
                     })
                     setManual(null)

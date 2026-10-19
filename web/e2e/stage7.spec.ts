@@ -56,7 +56,7 @@ async function api<T>(request: APIRequestContext, method: 'GET' | 'POST' | 'PUT'
 /** Открытая смена: возврат наличными без неё не проводится (ADR-065). */
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   if (await api(request, 'GET', '/shifts/current')) return
-  await api(request, 'POST', '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId })
+  await api(request, 'POST', '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId, cashier_pin: '1234' })
 }
 
 async function goods(request: APIRequestContext, categoryId: string, name: string, price: number, cost: number, extra: Record<string, unknown> = {}) {
@@ -79,7 +79,7 @@ test('аккумулятор в оплату: 10 000 с − 12 кг × 50 с, в
   await api(page.request, 'PUT', '/settings/batteries', { intake_per_kg_tyiyn: 5_000 })
   try {
     const cashier = `Кассир АКБ-оплата ${RUN}`
-    const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true })
+    const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
     const code = `27${RUN}777`
     const cat = await api<{ id: string }>(page.request, 'POST', '/categories', { name: `АКБ ${RUN}`, kind: 'battery' })
     const name = `Varta 60 ${RUN}`
@@ -128,7 +128,7 @@ test('аккумулятор в оплату: 10 000 с − 12 кг × 50 с, в
 
 test('масляная книжка по каждому фильтру: строка у категории, интервал у машины, печать', async ({ page }) => {
   await login(page)
-  const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Кассир фильтров ${RUN}`, is_cashier: true })
+  const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Кассир фильтров ${RUN}`, is_cashier: true, pin: '1234' })
   const mst = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Мастер фильтров ${RUN}`, is_master: true })
   const oilCat = await api<{ id: string }>(page.request, 'POST', '/categories', { name: `Масла по строкам ${RUN}`, kind: 'oil' })
   const filterCat = await api<{ id: string }>(page.request, 'POST', '/categories', { name: `Фильтры масляные ${RUN}`, kind: 'filter' })

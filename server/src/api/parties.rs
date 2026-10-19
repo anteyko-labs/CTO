@@ -47,6 +47,11 @@ pub struct PartyOut {
     pub role: String,
     pub kind: String,
     pub name: String,
+    /// Имя и фамилия клиента-человека (ADR-083); у прежних записей — пусто, полное имя в `name`.
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name: String,
     pub phone: String,
     pub inn: String,
     pub comment: String,
@@ -78,6 +83,8 @@ pub(crate) struct VehicleOut {
     pub(crate) model: String,
     pub(crate) comment: String,
     pub(crate) active: bool,
+    /// Единица пробега машины: `km` или `mi` (ADR-084).
+    pub(crate) mileage_unit: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -116,7 +123,7 @@ pub(crate) async fn search_parties(
             });
     let rows = sqlx::query_as!(
         PartyOut,
-        r#"select id, role, kind, name, phone, inn, comment,
+        r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
                   credit_limit_tyiyn as "credit_limit_tyiyn?", due_days as "due_days?",
                   active, balance_tyiyn,
                   case when parties.balance_tyiyn > 0 and parties.due_days is not null then
@@ -131,6 +138,8 @@ pub(crate) async fn search_parties(
              and ($3::text is null or kind = $3)
              and ($4::text is null
                   or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'
+                  -- «Имя Фамилия» тоже находит «Фамилия Имя» (ADR-083).
+                  or (first_name <> '' and (first_name || ' ' || last_name) ilike '%' || $4 || '%')
                   -- Госномер машины: на замене кассир видит машину, а не паспорт (SPEC-16).
                   or exists (select 1 from party_vehicles v
                              where v.party_id = parties.id and v.active
@@ -154,7 +163,14 @@ pub(crate) async fn search_parties(
 struct PartyReq {
     role: Option<String>,
     kind: Option<String>,
+    /// Название фирмы или полное имя; у человека с `first_name`/`last_name` — собирается из них.
+    #[serde(default)]
     name: String,
+    /// Клиент-человек: имя и фамилия отдельно, обе обязательны (ADR-083).
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
     #[serde(default)]
     phone: String,
     #[serde(default)]
@@ -170,12 +186,17 @@ async fn create_party(
     ctx: Ctx,
     Json(req): Json<PartyReq>,
 ) -> AppResult<Json<PartyOut>> {
-    let name = req.name.trim().to_string();
+    let role = req.role.unwrap_or_else(|| "customer".into());
+    let kind = req.kind.unwrap_or_else(|| "person".into());
+    let person = person_name(&kind, req.first_name.as_deref(), req.last_name.as_deref())?;
+    let name = match &person {
+        Some((_, _, full)) => full.clone(),
+        None => req.name.trim().to_string(),
+    };
     if name.is_empty() {
         return Err(invalid("укажите название или ФИО"));
     }
-    let role = req.role.unwrap_or_else(|| "customer".into());
-    let kind = req.kind.unwrap_or_else(|| "person".into());
+    let (first_name, last_name) = person.map(|(f, l, _)| (f, l)).unwrap_or_default();
     if !matches!(role.as_str(), "customer" | "supplier") {
         return Err(invalid("роль: клиент или поставщик"));
     }
@@ -197,8 +218,8 @@ async fn create_party(
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
         r#"insert into parties (id, branch_id, role, kind, name, phone, inn, comment,
-                                credit_limit_tyiyn, due_days)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+                                credit_limit_tyiyn, due_days, first_name, last_name)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         id,
         ctx.user.branch_id,
         role,
@@ -208,7 +229,9 @@ async fn create_party(
         req.inn.trim(),
         req.comment.trim(),
         req.credit_limit_tyiyn,
-        due_days
+        due_days,
+        first_name,
+        last_name
     )
     .execute(&mut *tx)
     .await?;
@@ -226,6 +249,39 @@ async fn create_party(
     Ok(Json(out))
 }
 
+/// Полное имя человека — «Фамилия Имя» (ADR-083): так его ищут и видят в списках, чеках и
+/// документах о долге. Имя и фамилия обязательны, если прислано хоть одно из них; у фирмы их нет.
+pub(crate) fn person_name(
+    kind: &str,
+    first: Option<&str>,
+    last: Option<&str>,
+) -> AppResult<Option<(String, String, String)>> {
+    if first.is_none() && last.is_none() {
+        return Ok(None);
+    }
+    if kind != "person" {
+        return Err(invalid("имя и фамилия — только у физлица"));
+    }
+    let f = first
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let l = last
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if f.is_empty() || l.is_empty() {
+        return Err(invalid("укажите имя и фамилию клиента"));
+    }
+    if f.chars().count() > 60 || l.chars().count() > 60 {
+        return Err(invalid("имя и фамилия — не длиннее 60 знаков"));
+    }
+    let full = format!("{l} {f}");
+    Ok(Some((f, l, full)))
+}
+
 pub(crate) async fn load_party(
     conn: &mut PgConnection,
     branch_id: Uuid,
@@ -233,7 +289,7 @@ pub(crate) async fn load_party(
 ) -> AppResult<PartyOut> {
     sqlx::query_as!(
         PartyOut,
-        r#"select id, role, kind, name, phone, inn, comment,
+        r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
                   credit_limit_tyiyn as "credit_limit_tyiyn?", due_days as "due_days?",
                   active, balance_tyiyn,
                   case when parties.balance_tyiyn > 0 and parties.due_days is not null then
@@ -267,7 +323,8 @@ async fn party_fields(
     id: Uuid,
 ) -> AppResult<serde_json::Value> {
     sqlx::query_scalar!(
-        r#"select jsonb_build_object('name', name, 'phone', phone, 'inn', inn, 'comment', comment,
+        r#"select jsonb_build_object('name', name, 'first_name', first_name, 'last_name', last_name,
+                                     'phone', phone, 'inn', inn, 'comment', comment,
                                      'kind', kind, 'credit_limit_tyiyn', credit_limit_tyiyn,
                                      'due_days', due_days, 'active', active) as "v!"
            from parties where id = $1 and branch_id = $2 for update"#,
@@ -282,6 +339,9 @@ async fn party_fields(
 #[derive(Deserialize)]
 struct PartyPatch {
     name: Option<String>,
+    /// Имя и фамилия человека (ADR-083): присылаются вместе, `name` собирается из них.
+    first_name: Option<String>,
+    last_name: Option<String>,
     phone: Option<String>,
     inn: Option<String>,
     comment: Option<String>,
@@ -313,6 +373,24 @@ async fn update_party(
     }
     let mut tx = state.pool.begin().await?;
     let before = party_fields(&mut tx, ctx.user.branch_id, id).await?;
+    let kind_now = req
+        .kind
+        .clone()
+        .or_else(|| {
+            before
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let person = person_name(
+        &kind_now,
+        req.first_name.as_deref(),
+        req.last_name.as_deref(),
+    )?;
+    // Стал фирмой — имя и фамилия человека не нужны.
+    let clear_person = kind_now == "company";
+    let name = person.as_ref().map(|p| p.2.clone()).or(req.name);
     let found = sqlx::query!(
         r#"update parties
            set name = coalesce(nullif(trim($3), ''), name),
@@ -322,19 +400,24 @@ async fn update_party(
                kind = coalesce($7, kind),
                credit_limit_tyiyn = coalesce($8, credit_limit_tyiyn),
                due_days = coalesce($9, due_days),
-               active = coalesce($10, active)
+               active = coalesce($10, active),
+               first_name = case when $13 then '' else coalesce($11, first_name) end,
+               last_name = case when $13 then '' else coalesce($12, last_name) end
            where id = $1 and branch_id = $2
            returning id"#,
         id,
         ctx.user.branch_id,
-        req.name,
+        name,
         req.phone,
         req.inn,
         req.comment,
         req.kind,
         req.credit_limit_tyiyn,
         req.due_days,
-        req.active
+        req.active,
+        person.as_ref().map(|p| p.0.clone()),
+        person.as_ref().map(|p| p.1.clone()),
+        clear_person
     )
     .fetch_optional(&mut *tx)
     .await?;
@@ -510,6 +593,16 @@ struct VehicleReq {
     #[serde(default)]
     comment: String,
     active: Option<bool>,
+    /// Пробег в км или милях (ADR-084); без него — км у новой, прежняя у правки.
+    #[serde(default)]
+    mileage_unit: Option<String>,
+}
+
+fn check_unit(unit: Option<&str>) -> AppResult<()> {
+    if unit.is_some_and(|u| !crate::domain::mileage::is_unit(u)) {
+        return Err(invalid("пробег — в км или милях"));
+    }
+    Ok(())
 }
 
 async fn create_vehicle(
@@ -522,10 +615,15 @@ async fn create_vehicle(
     if plate.is_empty() {
         return Err(invalid("укажите госномер"));
     }
+    check_unit(req.mileage_unit.as_deref())?;
     // Номер в одном виде (SPEC-22): «01 kg-123 АВС» и «01KG123ABC» — одна машина.
     let norm = crate::domain::plate::normalize(&plate);
     let branch_id = ctx.user.branch_id;
     let mut tx = state.pool.begin().await?;
+    // Марка и модель — из справочника; новую справочник запоминает (ADR-083).
+    let (brand, model) =
+        crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
+    let unit = req.mileage_unit.clone().unwrap_or_else(|| "km".into());
     // Блокировка клиента: два одновременных добавления одного номера не заведут две машины.
     let party_name = sqlx::query_scalar!(
         "select name from parties where id = $1 and branch_id = $2 for update",
@@ -539,7 +637,7 @@ async fn create_vehicle(
     // Убранную (клиентом в боте или точкой) — возвращаем в список (ADR-062).
     let own = sqlx::query_as!(
         VehicleOut,
-        r#"select id, plate, brand, model, comment, active from party_vehicles
+        r#"select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
            where party_id = $1 and branch_id = $2 and plate_norm = $3
            order by active desc, created_at limit 1"#,
         id,
@@ -558,16 +656,18 @@ async fn create_vehicle(
     }
     let vid = new_id();
     sqlx::query!(
-        r#"insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment, plate_norm)
-           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+        r#"insert into party_vehicles (id, branch_id, party_id, plate, brand, model, comment, plate_norm,
+                                       mileage_unit)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
         vid,
         branch_id,
         id,
         plate,
-        req.brand.trim(),
-        req.model.trim(),
+        brand,
+        model,
         req.comment.trim(),
-        norm
+        norm,
+        unit
     )
     .execute(&mut *tx)
     .await?;
@@ -613,10 +713,11 @@ async fn create_vehicle(
     Ok(Json(VehicleOut {
         id: vid,
         plate,
-        brand: req.brand.trim().into(),
-        model: req.model.trim().into(),
+        brand,
+        model,
         comment: req.comment.trim().into(),
         active: true,
+        mileage_unit: unit,
     }))
 }
 
@@ -663,7 +764,7 @@ async fn restore_vehicle(
     restore_vehicle_tx(&mut tx, &ctx, id, vehicle_id, "card").await?;
     let row = sqlx::query_as!(
         VehicleOut,
-        r#"select id, plate, brand, model, comment, active from party_vehicles
+        r#"select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
            where id = $1 and party_id = $2 and branch_id = $3"#,
         vehicle_id,
         id,
@@ -686,9 +787,12 @@ async fn update_vehicle(
     let plate_norm = Some(req.plate.trim())
         .filter(|p| !p.is_empty())
         .map(crate::domain::plate::normalize);
+    check_unit(req.mileage_unit.as_deref())?;
     let mut tx = state.pool.begin().await?;
+    let (brand, model) =
+        crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
     let before = sqlx::query!(
-        r#"select v.plate, v.brand, v.model, v.comment, v.active from party_vehicles v
+        r#"select v.plate, v.brand, v.model, v.comment, v.active, v.mileage_unit from party_vehicles v
            where v.id = $1 and v.party_id = $2 and v.branch_id = $3
            for update"#,
         vehicle_id,
@@ -704,19 +808,21 @@ async fn update_vehicle(
            set plate = coalesce(nullif(upper(trim($3)), ''), plate),
                plate_norm = coalesce($9, plate_norm),
                brand = $4, model = $5, comment = $6,
-               active = coalesce($7, active)
+               active = coalesce($7, active),
+               mileage_unit = coalesce($10, mileage_unit)
            where id = $1 and party_id = $2
              and party_id in (select p.id from parties p where p.branch_id = $8)
-           returning id, plate, brand, model, comment, active"#,
+           returning id, plate, brand, model, comment, active, mileage_unit"#,
         vehicle_id,
         id,
         req.plate,
-        req.brand.trim(),
-        req.model.trim(),
+        brand,
+        model,
         req.comment.trim(),
         req.active,
         ctx.user.branch_id,
-        plate_norm
+        plate_norm,
+        req.mileage_unit
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -732,9 +838,11 @@ async fn update_vehicle(
             "plate": row.plate,
             "changes": ops::changes(
                 &json!({ "plate": before.plate, "brand": before.brand, "model": before.model,
-                         "comment": before.comment, "active": before.active }),
+                         "comment": before.comment, "active": before.active,
+                         "mileage_unit": before.mileage_unit }),
                 &json!({ "plate": row.plate, "brand": row.brand, "model": row.model,
-                         "comment": row.comment, "active": row.active }),
+                         "comment": row.comment, "active": row.active,
+                         "mileage_unit": row.mileage_unit }),
             ),
         }),
     )
@@ -1503,7 +1611,7 @@ pub(crate) async fn party_card_data(
     .await?;
     let vehicles = sqlx::query_as!(
         VehicleOut,
-        "select id, plate, brand, model, comment, active from party_vehicles
+        "select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
          where party_id = $1 order by active desc, plate",
         id
     )

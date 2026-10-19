@@ -4,9 +4,10 @@ import { PayrollMonth } from '../components/PayrollMonth'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { accountLabel, isTill, payAccounts } from '../lib/accounts'
 import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
-import type { PayrollRow } from '../lib/types'
+import type { CashAccount, PayrollRow } from '../lib/types'
 
 /** Расчёт за день: кто сколько заработал и сколько ему должны (SPEC-07). */
 export default function Payroll() {
@@ -18,6 +19,12 @@ export default function Payroll() {
   const [salary, setSalary] = useState<PayrollRow | null>(null)
   const [entries, setEntries] = useState<PayrollRow | null>(null)
   const [form, setForm] = useState({ sum: '', comment: '', advance: false })
+  // Выплата с любого счёта — владелец; администратор — из кассы смены (SPEC-29 §13, ADR-076).
+  const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
+  const payFrom = payAccounts(accounts.data ?? [], owner)
+  const [fromPick, setFromPick] = useState('')
+  const fromId = payFrom.some((a) => a.id === fromPick) ? fromPick : (payFrom[0]?.id ?? '')
+  const fromAcc = payFrom.find((a) => a.id === fromId)
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
   const [opId, setOpId] = useState(newOpId)
   const act = useAction()
@@ -42,13 +49,15 @@ export default function Payroll() {
         employee_id: paying.employee_id,
         amount_tyiyn: sum,
         source: 'account',
+        account_id: fromId || undefined,
         // Аванс сверх заработанного — только с явной отметки владельца (SPEC-07).
         advance: sum > paying.balance_tyiyn && form.advance,
         comment: form.comment,
       })
       close()
       rows.reload()
-      toast('Выплачено из кассы')
+      accounts.reload()
+      toast(fromAcc && !isTill(fromAcc) ? `Выплачено: ${fromAcc.name}` : 'Выплачено из кассы')
     })
 
   const addExtra = () =>
@@ -200,7 +209,22 @@ export default function Payroll() {
       {paying && (
         <Modal title={`Выплата: ${paying.full_name}`} onClose={close}>
           <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">К выплате {formatSom(paying.balance_tyiyn)}, деньги уйдут из кассы</div>
+            <div className="text-sm text-slate-600">
+              К выплате {formatSom(paying.balance_tyiyn)}, деньги уйдут {fromAcc && !isTill(fromAcc) ? `со счёта «${fromAcc.name}»` : 'из кассы'}
+            </div>
+            {payFrom.length > 1 ? (
+              <Field label="Откуда">
+                <select id="payout-from" value={fromId} onChange={(e) => setFromPick(e.target.value)}>
+                  {payFrom.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {accountLabel(a)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              fromAcc && <div className="text-xs text-slate-500">{accountLabel(fromAcc)}</div>
+            )}
             <Field label="Сумма, с" required>
               <input autoFocus inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
             </Field>

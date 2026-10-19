@@ -19,7 +19,8 @@ export default function Clients() {
   const [q, setQ] = useState('')
   const [kind, setKind] = useState<'' | 'person' | 'company'>('')
   const [onlyDebtors, setOnlyDebtors] = useState(false)
-  const [form, setForm] = useState({ kind: 'person' as Party['kind'], name: '', phone: '', inn: '' })
+  // Человек — имя и фамилия отдельно, обязательны; фирма — название (ADR-083).
+  const [form, setForm] = useState({ kind: 'person' as Party['kind'], name: '', first: '', last: '', phone: '', inn: '' })
   const [adding, setAdding] = useState(false)
   const query = useDebounced(q.trim(), 250)
   const create = useAction()
@@ -41,7 +42,9 @@ export default function Clients() {
   const pager = usePager(rows, 'clients', `${query}:${kind}:${onlyDebtors}`)
   const company = form.kind === 'company'
   const notFilled = missingWithFocus(
-    [Boolean(form.name.trim()), company ? 'название фирмы' : 'ФИО', '#new-client-name'],
+    [!company || Boolean(form.name.trim()), 'название фирмы', '#new-client-name'],
+    [company || Boolean(form.first.trim()), 'имя', '#new-client-first'],
+    [company || Boolean(form.last.trim()), 'фамилию', '#new-client-last'],
     [!company || Boolean(form.inn.trim()), 'ИНН фирмы', '#new-client-inn'],
   )
 
@@ -50,11 +53,11 @@ export default function Clients() {
       const p = await post<Party>('/parties', {
         role: 'customer',
         kind: form.kind,
-        name: form.name.trim(),
+        ...(company ? { name: form.name.trim() } : { first_name: form.first.trim(), last_name: form.last.trim() }),
         phone: form.phone.trim(),
         inn: form.inn.trim(),
       })
-      setForm({ kind: form.kind, name: '', phone: '', inn: '' })
+      setForm({ kind: form.kind, name: '', first: '', last: '', phone: '', inn: '' })
       navigate(`/clients/${p.id}`)
     })
 
@@ -167,9 +170,20 @@ export default function Clients() {
                 </button>
               ))}
             </div>
-            <Field label={company ? 'Название фирмы' : 'ФИО'} required>
-              <input id="new-client-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            </Field>
+            {company ? (
+              <Field label="Название фирмы" required>
+                <input id="new-client-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              </Field>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Имя" required>
+                  <input id="new-client-first" autoFocus value={form.first} onChange={(e) => setForm({ ...form, first: e.target.value })} />
+                </Field>
+                <Field label="Фамилия" required>
+                  <input id="new-client-last" value={form.last} onChange={(e) => setForm({ ...form, last: e.target.value })} />
+                </Field>
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Телефон">
                 <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />

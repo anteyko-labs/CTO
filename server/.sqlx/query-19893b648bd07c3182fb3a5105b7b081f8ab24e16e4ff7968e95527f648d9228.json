@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, mileage_km,\n                                    oil_text, filter_text, comment, user_id, mileage_value, mileage_unit)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "19893b648bd07c3182fb3a5105b7b081f8ab24e16e4ff7968e95527f648d9228"
+}

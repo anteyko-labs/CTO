@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_vehicles\n           set plate = coalesce(nullif(upper(trim($3)), ''), plate),\n               plate_norm = coalesce($9, plate_norm),\n               brand = $4, model = $5, comment = $6,\n               active = coalesce($7, active),\n               mileage_unit = coalesce($10, mileage_unit)\n           where id = $1 and party_id = $2\n             and party_id in (select p.id from parties p where p.branch_id = $8)\n           returning id, plate, brand, model, comment, active, mileage_unit",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "mileage_unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "73de26339b1dd5cca8fcd3c0a00e99cef5d2711603e708912964b8bc566c6947"
+}

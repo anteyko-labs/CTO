@@ -1398,8 +1398,11 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
                 format!(
                     "Последняя замена: {}{}",
                     last.change_date.format("%d.%m.%Y"),
-                    last.mileage_km
-                        .map(|m| format!(", {}", km(m)))
+                    last.mileage
+                        .map(|m| format!(
+                            ", {}",
+                            crate::domain::mileage::text(m, &last.mileage_unit)
+                        ))
                         .unwrap_or_default()
                 ),
             ];
@@ -2403,14 +2406,32 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
             )
         }
         // О закрытии уже было сообщение «🔴 Смена № … закрыта» — здесь только сдача кассы.
-        "shift.handover" => (
-            format!("📥 Касса смены № {} сдана", num("number")),
-            format!(
-                "в сейф {}, в кассе осталось {}",
-                money_of(data, "to_safe"),
-                money_of(data, "left")
-            ),
-        ),
+        // Сдали кассу: сколько, куда и кто кассир (SPEC-29 §14); прежние записи — «в сейф».
+        "shift.handover" => {
+            let to = txt("to_name");
+            let cashier = txt("cashier");
+            (
+                format!("📥 Касса смены № {} сдана", num("number")),
+                if to.is_empty() {
+                    format!(
+                        "в сейф {}, в кассе осталось {}",
+                        money_of(data, "to_safe"),
+                        money_of(data, "left")
+                    )
+                } else {
+                    format!(
+                        "Сдали кассу: {} → {to}{}, в кассе осталось {}",
+                        money_of(data, "to_safe"),
+                        if cashier.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", кассир {cashier}")
+                        },
+                        money_of(data, "left")
+                    )
+                },
+            )
+        }
         "shift.reopen" => (
             format!(
                 "🔓 Смена № {} переоткрыта",
@@ -2676,6 +2697,16 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
                 num("grams") / 1000,
                 num("grams") % 1000,
                 money_of(data, "amount")
+            ),
+        ),
+        "oil.transfer_admin" => (
+            format!("🛢 Перелив № {} (администратор)", num("number")),
+            format!(
+                "{} → {}, {} мл, себестоимость {}",
+                txt("from_name"),
+                txt("to_name"),
+                num("qty_ml"),
+                money_of(data, "value")
             ),
         ),
         "oil.transfer" => (

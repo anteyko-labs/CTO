@@ -37,7 +37,7 @@ async function apiPost<T>(request: APIRequestContext, path: string, data: unknow
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   if (await apiGet<ShiftRow | null>(request, '/shifts/current')) return
   const opened = await request.post('/api/v1/shifts/open', {
-    data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId },
+    data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId, cashier_pin: '1234' },
     headers: DEVICE,
   })
   expect(opened.ok(), await opened.text()).toBeTruthy()
@@ -71,7 +71,7 @@ async function product(request: APIRequestContext, name: string, code: string, p
 test('расчёт кассира: 2 % за день, выплата, оклад за месяц', async ({ page }) => {
   await login(page)
   const cashier = `Кассир расчёта ${RUN}`
-  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
   await openOwnShift(page.request, emp.id)
   const p = await product(page.request, `Щётка расчёт ${RUN}`, `25${RUN}301`, 100_000, 50_000, 5)
   // Чек на 1000 с при закупке 500 с: валовая 500 с, кассиру 2 % = 10 с.
@@ -162,7 +162,7 @@ test('кабинет юрлица: вход по ИНН, смена пароля
 test('аккумуляторы на вес: приём из кассы и продажа не дешевле средней', async ({ page }) => {
   await login(page)
   const cashier = `Кассир АКБ ${RUN}`
-  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
   await ensureOpenShift(page.request, emp.id)
   await apiPost(page.request, '/cash/movements', { op_id: crypto.randomUUID(), kind: 'cash_in', amount_tyiyn: 500_000, comment: 'размен' })
 
@@ -189,7 +189,7 @@ test('масляная книжка: замена с пробегом, след�
   await login(page)
   const cashier = `Кассир книжки ${RUN}`
   const master = `Мастер книжки ${RUN}`
-  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  const emp = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
   const mst = await apiPost<{ id: string }>(page.request, '/employees', { full_name: master, is_master: true })
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла книжки ${RUN}`, kind: 'oil' })
   const oil = await apiPost<{ id: string }>(page.request, '/products', {
@@ -230,7 +230,7 @@ test('масляная книжка: замена с пробегом, след�
 test('аналог фильтра вместо отсутствующего и доставка в чеке', async ({ page }) => {
   await login(page)
   const cashier = `Кассир аналогов ${RUN}`
-  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Фильтры аналогов ${RUN}`, kind: 'filter' })
   const code = `24${RUN}401`
   // Оригинала нет на складе, аналог Mann есть.
@@ -284,9 +284,12 @@ test('новый клиент в кассе: физлицо или юрлицо 
   await expect(page.getByRole('status').filter({ hasText: 'физлицо или юрлицо' })).toBeVisible()
   await expect(create).toBeDisabled()
   await page.getByRole('button', { name: /^Физлицо/ }).click()
-  await page.locator('#client-name').fill(`Физлицов ${RUN}`)
+  // Человек — имя и фамилия отдельно, обе обязательны (SPEC-29 §20).
+  await page.locator('#client-first').fill(`Иван${RUN}`)
+  await expect(create).toBeDisabled()
+  await page.locator('#client-last').fill('Физлицов')
   await create.click()
-  await expect(page.getByText(`Физлицов ${RUN}`)).toBeVisible()
+  await expect(page.getByText(`Физлицов Иван${RUN}`)).toBeVisible()
   await expect(page.getByText(`ПИН ${pin}`)).toBeVisible()
   // Ошиблись — тип меняется прямо в чеке.
   await page.getByRole('button', { name: 'это юрлицо' }).click()

@@ -83,6 +83,14 @@ pub struct PaymentReq {
     pub account_id: Option<Uuid>,
 }
 
+/// Интервал строки книжки из чека: км (мили экран переводит сам, ADR-084) и дни.
+#[derive(Deserialize, Clone)]
+pub struct BookIntervalReq {
+    pub slot: String,
+    pub interval_km: i32,
+    pub interval_days: i32,
+}
+
 #[derive(Deserialize)]
 pub struct SaleReq {
     pub op_id: Uuid,
@@ -105,6 +113,15 @@ pub struct SaleReq {
     /// Пробег машины при замене — в масляную книжку (SPEC-16).
     #[serde(default)]
     pub mileage_km: Option<i32>,
+    /// Пробег, как его вписали, и единица (ADR-084); без единицы — единица машины.
+    #[serde(default)]
+    pub mileage: Option<i32>,
+    #[serde(default)]
+    pub mileage_unit: Option<String>,
+    /// «Через сколько менять»: интервал строк книжки этой машины, поставленный в чеке
+    /// (SPEC-29 §23). Сохраняется интервалом машины в транзакции чека.
+    #[serde(default)]
+    pub book_intervals: Vec<BookIntervalReq>,
     /// Адрес доставки; пусто — забрали сами.
     #[serde(default)]
     pub delivery_address: String,
@@ -1229,12 +1246,13 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.sale_type == "service"
         && let (Some(party_id), Some(vehicle_id)) = (req.party_id, req.vehicle_id)
     {
-        if req
-            .mileage_km
-            .is_some_and(|m| !(0..=5_000_000).contains(&m))
-        {
-            return Err(invalid("пробег от 0 до 5 000 000 км"));
-        }
+        let car_unit = crate::api::oil_book::vehicle_unit(conn, vehicle_id).await?;
+        let mileage = crate::api::oil_book::resolve_mileage(
+            req.mileage,
+            req.mileage_unit.as_deref(),
+            req.mileage_km,
+            &car_unit,
+        )?;
         crate::api::oil_book::record_from_sale(
             conn,
             ctx,
@@ -1242,10 +1260,25 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             party_id,
             vehicle_id,
             business_date,
-            req.mileage_km,
+            mileage,
             &req.declined,
         )
         .await?;
+        // «Через сколько менять» из чека — интервал строки у этой машины (SPEC-29 §23).
+        if req.book_intervals.len() > crate::api::oil_book::SLOTS.len() {
+            return Err(invalid("интервалов больше, чем строк книжки"));
+        }
+        for b in &req.book_intervals {
+            crate::api::oil_book::set_interval_tx(
+                conn,
+                ctx,
+                vehicle_id,
+                &b.slot,
+                Some((b.interval_km, b.interval_days)),
+                "sale",
+            )
+            .await?;
+        }
     }
     payroll::accrue_for_sale(
         conn,

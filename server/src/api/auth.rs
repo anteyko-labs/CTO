@@ -40,7 +40,7 @@ fn session_cookie(state: &AppState, value: &str, max_age: i64) -> String {
 }
 
 /// Неудачных попыток до блокировки и её длительность в минутах.
-const MAX_FAILURES: i32 = 5;
+pub(crate) const MAX_FAILURES: i32 = 5;
 const LOCK_MINUTES: i32 = 15;
 /// Сколько неудач по одному логину со всех адресов за окно — повод сказать владельцу.
 const ALERT_FAILURES_ANY_ADDR: i32 = 20;
@@ -65,6 +65,15 @@ pub(crate) async fn clear_login(state: &AppState, login: &str, addr: &str) -> Ap
     )
     .execute(&state.pool)
     .await?;
+    Ok(())
+}
+
+/// Снимает счётчик неудачных попыток по ключу: верный PIN кассира или пароль владельца при
+/// открытии смены (ADR-081), новый PIN, заданный владельцем.
+pub(crate) async fn clear_attempts(state: &AppState, key: &str) -> AppResult<()> {
+    sqlx::query!("delete from login_attempts where login = $1", key)
+        .execute(&state.pool)
+        .await?;
     Ok(())
 }
 
@@ -136,7 +145,11 @@ pub(crate) async fn note_failure(
 /// Успешный вход удаляет строку, поэтому счётчик считает только неудачи.
 /// Попытки во время блокировки строку не меняют: блокировку нельзя продлевать бесконечно,
 /// через `LOCK_MINUTES` она снимается и счёт начинается заново (ADR-059).
-async fn reserve_with_limit(state: &AppState, key: &str, max: i32) -> AppResult<Option<i64>> {
+pub(crate) async fn reserve_with_limit(
+    state: &AppState,
+    key: &str,
+    max: i32,
+) -> AppResult<Option<i64>> {
     let mut tx = state.pool.begin().await?;
     let row = sqlx::query!(
         r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
@@ -254,7 +267,12 @@ async fn login(
     .await?;
     tx.commit().await?;
     let cookie = session_cookie(&state, &token, SESSION_DAYS * 86_400);
-    Ok((AppendHeaders([(SET_COOKIE, cookie)]), Json(user)))
+    let mut conn = state.pool.acquire().await?;
+    let permissions = auth::permissions(&mut conn, user.id).await?;
+    Ok((
+        AppendHeaders([(SET_COOKIE, cookie)]),
+        Json(MeOut { user, permissions }),
+    ))
 }
 
 async fn logout(State(state): State<AppState>, parts: Parts) -> AppResult<impl IntoResponse> {
@@ -272,8 +290,18 @@ async fn logout(State(state): State<AppState>, parts: Parts) -> AppResult<impl I
     ))
 }
 
-async fn me(user: CurrentUser) -> Json<CurrentUser> {
-    Json(user)
+/// Текущий пользователь и его права сверх роли (ADR-082).
+#[derive(Serialize)]
+struct MeOut {
+    #[serde(flatten)]
+    user: CurrentUser,
+    permissions: Vec<String>,
+}
+
+async fn me(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<MeOut>> {
+    let mut conn = state.pool.acquire().await?;
+    let permissions = auth::permissions(&mut conn, user.id).await?;
+    Ok(Json(MeOut { user, permissions }))
 }
 
 #[derive(Serialize)]
@@ -283,6 +311,8 @@ struct UserOut {
     full_name: String,
     role: String,
     active: bool,
+    /// Права сверх роли, выданные владельцем (ADR-082).
+    permissions: Vec<String>,
 }
 
 async fn list_users(
@@ -291,7 +321,10 @@ async fn list_users(
 ) -> AppResult<Json<Vec<UserOut>>> {
     let rows = sqlx::query_as!(
         UserOut,
-        "select id, login, full_name, role, active from users where branch_id = $1 order by full_name",
+        r#"select u.id, u.login, u.full_name, u.role, u.active,
+                  array(select p.permission from user_permissions p
+                        where p.user_id = u.id order by p.permission) as "permissions!"
+           from users u where u.branch_id = $1 order by u.full_name"#,
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -359,6 +392,7 @@ async fn create_user(
         full_name,
         role: role.as_str().into(),
         active: true,
+        permissions: Vec::new(),
     }))
 }
 
@@ -368,6 +402,8 @@ struct UpdateUserReq {
     role: Option<String>,
     active: Option<bool>,
     password: Option<String>,
+    /// Права сверх роли целиком (ADR-082): что не в списке — снимается.
+    permissions: Option<Vec<String>>,
 }
 
 async fn update_user(
@@ -397,8 +433,14 @@ async fn update_user(
     )
     .fetch_all(&mut *tx)
     .await?;
-    let out = sqlx::query_as!(
-        UserOut,
+    if let Some(list) = &req.permissions
+        && let Some(bad) = list
+            .iter()
+            .find(|p| !auth::PERMISSIONS.contains(&p.as_str()))
+    {
+        return Err(invalid(format!("неизвестное право «{bad}»")));
+    }
+    let row = sqlx::query!(
         r#"update users set
              full_name = coalesce($3, full_name),
              role = coalesce($4, role),
@@ -416,6 +458,36 @@ async fn update_user(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let before_perms = auth::permissions(&mut tx, id).await?;
+    if let Some(list) = &req.permissions {
+        sqlx::query!(
+            "delete from user_permissions where user_id = $1 and not (permission = any($2))",
+            id,
+            list
+        )
+        .execute(&mut *tx)
+        .await?;
+        for p in list {
+            sqlx::query!(
+                r#"insert into user_permissions (user_id, branch_id, permission, granted_by)
+                   values ($1, $2, $3, $4) on conflict do nothing"#,
+                id,
+                ctx.user.branch_id,
+                p,
+                ctx.user.id
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    let out = UserOut {
+        id: row.id,
+        login: row.login,
+        full_name: row.full_name,
+        role: row.role,
+        active: row.active,
+        permissions: auth::permissions(&mut tx, id).await?,
+    };
     let still_owner = out.active && out.role == "owner";
     if owners.len() == 1 && owners.contains(&id) && !still_owner {
         return Err(AppError::Conflict(
@@ -437,7 +509,14 @@ async fn update_user(
         "user.update",
         "user",
         Some(id),
-        json!({ "login": out.login, "role": out.role, "active": out.active, "password_changed": hash.is_some() }),
+        json!({
+            "login": out.login,
+            "role": out.role,
+            "active": out.active,
+            "password_changed": hash.is_some(),
+            "permissions_before": before_perms,
+            "permissions": out.permissions,
+        }),
     )
     .await?;
     tx.commit().await?;

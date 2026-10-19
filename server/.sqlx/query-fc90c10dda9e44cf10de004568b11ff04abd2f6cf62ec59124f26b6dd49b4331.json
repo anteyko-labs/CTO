@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),\n             is_master = coalesce($5, is_master), active = coalesce($6, active), phone = coalesce($7, phone)\n           where id = $1 and branch_id = $2\n           returning id, full_name, is_cashier, is_master, active, phone, pin_hash is not null as \"has_pin!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_master",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "has_pin!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "fc90c10dda9e44cf10de004568b11ff04abd2f6cf62ec59124f26b6dd49b4331"
+}

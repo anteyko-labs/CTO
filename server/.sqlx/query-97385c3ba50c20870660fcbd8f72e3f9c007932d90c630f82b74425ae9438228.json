@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, make_id, name from car_models order by lower(name)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "make_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "97385c3ba50c20870660fcbd8f72e3f9c007932d90c630f82b74425ae9438228"
+}

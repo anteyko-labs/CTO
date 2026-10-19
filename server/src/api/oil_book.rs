@@ -103,6 +103,10 @@ pub struct SlotNext {
     pub last_text: Option<String>,
     pub next_km: Option<i32>,
     pub next_date: Option<NaiveDate>,
+    /// Единица пробега машины (ADR-084) и пробег последней и следующей замены в ней.
+    pub unit: String,
+    pub last_mileage: Option<i32>,
+    pub next_mileage: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -110,6 +114,9 @@ pub struct OilRecord {
     pub id: Uuid,
     pub change_date: NaiveDate,
     pub mileage_km: Option<i32>,
+    /// Пробег, как его вписали, и единица (ADR-084).
+    pub mileage: Option<i32>,
+    pub mileage_unit: String,
     pub oil_text: String,
     pub filter_text: String,
     /// Строки по книжке: масло, фильтры, прочие работы (SPEC-27).
@@ -139,8 +146,14 @@ pub struct VehicleBook {
     pub plate: String,
     pub brand: String,
     pub model: String,
+    /// Пометка точки к машине — чтобы правка машины в книжке её не стёрла.
+    pub comment: String,
     /// Машина в списке клиента; убранная (клиентом в боте или точкой) — `false` (ADR-062).
     pub active: bool,
+    /// Пробег машины — в км или милях (ADR-084).
+    pub mileage_unit: String,
+    /// Следующая замена масла в единице машины.
+    pub next_mileage: Option<i32>,
     /// Интервал и следующая замена масла: последний известный пробег + интервал, дата
     /// последней замены масла + дни.
     pub interval_km: i32,
@@ -175,7 +188,7 @@ pub async fn record_from_sale(
     party_id: Uuid,
     vehicle_id: Uuid,
     change_date: NaiveDate,
-    mileage_km: Option<i32>,
+    mileage: Option<Mileage>,
     declined: &str,
 ) -> AppResult<()> {
     let rows = sqlx::query!(
@@ -228,8 +241,9 @@ pub async fn record_from_sale(
     let id = new_id();
     let inserted = sqlx::query_scalar!(
         r#"insert into oil_changes (id, branch_id, vehicle_id, party_id, sale_id, change_date,
-                                    mileage_km, oil_text, filter_text, user_id, declined)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                                    mileage_km, oil_text, filter_text, user_id, declined,
+                                    mileage_value, mileage_unit)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            on conflict (sale_id) where sale_id is not null do nothing
            returning id"#,
         id,
@@ -238,11 +252,13 @@ pub async fn record_from_sale(
         party_id,
         sale_id,
         change_date,
-        mileage_km,
+        mileage.as_ref().map(|m| m.km),
         join_slots(&lines, |s| s == "oil"),
         join_slots(&lines, |s| s.ends_with("_filter")),
         ctx.user.id,
-        declined.trim()
+        declined.trim(),
+        mileage.as_ref().map(|m| m.value),
+        mileage.as_ref().map_or("km", |m| m.unit.as_str())
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -306,7 +322,7 @@ pub async fn books_with_removed(
     removed: bool,
 ) -> AppResult<Vec<VehicleBook>> {
     let vehicles = sqlx::query!(
-        r#"select id, plate, brand, model, active
+        r#"select id, plate, brand, model, comment, active, mileage_unit
            from party_vehicles
            where branch_id = $1 and ($2::uuid is null or party_id = $2) and ($3::uuid is null or id = $3)
              and (active or $3::uuid is not null or $4)
@@ -320,7 +336,8 @@ pub async fn books_with_removed(
     .await?;
     let ids: Vec<Uuid> = vehicles.iter().map(|v| v.id).collect();
     let records = sqlx::query!(
-        r#"select o.id, o.vehicle_id, o.change_date, o.mileage_km, o.oil_text, o.filter_text, o.comment,
+        r#"select o.id, o.vehicle_id, o.change_date, o.mileage_km, o.mileage_value, o.mileage_unit,
+                  o.oil_text, o.filter_text, o.comment,
                   o.declined, o.sale_id, s.number as "sale_number?",
                   -- Возврат — чек с минусом и ссылкой на исходный: как в фильтре ниже.
                   (s.total_tyiyn + coalesce((select sum(r.total_tyiyn) from sales r where r.reversal_of = s.id), 0))::bigint
@@ -374,6 +391,8 @@ pub async fn books_with_removed(
                 id: r.id,
                 change_date: r.change_date,
                 mileage_km: r.mileage_km,
+                mileage: r.mileage_value.or(r.mileage_km),
+                mileage_unit: r.mileage_unit.clone(),
                 oil_text: r.oil_text.clone(),
                 filter_text: r.filter_text.clone(),
                 // Запись без строк (заведена в обход книжки) — по прежним полям масла и фильтра.
@@ -405,20 +424,31 @@ pub async fn books_with_removed(
             .collect();
         let slots: Vec<SlotNext> = SLOTS
             .iter()
-            .map(|slot| slot_next(slot, &recs, own.get(slot).copied(), &categories))
+            .map(|slot| {
+                slot_next(
+                    slot,
+                    &recs,
+                    own.get(slot).copied(),
+                    &categories,
+                    &v.mileage_unit,
+                )
+            })
             .filter(|n| n.slot == "oil" || n.last_date.is_some() || n.own_interval)
             .collect();
         let oil = slots
             .iter()
             .find(|n| n.slot == "oil")
             .cloned()
-            .unwrap_or_else(|| slot_next("oil", &recs, None, &categories));
+            .unwrap_or_else(|| slot_next("oil", &recs, None, &categories, &v.mileage_unit));
         out.push(VehicleBook {
             vehicle_id: v.id,
             plate: v.plate,
             brand: v.brand,
             model: v.model,
+            comment: v.comment,
             active: v.active,
+            next_mileage: oil.next_mileage,
+            mileage_unit: v.mileage_unit,
             interval_km: oil.interval_km.unwrap_or(8000),
             interval_days: oil.interval_days.unwrap_or(31),
             next_km: oil.next_km,
@@ -434,8 +464,8 @@ pub async fn books_with_removed(
 /// «на 93 000 км или до 12.01.2027» — следующая замена строки для бота; пусто — срока нет.
 pub fn next_text(n: &SlotNext) -> String {
     [
-        n.next_km
-            .map(|k| format!("на {}", crate::api::telegram::km(k))),
+        n.next_mileage
+            .map(|k| format!("на {}", crate::domain::mileage::text(k, &n.unit))),
         n.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y"))),
     ]
     .into_iter()
@@ -507,6 +537,7 @@ fn slot_next(
     recs: &[OilRecord],
     own: Option<(i32, i32)>,
     categories: &[CategoryInterval],
+    unit: &str,
 ) -> SlotNext {
     // Записи свежие сверху: первая со строкой — последняя замена.
     let last = recs.iter().find_map(|r| {
@@ -538,7 +569,11 @@ fn slot_next(
         r.change_date
             .checked_add_days(chrono::Days::new(u64::try_from(days).unwrap_or(31)))
     });
+    let in_unit = |k: Option<i32>| k.and_then(|k| crate::domain::mileage::from_km(k, unit));
     SlotNext {
+        unit: unit.to_string(),
+        last_mileage: in_unit(last_km),
+        next_mileage: in_unit(next_km),
         slot: slot.to_string(),
         label: slot_label(slot).to_string(),
         interval_km: interval.map(|i| i.0),
@@ -629,21 +664,50 @@ async fn settings(
         Some((km, days))
     };
     let mut tx = state.pool.begin().await?;
+    set_interval_tx(&mut tx, &ctx, id, &req.slot, interval, "card").await?;
+    let out = books(&mut tx, ctx.user.branch_id, None, Some(id))
+        .await?
+        .pop()
+        .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Интервал строки книжки у машины: свой (км и дни) или `None` — снова по категории.
+/// В транзакции вызывающего: карточка машины и чек замены (SPEC-29 §23). `via` — откуда
+/// поменяли, для журнала.
+pub async fn set_interval_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    slot: &str,
+    interval: Option<(i32, i32)>,
+    via: &str,
+) -> AppResult<()> {
+    if !is_slot(slot) {
+        return Err(invalid("неизвестная строка книжки"));
+    }
+    if let Some((km, days)) = interval {
+        check_interval(km, days)?;
+    }
     let plate = sqlx::query_scalar!(
         "select plate from party_vehicles where id = $1 and branch_id = $2 for update",
         id,
         ctx.user.branch_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
     let before = sqlx::query!(
         "select interval_km, interval_days from vehicle_book_intervals where vehicle_id = $1 and slot = $2",
         id,
-        req.slot
+        slot
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?;
+    if before.as_ref().map(|b| (b.interval_km, b.interval_days)) == interval {
+        return Ok(());
+    }
     match interval {
         Some((km, days)) => {
             sqlx::query!(
@@ -653,44 +717,40 @@ async fn settings(
                    set interval_km = excluded.interval_km, interval_days = excluded.interval_days, updated_at = now()"#,
                 id,
                 ctx.user.branch_id,
-                req.slot,
+                slot,
                 km,
                 days
             )
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
         }
         None => {
             sqlx::query!(
                 "delete from vehicle_book_intervals where vehicle_id = $1 and slot = $2",
                 id,
-                req.slot
+                slot
             )
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
         }
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         "vehicle.oil_interval",
         "vehicle",
         Some(id),
         json!({
             "plate": plate,
-            "slot": req.slot,
+            "slot": slot,
             "before": before.map(|b| json!({ "km": b.interval_km, "days": b.interval_days })),
             "km": interval.map(|i| i.0),
             "days": interval.map(|i| i.1),
+            "via": via,
         }),
     )
     .await?;
-    let out = books(&mut tx, ctx.user.branch_id, None, Some(id))
-        .await?
-        .pop()
-        .ok_or(AppError::NotFound)?;
-    tx.commit().await?;
-    Ok(Json(out))
+    Ok(())
 }
 
 /// Интервал строки книжки: от 500 до 200 000 км и от 1 до 1095 дней.
@@ -713,6 +773,11 @@ struct ManualLine {
 struct ManualReq {
     change_date: NaiveDate,
     mileage_km: Option<i32>,
+    /// Пробег в единице машины или в `mileage_unit` (ADR-084).
+    #[serde(default)]
+    mileage: Option<i32>,
+    #[serde(default)]
+    mileage_unit: Option<String>,
     #[serde(default)]
     oil_text: String,
     #[serde(default)]
@@ -729,6 +794,56 @@ fn check_mileage(m: Option<i32>) -> AppResult<()> {
         return Err(invalid("пробег от 0 до 5 000 000 км"));
     }
     Ok(())
+}
+
+/// Пробег замены (ADR-084): как вписали (число и единица) и он же в км — для интервалов.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mileage {
+    pub km: i32,
+    pub value: i32,
+    pub unit: String,
+}
+
+/// Пробег из запроса: `mileage` в единице `mileage_unit` (без неё — в единице машины) или
+/// прежнее поле `mileage_km` (в км). Ничего нет — `None`.
+pub fn resolve_mileage(
+    mileage: Option<i32>,
+    unit: Option<&str>,
+    legacy_km: Option<i32>,
+    car_unit: &str,
+) -> AppResult<Option<Mileage>> {
+    let (value, unit) = match (mileage, legacy_km) {
+        (Some(v), _) => (v, unit.unwrap_or(car_unit)),
+        (None, Some(k)) => (k, "km"),
+        (None, None) => return Ok(None),
+    };
+    if !crate::domain::mileage::is_unit(unit) {
+        return Err(invalid("пробег — в км или милях"));
+    }
+    if !(0..=5_000_000).contains(&value) {
+        return Err(invalid(if unit == "mi" {
+            "пробег от 0 до 5 000 000 миль"
+        } else {
+            "пробег от 0 до 5 000 000 км"
+        }));
+    }
+    let km = crate::domain::mileage::to_km(value, unit).ok_or_else(crate::error::overflow)?;
+    Ok(Some(Mileage {
+        km,
+        value,
+        unit: unit.to_string(),
+    }))
+}
+
+/// Единица пробега машины.
+pub async fn vehicle_unit(conn: &mut PgConnection, vehicle_id: Uuid) -> AppResult<String> {
+    Ok(sqlx::query_scalar!(
+        "select mileage_unit from party_vehicles where id = $1",
+        vehicle_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or_else(|| "km".into()))
 }
 
 /// Запись из тетради: замены до появления системы.
@@ -760,7 +875,7 @@ async fn manual(
     }
     let mut tx = state.pool.begin().await?;
     let v = sqlx::query!(
-        "select party_id, plate, active from party_vehicles where id = $1 and branch_id = $2",
+        "select party_id, plate, active, mileage_unit from party_vehicles where id = $1 and branch_id = $2",
         id,
         ctx.user.branch_id
     )
@@ -775,21 +890,29 @@ async fn manual(
         )));
     }
     let party_id = v.party_id;
+    let mileage = resolve_mileage(
+        req.mileage,
+        req.mileage_unit.as_deref(),
+        req.mileage_km,
+        &v.mileage_unit,
+    )?;
     let rid = new_id();
     sqlx::query!(
         r#"insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, mileage_km,
-                                    oil_text, filter_text, comment, user_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+                                    oil_text, filter_text, comment, user_id, mileage_value, mileage_unit)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         rid,
         ctx.user.branch_id,
         id,
         party_id,
         req.change_date,
-        req.mileage_km,
+        mileage.as_ref().map(|m| m.km),
         join_slots(&lines, |s| s == "oil"),
         join_slots(&lines, |s| s.ends_with("_filter")),
         req.comment.trim(),
-        ctx.user.id
+        ctx.user.id,
+        mileage.as_ref().map(|m| m.value),
+        mileage.as_ref().map_or("km", |m| m.unit.as_str())
     )
     .execute(&mut *tx)
     .await?;
@@ -800,7 +923,13 @@ async fn manual(
         "vehicle.oil_manual",
         "vehicle",
         Some(id),
-        json!({ "record": rid, "date": req.change_date, "mileage": req.mileage_km }),
+        json!({
+            "record": rid,
+            "date": req.change_date,
+            "mileage": mileage.as_ref().map(|m| m.km),
+            "mileage_value": mileage.as_ref().map(|m| m.value),
+            "mileage_unit": mileage.as_ref().map(|m| m.unit.clone()),
+        }),
     )
     .await?;
     let out = books(&mut tx, ctx.user.branch_id, None, Some(id))
@@ -814,6 +943,11 @@ async fn manual(
 #[derive(Deserialize)]
 struct EditReq {
     mileage_km: Option<i32>,
+    /// Пробег в единице машины или в `mileage_unit` (ADR-084).
+    #[serde(default)]
+    mileage: Option<i32>,
+    #[serde(default)]
+    mileage_unit: Option<String>,
     comment: Option<String>,
     declined: Option<String>,
 }
@@ -828,22 +962,34 @@ async fn edit(
     check_mileage(req.mileage_km)?;
     let mut tx = state.pool.begin().await?;
     let before = sqlx::query!(
-        "select mileage_km, comment, declined from oil_changes where id = $1 and branch_id = $2 for update",
+        r#"select o.mileage_km, o.comment, o.declined, v.mileage_unit as car_unit
+           from oil_changes o join party_vehicles v on v.id = o.vehicle_id
+           where o.id = $1 and o.branch_id = $2 for update of o"#,
         id,
         ctx.user.branch_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let mileage = resolve_mileage(
+        req.mileage,
+        req.mileage_unit.as_deref(),
+        req.mileage_km,
+        &before.car_unit,
+    )?;
     let r = sqlx::query!(
         r#"update oil_changes set mileage_km = coalesce($3, mileage_km),
+             mileage_value = coalesce($6, mileage_value),
+             mileage_unit = coalesce($7, mileage_unit),
              comment = coalesce($4, comment), declined = coalesce($5, declined), updated_at = now()
            where id = $1 and branch_id = $2 returning vehicle_id, mileage_km, comment, declined"#,
         id,
         ctx.user.branch_id,
-        req.mileage_km,
+        mileage.as_ref().map(|m| m.km),
         req.comment.as_deref().map(str::trim),
-        req.declined.as_deref().map(str::trim)
+        req.declined.as_deref().map(str::trim),
+        mileage.as_ref().map(|m| m.value),
+        mileage.as_ref().map(|m| m.unit.clone())
     )
     .fetch_optional(&mut *tx)
     .await?

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select permission from user_permissions where user_id = $1 order by permission",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "permission",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c53874db5a9ee0f2aae295bd70d16c0452b4dceadc5e851e8107654e5fc34124"
+}

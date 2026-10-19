@@ -5,6 +5,7 @@ import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Party, PartyContact, PartyVehicle } from '../lib/types'
 import { Badge, Button, ErrorBox, Field, Missing, Modal } from './ui'
 import { missingWithFocus } from '../lib/forms'
+import { VehicleFormModal } from './VehicleFormModal'
 
 /** Что набрали в поиске: ПИН/ИНН, телефон или имя — в какое поле подставить при создании.
  *  Физлицо это или фирма, по цифрам не понять (ПИН и ИНН оба по 14 цифр): выбирает кассир. */
@@ -25,9 +26,12 @@ export function balanceText(balance: number): string {
 /** Новый клиент прямо из кассы: минимум полей, остальное потом в карточке. */
 function NewClientModal({ initial, onClose, onCreated }: { initial: string; onClose: () => void; onCreated: (p: Party) => void }) {
   const field = guessField(initial)
+  // Набранное слово — в название фирмы; у человека — в имя, фамилию кассир допишет (ADR-083).
   const [form, setForm] = useState({
     kind: null as Party['kind'] | null,
     name: field === 'name' ? initial : '',
+    first: field === 'name' ? initial : '',
+    last: '',
     phone: field === 'phone' ? initial : '',
     inn: field === 'inn' ? initial : '',
   })
@@ -35,7 +39,9 @@ function NewClientModal({ initial, onClose, onCreated }: { initial: string; onCl
   const company = form.kind === 'company'
   const notFilled = missingWithFocus(
     [form.kind !== null, 'физлицо или юрлицо', '[data-kind]'],
-    [Boolean(form.name.trim()), company ? 'название фирмы' : 'ФИО', '#client-name'],
+    [form.kind !== 'company' || Boolean(form.name.trim()), 'название фирмы', '#client-name'],
+    [form.kind !== 'person' || Boolean(form.first.trim()), 'имя', '#client-first'],
+    [form.kind !== 'person' || Boolean(form.last.trim()), 'фамилию', '#client-last'],
     [!company || Boolean(form.inn.trim()), 'ИНН фирмы', '#client-inn'],
   )
 
@@ -45,7 +51,7 @@ function NewClientModal({ initial, onClose, onCreated }: { initial: string; onCl
       const p = await post<Party>('/parties', {
         role: 'customer',
         kind: form.kind,
-        name: form.name.trim(),
+        ...(company ? { name: form.name.trim() } : { first_name: form.first.trim(), last_name: form.last.trim() }),
         phone: form.phone.trim(),
         inn: form.inn.trim(),
       })
@@ -72,9 +78,20 @@ function NewClientModal({ initial, onClose, onCreated }: { initial: string; onCl
             </button>
           ))}
         </div>
-        <Field label={company ? 'Название фирмы' : 'ФИО'} required>
-          <input id="client-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        </Field>
+        {company || form.kind === null ? (
+          <Field label={company ? 'Название фирмы' : 'Имя или название'} required>
+            <input id="client-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value, first: e.target.value })} />
+          </Field>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Имя" required>
+              <input id="client-first" value={form.first} onChange={(e) => setForm({ ...form, first: e.target.value })} />
+            </Field>
+            <Field label="Фамилия" required>
+              <input id="client-last" autoFocus value={form.last} onChange={(e) => setForm({ ...form, last: e.target.value })} />
+            </Field>
+          </div>
+        )}
         <Field label="Телефон">
           <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
         </Field>
@@ -193,13 +210,8 @@ export function ClientPicker({
   const addRow = (value: string) =>
     void add.run(async () => {
       if (!party || !adding) return
-      if (adding === 'contact') {
-        const c = await post<PartyContact>(`/parties/${party.id}/contacts`, { full_name: value })
-        onContact(c.id)
-      } else {
-        const v = await post<PartyVehicle>(`/parties/${party.id}/vehicles`, { plate: value })
-        onVehicle(v.id)
-      }
+      const c = await post<PartyContact>(`/parties/${party.id}/contacts`, { full_name: value })
+      onContact(c.id)
       setAdding(null)
       card.reload()
     })
@@ -285,11 +297,22 @@ export function ClientPicker({
           </select>
         </Field>
         <ErrorBox error={add.error ?? card.error ?? kindAct.error} />
-        {adding && (
+        {adding === 'vehicle' && (
+          <VehicleFormModal
+            partyId={party.id}
+            onClose={() => setAdding(null)}
+            onSaved={(v) => {
+              setAdding(null)
+              onVehicle(v.id)
+              card.reload()
+            }}
+          />
+        )}
+        {adding === 'contact' && (
           <NewRowModal
-            title={adding === 'contact' ? 'Новый работник' : 'Новая машина'}
-            label={adding === 'contact' ? 'ФИО' : 'Госномер'}
-            hint={adding === 'contact' ? 'Телефон и должность можно добавить в карточке' : 'Марку и модель можно добавить в карточке'}
+            title="Новый работник"
+            label="ФИО"
+            hint="Телефон и должность можно добавить в карточке"
             busy={add.busy}
             error={add.error}
             onClose={() => setAdding(null)}

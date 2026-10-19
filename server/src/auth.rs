@@ -62,6 +62,39 @@ impl CurrentUser {
     }
 }
 
+/// Права, которые владелец выдал пользователю сверх роли (ADR-082): `oil_transfer` — перелив.
+pub const PERMISSIONS: [&str; 1] = ["oil_transfer"];
+
+/// Права пользователя сверх роли — экран показывает по ним пункты меню, проверяет сервер.
+pub async fn permissions(conn: &mut sqlx::PgConnection, user_id: Uuid) -> AppResult<Vec<String>> {
+    Ok(sqlx::query_scalar!(
+        "select permission from user_permissions where user_id = $1 order by permission",
+        user_id
+    )
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
+/// Владельцу можно всё; администратору — если владелец выдал ему это право (ADR-082).
+pub async fn has_permission(
+    conn: &mut sqlx::PgConnection,
+    user: &CurrentUser,
+    permission: &str,
+) -> AppResult<bool> {
+    if user.is_owner() {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar!(
+        r#"select exists (select 1 from user_permissions
+                          where user_id = $1 and branch_id = $2 and permission = $3) as "e!""#,
+        user.id,
+        user.branch_id,
+        permission
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// Пользователь и устройство изменяющего запроса.
 #[derive(Debug, Clone)]
 pub struct Ctx {

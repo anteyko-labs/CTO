@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select mileage_unit from party_vehicles where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mileage_unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "65550fc79fd9d21b869e3019a7a8fa3f3a30da550a5309bafddeddd37dcbb05b"
+}

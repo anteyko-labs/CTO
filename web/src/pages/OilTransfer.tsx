@@ -7,21 +7,23 @@ import { formatDateTime, formatLiters, formatSom, litersInput, parseLiters, pars
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { canisterPourPrice, divRound } from '../lib/money'
+import { useUser } from '../lib/auth'
 import type { Product } from '../lib/types'
 
 interface OilState {
   product_id: string
   name: string
   stock_ml: number
-  value_tyiyn: number
-  avg_per_l_tyiyn: number | null
+  /** Стоимость и средняя — только владельцу (ADR-082). */
+  value_tyiyn?: number
+  avg_per_l_tyiyn?: number | null
 }
 
 interface TransferOut {
   id: string
   number: number
   qty_ml: number
-  value_tyiyn: number
+  value_tyiyn?: number
   from: OilState
   to: OilState
 }
@@ -32,7 +34,7 @@ interface TransferRow {
   from_name: string
   to_name: string
   qty_ml: number
-  value_tyiyn: number
+  value_tyiyn?: number
   comment: string
   user_name: string
   created_at: string
@@ -43,7 +45,10 @@ interface TransferRow {
 const perLiter = (value: number, ml: number): number | null => (ml > 0 ? divRound(value * 1000, ml) : null)
 
 
+// Перелив проводит владелец или администратор с правом «Перелив масла» (ADR-082): администратор
+// себестоимости не видит (сервер её не отдаёт), цену не меняет и перелив не отменяет.
 export default function OilTransfer() {
+  const owner = useUser().role === 'owner'
   const products = useLoad(() => get<Product[]>('/products?limit=500'), [])
   const history = useLoad(() => get<TransferRow[]>('/oil/transfers'), [])
   const historyPager = usePager(history.data ?? [], 'oil.transfers')
@@ -91,7 +96,7 @@ export default function OilTransfer() {
         qty_ml: ml,
         comment: form.comment,
       })
-      setDone(out)
+      if (owner) setDone(out)
       setOpId(newOpId())
       setPrices({ canister: somInput(to?.sale_price_tyiyn ?? 0) })
       setForm({ from: '', to: '', liters: '', comment: '' })
@@ -119,6 +124,11 @@ export default function OilTransfer() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Перелив масла" />
+      {!owner && (
+        <div className="text-sm text-slate-600" data-testid="oil-admin-note">
+          Владелец получит уведомление о переливе. Отменить перелив и поменять цену может только он.
+        </div>
+      )}
       <ErrorBox error={products.error} />
 
       <Card className="flex flex-col gap-3">
@@ -217,8 +227,8 @@ export default function OilTransfer() {
             </div>
             <div className="text-sm text-slate-700">
               В «{done.to.name}» теперь {formatLiters(done.to.stock_ml)}
-              {done.to.avg_per_l_tyiyn !== null && `, себестоимость ${formatSom(done.to.avg_per_l_tyiyn)} за литр`}.
-              {doneProduct?.container_ml && done.to.avg_per_l_tyiyn !== null &&
+              {typeof done.to.avg_per_l_tyiyn === 'number' && `, себестоимость ${formatSom(done.to.avg_per_l_tyiyn)} за литр`}.
+              {doneProduct?.container_ml && typeof done.to.avg_per_l_tyiyn === 'number' &&
                 ` Канистра ${formatLiters(doneProduct.container_ml)} обходится в ${formatSom(divRound(done.to.avg_per_l_tyiyn * doneProduct.container_ml, 1000))}.`}
             </div>
           </div>
@@ -249,7 +259,7 @@ export default function OilTransfer() {
         {(history.data ?? []).length === 0 ? (
           <Empty>Переливов ещё не было</Empty>
         ) : (
-          <Table head={['№', 'Когда', 'Откуда', 'Куда', 'Сколько', 'Стоимость', 'Кто', '']}>
+          <Table head={owner ? ['№', 'Когда', 'Откуда', 'Куда', 'Сколько', 'Стоимость', 'Кто', ''] : ['№', 'Когда', 'Откуда', 'Куда', 'Сколько', 'Кто']}>
             {historyPager.shown.map((t) => (
               <tr key={t.id} className={t.reversed ? 'text-slate-400 line-through' : ''}>
                 <td className="px-2 py-2 font-medium">{t.number}</td>
@@ -257,8 +267,9 @@ export default function OilTransfer() {
                 <td className="px-2 py-2">{t.from_name}</td>
                 <td className="px-2 py-2">{t.to_name}</td>
                 <td className="whitespace-nowrap px-2 py-2">{formatLiters(t.qty_ml)}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatSom(t.value_tyiyn)}</td>
+                {owner && <td className="whitespace-nowrap px-2 py-2">{formatSom(t.value_tyiyn ?? 0)}</td>}
                 <td className="px-2 py-2">{t.user_name}</td>
+                {owner && (
                 <td className="px-2 py-2 text-right">
                   {t.reversed ? (
                     <span className="no-underline">отменён</span>
@@ -268,6 +279,7 @@ export default function OilTransfer() {
                     </Button>
                   )}
                 </td>
+                )}
               </tr>
             ))}
           </Table>
@@ -279,7 +291,7 @@ export default function OilTransfer() {
           <div className="flex flex-col gap-3">
             <div className="text-sm text-slate-600">
               {formatLiters(reversing.row.qty_ml)} вернутся из «{reversing.row.to_name}» в «{reversing.row.from_name}» той же стоимостью{' '}
-              {formatSom(reversing.row.value_tyiyn)}. Если перелитое уже продано, отменить нельзя — тогда перелейте обратно.
+              {formatSom(reversing.row.value_tyiyn ?? 0)}. Если перелитое уже продано, отменить нельзя — тогда перелейте обратно.
             </div>
             <Field label="Причина" required>
               <input autoFocus value={reversing.comment} onChange={(e) => setReversing({ ...reversing, comment: e.target.value })} />

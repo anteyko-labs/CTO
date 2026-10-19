@@ -51,13 +51,13 @@ export function CashierFavorites({ onProduct, onService }: { onProduct: (p: Prod
             <button
               key={`${t.kind}-${p?.id ?? s?.id}`}
               type="button"
-              className="flex min-h-19 flex-col justify-between rounded-lg border border-slate-200 bg-white p-2.5 text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100"
+              className="flex min-h-24 flex-col justify-between rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100"
               onClick={() => (p ? onProduct(p) : s && onService(s))}
             >
-              <span className="line-clamp-2 text-sm font-medium leading-snug">{p?.name ?? s?.name}</span>
+              <span className="line-clamp-2 text-base font-medium leading-snug">{p?.name ?? s?.name}</span>
               <span className="mt-1 flex items-baseline justify-between gap-2">
-                <Money value={p ? p.sale_price_tyiyn : (s?.price_tyiyn ?? 0)} className="font-semibold text-sky-700" />
-                <span className={`truncate text-xs ${out ? 'text-rose-700' : 'text-slate-500'}`}>{p ? stockText(p) : 'услуга'}</span>
+                <Money value={p ? p.sale_price_tyiyn : (s?.price_tyiyn ?? 0)} className="text-base font-semibold text-sky-700" />
+                <span className={`truncate text-sm ${out ? 'text-rose-700' : 'text-slate-500'}`}>{p ? stockText(p) : 'услуга'}</span>
               </span>
             </button>
           )

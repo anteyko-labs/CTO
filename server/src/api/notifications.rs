@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 56] = [
+pub(crate) const WATCHED: [&str; 58] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -76,6 +76,8 @@ pub(crate) const WATCHED: [&str; 56] = [
     "stock_in.reverse",
     "supplier_return.post",
     "supplier_return.reverse",
+    "oil.transfer_admin",
+    "employee.pin",
 ];
 
 #[derive(Serialize)]
@@ -386,6 +388,21 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .and_then(Value::as_bool)
                     .filter(|c| *c)
                     .map(|_| "сменён пароль".to_string()),
+                // Право «Перелив масла» выдано или снято (ADR-082).
+                {
+                    let has = |k: &str| {
+                        data.get(k)
+                            .and_then(Value::as_array)
+                            .is_some_and(|a| a.iter().any(|p| p == "oil_transfer"))
+                    };
+                    match (has("permissions_before"), has("permissions")) {
+                        (false, true) if data.get("permissions_before").is_some() => {
+                            Some("выдано право «Перелив масла»".to_string())
+                        }
+                        (true, false) => Some("снято право «Перелив масла»".to_string()),
+                        _ => None,
+                    }
+                },
             ]
             .into_iter()
             .flatten()
@@ -454,14 +471,28 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             };
             (
                 format!("Смена № {} закрыта", num("number").unwrap_or(0)),
-                format!(
-                    "должно было быть {}, пересчитали {}{}; в сейф {}, в кассе осталось {}",
-                    money(num("expected")),
-                    money(num("counted")),
-                    diff_text,
-                    money(num("to_safe")),
-                    money(num("left"))
-                ),
+                {
+                    // Куда сдали и кассир (SPEC-29 §14); у прежних записей — «в сейф».
+                    let to = text("to_name");
+                    let cashier = text("cashier");
+                    let handed = if to.is_empty() {
+                        format!("в сейф {}", money(num("to_safe")))
+                    } else {
+                        format!("сдали кассу: {} → {to}", money(num("to_safe")))
+                    };
+                    format!(
+                        "должно было быть {}, пересчитали {}{}; {handed}, в кассе осталось {}{}",
+                        money(num("expected")),
+                        money(num("counted")),
+                        diff_text,
+                        money(num("left")),
+                        if cashier.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", кассир {cashier}")
+                        }
+                    )
+                },
             )
         }
         "revision.post" => (
@@ -773,6 +804,28 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "defect.resolve_reverse" => (
             format!("Отменено решение по браку № {}", num("number").unwrap_or(0)),
             format!("{}{}", text("name"), comment(data)),
+        ),
+        // Перелив администратора с правом (ADR-082): владелец узнаёт о каждом.
+        "oil.transfer_admin" => (
+            format!(
+                "Перелив № {} провёл администратор",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} → {}, {} мл, себестоимость {}",
+                text("from_name"),
+                text("to_name"),
+                num("qty_ml").unwrap_or(0),
+                money(num("value"))
+            ),
+        ),
+        "employee.pin" => (
+            if data.get("set").and_then(Value::as_bool).unwrap_or(false) {
+                format!("Задан PIN кассира: {}", text("full_name"))
+            } else {
+                format!("Снят PIN кассира: {}", text("full_name"))
+            },
+            String::new(),
         ),
         "stock_in.post" => (
             format!(

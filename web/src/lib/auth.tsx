@@ -82,3 +82,4 @@ export function useUser(): User {
   if (!user) throw new Error('нет пользователя')
   return user
 }
+

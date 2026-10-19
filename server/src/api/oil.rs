@@ -9,7 +9,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::receipts::lock_products;
-use crate::auth::{Ctx, Owner};
+use crate::auth::{Ctx, CurrentUser};
 use crate::domain::costing::cost_of;
 use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid, overflow};
@@ -41,7 +41,10 @@ pub struct OilState {
     pub product_id: Uuid,
     pub name: String,
     pub stock_ml: i64,
-    pub value_tyiyn: i64,
+    /// Стоимость остатка и средняя за литр — только владельцу (инвариант 13, ADR-082).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_tyiyn: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avg_per_l_tyiyn: Option<i64>,
 }
 
@@ -50,9 +53,36 @@ pub struct TransferOut {
     pub id: Uuid,
     pub number: i64,
     pub qty_ml: i64,
-    pub value_tyiyn: i64,
+    /// Себестоимость перелитого — только владельцу (ADR-082).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_tyiyn: Option<i64>,
     pub from: OilState,
     pub to: OilState,
+}
+
+impl TransferOut {
+    /// Администратору с правом перелива сервер себестоимость не отдаёт (инвариант 13).
+    fn for_user(mut self, user: &CurrentUser) -> Self {
+        if !user.is_owner() {
+            self.value_tyiyn = None;
+            for s in [&mut self.from, &mut self.to] {
+                s.value_tyiyn = None;
+                s.avg_per_l_tyiyn = None;
+            }
+        }
+        self
+    }
+}
+
+/// Перелив проводит владелец или администратор, которому владелец выдал право (ADR-082).
+async fn require_transfer_right(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<()> {
+    if crate::auth::has_permission(conn, user, "oil_transfer").await? {
+        Ok(())
+    } else {
+        Err(AppError::ForbiddenWith(
+            "перелив — владелец или администратор с правом «Перелив масла»".into(),
+        ))
+    }
 }
 
 async fn oil_state(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<OilState> {
@@ -69,7 +99,7 @@ async fn oil_state(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppRes
         product_id: id,
         name: r.name,
         stock_ml: r.qty,
-        value_tyiyn: r.value,
+        value_tyiyn: Some(r.value),
         avg_per_l_tyiyn: (r.qty > 0)
             .then(|| div_round(i128::from(r.value) * 1000, i128::from(r.qty)))
             .flatten(),
@@ -86,10 +116,9 @@ pub async fn post_transfer_tx(
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    // Перелив и цена за литр — только владелец (инвариант 14).
-    if !ctx.user.is_owner() {
-        return Err(AppError::Forbidden);
-    }
+    // Перелив — владелец или администратор с правом (инвариант 14 с отступлением ADR-082);
+    // цена за литр — по-прежнему только владелец.
+    require_transfer_right(conn, &ctx.user).await?;
     if req.from_product_id == req.to_product_id {
         return Err(invalid("выберите разные масла"));
     }
@@ -174,10 +203,17 @@ pub async fn post_transfer_tx(
     .await?;
     let from = oil_state(conn, branch_id, req.from_product_id).await?;
     let to = oil_state(conn, branch_id, req.to_product_id).await?;
+    // Перелив администратора — отдельным событием: владелец получает уведомление о каждом
+    // (ADR-082); свой перелив владельца — в ленте бота, как раньше.
+    let action = if ctx.user.is_owner() {
+        KIND
+    } else {
+        "oil.transfer_admin"
+    };
     ops::audit(
         conn,
         ctx,
-        KIND,
+        action,
         "product",
         Some(req.to_product_id),
         json!({
@@ -195,10 +231,11 @@ pub async fn post_transfer_tx(
         id,
         number,
         qty_ml: req.qty_ml,
-        value_tyiyn: value,
+        value_tyiyn: Some(value),
         from,
         to,
-    };
+    }
+    .for_user(&ctx.user);
     ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }
@@ -326,7 +363,7 @@ pub async fn reverse_transfer_tx(
         id,
         number: t.number,
         qty_ml: t.qty_ml,
-        value_tyiyn: t.value_tyiyn,
+        value_tyiyn: Some(t.value_tyiyn),
         from,
         to,
     };
@@ -360,12 +397,26 @@ pub(crate) struct TransferRow {
     pub(crate) reversed: bool,
 }
 
+/// Список переливов: владельцу — целиком, администратору с правом — без себестоимости.
 async fn list(
     State(state): State<AppState>,
-    Owner(user): Owner,
-) -> AppResult<Json<Vec<TransferRow>>> {
+    user: CurrentUser,
+) -> AppResult<Json<Vec<serde_json::Value>>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(list_data(&mut conn, &user).await?))
+    require_transfer_right(&mut conn, &user).await?;
+    let rows = list_rows(&mut conn, &user).await?;
+    let owner = user.is_owner();
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| {
+                let mut v = json!(r);
+                if !owner && let Some(o) = v.as_object_mut() {
+                    o.remove("value_tyiyn");
+                }
+                v
+            })
+            .collect(),
+    ))
 }
 
 /// Последние 100 переливов — экран владельца и его бот (SPEC-24). Только владелец.
@@ -374,6 +425,13 @@ pub(crate) async fn list_data(
     user: &crate::auth::CurrentUser,
 ) -> AppResult<Vec<TransferRow>> {
     user.require_owner()?;
+    list_rows(conn, user).await
+}
+
+async fn list_rows(
+    conn: &mut PgConnection,
+    user: &crate::auth::CurrentUser,
+) -> AppResult<Vec<TransferRow>> {
     let rows = sqlx::query_as!(
         TransferRow,
         r#"select t.id, t.number, f.name as from_name, d.name as to_name, t.qty_ml, t.value_tyiyn,

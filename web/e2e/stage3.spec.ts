@@ -94,14 +94,14 @@ const apiPost = <T>(request: APIRequestContext, path: string, data: unknown) => 
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   if (await apiGet<ShiftRow | null>(request, '/shifts/current')) return
   const opened = await request.post('/api/v1/shifts/open', {
-    data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId },
+    data: { op_id: crypto.randomUUID(), cashier_employee_id: cashierId, cashier_pin: '1234' },
     headers: DEVICE,
   })
   expect(opened.ok(), await opened.text()).toBeTruthy()
 }
 
 async function employee(request: APIRequestContext, name: string, roles: { is_cashier?: boolean; is_master?: boolean }) {
-  return apiPost<{ id: string }>(request, '/employees', { full_name: name, ...roles })
+  return apiPost<{ id: string }>(request, '/employees', { full_name: name, ...roles, ...(roles.is_cashier ? { pin: '1234' } : {}) })
 }
 
 /** Штучный товар с приходом: цена продажи и закупка за штуку в тыйынах. */
@@ -171,7 +171,7 @@ test('услуга «масло клиента»: ставка мастера и
   await login(page)
   const cashier = `Кассир услуг ${RUN}`
   const master = `Мастер услуг ${RUN}`
-  await employee(page.request, cashier, { is_cashier: true })
+  await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   const m = await employee(page.request, master, { is_master: true })
   const service = `Замена масла (масло клиента) ${RUN}`
 
@@ -207,7 +207,7 @@ test('услуга «масло клиента»: ставка мастера и
 test('продажа в долг: ПИН из кассы и печать расписки', async ({ page }) => {
   await login(page)
   const cashier = `Кассир долга ${RUN}`
-  await employee(page.request, cashier, { is_cashier: true })
+  await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   const code = `27${RUN}101`
   const product = `Фильтр в долг ${RUN}`
   await pieceProduct(page.request, product, code, 125_000, 60_000)
@@ -258,7 +258,7 @@ test('повторный долг: в расписке прежний долг �
   // Взял в долг 400, пришёл снова и взял ещё 500: расписка показывает прежние 400 и итог 900.
   await login(page)
   const cashier = `Кассир повторного долга ${RUN}`
-  const cashierId = (await employee(page.request, cashier, { is_cashier: true })).id
+  const cashierId = (await employee(page.request, cashier, { is_cashier: true, pin: '1234' })).id
   await ensureOpenShift(page.request, cashierId)
   const code = `27${RUN}202`
   const product = `Свеча в долг ${RUN}`
@@ -296,7 +296,7 @@ test('повторный долг: в расписке прежний долг �
 test('оплата долга из кассы попадает в смену', async ({ page }) => {
   await login(page)
   const cashier = `Кассир оплаты ${RUN}`
-  const emp = await employee(page.request, cashier, { is_cashier: true })
+  const emp = await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   await ensureOpenShift(page.request, emp.id)
   const prod = await pieceProduct(page.request, `Фильтр оплаты ${RUN}`, `25${RUN}202`, 100_000, 50_000)
   const client = `Должник Оплатов ${RUN}`
@@ -322,7 +322,7 @@ test('оплата долга из кассы попадает в смену', a
 test('подарок по порогу: 1 л розлива мало, канистра 4 л — спрашивает', async ({ page }) => {
   await login(page)
   const cashier = `Кассир подарков ${RUN}`
-  await employee(page.request, cashier, { is_cashier: true })
+  await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   const oilCode = `24${RUN}303`
   const oil = await oilProduct(page.request, `Totachi 0W-20 ${RUN}`, {
     code: oilCode,
@@ -370,6 +370,8 @@ test('подарок по порогу: 1 л розлива мало, канис
   await pickCashier(page, cashier)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
+  // Масло на вынос — касса спрашивает, не замена ли это (SPEC-29 §18).
+  await page.getByTestId('oil-question').getByRole('button', { name: 'Нет, на вынос' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
   // 1 л по 750 (розлив от цены канистры 3000 / 4 л, ADR-074) + канистра 3000, подарок за ноль.
   await expect(page.getByText(money('Итог 3 750 с'))).toBeVisible()
@@ -434,7 +436,7 @@ test('перелив масла: 5 л по 100 в 50 л по 200 дают 190,91
 
 test('акт сверки из карточки клиента', async ({ page }) => {
   await login(page)
-  const emp = await employee(page.request, `Кассир акта ${RUN}`, { is_cashier: true })
+  const emp = await employee(page.request, `Кассир акта ${RUN}`, { is_cashier: true, pin: '1234' })
   await ensureOpenShift(page.request, emp.id)
   const prod = await pieceProduct(page.request, `Фильтр акта ${RUN}`, `20${RUN}707`, 200_000, 100_000)
   const client = `Сверкин Акт ${RUN}`
@@ -462,7 +464,7 @@ test('акт сверки из карточки клиента', async ({ page }
 test('цена ниже закупочной: касса показывает отказ сервера, чек не проведён', async ({ page }) => {
   await login(page)
   const cashier = `Кассир цены ${RUN}`
-  await employee(page.request, cashier, { is_cashier: true })
+  await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   const code = `19${RUN}808`
   const product = `Фильтр дешёвый ${RUN}`
   await pieceProduct(page.request, product, code, 50_000, 30_000)
@@ -486,7 +488,7 @@ test('замена в сервисе у физлица: машина, обяза
   await login(page)
   const cashier = `Кассир книжки ${RUN}`
   const master = `Мастер книжки ${RUN}`
-  await employee(page.request, cashier, { is_cashier: true })
+  await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   await employee(page.request, master, { is_master: true })
   const client = `Частник ${RUN}`
   await apiSend(page.request, 'POST', '/parties', { name: client, kind: 'person', phone: `0555${RUN.slice(-6)}` })

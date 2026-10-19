@@ -286,6 +286,9 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         payments,
         offline: false,
         mileage_km: None,
+        mileage: None,
+        mileage_unit: None,
+        book_intervals: Vec::new(),
         delivery_address: String::new(),
         declined: String::new(),
     }
@@ -1078,14 +1081,14 @@ async fn oil_transfer_averages_cost(pool: PgPool) {
     // Администратору перелив недоступен; больше, чем есть, не перелить.
     assert!(matches!(
         transfer(&w.admin, 1_000).await,
-        Err(AppError::Forbidden)
+        Err(AppError::ForbiddenWith(_))
     ));
     assert!(matches!(
         transfer(&w.owner, 60_000).await,
         Err(AppError::Validation(_))
     ));
     let out = transfer(&w.owner, 50_000).await.unwrap();
-    assert_eq!(out.value_tyiyn, 1_000_000);
+    assert_eq!(out.value_tyiyn, Some(1_000_000));
     assert_eq!(out.to.stock_ml, 55_000);
     assert_eq!(out.to.avg_per_l_tyiyn, Some(19_091));
     assert_eq!(out.from.stock_ml, 0);
@@ -1127,9 +1130,12 @@ async fn oil_transfer_averages_cost(pool: PgPool) {
         .unwrap();
     assert_eq!(
         (back.from.stock_ml, back.from.value_tyiyn),
-        (50_000, 1_000_000)
+        (50_000, Some(1_000_000))
     );
-    assert_eq!((back.to.stock_ml, back.to.value_tyiyn), (5_000, 50_000));
+    assert_eq!(
+        (back.to.stock_ml, back.to.value_tyiyn),
+        (5_000, Some(50_000))
+    );
     assert!(matches!(
         reverse(&w.owner, out.id, "ещё раз").await,
         Err(AppError::Conflict(_))

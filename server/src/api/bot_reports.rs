@@ -1432,8 +1432,11 @@ pub async fn party(
                     lines.push(format!(
                         "  {}{}: {}",
                         day(r.change_date),
-                        r.mileage_km
-                            .map(|k| format!(", {k} км"))
+                        r.mileage
+                            .map(|k| format!(
+                                ", {}",
+                                crate::domain::mileage::text(k, &r.mileage_unit)
+                            ))
                             .unwrap_or_default(),
                         or_dash(&what)
                     ));

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into car_models (id, make_id, name, created_by) values ($1, $2, $3, $4) on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "be17e741474981f35c0d7b4b250d535d9d1ad6c3704ffa33fae23993378bc4bd"
+}

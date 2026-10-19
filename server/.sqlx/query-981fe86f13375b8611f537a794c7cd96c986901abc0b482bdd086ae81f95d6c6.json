@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(\n             (select t.to_account_id from shift_handovers h\n              join cash_transfers t on t.id = h.transfer_id\n              join cash_accounts a on a.id = t.to_account_id\n              join shifts s on s.id = h.shift_id\n              where s.branch_id = $1 and a.active and a.id <> $2\n              order by h.created_at desc limit 1),\n             (select id from cash_accounts\n              where branch_id = $1 and kind = 'safe' and not owner_only and active\n              order by created_at limit 1)) as \"id?\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id?",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "981fe86f13375b8611f537a794c7cd96c986901abc0b482bdd086ae81f95d6c6"
+}

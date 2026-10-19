@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select party_id, plate, active, mileage_unit from party_vehicles where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "mileage_unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1a258ac8cd6f5ed7d62ddf5bf93ec815f7702c4f30840a008830eaeb304b090b"
+}

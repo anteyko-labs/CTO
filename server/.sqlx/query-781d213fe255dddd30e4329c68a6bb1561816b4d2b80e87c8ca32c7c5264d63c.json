@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, plate, brand, model, comment, active, mileage_unit\n           from party_vehicles\n           where branch_id = $1 and ($2::uuid is null or party_id = $2) and ($3::uuid is null or id = $3)\n             and (active or $3::uuid is not null or $4)\n           order by active desc, plate",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "model",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "mileage_unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "781d213fe255dddd30e4329c68a6bb1561816b4d2b80e87c8ca32c7c5264d63c"
+}

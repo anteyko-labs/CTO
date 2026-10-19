@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
             routing::get(list_employees).post(create_employee),
         )
         .route("/employees/{id}", routing::patch(update_employee))
+        .route("/employees/{id}/pin", routing::post(set_pin))
         .route(
             "/services",
             routing::get(list_services).post(create_service),
@@ -70,6 +71,8 @@ struct EmployeeOut {
     /// Телефон для кабинета в боте (SPEC-23) — только владельцу: он открывает доступ к начислениям.
     #[serde(skip_serializing_if = "Option::is_none")]
     phone: Option<String>,
+    /// PIN кассира задан (ADR-081); сам PIN не отдаётся никому.
+    has_pin: bool,
 }
 
 async fn list_employees(
@@ -78,7 +81,7 @@ async fn list_employees(
 ) -> AppResult<Json<Vec<EmployeeOut>>> {
     let owner = user.is_owner();
     let rows = sqlx::query!(
-        "select id, full_name, is_cashier, is_master, active, phone from employees where branch_id = $1 order by full_name",
+        "select id, full_name, is_cashier, is_master, active, phone, pin_hash is not null as \"has_pin!\" from employees where branch_id = $1 order by full_name",
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -91,6 +94,7 @@ async fn list_employees(
         is_master: r.is_master,
         active: r.active,
         phone: owner.then_some(r.phone),
+        has_pin: r.has_pin,
     })
     .collect();
     Ok(Json(rows))
@@ -118,6 +122,18 @@ struct EmployeeReq {
     /// Телефон для бота можно указать сразу — только владелец (SPEC-23, SPEC-27).
     #[serde(default)]
     phone: String,
+    /// PIN кассира (4 цифры) можно задать сразу — только владелец (ADR-081).
+    #[serde(default)]
+    pin: Option<String>,
+}
+
+/// PIN кассира — ровно 4 цифры (ADR-081).
+pub(crate) fn check_pin(pin: &str) -> AppResult<()> {
+    if pin.len() == 4 && pin.bytes().all(|b| b.is_ascii_digit()) {
+        Ok(())
+    } else {
+        Err(invalid("PIN — 4 цифры"))
+    }
 }
 
 async fn create_employee(
@@ -134,16 +150,29 @@ async fn create_employee(
     if !phone.is_empty() && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
+    let pin_hash = match req.pin.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(pin) => {
+            if !ctx.user.is_owner() {
+                return Err(AppError::Forbidden);
+            }
+            check_pin(pin)?;
+            Some(crate::auth::hash_password(pin.to_string()).await?)
+        }
+        None => None,
+    };
+    let has_pin = pin_hash.is_some();
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
-        "insert into employees (id, branch_id, full_name, is_cashier, is_master, phone) values ($1, $2, $3, $4, $5, $6)",
+        r#"insert into employees (id, branch_id, full_name, is_cashier, is_master, phone, pin_hash, pin_set_at)
+           values ($1, $2, $3, $4, $5, $6, $7, case when $7::text is null then null else now() end)"#,
         id,
         ctx.user.branch_id,
         full_name,
         req.is_cashier,
         req.is_master,
-        phone
+        phone,
+        pin_hash
     )
     .execute(&mut *tx)
     .await?;
@@ -164,6 +193,7 @@ async fn create_employee(
             "is_master": req.is_master,
             "phone": phone,
             "pay_rules_added": rules_added,
+            "pin_set": has_pin,
         }),
     )
     .await?;
@@ -175,6 +205,7 @@ async fn create_employee(
         is_master: req.is_master,
         active: true,
         phone: ctx.user.is_owner().then_some(phone),
+        has_pin,
     }))
 }
 
@@ -240,7 +271,7 @@ async fn update_employee(
         r#"update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),
              is_master = coalesce($5, is_master), active = coalesce($6, active), phone = coalesce($7, phone)
            where id = $1 and branch_id = $2
-           returning id, full_name, is_cashier, is_master, active, phone"#,
+           returning id, full_name, is_cashier, is_master, active, phone, pin_hash is not null as "has_pin!""#,
         id,
         ctx.user.branch_id,
         full_name,
@@ -267,6 +298,7 @@ async fn update_employee(
         is_master: r.is_master,
         active: r.active,
         phone: ctx.user.is_owner().then(|| r.phone.clone()),
+        has_pin: r.has_pin,
     };
     // Правила по умолчанию — только когда сотрудник становится кассиром и правил кассира у него
     // никогда не было: правка имени и повторное назначение не возвращают закрытый оклад (ADR-062).
@@ -302,6 +334,69 @@ async fn update_employee(
     .await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct PinReq {
+    /// Новый PIN, 4 цифры; `null` — снять PIN.
+    pin: Option<String>,
+}
+
+/// PIN кассира задаёт, меняет и снимает только владелец (ADR-081). Хранится хеш argon2, как у
+/// паролей; новый PIN снимает блокировку после неверных попыток.
+async fn set_pin(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PinReq>,
+) -> AppResult<Json<EmployeeOut>> {
+    ctx.user.require_owner()?;
+    let pin = req.pin.map(|p| p.trim().to_string());
+    let hash = match &pin {
+        Some(p) => {
+            check_pin(p)?;
+            Some(crate::auth::hash_password(p.clone()).await?)
+        }
+        None => None,
+    };
+    let mut tx = state.pool.begin().await?;
+    let r = sqlx::query!(
+        r#"update employees
+           set pin_hash = $3, pin_set_at = case when $3::text is null then null else now() end
+           where id = $1 and branch_id = $2
+           returning id, full_name, is_cashier, is_master, active, phone"#,
+        id,
+        ctx.user.branch_id,
+        hash
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "employee.pin",
+        "employee",
+        Some(id),
+        json!({ "full_name": r.full_name, "set": hash.is_some() }),
+    )
+    .await?;
+    tx.commit().await?;
+    crate::api::auth::clear_attempts(&state, &pin_key(id)).await?;
+    Ok(Json(EmployeeOut {
+        id: r.id,
+        full_name: r.full_name,
+        is_cashier: r.is_cashier,
+        is_master: r.is_master,
+        active: r.active,
+        phone: Some(r.phone),
+        has_pin: hash.is_some(),
+    }))
+}
+
+/// Ключ счётчика неверных PIN кассира (та же таблица, что у попыток входа).
+pub(crate) fn pin_key(employee_id: Uuid) -> String {
+    format!("pin|{employee_id}")
 }
 
 // ---------- Услуги ----------

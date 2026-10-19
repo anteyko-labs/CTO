@@ -31,7 +31,7 @@ async function apiPost<T>(request: APIRequestContext, path: string, data: unknow
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   const current = await request.get('/api/v1/shifts/current')
   if ((await current.json()) !== null) return
-  await apiPost(request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId })
+  await apiPost(request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId, cashier_pin: '1234' })
 }
 
 async function scan(page: Page, code: string) {
@@ -47,7 +47,7 @@ test('товар, приход, продажа, возврат и остаток
   const product = `Фильтр E2E ${RUN}`
 
   await login(page, OWNER, OWNER_PASSWORD)
-  const employee = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true, is_master: true })
+  const employee = await apiPost<{ id: string }>(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1234', is_master: true })
   await apiPost(page.request, '/categories', { name: category, kind: 'filter' })
 
   // Приход: незнакомый код предлагает привязать его к товару или создать новый.
@@ -145,7 +145,7 @@ test('касса работает без сети, чек уходит при е
     paid_from: await ownerSafe(page.request),
     lines: [{ product_id: prod.id, qty: 5, cost_tyiyn: 150000 }],
   })
-  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true })
+  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
 
   // Снимок каталога должен успеть лечь на устройство.
   await page.goto('/')

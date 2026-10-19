@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into oil_changes (id, branch_id, vehicle_id, party_id, sale_id, change_date,\n                                    mileage_km, oil_text, filter_text, user_id, declined,\n                                    mileage_value, mileage_unit)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n           on conflict (sale_id) where sale_id is not null do nothing\n           returning id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Int4",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8e76c4ece55d5284e2f36a5b4bc2f9c484dc8989a296c092ad173d97bf64d5b1"
+}

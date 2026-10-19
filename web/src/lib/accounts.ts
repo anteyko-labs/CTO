@@ -1,6 +1,7 @@
 // Свои счета (SPEC-28 §5, ADR-076, ADR-077): кассы и безналичные счета, итоги «Обзора счетов», выбор
 // банка для карты и перевода (свой счёт по умолчанию у каждого способа). Права и остатки проверяет
 // сервер; здесь — только показ и выбор.
+import { formatSom } from './format'
 import type { CashAccount } from './types'
 
 /** Касса смены: к ней привязана смена, в неё идут наличные чеков. Одна на филиал. */
@@ -74,4 +75,31 @@ export function defaultBankId(
 export function enoughOn(a: Pick<CashAccount, 'balance_tyiyn' | 'allow_negative'> | undefined, amount: number): boolean {
   if (!a) return true
   return a.allow_negative || amount <= a.balance_tyiyn
+}
+
+/** Счёт с остатком для выбора: «Касса — 12 300 с» (SPEC-29 §12). Остаток — с сервера, как есть. */
+export function accountLabel(a: Pick<CashAccount, 'name' | 'balance_tyiyn'>): string {
+  return `${a.name} — ${formatSom(a.balance_tyiyn)}`
+}
+
+/** Откуда платить сотруднику или поставщику: владелец — любой действующий счёт, администратор —
+ *  только касса смены (ADR-076, SPEC-29 §13). Касса смены — первой. Права проверяет сервер. */
+export function payAccounts<T extends Pick<CashAccount, 'kind' | 'is_default' | 'owner_only'> & { active?: boolean }>(
+  accounts: readonly T[],
+  owner: boolean,
+): T[] {
+  return accounts
+    .filter((a) => a.active !== false && (owner || (isTill(a) && !a.owner_only)))
+    .sort((x, y) => Number(isTill(y)) - Number(isTill(x)))
+}
+
+/** Куда сдать кассу: любой действующий счёт, кроме самой кассы смены; первым — предложенный
+ *  сервером (куда сдавали в прошлый раз или сейф магазина), иначе первый сейф (SPEC-29 §14). */
+export function handoverChoices<T extends Pick<CashAccount, 'id' | 'kind' | 'is_default'> & { active?: boolean }>(
+  accounts: readonly T[],
+  suggested: string | null | undefined,
+): { list: T[]; pick: string } {
+  const list = accounts.filter((a) => a.active !== false && !isTill(a))
+  const pick = list.some((a) => a.id === suggested) ? (suggested as string) : (list.find((a) => a.kind === 'safe')?.id ?? list[0]?.id ?? '')
+  return { list, pick }
 }

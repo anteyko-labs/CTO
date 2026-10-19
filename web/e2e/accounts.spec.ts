@@ -46,7 +46,7 @@ test('свой банк: завести, продать картой на нег
   await login(page)
   const bankName = `Оптима ${RUN}`
   const cashier = `Кассир счетов ${RUN}`
-  await api(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true })
+  await api(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
   const cat = await api<{ id: string }>(page.request, 'POST', '/categories', { name: `Счета ${RUN}`, kind: 'other' })
   const code = `29${RUN}555`
   const item = `Ветошь ${RUN}`

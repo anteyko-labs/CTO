@@ -37,6 +37,7 @@ pub fn routes() -> Router<AppState> {
         .route("/shifts", routing::get(list_shifts))
         .route("/shifts/open", routing::post(open_shift))
         .route("/shifts/current", routing::get(current_shift))
+        .route("/shifts/handover-target", routing::get(handover_target))
         .route("/shifts/{id}", routing::get(get_shift))
         .route("/shifts/{id}/close", routing::post(close_shift))
         .route("/shifts/{id}/reopen", routing::post(reopen_shift))
@@ -775,6 +776,79 @@ struct OpenReq {
     account_id: Option<Uuid>,
     cashier_employee_id: Uuid,
     counted_tyiyn: Option<i64>,
+    /// PIN кассира смены (ADR-081).
+    #[serde(default)]
+    cashier_pin: Option<String>,
+    /// Вместо PIN кассира — пароль владельца, который открывает смену сам (ADR-081).
+    #[serde(default)]
+    owner_password: Option<String>,
+}
+
+/// Открытие смены подтверждает кассир своим PIN или владелец своим паролем (ADR-081).
+/// Проверка — до транзакции: неверная попытка записывается и тогда, когда смену не открыли.
+/// Пять неверных подряд за 15 минут — блокировка на 15 минут (как у входа, ADR-016).
+async fn confirm_opener(state: &AppState, ctx: &Ctx, req: &OpenReq) -> AppResult<&'static str> {
+    use crate::api::auth::{MAX_FAILURES, clear_attempts, reserve_with_limit};
+    if let Some(password) = req.owner_password.as_deref().filter(|p| !p.is_empty()) {
+        if !ctx.user.is_owner() {
+            return Err(AppError::ForbiddenWith(
+                "паролем смену открывает только владелец; кассир вводит свой PIN".into(),
+            ));
+        }
+        if password.len() > 200 {
+            return Err(invalid("неверный пароль владельца"));
+        }
+        let key = format!("shift-owner|{}", ctx.user.id);
+        if let Some(minutes) = reserve_with_limit(state, &key, MAX_FAILURES).await? {
+            return Err(AppError::TooManyRequests(format!(
+                "слишком много неверных паролей, повторите через {minutes} мин"
+            )));
+        }
+        let hash =
+            sqlx::query_scalar!("select password_hash from users where id = $1", ctx.user.id)
+                .fetch_one(&state.pool)
+                .await?;
+        if !crate::auth::verify_password(password.to_string(), hash).await {
+            return Err(invalid("неверный пароль владельца"));
+        }
+        clear_attempts(state, &key).await?;
+        return Ok("owner_password");
+    }
+    let emp = sqlx::query!(
+        "select full_name, pin_hash from employees where id = $1 and branch_id = $2",
+        req.cashier_employee_id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| invalid("кассир не найден"))?;
+    let Some(hash) = emp.pin_hash else {
+        return Err(invalid(format!(
+            "у кассира {} нет PIN: владелец задаёт его в карточке сотрудника{}",
+            emp.full_name,
+            if ctx.user.is_owner() {
+                " (или откройте смену своим паролем)"
+            } else {
+                ""
+            }
+        )));
+    };
+    let pin = req.cashier_pin.as_deref().map(str::trim).unwrap_or("");
+    if pin.is_empty() {
+        return Err(invalid("введите PIN кассира"));
+    }
+    let key = crate::api::refs::pin_key(req.cashier_employee_id);
+    if let Some(minutes) = reserve_with_limit(state, &key, MAX_FAILURES).await? {
+        return Err(AppError::TooManyRequests(format!(
+            "PIN кассира {} заблокирован после {MAX_FAILURES} неверных попыток: повторите через {minutes} мин или попросите владельца задать новый PIN",
+            emp.full_name
+        )));
+    }
+    if pin.len() > 16 || !crate::auth::verify_password(pin.to_string(), hash).await {
+        return Err(invalid("неверный PIN кассира"));
+    }
+    clear_attempts(state, &key).await?;
+    Ok("pin")
 }
 
 async fn open_shift(
@@ -790,6 +864,7 @@ async fn open_shift(
     if let Some(c) = req.counted_tyiyn {
         ops::check_balance(c)?;
     }
+    let confirmed = confirm_opener(&state, &ctx, &req).await?;
     let mut tx = state.pool.begin().await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
@@ -876,7 +951,12 @@ async fn open_shift(
         KIND,
         "shift",
         Some(id),
-        json!({ "number": number, "expected": acc.balance_tyiyn, "counted": req.counted_tyiyn }),
+        json!({
+            "number": number,
+            "expected": acc.balance_tyiyn,
+            "counted": req.counted_tyiyn,
+            "confirmed": confirmed,
+        }),
     )
     .await?;
     let out = load_shift(&mut tx, branch_id, id).await?;
@@ -902,6 +982,10 @@ struct ClosePayout {
     op_id: Uuid,
     employee_id: Uuid,
     amount_tyiyn: i64,
+    /// Откуда выплатить (SPEC-29 §13): без него — касса смены. Владелец — любой действующий
+    /// счёт, администратор — только касса смены (ADR-076).
+    #[serde(default)]
+    account_id: Option<Uuid>,
 }
 
 async fn close_shift(
@@ -948,6 +1032,7 @@ async fn close_shift(
         }
         let comment = format!("при закрытии смены № {}", shift.number);
         for p in &req.payouts {
+            let from = p.account_id.unwrap_or(shift.account_id);
             crate::api::payroll::post_payout_tx(
                 &mut tx,
                 &ctx,
@@ -956,15 +1041,18 @@ async fn close_shift(
                     employee_id: p.employee_id,
                     amount_tyiyn: p.amount_tyiyn,
                     source: Some("account".into()),
-                    account_id: Some(shift.account_id),
+                    account_id: Some(from),
                     advance: false,
                     comment: comment.clone(),
                 },
             )
             .await?;
-            paid_out = paid_out
-                .checked_add(p.amount_tyiyn)
-                .ok_or_else(crate::error::overflow)?;
+            // «Должно быть» уменьшают только выплаты из кассы смены.
+            if from == shift.account_id {
+                paid_out = paid_out
+                    .checked_add(p.amount_tyiyn)
+                    .ok_or_else(crate::error::overflow)?;
+            }
         }
     }
     // Сначала блокировка кассы, потом проверка: два устройства не закроют смену дважды.
@@ -1205,30 +1293,34 @@ async fn handover_shift(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    // Сейф магазина по умолчанию: в сейф владельца деньги перекладывает он сам (ADR-037).
+    // Куда сдают — выбирает кассир (SPEC-29 §14): по умолчанию куда сдавали в прошлый раз,
+    // иначе сейф магазина. Любой действующий счёт, кроме самой кассы смены (ADR-081).
     let safe = match req.to_account_id {
         Some(a) => a,
-        None => sqlx::query_scalar!(
-            r#"select id from cash_accounts
-               where branch_id = $1 and kind = 'safe' and not owner_only and active
-               order by created_at limit 1"#,
-            branch_id
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| invalid("нет сейфа магазина"))?,
+        None => handover_default(&mut tx, branch_id, shift.account_id)
+            .await?
+            .ok_or_else(|| invalid("нет сейфа магазина: выберите, куда сдать"))?,
     };
-    let safe_kind = sqlx::query_scalar!(
-        "select kind from cash_accounts where id = $1 and branch_id = $2",
+    if safe == shift.account_id {
+        return Err(invalid("кассу сдают на другой счёт"));
+    }
+    let target = sqlx::query!(
+        "select name, active from cash_accounts where id = $1 and branch_id = $2",
         safe,
         branch_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| invalid("касса не найдена"))?;
-    if safe_kind != "safe" {
-        return Err(invalid("кассу сдают в сейф"));
+    if !target.active {
+        return Err(invalid("счёт в архиве"));
     }
+    let cashier = sqlx::query_scalar!(
+        "select e.full_name from shifts s join employees e on e.id = s.cashier_employee_id where s.id = $1",
+        id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     lock_accounts(&mut tx, branch_id, &[shift.account_id, safe]).await?;
     let close = sqlx::query!(
         r#"select c.id, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,
@@ -1312,6 +1404,9 @@ async fn handover_shift(
             "diff": close.diff_tyiyn,
             "to_safe": req.amount_tyiyn,
             "left": left,
+            "to_account_id": safe,
+            "to_name": target.name,
+            "cashier": cashier,
         }),
     )
     .await?;
@@ -1319,6 +1414,48 @@ async fn handover_shift(
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+/// Куда сдать кассу по умолчанию: куда сдавали в прошлый раз (если счёт ещё действует),
+/// иначе сейф магазина (SPEC-29 §14).
+pub(crate) async fn handover_default(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    till: Uuid,
+) -> AppResult<Option<Uuid>> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce(
+             (select t.to_account_id from shift_handovers h
+              join cash_transfers t on t.id = h.transfer_id
+              join cash_accounts a on a.id = t.to_account_id
+              join shifts s on s.id = h.shift_id
+              where s.branch_id = $1 and a.active and a.id <> $2
+              order by h.created_at desc limit 1),
+             (select id from cash_accounts
+              where branch_id = $1 and kind = 'safe' and not owner_only and active
+              order by created_at limit 1)) as "id?""#,
+        branch_id,
+        till
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+#[derive(Serialize)]
+struct HandoverTarget {
+    account_id: Option<Uuid>,
+}
+
+/// Счёт, который окно «Сдать кассу» предлагает первым.
+async fn handover_target(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<HandoverTarget>> {
+    let mut conn = state.pool.acquire().await?;
+    let till = default_account(&mut conn, user.branch_id).await?;
+    Ok(Json(HandoverTarget {
+        account_id: handover_default(&mut conn, user.branch_id, till).await?,
+    }))
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]

@@ -4,10 +4,11 @@
 // Администратор видит счета без «только владелец», без правки. Остатки и права — на сервере.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { AccountMoneyModal, type AccountMoneyKind } from '../components/AccountMoneyModal'
 import { Icon } from '../components/icons'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { accountNote, accountTotals, accountType, isBank, isTill } from '../lib/accounts'
 import { get, getPage, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -66,6 +67,8 @@ export default function Accounts() {
   const totals = accountTotals(rows)
   const [form, setForm] = useState<Form | null>(null)
   const [history, setHistory] = useState<CashAccount | null>(null)
+  // «Внести», «Изъять», «Перевести» у счёта (SPEC-29 §11) — владелец; все счета для «куда».
+  const [money, setMoney] = useState<{ kind: AccountMoneyKind; account: CashAccount } | null>(null)
   const act = useAction()
 
   const edit = (a: CashAccount) => {
@@ -197,7 +200,32 @@ export default function Accounts() {
                   </td>
                   <td className="px-2 py-2">{a.allow_negative ? 'Разрешён' : 'Не разрешён'}</td>
                   <td className="px-2 py-2 tabular-nums">{isBank(a) ? formatPercentBp(a.fee_rate_bp ?? 0) : '—'}</td>
-                  <td className="whitespace-nowrap px-2 py-2 text-right">
+                  <td className="overflow-visible! whitespace-nowrap px-2 py-2 text-right">
+                    {owner && a.active && (
+                      <span className="mr-1 hidden gap-1 lg:inline-flex">
+                        <Button variant="secondary" className="min-h-9 px-2 py-1 text-xs" onClick={() => setMoney({ kind: 'cash_in', account: a })}>
+                          Внести
+                        </Button>
+                        <Button variant="secondary" className="min-h-9 px-2 py-1 text-xs" onClick={() => setMoney({ kind: 'cash_out', account: a })}>
+                          Изъять
+                        </Button>
+                        <Button variant="secondary" className="min-h-9 px-2 py-1 text-xs" onClick={() => setMoney({ kind: 'transfer', account: a })}>
+                          Перевести
+                        </Button>
+                      </span>
+                    )}
+                    {owner && a.active && (
+                      <span className="lg:hidden">
+                        <RowMenu
+                          label={`Деньги «${a.name}»`}
+                          items={[
+                            { label: 'Внести', onClick: () => setMoney({ kind: 'cash_in', account: a }) },
+                            { label: 'Изъять', onClick: () => setMoney({ kind: 'cash_out', account: a }) },
+                            { label: 'Перевести', onClick: () => setMoney({ kind: 'transfer', account: a }) },
+                          ]}
+                        />
+                      </span>
+                    )}
                     {owner && (
                       <Button variant="ghost" className="px-2" aria-label={`Изменить «${a.name}»`} title="Изменить" onClick={() => edit(a)}>
                         <Icon name="edit" className="h-4 w-4" />
@@ -302,6 +330,19 @@ export default function Accounts() {
       )}
 
       {history && <AccountHistory account={history} onClose={() => setHistory(null)} owner={owner} />}
+
+      {money && (
+        <AccountMoneyModal
+          kind={money.kind}
+          account={money.account}
+          accounts={rows}
+          onClose={() => setMoney(null)}
+          onDone={() => {
+            setMoney(null)
+            list.reload()
+          }}
+        />
+      )}
     </div>
   )
 }

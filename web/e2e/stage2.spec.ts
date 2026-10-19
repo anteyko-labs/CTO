@@ -22,7 +22,7 @@ async function api<T>(request: APIRequestContext, method: 'GET' | 'POST', path: 
 async function ensureOpenShift(request: APIRequestContext, cashierId: string): Promise<void> {
   const current = await api<ShiftRow | null>(request, 'GET', '/shifts/current')
   if (current.body) return
-  const opened = await api(request, 'POST', '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId })
+  const opened = await api(request, 'POST', '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashierId, cashier_pin: '1234' })
   expect(opened.status).toBe(200)
 }
 
@@ -34,7 +34,7 @@ test('закрытие смены с недостачей и сдача касс
   await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
 
   const cashier = `Кассир смены ${RUN}`
-  const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true })
+  const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
   expect(emp.status).toBe(200)
   await ensureOpenShift(page.request, emp.body.id)
   // Деньги в кассе, чтобы было что пересчитывать и сдавать.
@@ -62,10 +62,12 @@ test('закрытие смены с недостачей и сдача касс
   // Сразу после закрытия — сдача кассы: оставить 50 сом на размен, остальное в сейф.
   await expect(page.getByText(/Сдать кассу · смена №/)).toBeVisible()
   const toSafe = (Number(counted.replace(/\s/g, '').replace(',', '.')) - 50).toFixed(2).replace('.', ',')
-  await page.getByLabel(/В сейф/).fill(toSafe)
+  // Куда сдать — выбирает кассир; первым предложен счёт, куда сдавали в прошлый раз, или сейф магазина (SPEC-29 §14).
+  await expect(page.locator('#handover-to')).toBeVisible()
+  await page.getByLabel(/Сдать, с/).fill(toSafe)
   await expect(page.getByText(/Останется в кассе: 50\sс/)).toBeVisible()
-  await page.getByRole('button', { name: 'Перевести в сейф' }).click()
-  await expect(page.getByText('Выручка в сейфе')).toBeVisible()
+  await page.getByRole('button', { name: /^Сдать в «/ }).click()
+  await expect(page.getByText(/Касса сдана: .* → /)).toBeVisible()
   await expect(page.getByText(/касса не сдана/)).toHaveCount(0)
 })
 
@@ -75,7 +77,7 @@ test('при открытой смене касса не спрашивает к
   await page.getByLabel('Пароль').fill(OWNER_PASSWORD)
   await page.getByRole('button', { name: 'Войти' }).click()
   await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
-  const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Кассир на смене ${RUN}`, is_cashier: true })
+  const emp = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Кассир на смене ${RUN}`, is_cashier: true, pin: '1234' })
   expect(emp.status).toBe(200)
   await ensureOpenShift(page.request, emp.body.id)
   const current = await api<{ number: number; cashier_name: string }>(page.request, 'GET', '/shifts/current')
@@ -94,7 +96,7 @@ test('выплата отмеченным при закрытии смены', a
   await page.getByRole('button', { name: 'Войти' }).click()
   await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
 
-  const cashier = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Кассир выплат ${RUN}`, is_cashier: true })
+  const cashier = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: `Кассир выплат ${RUN}`, is_cashier: true, pin: '1234' })
   const masterName = `Мастер выплат ${RUN}`
   const master = await api<{ id: string }>(page.request, 'POST', '/employees', { full_name: masterName, is_master: true })
   expect(master.status).toBe(200)

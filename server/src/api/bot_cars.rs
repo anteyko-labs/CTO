@@ -7,7 +7,7 @@ use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::api::oil_book::{OilRecord, books};
-use crate::api::telegram::{Button, Keys, Reply, km};
+use crate::api::telegram::{Button, Keys, Reply};
 use crate::domain::money::format_som;
 use crate::domain::plate;
 use crate::error::AppResult;
@@ -357,8 +357,8 @@ async fn cars(
 /// Замена для карточки: дата, пробег, сумма чека за вычетом возвратов и строки книжки.
 fn record_text(r: &OilRecord) -> String {
     let mut head = vec![r.change_date.format("%d.%m.%Y").to_string()];
-    if let Some(m) = r.mileage_km {
-        head.push(km(m));
+    if let Some(m) = r.mileage {
+        head.push(crate::domain::mileage::text(m, &r.mileage_unit));
     }
     // Запись из тетради — без чека, суммы нет.
     head.push(r.sale_total_tyiyn.map_or_else(|| "—".into(), format_som));
