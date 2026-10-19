@@ -9136,3 +9136,203 @@ async fn car_from_dictionary_miles_and_interval_in_sale(pool: PgPool) {
     let (s, _, bad) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
     assert_eq!((s, bad), (StatusCode::OK, json!([])));
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn stock_in_and_supplier_return_lists_by_period_and_pages(pool: PgPool) {
+    // Экраны «Оприходование» и «Возврат поставщику» из меню (SPEC-29 §25): общий список за период
+    // со страницами, число строк — в `X-Total-Count`; администратору — без себестоимости возврата.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let a = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let b = product(&app, &owner, "Свеча", 30_000, 0).await;
+    for (item, qty) in [(&a, 1), (&b, 2), (&a, 3)] {
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/stock-ins",
+            Some(&admin),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "product_id": item, "qty": qty,
+                         "price_tyiyn": 10_000, "comment": "нашли на складе" }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    let today = (chrono::Utc::now() + chrono::Duration::hours(6)).date_naive();
+    let (s, total, page) = call_total(
+        &app,
+        &format!("/api/v1/stock-ins?from={today}&to={today}&limit=2&offset=0"),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(total, Some(3));
+    let page = page.as_array().unwrap();
+    assert_eq!(page.len(), 2);
+    // Новые сверху: № 3, потом № 2; цена закупки видна администратору (ADR-008).
+    assert_eq!(
+        (page[0]["number"].as_i64(), page[0]["qty"].as_i64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(page[0]["cost_tyiyn"], 30_000);
+    let (_, total, rest) = call_total(&app, "/api/v1/stock-ins?limit=2&offset=2", &owner).await;
+    assert_eq!((total, rest.as_array().unwrap().len()), (Some(3), 1));
+    let (_, total, _) =
+        call_total(&app, &format!("/api/v1/stock-ins?product_id={b}"), &owner).await;
+    assert_eq!(total, Some(1));
+    let yesterday = today.pred_opt().unwrap();
+    let (_, total, _) = call_total(
+        &app,
+        &format!("/api/v1/stock-ins?from={yesterday}&to={yesterday}"),
+        &owner,
+    )
+    .await;
+    assert_eq!(total, Some(0));
+
+    // Возвраты двум поставщикам — в одном списке; у поставщика — только свои.
+    let s1 = new_supplier(&app, &owner, "Автоснаб").await;
+    let s2 = new_supplier(&app, &owner, "Другой").await;
+    for sup in [&s1, &s2] {
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/receipts",
+            Some(&owner),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": sup, "payment": "debt",
+                         "lines": [{ "product_id": a, "qty": 5, "cost_tyiyn": 10_000 }] }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/supplier-returns",
+            Some(&admin),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "supplier_id": sup, "settle": "debt",
+                         "lines": [{ "product_id": a, "qty": 1 }] }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    let (s, total, list) = call_total(
+        &app,
+        &format!("/api/v1/supplier-returns?from={today}&to={today}&limit=25&offset=0"),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(total, Some(2));
+    let list = list.as_array().unwrap();
+    assert_eq!(list[0]["supplier_name"], "Другой");
+    assert_eq!(list[0]["settle"], "debt");
+    assert!(
+        list.iter().all(|r| r.get("cost_tyiyn").is_none()),
+        "{list:?}"
+    );
+    let (_, _, own) = call_total(&app, "/api/v1/supplier-returns?limit=25", &owner).await;
+    assert!(
+        own.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["cost_tyiyn"].is_i64())
+    );
+    let (_, total, _) = call_total(
+        &app,
+        &format!("/api/v1/supplier-returns?supplier_id={s1}"),
+        &owner,
+    )
+    .await;
+    assert_eq!(total, Some(1));
+    let (_, _, verify) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
+    assert_eq!(verify, json!([]));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn new_account_takes_default_marks_on_create(pool: PgPool) {
+    // Отметки «по умолчанию для карты / перевода» при заведении счёта ставятся сразу, прежний
+    // счёт их теряет в той же транзакции (SPEC-29 §25); у наличного — 422, у «только владелец» — 422.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, old_bank, _) = accounts_of(&app, &owner).await;
+    let create = |body: Value| {
+        let app = app.clone();
+        let owner = owner.clone();
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/cash/accounts",
+                Some(&owner),
+                Some(body),
+            )
+            .await
+        }
+    };
+    let (s, _, qr) = create(
+        json!({ "op_id": Uuid::now_v7(), "name": "Личный счёт владельца",
+                                    "kind": "bank", "default_transfer": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{qr}");
+    assert_eq!(
+        (
+            qr["default_transfer"].as_bool(),
+            qr["default_card"].as_bool()
+        ),
+        (Some(true), Some(false))
+    );
+    let (s, _, term) = create(json!({ "op_id": Uuid::now_v7(), "name": "Терминал", "kind": "bank",
+                                      "fee_rate_bp": 50, "default_card": true, "default_transfer": false })).await;
+    assert_eq!(s, StatusCode::OK, "{term}");
+    assert_eq!(term["default_card"], true);
+    let (_, _, accounts) = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None).await;
+    let marks: Vec<(String, bool, bool)> = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["id"].as_str().unwrap().to_string(),
+                a["default_card"].as_bool().unwrap(),
+                a["default_transfer"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    let of = |id: &str| {
+        marks
+            .iter()
+            .find(|m| m.0 == id)
+            .map(|m| (m.1, m.2))
+            .unwrap()
+    };
+    assert_eq!(of(&old_bank), (false, false));
+    assert_eq!(of(qr["id"].as_str().unwrap()), (false, true));
+    assert_eq!(of(term["id"].as_str().unwrap()), (true, false));
+    assert_eq!(marks.iter().filter(|m| m.1).count(), 1);
+    assert_eq!(marks.iter().filter(|m| m.2).count(), 1);
+    // Наличному отметка не ставится; «только владелец» с отметкой — 422, прежний счёт с отметкой.
+    let (s, _, _) = create(
+        json!({ "op_id": Uuid::now_v7(), "name": "Сейф 2", "kind": "safe", "default_card": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = create(
+        json!({ "op_id": Uuid::now_v7(), "name": "Скрытый", "kind": "bank",
+                                   "owner_only": true, "default_card": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let still: bool =
+        sqlx::query_scalar("select default_card from cash_accounts where id = $1::uuid")
+            .bind(term["id"].as_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(still);
+}

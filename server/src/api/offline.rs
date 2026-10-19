@@ -82,6 +82,8 @@ struct SnapBank {
     name: String,
     default_card: bool,
     default_transfer: bool,
+    /// Ставка комиссии банка на сегодня, сотые доли процента: подпись у кнопок оплаты без сети.
+    fee_rate_bp: i32,
 }
 
 #[derive(Serialize)]
@@ -148,7 +150,9 @@ async fn snapshot(
     crate::api::cash::ensure_accounts(&mut conn, user.branch_id).await?;
     let bank_accounts = sqlx::query_as!(
         SnapBank,
-        r#"select id, name, default_card, default_transfer from cash_accounts
+        r#"select id, name, default_card, default_transfer,
+                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as "fee_rate_bp!"
+           from cash_accounts
            where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)
            order by default_card desc, default_transfer desc, name"#,
         user.branch_id,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select r.id, r.number, r.supplier_id, s.name as supplier_name, r.settle, r.account_id,\n                  a.name as \"account_name?\", r.amount_tyiyn, r.cost_tyiyn, r.diff_tyiyn, r.comment,\n                  r.reversal_of, (select x.id from supplier_returns x where x.reversal_of = r.id) as reversed_by,\n                  u.full_name as user_name, r.created_at\n           from supplier_returns r\n           join suppliers s on s.id = r.supplier_id\n           join users u on u.id = r.user_id\n           left join cash_accounts a on a.id = r.account_id\n           where r.branch_id = $1 and ($2::uuid is null or r.id = $2)\n             and ($3::uuid is null or r.supplier_id = $3)\n           order by r.created_at desc\n           limit 500",
+  "query": "select r.id, r.number, r.supplier_id, s.name as supplier_name, r.settle, r.account_id,\n                  a.name as \"account_name?\", r.amount_tyiyn, r.cost_tyiyn, r.diff_tyiyn, r.comment,\n                  r.reversal_of, (select x.id from supplier_returns x where x.reversal_of = r.id) as reversed_by,\n                  u.full_name as user_name, r.created_at\n           from supplier_returns r\n           join suppliers s on s.id = r.supplier_id\n           join users u on u.id = r.user_id\n           left join cash_accounts a on a.id = r.account_id\n           where r.branch_id = $1 and ($2::uuid is null or r.id = $2)\n             and ($3::uuid is null or r.supplier_id = $3)\n             and ($4::date is null or r.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($5::date is null or r.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by r.created_at desc\n           limit $6",
   "describe": {
     "columns": [
       {
@@ -83,7 +83,10 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Date",
+        "Date",
+        "Int8"
       ]
     },
     "nullable": [
@@ -104,5 +107,5 @@
       false
     ]
   },
-  "hash": "e4352fd6c51e4f2fcaa132ff300958f2fa5dc503fe3507564f1ca425c06469bd"
+  "hash": "af7670c1211efddcaacf09084ea20a241c66fd1948d36a832243cf970c5b160a"
 }

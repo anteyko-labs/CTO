@@ -11,13 +11,14 @@ use std::collections::BTreeSet;
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::catalog::price_unit;
+use crate::api::paging::{MAX_ROWS, PageQuery, Paged, paged};
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::costing::cost_of;
 use crate::domain::money::div_round;
@@ -75,7 +76,7 @@ async fn load(
     conn: &mut PgConnection,
     user: &CurrentUser,
     id: Option<Uuid>,
-    supplier_id: Option<Uuid>,
+    f: ListQuery,
 ) -> AppResult<Vec<SupplierReturnOut>> {
     let owner = user.is_owner();
     let heads = sqlx::query!(
@@ -89,11 +90,16 @@ async fn load(
            left join cash_accounts a on a.id = r.account_id
            where r.branch_id = $1 and ($2::uuid is null or r.id = $2)
              and ($3::uuid is null or r.supplier_id = $3)
+             and ($4::date is null or r.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')
+             and ($5::date is null or r.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')
            order by r.created_at desc
-           limit 500"#,
+           limit $6"#,
         user.branch_id,
         id,
-        supplier_id
+        f.supplier_id,
+        f.from,
+        f.to,
+        MAX_ROWS
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -149,25 +155,32 @@ pub(crate) async fn load_one(
     user: &CurrentUser,
     id: Uuid,
 ) -> AppResult<SupplierReturnOut> {
-    load(conn, user, Some(id), None)
+    load(conn, user, Some(id), ListQuery::default())
         .await?
         .into_iter()
         .next()
         .ok_or(AppError::NotFound)
 }
 
-#[derive(Deserialize)]
+/// Отбор возвратов: поставщик и период по дню Бишкека (оба края включительно).
+#[derive(Deserialize, Default, Clone, Copy)]
 struct ListQuery {
     supplier_id: Option<Uuid>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
 }
 
+/// Возвраты поставщикам (SPEC-29 §25): экран «Возврат поставщику» — все поставщики, период и
+/// страницы; карточка поставщика — по `supplier_id`. Без `limit` — как раньше, до 500 строк.
 async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<ListQuery>,
-) -> AppResult<Json<Vec<SupplierReturnOut>>> {
+    Query(page): Query<PageQuery>,
+) -> AppResult<Paged<SupplierReturnOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(load(&mut conn, &user, None, q.supplier_id).await?))
+    let (items, total) = page.slice(load(&mut conn, &user, None, q).await?, 500);
+    Ok(paged(items, total))
 }
 
 async fn get_one(

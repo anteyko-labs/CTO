@@ -81,7 +81,7 @@ test('свой банк: завести, продать картой на нег
   await picker.fill(code)
   await picker.press('Enter')
   await expect(page.getByText(item)).toBeVisible()
-  await page.locator('[data-pay]').getByRole('button', { name: 'Карта', exact: true }).click()
+  await page.locator('[data-pay]').getByRole('button', { name: 'Карта / QR банка', exact: true }).click()
   await page.getByTestId('pay-bank').getByRole('button', { name: bankName }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()

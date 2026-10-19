@@ -103,3 +103,23 @@ export function handoverChoices<T extends Pick<CashAccount, 'id' | 'kind' | 'is_
   const pick = list.some((a) => a.id === suggested) ? (suggested as string) : (list.find((a) => a.kind === 'safe')?.id ?? list[0]?.id ?? '')
   return { list, pick }
 }
+
+/** Ставка комиссии коротко: 50 → «0,5 %», 100 → «1 %». */
+export function feeShort(bp: number): string {
+  const abs = Math.abs(bp)
+  const frac = String(abs % 100).padStart(2, '0').replace(/0+$/, '')
+  return `${bp < 0 ? '−' : ''}${Math.trunc(abs / 100)}${frac ? `,${frac}` : ''} %`
+}
+
+/** Подпись под кнопками оплаты на кассе: куда идут деньги и комиссия банка (SPEC-29 §25).
+ *  Наличные — в кассу смены; карта и QR банка, QR владельцу — на выбранный счёт или счёт по
+ *  умолчанию для способа. Ставка — с сервера или из снимка кассы без сети. */
+export function payCaption(
+  method: 'cash' | NoncashMethod,
+  bank?: Pick<CashAccount, 'name'> & { fee_rate_bp?: number },
+): string {
+  if (method === 'cash') return '→ Касса · наличные'
+  if (!bank) return '→ счёт по умолчанию'
+  const fee = bank.fee_rate_bp ?? 0
+  return `→ ${bank.name} · ${fee > 0 ? `комиссия ${feeShort(fee)}` : 'без комиссии'}`
+}

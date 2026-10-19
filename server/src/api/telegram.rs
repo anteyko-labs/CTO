@@ -1996,8 +1996,8 @@ pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult
     }
     let mut pays = vec![
         format!("  наличными: {}", format_som(s.cash_sales_tyiyn)),
-        format!("  картой: {}", format_som(s.card_tyiyn)),
-        format!("  QR: {}", format_som(s.transfer_tyiyn)),
+        format!("  карта / QR банка: {}", format_som(s.card_tyiyn)),
+        format!("  QR владельцу: {}", format_som(s.transfer_tyiyn)),
     ];
     if s.debt_tyiyn != 0 {
         pays.push(format!("  в долг: {}", format_som(s.debt_tyiyn)));
@@ -2018,7 +2018,7 @@ pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult
     if s.bank_split.len() > 1 {
         for b in &s.bank_split {
             pays.push(format!(
-                "  на «{}»: картой {}, QR {}",
+                "  на «{}»: карта / QR банка {}, QR владельцу {}",
                 b.name,
                 format_som(b.card_tyiyn),
                 format_som(b.transfer_tyiyn)
@@ -2753,8 +2753,8 @@ pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, 
     .map(|p| {
         let how = match p.method.as_str() {
             "cash" => "наличными",
-            "card" => "картой",
-            "transfer" => "QR",
+            "card" => "картой / QR банка",
+            "transfer" => "QR владельцу",
             "debt" => "в долг",
             "bonus" => "баллами",
             // Аккумулятор в оплату: «аккумулятор 12 кг — 600 с» (SPEC-27).

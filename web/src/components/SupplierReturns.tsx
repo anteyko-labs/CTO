@@ -3,6 +3,7 @@
 // Себестоимость и разницу видит только владелец. Владелец исправляет проведённый возврат той же
 // формой (SPEC-29 §24, ADR-085).
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
@@ -16,6 +17,7 @@ import { returnAmount, returnQty } from '../lib/supplierReturn'
 import type { CashAccount, Product, SupplierReturn } from '../lib/types'
 import { CorrectionBadges, FixButton } from './Correction'
 import { FIX_SUBMIT, FixBanner, FixDraft, type FixMode } from './FixDraft'
+import { Pager, usePagedLoad } from './Pager'
 import { ProductPicker } from './ProductPicker'
 import { Badge, Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
@@ -240,30 +242,40 @@ function SupplierReturnFixLines({ fix, supplierName, onClose, onDone }: { fix: F
   return <SupplierReturnModal supplierId={fix.doc.supplier_id} supplierName={supplierName} fix={fix} initialLines={lines.data} onClose={onClose} onDone={onDone} />
 }
 
-/** Возвраты поставщику в его карточке: список, сторно и исправление. */
-export function SupplierReturnList({ supplierId, onChanged }: { supplierId: string; onChanged: () => void }) {
+/** Возвраты поставщику: в его карточке (`supplierId`) или все за период — экран «Возврат
+ *  поставщику» (SPEC-29 §25). Страницы режет сервер; сторно и исправление — здесь же. */
+export function SupplierReturnList({ supplierId, from, to, onChanged }: { supplierId?: string; from?: string; to?: string; onChanged: () => void }) {
   const owner = useUser().role === 'owner'
-  const list = useLoad(() => get<SupplierReturn[]>(`/supplier-returns${qs({ supplier_id: supplierId })}`), [supplierId])
+  const list = usePagedLoad<SupplierReturn>(`/supplier-returns${qs({ supplier_id: supplierId, from, to })}`, supplierId ? 'supplier.returns' : 'supplier-returns')
   const [reversing, setReversing] = useState<{ doc: SupplierReturn; comment: string; opId: string } | null>(null)
   const [fixing, setFixing] = useState<SupplierReturn | null>(null)
   // Отметки «исправлен → / исправление» — одним запросом на список.
   const marks = useLoad(() => loadCorrections('supplier_return').then(correctionMarks), [])
   const act = useAction()
-  const rows = list.data ?? []
+  const rows = list.items
   return (
     <div className="flex flex-col gap-3">
       <ErrorBox error={list.error ?? act.error} />
-      {rows.length === 0 ? (
-        <Empty>Возвратов этому поставщику не было</Empty>
+      {list.loading && !list.data ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>{supplierId ? 'Возвратов этому поставщику не было' : 'Возвратов поставщикам за период нет'}</Empty>
       ) : (
-        <Table head={['№', 'Дата', 'Товары', 'Сумма', 'Итог', ...(owner ? ['Разница'] : []), 'Кто', '']}>
+        <Table head={['№', 'Дата', ...(supplierId ? [] : ['Поставщик']), 'Товары', 'Сумма', 'Итог', ...(owner ? ['Разница'] : []), 'Кто', '']}>
           {rows.map((r) => (
-            <tr key={r.id} className={r.reversed_by ? 'text-slate-400' : ''}>
+            <tr key={r.id} data-testid="supplier-return-row" className={r.reversed_by ? 'text-slate-400' : ''}>
               <td className="px-2 py-2 font-medium">
                 {r.number} {r.reversal_of && <Badge tone="amber">сторно</Badge>}
                 {r.reversed_by && <Badge tone="rose">отменён</Badge>} <CorrectionBadges mark={marks.data?.get(r.id)} />
               </td>
               <td className="whitespace-nowrap px-2 py-2">{formatDateTime(r.created_at)}</td>
+              {!supplierId && (
+                <td className="px-2 py-2">
+                  <Link className="text-sky-700 hover:underline" to={`/suppliers/${r.supplier_id}`}>
+                    {r.supplier_name}
+                  </Link>
+                </td>
+              )}
               <td className="px-2 py-2">
                 {r.lines.map((l) => `${l.product_name} × ${qtyText(Math.abs(l.qty), l.unit)}`).join(', ')}
                 {r.comment && <div className="text-xs text-slate-500">{r.comment}</div>}
@@ -286,6 +298,7 @@ export function SupplierReturnList({ supplierId, onChanged }: { supplierId: stri
           ))}
         </Table>
       )}
+      <Pager page={list.page} size={list.size} total={list.total} onPage={list.setPage} onSize={list.setSize} label="Страницы возвратов поставщику" />
       {fixing && (
         <SupplierReturnFix
           key={fixing.id}

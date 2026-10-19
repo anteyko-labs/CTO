@@ -20,27 +20,35 @@ const TITLES: Record<AccountMoneyKind, string> = {
 
 export function AccountMoneyModal({
   kind,
-  account,
+  account: fixed,
   accounts,
+  choices,
   onClose,
   onDone,
 }: {
   kind: AccountMoneyKind
-  account: CashAccount
+  /** Счёт из строки «Обзора счетов»; без него счёт выбирают в окне из `choices`. */
+  account?: CashAccount
   /** Все счета филиала: куда перевести — любой действующий, кроме этого. */
   accounts: CashAccount[]
+  /** С какого счёта можно (SPEC-29 §25): владельцу — любой действующий, администратору — касса смены. */
+  choices?: CashAccount[]
   onClose: () => void
   onDone: () => void
 }) {
-  const targets = accounts.filter((a) => a.id !== account.id && a.active !== false)
+  const [picked, setPicked] = useState(fixed?.id ?? choices?.[0]?.id ?? '')
+  const account = fixed ?? choices?.find((a) => a.id === picked)
+  const targets = accounts.filter((a) => a.id !== account?.id && a.active !== false)
   const [sum, setSum] = useState('')
   const [comment, setComment] = useState('')
-  const [to, setTo] = useState(targets[0]?.id ?? '')
+  const [toPick, setTo] = useState('')
+  const to = targets.some((a) => a.id === toPick) ? toPick : (targets[0]?.id ?? '')
   // Один op_id на открытое окно: повтор после потерянного ответа не задвоит операцию.
   const [opId] = useState(newOpId)
   const act = useAction()
   const value = parseSom(sum)
   const missing = missingWithFocus(
+    [Boolean(account), 'счёт', '#account-money-from'],
     [value !== null && value > 0, 'сумму', '#account-money-sum'],
     [kind !== 'transfer' || Boolean(to), 'куда перевести', '#account-money-to'],
     [kind === 'transfer' || Boolean(comment.trim()), 'за что', '#account-money-comment'],
@@ -48,7 +56,7 @@ export function AccountMoneyModal({
 
   const save = () =>
     void act.run(async () => {
-      if (value === null) return
+      if (value === null || !account) return
       if (kind === 'transfer') {
         await post('/cash/transfers', { op_id: opId, from_account_id: account.id, to_account_id: to, amount_tyiyn: value, comment })
       } else {
@@ -64,9 +72,21 @@ export function AccountMoneyModal({
     })
 
   return (
-    <Modal title={`${TITLES[kind]} · ${account.name}`} onClose={onClose}>
+    <Modal title={fixed ? `${TITLES[kind]} · ${fixed.name}` : TITLES[kind]} onClose={onClose}>
       <div className="flex flex-col gap-3" data-testid="account-money">
-        <div className="text-sm text-slate-600">Сейчас на счёте: {formatSom(account.balance_tyiyn)}</div>
+        {!fixed && (
+          <Field label={kind === 'cash_in' ? 'На какой счёт' : 'С какого счёта'} required>
+            <select id="account-money-from" value={picked} onChange={(e) => setPicked(e.target.value)}>
+              {(choices ?? []).length === 0 && <option value="">— нет доступных счетов —</option>}
+              {(choices ?? []).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {accountLabel(a)}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        {account && <div className="text-sm text-slate-600">Сейчас на счёте: {formatSom(account.balance_tyiyn)}</div>}
         {kind === 'transfer' && (
           <Field label="Куда" required>
             <select id="account-money-to" value={to} onChange={(e) => setTo(e.target.value)}>

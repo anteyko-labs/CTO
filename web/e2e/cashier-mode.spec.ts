@@ -123,7 +123,7 @@ test('режим кассы: крупно, без меню, продажа эк�
   expect((await size(qty)).height).toBeGreaterThanOrEqual(56)
   expect((await size(received)).height).toBeGreaterThanOrEqual(56)
   expect((await size(page.getByPlaceholder(PICKER))).height).toBeGreaterThanOrEqual(56)
-  for (const label of ['Наличные', 'Карта', 'В долг']) {
+  for (const label of ['Наличные', 'Карта / QR банка', 'В долг']) {
     expect((await size(page.locator('[data-pay]').getByRole('button', { name: label, exact: true }))).height).toBeGreaterThanOrEqual(64)
   }
   const submit = page.getByRole('button', { name: 'Провести чек' })

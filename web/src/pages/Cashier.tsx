@@ -28,7 +28,7 @@ import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, t
 import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
-import { bankChoices, defaultBankId, isTill, type NoncashMethod } from '../lib/accounts'
+import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
 import { useUser } from '../lib/auth'
 import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../lib/cashierMode'
 import { postCorrection } from '../lib/corrections'
@@ -55,7 +55,7 @@ interface CartLine {
 type PayMode = PaymentMethod | 'mixed'
 
 const CASHIER_KEY = 'avtodom.cashier_id'
-type BankChoice = Pick<CashAccount, 'id' | 'name' | 'kind' | 'default_card' | 'default_transfer'>
+type BankChoice = Pick<CashAccount, 'id' | 'name' | 'kind' | 'default_card' | 'default_transfer'> & { fee_rate_bp?: number }
 
 /** Безналичные счета с отметками «по умолчанию для карты / перевода» (ADR-077): с сервера, без
  * связи — из снимка кассы. */
@@ -404,6 +404,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   })()
   // Способы безнала в чеке: для каждого — строка выбора банка.
   const noncashMethods = (['card', 'transfer'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m))
+  // Куда идут деньги и комиссия — подпись под кнопками оплаты (SPEC-29 §25), без сети — из снимка.
+  const captionMethods = (['cash', 'card', 'transfer'] as const).filter((m) => (payMode === 'mixed' ? Boolean(split[m].trim()) : payMode === m))
+  const payCaptions = captionMethods.map((m) =>
+    m === 'cash'
+      ? payCaption('cash')
+      : `${captionMethods.length > 1 ? `${PAYMENT_LABELS[m]} ` : ''}${payCaption(m, bankList.find((b) => b.id === bankFor(m)))}`,
+  )
   const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number; price_per_kg_tyiyn?: number; account_id?: string }[] | null = moneyPayments && [
     ...moneyPayments,
     ...(bonusAmount > 0 ? [{ method: 'bonus' as const, amount_tyiyn: bonusAmount }] : []),
@@ -1371,6 +1378,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </button>
             ))}
           </div>
+          {payCaptions.length > 0 && (
+            <div className="-mt-1 flex flex-col text-xs text-slate-500" data-testid="pay-dest">
+              {payCaptions.map((c) => (
+                <span key={c}>{c}</span>
+              ))}
+            </div>
+          )}
           {total > 0 && (!bonus || !batteryPay) && (
             <div className="-mt-1 flex flex-wrap justify-end gap-x-4 gap-y-1">
               {!batteryPay && (

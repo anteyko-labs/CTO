@@ -9,7 +9,7 @@ import { Icon } from '../components/icons'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { accountNote, accountTotals, accountType, isBank, isTill } from '../lib/accounts'
+import { accountNote, accountTotals, accountType, isBank, isTill, payAccounts } from '../lib/accounts'
 import { get, getPage, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDate, formatDateTime, formatPercentBp, formatSom, parsePercentBp, shiftDate, todayBishkek } from '../lib/format'
@@ -58,7 +58,8 @@ const feeInput = (bp: number) => formatPercentBp(bp).replace(/ %$/, '')
 /** «с 01.01.2000» у ставки, заведённой при установке, не несёт смысла — пишем «с начала учёта». */
 const since = (d: string) => (d <= '2000-01-01' ? 'с начала учёта' : `с ${formatDate(d)}`)
 
-export default function Accounts() {
+/** «Обзор счетов»; `openMoney` — пункт меню «Внести / Изъять»: сразу окно «Внести» с выбором счёта. */
+export default function Accounts({ openMoney = false }: { openMoney?: boolean }) {
   const owner = useUser().role === 'owner'
   const [archived, setArchived] = useState(false)
   const list = useLoad(() => get<CashAccount[]>(`/cash/accounts${qs({ archived: archived || undefined })}`), [archived])
@@ -68,7 +69,10 @@ export default function Accounts() {
   const [form, setForm] = useState<Form | null>(null)
   const [history, setHistory] = useState<CashAccount | null>(null)
   // «Внести», «Изъять», «Перевести» у счёта (SPEC-29 §11) — владелец; все счета для «куда».
-  const [money, setMoney] = useState<{ kind: AccountMoneyKind; account: CashAccount } | null>(null)
+  // Кнопки над списком — счёт выбирают в окне: владельцу любой действующий, администратору — касса
+  // смены, как на экране «Смена» (SPEC-29 §25). Права проверяет сервер.
+  const [money, setMoney] = useState<{ kind: AccountMoneyKind; account?: CashAccount } | null>(openMoney ? { kind: 'cash_in' } : null)
+  const choices = payAccounts(rows, owner)
   const act = useAction()
 
   const edit = (a: CashAccount) => {
@@ -157,12 +161,25 @@ export default function Accounts() {
         title="Обзор счетов"
         subtitle="Кассы, сейфы и банковские счета: остатки, отрицательный баланс, комиссия банка, история движений"
         actions={
-          owner && (
-            <Button onClick={create}>
-              <Icon name="plus" className="h-4 w-4" />
-              Счёт
+          <div className="flex flex-wrap gap-2" data-testid="money-actions">
+            <Button variant="secondary" onClick={() => setMoney({ kind: 'cash_in' })}>
+              Внести
             </Button>
-          )
+            <Button variant="secondary" onClick={() => setMoney({ kind: 'cash_out' })}>
+              Изъять
+            </Button>
+            {owner && (
+              <Button variant="secondary" onClick={() => setMoney({ kind: 'transfer' })}>
+                Перевести
+              </Button>
+            )}
+            {owner && (
+              <Button onClick={create}>
+                <Icon name="plus" className="h-4 w-4" />
+                Счёт
+              </Button>
+            )}
+          </div>
         }
       />
       <Card>
@@ -331,11 +348,12 @@ export default function Accounts() {
 
       {history && <AccountHistory account={history} onClose={() => setHistory(null)} owner={owner} />}
 
-      {money && (
+      {money && (list.data || money.account) && (
         <AccountMoneyModal
           kind={money.kind}
           account={money.account}
           accounts={rows}
+          choices={choices}
           onClose={() => setMoney(null)}
           onDone={() => {
             setMoney(null)

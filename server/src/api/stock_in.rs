@@ -7,13 +7,14 @@
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::catalog::price_unit;
+use crate::api::paging::{MAX_ROWS, PageQuery, Paged, paged};
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid, overflow};
@@ -48,11 +49,19 @@ pub struct StockInOut {
     pub created_at: DateTime<Utc>,
 }
 
+/// Отбор списка оприходований: товар и период по дню Бишкека (оба края включительно).
+#[derive(Deserialize, Default, Clone, Copy)]
+struct Filter {
+    product_id: Option<Uuid>,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+}
+
 async fn load(
     conn: &mut PgConnection,
     branch_id: Uuid,
     id: Option<Uuid>,
-    product_id: Option<Uuid>,
+    f: Filter,
 ) -> AppResult<Vec<StockInOut>> {
     Ok(sqlx::query_as!(
         StockInOut,
@@ -65,11 +74,16 @@ async fn load(
            join users u on u.id = s.user_id
            where s.branch_id = $1 and ($2::uuid is null or s.id = $2)
              and ($3::uuid is null or s.product_id = $3)
+             and ($4::date is null or s.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')
+             and ($5::date is null or s.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')
            order by s.created_at desc
-           limit 500"#,
+           limit $6"#,
         branch_id,
         id,
-        product_id
+        f.product_id,
+        f.from,
+        f.to,
+        MAX_ROWS
     )
     .fetch_all(&mut *conn)
     .await?)
@@ -80,27 +94,24 @@ pub(crate) async fn load_one(
     branch_id: Uuid,
     id: Uuid,
 ) -> AppResult<StockInOut> {
-    load(conn, branch_id, Some(id), None)
+    load(conn, branch_id, Some(id), Filter::default())
         .await?
         .into_iter()
         .next()
         .ok_or(AppError::NotFound)
 }
 
-#[derive(Deserialize)]
-struct ListQuery {
-    product_id: Option<Uuid>,
-}
-
+/// Список оприходований (SPEC-29 §25): экран «Оприходование» — период и страницы, окно товара —
+/// по `product_id`. Без `limit` — как раньше, до 500 строк.
 async fn list(
     State(state): State<AppState>,
     user: CurrentUser,
-    Query(q): Query<ListQuery>,
-) -> AppResult<Json<Vec<StockInOut>>> {
+    Query(f): Query<Filter>,
+    Query(page): Query<PageQuery>,
+) -> AppResult<Paged<StockInOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(
-        load(&mut conn, user.branch_id, None, q.product_id).await?,
-    ))
+    let (items, total) = page.slice(load(&mut conn, user.branch_id, None, f).await?, 500);
+    Ok(paged(items, total))
 }
 
 async fn get_one(

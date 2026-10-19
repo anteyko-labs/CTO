@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, enoughOn, handoverChoices, isDefaultFor, isTill, payAccounts } from './accounts'
+import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, enoughOn, feeShort, handoverChoices, isDefaultFor, isTill, payAccounts, payCaption } from './accounts'
+import { PAYMENT_LABELS } from './types'
 import { formatSom } from './format'
 import type { CashAccount } from './types'
 
@@ -84,5 +85,27 @@ describe('выбор счёта с остатком (SPEC-29 §12–14)', () => 
     expect(handoverChoices(list, 'Оптима')).toMatchObject({ pick: 'Оптима' })
     expect(handoverChoices(list, 'Касса').pick).toBe('Сейф-1')
     expect(handoverChoices(list, null).list.map((a) => a.id)).toEqual(['Сейф-1', 'СВИНЕЦ', 'Оптима', 'Счёт'])
+  })
+})
+
+describe('подпись под кнопками оплаты (SPEC-29 §25)', () => {
+  it('ставка коротко', () => {
+    expect(feeShort(50)).toBe('0,5 %')
+    expect(feeShort(100)).toBe('1 %')
+    expect(feeShort(125)).toBe('1,25 %')
+    expect(feeShort(0)).toBe('0 %')
+  })
+  it('куда идут деньги и комиссия', () => {
+    expect(payCaption('cash')).toBe('→ Касса · наличные')
+    expect(payCaption('card', { name: 'Счёт', fee_rate_bp: 50 })).toBe('→ Счёт · комиссия 0,5 %')
+    expect(payCaption('transfer', { name: 'Личный счёт владельца', fee_rate_bp: 0 })).toBe('→ Личный счёт владельца · без комиссии')
+    // Старый снимок кассы без ставки — без комиссии; счёта нет — по умолчанию на сервере.
+    expect(payCaption('transfer', { name: 'Карта' })).toBe('→ Карта · без комиссии')
+    expect(payCaption('card')).toBe('→ счёт по умолчанию')
+  })
+  it('кнопки оплаты: коды прежние, подписи по устройству точки', () => {
+    expect(PAYMENT_LABELS.card).toBe('Карта / QR банка')
+    expect(PAYMENT_LABELS.transfer).toBe('QR владельцу')
+    expect(PAYMENT_LABELS.cash).toBe('Наличные')
   })
 })

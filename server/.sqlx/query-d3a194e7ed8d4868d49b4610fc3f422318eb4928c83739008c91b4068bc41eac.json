@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.number, s.product_id, p.name as product_name, p.unit, p.container_ml,\n                  s.qty, s.price_tyiyn, s.cost_tyiyn, s.comment, s.reversal_of,\n                  (select x.id from stock_ins x where x.reversal_of = s.id) as reversed_by,\n                  u.full_name as user_name, s.created_at\n           from stock_ins s\n           join products p on p.id = s.product_id\n           join users u on u.id = s.user_id\n           where s.branch_id = $1 and ($2::uuid is null or s.id = $2)\n             and ($3::uuid is null or s.product_id = $3)\n           order by s.created_at desc\n           limit 500",
+  "query": "select s.id, s.number, s.product_id, p.name as product_name, p.unit, p.container_ml,\n                  s.qty, s.price_tyiyn, s.cost_tyiyn, s.comment, s.reversal_of,\n                  (select x.id from stock_ins x where x.reversal_of = s.id) as reversed_by,\n                  u.full_name as user_name, s.created_at\n           from stock_ins s\n           join products p on p.id = s.product_id\n           join users u on u.id = s.user_id\n           where s.branch_id = $1 and ($2::uuid is null or s.id = $2)\n             and ($3::uuid is null or s.product_id = $3)\n             and ($4::date is null or s.created_at >= ($4::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($5::date is null or s.created_at < ($5::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by s.created_at desc\n           limit $6",
   "describe": {
     "columns": [
       {
@@ -78,7 +78,10 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Date",
+        "Date",
+        "Int8"
       ]
     },
     "nullable": [
@@ -98,5 +101,5 @@
       false
     ]
   },
-  "hash": "fe547b3ccd5b309425a350626af0d947014f9651ea68870352c75640e01b1b53"
+  "hash": "d3a194e7ed8d4868d49b4610fc3f422318eb4928c83739008c91b4068bc41eac"
 }

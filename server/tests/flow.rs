@@ -7683,6 +7683,8 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
                 allow_negative: true,
                 owner_only: false,
                 fee_rate_bp: None,
+                default_card: None,
+                default_transfer: None,
             },
         )
         .await
@@ -9341,6 +9343,8 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
             allow_negative: true,
             owner_only: false,
             fee_rate_bp: None,
+            default_card: None,
+            default_transfer: None,
         },
     )
     .await
@@ -9355,6 +9359,8 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
             allow_negative: false,
             owner_only: false,
             fee_rate_bp: None,
+            default_card: None,
+            default_transfer: None,
         },
     )
     .await

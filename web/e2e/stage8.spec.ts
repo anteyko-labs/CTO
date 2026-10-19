@@ -108,7 +108,7 @@ test('приход: цена продажи и прошлая закупка; ч
   await expect(dialog).toBeVisible()
   await dialog.getByLabel('Сумма, с').fill('400')
   // «Вне кассы» больше нет (ADR-079): владелец платит переводом со «Счёта».
-  await dialog.getByRole('button', { name: 'QR' }).click()
+  await dialog.getByRole('button', { name: 'QR владельцу' }).click()
   await dialog.getByRole('button', { name: 'Оплатить' }).click()
   // Окно показывает итог оплаты (SPEC-28 §3) и закрывается кнопкой «Готово».
   await expect(dialog.getByTestId('repay-result')).toContainText(money('400 с'))

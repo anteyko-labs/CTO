@@ -25,8 +25,8 @@ export const MOVEMENT_LABELS: Record<string, string> = {
 /** Способы оплаты чека словами. */
 export const METHOD_LABELS: Record<string, string> = {
   cash: 'Наличные',
-  card: 'Карта',
-  transfer: 'Перевод (QR)',
+  card: 'Карта / QR банка',
+  transfer: 'QR владельцу',
   debt: 'В долг',
   bonus: 'Баллы',
   battery: 'Аккумулятор',

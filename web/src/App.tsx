@@ -46,6 +46,8 @@ import DebtDocsSettings from './pages/DebtDocsSettings'
 import OilTransfer from './pages/OilTransfer'
 import Revision from './pages/Revision'
 import Stock from './pages/Stock'
+import StockIns from './pages/StockIns'
+import SupplierReturnsPage from './pages/SupplierReturns'
 import TelegramSettings from './pages/TelegramSettings'
 import ExpenseArticles from './pages/ExpenseArticles'
 import SupplierCard from './pages/SupplierCard'
@@ -83,6 +85,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
       { to: '/income', label: 'Поступления', icon: 'incoming' },
       { to: '/accounts', label: 'Счета', icon: 'wallet' },
+      { to: '/money', label: 'Внести / Изъять', icon: 'plus' },
       { to: '/bank', label: 'Счёт', icon: 'expenses', ownerOnly: true },
     ],
   },
@@ -90,6 +93,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     title: 'Склад',
     items: [
       { to: '/receipts', label: 'Приход', icon: 'incoming' },
+      { to: '/stock-ins', label: 'Оприходование', icon: 'plus' },
+      { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'back' },
       { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/products', label: 'Товары', icon: 'products' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },
@@ -287,6 +292,9 @@ function Shell() {
           {owner && <Route path="/bank" element={<Bank />} />}
           <Route path="/income" element={<Income />} />
           <Route path="/accounts" element={<Accounts />} />
+          <Route path="/money" element={<Accounts key="money" openMoney />} />
+          <Route path="/stock-ins" element={<StockIns />} />
+          <Route path="/supplier-returns" element={<SupplierReturnsPage />} />
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

@@ -107,7 +107,7 @@ test('«Это замена масла?» перед чеком на вынос 
     await picker.fill(code)
     await picker.press('Enter')
     await expect(page.getByText(`Масло 5W-40 ${RUN}`)).toBeVisible()
-    await page.getByRole('button', { name: 'Карта', exact: true }).click()
+    await page.getByRole('button', { name: 'Карта / QR банка', exact: true }).click()
     await page.getByRole('button', { name: 'Провести чек' }).first().click()
   }
 

@@ -2071,6 +2071,12 @@ pub struct AccountCreateReq {
     /// Ставка комиссии банка с сегодняшнего дня, сотые доли процента (только `bank`; нет — 0 %).
     #[serde(default)]
     pub fee_rate_bp: Option<i32>,
+    /// Сразу сделать счётом по умолчанию для карты (только `bank`): прежний перестаёт им быть.
+    #[serde(default)]
+    pub default_card: Option<bool>,
+    /// Сразу сделать счётом по умолчанию для перевода (только `bank`): прежний перестаёт им быть.
+    #[serde(default)]
+    pub default_transfer: Option<bool>,
 }
 
 fn account_name(name: &str) -> AppResult<String> {
@@ -2127,7 +2133,15 @@ pub async fn create_account_tx(
     if req.kind != "bank" && req.fee_rate_bp.is_some_and(|r| r != 0) {
         return Err(invalid("комиссия банка — только у безналичного счёта"));
     }
-    // Первый безналичный счёт филиала сразу становится счётом по умолчанию для карты и перевода.
+    let want_card = req.default_card == Some(true);
+    let want_transfer = req.default_transfer == Some(true);
+    if req.kind != "bank" && (want_card || want_transfer) {
+        return Err(invalid(
+            "по умолчанию для карты или перевода — только безналичный счёт",
+        ));
+    }
+    // Первый безналичный счёт филиала сразу становится счётом по умолчанию для карты и перевода;
+    // отметки из запроса ставятся тут же, в той же транзакции (SPEC-29 §25).
     let (for_card, for_transfer) = if req.kind == "bank" {
         let d = sqlx::query!(
             r#"select not exists (select 1 from cash_accounts
@@ -2138,7 +2152,7 @@ pub async fn create_account_tx(
         )
         .fetch_one(&mut *conn)
         .await?;
-        (d.card, d.transfer)
+        (d.card || want_card, d.transfer || want_transfer)
     } else {
         (false, false)
     };
@@ -2146,6 +2160,22 @@ pub async fn create_account_tx(
         return Err(invalid(
             "счёт по умолчанию для карты и перевода видит администратор: «только владелец» для него нельзя",
         ));
+    }
+    if for_card {
+        sqlx::query!(
+            "update cash_accounts set default_card = false where branch_id = $1 and default_card",
+            ctx.user.branch_id
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    if for_transfer {
+        sqlx::query!(
+            "update cash_accounts set default_transfer = false where branch_id = $1 and default_transfer",
+            ctx.user.branch_id
+        )
+        .execute(&mut *conn)
+        .await?;
     }
     let id = new_id();
     let mut out = sqlx::query_as!(

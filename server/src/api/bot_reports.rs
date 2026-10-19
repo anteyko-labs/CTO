@@ -61,8 +61,8 @@ fn movement_kind(kind: &str) -> &str {
         "count_diff" => "пересчёт",
         "reversal" => "сторно",
         "bank_fee" => "комиссия банка",
-        "card" => "оплата картой",
-        "transfer" => "оплата переводом",
+        "card" => "оплата картой / QR банка",
+        "transfer" => "оплата QR владельцу",
         other => other,
     }
 }
@@ -661,8 +661,8 @@ pub async fn money(
 fn method_name(method: &str) -> &str {
     match method {
         "cash" => "наличными",
-        "card" => "картой",
-        "transfer" => "переводом",
+        "card" => "картой / QR банка",
+        "transfer" => "QR владельцу",
         "debt" => "в долг",
         "bonus" => "баллами",
         "battery" => "аккумуляторами",

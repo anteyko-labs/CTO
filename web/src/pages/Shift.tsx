@@ -381,8 +381,8 @@ export default function Shift() {
                 Продано: {shift.sales_count ?? 0} чек. на {formatSom(shift.sales_total_tyiyn ?? 0)}
               </div>
               <Row label="Наличными" value={shift.cash_sales_tyiyn} />
-              <Row label="Картой" value={shift.card_tyiyn} />
-              <Row label="QR" value={shift.transfer_tyiyn} />
+              <Row label="Карта / QR банка" value={shift.card_tyiyn} />
+              <Row label="QR владельцу" value={shift.transfer_tyiyn} />
               {(shift.bank_split ?? []).length > 1 &&
                 (shift.bank_split ?? []).map((b) => <Row key={b.account_id} label={`  на «${b.name}»`} value={b.total_tyiyn} />)}
               {shift.debt_tyiyn !== 0 && <Row label="В долг" value={shift.debt_tyiyn} />}
@@ -584,13 +584,13 @@ export default function Shift() {
               </div>
             )}
             <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700" data-testid="close-noncash">
-              Безнал за смену: картой <b className="tabular-nums">{formatSom(shift.card_tyiyn)}</b> · QR{' '}
+              Безнал за смену: карта / QR банка <b className="tabular-nums">{formatSom(shift.card_tyiyn)}</b> · QR владельцу{' '}
               <b className="tabular-nums">{formatSom(shift.transfer_tyiyn)}</b>
               {(shift.bank_split ?? []).length > 1 && (
                 <ul className="mt-1 text-xs" data-testid="close-noncash-banks">
                   {(shift.bank_split ?? []).map((b) => (
                     <li key={b.account_id}>
-                      {b.name}: картой {formatSom(b.card_tyiyn)} · QR {formatSom(b.transfer_tyiyn)}
+                      {b.name}: карта / QR банка {formatSom(b.card_tyiyn)} · QR владельцу {formatSom(b.transfer_tyiyn)}
                     </li>
                   ))}
                 </ul>

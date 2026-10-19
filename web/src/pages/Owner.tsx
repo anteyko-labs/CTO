@@ -327,7 +327,7 @@ export function OwnerDashboard() {
             <Link to="/bank" className="rounded-md hover:bg-slate-50" data-testid="noncash">
               <Tile label={`Безнал ${word}`} value={formatSom(data.noncash.total_tyiyn)}>
                 <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500">
-                  картой {formatSom(data.noncash.card_tyiyn)} · QR {formatSom(data.noncash.transfer_tyiyn)}
+                  карта / QR банка {formatSom(data.noncash.card_tyiyn)} · QR владельцу {formatSom(data.noncash.transfer_tyiyn)}
                 </div>
                 {(data.noncash.by_account ?? []).length > 1 && (
                   <div className="text-xs tabular-nums text-slate-500" data-testid="noncash-banks">

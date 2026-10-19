@@ -67,13 +67,13 @@ export default function Bank() {
           <Card className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <Tile label="Остаток сейчас" value={data.balance_tyiyn} />
             <Tile
-              label="Картой"
+              label="Карта / QR банка"
               value={data.card.total_tyiyn}
               tone="text-emerald-700"
               hint={`чеки ${formatSom(data.card.sales_tyiyn)} · долги ${formatSom(data.card.repayments_tyiyn)}`}
             />
             <Tile
-              label="Переводом (QR)"
+              label="QR владельцу"
               value={data.transfer.total_tyiyn}
               tone="text-emerald-700"
               hint={`чеки ${formatSom(data.transfer.sales_tyiyn)} · долги ${formatSom(data.transfer.repayments_tyiyn)}`}
