@@ -1,7 +1,10 @@
 #!/bin/sh
 . "$(dirname "$0")/lib.sh"
 
+require_forbidden_list || exit 1
+
 fail=0
+top=$(git rev-parse --show-toplevel)
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -z "$staged" ] && exit 0
 
@@ -13,12 +16,26 @@ if [ -n "$blocked" ]; then
   fail=1
 fi
 
+# 1б. Имена файлов проверяются тем же списком: локальные заметки и настройки рабочих
+# инструментов называются запрещёнными словами и в индекс попасть не должны.
+# Файлы из .githooks/forbidden-allow (ADR-060) — исключение.
+allow_list=$(mktemp)
+trap 'rm -f "$allow_list"' EXIT
+if [ -f "$top/.githooks/forbidden-allow" ]; then
+  grep -vE '^[[:space:]]*(#|$)' "$top/.githooks/forbidden-allow" > "$allow_list"
+fi
+names=$(printf '%s\n' "$staged" | grep -vxF -f "$allow_list")
+if [ -n "$names" ] && ! printf '%s\n' "$names" | check_forbidden >&2; then
+  echo "pre-commit: имена этих файлов содержат запрещённые слова — такие файлы не коммитятся." >&2
+  fail=1
+fi
+
 # 2. Запрещённые слова в добавленных строках (хуки и генерируемые lock-файлы не проверяем).
 # Файлы из .githooks/forbidden-allow — исключение по решению заказчика (ADR-060): там названы
 # поставщик и модель разбора вопросов бота. Сами файлы проверяются на секреты (п. 3).
 allow=""
-if [ -f "$(git rev-parse --show-toplevel)/.githooks/forbidden-allow" ]; then
-  allow=$(grep -vE '^[[:space:]]*(#|$)' "$(git rev-parse --show-toplevel)/.githooks/forbidden-allow" | sed 's/^/:(exclude)/')
+if [ -s "$allow_list" ]; then
+  allow=$(sed 's/^/:(exclude)/' "$allow_list")
 fi
 # shellcheck disable=SC2086
 checked=$(git diff --cached -U0 -- . ':(exclude).githooks' ':(exclude)**/package-lock.json' ':(exclude)**/Cargo.lock' ':(exclude)**/.sqlx/**' $allow | grep -E '^\+[^+]' )
@@ -38,7 +55,7 @@ fi
 if printf '%s
 ' "$staged" | grep -qE '^server/'; then
   if command -v cargo >/dev/null 2>&1; then
-    manifest="$(git rev-parse --show-toplevel)/server/Cargo.toml"
+    manifest="$top/server/Cargo.toml"
     cargo fmt --manifest-path "$manifest" --all -- --check >/dev/null 2>&1 || { echo "pre-commit: cargo fmt --check не прошёл." >&2; fail=1; }
     if ! out=$(cargo clippy --manifest-path "$manifest" --all-targets --quiet -- -D warnings 2>&1); then
       printf '%s

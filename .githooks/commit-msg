@@ -3,6 +3,8 @@
 
 msg_file="$1"
 
+require_forbidden_list || exit 1
+
 if ! grep -v '^#' "$msg_file" | check_forbidden; then
   echo "commit-msg: сообщение содержит запрещённые слова или трейлеры." >&2
   exit 1
