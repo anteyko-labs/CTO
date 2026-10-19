@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, doc_type, reversal_of,\n                          exists (select 1 from payroll_accruals x where x.reversal_of = a.id) as \"reversed!\"\n                   from payroll_accruals a where a.id = $1 and a.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "81ebeab01108db4607dc5dc81aacfe55825250aa8e86c5fe5c91baa5033df5e8"
+}

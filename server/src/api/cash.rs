@@ -283,6 +283,16 @@ pub struct CashEntry<'a> {
 /// Записывает движение денег и пересчитывает остаток кассы (инвариант 6).
 /// Смена подставляется сама: открытая на этой кассе в момент проведения.
 pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) -> AppResult<i64> {
+    add_movement_id(conn, ctx, e).await.map(|(_, b)| b)
+}
+
+/// То же, что [`add_movement`], и возвращает id движения: «Исправить» связывает внесение или
+/// изъятие с исправленным (SPEC-29 §24).
+pub async fn add_movement_id(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    e: CashEntry<'_>,
+) -> AppResult<(Uuid, i64)> {
     // Сумма каждой операции проверена на её входе; здесь — предел остатка кассы.
     ops::check_balance(e.amount)?;
     let acc = sqlx::query!(
@@ -329,11 +339,12 @@ pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) 
         .await?;
     }
     let shift_id = open_shift_id(conn, ctx.user.branch_id, e.account_id).await?;
+    let movement_id = new_id();
     sqlx::query!(
         r#"insert into cash_movements (id, branch_id, account_id, shift_id, kind, amount_tyiyn,
                                        doc_type, doc_id, comment, user_id, device_id)
            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
-        new_id(),
+        movement_id,
         ctx.user.branch_id,
         e.account_id,
         shift_id,
@@ -354,7 +365,7 @@ pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) 
     )
     .execute(&mut *conn)
     .await?;
-    Ok(next)
+    Ok((movement_id, next))
 }
 
 /// Документ движения словами для уведомления: «расход № 15», «чек № 42», «изъятие».
@@ -1471,6 +1482,9 @@ pub struct MovementReq {
 pub struct BalanceOut {
     pub account_id: Uuid,
     pub balance_tyiyn: i64,
+    /// Проведённое движение (внесение, изъятие или его сторно).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_id: Option<Uuid>,
 }
 
 /// Кассы владельца трогает только он (ADR-037).
@@ -1538,7 +1552,7 @@ pub async fn post_movement_tx(
     } else {
         -req.amount_tyiyn
     };
-    let balance = add_movement(
+    let (movement_id, balance) = add_movement_id(
         &mut *conn,
         ctx,
         CashEntry {
@@ -1563,16 +1577,17 @@ pub async fn post_movement_tx(
     let out = BalanceOut {
         account_id,
         balance_tyiyn: balance,
+        movement_id: Some(movement_id),
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }
 
 #[derive(Deserialize)]
-struct ReverseReq {
-    op_id: Uuid,
+pub struct ReverseReq {
+    pub op_id: Uuid,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 /// Администратор отменяет только то, что сделано в открытой смене (или вне смены, пока
@@ -1599,13 +1614,25 @@ async fn reverse_movement(
     Path(id): Path<Uuid>,
     Json(req): Json<ReverseReq>,
 ) -> AppResult<Json<BalanceOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_movement_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно внесения или изъятия — одна транзакция вызывающего: экран и «Исправить» (SPEC-29 §24).
+pub async fn reverse_movement_tx(
+    tx: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReverseReq,
+) -> AppResult<BalanceOut> {
     const KIND: &str = "cash.reverse";
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let m = sqlx::query!(
         r#"select account_id, shift_id, kind, amount_tyiyn, doc_type from cash_movements
@@ -1622,9 +1649,9 @@ async fn reverse_movement(
             "это движение отменяется своим документом: чеком, расходом или выплатой",
         ));
     }
-    check_account_access(&mut tx, &ctx, m.account_id).await?;
-    lock_accounts(&mut tx, ctx.user.branch_id, &[m.account_id]).await?;
-    check_reverse_window(&mut tx, &ctx, m.account_id, m.shift_id).await?;
+    check_account_access(&mut *tx, ctx, m.account_id).await?;
+    lock_accounts(&mut *tx, ctx.user.branch_id, &[m.account_id]).await?;
+    check_reverse_window(&mut *tx, ctx, m.account_id, m.shift_id).await?;
     let done = sqlx::query_scalar!(
         r#"select exists (select 1 from cash_movements
                           where kind = 'reversal' and doc_type = 'cash_movement' and doc_id = $1) as "e!""#,
@@ -1635,9 +1662,9 @@ async fn reverse_movement(
     if done {
         return Err(AppError::Conflict("движение уже отменено".into()));
     }
-    let balance = add_movement(
-        &mut tx,
-        &ctx,
+    let (rid, balance) = add_movement_id(
+        &mut *tx,
+        ctx,
         CashEntry {
             account_id: m.account_id,
             kind: "reversal",
@@ -1649,8 +1676,8 @@ async fn reverse_movement(
     )
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "cash",
         Some(id),
@@ -1660,10 +1687,10 @@ async fn reverse_movement(
     let out = BalanceOut {
         account_id: m.account_id,
         balance_tyiyn: balance,
+        movement_id: Some(rid),
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -1824,13 +1851,25 @@ async fn reverse_transfer(
     Path(id): Path<Uuid>,
     Json(req): Json<ReverseReq>,
 ) -> AppResult<Json<Value>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_transfer_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно перемещения — одна транзакция вызывающего: экран и «Исправить» (SPEC-29 §24).
+pub async fn reverse_transfer_tx(
+    tx: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReverseReq,
+) -> AppResult<Value> {
     const KIND: &str = "cash.transfer_reverse";
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let t = sqlx::query!(
         r#"select number, from_account_id, to_account_id, amount_tyiyn, reversal_of
@@ -1845,9 +1884,9 @@ async fn reverse_transfer(
         return Err(invalid("это уже сторно перемещения"));
     }
     // Сторно забирает деньги из получателя: из кассы владельца — только он сам.
-    check_account_access(&mut tx, &ctx, t.to_account_id).await?;
+    check_account_access(&mut *tx, ctx, t.to_account_id).await?;
     lock_accounts(
-        &mut tx,
+        &mut *tx,
         ctx.user.branch_id,
         &[t.from_account_id, t.to_account_id],
     )
@@ -1861,7 +1900,7 @@ async fn reverse_transfer(
     .fetch_optional(&mut *tx)
     .await?
     .flatten();
-    check_reverse_window(&mut tx, &ctx, t.from_account_id, out_shift).await?;
+    check_reverse_window(&mut *tx, ctx, t.from_account_id, out_shift).await?;
     // Сдача кассы уже вошла в итог смены, который видел владелец: отменяет её только он.
     let handover = sqlx::query_scalar!(
         r#"select exists (select 1 from shift_handovers where transfer_id = $1) as "e!""#,
@@ -1883,8 +1922,8 @@ async fn reverse_transfer(
     }
     let comment = format!("сторно перемещения № {}: {}", t.number, req.comment.trim());
     let (rid, number) = transfer_tx(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         TransferArgs {
             from: t.to_account_id,
             to: t.from_account_id,
@@ -1895,8 +1934,8 @@ async fn reverse_transfer(
     )
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "cash",
         Some(rid),
@@ -1908,9 +1947,8 @@ async fn reverse_transfer(
     )
     .await?;
     let out = json!({ "id": rid, "number": number });
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Serialize)]

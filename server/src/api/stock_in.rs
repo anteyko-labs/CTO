@@ -75,7 +75,11 @@ async fn load(
     .await?)
 }
 
-async fn load_one(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<StockInOut> {
+pub(crate) async fn load_one(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<StockInOut> {
     load(conn, branch_id, Some(id), None)
         .await?
         .into_iter()

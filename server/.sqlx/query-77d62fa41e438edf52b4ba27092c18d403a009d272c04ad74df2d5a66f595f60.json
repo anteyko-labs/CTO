@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.paid_account_id,\n                  exists (select 1 from party_ledger l where l.doc_type = 'receipt' and l.doc_id = r.id\n                            and l.kind = 'debt') as \"on_debt!\"\n           from receipts r where r.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "paid_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "on_debt!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "77d62fa41e438edf52b4ba27092c18d403a009d272c04ad74df2d5a66f595f60"
+}

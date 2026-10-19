@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, Notice, PageHeader, Table, toast } from '../components/ui'
 import { Icon } from '../components/icons'
 import { Pager, usePageState, usePager } from '../components/Pager'
+import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { get, getPage, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { StaffPayList } from '../components/StaffPayList'
@@ -11,6 +12,8 @@ import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { MOVEMENT_LABELS } from '../lib/income'
 import { accountLabel, handoverChoices, isTill, payAccounts } from '../lib/accounts'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
+import { correctionMarks, loadCorrections, numberText } from '../lib/corrections'
+import { movementDoc, movementFields, transferDoc, transferFields, type MovementDoc, type TransferDoc } from '../lib/moneyFix'
 import type { CashAccount, CashMovement, Employee, PayrollRow, Shift as ShiftRow } from '../lib/types'
 
 /** Виды движений словами — общие с «Счётом» и «Куда сколько поступило». */
@@ -64,7 +67,11 @@ type Closing = {
  *  владельца (ADR-081). */
 type Opening = { cashier: string; counted: string; opId: string; pin: string; byOwner: boolean; password: string }
 
-type MoneyForm = { kind: 'cash_in' | 'cash_out' | 'transfer'; sum: string; comment: string; from: string; to: string; opId: string }
+/** Исправление проведённого внесения, изъятия или перевода (SPEC-29 §24): то же окно, заполненное
+ *  исходным документом; `filled` — поля уже взяты из него. */
+type MoneyFix = { kind: 'cash_movement' | 'cash_transfer'; id: string; filled: boolean }
+
+type MoneyForm = { kind: 'cash_in' | 'cash_out' | 'transfer'; sum: string; comment: string; from: string; to: string; opId: string; fix?: MoneyFix }
 
 /** Смена и кассы: открыть, внести, изъять, перевести, закрыть с пересчётом и сдать кассу (SPEC-05). */
 export default function Shift() {
@@ -78,6 +85,7 @@ export default function Shift() {
   usePolling(accounts.reload)
   const [open, setOpen] = useState<Opening | null>(null)
   const [money, setMoney] = useState<MoneyForm | null>(null)
+  const correction = useCorrection<MovementDoc | TransferDoc>(money?.fix?.kind ?? 'cash_movement', money?.fix?.id ?? null)
   const [closing, setClosing] = useState<Closing | null>(null)
   // Чеки этого устройства, ещё не ушедшие на сервер: их наличные уже в кассе, а в «должно быть» —
   // ещё нет. Закрыть смену до их отправки — ложная недостача (ADR-059).
@@ -242,6 +250,32 @@ export default function Shift() {
       toast('Сторно проведено')
     })
 
+  const startFix = (m: CashMovement) => {
+    closeDialogs()
+    correction.setComment('')
+    const transfer = m.doc_type === 'transfer'
+    setMoney({
+      kind: transfer ? 'transfer' : m.kind === 'cash_in' ? 'cash_in' : 'cash_out',
+      sum: '',
+      comment: '',
+      from: '',
+      to: '',
+      opId: newOpId(),
+      fix: { kind: transfer ? 'cash_transfer' : 'cash_movement', id: transfer ? (m.doc_id ?? '') : m.id, filled: false },
+    })
+  }
+
+  const submitFix = async () => {
+    if (!money?.fix) return
+    const doc = money.fix.kind === 'cash_transfer' ? transferDoc(money) : movementDoc(money, till?.id ?? null)
+    if (!doc) return
+    const c = await correction.save(doc)
+    if (!c) return
+    setMoney(null)
+    reloadAll()
+    toast(`Исправлено: ${numberText(c.new_number) || (money.kind === 'transfer' ? 'перевод' : 'запись')}`)
+  }
+
   const startMoney = (kind: MoneyForm['kind']) => {
     closeDialogs()
     setMoney({
@@ -265,6 +299,13 @@ export default function Shift() {
   const openCashier = cashiers.find((e) => e.id === open?.cashier)
   // Касса смены: её остаток — «должно быть» на начало новой смены (SPEC-29 §16).
   const till = accs.find((a) => isTill(a))
+  // Исправление: поля окна заполняются исходным документом, как только он пришёл с сервера.
+  const fixDraft = correction.draft.data
+  if (money?.fix && !money.fix.filled && fixDraft && fixDraft.original_id === money.fix.id) {
+    const fields =
+      money.fix.kind === 'cash_transfer' ? transferFields(fixDraft.doc as TransferDoc) : movementFields(fixDraft.doc as MovementDoc, till?.id ?? null)
+    setMoney({ ...money, ...fields, fix: { ...money.fix, filled: true } })
+  }
   // Выплаты при закрытии: владелец — с любого счёта, администратор — из кассы смены (SPEC-29 §13).
   const payFromList = payAccounts(accs, owner)
   const fromTill = !closing || !shift || closing.payFrom === shift.account_id || !closing.payFrom
@@ -304,6 +345,7 @@ export default function Shift() {
         [money.kind !== 'transfer' || Boolean(money.to), 'куда', '#money-to'],
         [money.kind !== 'transfer' || money.from !== money.to, 'разные кассы', '#money-to'],
         [money.kind === 'transfer' || Boolean(money.comment.trim()), 'за что', '#money-comment'],
+        [!money.fix || Boolean(correction.comment.trim()), 'что и почему исправляете', '#correction-comment'],
       )
     : []
   const handoverSum = handover ? parseSom(handover.sum) : null
@@ -463,6 +505,7 @@ export default function Shift() {
               closeDialogs()
               setReverse({ m, comment: '', opId: newOpId() })
             }}
+            onFix={startFix}
           />
         )}
       </Card>
@@ -779,10 +822,14 @@ export default function Shift() {
 
       {money && (
         <Modal
-          title={money.kind === 'cash_in' ? 'Внести в кассу' : money.kind === 'cash_out' ? 'Изъять из кассы' : 'Перевести между кассами'}
+          title={`${money.fix ? 'Исправить: ' : ''}${money.kind === 'cash_in' ? 'Внести в кассу' : money.kind === 'cash_out' ? 'Изъять из кассы' : 'Перевести между кассами'}`}
           onClose={closeDialogs}
         >
           <div className="flex flex-col gap-3">
+            {money.fix && !money.fix.filled && (correction.draft.loading ? <Loading /> : null)}
+            {money.fix && fixDraft && (
+              <CorrectionBanner label={fixDraft.kind_label} number={fixDraft.number} comment={correction.comment} onComment={correction.setComment} />
+            )}
             {money.kind === 'transfer' && (
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Откуда" required>
@@ -828,14 +875,20 @@ export default function Shift() {
               <input id="money-comment" value={money.comment} onChange={(e) => setMoney({ ...money, comment: e.target.value })} />
             </Field>
             <Missing items={moneyMissing} />
-            <ErrorBox error={act.error} />
+            <ErrorBox error={money.fix ? correction.error : act.error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={closeDialogs}>
                 Отмена
               </Button>
-              <Button disabled={act.busy || moneyMissing.length > 0} onClick={submitMoney}>
-                Записать
-              </Button>
+              {money.fix ? (
+                <Button disabled={correction.busy || !money.fix.filled || moneyMissing.length > 0} onClick={() => void submitFix()}>
+                  Сохранить исправление
+                </Button>
+              ) : (
+                <Button disabled={act.busy || moneyMissing.length > 0} onClick={submitMoney}>
+                  Записать
+                </Button>
+              )}
             </div>
           </div>
         </Modal>
@@ -847,9 +900,12 @@ export default function Shift() {
 }
 
 /** Движения выбранной кассы, новые сверху; страницу режет сервер. `tick` — перечитать после операции. */
-function AccountMoves({ id, tick, onReverse }: { id: string; tick: number; onReverse: (m: CashMovement) => void }) {
+function AccountMoves({ id, tick, onReverse, onFix }: { id: string; tick: number; onReverse: (m: CashMovement) => void; onFix: (m: CashMovement) => void }) {
   const pager = usePageState('shift.movements', id)
   const moves = useLoad(() => getPage<CashMovement>(`/cash/accounts/${id}`, { limit: pager.size, offset: pager.page * pager.size }), [id, pager.page, pager.size, tick])
+  // Отметки исправлений: внесения и изъятия — по id движения, переводы — по id перевода.
+  const fixes = useLoad(() => Promise.all([loadCorrections('cash_movement'), loadCorrections('cash_transfer')]).then(([a, b]) => correctionMarks([...a, ...b])), [tick])
+  const markOf = (m: CashMovement) => fixes.data?.get(m.doc_type === 'transfer' && m.doc_id ? m.doc_id : m.id)
   const rows = moves.data?.items ?? []
   return (
     <div className="mt-4">
@@ -864,7 +920,12 @@ function AccountMoves({ id, tick, onReverse }: { id: string; tick: number; onRev
             {rows.map((m) => (
               <tr key={m.id}>
                 <td className="whitespace-nowrap px-2 py-2">{formatDateTime(m.created_at)}</td>
-                <td className="px-2 py-2">{KIND_LABELS[m.kind] ?? m.kind}</td>
+                <td className="px-2 py-2">
+                  {KIND_LABELS[m.kind] ?? m.kind}
+                  <span className="ml-2 inline-flex flex-wrap gap-1">
+                    <CorrectionBadges mark={markOf(m)} />
+                  </span>
+                </td>
                 <td className="px-2 py-2 text-right">
                   <Money value={m.amount_tyiyn} tone="negative" className="font-medium" />
                 </td>
@@ -872,9 +933,12 @@ function AccountMoves({ id, tick, onReverse }: { id: string; tick: number; onRev
                 <td className="px-2 py-2">{m.user_name}</td>
                 <td className="px-2 py-2 text-right">
                   {m.reversible && (
-                    <Button variant="ghost" onClick={() => onReverse(m)}>
-                      Сторно
-                    </Button>
+                    <div className="flex items-center justify-end gap-2">
+                      <FixButton small onClick={() => onFix(m)} />
+                      <Button variant="ghost" onClick={() => onReverse(m)}>
+                        Сторно
+                      </Button>
+                    </div>
                   )}
                 </td>
               </tr>

@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { PayrollEntries } from '../components/PayrollEntries'
+import { ExtraForm, PayoutForm, SalaryForm } from '../components/PayrollForms'
 import { PayrollMonth } from '../components/PayrollMonth'
-import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { get, newOpId, post, qs } from '../lib/api'
+import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table } from '../components/ui'
+import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { accountLabel, isTill, payAccounts } from '../lib/accounts'
-import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
-import { useAction, useLoad } from '../lib/hooks'
-import type { CashAccount, PayrollRow } from '../lib/types'
+import { formatSom, todayBishkek } from '../lib/format'
+import { useLoad } from '../lib/hooks'
+import type { PayrollRow } from '../lib/types'
 
 /** Расчёт за день: кто сколько заработал и сколько ему должны (SPEC-07). */
 export default function Payroll() {
@@ -18,89 +18,16 @@ export default function Payroll() {
   const [extra, setExtra] = useState<{ row: PayrollRow; kind: 'bonus' | 'penalty' } | null>(null)
   const [salary, setSalary] = useState<PayrollRow | null>(null)
   const [entries, setEntries] = useState<PayrollRow | null>(null)
-  const [form, setForm] = useState({ sum: '', comment: '', advance: false })
-  // Выплата с любого счёта — владелец; администратор — из кассы смены (SPEC-29 §13, ADR-076).
-  const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
-  const payFrom = payAccounts(accounts.data ?? [], owner)
-  const [fromPick, setFromPick] = useState('')
-  const fromId = payFrom.some((a) => a.id === fromPick) ? fromPick : (payFrom[0]?.id ?? '')
-  const fromAcc = payFrom.find((a) => a.id === fromId)
-  // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
-  const [opId, setOpId] = useState(newOpId)
-  const act = useAction()
   const rows = useLoad(() => get<PayrollRow[]>(`/payroll/day${qs({ date })}`), [date])
-  const overpay = paying !== null && (parseSom(form.sum) ?? 0) > paying.balance_tyiyn
 
   const close = () => {
     setPaying(null)
     setExtra(null)
     setSalary(null)
-    setForm({ sum: '', comment: '', advance: false })
-    setOpId(newOpId())
   }
-
-  const pay = () =>
-    void act.run(async () => {
-      if (!paying) return
-      const sum = parseSom(form.sum)
-      if (sum === null || sum <= 0) throw new Error('Неверная сумма')
-      await post('/payouts', {
-        op_id: opId,
-        employee_id: paying.employee_id,
-        amount_tyiyn: sum,
-        source: 'account',
-        account_id: fromId || undefined,
-        // Аванс сверх заработанного — только с явной отметки владельца (SPEC-07).
-        advance: sum > paying.balance_tyiyn && form.advance,
-        comment: form.comment,
-      })
-      close()
-      rows.reload()
-      accounts.reload()
-      toast(fromAcc && !isTill(fromAcc) ? `Выплачено: ${fromAcc.name}` : 'Выплачено из кассы')
-    })
-
-  const addExtra = () =>
-    void act.run(async () => {
-      if (!extra) return
-      const sum = parseSom(form.sum)
-      if (sum === null || sum <= 0) throw new Error('Неверная сумма')
-      await post('/payroll/accruals', {
-        op_id: opId,
-        employee_id: extra.row.employee_id,
-        kind: extra.kind,
-        amount_tyiyn: sum,
-        business_date: date,
-        comment: form.comment,
-      })
-      close()
-      rows.reload()
-      toast(extra.kind === 'bonus' ? 'Бонус начислен' : 'Удержание записано')
-    })
-
-  const payMonth = () =>
-    void act.run(async () => {
-      if (!salary) return
-      const sum = form.sum.trim() ? parseSom(form.sum) : null
-      if (form.sum.trim() && sum === null) throw new Error('Неверная сумма')
-      await post('/payroll/salary', {
-        op_id: opId,
-        employee_id: salary.employee_id,
-        month: `${date.slice(0, 7)}-01`,
-        amount_tyiyn: sum,
-      })
-      close()
-      rows.reload()
-      toast('Оклад начислен')
-    })
-
-  const openSalary = (r: PayrollRow) => {
-    setSalary(r)
-    setForm({ sum: '', comment: '', advance: false })
-  }
-  const openExtra = (r: PayrollRow, kind: 'bonus' | 'penalty') => {
-    setExtra({ row: r, kind })
-    setForm({ sum: '', comment: '', advance: false })
+  const done = () => {
+    close()
+    rows.reload()
   }
 
   const list = rows.data ?? []
@@ -141,7 +68,7 @@ export default function Payroll() {
       </Card>
 
       <Card>
-        <ErrorBox error={rows.error ?? act.error} />
+        <ErrorBox error={rows.error} />
         {rows.loading && !rows.data ? (
           <Loading />
         ) : list.length === 0 ? (
@@ -179,10 +106,7 @@ export default function Payroll() {
                       <Button
                         className="px-3 py-1 text-xs"
                         disabled={r.balance_tyiyn <= 0 && !owner}
-                        onClick={() => {
-                          setPaying(r)
-                          setForm({ sum: somInput(Math.max(0, r.balance_tyiyn)), comment: '', advance: false })
-                        }}
+                        onClick={() => setPaying(r)}
                       >
                         Выплатить
                       </Button>
@@ -190,9 +114,9 @@ export default function Payroll() {
                         <RowMenu
                           label="Начисления сотруднику"
                           items={[
-                            { label: 'Оклад', onClick: () => openSalary(r) },
-                            { label: 'Бонус', onClick: () => openExtra(r, 'bonus') },
-                            { label: 'Удержать', onClick: () => openExtra(r, 'penalty'), danger: true },
+                            { label: 'Оклад', onClick: () => setSalary(r) },
+                            { label: 'Бонус', onClick: () => setExtra({ row: r, kind: 'bonus' }) },
+                            { label: 'Удержать', onClick: () => setExtra({ row: r, kind: 'penalty' }), danger: true },
                             { label: 'Начисления и выплаты за день', onClick: () => setEntries(r) },
                           ]}
                         />
@@ -208,72 +132,13 @@ export default function Payroll() {
 
       {paying && (
         <Modal title={`Выплата: ${paying.full_name}`} onClose={close}>
-          <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">
-              К выплате {formatSom(paying.balance_tyiyn)}, деньги уйдут {fromAcc && !isTill(fromAcc) ? `со счёта «${fromAcc.name}»` : 'из кассы'}
-            </div>
-            {payFrom.length > 1 ? (
-              <Field label="Откуда">
-                <select id="payout-from" value={fromId} onChange={(e) => setFromPick(e.target.value)}>
-                  {payFrom.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {accountLabel(a)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            ) : (
-              fromAcc && <div className="text-xs text-slate-500">{accountLabel(fromAcc)}</div>
-            )}
-            <Field label="Сумма, с" required>
-              <input autoFocus inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
-            </Field>
-            <Field label="Комментарий">
-              <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
-            </Field>
-            {overpay &&
-              (owner ? (
-                <label className="flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  <input type="checkbox" checked={form.advance} onChange={(e) => setForm({ ...form, advance: e.target.checked })} />
-                  Это больше заработанного на {formatSom((parseSom(form.sum) ?? 0) - paying.balance_tyiyn)}. Выдать как аванс?
-                </label>
-              ) : (
-                <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                  Это больше заработанного: аванс выдаёт только владелец. Уменьшите сумму до {formatSom(Math.max(paying.balance_tyiyn, 0))}.
-                </div>
-              ))}
-            <ErrorBox error={act.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={close}>
-                Отмена
-              </Button>
-              <Button disabled={act.busy || !form.sum.trim() || (overpay && (!owner || !form.advance))} onClick={pay}>
-                Выплатить
-              </Button>
-            </div>
-          </div>
+          <PayoutForm employeeId={paying.employee_id} balance={paying.balance_tyiyn} onCancel={close} onDone={done} />
         </Modal>
       )}
 
       {extra && (
         <Modal title={`${extra.kind === 'bonus' ? 'Бонус' : 'Удержание'}: ${extra.row.full_name}`} onClose={close}>
-          <div className="flex flex-col gap-3">
-            <Field label="Сумма, с" required>
-              <input autoFocus inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
-            </Field>
-            <Field label="Причина" required>
-              <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
-            </Field>
-            <ErrorBox error={act.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={close}>
-                Отмена
-              </Button>
-              <Button disabled={act.busy || !form.sum.trim() || !form.comment.trim()} onClick={addExtra}>
-                Записать
-              </Button>
-            </div>
-          </div>
+          <ExtraForm employeeId={extra.row.employee_id} kind={extra.kind} date={date} onCancel={close} onDone={done} />
         </Modal>
       )}
 
@@ -291,23 +156,14 @@ export default function Payroll() {
 
       {salary && (
         <Modal title={`Оклад за месяц: ${salary.full_name}`} onClose={close}>
-          <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">
-              Месяц {date.slice(0, 7)}. Пустая сумма — возьмём из правила оплаты.
-            </div>
-            <Field label="Сумма, с">
-              <input autoFocus inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
-            </Field>
-            <ErrorBox error={act.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={close}>
-                Отмена
-              </Button>
-              <Button disabled={act.busy} onClick={payMonth}>
-                Начислить
-              </Button>
-            </div>
-          </div>
+          <SalaryForm
+            employeeId={salary.employee_id}
+            month={`${date.slice(0, 7)}-01`}
+            hint={`Месяц ${date.slice(0, 7)}. Пустая сумма — возьмём из правила оплаты.`}
+            optional
+            onCancel={close}
+            onDone={done}
+          />
         </Modal>
       )}
       </>

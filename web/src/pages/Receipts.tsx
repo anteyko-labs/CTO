@@ -2,7 +2,10 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
+import { CorrectionBadges } from '../components/Correction'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
+import { correctionMarks, loadCorrections } from '../lib/corrections'
+import { useLoad } from '../lib/hooks'
 import { qs } from '../lib/api'
 import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
 import type { ReceiptListItem } from '../lib/types'
@@ -13,6 +16,8 @@ export default function Receipts() {
   const [from, setFrom] = useState(() => shiftDate(todayBishkek(), -30))
   // Страницу режет сервер; смена периода — снова первая страница.
   const list = usePagedLoad<ReceiptListItem>(`/receipts${qs({ from, to })}`, 'receipts')
+  // Исправленные накладные и исправления — одним запросом на экран (SPEC-29 §24).
+  const fixes = useLoad(() => loadCorrections('receipt').then(correctionMarks), [from, to])
 
   return (
     <div>
@@ -52,6 +57,7 @@ export default function Receipts() {
                           {r.reversal_of && <Badge tone="amber">сторно</Badge>}
                           {r.reversed && <Badge tone="rose">сторнирован</Badge>}
                           {!r.reversal_of && !r.reversed && ((r.on_debt_tyiyn ?? 0) > 0 ? <Badge tone="amber">в долг поставщику</Badge> : <Badge tone="green">оплачен</Badge>)}
+                          <CorrectionBadges mark={fixes.data?.get(r.id)} />
                         </div>
                       </div>
                       <div className="shrink-0 text-right font-bold tabular-nums">{formatSom(r.total_tyiyn)}</div>
@@ -75,6 +81,7 @@ export default function Receipts() {
                         {r.reversal_of && <Badge tone="amber">сторно</Badge>}
                         {r.reversed && <Badge tone="rose">сторнирован</Badge>}
                         {!r.reversal_of && !r.reversed && ((r.on_debt_tyiyn ?? 0) > 0 ? <Badge tone="amber">в долг поставщику</Badge> : <Badge tone="green">оплачен</Badge>)}
+                        <CorrectionBadges mark={fixes.data?.get(r.id)} />
                       </td>
                     </tr>
                   ))}

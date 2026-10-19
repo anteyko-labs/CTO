@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 58] = [
+pub(crate) const WATCHED: [&str; 59] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -78,6 +78,7 @@ pub(crate) const WATCHED: [&str; 58] = [
     "supplier_return.reverse",
     "oil.transfer_admin",
     "employee.pin",
+    "correction.post",
 ];
 
 #[derive(Serialize)]
@@ -205,6 +206,49 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     data.get("name").and_then(Value::as_str).unwrap_or("товар")
                 ),
                 parts.join("; "),
+            )
+        }
+        // «Исправить» владельца (SPEC-29 §24): что исправлено и что поменялось.
+        "correction.post" => {
+            let no = |key: &str| num(key).map(|n| format!(" № {n}")).unwrap_or_default();
+            let changes = data
+                .get("diff")
+                .and_then(Value::as_array)
+                .map(|d| {
+                    let mut parts: Vec<String> = d
+                        .iter()
+                        .take(5)
+                        .map(|x| {
+                            format!(
+                                "{}: {} → {}",
+                                x.get("what").and_then(Value::as_str).unwrap_or(""),
+                                x.get("old").and_then(Value::as_str).unwrap_or(""),
+                                x.get("new").and_then(Value::as_str).unwrap_or("")
+                            )
+                        })
+                        .collect();
+                    if d.len() > 5 {
+                        parts.push(format!("и ещё {}", d.len() - 5));
+                    }
+                    if parts.is_empty() {
+                        "без изменений".into()
+                    } else {
+                        parts.join("; ")
+                    }
+                })
+                .unwrap_or_default();
+            (
+                format!(
+                    "Исправлен документ: {}{} → {}",
+                    text("label"),
+                    no("original_number"),
+                    if num("new_number").is_some() {
+                        format!("№ {}", num("new_number").unwrap_or(0))
+                    } else {
+                        "новый".into()
+                    }
+                ),
+                format!("{}{}", changes, comment(data)),
             )
         }
         "sale.price_override" => (

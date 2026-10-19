@@ -2,7 +2,9 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { CorrectionBadges } from '../components/Correction'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
+import { correctionMarks, loadCorrections, type CorrectionMark } from '../lib/corrections'
 import { get, qs } from '../lib/api'
 import { formatSom, formatTime, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
@@ -30,12 +32,13 @@ function Client({ name, phone, fallback }: { name: string | null; phone?: string
   )
 }
 
-/** Отметки чека: возврат, в долг. */
-function Marks({ s }: { s: SaleListItem }) {
+/** Отметки чека: возврат, в долг, исправлен / исправление (SPEC-29 §24). */
+function Marks({ s, fix }: { s: SaleListItem; fix?: CorrectionMark }) {
   return (
     <>
       {s.kind === 'return' && <Badge tone="rose">возврат</Badge>}
       {s.debt_tyiyn !== 0 && <Badge tone="amber">в долг {formatSom(Math.abs(s.debt_tyiyn))}</Badge>}
+      <CorrectionBadges mark={fix} />
     </>
   )
 }
@@ -44,6 +47,8 @@ export default function SalesDay() {
   const [date, setDate] = useState(todayBishkek)
   const navigate = useNavigate()
   const { data, error, loading } = useLoad(() => get<Day>(`/sales${qs({ date })}`), [date])
+  // Исправленные чеки и исправления — одним запросом на экран.
+  const fixes = useLoad(() => loadCorrections('sale').then(correctionMarks), [date])
   const sold = data?.sales.filter((s) => s.kind === 'sale').reduce((acc, s) => acc + s.total_tyiyn, 0) ?? 0
   const returns = data?.sales.filter((s) => s.kind === 'return') ?? []
   const returnsSum = returns.reduce((acc, s) => acc + s.total_tyiyn, 0)
@@ -137,7 +142,7 @@ export default function SalesDay() {
                         <Client name={s.party_name} phone={s.party_phone} fallback={s.sale_type === 'service' ? 'В сервис' : 'На вынос'} />
                       </span>
                       {s.master_name && <span>· мастер {s.master_name}</span>}
-                      <Marks s={s} />
+                      <Marks s={s} fix={fixes.data?.get(s.id)} />
                     </div>
                   </Link>
                 </li>
@@ -151,6 +156,9 @@ export default function SalesDay() {
                     <td className="px-2 py-2 tabular-nums">{formatTime(s.created_at)}</td>
                     <td className="px-2 py-2">
                       {s.kind === 'return' ? <Badge tone="rose">возврат</Badge> : s.sale_type === 'service' ? 'В сервис' : 'На вынос'}
+                      <div>
+                        <CorrectionBadges mark={fixes.data?.get(s.id)} />
+                      </div>
                     </td>
                     <td className="px-2 py-2">
                       <Client name={s.party_name} phone={s.party_phone} fallback="—" />

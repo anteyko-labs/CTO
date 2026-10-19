@@ -1,18 +1,23 @@
 // Возврат товара поставщику — не брак (SPEC-29 §9): строки товар и количество, сумма по умолчанию —
 // цена последнего прихода от него × количество; итог — меньше наш долг или деньги на счёт.
-// Себестоимость и разницу видит только владелец.
+// Себестоимость и разницу видит только владелец. Владелец исправляет проведённый возврат той же
+// формой (SPEC-29 §24, ADR-085).
 import { useState } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { qtyText } from '../lib/defects'
+import { fixedText, returnLineFromDraft, type DraftReturnLine } from '../lib/docFix'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { paySources } from '../lib/receiptPay'
 import { returnAmount, returnQty } from '../lib/supplierReturn'
 import type { CashAccount, Product, SupplierReturn } from '../lib/types'
+import { CorrectionBadges, FixButton } from './Correction'
+import { FIX_SUBMIT, FixBanner, FixDraft, type FixMode } from './FixDraft'
 import { ProductPicker } from './ProductPicker'
-import { Badge, Button, Empty, ErrorBox, Field, Missing, Modal, Table, toast } from './ui'
+import { Badge, Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 interface Line {
   key: string
@@ -25,15 +30,38 @@ interface Line {
   price: number | null
 }
 
+/** Возврат в виде запроса проведения (без op_id). */
+interface ReturnDoc {
+  supplier_id: string
+  settle: 'debt' | 'money'
+  account_id: string | null
+  comment: string
+  lines: DraftReturnLine[]
+}
+
 const unitWord = (p: Product) => (p.unit === 'ml' ? 'л' : p.unit === 'g' ? 'кг' : 'шт')
 
-/** Окно возврата поставщику. */
-export function SupplierReturnModal({ supplierId, supplierName, onClose, onDone }: { supplierId: string; supplierName: string; onClose: () => void; onDone: () => void }) {
+/** Окно возврата поставщику; с `fix` — исправление проведённого, строки уже заполнены. */
+export function SupplierReturnModal({
+  supplierId,
+  supplierName,
+  onClose,
+  onDone,
+  fix,
+  initialLines = [],
+}: {
+  supplierId: string
+  supplierName: string
+  onClose: () => void
+  onDone: () => void
+  fix?: FixMode<ReturnDoc>
+  initialLines?: Line[]
+}) {
   const owner = useUser().role === 'owner'
-  const [lines, setLines] = useState<Line[]>([])
-  const [settle, setSettle] = useState<'debt' | 'money'>('debt')
-  const [account, setAccount] = useState('')
-  const [comment, setComment] = useState('')
+  const [lines, setLines] = useState<Line[]>(initialLines)
+  const [settle, setSettle] = useState<'debt' | 'money'>(fix?.doc.settle ?? 'debt')
+  const [account, setAccount] = useState(fix?.doc.account_id ?? '')
+  const [comment, setComment] = useState(fix?.doc.comment ?? '')
   const [opId] = useState(newOpId)
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const sources = paySources(accounts.data ?? [], owner)
@@ -60,31 +88,40 @@ export function SupplierReturnModal({ supplierId, supplierName, onClose, onDone 
     [lines.length > 0, 'товары — отсканируйте или найдите', '[data-return-picker] input'],
     [bad < 0, `количество и сумму в строке ${bad + 1}`, `#return-qty-${bad + 1}`],
     [settle === 'debt' || Boolean(account), 'счёт, куда пришли деньги', '#return-account'],
+    [!fix || Boolean(fix.comment.trim()), 'что и почему исправляете', '#correction-comment'],
   )
 
   const save = () =>
     void act.run(async () => {
-      const out = await post<SupplierReturn>('/supplier-returns', {
-        op_id: opId,
+      const doc = {
         supplier_id: supplierId,
         settle,
         account_id: settle === 'money' ? account : null,
         comment: comment.trim(),
-        lines: parsed.map((x) => ({ product_id: x.l.product.id, qty: x.q, ...(x.a !== null ? { amount_tyiyn: x.a } : {}) })),
-      })
+        lines: parsed.map((x) => ({ product_id: x.l.product.id, qty: x.q ?? 0, ...(x.a !== null ? { amount_tyiyn: x.a } : {}) })),
+      }
+      if (fix) {
+        const fixed = await fix.save({ ...fix.doc, ...doc })
+        if (!fixed) return
+        toast(fixedText(fixed))
+        onDone()
+        return
+      }
+      const out = await post<SupplierReturn>('/supplier-returns', { op_id: opId, ...doc })
       toast(`Возврат поставщику № ${out.number}: ${formatSom(out.amount_tyiyn)}`)
       onDone()
     })
 
   return (
-    <Modal title={`Возврат поставщику: ${supplierName}`} wide onClose={onClose}>
+    <Modal title={`${fix ? 'Исправить возврат поставщику' : 'Возврат поставщику'}: ${supplierName}`} wide onClose={onClose}>
       <div className="flex flex-col gap-3">
+        {fix && <FixBanner fix={fix} />}
         <p className="text-sm text-slate-600">
           Товар уходит со склада. Сумма по умолчанию — цена последнего прихода от этого поставщика × количество; её можно поменять.
           Брак оформляйте на экране «Брак».
         </p>
         <div data-return-picker>
-          <ProductPicker onPick={(p) => add(p)} autoFocus placeholder="Сканируйте или найдите товар, который возвращаем" />
+          <ProductPicker onPick={(p) => add(p)} autoFocus={!fix} placeholder="Сканируйте или найдите товар, который возвращаем" />
         </div>
         {lines.length === 0 ? (
           <Empty>Добавьте товары</Empty>
@@ -156,13 +193,13 @@ export function SupplierReturnModal({ supplierId, supplierName, onClose, onDone 
           <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Почему возвращаем" />
         </Field>
         <Missing items={missing} />
-        <ErrorBox error={act.error ?? accounts.error} />
+        <ErrorBox error={act.error ?? fix?.error ?? accounts.error} />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={act.busy || missing.length > 0} onClick={save}>
-            Провести возврат
+          <Button disabled={act.busy || Boolean(fix?.busy) || missing.length > 0} onClick={save}>
+            {fix ? FIX_SUBMIT : 'Провести возврат'}
           </Button>
         </div>
       </div>
@@ -170,11 +207,47 @@ export function SupplierReturnModal({ supplierId, supplierName, onClose, onDone 
   )
 }
 
-/** Возвраты поставщику в его карточке: список и сторно. */
+/** Исправление возврата: товары строк и цены последнего прихода — до открытия формы. */
+function SupplierReturnFix({ doc, onClose, onDone }: { doc: SupplierReturn; onClose: () => void; onDone: () => void }) {
+  return (
+    <FixDraft<ReturnDoc> kind="supplier_return" id={doc.id} onCancel={onClose}>
+      {(fix) => <SupplierReturnFixLines fix={fix} supplierName={doc.supplier_name} onClose={onClose} onDone={onDone} />}
+    </FixDraft>
+  )
+}
+
+function SupplierReturnFixLines({ fix, supplierName, onClose, onDone }: { fix: FixMode<ReturnDoc>; supplierName: string; onClose: () => void; onDone: () => void }) {
+  const lines = useLoad(
+    () =>
+      Promise.all(
+        fix.doc.lines.map(async (l) => {
+          const product = await get<Product>(`/products/${l.product_id}`)
+          const price = await get<{ price_tyiyn: number | null }>(`/supplier-returns/price${qs({ supplier_id: fix.doc.supplier_id, product_id: l.product_id })}`)
+            .then((r) => r.price_tyiyn)
+            .catch(() => null)
+          return returnLineFromDraft(l, product, price)
+        }),
+      ),
+    [],
+  )
+  if (!lines.data) {
+    return (
+      <Modal title="Исправить возврат поставщику" onClose={onClose}>
+        {lines.error ? <ErrorBox error={lines.error} /> : <Loading />}
+      </Modal>
+    )
+  }
+  return <SupplierReturnModal supplierId={fix.doc.supplier_id} supplierName={supplierName} fix={fix} initialLines={lines.data} onClose={onClose} onDone={onDone} />
+}
+
+/** Возвраты поставщику в его карточке: список, сторно и исправление. */
 export function SupplierReturnList({ supplierId, onChanged }: { supplierId: string; onChanged: () => void }) {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<SupplierReturn[]>(`/supplier-returns${qs({ supplier_id: supplierId })}`), [supplierId])
   const [reversing, setReversing] = useState<{ doc: SupplierReturn; comment: string; opId: string } | null>(null)
+  const [fixing, setFixing] = useState<SupplierReturn | null>(null)
+  // Отметки «исправлен → / исправление» — одним запросом на список.
+  const marks = useLoad(() => loadCorrections('supplier_return').then(correctionMarks), [])
   const act = useAction()
   const rows = list.data ?? []
   return (
@@ -188,7 +261,7 @@ export function SupplierReturnList({ supplierId, onChanged }: { supplierId: stri
             <tr key={r.id} className={r.reversed_by ? 'text-slate-400' : ''}>
               <td className="px-2 py-2 font-medium">
                 {r.number} {r.reversal_of && <Badge tone="amber">сторно</Badge>}
-                {r.reversed_by && <Badge tone="rose">отменён</Badge>}
+                {r.reversed_by && <Badge tone="rose">отменён</Badge>} <CorrectionBadges mark={marks.data?.get(r.id)} />
               </td>
               <td className="whitespace-nowrap px-2 py-2">{formatDateTime(r.created_at)}</td>
               <td className="px-2 py-2">
@@ -201,14 +274,30 @@ export function SupplierReturnList({ supplierId, onChanged }: { supplierId: stri
               <td className="px-2 py-2">{r.user_name}</td>
               <td className="px-2 py-2 text-right">
                 {!r.reversal_of && !r.reversed_by && (
-                  <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ doc: r, comment: '', opId: newOpId() })}>
-                    Сторно
-                  </Button>
+                  <span className="inline-flex gap-1">
+                    <FixButton small onClick={() => setFixing(r)} />
+                    <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ doc: r, comment: '', opId: newOpId() })}>
+                      Сторно
+                    </Button>
+                  </span>
                 )}
               </td>
             </tr>
           ))}
         </Table>
+      )}
+      {fixing && (
+        <SupplierReturnFix
+          key={fixing.id}
+          doc={fixing}
+          onClose={() => setFixing(null)}
+          onDone={() => {
+            setFixing(null)
+            list.reload()
+            marks.reload()
+            onChanged()
+          }}
+        />
       )}
       {reversing && (
         <Modal title={`Сторно возврата № ${reversing.doc.number}`} onClose={() => setReversing(null)}>

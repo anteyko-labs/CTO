@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number from receipts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "14d404b217848d068bf2e57d33540cff8091e64e71e4e248718448081563c873"
+}

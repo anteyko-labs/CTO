@@ -8,11 +8,14 @@ import { ReconciliationButton, ReconciliationModal } from '../components/Reconci
 import { stockText } from '../components/ProductPicker'
 import { VehicleFormModal } from '../components/VehicleFormModal'
 import { RepaymentModal } from '../components/RepaymentModal'
+import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { correctionMarks, loadCorrections } from '../lib/corrections'
+import { adjustDoc, adjustFields, type AdjustDoc } from '../lib/moneyFix'
 import type { Party, PartyCard, PartyTimelineItem, TopProducts } from '../lib/types'
 
 interface CabinetState {
@@ -146,12 +149,15 @@ function MoneyModal({
   title,
   party,
   adjust,
+  fixId,
   onClose,
   onDone,
 }: {
   title: string
   party: Party
   adjust: boolean
+  /** «Исправить» проведённую правку баланса (SPEC-29 §24): id записи долга; окно заполняется ею. */
+  fixId?: string
   onClose: () => void
   onDone: () => void
 }) {
@@ -161,6 +167,26 @@ function MoneyModal({
   const { busy, error, run } = useAction()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
   const [opId] = useState(newOpId)
+  // Исправление: поля — из исходной правки, как только она пришла с сервера.
+  const correction = useCorrection<AdjustDoc>('ledger', fixId ?? null)
+  const fixDraft = fixId ? correction.draft.data : null
+  const [filled, setFilled] = useState(false)
+  if (fixDraft && !filled) {
+    const f = adjustFields(fixDraft.doc)
+    setSign(f.sign)
+    setSum(f.sum)
+    setComment(f.comment)
+    setFilled(true)
+  }
+  const fixDoc = fixDraft ? adjustDoc(fixDraft.doc, { sign, sum, comment }) : null
+
+  const saveFix = async () => {
+    if (!fixDoc || !comment.trim()) return
+    const c = await correction.save(fixDoc)
+    if (!c) return
+    toast(`Исправлено: правка баланса ${formatSom(fixDoc.amount_tyiyn)}`)
+    onDone()
+  }
 
   const save = () =>
     run(async () => {
@@ -179,6 +205,8 @@ function MoneyModal({
   return (
     <Modal title={title} onClose={onClose}>
       <div className="flex flex-col gap-3">
+        {fixDraft && <CorrectionBanner label={fixDraft.kind_label} number={fixDraft.number} comment={correction.comment} onComment={correction.setComment} />}
+        {fixId && !filled && correction.draft.loading && <Loading />}
         <div className="text-sm text-slate-600">
           {party.name}: {balanceText(party.balance_tyiyn)}
         </div>
@@ -212,14 +240,20 @@ function MoneyModal({
             Деньги попадут в кассу вместе со сменой на этапе «День»; сейчас записывается только долг.
           </div>
         )}
-        <ErrorBox error={error} />
+        <ErrorBox error={fixId ? correction.error : error} />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || !sum.trim()} onClick={() => void save()}>
-            Записать
-          </Button>
+          {fixId ? (
+            <Button disabled={correction.busy || !fixDoc || !comment.trim() || !correction.comment.trim()} onClick={() => void saveFix()}>
+              Сохранить исправление
+            </Button>
+          ) : (
+            <Button disabled={busy || !sum.trim()} onClick={() => void save()}>
+              Записать
+            </Button>
+          )}
         </div>
       </div>
     </Modal>
@@ -259,6 +293,8 @@ export default function ClientCard() {
   const owner = useUser().role === 'owner'
   const [money, setMoney] = useState<null | 'repay' | 'adjust'>(null)
   const [reversing, setReversing] = useState<{ item: PartyTimelineItem; comment: string; opId: string } | null>(null)
+  // «Исправить» оплату долга или правку баланса — той же формой, что их записывает (SPEC-29 §24).
+  const [fixing, setFixing] = useState<{ kind: 'repayment' | 'adjust'; ledgerId: string } | null>(null)
   const revAct = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const [limits, setLimits] = useState<{ limit: string; days: string } | null>(null)
@@ -268,6 +304,9 @@ export default function ClientCard() {
   const [reconciling, setReconciling] = useState(false)
   const row = useAction()
   const card = useLoad(() => get<PartyCard>(`/parties/${id}/card`), [id])
+  // Отметки «исправлен» / «исправление» у записей долга — одним запросом на историю.
+  const corrections = useLoad(() => loadCorrections('ledger'), [])
+  const marks = useMemo(() => correctionMarks(corrections.data ?? []), [corrections.data])
   // История — по страницам, новые сверху; другой клиент — первая страница.
   const history = useMemo(() => mergeDebts(card.data?.timeline ?? []), [card.data])
   const historyPager = usePager(history, 'client.history', id)
@@ -521,6 +560,11 @@ export default function ClientCard() {
                     </span>
                   )}
                   {t.number !== null && <span className="ml-2 whitespace-nowrap text-slate-500">№ {t.number}</span>}
+                  {t.ledger_id && (
+                    <span className="ml-1 inline-flex flex-wrap gap-1">
+                      <CorrectionBadges mark={marks.get(t.ledger_id)} />
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 py-2 md:text-right">
                   <Money value={t.amount_tyiyn} />
@@ -531,6 +575,9 @@ export default function ClientCard() {
                     <Link className="text-sky-700 underline" to={`/sales/${t.doc_id}`}>
                       Чек
                     </Link>
+                  )}
+                  {owner && t.reversible && t.ledger_id && (t.kind === 'repayment' || t.kind === 'adjust') && (
+                    <FixButton small className="ml-2" onClick={() => setFixing({ kind: t.kind === 'adjust' ? 'adjust' : 'repayment', ledgerId: t.ledger_id ?? '' })} />
                   )}
                   {owner && t.reversible && (
                     <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ item: t, comment: '', opId: newOpId() })}>
@@ -585,6 +632,34 @@ export default function ClientCard() {
           onDone={() => {
             setMoney(null)
             card.reload()
+          }}
+        />
+      )}
+      {fixing?.kind === 'repayment' && (
+        <RepaymentModal
+          key={fixing.ledgerId}
+          party={party}
+          fixId={fixing.ledgerId}
+          onClose={() => setFixing(null)}
+          onDone={() => {
+            setFixing(null)
+            card.reload()
+            corrections.reload()
+          }}
+        />
+      )}
+      {fixing?.kind === 'adjust' && (
+        <MoneyModal
+          key={fixing.ledgerId}
+          title="Исправить правку баланса"
+          party={party}
+          adjust
+          fixId={fixing.ledgerId}
+          onClose={() => setFixing(null)}
+          onDone={() => {
+            setFixing(null)
+            card.reload()
+            corrections.reload()
           }}
         />
       )}

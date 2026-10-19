@@ -8,6 +8,8 @@ import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { CashAccount, OpenDebt, OpenDebts, Party, SupplierInvoice, SupplierInvoices } from '../lib/types'
 import { accountLabel, bankChoices, isBank, isTill } from '../lib/accounts'
+import { repaymentDoc, repaymentFields, type RepaymentDoc } from '../lib/moneyFix'
+import { CorrectionBanner, useCorrection } from './Correction'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 // «Вне кассы» (из своих) больше нет — сервер отвечает 422 (ADR-079).
@@ -35,12 +37,15 @@ export interface InvoiceToPay {
 export function RepaymentModal({
   party,
   invoice,
+  fixId,
   onClose,
   onDone,
 }: {
   party: Pick<Party, 'id' | 'name' | 'balance_tyiyn' | 'role'>
   /** Оплата одной накладной; без неё оплата закрывает самые старые накладные (ADR-073). */
   invoice?: InvoiceToPay
+  /** «Исправить» проведённую оплату (SPEC-29 §24): id записи долга; окно заполняется ею. */
+  fixId?: string
   onClose: () => void
   onDone: (balance: number) => void
 }) {
@@ -71,12 +76,25 @@ export function RepaymentModal({
   const { busy, error, run } = useAction()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит оплату.
   const [opId] = useState(newOpId)
+  // Исправление: поля — из исходной оплаты, как только она пришла с сервера.
+  const correction = useCorrection<RepaymentDoc>('ledger', fixId ?? null)
+  const fixDraft = fixId ? correction.draft.data : null
+  const [filled, setFilled] = useState(false)
+  if (fixDraft && !filled) {
+    const f = repaymentFields(fixDraft.doc)
+    setSum(f.sum)
+    setMethod(f.method)
+    setAccountPick(f.account)
+    setComment(f.comment)
+    setFilled(true)
+  }
   // Администратор поставщику платит только из кассы смены.
   const methods: Method[] = owner || !supplier ? ['cash', 'card', 'transfer'] : ['cash']
   const value = parseSom(sum)
   const notFilled = missingWithFocus(
     [value !== null && value > 0, 'сумму', '#repay-sum'],
     [!invoice || (value !== null && value <= invoice.left_tyiyn), 'сумму не больше остатка накладной', '#repay-sum'],
+    [!fixId || Boolean(correction.comment.trim()), 'что и почему исправляете', '#correction-comment'],
   )
   const debt = Math.abs(party.balance_tyiyn)
   const overdue = details.data?.kind === 'customer' ? details.data.d.overdue_tyiyn : 0
@@ -108,7 +126,17 @@ export function RepaymentModal({
       details.reload()
     })
 
-  const title = invoice ? `Оплата накладной № ${invoice.number}: ${party.name}` : supplier ? `Оплата поставщику: ${party.name}` : `Оплата долга: ${party.name}`
+  const saveFix = async () => {
+    if (!fixDraft) return
+    const doc = repaymentDoc(fixDraft.doc, { sum, method, account: accountId, comment })
+    if (!doc) return
+    const c = await correction.save(doc)
+    if (!c) return
+    toast(`Исправлено: ${supplier ? 'оплата поставщику' : 'оплата долга'} ${formatSom(doc.amount_tyiyn)}`)
+    onDone(party.balance_tyiyn)
+  }
+
+  const title = fixId ? `Исправить оплату: ${party.name}` : invoice ? `Оплата накладной № ${invoice.number}: ${party.name}` : supplier ? `Оплата поставщику: ${party.name}` : `Оплата долга: ${party.name}`
 
   return (
     <Modal title={title} full onClose={close}>
@@ -155,15 +183,19 @@ export function RepaymentModal({
             </div>
           ) : (
             <>
-              {supplier && !invoice && <div className="text-xs text-slate-500">Оплата закрывает самые старые неоплаченные накладные.</div>}
-              {!supplier && <div className="text-xs text-slate-500">Оплата гасит самые старые долги первыми.</div>}
+              {fixDraft && (
+                <CorrectionBanner label={fixDraft.kind_label} number={fixDraft.number} comment={correction.comment} onComment={correction.setComment} />
+              )}
+              {fixId && !filled && correction.draft.loading && <Loading />}
+              {supplier && !invoice && !fixId && <div className="text-xs text-slate-500">Оплата закрывает самые старые неоплаченные накладные.</div>}
+              {!supplier && !fixId && <div className="text-xs text-slate-500">Оплата гасит самые старые долги первыми.</div>}
               <Field label="Сумма, с" required>
                 <input id="repay-sum" className="text-lg" autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
               </Field>
-              {!invoice && value !== null && value > owed && owed > 0 && (
+              {!invoice && !fixId && value !== null && value > owed && owed > 0 && (
                 <div className="text-xs text-amber-700">Больше долга: разница станет {supplier ? 'нашим авансом поставщику' : 'авансом клиента'}.</div>
               )}
-              {value !== null && value > 0 && (
+              {!fixId && value !== null && value > 0 && (
                 <div className="text-sm text-slate-600" data-testid="repay-after">
                   После оплаты долг: <span className="font-semibold tabular-nums">{formatSom(Math.max(0, debt - value))}</span>
                 </div>
@@ -210,14 +242,20 @@ export function RepaymentModal({
                 <input value={comment} onChange={(e) => setComment(e.target.value)} />
               </Field>
               <Missing items={notFilled} />
-              <ErrorBox error={error} />
+              <ErrorBox error={fixId ? correction.error : error} />
               <div className="flex justify-end gap-2">
                 <Button variant="secondary" onClick={onClose}>
                   Отмена
                 </Button>
-                <Button disabled={busy || notFilled.length > 0} onClick={save}>
-                  {supplier ? 'Оплатить' : 'Принять оплату'}
-                </Button>
+                {fixId ? (
+                  <Button disabled={correction.busy || !filled || notFilled.length > 0} onClick={() => void saveFix()}>
+                    Сохранить исправление
+                  </Button>
+                ) : (
+                  <Button disabled={busy || notFilled.length > 0} onClick={save}>
+                    {supplier ? 'Оплатить' : 'Принять оплату'}
+                  </Button>
+                )}
               </div>
             </>
           )}

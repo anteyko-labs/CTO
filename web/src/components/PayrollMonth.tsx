@@ -1,11 +1,12 @@
 // Расчёт за месяц: остаток на начало, начисления по видам, выплаты, остаток на конец (SPEC-07).
 import { useState } from 'react'
-import { get, newOpId, post, qs } from '../lib/api'
+import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
-import { useAction, useLoad } from '../lib/hooks'
+import { formatSom, somInput, todayBishkek } from '../lib/format'
+import { useLoad } from '../lib/hooks'
 import { PayrollEntries } from './PayrollEntries'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, Table, toast } from './ui'
+import { SalaryForm } from './PayrollForms'
+import { Badge, Button, Card, Empty, ErrorBox, Loading, Modal, Money, Table } from './ui'
 
 interface MonthRow {
   employee_id: string
@@ -49,24 +50,12 @@ export function PayrollMonth() {
   const owner = useUser().role === 'owner'
   const [month, setMonth] = useState(shiftMonth(todayBishkek(), 0))
   const data = useLoad(() => get<MonthOut>(`/payroll/month${qs({ month })}`), [month])
-  const [salary, setSalary] = useState<{ row: MonthRow; sum: string; opId: string } | null>(null)
+  const [salary, setSalary] = useState<MonthRow | null>(null)
   const [entries, setEntries] = useState<MonthRow | null>(null)
-  const act = useAction()
   const [y, m] = month.split('-').map(Number)
   const current = shiftMonth(todayBishkek(), 0)
   const rows = data.data?.rows ?? []
   const total = (key: keyof MonthRow) => rows.reduce((acc, r) => acc + (r[key] as number), 0)
-
-  const accrue = () =>
-    void act.run(async () => {
-      if (!salary) return
-      const sum = parseSom(salary.sum)
-      if (sum === null || sum <= 0) throw new Error('Неверная сумма')
-      await post('/payroll/salary', { op_id: salary.opId, employee_id: salary.row.employee_id, month, amount_tyiyn: sum })
-      setSalary(null)
-      data.reload()
-      toast('Оклад начислен')
-    })
 
   return (
     <div className="flex flex-col gap-4">
@@ -84,7 +73,7 @@ export function PayrollMonth() {
           «На конец» — сколько ещё должны сотруднику; с минусом — выдано больше заработанного.
         </div>
       </Card>
-      <ErrorBox error={data.error ?? act.error} />
+      <ErrorBox error={data.error} />
       {data.loading && !data.data ? (
         <Loading />
       ) : rows.length === 0 ? (
@@ -124,7 +113,7 @@ export function PayrollMonth() {
                     <Button
                       variant="secondary"
                       className="px-2 py-1 text-xs"
-                      onClick={() => setSalary({ row: r, sum: r.salary_rule_tyiyn ? somInput(r.salary_rule_tyiyn) : '', opId: newOpId() })}
+                      onClick={() => setSalary(r)}
                     >
                       Оклад
                     </Button>
@@ -165,24 +154,18 @@ export function PayrollMonth() {
       )}
 
       {salary && (
-        <Modal title={`Оклад за ${MONTHS[m - 1]}: ${salary.row.full_name}`} onClose={() => setSalary(null)}>
-          <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">
-              По правилу {salary.row.salary_rule_tyiyn ? formatSom(salary.row.salary_rule_tyiyn) : 'оклада нет'}. За неполный месяц укажите сумму, которую решили платить.
-            </div>
-            <Field label="Сумма, с" required>
-              <input autoFocus inputMode="decimal" value={salary.sum} onChange={(e) => setSalary({ ...salary, sum: e.target.value })} />
-            </Field>
-            <ErrorBox error={act.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setSalary(null)}>
-                Отмена
-              </Button>
-              <Button disabled={act.busy || !salary.sum.trim()} onClick={accrue}>
-                Начислить
-              </Button>
-            </div>
-          </div>
+        <Modal title={`Оклад за ${MONTHS[m - 1]}: ${salary.full_name}`} onClose={() => setSalary(null)}>
+          <SalaryForm
+            employeeId={salary.employee_id}
+            month={month}
+            hint={`По правилу ${salary.salary_rule_tyiyn ? formatSom(salary.salary_rule_tyiyn) : 'оклада нет'}. За неполный месяц укажите сумму, которую решили платить.`}
+            initialSum={salary.salary_rule_tyiyn ? somInput(salary.salary_rule_tyiyn) : ''}
+            onCancel={() => setSalary(null)}
+            onDone={() => {
+              setSalary(null)
+              data.reload()
+            }}
+          />
         </Modal>
       )}
     </div>

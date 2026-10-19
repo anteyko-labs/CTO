@@ -1,8 +1,10 @@
 // Оплата накладных поставщику: статус и история платежей — кто, когда, сколько, откуда (SPEC-27, ADR-073).
 import { Link } from 'react-router-dom'
+import type { CorrectionMark } from '../lib/corrections'
 import { formatDateTime, formatSom } from '../lib/format'
 import { INVOICE_STATUS_LABELS, paymentSource } from '../lib/supplierPay'
 import type { InvoicePayment, InvoiceStatus, SupplierPayment } from '../lib/types'
+import { CorrectionBadges, FixButton } from './Correction'
 import { Pager, usePager } from './Pager'
 import { Badge, Table } from './ui'
 
@@ -37,8 +39,17 @@ export function InvoicePayments({ payments }: { payments: InvoicePayment[] }) {
   )
 }
 
-/** Все платежи и зачёты поставщику: на какие накладные легли. */
-export function SupplierPaymentHistory({ payments }: { payments: SupplierPayment[] }) {
+/** Все платежи и зачёты поставщику: на какие накладные легли. `onFix` — «Исправить» платёж
+ *  (SPEC-29 §24, только владелец), `marks` — отметки исправлений по id записи долга. */
+export function SupplierPaymentHistory({
+  payments,
+  marks,
+  onFix,
+}: {
+  payments: SupplierPayment[]
+  marks?: Map<string, CorrectionMark>
+  onFix?: (p: SupplierPayment) => void
+}) {
   const pager = usePager(payments, 'supplier.payments')
   if (payments.length === 0) return <div className="text-sm text-slate-500">Платежей поставщику не было.</div>
   return (
@@ -59,7 +70,15 @@ export function SupplierPaymentHistory({ payments }: { payments: SupplierPayment
                     <Badge tone="rose">сторно</Badge>
                 </>
               )}
+              <span className="ml-1 inline-flex flex-wrap gap-1">
+                <CorrectionBadges mark={marks?.get(p.ledger_id)} />
+              </span>
               {p.comment && <div className="text-xs text-slate-500">{p.comment}</div>}
+              {onFix && p.kind === 'payment' && !p.reversed && (
+                <div className="mt-1">
+                  <FixButton small onClick={() => onFix(p)} />
+                </div>
+              )}
             </td>
             <td className="px-2 py-2">
               {applied.length === 0

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select reversal_of, exists (select 1 from receipts x where x.reversal_of = r.id) as \"reversed!\"\n                   from receipts r where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "853939590b4b511c10d03f220ea16b0f8fb7144d731ba9fd0d75c895511e7d4e"
+}

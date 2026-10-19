@@ -144,7 +144,7 @@ async fn load(
         .collect())
 }
 
-async fn load_one(
+pub(crate) async fn load_one(
     conn: &mut PgConnection,
     user: &CurrentUser,
     id: Uuid,

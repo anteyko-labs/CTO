@@ -31,9 +31,11 @@ import Profit, { OwnerDashboard } from './pages/Owner'
 import Payroll from './pages/Payroll'
 import Products from './pages/Products'
 import TopProducts from './pages/TopProducts'
+import ReceiptCorrect from './pages/ReceiptCorrect'
 import ReceiptNew from './pages/ReceiptNew'
 import ReceiptView from './pages/ReceiptView'
 import Receipts from './pages/Receipts'
+import SaleCorrect from './pages/SaleCorrect'
 import SaleView from './pages/SaleView'
 import SalesDay from './pages/SalesDay'
 import Services from './pages/Services'
@@ -256,9 +258,11 @@ function Shell() {
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />
           <Route path="/sales/:id" element={<ByParam><SaleView /></ByParam>} />
+          {owner && <Route path="/sales/:id/correct" element={<ByParam><SaleCorrect /></ByParam>} />}
           <Route path="/receipts" element={<Receipts />} />
           <Route path="/receipts/new" element={<ReceiptNew />} />
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
+          {owner && <Route path="/receipts/:id/correct" element={<ByParam><ReceiptCorrect /></ByParam>} />}
           <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
           <Route path="/top-products" element={<TopProducts />} />

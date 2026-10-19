@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select business_date, contact_id, vehicle_id from sales where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "contact_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "vehicle_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "afa6880cf4a546a54344318cf1db68b0786dfc612c1fdfac878b2f94758504ff"
+}

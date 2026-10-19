@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.number, t.from_account_id, t.to_account_id, t.amount_tyiyn, t.comment,\n                          f.name as from_name, d.name as to_name\n                   from cash_transfers t\n                   join cash_accounts f on f.id = t.from_account_id\n                   join cash_accounts d on d.id = t.to_account_id\n                   where t.id = $1 and t.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "from_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "to_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "from_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "to_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "523f035afa29a66f667a3abd34426e52e06a5c21bcc9a2b0dbe3dd9619bcd2ee"
+}

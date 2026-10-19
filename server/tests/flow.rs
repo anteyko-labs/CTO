@@ -291,6 +291,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         book_intervals: Vec::new(),
         delivery_address: String::new(),
         declined: String::new(),
+        correction: None,
     }
 }
 
@@ -481,6 +482,7 @@ async fn oil_change_is_a_mark_not_a_service_line(pool: PgPool) {
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty }],
         payments: cash(50_000 * qty),
+        business_date: None,
     };
     let mut tx = pool.begin().await.unwrap();
     let partial = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(1))
@@ -599,6 +601,7 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
             comment: "вернули".into(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments: vec![pay("debt", 1000)],
+            business_date: None,
         },
     )
     .await
@@ -776,6 +779,7 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
                     grams: None,
                 },
             ],
+            business_date: None,
         },
     )
     .await
@@ -827,6 +831,7 @@ async fn full_return_takes_back_master_fee(pool: PgPool) {
                 comment: String::new(),
                 lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
                 payments: cash(5_000),
+                business_date: None,
             },
         )
         .await
@@ -889,6 +894,7 @@ async fn partial_returns_restore_exact_cost(pool: PgPool) {
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty }],
         payments: cash(100 * qty),
+        business_date: None,
     };
     for _ in 0..3 {
         let mut tx = pool.begin().await.unwrap();
@@ -1301,6 +1307,7 @@ async fn return_after_merge_lands_on_main_card(pool: PgPool) {
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments: cash(50_000),
+            business_date: None,
         },
     )
     .await
@@ -1690,6 +1697,7 @@ async fn oil_book_records_service_change(pool: PgPool) {
                 ReturnLineReq { line_no: 2, qty: 1 },
             ],
             payments: cash(250_000),
+            business_date: None,
         },
     )
     .await
@@ -1868,6 +1876,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
         payments,
+        business_date: None,
     };
     let mut tx = pool.begin().await.unwrap();
     assert!(matches!(
@@ -1935,6 +1944,7 @@ async fn return_one(
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
             payments,
+            business_date: None,
         },
     )
     .await;
@@ -3054,6 +3064,7 @@ async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
             comment: String::new(),
             lines: vec![ReturnLineReq { line_no: 2, qty: 1 }],
             payments: cash(50_000),
+            business_date: None,
         },
     )
     .await
@@ -5104,6 +5115,7 @@ async fn cashier_percent_is_only_from_money(pool: PgPool) {
         comment: String::new(),
         lines: vec![ReturnLineReq { line_no: 1, qty }],
         payments,
+        business_date: None,
     };
 
     // Чек 1 000 с за штуку с закупкой 30 с: валовая 970 с, из них 200 с баллами.
@@ -8049,6 +8061,7 @@ async fn give_back(
             comment: "вернули".into(),
             lines: vec![ReturnLineReq { line_no: 1, qty }],
             payments,
+            business_date: None,
         },
     )
     .await;
@@ -8686,6 +8699,7 @@ mod point_feedback_stock {
                 comment: String::new(),
                 lines: vec![ReturnLineReq { line_no: 1, qty: 1 }],
                 payments: cash(50_000),
+                business_date: None,
             },
         )
         .await

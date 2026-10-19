@@ -299,7 +299,11 @@ pub struct ExpenseReq {
     pub comment: String,
 }
 
-async fn load_expense(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<ExpenseOut> {
+pub(crate) async fn load_expense(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<ExpenseOut> {
     sqlx::query_as!(
         ExpenseOut,
         r#"select e.id, e.number, e.article_id, a.name as article_name, e.amount_tyiyn, e.source,
@@ -443,10 +447,10 @@ pub async fn post_expense_tx(
 }
 
 #[derive(Deserialize)]
-struct ReverseReq {
-    op_id: Uuid,
+pub struct ReverseReq {
+    pub op_id: Uuid,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 async fn reverse(
@@ -455,11 +459,24 @@ async fn reverse(
     Path(id): Path<Uuid>,
     Json(req): Json<ReverseReq>,
 ) -> AppResult<Json<ExpenseOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_expense_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно расхода — одна транзакция вызывающего: экран и «Исправить» (SPEC-29 §24).
+pub async fn reverse_expense_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReverseReq,
+) -> AppResult<ExpenseOut> {
     const KIND: &str = "expense.reverse";
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    let tx = conn;
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let orig = sqlx::query!(
         r#"select e.article_id, e.amount_tyiyn, e.source, e.account_id, e.expense_date, e.user_id,
@@ -495,11 +512,11 @@ async fn reverse(
         .fetch_optional(&mut *tx)
         .await?
         .flatten();
-        if shift != cash::open_shift_id(&mut tx, branch_id, acc).await? {
+        if shift != cash::open_shift_id(&mut *tx, branch_id, acc).await? {
             return Err(AppError::Forbidden);
         }
     }
-    let number = ops::next_counter(&mut tx, branch_id, "expense").await?;
+    let number = ops::next_counter(&mut *tx, branch_id, "expense").await?;
     let rid = new_id();
     sqlx::query!(
         r#"insert into expenses (id, branch_id, number, article_id, amount_tyiyn, source,
@@ -528,10 +545,10 @@ async fn reverse(
         }
     })?;
     if let Some(acc) = orig.account_id {
-        cash::require_open_shift(&mut tx, branch_id, acc).await?;
+        cash::require_open_shift(&mut *tx, branch_id, acc).await?;
         cash::add_movement(
-            &mut tx,
-            &ctx,
+            &mut *tx,
+            ctx,
             CashEntry {
                 account_id: acc,
                 kind: "reversal",
@@ -544,16 +561,15 @@ async fn reverse(
         .await?;
     }
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "expense",
         Some(rid),
         json!({ "original": id, "amount_tyiyn": orig.amount_tyiyn }),
     )
     .await?;
-    let out = load_expense(&mut tx, branch_id, rid).await?;
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    let out = load_expense(&mut *tx, branch_id, rid).await?;
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }

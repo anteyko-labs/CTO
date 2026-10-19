@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, doc_type, reversal_of,\n                          exists (select 1 from party_ledger x where x.reversal_of = l.id) as \"reversed!\"\n                   from party_ledger l where l.id = $1 and l.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "65f540de746f90097695a8a784e166e987be8d3aa88deebcf73912f8d2dc9792"
+}

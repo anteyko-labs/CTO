@@ -5,6 +5,7 @@
 // Ввод подряд с клавиатуры и подсказки из старой программы, часть оплаты сразу, фото накладной (SPEC-29).
 import { useState, type KeyboardEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { CorrectionBanner } from '../components/Correction'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -14,6 +15,8 @@ import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUplo
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table, toast } from '../components/ui'
 import { accountLabel } from '../lib/accounts'
 import { get, newOpId, post } from '../lib/api'
+import { postCorrection } from '../lib/corrections'
+import type { ReceiptFixState } from '../lib/receiptFix'
 import { formatLiters, formatSom, parseSom } from '../lib/format'
 import { initialPrices, isOil, lastText, lineCalc, parseCount, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
@@ -38,16 +41,25 @@ interface Line {
   last?: LastReceipt | null
 }
 
-export default function ReceiptNew() {
+/** Исправление прихода владельцем (SPEC-29 §24): тот же экран, заполненный исходной накладной. */
+export interface ReceiptFix {
+  originalId: string
+  number: number | null
+  state: ReceiptFixState
+}
+
+export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const navigate = useNavigate()
   const [opId] = useState(newOpId)
   const suppliers = useLoad(() => get<Supplier[]>('/suppliers'), [])
-  const [supplierId, setSupplierId] = useState('')
-  const [supplierDoc, setSupplierDoc] = useState('')
-  const [comment, setComment] = useState('')
+  const [supplierId, setSupplierId] = useState(fix?.state.supplierId ?? '')
+  const [supplierDoc, setSupplierDoc] = useState(fix?.state.supplierDoc ?? '')
+  const [comment, setComment] = useState(fix?.state.comment ?? '')
   // Сразу целиком, часть сейчас и остаток в долг, всё в долг (SPEC-29 §4).
-  const [payMode, setPayMode] = useState<PayMode>('paid')
-  const [partText, setPartText] = useState('')
+  const [payMode, setPayMode] = useState<PayMode>(fix?.state.payMode ?? 'paid')
+  const [partText, setPartText] = useState(fix?.state.partText ?? '')
+  // «Что и почему исправляете» — обязателен (SPEC-29 §24).
+  const [fixComment, setFixComment] = useState('')
   const onDebt = payMode !== 'paid'
   const [photos, setPhotos] = useState<PendingPhoto[]>([])
   const photoAction = useAction()
@@ -57,9 +69,9 @@ export default function ReceiptNew() {
   const owner = useUser().role === 'owner'
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const sources = paySources(accounts.data ?? [], owner)
-  const [paidFrom, setPaidFrom] = useState('')
+  const [paidFrom, setPaidFrom] = useState(fix?.state.paidFrom ?? '')
   const source = paidFrom || defaultPaySource(sources, owner)
-  const [lines, setLines] = useState<Line[]>([])
+  const [lines, setLines] = useState<Line[]>(fix?.state.lines ?? [])
   const [print, setPrint] = useState(false)
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
@@ -164,8 +176,10 @@ export default function ReceiptNew() {
     [!onDebt || Boolean(supplierId), 'поставщика для накладной в долг', '#receipt-supplier'],
     [partError === null, partError ?? '', '#receipt-paid-now'],
     [!paying || Boolean(source), 'откуда оплачено', '#receipt-paid-from'],
-    [!paying || !notEnough(sources, source, now), 'денег на выбранном счёте меньше оплаты', '#receipt-paid-from'],
+    // Исправление: исходная оплата вернётся на счёт, остаток проверит сервер.
+    [Boolean(fix) || !paying || !notEnough(sources, source, now), 'денег на выбранном счёте меньше оплаты', '#receipt-paid-from'],
     [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+    [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
   )
 
   const addPhotos = (files: FileList) =>
@@ -200,8 +214,7 @@ export default function ReceiptNew() {
       return
     }
     void save.run(async () => {
-      const r = await post<Receipt>('/receipts', {
-        op_id: opId,
+      const doc = {
         supplier_id: supplierId || null,
         payment: onDebt ? 'debt' : 'paid',
         paid_from: paying ? source : null,
@@ -209,7 +222,11 @@ export default function ReceiptNew() {
         supplier_doc: supplierDoc.trim(),
         comment: comment.trim(),
         lines: body,
-      })
+      }
+      // Исправление: сторно исходной накладной и верная — одной операцией (SPEC-29 §24).
+      const r = fix
+        ? { id: (await postCorrection({ op_id: opId, kind: 'receipt', original_id: fix.originalId, comment: fixComment.trim(), doc })).new_id }
+        : await post<Receipt>('/receipts', { op_id: opId, ...doc })
       // Фото — после проведения: накладная уже есть, не загрузившееся можно прикрепить в ней.
       if (photos.length) {
         const failed = await uploadPhotos(r.id, photos)
@@ -231,14 +248,24 @@ export default function ReceiptNew() {
   return (
     <div className={lines.length > 0 ? 'pb-20 md:pb-0' : ''}>
       <PageHeader
-        title="Новый приход"
+        title={fix ? `Исправление прихода${fix.number ? ` № ${fix.number}` : ''}` : 'Новый приход'}
         actions={
-          <Button variant="secondary" onClick={() => navigate('/receipts')}>
-            К списку
+          <Button variant="secondary" onClick={() => navigate(fix ? `/receipts/${fix.originalId}` : '/receipts')}>
+            {fix ? 'Отменить' : 'К списку'}
           </Button>
         }
       />
       <div className="flex flex-col gap-4">
+        {fix && (
+          <>
+            <CorrectionBanner label="приход" number={fix.number} comment={fixComment} onComment={setFixComment} />
+            {fix.state.rounded.length > 0 && (
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Цена за штуку округлена до тыйына — проверьте сумму строк: {fix.state.rounded.join(', ')}
+              </div>
+            )}
+          </>
+        )}
         <Card>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <Field label="Поставщик">
@@ -479,7 +506,7 @@ export default function ReceiptNew() {
                 </div>
                 <div className="hidden md:block">
                   <Button disabled={save.busy || missing.length > 0} onClick={submit}>
-                    Провести приход
+                    {fix ? 'Сохранить исправление' : 'Провести приход'}
                   </Button>
                 </div>
               </div>
@@ -514,7 +541,7 @@ export default function ReceiptNew() {
             <div className="truncate text-xl font-bold tabular-nums">{total === null ? '—' : formatSom(total)}</div>
           </div>
           <Button className="shrink-0 px-6 py-3 text-base" disabled={save.busy || missing.length > 0} onClick={submit}>
-            Провести приход
+            {fix ? 'Сохранить' : 'Провести приход'}
           </Button>
         </div>
       )}

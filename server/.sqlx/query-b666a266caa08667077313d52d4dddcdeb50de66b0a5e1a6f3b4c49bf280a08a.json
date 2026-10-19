@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.number, t.from_product_id, t.to_product_id, t.qty_ml, t.comment,\n                          f.name as from_name, d.name as to_name\n                   from oil_transfers t\n                   join products f on f.id = t.from_product_id\n                   join products d on d.id = t.to_product_id\n                   where t.id = $1 and t.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "from_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "to_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "qty_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "from_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "to_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b666a266caa08667077313d52d4dddcdeb50de66b0a5e1a6f3b4c49bf280a08a"
+}

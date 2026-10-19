@@ -1,6 +1,7 @@
 // Просмотр чека, печать и частичный возврат (SPEC-04).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { CorrectionLinks, FixButton } from '../components/Correction'
 import { lineQtyText, printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
@@ -202,6 +203,7 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
 
 export default function SaleView() {
   const { id = '' } = useParams()
+  const navigate = useNavigate()
   const user = useUser()
   const owner = user.role === 'owner'
   const { data: sale, error, loading } = useLoad(() => get<Sale>(`/sales/${id}`), [id])
@@ -246,6 +248,10 @@ export default function SaleView() {
                 Документ о долге
               </Button>
             )}
+            {sale.kind === 'sale' && sale.returns.length === 0 && (
+              // Исправить чек целиком: сторно и верный чек одним действием (SPEC-29 §24).
+              <FixButton onClick={() => navigate(`/sales/${sale.id}/correct`)} />
+            )}
             {sale.kind === 'sale' && !fullyReturned && (
               <Button variant="danger-outline" onClick={() => setReturning(true)}>
                 Возврат
@@ -254,6 +260,7 @@ export default function SaleView() {
           </>
         }
       />
+      <CorrectionLinks id={sale.id} hrefOf={(doc) => `/sales/${doc}`} />
       <Card className="grid gap-2 text-sm sm:grid-cols-2">
         <div>Дата: {formatDateTime(sale.created_at)}</div>
         <div>Тип: {sale.sale_type === 'service' ? 'В сервис' : 'На вынос'}</div>

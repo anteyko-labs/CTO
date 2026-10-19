@@ -41,10 +41,10 @@ pub fn routes() -> Router<AppState> {
 // ---------- Сторно ----------
 
 #[derive(Deserialize)]
-struct ReverseReq {
-    op_id: Uuid,
+pub struct ReverseReq {
+    pub op_id: Uuid,
     #[serde(default)]
-    comment: String,
+    pub comment: String,
 }
 
 /// Сторно начисления владельцем: удержание недостачи, ошибочный бонус или оклад (SPEC-07).
@@ -55,6 +55,19 @@ async fn reverse_accrual(
     Path(id): Path<Uuid>,
     Json(req): Json<ReverseReq>,
 ) -> AppResult<Json<OkOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_accrual_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно начисления — одна транзакция вызывающего: экран и «Исправить» (SPEC-29 §24).
+pub async fn reverse_accrual_tx(
+    tx: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReverseReq,
+) -> AppResult<OkOut> {
     const KIND: &str = "payroll.accrual_reverse";
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
@@ -62,9 +75,8 @@ async fn reverse_accrual(
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let a = sqlx::query!(
         r#"select employee_id, business_date, kind, amount_tyiyn, doc_type, reversal_of
@@ -83,7 +95,7 @@ async fn reverse_accrual(
             "начисление по чеку снимается возвратом чека".into(),
         ));
     }
-    lock_employee(&mut tx, ctx.user.branch_id, a.employee_id).await?;
+    lock_employee(&mut *tx, ctx.user.branch_id, a.employee_id).await?;
     let rid = new_id();
     sqlx::query!(
         r#"insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,
@@ -110,18 +122,20 @@ async fn reverse_accrual(
         }
     })?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "employee",
         Some(a.employee_id),
         json!({ "accrual": id, "kind": a.kind, "amount_tyiyn": -a.amount_tyiyn, "comment": req.comment.trim() }),
     )
     .await?;
-    let out = OkOut { ok: true };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    let out = OkOut {
+        ok: true,
+        id: Some(rid),
+    };
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 /// Сторно выплаты владельцем: деньги возвращаются в ту кассу, откуда ушли.
@@ -131,6 +145,19 @@ async fn reverse_payout(
     Path(id): Path<Uuid>,
     Json(req): Json<ReverseReq>,
 ) -> AppResult<Json<PayoutOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = reverse_payout_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Сторно выплаты — одна транзакция вызывающего: экран и «Исправить» (SPEC-29 §24).
+pub async fn reverse_payout_tx(
+    tx: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReverseReq,
+) -> AppResult<PayoutOut> {
     const KIND: &str = "payout.reverse";
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
@@ -139,9 +166,8 @@ async fn reverse_payout(
         return Err(invalid("укажите причину"));
     }
     let branch_id = ctx.user.branch_id;
-    let mut tx = state.pool.begin().await?;
-    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
-        return Ok(Json(done));
+    if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
+        return Ok(done);
     }
     let p = sqlx::query!(
         r#"select employee_id, amount_tyiyn, source, account_id, reversal_of
@@ -155,8 +181,8 @@ async fn reverse_payout(
     if p.reversal_of.is_some() {
         return Err(invalid("это уже сторно"));
     }
-    lock_employee(&mut tx, branch_id, p.employee_id).await?;
-    let number = ops::next_counter(&mut tx, branch_id, "payout").await?;
+    lock_employee(&mut *tx, branch_id, p.employee_id).await?;
+    let number = ops::next_counter(&mut *tx, branch_id, "payout").await?;
     let rid = new_id();
     sqlx::query!(
         r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
@@ -185,10 +211,10 @@ async fn reverse_payout(
     })?;
     // Деньги возвращаются в кассу смены — только в открытую смену (SPEC-07).
     if let Some(acc) = p.account_id {
-        cash::require_open_shift(&mut tx, branch_id, acc).await?;
+        cash::require_open_shift(&mut *tx, branch_id, acc).await?;
         cash::add_movement(
-            &mut tx,
-            &ctx,
+            &mut *tx,
+            ctx,
             CashEntry {
                 account_id: acc,
                 kind: "reversal",
@@ -208,8 +234,8 @@ async fn reverse_payout(
     .fetch_one(&mut *tx)
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *tx,
+        ctx,
         KIND,
         "employee",
         Some(p.employee_id),
@@ -221,9 +247,8 @@ async fn reverse_payout(
         number,
         balance_tyiyn: balance,
     };
-    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 // ---------- Начисления и выплаты сотрудника ----------
@@ -589,17 +614,18 @@ pub async fn add_accrual(
     ctx: &Ctx,
     business_date: Option<NaiveDate>,
     a: Accrual<'_>,
-) -> AppResult<()> {
+) -> AppResult<Option<Uuid>> {
     if a.amount == 0 {
-        return Ok(());
+        return Ok(None);
     }
     ops::check_amount(a.amount)?;
+    let id = new_id();
     sqlx::query!(
         r#"insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,
                                          base_tyiyn, rule_id, doc_type, doc_id, comment, user_id, device_id)
            values ($1, $2, $3, coalesce($4, (now() at time zone 'Asia/Bishkek')::date), $5, $6,
                    $7, $8, $9, $10, $11, $12, $13)"#,
-        new_id(),
+        id,
         ctx.user.branch_id,
         a.employee_id,
         business_date,
@@ -615,7 +641,7 @@ pub async fn add_accrual(
     )
     .execute(&mut *conn)
     .await?;
-    Ok(())
+    Ok(Some(id))
 }
 
 /// Оплата кассира по умолчанию (SPEC-07, ADR-019, ADR-036): 2 % с валовой прибыли чека
@@ -1644,6 +1670,9 @@ pub struct AccrualReq {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OkOut {
     pub ok: bool,
+    /// Проведённое начисление: премия, удержание, оклад или сторно.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
 }
 
 async fn post_accrual(
@@ -1688,7 +1717,7 @@ pub async fn post_accrual_tx(
     } else {
         req.amount_tyiyn
     };
-    add_accrual(
+    let accrual_id = add_accrual(
         &mut *conn,
         ctx,
         req.business_date,
@@ -1713,7 +1742,10 @@ pub async fn post_accrual_tx(
         json!({ "kind": req.kind, "amount_tyiyn": amount, "comment": req.comment.trim() }),
     )
     .await?;
-    let out = OkOut { ok: true };
+    let out = OkOut {
+        ok: true,
+        id: accrual_id,
+    };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }
@@ -1801,7 +1833,7 @@ pub async fn post_salary_tx(
             "оклад за этот месяц уже начислен".into(),
         ));
     }
-    add_accrual(
+    let accrual_id = add_accrual(
         &mut *conn,
         ctx,
         Some(date),
@@ -1826,7 +1858,10 @@ pub async fn post_salary_tx(
         json!({ "amount_tyiyn": amount, "month": req.month }),
     )
     .await?;
-    let out = OkOut { ok: true };
+    let out = OkOut {
+        ok: true,
+        id: accrual_id,
+    };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
 }

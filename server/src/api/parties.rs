@@ -1221,6 +1221,9 @@ pub struct RepaymentReq {
 pub struct LedgerResult {
     pub party_id: Uuid,
     pub balance_tyiyn: i64,
+    /// Проведённая запись долга: погашение, правка или сторно (SPEC-29 §24).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_id: Option<Uuid>,
 }
 
 /// Погашение долга: баланс контрагента и движение денег — в одной транзакции (SPEC-10, SPEC-05).
@@ -1428,7 +1431,7 @@ pub async fn post_repayment_tx(
             .await?;
         }
     }
-    let (balance, _) = add_ledger_to(
+    let (balance, ledger_id) = add_ledger_to(
         &mut *conn,
         ctx,
         LedgerEntry {
@@ -1464,6 +1467,7 @@ pub async fn post_repayment_tx(
     let out = LedgerResult {
         party_id: req.party_id,
         balance_tyiyn: balance,
+        ledger_id: Some(ledger_id),
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
@@ -1509,7 +1513,7 @@ pub async fn post_adjust_tx(
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    let balance = add_ledger(
+    let (balance, ledger_id) = add_ledger_to(
         &mut *conn,
         ctx,
         LedgerEntry {
@@ -1520,6 +1524,7 @@ pub async fn post_adjust_tx(
             doc_id: None,
             comment: req.comment.trim(),
         },
+        None,
     )
     .await?;
     // Прощённый долг не будет погашен: процент кассира по нему не ждём.
@@ -1539,6 +1544,7 @@ pub async fn post_adjust_tx(
     let out = LedgerResult {
         party_id: req.party_id,
         balance_tyiyn: balance,
+        ledger_id: Some(ledger_id),
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
@@ -1888,12 +1894,13 @@ pub async fn reverse_ledger_tx(
     let next = balance
         .checked_sub(l.amount_tyiyn)
         .ok_or_else(|| invalid("слишком большая сумма долга"))?;
+    let rid = new_id();
     sqlx::query!(
         r#"insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,
                                      doc_type, doc_id, comment, reversal_of, user_id, device_id)
            values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date,
                    'reversal', $6, $7, $6, $8, $9)"#,
-        new_id(),
+        rid,
         branch_id,
         l.party_id,
         l.kind,
@@ -1934,6 +1941,7 @@ pub async fn reverse_ledger_tx(
     let out = LedgerResult {
         party_id: l.party_id,
         balance_tyiyn: next,
+        ledger_id: Some(rid),
     };
     ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
     Ok(out)

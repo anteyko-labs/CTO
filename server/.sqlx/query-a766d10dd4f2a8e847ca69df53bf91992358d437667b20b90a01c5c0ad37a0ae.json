@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from battery_intake_reversals x where x.intake_id = b.id) as \"r!\"\n                   from battery_intakes b where b.id = $1 and b.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "r!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a766d10dd4f2a8e847ca69df53bf91992358d437667b20b90a01c5c0ad37a0ae"
+}

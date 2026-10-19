@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.kind, m.amount_tyiyn, m.account_id, m.comment, m.doc_type, a.name as account\n                   from cash_movements m join cash_accounts a on a.id = m.account_id\n                   where m.id = $1 and m.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "account",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "32e986104d07929de50669da6f126e97b93cfe8b387e1d76d4ee77802840765b"
+}

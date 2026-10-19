@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select data from audit_log\n           where branch_id = $1 and action = 'debt.repayment' and data ->> 'repayment_id' = $2\n           order by created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "24c2234189284ddedc589664c4cb97795cd5719be99a6d2f79075e089d0460d6"
+}

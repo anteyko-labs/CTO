@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, l.amount_tyiyn,\n                  (select m.account_id from cash_movements m\n                    where m.doc_type = 'repayment' and m.doc_id = l.doc_id and m.kind <> 'bank_fee'\n                    order by m.created_at limit 1) as account_id\n           from party_ledger l join receipts r on r.id = $2\n           where l.branch_id = $1 and l.party_id = r.supplier_id\n             and l.kind = 'repayment' and l.doc_type = 'repayment' and l.reversal_of is null\n             and l.created_at = r.created_at\n             and not exists (select 1 from party_ledger x where x.reversal_of = l.id)\n           order by l.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "15a34689389e0c66ff60b36b0beac486f66007023af7b5d92f3b71bc2231acc7"
+}

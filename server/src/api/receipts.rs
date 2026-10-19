@@ -109,7 +109,11 @@ pub struct ReceiptOut {
     pub debt: Option<crate::api::supplier_debts::ReceiptDebt>,
 }
 
-async fn load_receipt(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<ReceiptOut> {
+pub(crate) async fn load_receipt(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<ReceiptOut> {
     let h = sqlx::query!(
         r#"select r.id, r.number, r.supplier_id, s.name as "supplier_name?", r.supplier_doc, r.comment,
                   r.total_tyiyn, r.reversal_of, u.full_name as user_name, r.created_at,

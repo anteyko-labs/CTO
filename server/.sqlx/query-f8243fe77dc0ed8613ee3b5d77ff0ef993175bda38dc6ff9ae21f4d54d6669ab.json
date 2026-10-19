@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number, grams, price_per_kg_tyiyn, amount_tyiyn, comment\n                   from battery_intakes where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "grams",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "price_per_kg_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f8243fe77dc0ed8613ee3b5d77ff0ef993175bda38dc6ff9ae21f4d54d6669ab"
+}

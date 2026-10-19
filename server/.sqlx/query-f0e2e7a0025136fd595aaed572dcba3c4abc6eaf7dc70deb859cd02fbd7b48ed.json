@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select line_no, qty from sale_lines where sale_id = $1 order by line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f0e2e7a0025136fd595aaed572dcba3c4abc6eaf7dc70deb859cd02fbd7b48ed"
+}

@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select mileage_value, mileage_unit, declined from oil_changes where sale_id = $1 limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mileage_value",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "mileage_unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "declined",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "dc460b7a00dfc475cc04ae604e0db5bdd38cbef3c6d0ddacd9fcef523597612b"
+}

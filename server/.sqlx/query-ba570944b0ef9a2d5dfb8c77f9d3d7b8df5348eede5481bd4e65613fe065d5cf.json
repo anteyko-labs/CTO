@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select new_number from doc_corrections where original_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "new_number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ba570944b0ef9a2d5dfb8c77f9d3d7b8df5348eede5481bd4e65613fe065d5cf"
+}

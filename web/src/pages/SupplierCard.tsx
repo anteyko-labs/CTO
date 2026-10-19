@@ -11,6 +11,7 @@ import type { DeliveryReceipt, DeliveryRow, InvoiceStatus, Party, ReceiptListIte
 import { ReconciliationButton } from '../components/ReconciliationButton'
 import { RepaymentModal, type InvoiceToPay } from '../components/RepaymentModal'
 import { InvoiceStatusBadge, SupplierPaymentHistory } from '../components/SupplierPayments'
+import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 import { SupplierReturnList, SupplierReturnModal } from '../components/SupplierReturns'
 
@@ -46,6 +47,10 @@ export default function SupplierCard() {
   // Накладные режет на страницы сервер; поставки — здесь (пришли целиком за период).
   const receipts = usePagedLoad<ReceiptListItem>(`/receipts${qs({ supplier_id: id })}`, 'supplier.receipts')
   const invoices = useLoad(() => get<SupplierInvoices>(`/parties/${id}/invoices`).catch(() => null), [id])
+  // «Исправить» платёж поставщику (SPEC-29 §24): то же окно оплаты, заполненное платежом.
+  const [fixing, setFixing] = useState<string | null>(null)
+  const corrections = useLoad(() => loadCorrections('ledger'), [])
+  const marks = correctionMarks(corrections.data ?? [])
   const reloadMoney = () => {
     party.reload()
     receipts.reload()
@@ -296,7 +301,7 @@ export default function SupplierCard() {
             Оплата без выбора накладной и зачёт брака закрывают самые старые неоплаченные накладные. Сторно платежа возвращает долг на те же накладные.
           </p>
           <ErrorBox error={invoices.error} />
-          {invoices.loading && !invoices.data ? <Loading /> : <SupplierPaymentHistory payments={invoices.data?.payments ?? []} />}
+          {invoices.loading && !invoices.data ? <Loading /> : <SupplierPaymentHistory payments={invoices.data?.payments ?? []} marks={marks} onFix={(p) => setFixing(p.ledger_id)} />}
         </Card>
       )}
 
@@ -335,6 +340,20 @@ export default function SupplierCard() {
       )}
 
       {opened && <ProductReceipts supplierId={id} row={opened} from={from} to={to} onClose={() => setOpened(null)} />}
+
+      {fixing && party.data && (
+        <RepaymentModal
+          key={fixing}
+          party={party.data}
+          fixId={fixing}
+          onClose={() => setFixing(null)}
+          onDone={() => {
+            setFixing(null)
+            reloadMoney()
+            corrections.reload()
+          }}
+        />
+      )}
 
       {paying && party.data && (
         <RepaymentModal

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from oil_transfer_reversals x where x.transfer_id = t.id) as \"r!\"\n                   from oil_transfers t where t.id = $1 and t.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "r!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3879fcd57f0d2a931c715237f7fa2a604a02d0cdff1472be208f993c1d0d03a9"
+}

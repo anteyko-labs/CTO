@@ -1,9 +1,14 @@
-// Начисления и выплаты сотрудника за период с отменой (сторно) владельцем (SPEC-07, ADR-064).
+// Начисления и выплаты сотрудника за период с отменой (сторно) владельцем (SPEC-07, ADR-064)
+// и исправлением той же формой, которой их создают (SPEC-29 §24, ADR-085).
 import { useState } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
+import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { CorrectionBadges, FixButton } from './Correction'
+import { FixDraft, type FixMode } from './FixDraft'
 import { Pager, usePager } from './Pager'
+import { ExtraForm, PayoutForm, SalaryForm, type ExtraDoc, type PayoutDoc, type SalaryDoc } from './PayrollForms'
 import { Button, Empty, ErrorBox, Field, Loading, Modal, Money, toast } from './ui'
 
 interface AccrualRow {
@@ -49,6 +54,11 @@ const KIND_LABELS: Record<string, string> = {
 
 type Target = { what: 'accrual'; row: AccrualRow } | { what: 'payout'; row: PayoutRow }
 
+/** Исправляются только ручные бонус и удержание и оклад за месяц; остальное — из чеков и смен. */
+const FIXABLE_KINDS = ['bonus', 'penalty', 'monthly_salary']
+
+const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
+
 /** Что отменяем и как это назвать: прощение недостачи — это сторно её удержания (ADR-064). */
 function actionLabel(t: Target): string {
   if (t.what === 'payout') return 'Отменить выплату'
@@ -60,6 +70,18 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
   const [target, setTarget] = useState<{ t: Target; reason: string; opId: string } | null>(null)
   const act = useAction()
   const [changed, setChanged] = useState(false)
+  const [fixing, setFixing] = useState<Target | null>(null)
+  // Отметки «исправлен → / исправление» — одним запросом на список.
+  const accMarks = useLoad(() => loadCorrections('accrual').then(correctionMarks), [])
+  const payMarks = useLoad(() => loadCorrections('payout').then(correctionMarks), [])
+
+  const fixed = () => {
+    setFixing(null)
+    setChanged(true)
+    data.reload()
+    accMarks.reload()
+    payMarks.reload()
+  }
 
   const confirm = () =>
     void act.run(async () => {
@@ -88,7 +110,42 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
           их нет. Отмена — новая запись с минусом, исходная остаётся зачёркнутой.
         </div>
         <ErrorBox error={data.error} />
-        {target ? (
+        {fixing ? (
+          <div className="flex flex-col gap-3 rounded-md border border-slate-200 p-3">
+            <h3 className="font-semibold">
+              Исправить: {fixing.what === 'payout' ? `выплата № ${fixing.row.number}` : (KIND_LABELS[fixing.row.kind] ?? fixing.row.kind).toLowerCase()}
+            </h3>
+            {fixing.what === 'payout' ? (
+              <FixDraft<PayoutDoc> key={fixing.row.id} kind="payout" id={fixing.row.id} onCancel={() => setFixing(null)}>
+                {(fix) => <PayoutForm employeeId={employee.employee_id} fix={fix} onCancel={() => setFixing(null)} onDone={fixed} />}
+              </FixDraft>
+            ) : (
+              <FixDraft<ExtraDoc | SalaryDoc> key={fixing.row.id} kind="accrual" id={fixing.row.id} onCancel={() => setFixing(null)}>
+                {(fix) =>
+                  fix.doc.type === 'salary' || !('kind' in fix.doc) ? (
+                    <SalaryForm
+                      employeeId={employee.employee_id}
+                      month={fix.doc.month}
+                      hint={`Оклад за ${MONTHS[Number(fix.doc.month.slice(5, 7)) - 1] ?? ''} ${fix.doc.month.slice(0, 4)}.`}
+                      fix={fix as FixMode<SalaryDoc>}
+                      onCancel={() => setFixing(null)}
+                      onDone={fixed}
+                    />
+                  ) : (
+                    <ExtraForm
+                      employeeId={employee.employee_id}
+                      kind={fix.doc.kind}
+                      date={fix.doc.business_date}
+                      fix={fix as FixMode<ExtraDoc>}
+                      onCancel={() => setFixing(null)}
+                      onDone={fixed}
+                    />
+                  )
+                }
+              </FixDraft>
+            )}
+          </div>
+        ) : target ? (
           <div className="flex flex-col gap-3 rounded-md border border-rose-200 bg-rose-50/40 p-3 text-sm">
             <h3 className="font-semibold">{actionLabel(target.t)}</h3>
             <div>
@@ -126,7 +183,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                       <span className={struck(a)}>
                         {formatDate(a.business_date)} · {a.reversal_of ? 'Сторно: ' : ''}
                         {KIND_LABELS[a.kind] ?? a.kind} · <Money value={a.amount_tyiyn} tone="negative" />
-                        {a.comment && <span className="text-slate-500"> — {a.comment}</span>}
+                        {a.comment && <span className="text-slate-500"> — {a.comment}</span>} <CorrectionBadges mark={accMarks.data?.get(a.id)} />
                         <span className="block text-xs text-slate-400">
                           {a.user_name}, {formatDateTime(a.created_at)}
                         </span>
@@ -135,13 +192,16 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                         <span className="text-xs text-slate-500">{a.kind === 'shortage' ? 'прощена' : 'отменено'}</span>
                       ) : (
                         !a.reversal_of && (
-                          <Button
-                            variant="secondary"
-                            className="px-2 py-1 text-xs"
-                            onClick={() => setTarget({ t: { what: 'accrual', row: a }, reason: '', opId: newOpId() })}
-                          >
-                            {actionLabel({ what: 'accrual', row: a })}
-                          </Button>
+                          <span className="flex gap-1">
+                            {FIXABLE_KINDS.includes(a.kind) && <FixButton small onClick={() => setFixing({ what: 'accrual', row: a })} />}
+                            <Button
+                              variant="secondary"
+                              className="px-2 py-1 text-xs"
+                              onClick={() => setTarget({ t: { what: 'accrual', row: a }, reason: '', opId: newOpId() })}
+                            >
+                              {actionLabel({ what: 'accrual', row: a })}
+                            </Button>
+                          </span>
                         )
                       )}
                     </li>
@@ -161,20 +221,23 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                       <span className={struck(p)}>
                         № {p.number} · {formatDateTime(p.created_at)} · {p.reversal_of ? 'Сторно: ' : ''}
                         <Money value={p.amount_tyiyn} tone="negative" /> · {p.account_name ? `из «${p.account_name}»` : 'мимо касс'}
-                        {p.comment && <span className="text-slate-500"> — {p.comment}</span>}
+                        {p.comment && <span className="text-slate-500"> — {p.comment}</span>} <CorrectionBadges mark={payMarks.data?.get(p.id)} />
                         <span className="block text-xs text-slate-400">{p.user_name}</span>
                       </span>
                       {p.reversed ? (
                         <span className="text-xs text-slate-500">отменена</span>
                       ) : (
                         !p.reversal_of && (
-                          <Button
-                            variant="secondary"
-                            className="px-2 py-1 text-xs"
-                            onClick={() => setTarget({ t: { what: 'payout', row: p }, reason: '', opId: newOpId() })}
-                          >
-                            Отменить
-                          </Button>
+                          <span className="flex gap-1">
+                            <FixButton small onClick={() => setFixing({ what: 'payout', row: p })} />
+                            <Button
+                              variant="secondary"
+                              className="px-2 py-1 text-xs"
+                              onClick={() => setTarget({ t: { what: 'payout', row: p }, reason: '', opId: newOpId() })}
+                            >
+                              Отменить
+                            </Button>
+                          </span>
                         )
                       )}
                     </li>

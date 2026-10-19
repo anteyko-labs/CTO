@@ -1,8 +1,9 @@
 // Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
+import { CorrectionBanner } from '../components/Correction'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
 import { QuickExpense } from '../components/QuickExpense'
@@ -26,6 +27,8 @@ import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
 import { bankChoices, defaultBankId, type NoncashMethod } from '../lib/accounts'
+import { postCorrection } from '../lib/corrections'
+import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
@@ -195,12 +198,20 @@ const NOTES = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
 
 const focusPicker = () => document.querySelector<HTMLInputElement>('[data-picker]')?.focus()
 
-export default function Cashier() {
+/** Исправление чека владельцем (SPEC-29 §24): тот же экран кассы, заполненный исходным чеком. */
+export interface CashierFix {
+  originalId: string
+  number: number | null
+  state: SaleFixState
+}
+
+export default function Cashier({ fix }: { fix?: CashierFix }) {
+  const navigate = useNavigate()
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
   // Куда идут карта и QR: у каждого способа свой счёт по умолчанию, кассир может выбрать другой
   // банк для этого чека (ADR-076, ADR-077).
   const banks = useLoad(loadBanks, [])
-  const [bankPick, setBankPick] = useState(NO_BANK_PICK)
+  const [bankPick, setBankPick] = useState<Record<NoncashMethod, string>>(fix?.state.bankPick ?? NO_BANK_PICK)
   const bankList = banks.data ?? []
   const bankFor = (method: NoncashMethod): string =>
     bankList.some((b) => b.id === bankPick[method]) ? bankPick[method] : defaultBankId(bankList, method)
@@ -216,20 +227,44 @@ export default function Cashier() {
   )
   // Смену могли открыть или закрыть на другом устройстве: кассир чека меняется вместе с ней.
   usePolling(shift.reload, 30_000)
-  const [draft] = useState(loadDraft)
+  // Исправление начинает с исходного чека и не трогает незавершённый чек кассы.
+  const [draft] = useState<Draft | null>(() =>
+    fix
+      ? {
+          saleType: fix.state.saleType,
+          masterId: fix.state.masterId,
+          lines: fix.state.lines,
+          comment: fix.state.comment,
+          party: fix.state.party,
+          contactId: fix.state.contactId,
+          vehicleId: fix.state.vehicleId,
+          mileage: fix.state.mileage,
+          delivery: fix.state.delivery,
+          declined: fix.state.declined,
+          nextEvery: null,
+        }
+      : loadDraft(),
+  )
+  // Учётный день исправленного чека и «что и почему исправляете» (SPEC-29 §24).
+  const [businessDate, setBusinessDate] = useState(fix?.state.businessDate ?? '')
+  const [fixComment, setFixComment] = useState('')
   const [saleType, setSaleType] = useState<'takeaway' | 'service'>(draft?.saleType ?? 'takeaway')
-  const [cashierId, setCashierId] = useState(() => remembered(CASHIER_KEY))
+  const [cashierId, setCashierId] = useState(() => fix?.state.cashierId ?? remembered(CASHIER_KEY))
   const [masterId, setMasterId] = useState(draft?.masterId ?? '')
   const [lines, setLines] = useState<CartLine[]>(draft?.lines ?? [])
   const [comment, setComment] = useState(draft?.comment ?? '')
-  const [payMode, setPayMode] = useState<PayMode>('cash')
+  const [payMode, setPayMode] = useState<PayMode>(fix?.state.payMode ?? 'cash')
   const [received, setReceived] = useState('')
-  const [split, setSplit] = useState<Record<Exclude<PaymentMethod, 'bonus' | 'battery'>, string>>({ cash: '', card: '', transfer: '', debt: '' })
+  const [split, setSplit] = useState<Record<Exclude<PaymentMethod, 'bonus' | 'battery'>, string>>(fix?.state.split ?? { cash: '', card: '', transfer: '', debt: '' })
   // Скидка баллами: часть чека оплачивается баллами клиента из бота (SPEC-19).
-  const [bonus, setBonus] = useState<BonusUse | null>(null)
+  const [bonus, setBonus] = useState<BonusUse | null>(() =>
+    fix && fix.state.bonusAmount > 0 && fix.state.party
+      ? { party_id: fix.state.party.id, name: fix.state.party.name, balance_tyiyn: fix.state.bonusAmount, amount_tyiyn: fix.state.bonusAmount }
+      : null,
+  )
   const [bonusOpen, setBonusOpen] = useState(false)
   // Старый аккумулятор в оплату: вес × цена приёма за кг; сумму считает сервер (SPEC-27).
-  const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKgText: string } | null>(null)
+  const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKgText: string } | null>(fix?.state.battery ?? null)
   const batteryLoad = useAction()
   const [confirmClear, setConfirmClear] = useState(false)
   // op_id попытки: повтор того же чека идёт с прежним, любое изменение чека даёт новый.
@@ -274,13 +309,13 @@ export default function Cashier() {
   const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
   const { busy, error, setError, run } = useAction()
 
-  const cashiers = employees.data?.filter((e) => e.active && e.is_cashier) ?? []
-  const masters = employees.data?.filter((e) => e.active && e.is_master) ?? []
+  // Исправление оставляет кассира и мастера исходного чека, даже если их уже отключили.
+  const cashiers = employees.data?.filter((e) => e.is_cashier && (e.active || e.id === fix?.state.cashierId)) ?? []
+  const masters = employees.data?.filter((e) => e.is_master && (e.active || e.id === fix?.state.masterId)) ?? []
 
-  useEffect(
-    () => saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery }),
-    [saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery],
-  )
+  useEffect(() => {
+    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery })
+  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery])
 
   // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
   const [storageAtRisk, setStorageAtRisk] = useState(false)
@@ -297,7 +332,8 @@ export default function Cashier() {
   // Открыта смена — кассир чека тот, кто открыл смену, касса его не спрашивает (ADR-071); сервер
   // сам ставит кассира смены. Он же запоминается на устройстве: если связь пропадёт, чек без сети
   // уйдёт с ним. Без смены кассира выбирают один раз, выбор помнится до открытия смены.
-  const shiftCashier = shift.data?.cashier_employee_id ?? null
+  // Исправление: кассир — исходного чека (владелец может выбрать другого), не смены.
+  const shiftCashier = fix ? null : (shift.data?.cashier_employee_id ?? null)
   // Выбор кассира показывается, только когда уже известно, что смены нет: иначе он мелькнёт
   // на время загрузки и исчезнет.
   const [shiftKnown, setShiftKnown] = useState(false)
@@ -647,6 +683,8 @@ export default function Cashier() {
     [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
     [!everyProblem, everyProblem ?? '', '#next-every-dist'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
+    [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
+    [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
   )
 
   const submit = () =>
@@ -676,6 +714,16 @@ export default function Cashier() {
           seen_list_price_tyiyn: l.gift ? 0 : listPrice(l),
         })),
         payments,
+      }
+      if (fix) {
+        // Исправление: сторно исходного и верный чек одной операцией на сервере (SPEC-29 §24).
+        const doc = { ...content, business_date: businessDate }
+        const fixKey = JSON.stringify([doc, fixComment.trim()])
+        if (attempt.current?.key !== fixKey) attempt.current = { key: fixKey, opId: newOpId() }
+        const res = await postCorrection({ op_id: attempt.current.opId, kind: 'sale', original_id: fix.originalId, comment: fixComment.trim(), doc })
+        toast(`Чек исправлен: № ${res.new_number ?? ''}`)
+        navigate(`/sales/${res.new_id}`)
+        return
       }
       const key = JSON.stringify(content)
       if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
@@ -758,7 +806,7 @@ export default function Cashier() {
 
   const canSubmit = !busy && blockers.length === 0
   // На вынос с моторным маслом — сначала «Это замена масла?» (SPEC-29 §18): один раз на чек.
-  const askOil = saleType === 'takeaway' && !oilAsked && hasEngineOil(lines)
+  const askOil = !fix && saleType === 'takeaway' && !oilAsked && hasEngineOil(lines)
   const trySubmit = () => {
     if (askOil) {
       setOilQuestion(true)
@@ -782,7 +830,18 @@ export default function Cashier() {
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
       <div className="flex min-w-0 flex-col gap-4">
-        {parked.length > 0 && (
+        {fix && (
+          <div className="flex flex-col gap-2">
+            <CorrectionBanner label="чек" number={fix.number} comment={fixComment} onComment={setFixComment} />
+            <Field label="Учётный день" hint="Как у исходного чека или за последние два дня">
+              <input id="correction-date" type="date" className="w-44" value={businessDate} onChange={(e) => setBusinessDate(e.target.value)} />
+            </Field>
+            <Link to={`/sales/${fix.originalId}`} className="text-sm text-sky-700 hover:underline">
+              ← Отменить исправление
+            </Link>
+          </div>
+        )}
+        {!fix && parked.length > 0 && (
           <Card className="flex flex-wrap items-center gap-2">
             <span className="text-sm text-slate-500">Отложенные:</span>
             {parked.map((p) => (
@@ -805,13 +864,13 @@ export default function Cashier() {
             ))}
           </Card>
         )}
-        {storageAtRisk && (
+        {!fix && storageAtRisk && (
           <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900" role="alert">
             Браузер может стереть неотправленные чеки — разрешите хранение данных для этого сайта в настройках браузера
             (или установите программу на рабочий стол).
           </div>
         )}
-        {shift.data === null && (
+        {!fix && shift.data === null && (
           <div
             className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
             title="Продавать можно, но наличные будет не с чем сверить"
@@ -835,7 +894,7 @@ export default function Cashier() {
               Услуги
             </Button>
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1">
+          <div className={`mt-2 flex-wrap items-center gap-x-1 gap-y-1 ${fix ? 'hidden' : 'flex'}`}>
             <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setDebtPay(true)}>
               <Icon name="debts" className="h-4 w-4" />
               Принять оплату долга
@@ -1086,19 +1145,19 @@ export default function Cashier() {
               </button>
             ))}
           </div>
-          {shift.data ? (
+          {shift.data && !fix ? (
             <div className="text-sm" data-testid="shift-cashier">
               Кассир: <b>{shift.data.cashier_name}</b> <span className="text-slate-500">(смена № {shift.data.number})</span>
             </div>
           ) : (
-            shiftKnown && (
-              <Field label="Кассир" required hint="Запомнится на этом устройстве до открытия смены">
+            (shiftKnown || fix) && (
+              <Field label="Кассир" required hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : 'Запомнится на этом устройстве до открытия смены'}>
                 <select
                   id="cashier-select"
                   value={cashierId}
                   onChange={(e) => {
                     setCashierId(e.target.value)
-                    remember(CASHIER_KEY, e.target.value)
+                    if (!fix) remember(CASHIER_KEY, e.target.value)
                   }}
                 >
                   <option value="">— выберите —</option>
@@ -1498,10 +1557,10 @@ export default function Cashier() {
           <ErrorBox error={error} />
           <Missing items={blockers} />
           <Button className="min-h-14 py-3 text-lg" disabled={!canSubmit} onClick={trySubmit}>
-            Провести чек
+            {fix ? 'Сохранить исправление' : 'Провести чек'}
           </Button>
-          <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — провести</div>
-          {lines.length > 0 && (
+          <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
+          {!fix && lines.length > 0 && (
             <div className="flex gap-2">
               <Button variant="secondary" className="flex-1" onClick={park}>
                 Отложить
@@ -1541,7 +1600,7 @@ export default function Cashier() {
             </div>
           </div>
           <Button className="min-h-12 shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={trySubmit}>
-            Провести чек
+            {fix ? 'Сохранить' : 'Провести чек'}
           </Button>
         </div>
       )}

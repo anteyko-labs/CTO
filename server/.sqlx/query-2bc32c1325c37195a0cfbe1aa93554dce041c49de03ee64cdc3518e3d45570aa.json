@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select business_date from sales where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2bc32c1325c37195a0cfbe1aa93554dce041c49de03ee64cdc3518e3d45570aa"
+}

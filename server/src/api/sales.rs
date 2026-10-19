@@ -128,6 +128,16 @@ pub struct SaleReq {
     /// Отказанные работы для масляной книжки: «воздушный фильтр» (ADR-055).
     #[serde(default)]
     pub declined: String,
+    /// Чек проводит «Исправить» владельца (SPEC-29 §24): кассир — из исправления, а не смены,
+    /// учётный день — заданный. С экрана не приходит.
+    #[serde(skip)]
+    pub correction: Option<SaleCorrection>,
+}
+
+/// Как проводится исправленный чек (SPEC-29 §24, ADR-085).
+#[derive(Clone, Copy, Debug)]
+pub struct SaleCorrection {
+    pub business_date: NaiveDate,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -785,23 +795,29 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     // а присланный другой кассир не учитывается. Чек без сети — по смене, открытой в момент
     // чека на устройстве; если смены тогда не было, остаётся кассир, выбранный на устройстве.
     let register = cash::default_account(conn, branch_id).await?;
-    let at_shift = cash::shift_open_at(
-        conn,
-        branch_id,
-        register,
-        if offline { req.client_time } else { None },
-    )
-    .await?;
+    let at_shift = if req.correction.is_some() {
+        // Исправление: кассир — тот, кого указал владелец (обычно кассир исходного чека).
+        None
+    } else {
+        cash::shift_open_at(
+            conn,
+            branch_id,
+            register,
+            if offline { req.client_time } else { None },
+        )
+        .await?
+    };
     let cashier_id = at_shift
         .as_ref()
         .map_or(req.cashier_id, |s| s.cashier_employee_id);
-    // Кассира смены могли отключить посреди смены — чек смены всё равно его.
+    // Кассира смены могли отключить посреди смены — чек смены всё равно его. Исправление
+    // сохраняет кассира исходного чека, даже если его уже отключили.
     check_employee(
         conn,
         branch_id,
         cashier_id,
         false,
-        offline || at_shift.is_some(),
+        offline || at_shift.is_some() || req.correction.is_some(),
         &mut bypass,
     )
     .await?;
@@ -988,11 +1004,12 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
                               user_id, device_id, client_time, delivery_address, business_date)
            values ($1, $2, $3, 'sale', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                   coalesce($17::date,
                    case when $15::timestamptz is not null
                          and $15::timestamptz > now() - interval '2 days'
                          and $15::timestamptz < now() + interval '5 minutes'
                         then ($15::timestamptz at time zone 'Asia/Bishkek')::date
-                        else (now() at time zone 'Asia/Bishkek')::date end)"#,
+                        else (now() at time zone 'Asia/Bishkek')::date end))"#,
         id,
         branch_id,
         number,
@@ -1010,7 +1027,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         // Время устройства задаёт учётный день только чеку без сети: онлайн-чек задним
         // числом в закрытый день не проводится (SPEC-08).
         if offline { req.client_time } else { None },
-        req.delivery_address.trim()
+        req.delivery_address.trim(),
+        req.correction.map(|c| c.business_date)
     )
     .execute(&mut *conn)
     .await?;
@@ -1404,6 +1422,10 @@ pub struct ReturnReq {
     /// явной отметкой (SPEC-27).
     #[serde(default)]
     pub battery_cash: bool,
+    /// Учётный день возврата: «Исправить» сторнирует чек в его же день (SPEC-29 §24). С экрана
+    /// не приходит — возврат ложится в сегодняшний день.
+    #[serde(skip)]
+    pub business_date: Option<NaiveDate>,
 }
 
 /// Счёт возврата на карту или переводом (ADR-076): деньги уходят с того безналичного счёта,
@@ -1771,7 +1793,7 @@ pub async fn return_sale_tx(
                               master_fee_tyiyn, comment, party_id, contact_id, vehicle_id,
                               reversal_of, user_id, device_id, business_date)
            values ($1, $2, $3, 'return', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                   (now() at time zone 'Asia/Bishkek')::date)"#,
+                   coalesce($16::date, (now() at time zone 'Asia/Bishkek')::date))"#,
         rid,
         branch_id,
         number,
@@ -1786,7 +1808,8 @@ pub async fn return_sale_tx(
         orig.vehicle_id,
         id,
         ctx.user.id,
-        ctx.device_id
+        ctx.device_id,
+        req.business_date
     )
     .execute(&mut *conn)
     .await?;

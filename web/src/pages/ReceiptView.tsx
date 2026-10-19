@@ -2,6 +2,7 @@
 // платежей (SPEC-27); фото накладной (SPEC-29 §3).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { CorrectionLinks, FixButton } from '../components/Correction'
 import { printLabels } from '../components/labels'
 import { ReceiptPhotos } from '../components/ReceiptPhotos'
 import { RepaymentModal } from '../components/RepaymentModal'
@@ -93,6 +94,10 @@ export default function ReceiptView() {
               </Button>
             )}
             {canReverse && (
+              // Исправить накладную: сторно и верная одним действием (SPEC-29 §24).
+              <FixButton onClick={() => navigate(`/receipts/${r.id}/correct`)} />
+            )}
+            {canReverse && (
               <Button variant="danger" onClick={() => setReverseOpen(true)}>
                 Сторно
               </Button>
@@ -102,6 +107,7 @@ export default function ReceiptView() {
       />
       <ErrorBox error={receipt.error} />
       <ErrorBox error={labels.error} />
+      <CorrectionLinks id={r.id} hrefOf={(doc) => `/receipts/${doc}`} />
       <Card>
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <div>
