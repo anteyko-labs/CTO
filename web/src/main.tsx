@@ -3,14 +3,20 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import CabinetApp from './pages/cabinet/CabinetApp'
+import { shouldSelectOnFocus } from './lib/focus'
 import { requestPersistentStorage } from './lib/offline'
 import './index.css'
 
 // Числовое поле при фокусе выделяется целиком: ввод заменяет значение, а не дописывается к нему.
+// Выделяем, только если поле всё ещё в фокусе и в нём ничего не набрали: select() у поля не в
+// фокусе возвращает фокус в него — и набранное дальше уходило в прежнее поле.
 document.addEventListener('focusin', (e) => {
   const t = e.target
   if (t instanceof HTMLInputElement && (t.inputMode === 'decimal' || t.inputMode === 'numeric')) {
-    setTimeout(() => t.select(), 0)
+    const value = t.value
+    setTimeout(() => {
+      if (shouldSelectOnFocus(document.activeElement === t, value, t.value)) t.select()
+    }, 0)
   }
 })
 

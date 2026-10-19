@@ -34,6 +34,7 @@ import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../l
 import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
+import { useFocusAfterRender } from '../lib/focus'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
@@ -211,6 +212,7 @@ export interface CashierFix {
 
 export default function Cashier({ fix }: { fix?: CashierFix }) {
   const navigate = useNavigate()
+  const focusAfterRender = useFocusAfterRender()
   const owner = useUser().role === 'owner'
   // Режим кассы для сенсорного моноблока (SPEC-29): без меню, всё крупнее, цифры — экранной
   // клавиатурой. В исправлении чека владельцем режима нет.
@@ -514,17 +516,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         setDone(null)
         setBatteryAvg(info.avg_per_kg_tyiyn)
         const p = await get<Product>(`/products/${info.product_id}`)
+        const key = nextKey()
         setLines((ls) => [
           ...ls,
           {
-            key: nextKey(),
+            key,
             kind: 'weight',
             product: p,
             qtyText: '',
             priceText: somInput(info.sale_per_kg_tyiyn || info.avg_per_kg_tyiyn || 0),
           },
         ])
-        setTimeout(() => document.querySelector<HTMLInputElement>('[data-weight]:last-of-type')?.focus(), 50)
+        // Фокус в вес новой строки — в той же отрисовке, где строка появилась.
+        focusAfterRender(`[data-weight="${key}"]`)
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось открыть продажу на вес'))
 
@@ -1104,7 +1108,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         </button>
                         <input
                           className={`min-h-12 rounded-none text-center text-lg ${touch ? 'w-20 text-xl font-semibold' : 'w-16'}`}
-                          data-weight={l.kind === 'weight' ? '' : undefined}
+                          data-weight={l.kind === 'weight' ? l.key : undefined}
                           // Подпись вокруг поля относится к первой кнопке «−», поэтому у поля своя.
                           aria-label={l.kind === 'pour' ? 'Литры' : l.kind === 'weight' ? 'Вес, кг' : l.kind === 'container' ? 'Канистры' : 'Кол-во'}
                           {...(l.kind === 'pour' || l.kind === 'weight'
@@ -1379,7 +1383,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     void batteryLoad.run(async () => {
                       const info = await get<BatteryInfo>('/batteries')
                       setBatteryPay({ kgText: '', perKgText: somInput(info.intake_per_kg_tyiyn) })
-                      setTimeout(() => document.getElementById('battery-kg')?.focus(), 50)
+                      focusAfterRender('#battery-kg')
                     })
                   }
                 >
@@ -1670,7 +1674,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   setOilQuestion(false)
                   setSaleType('service')
                   toast('Замена масла: выберите мастера, клиента и машину')
-                  setTimeout(() => document.getElementById('master-select')?.focus(), 50)
+                  focusAfterRender('#master-select')
                 }}
               >
                 Да, замена

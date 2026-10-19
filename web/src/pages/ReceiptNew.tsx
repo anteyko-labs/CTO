@@ -20,6 +20,7 @@ import type { ReceiptFixState } from '../lib/receiptFix'
 import { formatLiters, formatSom, parseSom } from '../lib/format'
 import { initialPrices, isOil, lastText, lineCalc, parseCount, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
+import { useFocusAfterRender } from '../lib/focus'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
 import { presetFromHit, type CardPreset } from '../lib/oldCatalog'
@@ -82,13 +83,10 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const save = useAction()
   const supplierAction = useAction()
 
-  /** Перейти к полю: выделить текст, чтобы ввод сразу заменил подставленное. */
-  const focusId = (id: string | null) =>
-    setTimeout(() => {
-      const el = document.getElementById(id ?? 'receipt-picker') as HTMLInputElement | null
-      el?.focus()
-      el?.select?.()
-    }, 30)
+  /** Перейти к полю: выделить текст, чтобы ввод сразу заменил подставленное. Фокус ставится
+   *  в той же отрисовке, где появилась строка, — без таймера, который перехватывал набор. */
+  const focusAfterRender = useFocusAfterRender()
+  const focusId = (id: string | null) => focusAfterRender(`#${id ?? 'receipt-picker'}`)
 
   /** Enter в поле строки — следующее поле, потом следующая строка, потом поиск (SPEC-29 §1). */
   const onFieldKey = (lineNo: number, field: LineField) => (e: KeyboardEvent<HTMLInputElement>) => {

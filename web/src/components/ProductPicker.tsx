@@ -5,6 +5,7 @@ import { ApiError, get, qs } from '../lib/api'
 import { productTitle } from '../lib/battery'
 import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
+import { resultsMatch } from '../lib/pickerResults'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
 import type { OldCatalogHit, Product } from '../lib/types'
 
@@ -40,6 +41,9 @@ export function ProductPicker({
 }) {
   const [text, setText] = useState('')
   const [results, setResults] = useState<Product[]>([])
+  // По какому запросу найдены `results`: после выбора список не стирается, а скрывается — иначе
+  // тот же запрос, набранный снова до срабатывания задержки, не перезапрашивался и давал «Ничего не нашли».
+  const [resultsFor, setResultsFor] = useState('')
   const [old, setOld] = useState<OldCatalogHit[]>([])
   const [active, setActive] = useState(0)
   const [message, setMessage] = useState<string | null>(null)
@@ -50,6 +54,7 @@ export function ProductPicker({
   useEffect(() => {
     if (query.length < 2) {
       setResults([])
+      setResultsFor(query)
       setOld([])
       return
     }
@@ -58,6 +63,7 @@ export function ProductPicker({
       .then((r) => {
         if (alive) {
           setResults(r)
+          setResultsFor(query)
           setActive(0)
         }
       })
@@ -66,6 +72,7 @@ export function ProductPicker({
         const snap = await readSnapshot()
         if (alive) {
           setResults(snap ? searchSnapshot(snap, query) : [])
+          setResultsFor(query)
           setActive(0)
         }
       })
@@ -81,12 +88,15 @@ export function ProductPicker({
     }
   }, [query, withOld])
 
-  const entries: Entry[] = [...results.map((p) => ({ kind: 'own' as const, p })), ...old.map((h) => ({ kind: 'old' as const, h }))]
+  // Показываем только найденное по набранному тексту (или по его началу, пока идёт набор).
+  const fresh = resultsFor.length >= 2 && resultsMatch(text, resultsFor)
+  const shownResults = fresh ? results : []
+  const shownOld = fresh ? old : []
+  const entries: Entry[] = [...shownResults.map((p) => ({ kind: 'own' as const, p })), ...shownOld.map((h) => ({ kind: 'old' as const, h }))]
 
   const clear = () => {
     setText('')
-    setResults([])
-    setOld([])
+    setActive(0)
     setMessage(null)
   }
 
@@ -177,10 +187,10 @@ export function ProductPicker({
         }}
       />
       {message && <div className="mt-1 text-sm text-rose-600">{message}</div>}
-      {query.length >= 2 && (entries.length > 0 || Boolean(onCreate)) && (
+      {query.length >= 2 && text.trim().length >= 2 && (entries.length > 0 || Boolean(onCreate)) && (
         <ul className="absolute z-30 mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
-          {results.length === 0 && <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{query}»</li>}
-          {results.map((p, i) => (
+          {fresh && results.length === 0 && <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{resultsFor}»</li>}
+          {shownResults.map((p, i) => (
             <li key={p.id}>
               <button
                 type="button"
@@ -200,13 +210,13 @@ export function ProductPicker({
               </button>
             </li>
           ))}
-          {old.length > 0 && (
+          {shownOld.length > 0 && (
             <li className="border-t border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium uppercase text-slate-500">
               Из старой программы — завести карточку
             </li>
           )}
-          {old.map((h, j) => {
-            const i = results.length + j
+          {shownOld.map((h, j) => {
+            const i = shownResults.length + j
             return (
               <li key={h.id}>
                 <button
