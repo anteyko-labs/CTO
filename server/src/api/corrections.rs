@@ -1806,49 +1806,77 @@ async fn load_correction(
     original_id: Option<Uuid>,
     new_id: Option<Uuid>,
 ) -> AppResult<Option<CorrectionOut>> {
-    let row = sqlx::query!(
+    Ok(
+        load_corrections(conn, user, id, original_id, new_id, None, 1)
+            .await?
+            .into_iter()
+            .next(),
+    )
+}
+
+/// Исправления филиала одним запросом, новые сверху: сначала последние `limit` по отбору, из
+/// них администратору — без исправлений личных расходов владельца.
+async fn load_corrections(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    id: Option<Uuid>,
+    original_id: Option<Uuid>,
+    new_id: Option<Uuid>,
+    kind: Option<&str>,
+    limit: i64,
+) -> AppResult<Vec<CorrectionOut>> {
+    let rows = sqlx::query!(
         r#"select c.id, c.kind, c.original_id, c.original_number, c.reversal_id, c.new_id, c.new_number,
                   c.comment, c.diff, u.full_name as user_name, c.created_at
-           from doc_corrections c join users u on u.id = c.user_id
-           where c.branch_id = $1
-             and ($2::uuid is null or c.id = $2)
-             and ($3::uuid is null or c.original_id = $3)
-             and ($4::uuid is null or c.new_id = $4)
-             -- Исправления личных расходов владельца администратору не видны, как и сами
-             -- расходы (SPEC-06, ADR-088).
-             and ($5 or not (c.kind = 'expense' and exists (
+           from (select * from doc_corrections d
+                 where d.branch_id = $1
+                   and ($2::uuid is null or d.id = $2)
+                   and ($3::uuid is null or d.original_id = $3)
+                   and ($4::uuid is null or d.new_id = $4)
+                   and ($6::text is null or d.kind = $6)
+                 order by d.created_at desc, d.id desc
+                 limit $7) c
+           join users u on u.id = c.user_id
+           -- Исправления личных расходов владельца администратору не видны, как и сами
+           -- расходы (SPEC-06, ADR-088).
+           where $5 or not (c.kind = 'expense' and exists (
                    select 1 from expenses e join expense_articles a on a.id = e.article_id
-                   where e.id = c.original_id and a.owner_only)))
-           limit 1"#,
+                   where e.id = c.original_id and a.owner_only))
+           order by c.created_at desc, c.id desc"#,
         user.branch_id,
         id,
         original_id,
         new_id,
-        user.is_owner()
+        user.is_owner(),
+        kind,
+        limit
     )
-    .fetch_optional(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
-    let Some(r) = row else { return Ok(None) };
-    let diff: Vec<DiffItem> = if user.is_owner() {
-        serde_json::from_value(r.diff).map_err(|e| AppError::Internal(e.to_string()))?
-    } else {
-        Vec::new()
-    };
-    let label = Kind::parse(&r.kind).map(Kind::label).unwrap_or("документ");
-    Ok(Some(CorrectionOut {
-        id: r.id,
-        kind: r.kind,
-        kind_label: label.into(),
-        original_id: r.original_id,
-        original_number: r.original_number,
-        reversal_id: r.reversal_id,
-        new_id: r.new_id,
-        new_number: r.new_number,
-        comment: r.comment,
-        diff,
-        user_name: r.user_name,
-        created_at: r.created_at,
-    }))
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let diff: Vec<DiffItem> = if user.is_owner() {
+            serde_json::from_value(r.diff).map_err(|e| AppError::Internal(e.to_string()))?
+        } else {
+            Vec::new()
+        };
+        let label = Kind::parse(&r.kind).map(Kind::label).unwrap_or("документ");
+        out.push(CorrectionOut {
+            id: r.id,
+            kind: r.kind,
+            kind_label: label.into(),
+            original_id: r.original_id,
+            original_number: r.original_number,
+            reversal_id: r.reversal_id,
+            new_id: r.new_id,
+            new_number: r.new_number,
+            comment: r.comment,
+            diff,
+            user_name: r.user_name,
+            created_at: r.created_at,
+        });
+    }
+    Ok(out)
 }
 
 #[derive(Serialize)]
@@ -1932,22 +1960,18 @@ async fn list(
 ) -> AppResult<Json<Vec<CorrectionOut>>> {
     let kind = q.kind.as_deref().map(Kind::parse).transpose()?;
     let mut conn = state.pool.acquire().await?;
-    let ids = sqlx::query_scalar!(
-        r#"select id from doc_corrections
-           where branch_id = $1 and ($2::text is null or kind = $2)
-           order by created_at desc limit 500"#,
-        user.branch_id,
-        kind.map(Kind::as_str)
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(c) = load_correction(&mut conn, &user, Some(id), None, None).await? {
-            out.push(c);
-        }
-    }
-    Ok(Json(out))
+    Ok(Json(
+        load_corrections(
+            &mut conn,
+            &user,
+            None,
+            None,
+            None,
+            kind.map(Kind::as_str),
+            500,
+        )
+        .await?,
+    ))
 }
 
 #[cfg(test)]

@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with a as (\n             select s.credit_id, sum(s.amount_tyiyn)::bigint as amount,\n                    coalesce(sum(s.amount_tyiyn) filter (where s.amount_tyiyn > 0), 0)::bigint as gross\n             from supplier_allocations s where s.debit_id = $2\n             group by s.credit_id\n           )\n           select l.id, l.doc_type, l.amount_tyiyn, l.created_at, l.comment, u.full_name as user_name,\n                  (select a.name from cash_movements m join cash_accounts a on a.id = m.account_id\n                    where l.doc_type = 'repayment' and m.doc_type = 'repayment' and m.doc_id = l.doc_id\n                      and m.kind = 'supplier_payment'\n                    order by m.created_at limit 1) as \"account?\",\n                  supplier_ledger_live(l) as \"live!\",\n                  a.amount as \"applied!\", a.gross as \"gross!\"\n           from a\n           join party_ledger l on l.id = a.credit_id\n           join users u on u.id = l.user_id\n           where l.branch_id = $1 and l.amount_tyiyn > 0 and l.reversal_of is null\n             and l.doc_type in ('repayment', 'defect', 'adjust', 'supplier_return')\n           order by l.created_at desc, l.id desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "account?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "live!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "applied!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "gross!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "96cd4e59db924b12e7b6c165e10154f05cee80d1b0fb9a5fafeba348d409f53a"
+}

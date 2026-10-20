@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select c.id, c.kind, c.original_id, c.original_number, c.reversal_id, c.new_id, c.new_number,\n                  c.comment, c.diff, u.full_name as user_name, c.created_at\n           from doc_corrections c join users u on u.id = c.user_id\n           where c.branch_id = $1\n             and ($2::uuid is null or c.id = $2)\n             and ($3::uuid is null or c.original_id = $3)\n             and ($4::uuid is null or c.new_id = $4)\n             -- Исправления личных расходов владельца администратору не видны, как и сами\n             -- расходы (SPEC-06, ADR-088).\n             and ($5 or not (c.kind = 'expense' and exists (\n                   select 1 from expenses e join expense_articles a on a.id = e.article_id\n                   where e.id = c.original_id and a.owner_only)))\n           limit 1",
+  "query": "select c.id, c.kind, c.original_id, c.original_number, c.reversal_id, c.new_id, c.new_number,\n                  c.comment, c.diff, u.full_name as user_name, c.created_at\n           from (select * from doc_corrections d\n                 where d.branch_id = $1\n                   and ($2::uuid is null or d.id = $2)\n                   and ($3::uuid is null or d.original_id = $3)\n                   and ($4::uuid is null or d.new_id = $4)\n                   and ($6::text is null or d.kind = $6)\n                 order by d.created_at desc, d.id desc\n                 limit $7) c\n           join users u on u.id = c.user_id\n           -- Исправления личных расходов владельца администратору не видны, как и сами\n           -- расходы (SPEC-06, ADR-088).\n           where $5 or not (c.kind = 'expense' and exists (\n                   select 1 from expenses e join expense_articles a on a.id = e.article_id\n                   where e.id = c.original_id and a.owner_only))\n           order by c.created_at desc, c.id desc",
   "describe": {
     "columns": [
       {
@@ -65,7 +65,9 @@
         "Uuid",
         "Uuid",
         "Uuid",
-        "Bool"
+        "Bool",
+        "Text",
+        "Int8"
       ]
     },
     "nullable": [
@@ -82,5 +84,5 @@
       false
     ]
   },
-  "hash": "3399a78f357a1957cba88419863e41f6df106d9225a183fbac2d6a5e6775f8f0"
+  "hash": "4c87af9d96c7cfdcc7ec973d40f6d7dcc0e8be358f00f4d2adefb761ab5a061b"
 }

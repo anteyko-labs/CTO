@@ -1,5 +1,7 @@
 //! Оплата сотрудников: правила, начисления, выплаты (SPEC-07).
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -2179,6 +2181,18 @@ pub async fn staff_pay(
     from: NaiveDate,
     to: NaiveDate,
 ) -> AppResult<Vec<StaffPay>> {
+    staff_pay_with(conn, branch_id, from, to, &mut HashMap::new()).await
+}
+
+/// То же, что `staff_pay`; `owed` — уже посчитанный долг по работникам (он не зависит от
+/// периода): список смен считает долг каждого работника один раз, а не в каждой смене.
+pub async fn staff_pay_with(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+    owed: &mut HashMap<Uuid, i64>,
+) -> AppResult<Vec<StaffPay>> {
     let rows = sqlx::query!(
         r#"select e.id, e.full_name, a.kind,
                   (count(*) filter (where a.amount_tyiyn > 0) - count(*) filter (where a.amount_tyiyn < 0)) as "count!",
@@ -2217,21 +2231,30 @@ pub async fn staff_pay(
         }
     }
     for p in &mut out {
-        let r = sqlx::query!(
-            r#"select
-                 coalesce((select sum(amount_tyiyn) from payouts
-                           where employee_id = $1
-                             and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "paid!",
-                 (coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)
-                  - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0))::bigint as "owed!""#,
+        p.paid_tyiyn = sqlx::query_scalar!(
+            r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "paid!" from payouts
+               where employee_id = $1
+                 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
             p.employee_id,
             from,
             to
         )
         .fetch_one(&mut *conn)
         .await?;
-        p.paid_tyiyn = r.paid;
-        p.owed_tyiyn = r.owed;
+        p.owed_tyiyn = match owed.get(&p.employee_id) {
+            Some(v) => *v,
+            None => {
+                let v = sqlx::query_scalar!(
+                    r#"select (coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)
+                              - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0))::bigint as "owed!""#,
+                    p.employee_id
+                )
+                .fetch_one(&mut *conn)
+                .await?;
+                owed.insert(p.employee_id, v);
+                v
+            }
+        };
     }
     Ok(out)
 }

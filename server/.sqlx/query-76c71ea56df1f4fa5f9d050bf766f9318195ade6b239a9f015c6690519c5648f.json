@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, -l.amount_tyiyn as \"total!\",\n                  coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                            where s.debit_id = l.id), 0)::bigint as \"paid!\"\n           from party_ledger l\n           join receipts r on r.id = l.doc_id\n           where l.branch_id = $1 and l.doc_type = 'receipt' and l.doc_id = $2\n             and l.amount_tyiyn < 0 and supplier_ledger_live(l)\n           order by l.business_date, l.created_at, l.id\n           limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "total!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "paid!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "76c71ea56df1f4fa5f9d050bf766f9318195ade6b239a9f015c6690519c5648f"
+}

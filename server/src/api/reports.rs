@@ -493,39 +493,70 @@ pub(crate) async fn profit_data(
     let categories = categories_for(&mut *conn, branch_id, from, to).await?;
 
     let days = sqlx::query!(
-        r#"with d as (select generate_series($2::date, $3::date, interval '1 day')::date as day)
+        // Каждый источник — одна сводка по дням периода, а не запрос на каждый день (ADR-094).
+        r#"with d as (select generate_series($2::date, $3::date, interval '1 day')::date as day),
+           sl as (select s.business_date as day, sum(l.amount_tyiyn) as revenue,
+                         sum(l.amount_tyiyn - l.cost_tyiyn) as gross
+                  from sale_lines l join sales s on s.id = l.sale_id
+                  where s.branch_id = $1 and s.business_date between $2 and $3
+                  group by 1),
+           rv as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, sum(m.value_delta_tyiyn) as v
+                  from stock_movements m
+                  where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')
+                    and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                  group by 1),
+           pa as (select a.business_date as day, sum(a.amount_tyiyn) as v from payroll_accruals a
+                  where a.branch_id = $1 and a.business_date between $2 and $3
+                  group by 1),
+           ex as (select e.expense_date as day, sum(e.amount_tyiyn) as v from expenses e
+                  where e.branch_id = $1 and e.expense_date between $2 and $3
+                  group by 1),
+           sp as (select s.business_date as day, sum(p.fee_tyiyn) as fee,
+                         sum(p.amount_tyiyn) filter (where p.method = 'bonus') as bonus
+                  from sale_payments p join sales s on s.id = p.sale_id
+                  where s.branch_id = $1 and s.business_date between $2 and $3
+                  group by 1),
+           bf as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, -sum(m.amount_tyiyn) as v
+                  from cash_movements m
+                  where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
+                    and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                  group by 1),
+           cd as (select s.business_date as day, sum(m.amount_tyiyn) as v
+                  from cash_movements m join shifts s on s.id = m.doc_id
+                  where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
+                    and s.business_date between $2 and $3
+                  group by 1),
+           dr as (select (x.created_at at time zone 'Asia/Bishkek')::date as day,
+                         sum(x.writeoff_tyiyn) as writeoff, sum(x.diff_tyiyn) as diff
+                  from defect_resolutions x
+                  where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                  group by 1),
+           sr as (select (x.created_at at time zone 'Asia/Bishkek')::date as day, sum(x.diff_tyiyn) as v
+                  from supplier_returns x
+                  where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
+                  group by 1)
            select d.day as "day!",
-             coalesce((select sum(l.amount_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
-                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "revenue!",
-             (coalesce((select sum(l.amount_tyiyn - l.cost_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
-                        where s.branch_id = $1 and s.business_date = d.day), 0)
-              + coalesce((select sum(m.value_delta_tyiyn) from stock_movements m
-                          where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')
-                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "gross!",
-             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
-                       where a.branch_id = $1 and a.business_date = d.day), 0)::bigint as "payroll!",
-             coalesce((select sum(e.amount_tyiyn) from expenses e
-                       where e.branch_id = $1 and e.expense_date = d.day), 0)::bigint as "expenses!",
-             (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
-                        where s.branch_id = $1 and s.business_date = d.day), 0)
-              + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
-                          where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
-                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "fee!",
-             coalesce((select sum(p.amount_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
-                       where s.branch_id = $1 and s.business_date = d.day and p.method = 'bonus'), 0)::bigint as "bonus!",
-             coalesce((select sum(m.amount_tyiyn) from cash_movements m join shifts s on s.id = m.doc_id
-                       where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
-                         and s.business_date = d.day), 0)::bigint as "cash_diff!",
-             coalesce((select sum(x.writeoff_tyiyn) from defect_resolutions x
-                       where x.branch_id = $1
-                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_writeoff!",
-             coalesce((select sum(x.diff_tyiyn) from defect_resolutions x
-                       where x.branch_id = $1
-                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_diff!",
-             coalesce((select sum(x.diff_tyiyn) from supplier_returns x
-                       where x.branch_id = $1
-                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "return_diff!"
-           from d order by d.day desc"#,
+             coalesce(sl.revenue, 0)::bigint as "revenue!",
+             (coalesce(sl.gross, 0) + coalesce(rv.v, 0))::bigint as "gross!",
+             coalesce(pa.v, 0)::bigint as "payroll!",
+             coalesce(ex.v, 0)::bigint as "expenses!",
+             (coalesce(sp.fee, 0) + coalesce(bf.v, 0))::bigint as "fee!",
+             coalesce(sp.bonus, 0)::bigint as "bonus!",
+             coalesce(cd.v, 0)::bigint as "cash_diff!",
+             coalesce(dr.writeoff, 0)::bigint as "defect_writeoff!",
+             coalesce(dr.diff, 0)::bigint as "defect_diff!",
+             coalesce(sr.v, 0)::bigint as "return_diff!"
+           from d
+           left join sl on sl.day = d.day
+           left join rv on rv.day = d.day
+           left join pa on pa.day = d.day
+           left join ex on ex.day = d.day
+           left join sp on sp.day = d.day
+           left join bf on bf.day = d.day
+           left join cd on cd.day = d.day
+           left join dr on dr.day = d.day
+           left join sr on sr.day = d.day
+           order by d.day desc"#,
         branch_id,
         from,
         to
@@ -868,10 +899,18 @@ pub(crate) async fn dashboard_data(
     .fetch_optional(&mut *conn)
     .await?;
     let to_pay = sqlx::query_scalar!(
+        // Начислено и выплачено — по одной сводке на работника: выражение долга не повторяется
+        // в условии `b > 0` (ADR-094).
         r#"select coalesce(sum(b), 0)::bigint as "v!" from (
-             select coalesce((select sum(a.amount_tyiyn) from payroll_accruals a where a.employee_id = e.id), 0)
-                  - coalesce((select sum(p.amount_tyiyn) from payouts p where p.employee_id = e.id), 0) as b
-             from employees e where e.branch_id = $1
+             select coalesce(a.v, 0) - coalesce(p.v, 0) as b
+             from employees e
+             left join (select a.employee_id, sum(a.amount_tyiyn) as v
+                        from payroll_accruals a join employees x on x.id = a.employee_id
+                        where x.branch_id = $1 group by a.employee_id) a on a.employee_id = e.id
+             left join (select p.employee_id, sum(p.amount_tyiyn) as v
+                        from payouts p join employees x on x.id = p.employee_id
+                        where x.branch_id = $1 group by p.employee_id) p on p.employee_id = e.id
+             where e.branch_id = $1
            ) x where b > 0"#,
         branch_id
     )

@@ -1,5 +1,7 @@
 //! Кассы, движения наличных и смена (SPEC-05).
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -583,6 +585,16 @@ pub(crate) async fn load_shift(
     branch_id: Uuid,
     id: Uuid,
 ) -> AppResult<ShiftOut> {
+    load_shift_with(conn, branch_id, id, &mut HashMap::new()).await
+}
+
+/// Смена; `owed` — долг по работникам, общий для всех смен списка (см. `staff_pay_with`).
+async fn load_shift_with(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+    owed: &mut HashMap<Uuid, i64>,
+) -> AppResult<ShiftOut> {
     let h = sqlx::query!(
         r#"select s.id, s.number, s.business_date, s.account_id, a.name as account_name,
                   e.full_name as cashier_name, s.cashier_employee_id, u.full_name as opened_by, s.opened_at,
@@ -675,8 +687,14 @@ pub(crate) async fn load_shift(
         close.as_ref().map(|c| c.closed_at),
     )
     .await?;
-    let pay =
-        crate::api::payroll::staff_pay(conn, branch_id, h.business_date, h.business_date).await?;
+    let pay = crate::api::payroll::staff_pay_with(
+        conn,
+        branch_id,
+        h.business_date,
+        h.business_date,
+        owed,
+    )
+    .await?;
     Ok(ShiftOut {
         sales_count: checks.count,
         sales_total_tyiyn: checks.total,
@@ -797,8 +815,9 @@ pub(crate) async fn shifts_data(
     .fetch_all(&mut *conn)
     .await?;
     let mut out = Vec::with_capacity(ids.len());
+    let mut owed = HashMap::new();
     for id in ids {
-        out.push(load_shift(&mut *conn, user.branch_id, id).await?);
+        out.push(load_shift_with(&mut *conn, user.branch_id, id, &mut owed).await?);
     }
     Ok(out)
 }

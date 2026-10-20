@@ -162,38 +162,93 @@ pub async fn bank_split(
     since: Option<DateTime<Utc>>,
     until: Option<DateTime<Utc>>,
 ) -> AppResult<Vec<BankSplit>> {
-    let rows = sqlx::query!(
-        r#"select p.account_id as "account_id!", a.name,
-                  coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as "card!",
-                  coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
-                  coalesce(sum(p.fee_tyiyn), 0)::bigint as "fee!"
-           from sale_payments p
-           join sales s on s.id = p.sale_id
-           join cash_accounts a on a.id = p.account_id
-           where s.branch_id = $1 and p.method in ('card', 'transfer')
-             and ($2::date is null or s.business_date >= $2)
-             and ($3::date is null or s.business_date <= $3)
-             and ($4::timestamptz is null or s.created_at >= $4)
-             and ($4::timestamptz is null or s.created_at <= coalesce($5, now()))
-           group by p.account_id, a.name, a.default_card
-           order by a.default_card desc, a.name"#,
-        branch_id,
-        days.map(|d| d.0),
-        days.map(|d| d.1),
-        since,
-        until
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    // Два запроса без необязательных условий: от чеков дня или смены к их оплатам (индексы
+    // чеков по дню и по времени), а не перебор всех безналичных оплат (ADR-094).
+    let rows: Vec<(Uuid, String, i64, i64, i64)> = if let Some((from, to)) = days {
+        sqlx::query!(
+            r#"with x as materialized (
+                 select p.account_id,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
+                        coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
+                 from sales s
+                 join sale_payments p on p.sale_id = s.id
+                 where p.account_id is not null and s.branch_id = $1 and s.business_date between $2 and $3
+                 and p.method in ('card', 'transfer')
+                 group by p.account_id
+               )
+               select x.account_id as "account_id!", a.name, x.card as "card!",
+                      x.transfer as "transfer!", x.fee as "fee!"
+               from x join cash_accounts a on a.id = x.account_id
+               order by a.default_card desc, a.name"#,
+            branch_id,
+            from,
+            to
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.fee))
+        .collect()
+    } else if let Some(since) = since {
+        sqlx::query!(
+            r#"with x as materialized (
+                 select p.account_id,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
+                        coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
+                 from sales s
+                 join sale_payments p on p.sale_id = s.id
+                 where p.account_id is not null and s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+                 and p.method in ('card', 'transfer')
+                 group by p.account_id
+               )
+               select x.account_id as "account_id!", a.name, x.card as "card!",
+                      x.transfer as "transfer!", x.fee as "fee!"
+               from x join cash_accounts a on a.id = x.account_id
+               order by a.default_card desc, a.name"#,
+            branch_id,
+            since,
+            until
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.fee))
+        .collect()
+    } else {
+        sqlx::query!(
+            r#"with x as materialized (
+                 select p.account_id,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
+                        coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
+                 from sales s
+                 join sale_payments p on p.sale_id = s.id
+                 where p.account_id is not null and s.branch_id = $1 and p.method in ('card', 'transfer')
+                 group by p.account_id
+               )
+               select x.account_id as "account_id!", a.name, x.card as "card!",
+                      x.transfer as "transfer!", x.fee as "fee!"
+               from x join cash_accounts a on a.id = x.account_id
+               order by a.default_card desc, a.name"#,
+            branch_id
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.fee))
+        .collect()
+    };
     Ok(rows
         .into_iter()
-        .map(|r| BankSplit {
-            account_id: r.account_id,
-            name: r.name,
-            card_tyiyn: r.card,
-            transfer_tyiyn: r.transfer,
-            fee_tyiyn: r.fee,
-            total_tyiyn: r.card.saturating_add(r.transfer),
+        .map(|(account_id, name, card, transfer, fee)| BankSplit {
+            account_id,
+            name,
+            card_tyiyn: card,
+            transfer_tyiyn: transfer,
+            fee_tyiyn: fee,
+            total_tyiyn: card.saturating_add(transfer),
         })
         .collect())
 }
@@ -687,27 +742,47 @@ pub async fn receipts_sold(
     .collect();
     let inflows = crate::api::deliveries::inflows(&mut *conn, branch_id, &ids).await?;
 
+    // Продажи товара после прихода — одним запросом на все строки: сумма и единицы за вычетом
+    // возвратов и без подарков, влитые карточки — вместе с основной (ADR-070).
+    let roots: Vec<Uuid> = lines.iter().map(|l| l.product_id).collect();
+    let since: Vec<DateTime<Utc>> = lines.iter().map(|l| l.created_at).collect();
+    let sold_rows = sqlx::query!(
+        r#"with recursive fam (id, root, depth) as (
+             select p.id, p.id, 0 from products p where p.id = any($2)
+             union all
+             select p.id, fam.root, fam.depth + 1 from products p join fam on p.merged_into = fam.id
+             where fam.depth < 8
+           )
+           select x.i as "i!", coalesce(t.amount, 0)::bigint as "amount!",
+                  coalesce(t.units, 0)::bigint as "units!"
+           from unnest($2::uuid[], $3::timestamptz[]) with ordinality as x(root, since, i)
+           left join lateral (
+             select sum(l.amount_tyiyn) as amount,
+                    sum(case when s.kind = 'return' then -l.units else l.units end) as units
+             from fam
+             join sale_lines l on l.product_id = fam.id
+             join sales s on s.id = l.sale_id
+             where fam.root = x.root and s.branch_id = $1 and not l.gift
+               and s.created_at >= x.since
+           ) t on true"#,
+        branch_id,
+        &roots,
+        &since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let sold_of: HashMap<i64, (i64, i64)> = sold_rows
+        .into_iter()
+        .map(|r| (r.i, (r.amount, r.units)))
+        .collect();
+
     let mut out: Vec<ReceiptSold> = Vec::new();
-    for l in lines {
-        // Средняя цена продаж товара после прихода — за вычетом возвратов и без подарков.
-        let sold = sqlx::query!(
-            r#"with recursive fam (id, depth) as (
-                 select $2::uuid, 0
-                 union all
-                 select p.id, fam.depth + 1 from products p join fam on p.merged_into = fam.id
-                 where fam.depth < 8
-               )
-               select coalesce(sum(l.amount_tyiyn), 0)::bigint as "amount!",
-                      coalesce(sum(case when s.kind = 'return' then -l.units else l.units end), 0)::bigint as "units!"
-               from sale_lines l join sales s on s.id = l.sale_id
-               where s.branch_id = $1 and l.product_id in (select id from fam) and not l.gift
-                 and s.created_at >= $3"#,
-            branch_id,
-            l.product_id,
-            l.created_at
-        )
-        .fetch_one(&mut *conn)
-        .await?;
+    for (n, l) in lines.into_iter().enumerate() {
+        let (sold_amount, sold_units) = i64::try_from(n)
+            .ok()
+            .and_then(|n| sold_of.get(&(n + 1)))
+            .copied()
+            .unwrap_or((0, 0));
         let tagged: Vec<(bool, i64)> = inflows
             .get(&l.product_id)
             .map(|v| {
@@ -725,10 +800,10 @@ pub async fn receipts_sold(
         let left_cost =
             div_round(i128::from(l.cost) * i128::from(left_qty), i128::from(l.qty)).unwrap_or(0);
         let sold_cost = l.cost.saturating_sub(left_cost);
-        let revenue = if sold.units > 0 {
+        let revenue = if sold_units > 0 {
             div_round(
-                i128::from(sold.amount) * i128::from(sold_qty),
-                i128::from(sold.units),
+                i128::from(sold_amount) * i128::from(sold_qty),
+                i128::from(sold_units),
             )
             .unwrap_or(0)
         } else {

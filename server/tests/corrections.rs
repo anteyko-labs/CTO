@@ -262,6 +262,12 @@ impl World {
             let rows: Vec<(String, i64)> = sqlx::query_as(sql).fetch_all(&self.pool).await.unwrap();
             m.extend(rows);
         }
+        let today: chrono::NaiveDate =
+            sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap();
+        assert_profit_days_as_before(self, today - chrono::Duration::days(2), today).await;
         let profit = get(&self.app, "/api/v1/reports/profit", &self.owner).await;
         for key in [
             "goods_tyiyn",
@@ -293,6 +299,92 @@ impl World {
             .await
             .unwrap()
     }
+}
+
+/// Прежний расчёт прибыли по дням (до ADR-094): по запросу на каждый день и источник.
+const OLD_PROFIT_DAYS: &str = r#"with d as (select generate_series($2::date, $3::date, interval '1 day')::date as day)
+           select d.day as "day!",
+             coalesce((select sum(l.amount_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
+                       where s.branch_id = $1 and s.business_date = d.day), 0)::bigint as "revenue!",
+             (coalesce((select sum(l.amount_tyiyn - l.cost_tyiyn) from sale_lines l join sales s on s.id = l.sale_id
+                        where s.branch_id = $1 and s.business_date = d.day), 0)
+              + coalesce((select sum(m.value_delta_tyiyn) from stock_movements m
+                          where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')
+                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "gross!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.branch_id = $1 and a.business_date = d.day), 0)::bigint as "payroll!",
+             coalesce((select sum(e.amount_tyiyn) from expenses e
+                       where e.branch_id = $1 and e.expense_date = d.day), 0)::bigint as "expenses!",
+             (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                        where s.branch_id = $1 and s.business_date = d.day), 0)
+              + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
+                          where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
+                            and (m.created_at at time zone 'Asia/Bishkek')::date = d.day), 0))::bigint as "fee!",
+             coalesce((select sum(p.amount_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                       where s.branch_id = $1 and s.business_date = d.day and p.method = 'bonus'), 0)::bigint as "bonus!",
+             coalesce((select sum(m.amount_tyiyn) from cash_movements m join shifts s on s.id = m.doc_id
+                       where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
+                         and s.business_date = d.day), 0)::bigint as "cash_diff!",
+             coalesce((select sum(x.writeoff_tyiyn) from defect_resolutions x
+                       where x.branch_id = $1
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_writeoff!",
+             coalesce((select sum(x.diff_tyiyn) from defect_resolutions x
+                       where x.branch_id = $1
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "defect_diff!",
+             coalesce((select sum(x.diff_tyiyn) from supplier_returns x
+                       where x.branch_id = $1
+                         and (x.created_at at time zone 'Asia/Bishkek')::date = d.day), 0)::bigint as "return_diff!"
+           from d order by d.day desc"#;
+
+/// Прибыль по дням одной сводкой на источник даёт те же числа, что прежний расчёт по дням.
+async fn assert_profit_days_as_before(w: &World, from: chrono::NaiveDate, to: chrono::NaiveDate) {
+    let report = get(
+        &w.app,
+        &format!("/api/v1/reports/profit?from={from}&to={to}"),
+        &w.owner,
+    )
+    .await;
+    let branch: Uuid = sqlx::query_scalar("select id from branches")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    type Row = (
+        chrono::NaiveDate,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    );
+    let rows: Vec<Row> = sqlx::query_as(OLD_PROFIT_DAYS)
+        .bind(branch)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&w.pool)
+        .await
+        .unwrap();
+    let old: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let net = r.2 - r.3 - r.4 - r.5 - r.6 + r.7 - r.8 + r.9 + r.10;
+            json!({
+                "date": r.0, "revenue_tyiyn": r.1, "gross_tyiyn": r.2, "payroll_tyiyn": r.3,
+                "expenses_tyiyn": r.4, "fee_tyiyn": r.5, "bonus_tyiyn": r.6, "cash_diff_tyiyn": r.7,
+                "defect_writeoff_tyiyn": r.8, "defect_diff_tyiyn": r.9, "return_diff_tyiyn": r.10,
+                "net_tyiyn": net
+            })
+        })
+        .collect();
+    assert_eq!(
+        report["days"],
+        json!(old),
+        "прибыль по дням разошлась с прежним расчётом"
+    );
 }
 
 fn delta(a: &BTreeMap<String, i64>, b: &BTreeMap<String, i64>) -> BTreeMap<String, i64> {
@@ -1575,6 +1667,13 @@ async fn profit_report_warns_about_late_offline_salary_and_fee(pool: PgPool) {
     .await;
     let warnings = get(&w.app, &uri, &w.owner).await["warnings"].to_string();
     assert!(!warnings.contains("оклад за"), "{warnings}");
+    // Прибыль по дням с начала прошлого месяца: оклад, чек без сети за вчера, сегодняшние чеки.
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    assert_profit_days_as_before(&w, start, today).await;
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

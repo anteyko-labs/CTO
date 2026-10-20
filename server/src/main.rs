@@ -1,10 +1,11 @@
 //! Точка входа сервера: конфигурация, подключение к базе, миграции, первичная настройка, запуск HTTP.
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use avtodom_server::config::Config;
 use avtodom_server::{MIGRATOR, app, bootstrap, build_state};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -25,9 +26,14 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let config = Config::from_env()?;
+    // Запросы с необязательными условиями (`$1 is null or …`) — план под каждый вызов: общий
+    // план подготовленного запроса после пятого вызова читает таблицы целиком (ADR-094).
+    let options = PgConnectOptions::from_str(&config.database_url)
+        .map_err(|e| format!("адрес базы: {e}"))?
+        .options([("plan_cache_mode", "force_custom_plan")]);
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&config.database_url)
+        .connect_with(options)
         .await
         .map_err(|e| format!("нет подключения к базе: {e}"))?;
     MIGRATOR

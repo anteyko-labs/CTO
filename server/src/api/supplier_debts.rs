@@ -282,23 +282,14 @@ pub async fn supplier_invoices(
             if c.live {
                 advance = advance.saturating_add(c.open);
             }
-            let kind = match c.doc_type.as_str() {
-                "repayment" => "payment",
-                "defect" => "defect",
-                "supplier_return" => "return",
-                _ => "adjust",
-            };
+            let kind = credit_kind(&c.doc_type);
             PaymentOut {
                 ledger_id: c.id,
                 at: c.created_at,
                 user_name: c.user_name,
                 kind: kind.into(),
                 amount_tyiyn: c.amount_tyiyn,
-                source: match (kind, c.account) {
-                    ("payment", Some(a)) => a,
-                    ("payment", None) => "outside".into(),
-                    _ => String::new(),
-                },
+                source: credit_source(kind, c.account),
                 reversed: !c.live,
                 comment: c.comment,
                 applied: by_credit.remove(&c.id).unwrap_or_default(),
@@ -339,16 +330,41 @@ pub struct InvoicePayment {
     pub comment: String,
 }
 
-/// Оплата накладной: `None`, если она не в долг (оплачена сразу) или снята сторно.
+/// Вид закрывающей записи: оплата, зачёт брака, возврат поставщику или правка.
+fn credit_kind(doc_type: &str) -> &'static str {
+    match doc_type {
+        "repayment" => "payment",
+        "defect" => "defect",
+        "supplier_return" => "return",
+        _ => "adjust",
+    }
+}
+
+/// Откуда оплата: название кассы, «outside» — из своих; у зачётов и правок — пусто.
+fn credit_source(kind: &str, account: Option<String>) -> String {
+    match (kind, account) {
+        ("payment", Some(a)) => a,
+        ("payment", None) => "outside".into(),
+        _ => String::new(),
+    }
+}
+
+/// Оплата накладной: `None`, если она не в долг (оплачена сразу) или снята сторно. Читает только
+/// эту накладную и легшие на неё платежи, а не всю историю поставщика.
 pub async fn receipt_debt(
     conn: &mut PgConnection,
     branch_id: Uuid,
     receipt_id: Uuid,
 ) -> AppResult<Option<ReceiptDebt>> {
-    let Some(party_id) = sqlx::query_scalar!(
-        r#"select l.party_id from party_ledger l
+    let Some(inv) = sqlx::query!(
+        r#"select l.id, -l.amount_tyiyn as "total!",
+                  coalesce((select sum(s.amount_tyiyn) from supplier_allocations s
+                            where s.debit_id = l.id), 0)::bigint as "paid!"
+           from party_ledger l
+           join receipts r on r.id = l.doc_id
            where l.branch_id = $1 and l.doc_type = 'receipt' and l.doc_id = $2
              and l.amount_tyiyn < 0 and supplier_ledger_live(l)
+           order by l.business_date, l.created_at, l.id
            limit 1"#,
         branch_id,
         receipt_id
@@ -358,42 +374,56 @@ pub async fn receipt_debt(
     else {
         return Ok(None);
     };
-    let all = supplier_invoices(conn, branch_id, party_id).await?;
-    let Some(inv) = all
-        .invoices
-        .iter()
-        .find(|i| i.receipt_id == Some(receipt_id))
-    else {
-        return Ok(None);
-    };
-    let payments = all
-        .payments
-        .iter()
-        .filter_map(|p| {
-            let a = p.applied.iter().find(|a| a.ledger_id == inv.ledger_id)?;
-            let amount = if p.reversed {
-                a.gross_tyiyn
-            } else {
-                a.amount_tyiyn
-            };
+    let credits = sqlx::query!(
+        r#"with a as (
+             select s.credit_id, sum(s.amount_tyiyn)::bigint as amount,
+                    coalesce(sum(s.amount_tyiyn) filter (where s.amount_tyiyn > 0), 0)::bigint as gross
+             from supplier_allocations s where s.debit_id = $2
+             group by s.credit_id
+           )
+           select l.id, l.doc_type, l.amount_tyiyn, l.created_at, l.comment, u.full_name as user_name,
+                  (select a.name from cash_movements m join cash_accounts a on a.id = m.account_id
+                    where l.doc_type = 'repayment' and m.doc_type = 'repayment' and m.doc_id = l.doc_id
+                      and m.kind = 'supplier_payment'
+                    order by m.created_at limit 1) as "account?",
+                  supplier_ledger_live(l) as "live!",
+                  a.amount as "applied!", a.gross as "gross!"
+           from a
+           join party_ledger l on l.id = a.credit_id
+           join users u on u.id = l.user_id
+           where l.branch_id = $1 and l.amount_tyiyn > 0 and l.reversal_of is null
+             and l.doc_type in ('repayment', 'defect', 'adjust', 'supplier_return')
+           order by l.created_at desc, l.id desc"#,
+        branch_id,
+        inv.id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let payments = credits
+        .into_iter()
+        .filter_map(|c| {
+            let reversed = !c.live;
+            let amount = if reversed { c.gross } else { c.applied };
+            let kind = credit_kind(&c.doc_type);
             (amount > 0).then(|| InvoicePayment {
-                ledger_id: p.ledger_id,
-                at: p.at,
-                user_name: p.user_name.clone(),
-                kind: p.kind.clone(),
-                source: p.source.clone(),
+                ledger_id: c.id,
+                at: c.created_at,
+                user_name: c.user_name,
+                kind: kind.into(),
+                source: credit_source(kind, c.account),
                 amount_tyiyn: amount,
-                payment_tyiyn: p.amount_tyiyn,
-                reversed: p.reversed,
-                comment: p.comment.clone(),
+                payment_tyiyn: c.amount_tyiyn,
+                reversed,
+                comment: c.comment,
             })
         })
         .collect();
+    let left = inv.total.saturating_sub(inv.paid);
     Ok(Some(ReceiptDebt {
-        total_tyiyn: inv.total_tyiyn,
-        paid_tyiyn: inv.paid_tyiyn,
-        left_tyiyn: inv.left_tyiyn,
-        status: inv.status.clone(),
+        total_tyiyn: inv.total,
+        paid_tyiyn: inv.paid,
+        left_tyiyn: left,
+        status: status(inv.total, inv.paid).into(),
         payments,
     }))
 }

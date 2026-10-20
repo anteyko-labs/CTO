@@ -41,7 +41,14 @@ pub fn app(state: AppState, web_dir: Option<&Path>) -> Router {
     let api = api::routes()
         .fallback(any(|| async { StatusCode::NOT_FOUND }))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024))
-        .layer(axum::middleware::map_response(json_rejections));
+        .layer(axum::middleware::map_response(json_rejections))
+        // Ответы сжимаются, если клиент просит: снимок кассы и списки — сотни КБ, а владелец
+        // ходит через Tailscale мимо Caddy (ADR-094).
+        // Быстрое сжатие: снимок кассы ужимается в 6–7 раз, а время ответа почти не растёт.
+        .layer(
+            tower_http::compression::CompressionLayer::new()
+                .quality(tower_http::CompressionLevel::Fastest),
+        );
     let router = Router::new().nest("/api/v1", api);
     let router = match web_dir {
         Some(dir) => {

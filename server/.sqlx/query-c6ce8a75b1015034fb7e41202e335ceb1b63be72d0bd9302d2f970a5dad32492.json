@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)\n                              - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0))::bigint as \"owed!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owed!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c6ce8a75b1015034fb7e41202e335ceb1b63be72d0bd9302d2f970a5dad32492"
+}
