@@ -9966,3 +9966,67 @@ async fn old_catalog_extra_codes_and_zeros(pool: PgPool) {
     let hits = search("4589904921552").await;
     assert_eq!(hits[0]["linked_product_id"], p["id"]);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn list_summaries_cover_the_whole_selection(pool: PgPool) {
+    // Итоги «Расходов» и «Клиентов» — по всему отбору, а не по первой странице (проверка 20.10.2026).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let safe = owner_safe(&app, &owner).await;
+    let (_, _, articles) = call(&app, "GET", "/api/v1/expense-articles", Some(&owner), None).await;
+    let article = articles[0]["id"].clone();
+    for _ in 0..3 {
+        let (s, _, e) = call(
+            &app,
+            "POST",
+            "/api/v1/expenses",
+            Some(&owner),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "article_id": article, "amount_tyiyn": 10_000,
+                         "source": "account", "account_id": safe, "comment": "тест" }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{e}");
+    }
+    let (s, _, page) = call(&app, "GET", "/api/v1/expenses?limit=1", Some(&owner), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(page.as_array().map(Vec::len), Some(1));
+    let (_, _, sum) = call(&app, "GET", "/api/v1/expenses/summary", Some(&owner), None).await;
+    assert_eq!(
+        (sum["count"].clone(), sum["total_tyiyn"].clone()),
+        (json!(3), json!(30_000))
+    );
+
+    for (name, balance) in [("ОсОО А", 50_000), ("ОсОО Б", -20_000)] {
+        let (_, _, p) = call(
+            &app,
+            "POST",
+            "/api/v1/parties",
+            Some(&owner),
+            Some(json!({ "name": name, "kind": "company", "inn": format!("0123456789012{}", name.len() % 10) })),
+        )
+        .await;
+        let (s, _, _) = call(
+            &app,
+            "POST",
+            "/api/v1/debts/adjust",
+            Some(&owner),
+            Some(json!({ "op_id": Uuid::now_v7(), "party_id": p["id"], "amount_tyiyn": balance, "comment": "из тетради" })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let (_, _, sum) = call(
+        &app,
+        "GET",
+        "/api/v1/parties/summary?role=customer",
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (sum["owe_tyiyn"].clone(), sum["advance_tyiyn"].clone()),
+        (json!(50_000), json!(20_000))
+    );
+}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Pager, usePager } from '../components/Pager'
+import { Pager, usePagedLoad } from '../components/Pager'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
@@ -21,7 +21,10 @@ export default function Expenses() {
   const [form, setForm] = useState<ExpenseFields>({ article: '', sum: '', account: '', date: todayBishkek(), comment: '' })
   const articles = useLoad(() => get<ExpenseArticle[]>('/expense-articles'), [])
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
-  const list = useLoad(() => get<Expense[]>(`/expenses${qs({ from, to })}`), [from, to])
+  // Страницу режет сервер, итог за период — отдельным запросом по всему отбору (проверка
+  // 20.10.2026: раньше итог считался по первым 500 строкам).
+  const list = usePagedLoad<Expense>(`/expenses${qs({ from, to })}`, 'expenses')
+  const summary = useLoad(() => get<{ count: number; total_tyiyn: number }>(`/expenses/summary${qs({ from, to })}`), [from, to])
   // Отметки «исправлен → № N» / «исправление № M» — одним запросом на список.
   const corrections = useLoad(() => loadCorrections('expense'), [])
   const marks = correctionMarks(corrections.data ?? [])
@@ -35,9 +38,11 @@ export default function Expenses() {
     [Boolean(form.article), 'статью', '#expense-article'],
     [Boolean(form.sum.trim()), 'сумму', '#expense-sum'],
   )
-  // Итог — по всему периоду, поэтому список приходит целиком и режется на страницы здесь.
-  const total = (list.data ?? []).reduce((acc, e) => acc + e.amount_tyiyn, 0)
-  const pager = usePager(list.data ?? [], 'expenses', `${from}:${to}`)
+  const total = summary.data?.total_tyiyn ?? 0
+  const reload = () => {
+    list.reload()
+    summary.reload()
+  }
 
   const save = () =>
     void act.run(async () => {
@@ -54,7 +59,7 @@ export default function Expenses() {
       })
       setForm({ ...form, sum: '', comment: '' })
       setOpId(newOpId())
-      list.reload()
+      reload()
       accounts.reload()
       toast('Расход записан')
     })
@@ -63,7 +68,7 @@ export default function Expenses() {
     void act.run(async () => {
       if (!window.confirm(`Сторнировать расход № ${e.number} на ${formatSom(e.amount_tyiyn)}?`)) return
       await post(`/expenses/${e.id}/reverse`, { op_id: newOpId(), comment: '' })
-      list.reload()
+      reload()
       accounts.reload()
       toast('Сторно записано')
     })
@@ -116,11 +121,11 @@ export default function Expenses() {
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
-        ) : (list.data ?? []).length === 0 ? (
+        ) : list.items.length === 0 ? (
           <Empty>Расходов за период нет</Empty>
         ) : (
           <Table head={['№', 'День', 'Статья', 'Из кассы', 'Сумма', 'Комментарий', '']}>
-            {pager.shown.map((e) => (
+            {list.items.map((e) => (
               <tr key={e.id} className={e.reversal_of ? 'text-slate-400' : ''}>
                 <td className="px-2 py-2 font-medium">{e.number}</td>
                 <td className="whitespace-nowrap px-2 py-2">{e.expense_date}</td>
@@ -159,7 +164,7 @@ export default function Expenses() {
             ))}
           </Table>
         )}
-        <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы расходов" />
+        <Pager page={list.page} size={list.size} total={list.total} onPage={list.setPage} onSize={list.setSize} label="Страницы расходов" />
       </Card>
 
       {fixing && (
@@ -171,7 +176,7 @@ export default function Expenses() {
           onClose={() => setFixing(null)}
           onDone={() => {
             setFixing(null)
-            list.reload()
+            reload()
             accounts.reload()
             corrections.reload()
           }}

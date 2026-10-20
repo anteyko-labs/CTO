@@ -16,6 +16,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/parties", routing::get(list_parties).post(create_party))
+        .route("/parties/summary", routing::get(parties_summary))
         .route("/parties/{id}", routing::get(get_party).patch(update_party))
         .route("/parties/{id}/card", routing::get(party_card))
         .route("/debts/ledger/{id}/reverse", routing::post(reverse_ledger))
@@ -107,6 +108,27 @@ async fn list_parties(
     let mut conn = state.pool.acquire().await?;
     let (items, total) = page.slice(search_parties(&mut conn, user.branch_id, f).await?, 500);
     Ok(crate::api::paging::paged(items, total))
+}
+
+/// Итоги отбора «Клиентов»: должны нам и авансы — по всему отбору, а не по первой странице.
+async fn parties_summary(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(f): Query<ListQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let mut conn = state.pool.acquire().await?;
+    let rows = search_parties(&mut conn, user.branch_id, f).await?;
+    let owe: i64 = rows
+        .iter()
+        .filter(|p| p.balance_tyiyn > 0)
+        .fold(0i64, |a, p| a.saturating_add(p.balance_tyiyn));
+    let advance: i64 = rows
+        .iter()
+        .filter(|p| p.balance_tyiyn < 0)
+        .fold(0i64, |a, p| a.saturating_sub(p.balance_tyiyn));
+    Ok(Json(
+        json!({ "count": rows.len(), "owe_tyiyn": owe, "advance_tyiyn": advance }),
+    ))
 }
 
 /// Поиск контрагентов филиала с долгом и просрочкой — для экрана и для вопросов боту (SPEC-21).

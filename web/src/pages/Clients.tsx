@@ -1,9 +1,9 @@
 // Клиенты с живыми итогами «должны нам» и «авансы» (SPEC-10, ADR-028).
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { Icon } from '../components/icons'
-import { Pager, usePager } from '../components/Pager'
+import { Pager, usePagedLoad } from '../components/Pager'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table } from '../components/ui'
 import { get, post, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
@@ -24,22 +24,26 @@ export default function Clients() {
   const [adding, setAdding] = useState(false)
   const query = useDebounced(q.trim(), 250)
   const create = useAction()
-  const list = useLoad(
-    () => get<Party[]>(`/parties${qs({ role: 'customer', q: query, kind, only_debtors: onlyDebtors })}`),
-    [query, kind, onlyDebtors],
-  )
+  // Страницу режет сервер, итоги — отдельным запросом по всему отбору (проверка 20.10.2026:
+  // раньше «Должны нам» считалось по первым 500 клиентам).
+  const filter = qs({ role: 'customer', q: query, kind, only_debtors: onlyDebtors })
+  const list = usePagedLoad<Party>(`/parties${filter}`, 'clients')
+  const summary = useLoad(() => get<{ count: number; owe_tyiyn: number; advance_tyiyn: number }>(`/parties/summary${filter}`), [filter])
 
-  const { reload } = list
+  const reloadList = list.reload
+  const reloadSummary = summary.reload
+  const reload = useCallback(() => {
+    reloadList()
+    reloadSummary()
+  }, [reloadList, reloadSummary])
   useEffect(() => {
     const t = setInterval(reload, REFRESH_MS)
     return () => clearInterval(t)
   }, [reload])
 
-  const rows = list.data ?? []
-  const owe = rows.filter((p) => p.balance_tyiyn > 0).reduce((a, p) => a + p.balance_tyiyn, 0)
-  const advance = rows.filter((p) => p.balance_tyiyn < 0).reduce((a, p) => a - p.balance_tyiyn, 0)
-  // Итоги — по всему отбору, поэтому список приходит целиком; смена отбора — первая страница.
-  const pager = usePager(rows, 'clients', `${query}:${kind}:${onlyDebtors}`)
+  const owe = summary.data?.owe_tyiyn ?? 0
+  const advance = summary.data?.advance_tyiyn ?? 0
+  const pager = { ...list, shown: list.items }
   const company = form.kind === 'company'
   const notFilled = missingWithFocus(
     [!company || Boolean(form.name.trim()), 'название фирмы', '#new-client-name'],
@@ -104,7 +108,7 @@ export default function Clients() {
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
-        ) : rows.length === 0 ? (
+        ) : list.items.length === 0 ? (
           <Empty
             icon="clients"
             action={

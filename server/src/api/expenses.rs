@@ -22,6 +22,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/expense-articles/{id}", routing::patch(update_article))
         .route("/expenses", routing::get(list).post(post_expense))
+        .route("/expenses/summary", routing::get(summary))
         .route("/expenses/{id}/reverse", routing::post(reverse))
 }
 
@@ -244,6 +245,23 @@ async fn list(
     let mut conn = state.pool.acquire().await?;
     let (items, total) = page.slice(list_data(&mut conn, &user, q).await?, 500);
     Ok(crate::api::paging::paged(items, total))
+}
+
+/// Итог отбора «Расходов» — по всему периоду, а не по первой странице (проверка 20.10.2026).
+async fn summary(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<ListQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let mut conn = state.pool.acquire().await?;
+    let rows = list_data(&mut conn, &user, q).await?;
+    let total = rows
+        .iter()
+        .try_fold(0i64, |a, e| a.checked_add(e.amount_tyiyn))
+        .ok_or_else(crate::error::overflow)?;
+    Ok(Json(
+        serde_json::json!({ "count": rows.len(), "total_tyiyn": total }),
+    ))
 }
 
 /// Список расходов экрана «Расходы» — и для отчёта бота владельцу (SPEC-24).
