@@ -1215,6 +1215,41 @@ pub async fn party(
     // Телефон — только если искали по номеру (SPEC-21: чужие телефоны не передаются).
     let by_phone = query.chars().filter(char::is_ascii_digit).count() >= 5;
     match report {
+        "card" if p.role == "supplier" => {
+            // Поставщик — по акту сверки: накладные, оплаты, возвраты и брак названы как есть,
+            // знаки с его стороны (проверка 20.10.2026: правила клиента путали знаки и подписи).
+            let (from, to) = period.map_or((None, None), |(f, t)| (Some(f), Some(t)));
+            let r = crate::api::parties::reconciliation_data(conn, user.branch_id, p.id, from, to)
+                .await?;
+            let mut lines = vec![format!("{} (поставщик)", r.name)];
+            lines.push(format!("Баланс: {}", balance_text(r.closing_tyiyn)));
+            lines.push(format!(
+                "За {}: в пользу точки {}, в пользу поставщика {}",
+                period_label(r.from, r.to),
+                format_som(r.debit_total_tyiyn),
+                format_som(r.credit_total_tyiyn)
+            ));
+            lines.push("Последние записи:".into());
+            let items: Vec<String> = r
+                .rows
+                .iter()
+                .rev()
+                .take(15)
+                .map(|x| {
+                    let sum = if x.debit_tyiyn != 0 {
+                        format!("в пользу точки {}", format_som(x.debit_tyiyn))
+                    } else {
+                        format!("в пользу поставщика {}", format_som(x.credit_tyiyn))
+                    };
+                    format!("{} {}: {sum}", day(x.date), x.document)
+                })
+                .collect();
+            if items.is_empty() {
+                lines.push("записей нет".into());
+            }
+            lines.extend(items);
+            Ok(lines.join("\n"))
+        }
         "card" => {
             let (from, to) = period.map_or((None, None), |(f, t)| (Some(f), Some(t)));
             let c = crate::api::parties::party_card_data(conn, user, p.id, from, to).await?;
