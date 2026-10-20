@@ -560,7 +560,9 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     // Куда сдали и кассир (SPEC-29 §14); у прежних записей — «в сейф».
                     let to = text("to_name");
                     let cashier = text("cashier");
-                    let handed = if to.is_empty() {
+                    let handed = if num("to_safe") == Some(0) {
+                        "кассу не сдавали".to_string()
+                    } else if to.is_empty() {
                         format!("в сейф {}", money(num("to_safe")))
                     } else {
                         format!("сдали кассу: {} → {to}", money(num("to_safe")))

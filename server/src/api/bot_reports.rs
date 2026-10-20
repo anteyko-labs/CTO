@@ -474,7 +474,7 @@ pub async fn money(
                                 format_som(c),
                                 format_som_signed(d),
                                 s.to_safe_tyiyn
-                                    .map(|v| format!(", в сейф {}", format_som(v)))
+                                    .map(|v| format!(", сдали {}", format_som(v)))
                                     .unwrap_or_default()
                             ),
                             _ => format!(
@@ -560,7 +560,7 @@ pub async fn money(
                     ));
                     match (s.to_safe_tyiyn, s.left_tyiyn) {
                         (Some(safe), Some(left)) => lines.push(format!(
-                            "В сейф {}, оставлено на размен {}",
+                            "Сдали {}, оставлено на размен {}",
                             format_som(safe),
                             format_som(left)
                         )),
@@ -1344,10 +1344,7 @@ pub async fn party(
                             format_som(r.amount_tyiyn)
                         );
                         if r.returned_qty != 0 {
-                            t.push_str(&format!(
-                                ", вернули браком {}",
-                                qty_text(r.returned_qty, &r.unit)
-                            ));
+                            t.push_str(&format!(", вернули {}", qty_text(r.returned_qty, &r.unit)));
                         }
                         if let (Some(price), Some(at)) = (r.last_price_tyiyn, r.last_at) {
                             t.push_str(&format!(

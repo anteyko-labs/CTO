@@ -1164,6 +1164,9 @@ pub(crate) async fn reconciliation_data(
             ("receipt_reversal", _) => format!("Сторно накладной{}", num(r.receipt_number)),
             // Возврат брака со скидкой на следующий приход (SPEC-25).
             ("defect", _) => "Возврат брака поставщику".to_string(),
+            // Возврат товара поставщику — не брак (SPEC-29 §9).
+            ("supplier_return", _) => "Возврат товара поставщику".to_string(),
+            ("supplier_return_reversal", _) => "Сторно возврата поставщику".to_string(),
             ("defect_reversal", _) => "Отмена возврата брака".to_string(),
             (_, "repayment") => match r.paid_via.as_deref() {
                 Some("register") => "Оплата наличными".to_string(),

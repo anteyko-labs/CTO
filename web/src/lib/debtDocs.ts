@@ -146,8 +146,11 @@ export const PLACEHOLDERS: [string, string][] = [
   ['машина', 'госномер'],
   ['чек', 'номер чека'],
   ['товары', 'таблица: наименование, количество, цена, сумма'],
+  ['итого', 'сумма всего чека'],
+  ['итого_словами', 'сумма чека прописью'],
+  ['из_них', '«, из них оплачено сразу …, в долг …» — если часть оплачена'],
   ['сумма', 'сумма в долг'],
-  ['сумма_словами', 'сумма прописью'],
+  ['сумма_словами', 'сумма в долг прописью'],
   ['срок_оплаты', 'дата, до которой платить'],
   ['история_долга', 'таблица прежних долгов и оплат с момента, когда долг был закрыт'],
   ['долг_до', 'сколько был должен до этой покупки'],
@@ -172,7 +175,7 @@ export const DEFAULT_PERSON = `РАСПИСКА
 
 {{товары}}
 
-на общую сумму {{сумма}} ({{сумма_словами}}).
+на общую сумму {{итого}} ({{итого_словами}}){{из_них}}.
 
 Ранее полученное в долг и оплаты:
 {{история_долга}}
@@ -201,7 +204,7 @@ export const DEFAULT_COMPANY = `НАКЛАДНАЯ № {{чек}} от {{дат�
 
 {{товары}}
 
-Всего отпущено на сумму {{сумма}} ({{сумма_словами}}).
+Всего отпущено на сумму {{итого}} ({{итого_словами}}){{из_них}}.
 
 Ранее отпущено с отсрочкой оплаты и оплачено:
 {{история_долга}}
@@ -218,12 +221,14 @@ export const DEFAULT_COMPANY = `НАКЛАДНАЯ № {{чек}} от {{дат�
 // ---------- Печать ----------
 
 const A4_STYLE = `
-  @page { size: A4; margin: 15mm; }
-  body { font-family: 'Times New Roman', serif; font-size: 11pt; color: #000; margin: 0; }
-  .doc { white-space: pre-wrap; line-height: 1.45; }
+  @page { size: A4; margin: 12mm 15mm; }
+  body { font-family: 'Times New Roman', serif; font-size: 10.5pt; color: #000; margin: 0; }
+  /* Расписка с историей долга должна помещаться на лист вместе с подписями (проверка 20.10.2026). */
+  .doc { white-space: pre-wrap; line-height: 1.3; }
+  .copy { break-inside: avoid-page; }
   .copy + .copy { page-break-before: always; }
   table { border-collapse: collapse; width: 100%; margin: 2mm 0; white-space: normal; }
-  th, td { border: 1px solid #000; padding: 1mm 1.5mm; font-size: 10pt; vertical-align: top; }
+  th, td { border: 1px solid #000; padding: 0.6mm 1.5mm; font-size: 9.5pt; vertical-align: top; }
   th { background: #f2f2f2; }
   .r { text-align: right; white-space: nowrap; }
   .c { text-align: center; }
@@ -348,6 +353,10 @@ export function printDebtDoc({ sale, party, settings, history }: DebtDocInput): 
     чек: String(sale.number),
     сумма: formatSomExact(debt),
     сумма_словами: somInWords(debt),
+    // Чек целиком и часть, оплаченная сразу (проверка 20.10.2026): «на общую сумму» — весь товар.
+    итого: formatSomExact(sale.total_tyiyn),
+    итого_словами: somInWords(sale.total_tyiyn),
+    из_них: sale.total_tyiyn > debt ? `, из них оплачено сразу ${formatSomExact(sale.total_tyiyn - debt)}, в долг ${formatSomExact(debt)}` : '',
     срок_оплаты: party.due_days ? dateRu(addDays(saleDate, party.due_days)) : '',
     баланс: after === null ? '' : formatSomExact(after),
     баланс_словами: after === null ? '' : somInWords(after),

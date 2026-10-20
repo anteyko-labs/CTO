@@ -1330,10 +1330,15 @@ pub async fn update_prices_tx(
         .await?;
     // Розлив за литр у масла меняется вместе с ценой канистры — владелец видит оба числа.
     let pour = |sale: i64| pour_price_per_l(&product.unit, product.container_ml, sale);
+    // Цена не менялась (правили только минимальный остаток) — запись в журнале без уведомления
+    // «Изменена цена» (SPEC-13, проверка 20.10.2026).
+    let price_changed = req
+        .sale_price_tyiyn
+        .is_some_and(|v| v != old.sale_price_tyiyn);
     ops::audit(
         &mut *conn,
         ctx,
-        "product.prices",
+        if price_changed { "product.prices" } else { "product.min_stock" },
         "product",
         Some(id),
         json!({

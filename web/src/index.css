@@ -137,6 +137,23 @@
   body {
     background: white;
   }
+  /* Отчёт на A4: широкие таблицы (прибыль по дням — 10 колонок) не режутся по краю листа, а
+     ужимаются шрифтом и переносом (проверка 20.10.2026). */
+  .overflow-x-auto {
+    overflow: visible !important;
+  }
+  table.responsive {
+    font-size: 8pt !important;
+  }
+  table.responsive th,
+  table.responsive td {
+    padding: 2px 3px !important;
+    white-space: normal !important;
+  }
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
 }
 
 /* Таблицы на телефоне: строки карточками, подписи из data-label (компонент Table). */

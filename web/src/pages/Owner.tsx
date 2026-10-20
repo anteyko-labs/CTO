@@ -528,7 +528,9 @@ function CalcRow({
       {signed ? (
         <span className={`whitespace-nowrap tabular-nums ${value < 0 ? 'text-rose-700' : ''}`}>{reportSigned(value)}</span>
       ) : minus ? (
-        <span className="whitespace-nowrap tabular-nums">{value === 0 ? formatSom(0) : `− ${formatSom(value)}`}</span>
+        // Вычитаемое меньше нуля (удержанная недостача в оплате труда, переоценка вверх) — это
+        // прибавка: «+ 10 605,20 с», а не «− −10 605,20 с» (проверка 20.10.2026).
+        <span className="whitespace-nowrap tabular-nums">{value === 0 ? formatSom(0) : value < 0 ? `+ ${formatSom(-value)}` : `− ${formatSom(value)}`}</span>
       ) : (
         <Money value={value} tone="negative" />
       )}
@@ -606,7 +608,10 @@ export default function Profit() {
             <div className="text-sm">
               <CalcRow label="Выручка за товары" value={t.goods_tyiyn} />
               <CalcRow label="Выручка за работы" value={t.services_tyiyn} />
-              <CalcRow label="Себестоимость проданного" value={t.cost_tyiyn} minus />
+              {/* Себестоимость проданного — как в категориях и на графике; переоценка остатков
+                  (ревизия, сторно закупок) — отдельной строкой (проверка 20.10.2026). */}
+              <CalcRow label="Себестоимость проданного" value={t.cost_tyiyn - (t.revaluation_tyiyn ?? 0)} minus />
+              {(t.revaluation_tyiyn ?? 0) !== 0 && <CalcRow label="Переоценка остатков" value={t.revaluation_tyiyn ?? 0} minus />}
               <CalcRow label="Валовая прибыль" value={t.gross_tyiyn} total />
               <CalcRow label="Оплата труда" value={t.payroll_tyiyn} minus />
               <CalcRow label="Комиссия банка" value={t.bank_fee_tyiyn} minus />

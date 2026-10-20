@@ -2399,9 +2399,17 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
         "shift.handover" => {
             let to = txt("to_name");
             let cashier = txt("cashier");
+            // «Деньги остались в кассе» — ничего не сдавали (проверка 20.10.2026).
+            let nothing = data.get("to_safe").and_then(Value::as_i64) == Some(0);
             (
-                format!("📥 Касса смены № {} сдана", num("number")),
-                if to.is_empty() {
+                if nothing {
+                    format!("📥 Смена № {}: деньги остались в кассе", num("number"))
+                } else {
+                    format!("📥 Касса смены № {} сдана", num("number"))
+                },
+                if nothing {
+                    format!("в кассе осталось {}", money_of(data, "left"))
+                } else if to.is_empty() {
                     format!(
                         "в сейф {}, в кассе осталось {}",
                         money_of(data, "to_safe"),

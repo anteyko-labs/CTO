@@ -627,6 +627,8 @@ export interface ProfitTotals {
   goods_tyiyn: number
   services_tyiyn: number
   cost_tyiyn: number
+  /** В том числе переоценка остатков (ревизия, сторно закупок). */
+  revaluation_tyiyn?: number
   gross_tyiyn: number
   payroll_tyiyn: number
   /** В том числе оклады за месяц — расшифровка оплаты труда. */

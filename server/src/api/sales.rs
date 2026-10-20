@@ -245,7 +245,8 @@ pub async fn load_sale(
     let lines = sqlx::query!(
         r#"select l.line_no, l.kind, l.product_id, l.service_id,
                   -- Полярность аккумулятора — в названии строки: «(Л)» прямая, «(П)» обратная (SPEC-27).
-                  coalesce(p.name || case p.attrs ->> 'polarity' when 'прямая' then ' (Л)'
+                  coalesce(l.name,
+                           p.name || case p.attrs ->> 'polarity' when 'прямая' then ' (Л)'
                                                                 when 'обратная' then ' (П)' else '' end,
                            sv.name) as "name!",
                   p.container_ml as "container_ml?",
@@ -601,8 +602,15 @@ async fn insert_line(
     sqlx::query!(
         r#"insert into sale_lines (id, sale_id, line_no, kind, product_id, service_id, qty, units,
                                    unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn, master_fee_tyiyn,
-                                   gift, cost_unknown)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
+                                   gift, cost_unknown, name)
+           select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                  -- Название на момент продажи: печать позже покажет то, что продали.
+                  coalesce(p.name || case p.attrs ->> 'polarity' when 'прямая' then ' (Л)'
+                                                                when 'обратная' then ' (П)' else '' end,
+                           sv.name)
+           from (select 1) x
+           left join products p on p.id = $5
+           left join services sv on sv.id = $6"#,
         new_id(),
         sale_id,
         line_no,

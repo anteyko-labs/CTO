@@ -26,6 +26,10 @@ pub struct Totals {
     pub goods_tyiyn: i64,
     pub services_tyiyn: i64,
     pub cost_tyiyn: i64,
+    /// В том числе переоценка остатков (ревизия, сторно закупок, ADR-044, ADR-087) — отдельной
+    /// строкой, чтобы себестоимость проданного сходилась с категориями и графиком.
+    #[serde(default)]
+    pub revaluation_tyiyn: i64,
     pub gross_tyiyn: i64,
     pub payroll_tyiyn: i64,
     /// В том числе оклады за месяц (начисления вида `monthly_salary`) — расшифровка строки
@@ -272,6 +276,7 @@ pub async fn totals_for(
         goods_tyiyn: lines.goods,
         services_tyiyn: lines.services,
         cost_tyiyn: cost,
+        revaluation_tyiyn: revaluation,
         gross_tyiyn: gross,
         payroll_tyiyn: payroll,
         salary_tyiyn: pay.salary,
