@@ -79,11 +79,22 @@ export async function readXlsx(file: Blob): Promise<string[][]> {
       const value =
         t === 's' ? (shared[Number(v)] ?? '') : t === 'inlineStr' ? Array.from(c.getElementsByTagName('t')).map((x) => x.textContent ?? '').join('') : v
       while (row.length < i) row.push('')
-      row[i] = value.trim()
+      row[i] = cellText(value)
     }
     if (row.some((x) => x !== '')) rows.push(row)
   }
   return rows
+}
+
+/** Текст ячейки: служебные «_x000d_» Excel раскрываются, переводы строк и прочие управляющие
+ *  знаки — пробелом, лишние пробелы убираются (иначе они попадали в название товара). */
+export function cellText(v: string): string {
+  return v
+    .replace(/_x([0-9A-Fa-f]{4})_/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** Сумма из Excel («150.813», «1 200,5») в тыйынах, округление до тыйына целыми. */
@@ -96,9 +107,11 @@ export function somToTyiyn(text: string): number {
   return Number.isSafeInteger(cents) ? cents : 0
 }
 
-/** Объём тары из названия масла: «AZMOL 5W40 4Л» → 4000 мл, «200L» → 200 000, «0,946L» → 946. */
+/** Объём тары из названия масла: «AZMOL 5W40 4Л» → 4000 мл, «200L» → 200 000, «0,946L» → 946.
+ *  Число сразу после буквы — часть вязкости («5W30 L» — не 30 л); из нескольких — последнее. */
 export function containerFromName(name: string): number | null {
-  const m = /(\d+(?:[.,]\d+)?)\s*(?:L|Л|l|л|LT|lt|литр)(?![a-zа-я])/i.exec(name)
+  const all = [...name.matchAll(/(?<![\p{L}\d.,])(\d+(?:[.,]\d+)?)\s*(?:L|Л|l|л|LT|lt|литр)(?![a-zа-я])/giu)]
+  const m = all[all.length - 1]
   if (!m) return null
   const [whole, frac = ''] = m[1].replace(',', '.').split('.')
   const ml = Number(whole) * 1000 + Number(frac.padEnd(3, '0').slice(0, 3))

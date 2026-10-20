@@ -32,13 +32,16 @@ export function presetFromHit(h: OldCatalogHit, categories: Category[], sticky =
   const known = categories.some((c) => c.id === sticky) ? sticky : ''
   const categoryId = liter ? oilCat || known : byName || known
   const per = (v: number) => (ml ? (divRound(v * ml, 1000) ?? 0) : v)
+  // Масло за литр без объёма в названии: цена литра — не цена канистры; поля пустые, пока не
+  // вписан объём (проверка 20.10.2026).
+  const unknownTare = liter && !ml
   return {
     name: h.name,
     barcode: scanned || h.barcode,
     article: h.article,
     categoryId,
     liters: ml ? litersInput(ml) : '',
-    price: h.price_tyiyn ? somInput(per(h.price_tyiyn)) : '',
-    cost: h.cost_tyiyn ? somInput(per(h.cost_tyiyn)) : '',
+    price: h.price_tyiyn && !unknownTare ? somInput(per(h.price_tyiyn)) : '',
+    cost: h.cost_tyiyn && !unknownTare ? somInput(per(h.cost_tyiyn)) : '',
   }
 }

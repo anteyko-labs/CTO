@@ -1076,6 +1076,29 @@ pub async fn create_product_tx(
         // Товара без штрихкода не бывает: заводского кода нет — выдаём свой.
         let code = next_internal_code(&mut *tx).await?;
         insert_barcode(&mut *tx, id, &code, true).await?;
+    } else {
+        // Позиция списка старой программы с этим кодом: её остальные коды (основной и «доп.
+        // код» — заводской EAN канистры) тоже становятся кодами товара, если не заняты, — иначе
+        // касса не найдёт товар по коду с упаковки (проверка 20.10.2026).
+        let extra = sqlx::query_scalar!(
+            r#"select distinct c as "c!" from old_catalog o,
+                 unnest(array[o.barcode] || regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+')) c
+               where o.branch_id = $1 and c <> ''
+                 and exists (select 1 from product_barcodes b
+                             where b.product_id = $2
+                               and (b.code = o.barcode
+                                    or b.code = any(regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+'))))
+                 and not exists (select 1 from product_barcodes x where x.code = c)"#,
+            ctx.user.branch_id,
+            id
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for code in extra {
+            if barcode::is_acceptable(&code) {
+                insert_barcode(&mut *tx, id, &code, false).await?;
+            }
+        }
     }
     ops::audit(
         &mut *tx,

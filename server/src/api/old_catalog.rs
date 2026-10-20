@@ -166,11 +166,22 @@ async fn search(
     }
     let rows = sqlx::query!(
         r#"select o.id, o.name, o.barcode, o.article, o.cost_tyiyn, o.price_tyiyn, o.unit, o.supplier, o.category,
-                  ($2 <> '' and (o.barcode = $2 or o.article = $2 or o.extra_code = $2)) as "exact!",
-                  (select b.product_id from product_barcodes b where b.code = o.barcode and o.barcode <> '' limit 1) as linked
+                  -- Код совпал: основной, артикул, любой из «доп. кодов» через «;» или «,», или
+                  -- тот же числовой код без потерянных Excel нулей впереди (проверка 20.10.2026).
+                  ($2 <> '' and (o.barcode = $2 or o.article = $2
+                                 or $2 = any(regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+'))
+                                 or (o.barcode ~ '^[0-9]+$' and $2 ~ '^[0-9]+$'
+                                     and ltrim(o.barcode, '0') = ltrim($2, '0')))) as "exact!",
+                  -- Уже заведена: любой её код есть у товара учёта — не открывать как новую.
+                  (select b.product_id from product_barcodes b
+                   where b.code = any(array[o.barcode] || regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+'))
+                     and b.code <> '' limit 1) as linked
            from old_catalog o
            where o.branch_id = $1
-             and (($2 <> '' and (o.barcode = $2 or o.article = $2 or o.extra_code = $2))
+             and (($2 <> '' and (o.barcode = $2 or o.article = $2
+                                 or $2 = any(regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+'))
+                                 or (o.barcode ~ '^[0-9]+$' and $2 ~ '^[0-9]+$'
+                                     and ltrim(o.barcode, '0') = ltrim($2, '0'))))
                   or ($3 <> '' and (o.name ilike '%' || $3 || '%' or similarity(o.name, $3) >= 0.25
                                     or o.article ilike $3 || '%')))
            order by "exact!" desc, similarity(o.name, $3) desc, o.name

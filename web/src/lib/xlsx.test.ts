@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { columnIndex, containerFromName, somToTyiyn } from './xlsx'
+import { cellText, columnIndex, containerFromName, somToTyiyn } from './xlsx'
 
 describe('Excel из старой программы', () => {
   it('столбцы', () => {
@@ -21,5 +21,12 @@ describe('Excel из старой программы', () => {
     expect(containerFromName('ЛУКОИЛ 10W40 205Л')).toBe(205000)
     expect(containerFromName('MOBIL 0,946L')).toBe(946)
     expect(containerFromName('WD 40')).toBeNull()
+    // Число после буквы — вязкость, а не объём.
+    expect(containerFromName('ROLF 5W30 L МЕТАЛ 4Л')).toBe(4000)
+    expect(containerFromName('Shell 5W-30 1 л')).toBe(1000)
+  })
+  it('текст ячейки без служебных знаков Excel', () => {
+    expect(cellText('ТОТАЧИ_x000d_\n 5W30  ')).toBe('ТОТАЧИ 5W30')
+    expect(cellText('  Фильтр\tC-110 ')).toBe('Фильтр C-110')
   })
 })

@@ -9897,3 +9897,72 @@ async fn refunds_fees_and_forgiveness_reverse_exactly(pool: PgPool) {
     // 240 с = 4,80 с (без отмены — 0).
     assert_eq!(percent().await - start, 480);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn old_catalog_extra_codes_and_zeros(pool: PgPool) {
+    // Настоящая выгрузка (проверка 20.10.2026): «Доп. код» через «;», нули впереди потеряны;
+    // карточка из позиции получает и заводской код; заведённая позиция не открывается как новая.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let rows = json!([
+        { "name": "TOTACHI 5W30 4Л", "barcode": "2110000043070", "extra_code": "4589904921551; 4589904921552", "unit": "литр" },
+        { "name": "Фильтр C-110", "barcode": "123456789012", "unit": "шт" }
+    ]);
+    let (s, _, _) = call(&app, "PUT", "/api/v1/old-catalog", Some(&owner), Some(rows)).await;
+    assert_eq!(s, StatusCode::OK);
+    let search = |code: &'static str| {
+        let app = app.clone();
+        let owner = owner.clone();
+        async move {
+            let (_, _, hits) = call(
+                &app,
+                "GET",
+                &format!("/api/v1/old-catalog/search?barcode={code}"),
+                Some(&owner),
+                None,
+            )
+            .await;
+            hits
+        }
+    };
+    let hits = search("4589904921552").await;
+    assert_eq!(
+        (hits[0]["exact"].clone(), hits[0]["name"].clone()),
+        (json!(true), json!("TOTACHI 5W30 4Л"))
+    );
+    // Код с упаковки с нулём впереди находит позицию, у которой Excel ноль потерял.
+    let hits = search("0123456789012").await;
+    assert_eq!(hits[0]["exact"], json!(true));
+    // Карточка по основному коду позиции получает и её «доп. коды».
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Масла", "kind": "oil" })),
+    )
+    .await;
+    let (s, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Totachi 5W30",
+                     "container_ml": 4000, "sale_price_tyiyn": 200_000, "barcodes": ["2110000043070"] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let (s, _, found) = call(
+        &app,
+        "GET",
+        "/api/v1/products/by-barcode/4589904921551",
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(found["id"], p["id"]);
+    // Уже заведена — скан любого её кода показывает связь, а не «новый товар».
+    let hits = search("4589904921552").await;
+    assert_eq!(hits[0]["linked_product_id"], p["id"]);
+}
