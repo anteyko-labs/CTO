@@ -198,6 +198,12 @@ export function RepaymentModal({
               {!fixId && value !== null && value > 0 && (
                 <div className="text-sm text-slate-600" data-testid="repay-after">
                   После оплаты долг: <span className="font-semibold tabular-nums">{formatSom(Math.max(0, debt - value))}</span>
+                  {/* Переплата видна суммой: она станет авансом (проверка 20.10.2026). */}
+                  {value > debt && debt >= 0 && (
+                    <span className="ml-1 text-amber-700">
+                      · переплата {formatSom(value - debt)} — {supplier ? 'наш аванс поставщику' : 'аванс клиента'}
+                    </span>
+                  )}
                 </div>
               )}
               <div className="text-sm font-medium text-slate-700">Способ оплаты</div>

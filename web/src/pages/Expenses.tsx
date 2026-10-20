@@ -5,7 +5,7 @@ import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '..
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatSom, parseSom, todayBishkek } from '../lib/format'
+import { formatDate, formatDateTime, formatSom, parseSom, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { CashAccount, Expense, ExpenseArticle } from '../lib/types'
@@ -128,7 +128,7 @@ export default function Expenses() {
             {list.items.map((e) => (
               <tr key={e.id} className={e.reversal_of ? 'text-slate-400' : ''}>
                 <td className="px-2 py-2 font-medium">{e.number}</td>
-                <td className="whitespace-nowrap px-2 py-2">{e.expense_date}</td>
+                <td className="whitespace-nowrap px-2 py-2">{formatDate(e.expense_date)}</td>
                 <td className="px-2 py-2">
                   {e.article_name}
                   {e.reversal_of && (

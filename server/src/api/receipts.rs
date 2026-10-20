@@ -951,7 +951,7 @@ pub async fn reverse_receipt_tx(
         KIND,
         "receipt",
         Some(rid),
-        json!({ "original": id, "number": number }),
+        json!({ "original": id, "number": orig.number, "reversal_number": number }),
     )
     .await?;
     if !negative.is_empty() {

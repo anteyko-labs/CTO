@@ -104,12 +104,12 @@ function Side({
                         <div className="font-medium">{p.name}</div>
                       ) : (
                         <div className="font-medium text-slate-500">
-                          Без имени{p.inn ? ` · ИНН ${p.inn}` : p.phone ? ` · ${p.phone}` : ''}
+                          Без имени{p.inn ? ` · ${p.kind === 'company' ? 'ИНН' : 'ПИН'} ${p.inn}` : p.phone ? ` · ${p.phone}` : ''}
                         </div>
                       )}
                       <div className="text-xs text-slate-500">
                         {p.kind === 'company' ? 'Юрлицо' : 'Физлицо'}
-                        {p.inn && named(p) && ` · ИНН ${p.inn}`}
+                        {p.inn && named(p) && ` · ${p.kind === 'company' ? 'ИНН' : 'ПИН'} ${p.inn}`}
                       </div>
                     </td>
                     <td className="whitespace-nowrap px-2 py-2" data-label="Телефон">

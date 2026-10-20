@@ -94,3 +94,27 @@ mod tests {
         assert_eq!(stock_text(9000, "ml", Some(4500)), "9 л = 2 кан. по 4,5 л");
     }
 }
+
+/// Слово при числе: «1 чек», «2 чека», «5 чеков» (11–14 — «чеков»).
+pub fn plural(n: i64, one: &'static str, few: &'static str, many: &'static str) -> &'static str {
+    let n = n.unsigned_abs();
+    match (n % 10, n % 100) {
+        (1, x) if x != 11 => one,
+        (2..=4, x) if !(12..=14).contains(&x) => few,
+        _ => many,
+    }
+}
+
+#[cfg(test)]
+mod plural_tests {
+    use super::plural;
+
+    #[test]
+    fn words_agree_with_numbers() {
+        let w = |n| plural(n, "чек", "чека", "чеков");
+        assert_eq!(
+            [w(1), w(2), w(5), w(11), w(21), w(22), w(112)],
+            ["чек", "чека", "чеков", "чеков", "чек", "чека", "чеков"]
+        );
+    }
+}

@@ -6703,7 +6703,7 @@ async fn bot_owner_reports_come_from_program_functions(pool: PgPool) {
     );
     report("stock_report", serde_json::json!({ "report": "receipts" }));
     let text = ask_reply(&mut conn, &a, chat, "приходы").await.text;
-    assert!(text.contains("1 накладных на 1 500 с"), "{text}");
+    assert!(text.contains("1 накладная на 1 500 с"), "{text}");
 
     // Карточка клиента и акт сверки — те же функции, что экраны.
     let client = add_party(&pool, &w, "Азамат Осмонов", "customer").await;

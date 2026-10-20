@@ -445,7 +445,7 @@ export default function ClientCard() {
           <div className="font-medium">{party.phone || '—'}</div>
         </div>
         <div>
-          <div className="text-xs text-slate-500">{party.kind === 'company' ? 'ИНН фирмы' : 'ИНН'}</div>
+          <div className="text-xs text-slate-500">{party.kind === 'company' ? 'ИНН фирмы' : 'ПИН'}</div>
           <div className="font-medium">{party.inn || '—'}</div>
         </div>
         <div>

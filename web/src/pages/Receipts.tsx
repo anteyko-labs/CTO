@@ -47,7 +47,14 @@ export default function Receipts() {
       {r.kind !== 'stock_in' &&
         !r.reversal_of &&
         !r.reversed &&
-        ((r.on_debt_tyiyn ?? 0) > 0 ? <Badge tone="amber">в долг поставщику</Badge> : <Badge tone="green">оплачен</Badge>)}
+        // Как в самой накладной: не оплачена, частично, оплачена (проверка 20.10.2026).
+        ((r.on_debt_tyiyn ?? 0) <= 0 || (r.debt_left_tyiyn ?? 0) <= 0 ? (
+          <Badge tone="green">оплачен</Badge>
+        ) : (r.debt_left_tyiyn ?? 0) < (r.on_debt_tyiyn ?? 0) ? (
+          <Badge tone="amber">частично</Badge>
+        ) : (
+          <Badge tone="amber">не оплачен</Badge>
+        ))}
       <CorrectionBadges mark={fixes.data?.get(r.id)} />
     </>
   )

@@ -38,7 +38,7 @@ export default function Bank() {
 
   return (
     <div>
-      <PageHeader title={data?.name ?? 'Счёт'} subtitle={`Безнал ${subtitle}: карта, перевод, комиссия банка и списания`} />
+      <PageHeader title={data?.name ?? 'Счёт'} subtitle={`Безнал ${subtitle}: карта / QR банка, QR владельцу, комиссия банка и списания`} />
       {(banks.data ?? []).length > 1 && (
         <div className="mb-3 flex flex-wrap gap-2" data-testid="bank-pick">
           {(banks.data ?? []).map((a) => {

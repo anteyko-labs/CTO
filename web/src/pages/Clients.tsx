@@ -79,7 +79,7 @@ export default function Clients() {
       <Card>
         <div className="mb-4 grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
           <Field label="Поиск">
-            <input placeholder="Название, телефон, ИНН" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input placeholder="Имя, телефон, ИНН или ПИН, госномер" value={q} onChange={(e) => setQ(e.target.value)} />
           </Field>
           <Field label="Вид">
             <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
@@ -124,7 +124,7 @@ export default function Clients() {
             Клиентов не найдено. Заведите первого — его можно выбрать прямо в кассе.
           </Empty>
         ) : (
-          <Table head={['Клиент', 'Вид', 'Телефон', 'ИНН', 'Баланс']}>
+          <Table head={['Клиент', 'Вид', 'Телефон', 'ИНН / ПИН', 'Баланс']}>
             {pager.shown.map((p) => (
               <tr
                 key={p.id}
@@ -192,7 +192,7 @@ export default function Clients() {
               <Field label="Телефон">
                 <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
               </Field>
-              <Field label="ИНН" required={company}>
+              <Field label={company ? 'ИНН' : 'ПИН (14 цифр с паспорта)'} required={company}>
                 <input id="new-client-inn" inputMode="numeric" value={form.inn} onChange={(e) => setForm({ ...form, inn: e.target.value })} />
               </Field>
             </div>

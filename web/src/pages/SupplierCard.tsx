@@ -138,7 +138,7 @@ export default function SupplierCard() {
         {s.comment && <div className="w-full text-slate-600">{s.comment}</div>}
       </Card>
 
-      <div className="flex gap-2" role="tablist">
+      <div className="-mx-1 flex gap-2 overflow-x-auto px-1" role="tablist">
         {(
           [
             ['deliveries', 'Поставки'],
@@ -308,7 +308,7 @@ export default function SupplierCard() {
       {tab === 'returns' && (
         <Card>
           <h2 className="mb-1 font-semibold">Возвраты товара</h2>
-          <p className="mb-3 text-xs text-slate-500">Возврат не брака: товар уходит со склада, наш долг меньше или поставщик отдаёт деньги. Брак — на экране «Брак».</p>
+          <p className="mb-3 text-xs text-slate-500">Возврат не брака: товар уходит со склада, наш долг меньше или поставщик отдаёт деньги. Брак — в «Остатки» → «Брак».</p>
           <SupplierReturnList key={returnsKey} supplierId={id} onChanged={reloadMoney} />
         </Card>
       )}

@@ -32,9 +32,9 @@ export function isDefaultFor(a: DefaultMarks, method: NoncashMethod): boolean {
 export function accountNote(a: Pick<CashAccount, 'kind' | 'is_default'> & DefaultMarks): string {
   if (isTill(a)) return 'касса смены'
   if (isBank(a)) {
-    if (a.default_card && a.default_transfer) return 'по умолчанию для карты и перевода'
-    if (a.default_card) return 'по умолчанию для карты'
-    if (a.default_transfer) return 'по умолчанию для перевода'
+    if (a.default_card && a.default_transfer) return 'по умолчанию для карты / QR банка и QR владельцу'
+    if (a.default_card) return 'по умолчанию для карты / QR банка'
+    if (a.default_transfer) return 'по умолчанию для QR владельцу'
     return ''
   }
   if (a.kind === 'safe') return 'сейф'

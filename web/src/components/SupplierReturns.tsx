@@ -120,7 +120,7 @@ export function SupplierReturnModal({
         {fix && <FixBanner fix={fix} />}
         <p className="text-sm text-slate-600">
           Товар уходит со склада. Сумма по умолчанию — цена последнего прихода от этого поставщика × количество; её можно поменять.
-          Брак оформляйте на экране «Брак».
+          Брак оформляйте в «Остатки» → «Брак».
         </p>
         <div data-return-picker>
           <ProductPicker onPick={(p) => add(p)} autoFocus={!fix} placeholder="Сканируйте или найдите товар, который возвращаем" />

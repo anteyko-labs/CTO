@@ -138,7 +138,8 @@ export default function Products() {
   }
 
   return (
-    <div>
+    // Снизу место под «+» на телефоне: последние карточки не прячутся под кнопкой.
+    <div className="pb-20 md:pb-0">
       <PageHeader
         title="Товары"
         actions={
@@ -313,7 +314,7 @@ export default function Products() {
       {/* «+» внизу экрана на телефоне: добавить товар (SPEC-29 §7). */}
       <button
         type="button"
-        className="fixed bottom-20 right-4 z-20 flex h-14 w-14 items-center justify-center rounded-full bg-sky-600 text-3xl text-white shadow-lg md:hidden"
+        className="fixed bottom-20 right-3 z-20 flex h-12 w-12 items-center justify-center rounded-full bg-sky-600 text-2xl text-white opacity-90 shadow-lg md:hidden"
         aria-label="Добавить товар"
         onClick={() => setEditing('new')}
       >

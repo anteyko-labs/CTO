@@ -1403,8 +1403,14 @@ async fn products_text(
     }
     let mut lines = vec![if low_only {
         format!(
-            "Остаток ниже минимального на сейчас ({} товаров):",
-            list.len()
+            "Остаток ниже минимального на сейчас ({} {}):",
+            list.len(),
+            crate::domain::qty::plural(
+                i64::try_from(list.len()).unwrap_or(i64::MAX),
+                "товар",
+                "товара",
+                "товаров"
+            )
         )
     } else {
         format!("Найдено товаров: {}", list.len())

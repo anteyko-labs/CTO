@@ -2596,8 +2596,8 @@ async fn repayment_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(S
             None => None,
         };
     let how = match method {
-        "card" => "картой",
-        "transfer" => "переводом",
+        "card" => "картой / QR банка",
+        "transfer" => "QR владельцу",
         "outside" => "мимо касс",
         _ => "наличными",
     };

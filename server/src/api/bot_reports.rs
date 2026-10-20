@@ -364,9 +364,10 @@ async fn dashboard(
             "накануне"
         };
         lines.push(format!(
-            "{when} {} ({} чеков), {prev} {} ({}), неделю назад {} ({})",
+            "{when} {} ({} {}), {prev} {} ({}), неделю назад {} ({})",
             format_som(c.today.revenue_tyiyn),
             c.today.sales_count,
+            crate::domain::qty::plural(c.today.sales_count, "чек", "чека", "чеков"),
             format_som(c.yesterday.revenue_tyiyn),
             c.yesterday.sales_count,
             format_som(c.week_ago.revenue_tyiyn),
@@ -1026,9 +1027,15 @@ pub async fn stock(
                 .iter()
                 .fold(0i64, |acc, r| acc.saturating_add(r.total_tyiyn));
             let mut lines = vec![format!(
-                "Приходы {}: {} накладных на {}",
+                "Приходы {}: {} {} на {}",
                 period_label(from, to),
                 rows.len(),
+                crate::domain::qty::plural(
+                    i64::try_from(rows.len()).unwrap_or(i64::MAX),
+                    "накладная",
+                    "накладные",
+                    "накладных"
+                ),
                 format_som(total)
             )];
             capped(
