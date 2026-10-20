@@ -163,7 +163,9 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const printLine = (l: Line) => {
     const c = calcOf(l)
     const copies = typeof c === 'string' ? 1 : c.n
-    void labels.run(() => printLabels([{ product: l.product, copies }]))
+    // На этикетке — цена, которую товар получит этим приходом (проверка 20.10.2026).
+    const product = typeof c === 'string' ? l.product : { ...l.product, sale_price_tyiyn: c.salePrice }
+    void labels.run(() => printLabels([{ product, copies }]))
   }
 
   const updateLine = (key: string, patch: Partial<Line>) =>
@@ -250,7 +252,7 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
       // Новая цена продажи уходит, только если её поменяли: товар получит её при проведении.
       const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
       body.push({ product_id: lines[i].product.id, qty: c.qty, cost_tyiyn: c.cost, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
-      copies.push({ product: lines[i].product, copies: c.n })
+      copies.push({ product: { ...lines[i].product, sale_price_tyiyn: c.salePrice }, copies: c.n })
     }
     if (total === null) {
       save.setError('Слишком большая сумма документа')

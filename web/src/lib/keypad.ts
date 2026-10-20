@@ -1,8 +1,9 @@
 // Экранная цифровая клавиатура режима кассы (SPEC-29, «Режим кассы»): как нажатие клавиши меняет
 // текст поля. Одна функция для количества, литров, сумм и PIN — без физической клавиатуры.
 
-/** Вид поля: целые (штуки, PIN, пробег) или с дробной частью через запятую (литры, сомы). */
-export type KeypadKind = 'int' | 'decimal'
+/** Вид поля: целые (штуки, пробег), с дробной частью через запятую (литры, сомы) или набор
+ *  цифр, где ноль впереди значим (PIN, ИНН). */
+export type KeypadKind = 'int' | 'decimal' | 'digits'
 
 export type KeypadKey = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | ',' | 'back' | 'clear'
 
@@ -32,6 +33,7 @@ export function applyKey(value: string, key: KeypadKey, opts: KeyOptions): strin
   }
   const sep = base.search(/[.,]/)
   if (sep >= 0 && base.length - sep - 1 >= (opts.decimals ?? 2)) return value
-  const next = base === '0' ? key : base + key
+  // «0» в числе заменяется первой цифрой («05» → «5»), а в PIN и кодах ноль — часть набора.
+  const next = base === '0' && opts.kind !== 'digits' ? key : base + key
   return next.length > maxLength ? value : next
 }

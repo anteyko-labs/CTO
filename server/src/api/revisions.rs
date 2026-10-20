@@ -418,6 +418,10 @@ async fn new_product(
     if !(0..=1_000_000_000).contains(&req.counted_qty) {
         return Err(invalid("найдено: от 0"));
     }
+    // Без цены товар ушёл бы с кассы за 0 с (проверка 20.10.2026).
+    if req.product.sale_price_tyiyn <= 0 {
+        return Err(invalid("укажите цену продажи"));
+    }
     let op_id = req.product.op_id;
     let mut tx = state.pool.begin().await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await? {

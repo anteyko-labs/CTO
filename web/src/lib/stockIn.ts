@@ -94,7 +94,7 @@ export function stockInFixLines(doc: StockInDraftDoc, products: Map<string, Prod
   const out: StockInFixLine[] = []
   for (const l of doc.lines) {
     const product = products.get(l.product_id)
-    if (!product) continue
+    if (!product) throw new Error('Не удалось загрузить товар строки — обновите страницу и попробуйте ещё раз')
     const sale = l.sale_price_tyiyn ?? product.sale_price_tyiyn
     out.push({
       key: nextKey(),

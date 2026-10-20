@@ -19,6 +19,12 @@ describe('экранная клавиатура', () => {
     expect(press('0', ['0'], { kind: 'int' })).toBe('0')
   })
 
+  it('PIN и коды: ноль впереди остаётся', () => {
+    expect(press('', ['0', '1', '2', '3'], { kind: 'digits', maxLength: 4 })).toBe('0123')
+    expect(press('', ['0', '0', '7'], { kind: 'digits' })).toBe('007')
+    expect(press('012', [','], { kind: 'digits' })).toBe('012')
+  })
+
   it('первая цифра в только что выбранном поле заменяет подставленное', () => {
     expect(press('1', ['3'], { kind: 'int', fresh: true })).toBe('3')
     expect(press('1', ['3', '2'], { kind: 'int', fresh: true })).toBe('32')

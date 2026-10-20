@@ -15,7 +15,6 @@ const doc = (over: Partial<ReceiptDraftDoc> = {}): ReceiptDraftDoc => ({
   lines: [
     { product_id: 'oil', qty: 8000, cost_tyiyn: 300_000, sale_price_tyiyn: 220_000 },
     { product_id: 'f', qty: 3, cost_tyiyn: 1000, sale_price_tyiyn: null },
-    { product_id: 'gone', qty: 1, cost_tyiyn: 100, sale_price_tyiyn: null },
   ],
   ...over,
 })
@@ -24,7 +23,7 @@ let n = 0
 const key = () => `k${++n}`
 
 describe('исправление прихода: исходная накладная в форму', () => {
-  it('масло канистрами, цена за канистру, наценка от цены продажи; пропавшая карточка пропускается', () => {
+  it('масло канистрами, цена за канистру, наценка от цены продажи', () => {
     const s = receiptFixState(doc(), new Map([['oil', oil], ['f', filter]]), key)
     expect(s.lines.map((l) => [l.product.id, l.count, l.price, l.salePrice, l.markup])).toEqual([
       ['oil', '2', '1500', '2200', '46,7'],
@@ -38,7 +37,14 @@ describe('исправление прихода: исходная накладн
   })
 
   it('оплачена сразу и вся в долг', () => {
-    expect(receiptFixState(doc({ payment: 'paid', paid_now_tyiyn: null }), new Map(), key).payMode).toBe('paid')
-    expect(receiptFixState(doc({ paid_now_tyiyn: null, paid_from: null }), new Map(), key)).toMatchObject({ payMode: 'debt', partText: '', paidFrom: '' })
+    const all = new Map([['oil', oil], ['f', filter]])
+    expect(receiptFixState(doc({ payment: 'paid', paid_now_tyiyn: null }), all, key).payMode).toBe('paid')
+    expect(receiptFixState(doc({ paid_now_tyiyn: null, paid_from: null }), all, key)).toMatchObject({ payMode: 'debt', partText: '', paidFrom: '' })
+  })
+
+  it('строку нельзя потерять: нет карточки или масло не целыми канистрами — ошибка', () => {
+    expect(() => receiptFixState(doc(), new Map([['oil', oil]]), key)).toThrow(/товар строки/)
+    const half = doc({ lines: [{ product_id: 'oil', qty: 6000, cost_tyiyn: 300_000, sale_price_tyiyn: null }] })
+    expect(() => receiptFixState(half, new Map([['oil', oil]]), key)).toThrow(/не целое число канистр/)
   })
 })

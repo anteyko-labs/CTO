@@ -105,7 +105,8 @@ export function RevisionNewProduct({
         [Boolean(form.name.trim()), 'название', '#revnew-name'],
         [Boolean(form.categoryId), 'категорию', '#revnew-category'],
         [!oil || (ml !== null && ml > 0), 'объём тары, л', '#revnew-liters'],
-        [!form.price.trim() || parseSom(form.price) !== null, 'цену числом', '#revnew-price'],
+        // Без цены товар продался бы за 0 с (проверка 20.10.2026): цена обязательна, как в «Товарах».
+        [(parseSom(form.price) ?? 0) > 0, 'цену продажи', '#revnew-price'],
         [!form.cost.trim() || parseSom(form.cost) !== null, 'закупку числом', '#revnew-cost'],
         [count !== null, oil ? 'сколько литров на полке' : 'сколько штук на полке', '#revnew-count'],
       )
@@ -123,7 +124,7 @@ export function RevisionNewProduct({
         article: form.article.trim(),
         container_ml: oil ? ml : null,
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
-        sale_price_tyiyn: parseSom(form.price || '0') ?? 0,
+        sale_price_tyiyn: parseSom(form.price) ?? 0,
         initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
       })
       toast(`Заведён и посчитан: ${r.product.name}`)

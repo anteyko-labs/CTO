@@ -172,8 +172,7 @@ const pinOk = (pin: string): boolean => /^\d{4}$/.test(pin)
 
 /** PIN кассира: задаёт, меняет и снимает только владелец; сам PIN нигде не показывается (ADR-081).
  *  Без PIN смену на кассира откроет только владелец своим паролем. */
-function PinBox({ employee }: { employee: Employee }) {
-  const [pin, setPin] = useState('')
+function PinBox({ employee, pin, setPin }: { employee: Employee; pin: string; setPin: (v: string) => void }) {
   const [has, setHas] = useState(Boolean(employee.has_pin))
   const act = useAction()
   const save = (value: string | null) =>
@@ -230,10 +229,15 @@ const phoneOk = (phone: string) => {
 function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose: () => void; onSaved: () => void }) {
   const owner = useUser().role === 'owner'
   const [form, setForm] = useState({ ...employee, phone: employee.phone ?? '' })
+  // Вписанный, но не сохранённый PIN общая «Сохранить» не теряет молча (проверка 20.10.2026):
+  // верный — сохраняется вместе с карточкой, неполный — ошибка.
+  const [pin, setPin] = useState('')
   const { busy, error, run } = useAction()
 
   const save = () =>
     run(async () => {
+      if (pin !== '' && !pinOk(pin)) throw new Error('PIN кассира — 4 цифры: допишите или очистите поле')
+      if (pin !== '') await post<Employee>(`/employees/${employee.id}/pin`, { pin })
       await patch<Employee>(`/employees/${employee.id}`, {
         full_name: form.full_name,
         is_cashier: form.is_cashier,
@@ -282,7 +286,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
             Сохранить
           </Button>
         </div>
-        {owner && employee.is_cashier && <PinBox employee={employee} />}
+        {owner && employee.is_cashier && <PinBox employee={employee} pin={pin} setPin={setPin} />}
         {owner && <PayRules employee={employee} />}
       </div>
     </Modal>

@@ -14,7 +14,7 @@ async function loadFix(id: string) {
   const doc = draft.doc
   const productIds = [...new Set(doc.lines.map((l) => l.product_id).filter((x): x is string => Boolean(x)))]
   const [products, services, party] = await Promise.all([
-    Promise.all(productIds.map((p) => get<Product>(`/products/${p}`).catch(() => null))),
+    Promise.all(productIds.map((p) => get<Product>(`/products/${p}`))),
     doc.lines.some((l) => l.service_id) ? get<Service[]>('/services') : Promise.resolve([] as Service[]),
     doc.party_id ? get<Party>(`/parties/${doc.party_id}`) : Promise.resolve(null),
   ])

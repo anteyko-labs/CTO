@@ -1,6 +1,7 @@
 // Печать товарного чека через диалог печати браузера (HTML-шаблон, лента 58–80 мм).
 import { formatDateTime, formatKg, formatLiters, formatSomExact } from '../lib/format'
 import { paymentLabel } from '../lib/battery'
+import { printInFrame } from '../lib/printFrame'
 import type { Sale, SaleLine } from '../lib/types'
 
 const esc = (s: string) =>
@@ -48,7 +49,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
   </style></head><body>
     <h1>Avtodom</h1>
     <div>${title} № ${sale.number}</div>
-    <div>${esc(formatDateTime(sale.created_at))}</div>
+    <div>${esc(saleWhen(sale))}</div>
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
     <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
@@ -56,20 +57,15 @@ export function saleHtml(sale: Sale, change: number | null): string {
   </body></html>`
 }
 
+/** Дата чека: день и время записи; если учётный день другой (чек без сети после полуночи,
+ *  исправленный чек) — учётный день, как в «Чеках за день» и акте сверки. */
+function saleWhen(sale: Sale): string {
+  const recorded = new Date(sale.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
+  if (!sale.business_date || sale.business_date === recorded) return formatDateTime(sale.created_at)
+  const [y, m, d] = sale.business_date.split('-')
+  return `${d}.${m}.${y}`
+}
+
 export function printSale(sale: Sale, change: number | null = null): void {
-  const frame = document.createElement('iframe')
-  Object.assign(frame.style, { position: 'fixed', width: '0', height: '0', border: '0' })
-  document.body.appendChild(frame)
-  const doc = frame.contentDocument
-  const win = frame.contentWindow
-  if (!doc || !win) {
-    frame.remove()
-    return
-  }
-  doc.open()
-  doc.write(saleHtml(sale, change))
-  doc.close()
-  win.focus()
-  win.print()
-  setTimeout(() => frame.remove(), 60_000)
+  printInFrame(saleHtml(sale, change))
 }

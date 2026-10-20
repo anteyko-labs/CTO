@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { CorrectionBadges, FixButton } from '../components/Correction'
 import { FIX_SUBMIT, FixBanner, FixDraft, type FixMode } from '../components/FixDraft'
 import { Pager, usePager } from '../components/Pager'
-import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
+import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -69,6 +69,8 @@ function TransferForm({ oils, fix, onPosted, onCancel }: { oils: Product[]; fix?
       : { from: '', to: '', liters: '', comment: '' },
   )
   const [opId, setOpId] = useState(newOpId)
+  // Перелив отменяет только владелец — перед проведением показываем, что и куда (ui-rules §3).
+  const [confirming, setConfirming] = useState(false)
   const act = useAction()
   const stockOf = (p: Product) => oilStockForFix(p.id, p.stock_qty, fix ? fix.doc : null)
 
@@ -131,9 +133,8 @@ function TransferForm({ oils, fix, onPosted, onCancel }: { oils: Product[]; fix?
             id="oil-from"
             value={form.from}
             onChange={(e) => {
-              const p = oils.find((o) => o.id === e.target.value)
-              const st = p ? stockOf(p) : 0
-              setForm({ ...form, from: e.target.value, liters: p && st > 0 ? litersInput(st) : '' })
+              // Количество не подставляется: «весь остаток» — отдельной кнопкой (проверка 20.10.2026).
+              setForm({ ...form, from: e.target.value, liters: '' })
             }}
           >
             <option value="">— выберите —</option>
@@ -160,8 +161,13 @@ function TransferForm({ oils, fix, onPosted, onCancel }: { oils: Product[]; fix?
         </Field>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Сколько, л" required hint="По умолчанию — весь остаток источника">
+        <Field label="Сколько, л" required>
           <input id="oil-liters" inputMode="decimal" value={form.liters} onChange={(e) => setForm({ ...form, liters: e.target.value })} />
+          {from && fromStock > 0 && (
+            <button type="button" className="mt-1 self-start text-xs text-sky-700 underline" onClick={() => setForm({ ...form, liters: litersInput(fromStock) })}>
+              весь остаток: {formatLiters(fromStock)}
+            </button>
+          )}
         </Field>
         <Field label="Комментарий">
           <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} placeholder="например, освободили бочку" />
@@ -197,13 +203,45 @@ function TransferForm({ oils, fix, onPosted, onCancel }: { oils: Product[]; fix?
             Отмена
           </Button>
         )}
-        <Button disabled={act.busy || Boolean(fix?.busy) || notFilled.length > 0} onClick={submit}>
+        <Button disabled={act.busy || Boolean(fix?.busy) || notFilled.length > 0} onClick={() => (fix ? submit() : setConfirming(true))}>
           {fix ? FIX_SUBMIT : 'Перелить'}
         </Button>
       </div>
+      {confirming && from && to && ml !== null && (
+        <Modal title="Перелить масло?" onClose={() => setConfirming(false)}>
+          <div className="flex flex-col gap-3 text-sm">
+            <p>
+              <b>{formatLiters(ml)}</b> из «{from.name}» в «{to.name}».
+            </p>
+            {viscosityOf(from) && viscosityOf(to) && viscosityOf(from) !== viscosityOf(to) && (
+              <Notice tone="rose">
+                Разная вязкость: {viscosityOf(from)} → {viscosityOf(to)}. Проверьте, то ли масло выбрано.
+              </Notice>
+            )}
+            <p className="text-slate-600">Отменить перелив сможет только владелец.</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setConfirming(false)}>
+                Назад
+              </Button>
+              <Button
+                disabled={act.busy}
+                onClick={() => {
+                  setConfirming(false)
+                  submit()
+                }}
+              >
+                Перелить
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   )
 }
+
+/** Вязкость масла из характеристик: «5W-30». */
+const viscosityOf = (p: Product): string => String((p.attrs as Record<string, string> | null)?.viscosity ?? '').trim()
 
 // Перелив проводит владелец или администратор с правом «Перелив масла» (ADR-082): администратор
 // себестоимости не видит (сервер её не отдаёт), цену не меняет и перелив не отменяет.

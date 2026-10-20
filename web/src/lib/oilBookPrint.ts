@@ -1,5 +1,6 @@
 // Печать масляной книжки на ленте 80 мм: последняя замена по строкам книжки, следующая по каждой
 // строке и QR-код на Телеграм-бот (SPEC-16, SPEC-27).
+import { printInFrame } from './printFrame'
 import QRCode from 'qrcode'
 import { get } from './api'
 import { formatDate } from './format'
@@ -72,20 +73,5 @@ export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null
 
 /** Печать на чековом принтере через диалог браузера. */
 export async function printOilBook(b: VehicleBook, opts: { client?: string | null; master?: string | null } = {}): Promise<void> {
-  const html = await oilBookHtml(b, { ...opts, link: await botLink() })
-  const frame = document.createElement('iframe')
-  Object.assign(frame.style, { position: 'fixed', width: '0', height: '0', border: '0' })
-  document.body.appendChild(frame)
-  const doc = frame.contentDocument
-  const win = frame.contentWindow
-  if (!doc || !win) {
-    frame.remove()
-    return
-  }
-  doc.open()
-  doc.write(html)
-  doc.close()
-  win.focus()
-  win.print()
-  setTimeout(() => frame.remove(), 60_000)
+  printInFrame(await oilBookHtml(b, { ...opts, link: await botLink() }))
 }

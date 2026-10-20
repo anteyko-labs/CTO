@@ -8322,7 +8322,7 @@ async fn revision_takes_a_product_not_in_the_program(pool: PgPool) {
         &uri,
         Some(&admin),
         Some(json!({ "op_id": Uuid::now_v7(), "counted_qty": 1, "category_id": cat["id"], "name": "Ещё",
-                     "container_ml": 1000 })),
+                     "container_ml": 1000, "sale_price_tyiyn": 50_000 })),
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT);

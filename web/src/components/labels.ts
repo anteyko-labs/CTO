@@ -1,4 +1,5 @@
 // Печать этикеток со штрихкодом через диалог печати браузера (SPEC-02, ADR-010).
+import { printInFrame } from '../lib/printFrame'
 import JsBarcode from 'jsbarcode'
 import { get } from '../lib/api'
 import { formatSom } from '../lib/format'
@@ -24,7 +25,11 @@ function barcodeSvg(code: string, heightMm: number): string {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   JsBarcode(svg, code, {
     format: isEan13(code) ? 'EAN13' : 'CODE128',
+    // Свободное поле по краям: сканер не читает код, прижатый к краю этикетки (EAN-13 — 11 и
+    // 7 модулей; модуль — 2 единицы рисунка).
     margin: 0,
+    marginLeft: 22,
+    marginRight: 14,
     height: Math.max(20, heightMm * 2),
     fontSize: 12,
     displayValue: true,
@@ -49,8 +54,16 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     const spec = t.spec ? `<div class="spec">${escapeHtml(t.spec)}</div>` : ''
     const article = s.show_article && product.article ? `<div class="small">${escapeHtml(product.article)}</div>` : ''
     const price = s.show_price ? `<div class="price">${escapeHtml(formatSom(product.sale_price_tyiyn))}</div>` : ''
+    // Маленькая этикетка (до 25 мм в высоту): штрихкоду — не меньше 9 мм, текст ужимается в
+    // строку названия и строку «бренд · характеристики — цена» (проверка 20.10.2026).
+    const compact = s.height_mm <= 25
+    const meta = [t.brand, t.spec].filter(Boolean).join(' · ')
+    const html = compact
+      ? `<div class="label">${t.name ? `<div class="name one">${escapeHtml(t.name)}</div>` : ''}<div class="code">${svg}</div>` +
+        `<div class="foot"><span class="meta">${escapeHtml(meta)}</span>${s.show_price ? `<span class="price">${escapeHtml(formatSom(product.sale_price_tyiyn))}</span>` : ''}</div></div>`
+      : `<div class="label">${brand}${name}${spec}${article}<div class="code">${svg}</div>${price}</div>`
     for (let i = 0; i < copies; i++) {
-      labels.push(`<div class="label">${brand}${name}${spec}${article}<div class="code">${svg}</div>${price}</div>`)
+      labels.push(html)
     }
   }
   return `<!doctype html><html><head><meta charset="utf-8"><title>Этикетки</title><style>
@@ -63,9 +76,13 @@ export function labelsHtml(items: LabelItem[], s: LabelSettings): string {
     .name { font-size: 8pt; font-weight: bold; line-height: 1.1; max-height: 2.3em; overflow: hidden; }
     .spec { font-size: 8pt; font-weight: bold; line-height: 1.1; }
     .small { font-size: 7pt; }
-    .code { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    .name.one { font-size: 7pt; white-space: nowrap; text-overflow: ellipsis; max-height: none; }
+    .code { flex: 1; min-height: ${Math.min(9, Math.max(6, s.height_mm * 0.45))}mm; display: flex; align-items: center; justify-content: center; }
     .code svg { width: 100%; height: 100%; }
     .price { font-size: 11pt; font-weight: bold; text-align: right; }
+    .foot { display: flex; align-items: baseline; justify-content: space-between; gap: 1mm; }
+    .foot .meta { font-size: 6.5pt; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .foot .price { font-size: 9pt; white-space: nowrap; }
   </style></head><body>${labels.join('')}</body></html>`
 }
 
@@ -75,22 +92,6 @@ export async function printLabels(items: LabelItem[]): Promise<number> {
   const printable = items.filter((i) => i.copies > 0 && i.product.barcodes.length > 0)
   const count = printable.reduce((acc, i) => acc + i.copies, 0)
   if (count === 0) return 0
-  const frame = document.createElement('iframe')
-  frame.style.position = 'fixed'
-  frame.style.width = '0'
-  frame.style.height = '0'
-  frame.style.border = '0'
-  document.body.appendChild(frame)
-  const doc = frame.contentDocument
-  if (!doc || !frame.contentWindow) {
-    frame.remove()
-    throw new Error('Не удалось подготовить печать')
-  }
-  doc.open()
-  doc.write(labelsHtml(printable, settings))
-  doc.close()
-  frame.contentWindow.focus()
-  frame.contentWindow.print()
-  setTimeout(() => frame.remove(), 60_000)
+  printInFrame(labelsHtml(printable, settings))
   return count
 }

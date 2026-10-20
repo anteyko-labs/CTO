@@ -49,7 +49,6 @@ describe('оприходование строками на экране прих
         lines: [
           { product_id: 'a', qty: 3, price_tyiyn: 20_000, sale_price_tyiyn: 32_000 },
           { product_id: 'o', qty: 6000, price_tyiyn: 150_000, sale_price_tyiyn: null },
-          { product_id: 'нет', qty: 1, price_tyiyn: 1, sale_price_tyiyn: null },
         ],
       },
       new Map([

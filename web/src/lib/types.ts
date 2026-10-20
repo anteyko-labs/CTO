@@ -338,6 +338,8 @@ export interface Sale {
   reversal_of: string | null
   user_name: string
   created_at: string
+  /** Учётный день чека: его печатают чек и документ о долге. */
+  business_date?: string | null
   lines: SaleLine[]
   payments: Payment[]
   returns: { id: string; number: number; total_tyiyn: number }[]

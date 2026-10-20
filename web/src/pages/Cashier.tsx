@@ -1546,7 +1546,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <input
                   id="debt-inn"
                   className="min-w-0 flex-1"
-                  {...num('int')}
+                  {...num('digits')}
                   placeholder={party.kind === 'company' ? 'ИНН' : 'ПИН'}
                   value={innText}
                   onChange={(e) => setInnText(e.target.value)}

@@ -37,7 +37,9 @@ export function StaffPayList({ staff, empty = 'Пока никому не нач
               </>
             ) : owed < 0 ? (
               <>
-                <div className="text-xs text-slate-500">аванс</div>
+                {/* Аванс — выдали больше заработанного; без выплат минус — это удержание (недостача,
+                    штраф): сотрудник должен, а не получил аванс (проверка 20.10.2026). */}
+                <div className="text-xs text-slate-500">{(p.paid_tyiyn ?? 0) > Math.max(p.total_tyiyn, 0) ? 'аванс' : 'долг сотрудника'}</div>
                 <div className="text-lg font-semibold tabular-nums text-rose-700">{formatSom(-owed)}</div>
               </>
             ) : (

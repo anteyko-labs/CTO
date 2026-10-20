@@ -206,6 +206,10 @@ pub struct SaleOut {
     pub reversal_of: Option<Uuid>,
     pub user_name: String,
     pub created_at: DateTime<Utc>,
+    /// Учётный день чека: его печатают чек и документ о долге, от него считается срок оплаты
+    /// (чек без сети после полуночи, исправленный чек — день продажи, а не записи).
+    #[serde(default)]
+    pub business_date: Option<NaiveDate>,
     pub lines: Vec<SaleLineOut>,
     pub payments: Vec<PaymentOut>,
     pub returns: Vec<SaleRef>,
@@ -222,7 +226,7 @@ pub async fn load_sale(
                   s.comment, s.delivery_address, s.reversal_of,
                   s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
                   pc.full_name as "contact_name?", pv.plate as "vehicle_plate?",
-                  u.full_name as user_name, s.created_at
+                  u.full_name as user_name, s.created_at, s.business_date
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id
@@ -310,6 +314,7 @@ pub async fn load_sale(
         reversal_of: h.reversal_of,
         user_name: h.user_name,
         created_at: h.created_at,
+        business_date: Some(h.business_date),
         lines,
         payments,
         returns,

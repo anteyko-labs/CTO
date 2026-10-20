@@ -38,15 +38,20 @@ export interface ReceiptFixState {
 /**
  * Поля прихода из исходной накладной. Масло — канистрами, цена — за штуку или канистру (сумма
  * строки ÷ количество); цена продажи — поставленная этим приходом, иначе текущая цена товара.
- * Карточки нет — строка пропускается.
+ * Карточки нет или масло не целыми канистрами — ошибка: строку нельзя потерять.
  */
 export function receiptFixState(doc: ReceiptDraftDoc, products: Map<string, Product>, nextKey: () => string): ReceiptFixState {
   const lines: ReceiptFixLine[] = []
   const rounded: string[] = []
   for (const l of doc.lines) {
+    // Карточка не загрузилась — исправлять нельзя: иначе строка молча пропала бы, а исходная
+    // накладная сторнировалась бы целиком (проверка 20.10.2026).
     const product = products.get(l.product_id)
-    if (!product) continue
-    const n = isOil(product) && l.qty % product.container_ml === 0 ? l.qty / product.container_ml : l.qty
+    if (!product) throw new Error('Не удалось загрузить товар строки — обновите страницу и попробуйте ещё раз')
+    if (isOil(product) && l.qty % product.container_ml !== 0) {
+      throw new Error(`«${product.name}»: в накладной не целое число канистр — исправьте сторно и новым приходом`)
+    }
+    const n = isOil(product) ? l.qty / product.container_ml : l.qty
     const per = divRound(l.cost_tyiyn, n)
     if (per * n !== l.cost_tyiyn) rounded.push(product.name)
     const sale = l.sale_price_tyiyn ?? product.sale_price_tyiyn

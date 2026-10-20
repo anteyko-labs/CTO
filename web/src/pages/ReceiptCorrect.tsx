@@ -12,7 +12,7 @@ import ReceiptNew from './ReceiptNew'
 async function loadFix(id: string) {
   const draft = await loadCorrectionDraft<ReceiptDraftDoc>('receipt', id)
   const ids = [...new Set(draft.doc.lines.map((l) => l.product_id))]
-  const products = await Promise.all(ids.map((p) => get<Product>(`/products/${p}`).catch(() => null)))
+  const products = await Promise.all(ids.map((p) => get<Product>(`/products/${p}`)))
   const byId = new Map(products.filter((p): p is Product => p !== null).map((p) => [p.id, p]))
   return { originalId: id, number: draft.number, state: receiptFixState(draft.doc, byId, () => crypto.randomUUID()) }
 }

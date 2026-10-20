@@ -1,5 +1,6 @@
 // Документы о долге и акт сверки (SPEC-10): тексты по умолчанию, подстановки, сумма прописью, печать A4.
 // Тексты правит владелец в настройках; пустое значение подстановки печатается линией для записи от руки.
+import { printInFrame } from './printFrame'
 import { formatDateTime, formatKg, formatLiters, formatSomExact } from './format'
 import type { Sale } from './types'
 
@@ -233,21 +234,9 @@ const A4_STYLE = `
 `
 
 export function printHtml(title: string, body: string): void {
-  const frame = document.createElement('iframe')
-  Object.assign(frame.style, { position: 'fixed', width: '0', height: '0', border: '0' })
-  document.body.appendChild(frame)
-  const doc = frame.contentDocument
-  const win = frame.contentWindow
-  if (!doc || !win) {
-    frame.remove()
-    return
-  }
-  doc.open()
-  doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${A4_STYLE}</style></head><body>${body}</body></html>`)
-  doc.close()
-  win.focus()
-  win.print()
-  setTimeout(() => frame.remove(), 60_000)
+  printInFrame(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>${A4_STYLE}</style></head><body>${body}</body></html>`,
+  )
 }
 
 function qtyText(l: Sale['lines'][number]): string {
@@ -339,8 +328,9 @@ export function printDebtDoc({ sale, party, settings, history }: DebtDocInput): 
   const before = h ? h.before : after === null ? null : after - debt
   const company = party.kind === 'company'
   const template = (company ? settings.company : settings.person) || (company ? DEFAULT_COMPANY : DEFAULT_PERSON)
-  // Дата чека по Бишкеку: чек с 00:00 до 06:00 не должен уйти «вчерашним» (UTC).
-  const saleDate = new Date(sale.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
+  // Учётный день чека — как в акте сверки и просрочке (чек без сети после полуночи, исправленный
+  // чек). Старый ответ без него — день записи по Бишкеку.
+  const saleDate = sale.business_date ?? new Date(sale.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
   const s = settings.seller
   const vars: Record<string, string> = {
     дата: dateRu(saleDate),

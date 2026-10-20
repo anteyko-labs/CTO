@@ -103,7 +103,7 @@ export function Keypad() {
 
   if (!target || !target.isConnected) return null
 
-  const kind: KeypadKind = target.dataset.keypad === 'decimal' ? 'decimal' : 'int'
+  const kind: KeypadKind = target.dataset.keypad === 'decimal' ? 'decimal' : target.dataset.keypad === 'digits' ? 'digits' : 'int'
   const decimals = Number(target.dataset.keypadDecimals) || 2
   const quick = (target.dataset.keypadQuick ?? '').split(';').filter(Boolean)
   const rect = target.getBoundingClientRect()

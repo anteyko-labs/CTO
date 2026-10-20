@@ -95,7 +95,7 @@ export function ShiftOpenModal({
               id="shift-pin"
               className="w-32 text-center text-lg tracking-[0.4em]"
               type="password"
-              {...num('int')}
+              {...num('digits')}
               autoComplete="off"
               maxLength={4}
               value={open.pin}
