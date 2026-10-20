@@ -478,15 +478,17 @@ fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
 /// проводится — касса покажет новую сумму. У остальных способов вес не учитывается.
 async fn price_battery(
     conn: &mut PgConnection,
-    branch_id: Uuid,
+    ctx: &Ctx,
     payments: &[PaymentReq],
 ) -> AppResult<Vec<PaymentReq>> {
+    let branch_id = ctx.user.branch_id;
     let mut out = Vec::with_capacity(payments.len());
     for p in payments {
         let mut p = p.clone();
         if p.method == "battery" {
             let grams = p.grams.ok_or_else(|| invalid("укажите вес аккумулятора"))?;
             crate::api::batteries::check_grams(grams)?;
+            let settings = crate::api::batteries::intake_price(conn, branch_id).await?;
             let price = match p.price_per_kg_tyiyn {
                 Some(v) if v <= 0 => {
                     return Err(invalid("цена приёма за кг должна быть больше нуля"));
@@ -495,9 +497,33 @@ async fn price_battery(
                     crate::ops::check_amount(v)?;
                     v
                 }
-                None => crate::api::batteries::intake_price(conn, branch_id).await?,
+                None => settings,
             };
+            // Дороже трёх цен приёма из настроек ставит только владелец: иначе 1 г лома
+            // «оплатил» бы любой товар (ADR-090).
+            if !ctx.user.is_owner() && settings > 0 && price > settings.saturating_mul(3) {
+                return Err(invalid(format!(
+                    "цену выше {} за кг ставит владелец",
+                    crate::domain::money::format_som(settings.saturating_mul(3))
+                )));
+            }
             let amount = crate::api::batteries::amount_for(grams, price)?;
+            if price != settings && amount > 0 {
+                crate::ops::audit(
+                    conn,
+                    ctx,
+                    "sale.battery_price",
+                    "product",
+                    None,
+                    json!({
+                        "grams": grams,
+                        "price_per_kg": price,
+                        "settings_per_kg": settings,
+                        "amount": amount,
+                    }),
+                )
+                .await?;
+            }
             if amount <= 0 {
                 return Err(invalid("цена приёма аккумуляторов не задана"));
             }
@@ -755,9 +781,13 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.lines.is_empty() {
         return Err(invalid("чек пуст"));
     }
+    // Тысячи строк одним запросом надолго заняли бы базу и кассу (ADR-090).
+    if req.lines.len() > 300 || req.payments.len() > 20 {
+        return Err(invalid("в чеке — не больше 300 строк и 20 оплат"));
+    }
     // Аккумулятор в оплату: сумму по весу считает сервер (SPEC-27).
     let mut req = req;
-    req.payments = price_battery(conn, branch_id, &req.payments).await?;
+    req.payments = price_battery(conn, ctx, &req.payments).await?;
     let battery_scrap = if req.payments.iter().any(|p| p.method == "battery") {
         Some(crate::api::batteries::scrap_product(conn).await?)
     } else {
@@ -1266,12 +1296,29 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         && let (Some(party_id), Some(vehicle_id)) = (req.party_id, req.vehicle_id)
     {
         let car_unit = crate::api::oil_book::vehicle_unit(conn, vehicle_id).await?;
-        let mileage = crate::api::oil_book::resolve_mileage(
+        let mileage = match crate::api::oil_book::resolve_mileage(
             req.mileage,
             req.mileage_unit.as_deref(),
             req.mileage_km,
             &car_unit,
-        )?;
+        ) {
+            Ok(m) => m,
+            // Чек без сети уже пробит: опечатка в пробеге не отменяет продажу (инвариант 10) —
+            // замена записывается без пробега, владелец видит причину (ADR-090).
+            Err(AppError::Validation(why)) if offline => {
+                ops::audit(
+                    conn,
+                    ctx,
+                    "sale.offline_bypass",
+                    "sale",
+                    Some(id),
+                    json!({ "number": number, "reasons": [format!("пробег не записан в книжку: {why}")] }),
+                )
+                .await?;
+                None
+            }
+            Err(e) => return Err(e),
+        };
         crate::api::oil_book::record_from_sale(
             conn,
             ctx,
@@ -1288,7 +1335,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             return Err(invalid("интервалов больше, чем строк книжки"));
         }
         for b in &req.book_intervals {
-            crate::api::oil_book::set_interval_tx(
+            match crate::api::oil_book::set_interval_tx(
                 conn,
                 ctx,
                 vehicle_id,
@@ -1296,7 +1343,23 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
                 Some((b.interval_km, b.interval_days)),
                 "sale",
             )
-            .await?;
+            .await
+            {
+                Ok(_) => {}
+                // Без сети — так же, как пробег: чек проводится, интервал остаётся прежним.
+                Err(AppError::Validation(why)) if offline => {
+                    ops::audit(
+                        conn,
+                        ctx,
+                        "sale.offline_bypass",
+                        "sale",
+                        Some(id),
+                        json!({ "number": number, "reasons": [format!("интервал замены не сохранён: {why}")] }),
+                    )
+                    .await?;
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
     payroll::accrue_for_sale(

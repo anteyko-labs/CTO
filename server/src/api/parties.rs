@@ -41,6 +41,8 @@ pub fn routes() -> Router<AppState> {
         .route("/parties/{id}/open-debts", routing::get(open_debts))
 }
 
+/// Срок оплаты долга — не больше 10 лет: дальше даты не помещаются в календарь.
+const MAX_DUE_DAYS: i32 = 3650;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PartyOut {
     pub id: Uuid,
@@ -121,6 +123,7 @@ pub(crate) async fn search_parties(
                     .replace('%', "\\%")
                     .replace('_', "\\_")
             });
+    let phone_digits = q.as_deref().and_then(crate::domain::phone::search_digits);
     let rows = sqlx::query_as!(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
@@ -138,6 +141,8 @@ pub(crate) async fn search_parties(
              and ($3::text is null or kind = $3)
              and ($4::text is null
                   or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'
+                  -- Телефон в любой записи: «0555 12 34 56» находит «+996555123456» (ADR-090).
+                  or ($7::text is not null and regexp_replace(phone, '[^0-9]', '', 'g') like '%' || $7 || '%')
                   -- «Имя Фамилия» тоже находит «Фамилия Имя» (ADR-083).
                   or (first_name <> '' and (first_name || ' ' || last_name) ilike '%' || $4 || '%')
                   -- Госномер машины: на замене кассир видит машину, а не паспорт (SPEC-16).
@@ -152,7 +157,8 @@ pub(crate) async fn search_parties(
         f.kind,
         q,
         f.only_debtors,
-        crate::api::paging::MAX_ROWS
+        crate::api::paging::MAX_ROWS,
+        phone_digits
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -205,6 +211,9 @@ async fn create_party(
     }
     if req.credit_limit_tyiyn.is_some_and(|v| v < 0) || req.due_days.is_some_and(|v| v < 0) {
         return Err(invalid("лимит и срок оплаты не отрицательны"));
+    }
+    if req.due_days.is_some_and(|v| v > MAX_DUE_DAYS) {
+        return Err(invalid("срок оплаты — не больше 3650 дней"));
     }
     // Лимит долга и срок оплаты ставит владелец (SPEC-10).
     if (req.credit_limit_tyiyn.is_some() || req.due_days.is_some()) && !ctx.user.is_owner() {
@@ -363,6 +372,9 @@ async fn update_party(
     // Проверка здесь, а не ограничением базы: иначе пользователь увидит «внутреннюю ошибку».
     if req.credit_limit_tyiyn.is_some_and(|v| v < 0) || req.due_days.is_some_and(|v| v < 0) {
         return Err(invalid("лимит и срок не могут быть меньше нуля"));
+    }
+    if req.due_days.is_some_and(|v| v > MAX_DUE_DAYS) {
+        return Err(invalid("срок оплаты — не больше 3650 дней"));
     }
     if req
         .kind
@@ -1987,6 +1999,9 @@ async fn limit_request(
         return Err(invalid("сумма повышения больше нуля"));
     }
     crate::ops::check_amount(req.amount_tyiyn)?;
+    if req.comment.chars().count() > 500 {
+        return Err(invalid("комментарий — не длиннее 500 знаков"));
+    }
     let mut tx = state.pool.begin().await?;
     let party = load_party(&mut tx, ctx.user.branch_id, id).await?;
     ops::audit(

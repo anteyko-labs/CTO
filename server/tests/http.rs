@@ -7861,7 +7861,8 @@ async fn invoice_photos_are_kept_and_hidden_only_by_owner(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::OK, "{h}");
     assert_eq!(h["hidden_reason"], "не та накладная");
-    let (s, _, _) = call(
+    // Повтор (потерянный ответ) — тот же результат, причина не меняется (инвариант 4, ADR-090).
+    let (s, _, again) = call(
         &app,
         "POST",
         &hide,
@@ -7869,7 +7870,8 @@ async fn invoice_photos_are_kept_and_hidden_only_by_owner(pool: PgPool) {
         Some(json!({ "reason": "ещё раз" })),
     )
     .await;
-    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["hidden_reason"], "не та накладная");
     let (_, _, list) = call(
         &app,
         "GET",

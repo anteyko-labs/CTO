@@ -286,8 +286,7 @@ async fn lookup(
     let found = sqlx::query!(
         r#"select p.id, p.name, p.phone from parties p
            where p.branch_id = $2 and p.role = 'customer' and p.active
-             and length(regexp_replace(p.phone, '[^0-9]', '', 'g')) >= 9
-             and right(regexp_replace(p.phone, '[^0-9]', '', 'g'), 9) = $1
+             and phone_norm(p.phone) = $1
              and exists (select 1 from telegram_customers t where t.party_id = p.id)
            order by p.created_at desc limit 2"#,
         key,

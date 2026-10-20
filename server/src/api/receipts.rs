@@ -382,6 +382,11 @@ pub async fn post_receipt_tx(
     if req.lines.is_empty() {
         return Err(invalid("в приходе нет строк"));
     }
+    if req.lines.len() > 500 {
+        return Err(invalid(
+            "в приходе — не больше 500 строк: разбейте накладную",
+        ));
+    }
     let mut total: i64 = 0;
     for l in &req.lines {
         if l.qty <= 0 || l.cost_tyiyn < 0 {

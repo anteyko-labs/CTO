@@ -5,5 +5,6 @@ pub mod costing;
 pub mod debt;
 pub mod mileage;
 pub mod money;
+pub mod phone;
 pub mod plate;
 pub mod qty;

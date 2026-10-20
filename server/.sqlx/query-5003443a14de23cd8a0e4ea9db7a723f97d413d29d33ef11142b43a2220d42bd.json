@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, branch_id, full_name, is_cashier, is_master from employees\n           where active and length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 9\n             and right(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = $1\n           order by created_at",
+  "query": "select id, branch_id, full_name, is_cashier, is_master from employees\n           where active and phone_norm(phone) = $1\n           order by created_at",
   "describe": {
     "columns": [
       {
@@ -42,5 +42,5 @@
       false
     ]
   },
-  "hash": "6390d2d7638ebb5600366a2bc440bdb2cd860ebfee47ef00bbe73ec391b80f10"
+  "hash": "5003443a14de23cd8a0e4ea9db7a723f97d413d29d33ef11142b43a2220d42bd"
 }

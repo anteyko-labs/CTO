@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 60] = [
+pub(crate) const WATCHED: [&str; 61] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -60,6 +60,7 @@ pub(crate) const WATCHED: [&str; 60] = [
     "gift.rule_toggle",
     "backup.failed",
     "backup.size",
+    "sale.battery_price",
     "telegram.code_flood",
     "telegram.customer_ambiguous",
     "receipt.reverse_negative",
@@ -165,6 +166,27 @@ fn comment(data: &Value) -> String {
         .filter(|c| !c.is_empty())
         .map(|c| format!(" — {c}"))
         .unwrap_or_default()
+}
+
+/// Данные события для текста уведомления: каждая строка — одной строкой (без переводов строк и
+/// управляющих знаков) и не длиннее 300 знаков. Длинный комментарий не превращает одно событие
+/// в сотни сообщений бота, переводом строки нельзя дописать в уведомление чужие строки (ADR-090).
+pub(crate) fn safe_data(v: &Value) -> Value {
+    match v {
+        Value::String(s) => {
+            let line = crate::api::bot_drafts::one_line(s);
+            if line.chars().count() > 300 {
+                Value::String(format!("{}…", line.chars().take(300).collect::<String>()))
+            } else {
+                Value::String(line)
+            }
+        }
+        Value::Array(a) => Value::Array(a.iter().map(safe_data).collect()),
+        Value::Object(m) => {
+            Value::Object(m.iter().map(|(k, x)| (k.clone(), safe_data(x))).collect())
+        }
+        x => x.clone(),
+    }
 }
 
 pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
@@ -789,6 +811,16 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         ),
         "backup.failed" => ("⚠️ Копия базы не создана".into(), text("reason")),
         "backup.size" => ("⚠️ Копии базы занимают много места".into(), text("reason")),
+        "sale.battery_price" => (
+            "Аккумулятор в оплату не по цене приёма".into(),
+            format!(
+                "{} по {} за кг (в настройках {}) — {}",
+                crate::domain::money::format_kg(num("grams").unwrap_or(0)),
+                crate::domain::money::format_som(num("price_per_kg").unwrap_or(0)),
+                crate::domain::money::format_som(num("settings_per_kg").unwrap_or(0)),
+                crate::domain::money::format_som(num("amount").unwrap_or(0))
+            ),
+        ),
         "telegram.code_flood" => (
             "Подбирают код привязки Телеграма".into(),
             format!(
@@ -1079,7 +1111,8 @@ async fn page(
     Ok(rows
         .into_iter()
         .map(|r| {
-            let (title, mut details) = describe(&r.action, &r.data);
+            let data = safe_data(&r.data);
+            let (title, mut details) = describe(&r.action, &data);
             // Проведено кнопкой в Телеграм-боте (SPEC-24) — видно и на экране.
             if r.data.get("source").and_then(Value::as_str) == Some("bot") {
                 details = if details.is_empty() {

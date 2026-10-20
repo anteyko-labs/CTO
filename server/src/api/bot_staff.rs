@@ -165,12 +165,11 @@ pub(crate) async fn drop_for_employee(
     Ok(())
 }
 
-/// Активные сотрудники с этим номером (последние 9 цифр).
+/// Активные сотрудники с этим номером (полный номер, ADR-090).
 pub async fn by_phone(conn: &mut PgConnection, key: &str) -> AppResult<Vec<Employee>> {
     Ok(sqlx::query!(
         r#"select id, branch_id, full_name, is_cashier, is_master from employees
-           where active and length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 9
-             and right(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = $1
+           where active and phone_norm(phone) = $1
            order by created_at"#,
         key
     )

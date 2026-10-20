@@ -35,8 +35,12 @@ pub async fn build_state(pool: PgPool, cookie_secure: bool) -> Result<AppState, 
 }
 
 pub fn app(state: AppState, web_dir: Option<&Path>) -> Router {
+    // Обычный запрос программы — до 512 КБ (чек на сотни строк — десятки КБ): мегабайтный
+    // комментарий не проходит. Загрузки списка старой программы и фото накладных ставят свой
+    // предел на своих маршрутах (ADR-090).
     let api = api::routes()
         .fallback(any(|| async { StatusCode::NOT_FOUND }))
+        .layer(axum::extract::DefaultBodyLimit::max(512 * 1024))
         .layer(axum::middleware::map_response(json_rejections));
     let router = Router::new().nest("/api/v1", api);
     let router = match web_dir {

@@ -640,10 +640,10 @@ pub fn is_question(text: &str) -> bool {
     !known || words > 1
 }
 
-/// Номер для сравнения: последние 9 цифр — так совпадут «+996 555 12 34 56» и «0555123456».
+/// Номер для сравнения — полный (ADR-090): «+996 555 12 34 56» и «0555123456» совпадут, а
+/// российский номер с теми же последними цифрами — нет.
 pub fn phone_key(phone: &str) -> Option<String> {
-    let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
-    (digits.len() >= 9).then(|| digits[digits.len() - 9..].to_string())
+    crate::domain::phone::key(phone)
 }
 
 /// Контакт из Телеграма: номер и чей он (кнопка «Поделиться номером» шлёт свой).
@@ -1152,8 +1152,7 @@ async fn link_customer(
     // фирмы не подключают. Несколько карточек — не угадываем (ADR-063).
     let found = sqlx::query!(
         r#"select id, name, branch_id from parties
-           where role = 'customer' and active and length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 9
-             and right(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = $1
+           where role = 'customer' and active and phone_norm(phone) = $1
            order by created_at desc"#,
         key
     )
@@ -2211,9 +2210,10 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
         let text = match texts.get(&r.id) {
             Some(t) => t.clone(),
             None => {
+                let data = crate::api::notifications::safe_data(&r.data);
                 let ev = Event {
                     action: &r.action,
-                    data: &r.data,
+                    data: &data,
                     entity_id: r.entity_id,
                     employee: r.employee.as_deref(),
                 };

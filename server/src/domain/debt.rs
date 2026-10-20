@@ -43,7 +43,10 @@ pub fn unpaid_parts(balance: i64, amounts: &[i64]) -> Vec<i64> {
 /// Последний день оплаты: долг, взятый в день `oldest`, платят в течение `due_days` дней
 /// (день долга — первый). На следующий день долг просрочен — ровно когда `overdue_tyiyn > 0`.
 pub fn due_date(oldest: NaiveDate, due_days: i32) -> NaiveDate {
-    oldest + chrono::Duration::days(i64::from(due_days) - 1)
+    // Без паники на любом сроке: дата за пределами календаря — самая дальняя (срок не наступит).
+    oldest
+        .checked_add_signed(chrono::Duration::days(i64::from(due_days) - 1))
+        .unwrap_or(NaiveDate::MAX)
 }
 
 /// Дней просрочки на `today`: 0 — срок не прошёл.

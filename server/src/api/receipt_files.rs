@@ -255,9 +255,11 @@ async fn download(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_static("inline"),
     );
+    // Скрытый владельцем файл не должен остаться в кэше браузера администратора: каждый показ
+    // спрашивает сервер.
     h.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=86400"),
+        HeaderValue::from_static("private, no-cache"),
     );
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -294,8 +296,15 @@ async fn hide(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Повтор после потерянного ответа — тот же результат, а не ошибка (инвариант 4).
     if f.hidden_at.is_some() {
-        return Err(AppError::Conflict("файл уже скрыт".into()));
+        let out = files_of(&mut tx, &ctx.user, f.receipt_id)
+            .await?
+            .into_iter()
+            .find(|x| x.id == id)
+            .ok_or(AppError::NotFound)?;
+        tx.commit().await?;
+        return Ok(Json(out));
     }
     sqlx::query!(
         "update receipt_files set hidden_at = now(), hidden_by = $2, hidden_reason = $3 where id = $1",
