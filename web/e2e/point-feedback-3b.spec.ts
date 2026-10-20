@@ -156,7 +156,7 @@ test('клиент с именем и фамилией, машина из спр
   await expect(page.getByText('Toyota Camry')).toBeVisible()
   await expect(page.getByText('пробег в милях')).toBeVisible()
   // Интервал масла показан в милях (хранится в км, ADR-084).
-  await expect(page.getByText(/каждые [\d\s]+ миль/).first()).toBeVisible()
+  await expect(page.getByText(/каждые [\d\s]+ мил(ь|и|я)/).first()).toBeVisible()
 })
 
 test('«Внести», «Изъять», «Перевести» у счёта на экране «Счета»', async ({ page }) => {

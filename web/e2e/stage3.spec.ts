@@ -415,9 +415,16 @@ test('перелив масла: 5 л по 100 в 50 л по 200 дают 190,91
   await page.goto('/oil-transfer')
   await page.locator('#oil-from').selectOption(from.id)
   await page.locator('#oil-to').selectOption(to.id)
+  // Количество не подставляется: «весь остаток» — кнопкой (проверка 20.10.2026).
+  await expect(page.locator('#oil-liters')).toHaveValue('')
+  await page.getByRole('button', { name: /весь остаток/ }).click()
   await expect(page.locator('#oil-liters')).toHaveValue('5')
   await expect(page.getByText(money('55 л по 190,91 с за л'))).toBeVisible()
   await page.getByRole('button', { name: 'Перелить' }).click()
+  // Подтверждение: что и куда; отменить сможет только владелец.
+  const confirm = page.getByRole('dialog', { name: 'Перелить масло?' })
+  await expect(confirm).toContainText('Отменить перелив сможет только владелец')
+  await confirm.getByRole('button', { name: 'Перелить' }).click()
   await expect(page.getByText(money('себестоимость 190,91 с за литр'))).toBeVisible()
   const stock = await apiGet<{ id: string; stock_qty: number }>(page.request, `/products/${to.id}`)
   expect(stock.stock_qty).toBe(55_000)
