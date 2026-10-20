@@ -112,6 +112,110 @@ pub(crate) struct ProfitOut {
     pub(crate) hours: Vec<HourRow>,
 }
 
+/// Предупреждения SPEC-08 «Достоверность» (ADR-092): прибыль периода может быть неполной или
+/// поменяться после просмотра.
+/// - `late_offline` — чеки без связи, проведённые позже своего учётного дня;
+/// - `salary_not_accrued` — месяц периода закончился, а оклад начислен не всем, у кого есть
+///   правило оклада в этом месяце;
+/// - `fee_rate_unset` — оплаты картой пришли на счёт, у которого в день чека не было ставки
+///   комиссии банка (перевод «QR владельцу» обычно без комиссии — его не считаем).
+pub(crate) async fn reliability_warnings(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<String>> {
+    let mut out = Vec::new();
+    let late = sqlx::query!(
+        r#"select count(*) as "n!", min(business_date) as "first?", max(business_date) as "last?"
+           from sales
+           where branch_id = $1 and business_date between $2 and $3 and client_time is not null
+             and business_date < (created_at at time zone 'Asia/Bishkek')::date"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if late.n > 0 {
+        let days = match (late.first, late.last) {
+            (Some(a), Some(b)) if a == b => format!(" за {}", a.format("%d.%m.%Y")),
+            (Some(a), Some(b)) => {
+                format!(" за {} — {}", a.format("%d.%m.%Y"), b.format("%d.%m.%Y"))
+            }
+            _ => String::new(),
+        };
+        out.push(format!(
+            "{} {}{days} провели позже их дня (без связи): прибыль тех дней изменилась после просмотра",
+            late.n,
+            crate::domain::qty::plural(late.n, "чек", "чека", "чеков")
+        ));
+    }
+    let salary = sqlx::query!(
+        r#"with months as (
+             select m::date as start, (m + interval '1 month - 1 day')::date as stop
+             from generate_series(date_trunc('month', $2::date), date_trunc('month', $3::date),
+                                  interval '1 month') m
+             where (m + interval '1 month - 1 day')::date < (now() at time zone 'Asia/Bishkek')::date
+           ), due as (
+             select distinct mo.start, r.employee_id
+             from months mo
+             join employee_pay_rules r on r.branch_id = $1 and r.kind = 'monthly_salary'
+               and r.active_from <= mo.stop and (r.active_to is null or r.active_to > mo.start)
+             join employees e on e.id = r.employee_id and e.active
+           )
+           select d.start as "month!", count(*) as "due!",
+                  count(*) filter (where not exists (
+                    select 1 from payroll_accruals a
+                    where a.branch_id = $1 and a.employee_id = d.employee_id
+                      and a.kind = 'monthly_salary' and a.reversal_of is null
+                      and date_trunc('month', a.business_date) = d.start
+                      and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)
+                  )) as "missing!"
+           from due d group by d.start order by d.start"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for m in salary.into_iter().filter(|m| m.missing > 0) {
+        out.push(format!(
+            "оклад за {} начислен не всем ({} из {}): прибыль месяца ещё не полная",
+            m.month.format("%m.%Y"),
+            m.due - m.missing,
+            m.due
+        ));
+    }
+    let no_rate = sqlx::query_scalar!(
+        r#"select distinct a.name from sale_payments p
+           join sales s on s.id = p.sale_id
+           join cash_accounts a on a.id = p.account_id
+           where s.branch_id = $1 and s.business_date between $2 and $3
+             and p.method = 'card' and p.amount_tyiyn > 0
+             and not exists (select 1 from cash_account_fees f
+                             where f.account_id = p.account_id and f.active_from <= s.business_date
+                               and (f.active_to is null or f.active_to > s.business_date))
+           order by 1"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if !no_rate.is_empty() {
+        out.push(format!(
+            "оплаты картой пришли на счёт без ставки комиссии банка ({}): комиссия по ним в прибыли — ноль, задайте ставку в «Счетах»",
+            no_rate
+                .iter()
+                .map(|n| format!("«{n}»"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(out)
+}
+
 #[derive(Deserialize)]
 struct Period {
     from: Option<NaiveDate>,
@@ -494,6 +598,7 @@ pub(crate) async fn profit_data(
             "по {pending} чекам в долг процент кассира начислится после погашения"
         ));
     }
+    warnings.extend(reliability_warnings(&mut *conn, branch_id, from, to).await?);
 
     let staff = crate::api::payroll::staff_pay(&mut *conn, branch_id, from, to).await?;
     let hours = if from == to {

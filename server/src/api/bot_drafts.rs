@@ -529,11 +529,6 @@ async fn account(
     q: Option<&str>,
 ) -> AppResult<Result<Source, String>> {
     crate::api::cash::ensure_accounts(conn, branch_id).await?;
-    if let Some(q) = q
-        && is_outside(q)
-    {
-        return Ok(Err(crate::api::receipts::NO_OUTSIDE.into()));
-    }
     let all = sqlx::query!(
         r#"select id, name, kind, balance_tyiyn, is_default from cash_accounts
            where branch_id = $1 and active order by is_default desc, kind, name"#,
@@ -541,6 +536,12 @@ async fn account(
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Подсказка при «не найдена» — настоящие кассы и счета филиала, а не выдуманный список.
+    let names = all
+        .iter()
+        .map(|a| format!("«{}»", one_line(&a.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
     let found: Vec<_> = match q {
         // Без названия — касса смены (`is_default` — только у неё, ADR-077).
         None => all
@@ -560,14 +561,20 @@ async fn account(
             }
         }
     };
+    // «Из своих» — отказ, только если так не называется ни одна касса: счёт «Свои деньги»
+    // владельца выбирается как обычный (ADR-092).
+    if found.is_empty()
+        && let Some(q) = q
+        && is_outside(q)
+    {
+        return Ok(Err(crate::api::receipts::NO_OUTSIDE.into()));
+    }
     let asked = q.unwrap_or("Касса").to_string();
     Ok(choose(
         found,
         |a| format!("{}: {}", a.name, format_som(a.balance_tyiyn)),
         |_| false,
-        format!(
-            "Касса «{asked}» не найдена. Кассы: «Касса», «Счёт», «Сейф магазина», «Сейф владельца»."
-        ),
+        format!("Касса «{asked}» не найдена. Кассы и счета: {names}."),
         format!("По «{asked}» подходит несколько касс"),
     )
     .map(|a| Source::Account {

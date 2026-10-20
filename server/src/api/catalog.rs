@@ -1051,7 +1051,9 @@ pub async fn create_product_tx(
     if let Some(cost) = req.initial_cost_tyiyn.filter(|c| *c > 0) {
         ops::check_amount(cost)?;
         sqlx::query!(
-            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+            r#"update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4,
+                                          owner_cost_qty = $3, owner_cost_tyiyn = $4
+               where branch_id = $1 and product_id = $2"#,
             ctx.user.branch_id,
             id,
             container_ml.unwrap_or(1),

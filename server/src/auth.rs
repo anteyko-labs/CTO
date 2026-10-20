@@ -173,24 +173,47 @@ pub fn session_token(parts: &Parts) -> Option<&str> {
     cookie_value(parts, SESSION_COOKIE)
 }
 
-/// Адрес клиента: за туннелем — из заголовка Cloudflare, за прокси — первый в цепочке.
+/// Адрес клиента для предела попыток входа (ADR-092). Сервер слушает 127.0.0.1, к нему ходят
+/// наши прокси на той же машине: Caddy (входящий X-Forwarded-For заменяет своим) и
+/// `tailscale serve` (дописывает адрес в конец цепочки). Поэтому адрес — последний в цепочке:
+/// первые подставляет кто угодно. Пришли напрямую не с локального адреса и не с прокси из
+/// `TRUSTED_PROXIES` (через запятую, например адрес Caddy в Docker) — заголовкам не верим,
+/// берём адрес соединения. Заголовок Cloudflare — только за туннелем (TRUST_CF_HEADER=1).
 pub fn client_addr(parts: &Parts) -> String {
+    let peer = parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+    let trusted = std::env::var("TRUSTED_PROXIES").unwrap_or_default();
+    client_addr_with(parts, peer, &trusted)
+}
+
+fn client_addr_with(parts: &Parts, peer: Option<std::net::IpAddr>, trusted: &str) -> String {
+    let via_proxy = peer.is_none_or(|ip| {
+        ip.is_loopback()
+            || trusted
+                .split(',')
+                .filter_map(|t| t.trim().parse::<std::net::IpAddr>().ok())
+                .any(|t| t == ip)
+    });
+    if !via_proxy {
+        return peer.map_or_else(|| "local".into(), |ip| ip.to_string());
+    }
     let header = |name: &str| {
         parts
             .headers
             .get(name)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.split(',').next().unwrap_or("").trim().to_string())
-            .filter(|v| !v.is_empty() && v.len() <= 64)
+            .and_then(|v| v.rsplit(',').map(str::trim).find(|x| !x.is_empty()))
+            .filter(|v| v.len() <= 64)
+            .map(str::to_string)
     };
-    // Адрес ставит наш прокси (Caddy в магазине, tailscale serve у владельца): входящий
-    // X-Forwarded-For от браузера они заменяют. Заголовок Cloudflare принимаем, только если
-    // сервер и правда за туннелем Cloudflare (TRUST_CF_HEADER=1) — иначе его подставит кто угодно.
     let cf = std::env::var("TRUST_CF_HEADER").is_ok_and(|v| v == "1");
     cf.then(|| header("cf-connecting-ip"))
         .flatten()
         .or_else(|| header("x-forwarded-for"))
         .or_else(|| header("x-real-ip"))
+        .or_else(|| peer.map(|ip| ip.to_string()))
         .unwrap_or_else(|| "local".into())
 }
 
@@ -260,5 +283,50 @@ impl FromRequestParts<AppState> for Owner {
         let user = CurrentUser::from_request_parts(parts, state).await?;
         user.require_owner()?;
         Ok(Self(user))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_addr_with;
+    use axum::http::Request;
+
+    fn parts(xff: Option<&str>) -> axum::http::request::Parts {
+        let mut b = Request::builder().uri("/");
+        if let Some(v) = xff {
+            b = b.header("x-forwarded-for", v);
+        }
+        b.body(()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn login_limit_key_is_not_set_by_the_client() {
+        let local = Some("127.0.0.1".parse().unwrap());
+        // Через tailscale serve: подставленный клиентом адрес первый, настоящий — последний.
+        assert_eq!(
+            client_addr_with(&parts(Some("6.6.6.6, 100.64.0.7")), local, ""),
+            "100.64.0.7"
+        );
+        assert_eq!(
+            client_addr_with(&parts(Some("192.168.1.20")), local, ""),
+            "192.168.1.20"
+        );
+        // Напрямую с чужого адреса — заголовку не верим.
+        let lan = Some("192.168.1.30".parse().unwrap());
+        assert_eq!(
+            client_addr_with(&parts(Some("6.6.6.6")), lan, ""),
+            "192.168.1.30"
+        );
+        // Прокси из TRUSTED_PROXIES (Caddy в Docker) — адрес из заголовка.
+        assert_eq!(
+            client_addr_with(
+                &parts(Some("10.0.0.5")),
+                Some("172.18.0.2".parse().unwrap()),
+                "172.18.0.2"
+            ),
+            "10.0.0.5"
+        );
+        assert_eq!(client_addr_with(&parts(None), local, ""), "127.0.0.1");
+        assert_eq!(client_addr_with(&parts(None), None, ""), "local");
     }
 }

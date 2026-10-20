@@ -919,6 +919,7 @@ async fn receipt_reversal(pool: PgPool) {
     let rev = |op| ReverseReq {
         op_id: op,
         comment: "ошибка".into(),
+        in_correction: false,
     };
     let mut tx = pool.begin().await.unwrap();
     let out = reverse_receipt_tx(&mut tx, &w.admin, r.id, rev(Uuid::now_v7()))
@@ -1352,6 +1353,7 @@ async fn receipt_reversal_revalues_rest_at_restored_cost(pool: PgPool) {
         ReverseReq {
             op_id: Uuid::now_v7(),
             comment: "ошибка цены".into(),
+            in_correction: false,
         },
     )
     .await
@@ -5350,6 +5352,7 @@ async fn receipt_reversal_of_sold_goods_is_owner_only(pool: PgPool) {
                 ReverseReq {
                     op_id: Uuid::now_v7(),
                     comment: "ошибка".into(),
+                    in_correction: false,
                 },
             )
             .await;
@@ -7187,6 +7190,7 @@ async fn storno(pool: &PgPool, ctx: &Ctx, id: Uuid) -> Result<(), AppError> {
         ReverseReq {
             op_id: Uuid::now_v7(),
             comment: String::new(),
+            in_correction: false,
         },
     )
     .await;
@@ -7829,6 +7833,47 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
     )
     .await;
     assert!(r.follow.is_some(), "{}", last_tool_result(&fake));
+    // Касса не найдена — подсказка из настоящих касс филиала (ADR-092).
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_receipt",
+        serde_json::json!({ "paid_from": "Конверт", "lines": [{ "product": "Фильтр W712", "quantity": "10 шт", "price": "100" }] }),
+    )
+    .await;
+    assert!(r.follow.is_none());
+    let said = last_tool_result(&fake);
+    assert!(
+        said.contains("Касса «Конверт» не найдена. Кассы и счета: ")
+            && said.contains("«Сейф владельца»"),
+        "{said}"
+    );
+    // Счёт со словом «свои» в названии — обычный счёт, черновик по нему готовится.
+    sqlx::query(
+        "insert into cash_accounts (id, branch_id, name, kind, owner_only, is_default) values ($1, $2, 'Свои деньги', 'other', true, false)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(w.owner.user.branch_id)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let r = draft_turn(
+        &mut conn,
+        &a,
+        &fake,
+        chat,
+        "draft_receipt",
+        serde_json::json!({ "paid_from": "Свои деньги", "lines": [{ "product": "Фильтр W712", "quantity": "10 шт", "price": "100" }] }),
+    )
+    .await;
+    assert!(r.follow.is_some(), "{}", last_tool_result(&fake));
+    assert!(
+        last_tool_result(&fake).contains("«Свои деньги"),
+        "{}",
+        last_tool_result(&fake)
+    );
 
     // Сотрудника отключили, пока черновик ждал кнопки, — не проводится.
     let r = draft_turn(
@@ -8821,6 +8866,7 @@ mod point_feedback_stock {
             ReverseReq {
                 op_id: Uuid::now_v7(),
                 comment: "ошибка".into(),
+                in_correction: false,
             },
         )
         .await
@@ -9038,6 +9084,7 @@ mod point_feedback_stock {
             ReverseReq {
                 op_id: Uuid::now_v7(),
                 comment: "не та накладная".into(),
+                in_correction: false,
             },
         )
         .await

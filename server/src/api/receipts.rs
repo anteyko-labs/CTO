@@ -660,6 +660,25 @@ pub async fn post_receipt_tx(
                 },
             )
             .await?;
+            // Владелец узнаёт и об оплате части сразу — как о полной оплате (ADR-092).
+            let name = sqlx::query_scalar!("select name from cash_accounts where id = $1", account)
+                .fetch_one(&mut *conn)
+                .await?;
+            ops::audit(
+                conn,
+                ctx,
+                "receipt.supplier_payment",
+                "receipt",
+                Some(id),
+                json!({
+                    "number": number,
+                    "amount": part,
+                    "account": name,
+                    "partial": true,
+                    "debt": total.saturating_sub(part),
+                }),
+            )
+            .await?;
         }
         (Some(account), None) => pay_supplier(conn, ctx, id, number, total, account).await?,
         _ => {}
@@ -742,6 +761,43 @@ pub struct ReverseReq {
     pub op_id: Uuid,
     #[serde(default)]
     pub comment: String,
+    /// Сторно внутри «Исправить»: верный приход проводится той же операцией, поэтому о минусе
+    /// судит исправление после него (ADR-092), а не сторно.
+    #[serde(skip)]
+    pub in_correction: bool,
+}
+
+/// Остатки товаров накладной (по живым карточкам, ADR-044): id, название, единица, остаток.
+/// «Исправить» сравнивает их до сторно и после верного прихода (ADR-092).
+pub async fn receipt_stock(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    receipt_id: Uuid,
+) -> AppResult<Vec<(Uuid, String, String, i64)>> {
+    let ids = sqlx::query_scalar!(
+        "select distinct product_id from receipt_lines where receipt_id = $1",
+        receipt_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut live = std::collections::BTreeSet::new();
+    for id in ids {
+        live.insert(ops::live_product(conn, id).await?);
+    }
+    let mut out = Vec::with_capacity(live.len());
+    for id in live {
+        let r = sqlx::query!(
+            r#"select p.name, p.unit, coalesce(bp.stock_qty, 0) as "stock!"
+               from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
+               where p.id = $1"#,
+            id,
+            branch_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        out.push((id, r.name, r.unit, r.stock));
+    }
+    Ok(out)
 }
 
 pub async fn reverse_receipt_tx(
@@ -788,7 +844,7 @@ pub async fn reverse_receipt_tx(
     let mut negative = Vec::new();
     for (product_id, qty) in &take {
         let r = sqlx::query!(
-            r#"select p.name, coalesce(bp.stock_qty, 0) as "stock!"
+            r#"select p.name, p.unit, coalesce(bp.stock_qty, 0) as "stock!"
                from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
                where p.id = $1"#,
             product_id,
@@ -797,9 +853,13 @@ pub async fn reverse_receipt_tx(
         .fetch_one(&mut *conn)
         .await?;
         if *qty > 0 && r.stock < *qty {
-            negative.push(
-                json!({ "name": r.name, "stock": r.stock, "qty": qty, "after": r.stock - qty }),
-            );
+            negative.push(json!({
+                "name": r.name,
+                "unit": r.unit,
+                "stock": r.stock,
+                "qty": qty,
+                "after": r.stock - qty,
+            }));
         }
     }
     if !negative.is_empty() && !ctx.user.is_owner() {
@@ -954,7 +1014,7 @@ pub async fn reverse_receipt_tx(
         json!({ "original": id, "number": orig.number, "reversal_number": number }),
     )
     .await?;
-    if !negative.is_empty() {
+    if !negative.is_empty() && !req.in_correction {
         ops::audit(
             conn,
             ctx,
@@ -1366,9 +1426,13 @@ pub async fn purchase_price_tx(
     ops::lock_pool(&mut *conn, branch_id, product_id).await?;
     // Закупок не было — цена владельца становится «последней закупочной»: следующие продажи
     // при нехватке остатка возьмут себестоимость по ней (SPEC-03). Цену прихода не перебиваем.
+    // Цена владельца хранится и отдельно: сторно закупки без других закупок вернёт её (ADR-092).
     sqlx::query!(
-        r#"update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4
-           where branch_id = $1 and product_id = $2 and last_cost_qty = 0"#,
+        r#"update branch_products
+           set last_cost_qty = case when last_cost_qty = 0 then $3 else last_cost_qty end,
+               last_cost_tyiyn = case when last_cost_qty = 0 then $4 else last_cost_tyiyn end,
+               owner_cost_qty = $3, owner_cost_tyiyn = $4
+           where branch_id = $1 and product_id = $2"#,
         branch_id,
         product_id,
         per,

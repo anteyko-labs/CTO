@@ -158,6 +158,21 @@ pub async fn post_transfer_tx(
     }
     // Стоимость уходит по средней источника; весь остаток — ровно вся его стоимость (ADR-011).
     let value = cost_of(req.qty_ml, &source).ok_or_else(overflow)?;
+    // У получателя ещё нет цены закупки: продажа сверх его остатка возьмёт себестоимость по
+    // цене перелитого масла, а не нулём (ADR-092). Свою цену получателя не перебиваем.
+    ops::lock_pool(conn, branch_id, req.to_product_id).await?;
+    if value > 0 {
+        sqlx::query!(
+            r#"update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4
+               where branch_id = $1 and product_id = $2 and last_cost_qty = 0"#,
+            branch_id,
+            req.to_product_id,
+            req.qty_ml,
+            value
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
     let number = ops::next_counter(conn, branch_id, "oil_transfer").await?;
     let id = new_id();
     sqlx::query!(

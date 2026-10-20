@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update payroll_pending set debt_remaining_tyiyn = debt_remaining_tyiyn - $2\n                   where sale_id = $1 and debt_remaining_tyiyn >= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "45b16e679d44d80b876accf8ae5bbf781333f94f9a550f6b79103cb63f8d002e"
+}

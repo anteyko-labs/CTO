@@ -2194,6 +2194,8 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
                                          now() - interval '1 day')
              and a.created_at >= t.linked_at
              and a.action = any($3)
+             -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.
+             and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')
              and not exists (select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = a.id)
            order by a.created_at, a.id, t.chat_id
            limit $4"#,
@@ -2279,6 +2281,8 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
                                          now() - interval '1 day')
              and a.created_at >= t.linked_at
              and a.action = any($3)
+             -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.
+             and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')
              and not exists (select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = a.id)"#,
         cursor,
         since,
@@ -2690,29 +2694,28 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
         "battery.intake" => (
             format!("🔋 Приём аккумуляторов № {}", num("number")),
             format!(
-                "{},{:03} кг · выдали {}",
-                num("grams") / 1000,
-                num("grams") % 1000,
+                "{} · выдали {}",
+                crate::domain::money::format_kg(num("grams")),
                 money_of(data, "amount")
             ),
         ),
         "oil.transfer_admin" => (
             format!("🛢 Перелив № {} (администратор)", num("number")),
             format!(
-                "{} → {}, {} мл, себестоимость {}",
+                "{} → {}, {}, себестоимость {}",
                 txt("from_name"),
                 txt("to_name"),
-                num("qty_ml"),
+                crate::domain::qty::liters(num("qty_ml")),
                 money_of(data, "value")
             ),
         ),
         "oil.transfer" => (
             format!("🛢 Перелив № {}", num("number")),
             format!(
-                "{} → {}, {} мл",
+                "{} → {}, {}",
                 txt("from_name"),
                 txt("to_name"),
-                num("qty_ml")
+                crate::domain::qty::liters(num("qty_ml"))
             ),
         ),
         "product.merge" => (

@@ -270,27 +270,42 @@ async fn live_purchases(
 }
 
 /// После сторно или отмены закупки «последней закупочной» становится последняя живая
-/// закупка любого вида; не осталось ни одной — ноль. Вызывать до движения сторно: если
-/// стоимость остатка уйдёт в минус, переоценка возьмёт уже восстановленную цену (ADR-044).
+/// закупка любого вида; не осталось ни одной — цена, которую указал владелец (при заведении
+/// товара или для проданного без цены, ADR-092), а нет и её — ноль. Вызывать до движения
+/// сторно: если стоимость остатка уйдёт в минус, переоценка возьмёт уже восстановленную цену
+/// (ADR-044).
 pub async fn restore_last_cost(
     conn: &mut PgConnection,
     branch_id: Uuid,
     product_id: Uuid,
 ) -> AppResult<()> {
-    let (qty, cost) = live_purchases(conn, branch_id, product_id)
+    let live = live_purchases(conn, branch_id, product_id)
         .await?
         .first()
-        .copied()
-        .unwrap_or((0, 0));
-    sqlx::query!(
-        "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
-        branch_id,
-        product_id,
-        qty,
-        cost
-    )
-    .execute(&mut *conn)
-    .await?;
+        .copied();
+    match live {
+        Some((qty, cost)) => {
+            sqlx::query!(
+                "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+                branch_id,
+                product_id,
+                qty,
+                cost
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+        None => {
+            sqlx::query!(
+                r#"update branch_products set last_cost_qty = owner_cost_qty, last_cost_tyiyn = owner_cost_tyiyn
+                   where branch_id = $1 and product_id = $2"#,
+                branch_id,
+                product_id
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -352,6 +367,9 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
             m.doc_type,
             "receipt" | "battery_intake" | "battery_tradein" | "stock_in"
         )
+        // Оприходование по нулю — «цены нет», как и для последней закупочной (ADR-086,
+        // ADR-092): оно не обнуляет стоимость остатка и себестоимость прошлых продаж.
+        && (m.doc_type != "stock_in" || m.value_delta > 0)
     {
         // Только закупка (и приём аккумулятора, в том числе в оплату чека) задаёт цену: возврат по чеку с нулевой себестоимостью не обнуляет минус.
         per_unit(m.value_delta, m.qty_delta)

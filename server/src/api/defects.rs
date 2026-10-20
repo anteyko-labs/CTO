@@ -855,11 +855,12 @@ pub async fn reverse_tx(
         // Товар взамен уже продан: остаток уйдёт в минус — проводим, владельцу уведомление,
         // как при сторно прихода (ADR-065, ADR-070).
         if rq > 0 && pool.qty < rq {
-            let name = sqlx::query_scalar!("select name from products where id = $1", target)
+            let p = sqlx::query!("select name, unit from products where id = $1", target)
                 .fetch_one(&mut *conn)
                 .await?;
             negative = Some(json!([{
-                "name": name,
+                "name": p.name,
+                "unit": p.unit,
                 "stock": pool.qty,
                 "qty": rq,
                 "after": pool.qty - rq,

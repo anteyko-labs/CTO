@@ -67,10 +67,14 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("не удалось занять {}: {e}", config.bind_addr))?;
     tracing::info!(addr = %config.bind_addr, "сервер запущен");
-    axum::serve(listener, app(state, web))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .map_err(|e| e.to_string())
+    // Адрес соединения нужен пределу попыток входа: заголовкам верим только от своего прокси.
+    axum::serve(
+        listener,
+        app(state, web).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+    .map_err(|e| e.to_string())
 }

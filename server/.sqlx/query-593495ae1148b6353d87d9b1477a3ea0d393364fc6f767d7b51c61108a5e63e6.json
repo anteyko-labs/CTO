@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce((select stock_qty from branch_products\n                                    where branch_id = $1 and product_id = $2), 0) as \"n!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "593495ae1148b6353d87d9b1477a3ea0d393364fc6f767d7b51c61108a5e63e6"
+}

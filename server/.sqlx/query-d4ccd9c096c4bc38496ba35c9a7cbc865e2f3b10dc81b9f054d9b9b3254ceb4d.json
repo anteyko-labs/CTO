@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select unknown_units from payroll_cost_pending where sale_id = $1 and line_no = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "unknown_units",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d4ccd9c096c4bc38496ba35c9a7cbc865e2f3b10dc81b9f054d9b9b3254ceb4d"
+}

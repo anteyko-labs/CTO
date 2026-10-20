@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(min(a.created_at), now()) as \"low!\"\n           from audit_log a\n           join telegram_links t on t.branch_id = a.branch_id\n           join users o on o.id = t.user_id and o.active and o.role = 'owner'\n           where a.created_at > greatest($1::timestamptz - interval '15 minutes', $2::timestamptz,\n                                         now() - interval '1 day')\n             and a.created_at >= t.linked_at\n             and a.action = any($3)\n             -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.\n             and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')\n             and not exists (select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = a.id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "low!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7bea20a3c1e36b4a86c22881919130c5ac1e814c0aa087ab82685494048faff2"
+}

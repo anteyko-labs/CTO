@@ -885,6 +885,45 @@ pub async fn accrue_for_sale(conn: &mut PgConnection, ctx: &Ctx, s: SaleAccrual)
             debt,
         )
         .await?;
+        // У клиента был аванс (переплата, деньги прежнего чека после его исправления): долг
+        // этого чека им уже частично оплачен. Процент с этой части — сразу, ожидание — только на
+        // настоящий долг (ADR-092). Долг чека уже в балансе клиента.
+        let balance = sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", pid)
+            .fetch_one(&mut *conn)
+            .await?;
+        let covered = debt.saturating_sub(balance.max(0)).clamp(0, debt);
+        if covered > 0 {
+            let base = div_round(
+                i128::from(gross - now_base) * i128::from(covered),
+                i128::from(debt),
+            )
+            .unwrap_or(0);
+            let accrued = div_round(i128::from(base) * i128::from(rate), 10_000).unwrap_or(0);
+            add_accrual(
+                conn,
+                ctx,
+                Some(business_date),
+                Accrual {
+                    employee_id: cashier_id,
+                    kind: "revenue_percent",
+                    amount: accrued,
+                    base: Some(base),
+                    rule_id: Some(rule_id),
+                    doc_type: "sale",
+                    doc_id: Some(sale_id),
+                    comment: "долг оплачен авансом клиента",
+                },
+            )
+            .await?;
+            sqlx::query!(
+                r#"update payroll_pending set debt_remaining_tyiyn = debt_remaining_tyiyn - $2
+                   where sale_id = $1 and debt_remaining_tyiyn >= $2"#,
+                sale_id,
+                covered
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
     }
     Ok(())
 }

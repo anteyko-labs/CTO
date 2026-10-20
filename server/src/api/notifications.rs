@@ -159,6 +159,38 @@ fn stock_in_goods(data: &Value) -> String {
     }
 }
 
+/// Строки «ушло в минус»: «Масло 5W-30: −5,5 л, Фильтр: −3 шт». Старые записи без единицы —
+/// числом со знаком «−».
+fn negative_lines(data: &Value) -> String {
+    data.get("lines")
+        .and_then(Value::as_array)
+        .map(|l| {
+            l.iter()
+                .map(|x| {
+                    let after = x.get("after").and_then(Value::as_i64).unwrap_or(0);
+                    let qty = match x.get("unit").and_then(Value::as_str) {
+                        Some(unit) => crate::domain::qty::qty_text(after, unit),
+                        None if after < 0 => format!("−{}", after.unsigned_abs()),
+                        None => after.to_string(),
+                    };
+                    format!(
+                        "{}: {qty}",
+                        x.get("name").and_then(Value::as_str).unwrap_or("товар")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
+/// Дата из записи «2026-10-20» — как везде на экранах: «20.10.2026».
+fn ru_date(s: &str) -> String {
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map(|d| d.format("%d.%m.%Y").to_string())
+        .unwrap_or_else(|_| s.to_string())
+}
+
 fn comment(data: &Value) -> String {
     data.get("comment")
         .and_then(Value::as_str)
@@ -332,17 +364,21 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             ),
             format!(
                 "{} — полученный взамен товар уже продан, остаток ушёл в минус — проверьте склад",
-                data.get("lines")
-                    .and_then(Value::as_array)
-                    .map(|l| l
-                        .iter()
-                        .map(|x| format!(
-                            "{}: {}",
-                            x.get("name").and_then(Value::as_str).unwrap_or("товар"),
-                            x.get("after").and_then(Value::as_i64).unwrap_or(0)
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", "))
+                negative_lines(data)
+            ),
+        ),
+        // Исправление накладной (ADR-092): верный приход уже проведён, а остаток всё равно в
+        // минусе — проверить склад; временный минус между сторно и верным приходом не пишется.
+        "receipt.reverse_negative" if data.get("correction").and_then(Value::as_bool) == Some(true) => (
+            format!(
+                "Исправление накладной № {}: остаток в минусе",
+                num("number").unwrap_or(0)
+            ),
+            format!(
+                "{} — после верного прихода{} товара меньше, чем уже продано — проверьте склад",
+                negative_lines(data),
+                num("new_number")
+                    .map(|n| format!(" № {n}"))
                     .unwrap_or_default()
             ),
         ),
@@ -353,18 +389,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             ),
             format!(
                 "{} — товар уже продан, остаток ушёл в минус — проведите верный приход",
-                data.get("lines")
-                    .and_then(Value::as_array)
-                    .map(|l| l
-                        .iter()
-                        .map(|x| format!(
-                            "{}: {}",
-                            x.get("name").and_then(Value::as_str).unwrap_or("товар"),
-                            x.get("after").and_then(Value::as_i64).unwrap_or(0)
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", "))
-                    .unwrap_or_default()
+                negative_lines(data)
             ),
         ),
         "battery.intake_reverse" => (
@@ -373,8 +398,8 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 num("number").unwrap_or(0)
             ),
             format!(
-                "{} г, в кассу вернулось {}{}",
-                num("grams").unwrap_or(0),
+                "{}, в кассу вернулось {}{}",
+                crate::domain::money::format_kg(num("grams").unwrap_or(0)),
                 money(num("amount")),
                 comment(data)
             ),
@@ -420,7 +445,8 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 data.get("after")
                     .and_then(|a| a.get("active_from"))
                     .and_then(Value::as_str)
-                    .unwrap_or("")
+                    .map(ru_date)
+                    .unwrap_or_default()
             ),
         ),
         "party.limit_request" => (
@@ -604,10 +630,10 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "oil.transfer_reverse" => (
             format!("Отменён перелив № {}", num("number").unwrap_or(0)),
             format!(
-                "{} → {}, {} мл вернулись в источник; причина: {}",
+                "{} → {}, {} вернулись в источник; причина: {}",
                 text("from_name"),
                 text("to_name"),
-                num("qty_ml").unwrap_or(0),
+                crate::domain::qty::liters(num("qty_ml").unwrap_or(0)),
                 text("comment")
             ),
         ),
@@ -633,6 +659,14 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             // «Из своих» — только в записях до ADR-079.
             if data.get("outside").and_then(Value::as_bool) == Some(true) {
                 format!("{} — из своих, мимо касс", money(num("amount")))
+            } else if data.get("partial").and_then(Value::as_bool) == Some(true) {
+                // Часть сразу при приходе (ADR-092), остальное — долг поставщику.
+                format!(
+                    "{} из «{}» сразу при приходе, остаток {} — в долг",
+                    money(num("amount")),
+                    text("account"),
+                    money(num("debt"))
+                )
             } else {
                 format!("{} из «{}»", money(num("amount")), text("account"))
             },
@@ -910,10 +944,10 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 num("number").unwrap_or(0)
             ),
             format!(
-                "{} → {}, {} мл, себестоимость {}",
+                "{} → {}, {}, себестоимость {}",
                 text("from_name"),
                 text("to_name"),
-                num("qty_ml").unwrap_or(0),
+                crate::domain::qty::liters(num("qty_ml").unwrap_or(0)),
                 money(num("value"))
             ),
         ),
@@ -1166,22 +1200,56 @@ mod tests {
             &json!({ "number": 7, "lines": [{ "name": "Фильтр", "after": -3 }] }),
         );
         assert_eq!(title, "Сторно накладной № 7: остаток ушёл в минус");
-        assert!(text.contains("Фильтр: -3"), "{text}");
+        assert!(text.contains("Фильтр: −3"), "{text}");
         assert!(text.contains("проведите верный приход"), "{text}");
+        let (_, text) = describe(
+            "receipt.reverse_negative",
+            &json!({ "number": 1, "lines": [{ "name": "Масло 5W-30 4 л", "unit": "ml", "after": -5500 }] }),
+        );
+        assert!(text.starts_with("Масло 5W-30 4 л: −5,5 л — "), "{text}");
+        let (title, text) = describe(
+            "receipt.reverse_negative",
+            &json!({ "number": 2, "new_number": 3, "correction": true,
+                     "lines": [{ "name": "Фильтр", "unit": "piece", "after": -2 }] }),
+        );
+        assert_eq!(title, "Исправление накладной № 2: остаток в минусе");
+        assert!(
+            text.contains("Фильтр: −2 шт") && text.contains("№ 3") && !text.contains("проведите"),
+            "{text}"
+        );
+        let (_, text) = describe(
+            "defect.reverse_negative",
+            &json!({ "number": 4, "lines": [{ "name": "Лом", "unit": "g", "after": -12_500 }] }),
+        );
+        assert!(text.starts_with("Лом: −12,5 кг"), "{text}");
+        let (title, text) = describe(
+            "receipt.supplier_payment",
+            &json!({ "number": 5, "amount": 30_000, "account": "Сейф", "partial": true, "debt": 90_000 }),
+        );
+        assert_eq!(title, "Оплата поставщику: накладная № 5");
+        assert_eq!(
+            text,
+            "300 с из «Сейф» сразу при приходе, остаток 900 с — в долг"
+        );
+        let (_, text) = describe(
+            "oil.transfer_admin",
+            &json!({ "number": 1, "from_name": "Бочка", "to_name": "Розлив", "qty_ml": 2000, "value": 100_000 }),
+        );
+        assert_eq!(text, "Бочка → Розлив, 2 л, себестоимость 1 000 с");
         let (title, text) = describe(
             "battery.intake_reverse",
             &json!({ "number": 3, "grams": 4000, "amount": 40000, "comment": "ошиблись" }),
         );
         assert_eq!(title, "Отменён приём аккумуляторов № 3");
         assert!(
-            text.contains("4000 г") && text.contains("ошиблись"),
+            text.contains("4 кг, в кассу") && text.contains("ошиблись"),
             "{text}"
         );
         let (_, text) = describe(
             "settings.payment_fee",
             &json!({ "method": "card", "before": { "rate_bp": 50 }, "after": { "rate_bp": 100, "active_from": "2026-10-20" } }),
         );
-        assert_eq!(text, "было 0,50 %, стало 1,00 % с 2026-10-20");
+        assert_eq!(text, "было 0,50 %, стало 1,00 % с 20.10.2026");
         let (title, _) = describe(
             "settings.payment_fee",
             &json!({ "account": "Оптима", "after": { "rate_bp": 50, "active_from": "2026-10-20" } }),

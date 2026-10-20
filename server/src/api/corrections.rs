@@ -1366,6 +1366,7 @@ async fn reverse(
                 crate::api::receipts::ReverseReq {
                     op_id: new_id(),
                     comment,
+                    in_correction: true,
                 },
             )
             .await?
@@ -1702,6 +1703,13 @@ pub async fn correct_tx(
     check_correctable(&mut *conn, branch_id, kind, req.original_id).await?;
     let before = load_doc(&mut *conn, &ctx.user, kind, req.original_id).await?;
     prelock_products(&mut *conn, branch_id, req.original_id, &req.doc).await?;
+    // Остатки товаров накладной до исправления: минус после верного прихода — повод для
+    // уведомления, временный минус между сторно и верным приходом — нет (ADR-092).
+    let stock_before = if kind == Kind::Receipt {
+        crate::api::receipts::receipt_stock(&mut *conn, branch_id, req.original_id).await?
+    } else {
+        Vec::new()
+    };
     let reversal_id = reverse(
         &mut *conn,
         ctx,
@@ -1711,6 +1719,39 @@ pub async fn correct_tx(
     )
     .await?;
     let (new_doc_id, new_number) = post_new(&mut *conn, ctx, kind, &req.doc, &before).await?;
+    if kind == Kind::Receipt {
+        let mut lines = Vec::new();
+        for (id, name, unit, was) in &stock_before {
+            let now = sqlx::query_scalar!(
+                r#"select coalesce((select stock_qty from branch_products
+                                    where branch_id = $1 and product_id = $2), 0) as "n!""#,
+                branch_id,
+                id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            if now < 0 && now < *was {
+                lines.push(json!({ "name": name, "unit": unit, "stock": was, "after": now }));
+            }
+        }
+        if !lines.is_empty() {
+            ops::audit(
+                &mut *conn,
+                ctx,
+                "receipt.reverse_negative",
+                "receipt",
+                Some(reversal_id),
+                json!({
+                    "original": req.original_id,
+                    "number": before.number,
+                    "new_number": new_number,
+                    "correction": true,
+                    "lines": lines,
+                }),
+            )
+            .await?;
+        }
+    }
     let after = load_doc(&mut *conn, &ctx.user, kind, new_doc_id).await?;
     let changes = diff(&before.desc, &after.desc);
     let id = new_id();

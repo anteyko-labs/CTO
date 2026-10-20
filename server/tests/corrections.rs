@@ -1108,3 +1108,609 @@ async fn multi_line_stock_in_correction_is_as_if(pool: PgPool) {
     .await;
     w.verify_stock().await;
 }
+
+// ---- Проверка 20.10.2026 (ADR-092) ----
+
+async fn audit_rows(pool: &PgPool, action: &str) -> Vec<Value> {
+    sqlx::query_scalar("select data from audit_log where action = $1 order by created_at, id")
+        .bind(action)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+async fn pool_of(pool: &PgPool, product: &str) -> (i64, i64, i64, i64) {
+    sqlx::query_as(
+        "select stock_qty, stock_value_tyiyn, last_cost_qty, last_cost_tyiyn from branch_products where product_id = $1::uuid",
+    )
+    .bind(product)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+impl World {
+    async fn sell(&self, product: &str, qty: i64, price: i64) -> Value {
+        ok(
+            &self.app,
+            "POST",
+            "/api/v1/sales",
+            &self.admin,
+            json!({
+                "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": self.cashier,
+                "lines": [{ "kind": "piece", "product_id": product, "qty": qty, "unit_price_tyiyn": price }],
+                "payments": [{ "method": "cash", "amount_tyiyn": qty * price }]
+            }),
+        )
+        .await
+    }
+
+    async fn receipt(&self, product: &str, qty: i64, cost: i64) -> String {
+        let r = ok(
+            &self.app,
+            "POST",
+            "/api/v1/receipts",
+            &self.owner,
+            json!({
+                "op_id": Uuid::now_v7(), "paid_from": self.safe,
+                "lines": [{ "product_id": product, "qty": qty, "cost_tyiyn": qty * cost }]
+            }),
+        )
+        .await;
+        r["id"].as_str().unwrap().to_string()
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipt_correction_warns_only_about_minus_that_stays(pool: PgPool) {
+    let w = World::new(pool).await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/cash/movements",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "account_id": w.safe, "kind": "cash_in", "amount_tyiyn": 10_000_000, "comment": "на закупку" }),
+    )
+    .await;
+    let filter = w.product("Фильтр", 30_000).await;
+    let rid = w.receipt(&filter, 10, 10_000).await;
+    w.sell(&filter, 8, 30_000).await;
+    // Верный приход — 9 шт: продано 8, остаток 1. Временный минус между сторно и верным
+    // приходом — не повод для тревоги.
+    let mut draft = w.draft("receipt", &rid).await;
+    draft["doc"]["lines"][0]["qty"] = json!(9);
+    draft["doc"]["lines"][0]["cost_tyiyn"] = json!(90_000);
+    let (s, fixed) = w
+        .correct(Uuid::now_v7(), "receipt", &rid, draft["doc"].clone())
+        .await;
+    assert_eq!(s, StatusCode::OK, "{fixed}");
+    assert!(
+        audit_rows(&w.pool, "receipt.reverse_negative")
+            .await
+            .is_empty()
+    );
+    // Верный приход — 5 шт, а продано 8: остаток в минусе и после исправления — уведомление.
+    let new_id = fixed["new_id"].as_str().unwrap().to_string();
+    let mut draft = w.draft("receipt", &new_id).await;
+    draft["doc"]["lines"][0]["qty"] = json!(5);
+    draft["doc"]["lines"][0]["cost_tyiyn"] = json!(50_000);
+    let (s, fixed) = w
+        .correct(Uuid::now_v7(), "receipt", &new_id, draft["doc"].clone())
+        .await;
+    assert_eq!(s, StatusCode::OK, "{fixed}");
+    let rows = audit_rows(&w.pool, "receipt.reverse_negative").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["correction"], true);
+    assert_eq!(rows[0]["lines"][0]["after"], -3);
+    assert_eq!(rows[0]["lines"][0]["unit"], "piece");
+    let list = get(&w.app, "/api/v1/notifications", &w.owner).await;
+    let text = list.to_string();
+    assert!(text.contains("остаток в минусе"), "{text}");
+    assert!(text.contains("Фильтр: −3 шт"), "{text}");
+    assert!(!text.contains("проведите верный приход"), "{text}");
+    // Обычное сторно в минус — прежнее уведомление с единицей и знаком «−».
+    let rid = w.receipt(&filter, 2, 10_000).await;
+    w.sell(&filter, 1, 30_000).await;
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/receipts/{rid}/reverse"),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" }),
+    )
+    .await;
+    let rows = audit_rows(&w.pool, "receipt.reverse_negative").await;
+    assert_eq!(rows.len(), 2);
+    assert!(rows[1].get("correction").is_none());
+    w.verify_stock().await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn partial_payment_at_receipt_is_notified(pool: PgPool) {
+    let w = World::new(pool).await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/cash/movements",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "account_id": w.safe, "kind": "cash_in", "amount_tyiyn": 1_000_000, "comment": "на закупку" }),
+    )
+    .await;
+    let oil = w.product("Масло", 50_000).await;
+    let supplier = w.supplier("Поставщик А").await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/receipts",
+        &w.owner,
+        json!({
+            "op_id": Uuid::now_v7(), "supplier_id": supplier, "payment": "debt",
+            "paid_from": w.safe, "paid_now_tyiyn": 30_000,
+            "lines": [{ "product_id": oil, "qty": 4, "cost_tyiyn": 120_000 }]
+        }),
+    )
+    .await;
+    let rows = audit_rows(&w.pool, "receipt.supplier_payment").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (&rows[0]["amount"], &rows[0]["partial"], &rows[0]["debt"]),
+        (&json!(30_000), &json!(true), &json!(90_000))
+    );
+    let text = get(&w.app, "/api/v1/notifications", &w.owner)
+        .await
+        .to_string();
+    assert!(
+        text.contains("300 с из «Сейф владельца» сразу при приходе, остаток 900 с — в долг"),
+        "{text}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn returned_units_sold_without_price_come_back_at_purchase_price(pool: PgPool) {
+    let w = World::new(pool).await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/cash/movements",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "account_id": w.safe, "kind": "cash_in", "amount_tyiyn": 10_000_000, "comment": "на закупку" }),
+    )
+    .await;
+    let filter = w.product("Фильтр", 6_000).await;
+    // Продали 4 шт без цены закупки: себестоимость 0.
+    let sale = w.sell(&filter, 4, 6_000).await;
+    let s0 = w.snapshot().await;
+    // Приход 8 по 5 000 закрыл минус: 4 оставшихся стоят 20 000, переоценка 20 000.
+    w.receipt(&filter, 8, 5_000).await;
+    let (qty, value, _, _) = pool_of(&w.pool, &filter).await;
+    assert_eq!((qty, value), (4, 20_000));
+    // Возврат всех 4 шт: они возвращаются по 5 000, обратная переоценка снимает лишнюю
+    // себестоимость — на складе 8 шт на 40 000, себестоимость дня — ноль.
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/sales/{}/return", sale["id"].as_str().unwrap()),
+        &w.admin,
+        json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 4 }],
+                "payments": [{ "method": "cash", "amount_tyiyn": 24_000 }] }),
+    )
+    .await;
+    let (qty, value, _, _) = pool_of(&w.pool, &filter).await;
+    assert_eq!((qty, value), (8, 40_000));
+    let d = delta(&s0, &w.snapshot().await);
+    assert_eq!(d.get("profit:cost_tyiyn"), None, "{d:?}");
+    w.verify_stock().await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn stock_in_at_zero_is_no_price_and_owner_price_survives_storno(pool: PgPool) {
+    let w = World::new(pool).await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/cash/movements",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "account_id": w.safe, "kind": "cash_in", "amount_tyiyn": 10_000_000, "comment": "на закупку" }),
+    )
+    .await;
+    // Оприходование по нулю закрывает минус: остаток — по последней закупочной, а не ноль.
+    let filter = w.product("Фильтр", 9_000).await;
+    w.receipt(&filter, 1, 5_000).await;
+    w.sell(&filter, 3, 9_000).await;
+    assert_eq!(pool_of(&w.pool, &filter).await.1, -10_000);
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/stock-ins",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "product_id": filter, "qty": 5, "price_tyiyn": 0, "comment": "нашли на складе" }),
+    )
+    .await;
+    assert_eq!(pool_of(&w.pool, &filter).await, (3, 15_000, 1, 5_000));
+    w.verify_stock().await;
+
+    // Цена владельца при заведении товара: сторно единственной закупки её не обнуляет.
+    let cat = ok(
+        &w.app,
+        "POST",
+        "/api/v1/categories",
+        &w.owner,
+        json!({ "name": "Свечи", "kind": "filter" }),
+    )
+    .await;
+    let plug = ok(
+        &w.app,
+        "POST",
+        "/api/v1/products",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Свеча", "sale_price_tyiyn": 9_000, "initial_cost_tyiyn": 3_000 }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rid = w.receipt(&plug, 2, 4_000).await;
+    let (_, _, lq, lc) = pool_of(&w.pool, &plug).await;
+    assert_eq!((lq, lc), (2, 8_000));
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/receipts/{rid}/reverse"),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "comment": "не та накладная" }),
+    )
+    .await;
+    assert_eq!(pool_of(&w.pool, &plug).await, (0, 0, 1, 3_000));
+
+    // Цена владельца для проданного без цены — так же.
+    let wiper = w.product("Щётка", 9_000).await;
+    w.sell(&wiper, 1, 9_000).await;
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/stock/{wiper}/purchase-price"),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "price_tyiyn": 2_500 }),
+    )
+    .await;
+    let rid = w.receipt(&wiper, 3, 4_000).await;
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/receipts/{rid}/reverse"),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "comment": "не та накладная" }),
+    )
+    .await;
+    let (_, _, lq, lc) = pool_of(&w.pool, &wiper).await;
+    assert_eq!((lq, lc), (1, 2_500));
+    w.verify_stock().await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn oil_transfer_gives_target_a_purchase_price(pool: PgPool) {
+    let w = World::new(pool).await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/cash/movements",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "account_id": w.safe, "kind": "cash_in", "amount_tyiyn": 10_000_000, "comment": "на закупку" }),
+    )
+    .await;
+    let cat = ok(
+        &w.app,
+        "POST",
+        "/api/v1/categories",
+        &w.owner,
+        json!({ "name": "Масла", "kind": "oil" }),
+    )
+    .await;
+    let mut oils = Vec::new();
+    for name in ["Масло 5W-30 4 л", "Масло 5W-30 розлив"] {
+        let p = ok(
+            &w.app,
+            "POST",
+            "/api/v1/products",
+            &w.owner,
+            json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": name,
+                    "container_ml": 4000, "sale_price_tyiyn": 200_000 }),
+        )
+        .await;
+        oils.push(p["id"].as_str().unwrap().to_string());
+    }
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/receipts",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "paid_from": w.safe,
+                "lines": [{ "product_id": oils[0], "qty": 8000, "cost_tyiyn": 240_000 }] }),
+    )
+    .await;
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/oil/transfers",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "from_product_id": oils[0], "to_product_id": oils[1],
+                "qty_ml": 1000, "comment": "в бочку" }),
+    )
+    .await;
+    assert_eq!(
+        pool_of(&w.pool, &oils[1]).await,
+        (1000, 30_000, 1000, 30_000)
+    );
+    w.verify_stock().await;
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn profit_report_warns_about_late_offline_salary_and_fee(pool: PgPool) {
+    let w = World::new(pool).await;
+    let filter = w.product("Фильтр", 30_000).await;
+    w.stock(&filter, 10, 10_000).await;
+    // Чек без сети за вчера, проведённый сегодня.
+    let at = chrono::Utc::now() - chrono::Duration::days(1);
+    let sale = ok(
+        &w.app,
+        "POST",
+        "/api/v1/sales",
+        &w.admin,
+        json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": w.cashier,
+            "offline": true, "client_time": at,
+            "lines": [{ "kind": "piece", "product_id": filter, "qty": 1, "unit_price_tyiyn": 30_000 }],
+            "payments": [{ "method": "cash", "amount_tyiyn": 30_000 }]
+        }),
+    )
+    .await;
+    let day = sale["business_date"].as_str().unwrap().to_string();
+    let report = get(
+        &w.app,
+        &format!("/api/v1/reports/profit?from={day}&to={day}"),
+        &w.owner,
+    )
+    .await;
+    let warnings = report["warnings"].to_string();
+    assert!(warnings.contains("1 чек"), "{warnings}");
+    assert!(warnings.contains("провели позже их дня"), "{warnings}");
+
+    // Картой на новый банк без ставки комиссии.
+    let bank = ok(
+        &w.app,
+        "POST",
+        "/api/v1/cash/accounts",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "name": "Оптима", "kind": "bank" }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/sales",
+        &w.admin,
+        json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": w.cashier,
+            "lines": [{ "kind": "piece", "product_id": filter, "qty": 1, "unit_price_tyiyn": 30_000 }],
+            "payments": [{ "method": "card", "amount_tyiyn": 30_000, "account_id": bank }]
+        }),
+    )
+    .await;
+    let report = get(&w.app, "/api/v1/reports/profit", &w.owner).await;
+    let warnings = report["warnings"].to_string();
+    assert!(
+        warnings.contains("без ставки комиссии банка («Оптима»)"),
+        "{warnings}"
+    );
+    assert!(!warnings.contains("провели позже"), "{warnings}");
+    ok(
+        &w.app,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{bank}"),
+        &w.owner,
+        json!({ "fee_rate_bp": 50 }),
+    )
+    .await;
+    // Ставка с сегодняшнего дня: сегодняшний чек уже под ней.
+    let report = get(&w.app, "/api/v1/reports/profit", &w.owner).await;
+    assert!(!report["warnings"].to_string().contains("ставки комиссии"));
+
+    // Оклад: правило с прошлого месяца, месяц закончился, оклад не начислен.
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    let (start, stop): (chrono::NaiveDate, chrono::NaiveDate) = sqlx::query_as(
+        "select (date_trunc('month', now() at time zone 'Asia/Bishkek') - interval '1 month')::date,
+                (date_trunc('month', now() at time zone 'Asia/Bishkek') - interval '1 day')::date",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    sqlx::query("update employee_pay_rules set active_from = $2 where employee_id = $1::uuid and kind = 'monthly_salary'")
+        .bind(&w.cashier)
+        .bind(start)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let has_rule: i64 = sqlx::query_scalar(
+        "select count(*) from employee_pay_rules where employee_id = $1::uuid and kind = 'monthly_salary'",
+    )
+    .bind(&w.cashier)
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    if has_rule == 0 {
+        let branch: Uuid = sqlx::query_scalar("select id from branches")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+        sqlx::query("insert into employee_pay_rules (id, branch_id, employee_id, kind, amount_tyiyn, active_from, user_id) values ($1, $2, $3::uuid, 'monthly_salary', 3000000, $4, $5)")
+            .bind(Uuid::now_v7())
+            .bind(branch)
+            .bind(&w.cashier)
+            .bind(start)
+            .bind(owner_id)
+            .execute(&w.pool)
+            .await
+            .unwrap();
+    }
+    let uri = format!("/api/v1/reports/profit?from={start}&to={stop}");
+    let warnings = get(&w.app, &uri, &w.owner).await["warnings"].to_string();
+    let month = start.format("%m.%Y").to_string();
+    assert!(
+        warnings.contains(&format!("оклад за {month} начислен не всем (0 из 1)")),
+        "{warnings}"
+    );
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/payroll/salary",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "employee_id": w.cashier, "month": start }),
+    )
+    .await;
+    let warnings = get(&w.app, &uri, &w.owner).await["warnings"].to_string();
+    assert!(!warnings.contains("оклад за"), "{warnings}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn admin_sees_only_last_week_shift_by_id(pool: PgPool) {
+    let w = World::new(pool).await;
+    let shifts = get(&w.app, "/api/v1/shifts", &w.admin).await;
+    let sid = shifts[0]["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/shifts/{sid}");
+    // Открытая смена видна всегда, даже если день старый.
+    let mut c = w.pool.acquire().await.unwrap();
+    for sql in [
+        "alter table shifts disable trigger shifts_immutable",
+        "update shifts set business_date = business_date - 10",
+        "alter table shifts enable trigger shifts_immutable",
+    ] {
+        sqlx::query(sql).execute(&mut *c).await.unwrap();
+    }
+    drop(c);
+    assert_eq!(
+        call(&w.app, "GET", &uri, Some(&w.admin), None).await.0,
+        StatusCode::OK
+    );
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/shifts/{sid}/close"),
+        &w.admin,
+        json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": 0 }),
+    )
+    .await;
+    // Закрытая смена старше 7 дней: в списке её нет — и по номеру тоже.
+    let list = get(&w.app, "/api/v1/shifts", &w.admin).await;
+    assert!(!list.to_string().contains(&sid));
+    assert_eq!(
+        call(&w.app, "GET", &uri, Some(&w.admin), None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&w.app, "GET", &uri, Some(&w.owner), None).await.0,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn debt_sale_paid_by_advance_does_not_wait_for_percent(pool: PgPool) {
+    let w = World::new(pool).await;
+    let branch: Uuid = sqlx::query_scalar("select id from branches")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into employee_pay_rules (id, branch_id, employee_id, kind, role, base, rate_bp, user_id)
+         values ($1, $2, $3::uuid, 'revenue_percent', 'cashier', 'gross', 200, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(branch)
+    .bind(&w.cashier)
+    .bind(owner_id)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let party = Uuid::now_v7();
+    sqlx::query(
+        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Аванс', '01204201910123')",
+    )
+    .bind(party)
+    .bind(branch)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let filter = w.product("Фильтр", 30_000).await;
+    w.stock(&filter, 10, 10_000).await;
+    let debt_sale = |qty: i64| {
+        json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": w.cashier, "party_id": party,
+            "lines": [{ "kind": "piece", "product_id": filter, "qty": qty, "unit_price_tyiyn": 30_000 }],
+            "payments": [{ "method": "debt", "amount_tyiyn": qty * 30_000 }]
+        })
+    };
+    // Клиент внёс 30 000 вперёд (аванс), потом взял в долг на 4 шт (120 000).
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/debts/repayments",
+        &w.admin,
+        json!({ "op_id": Uuid::now_v7(), "party_id": party, "amount_tyiyn": 30_000, "method": "cash" }),
+    )
+    .await;
+    ok(&w.app, "POST", "/api/v1/sales", &w.admin, debt_sale(4)).await;
+    // Долг клиента 90 000 — и процент ждёт ровно его, а не 120 000; начислено за 30 000:
+    // валовая 80 000 × 30 000 / 120 000 = 20 000, 2 % = 400.
+    let (balance,): (i64,) = sqlx::query_as("select balance_tyiyn from parties where id = $1")
+        .bind(party)
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(balance, 90_000);
+    let waits: i64 = sqlx::query_scalar(
+        "select coalesce(sum(debt_remaining_tyiyn), 0)::bigint from payroll_pending where party_id = $1",
+    )
+    .bind(party)
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(waits, 90_000);
+    let accrued: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where kind = 'revenue_percent'",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(accrued, 400);
+    // Погасили остаток — процент полностью: 80 000 × 2 % = 1 600.
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/debts/repayments",
+        &w.admin,
+        json!({ "op_id": Uuid::now_v7(), "party_id": party, "amount_tyiyn": 90_000, "method": "cash" }),
+    )
+    .await;
+    let accrued: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where kind = 'revenue_percent'",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(accrued, 1_600);
+    let report = get(&w.app, "/api/v1/reports/profit", &w.owner).await;
+    assert!(
+        !report["warnings"]
+            .to_string()
+            .contains("начислится после погашения")
+    );
+}

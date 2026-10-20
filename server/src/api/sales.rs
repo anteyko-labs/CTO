@@ -1653,6 +1653,8 @@ pub async fn return_sale_tx(
         /// Себестоимость строки чека была неизвестна (ADR-062) и сколько в строке было всего.
         cost_unknown: bool,
         orig_qty: i64,
+        /// Сколько из возвращаемых единиц ушли без цены закупки (себестоимость 0).
+        unknown_units: i64,
     }
     let mut planned = Vec::new();
     let mut total: i64 = 0;
@@ -1689,6 +1691,21 @@ pub async fn return_sale_tx(
         let amount = share(o.amount_tyiyn, done.amount, rl.qty, o.qty, done.qty)?;
         let cost = share(o.cost_tyiyn, done.cost, rl.qty, o.qty, done.qty)?;
         let fee = share(o.master_fee_tyiyn, done.fee, rl.qty, o.qty, done.qty)?;
+        let unknown_units = if o.cost_unknown {
+            let all = sqlx::query_scalar!(
+                "select unknown_units from payroll_cost_pending where sale_id = $1 and line_no = $2",
+                id,
+                rl.line_no
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+            .unwrap_or(0);
+            let already = div_round(i128::from(all) * i128::from(done.qty), i128::from(o.qty))
+                .ok_or_else(overflow)?;
+            share(all, already, rl.qty, o.qty, done.qty)?.clamp(0, units.max(0))
+        } else {
+            0
+        };
         total = total.checked_add(amount).ok_or_else(overflow)?;
         planned.push(Planned {
             p: Prepared {
@@ -1714,6 +1731,7 @@ pub async fn return_sale_tx(
             fee,
             cost_unknown: o.cost_unknown,
             orig_qty: o.qty,
+            unknown_units,
         });
     }
     check_payments(&req.payments, total)?;
@@ -1960,7 +1978,32 @@ pub async fn return_sale_tx(
     .await?;
     for x in &planned {
         if let Some(pid) = x.p.product_id {
-            ops::lock_pool(conn, branch_id, pid).await?;
+            let pool = ops::lock_pool(conn, branch_id, pid).await?;
+            // Единицы, проданные без цены закупки, вернулись, а цена уже есть (приход закрыл минус
+            // с переоценкой или владелец её указал): они возвращаются по последней закупочной,
+            // разница — обратной переоценкой. Иначе себестоимость этих единиц списана дважды:
+            // переоценкой при приходе и снова при следующей продаже (ADR-092).
+            if x.unknown_units > 0 && pool.last_qty > 0 && pool.qty.saturating_add(x.p.units) != 0 {
+                let back = div_round(
+                    i128::from(x.unknown_units) * i128::from(pool.last_cost),
+                    i128::from(pool.last_qty),
+                )
+                .ok_or_else(overflow)?;
+                if back > 0 {
+                    ops::apply_movement(
+                        conn,
+                        Movement {
+                            branch_id,
+                            product_id: pid,
+                            qty_delta: 0,
+                            value_delta: back,
+                            doc_type: "revaluation",
+                            doc_id: rid,
+                        },
+                    )
+                    .await?;
+                }
+            }
             ops::apply_movement(
                 conn,
                 Movement {

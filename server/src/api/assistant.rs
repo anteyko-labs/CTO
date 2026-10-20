@@ -1368,14 +1368,6 @@ async fn client_debt_text(conn: &mut PgConnection, branch_id: Uuid, q: &str) -> 
     Ok(lines.join("\n"))
 }
 
-fn qty_text(qty: i64, unit: &str) -> String {
-    if unit == "ml" {
-        format!("{qty} мл")
-    } else {
-        format!("{qty} шт")
-    }
-}
-
 async fn products_text(
     conn: &mut PgConnection,
     ctx: &ToolCtx,
@@ -1416,17 +1408,26 @@ async fn products_text(
         format!("Найдено товаров: {}", list.len())
     }];
     for p in list {
-        let per = match p.container_ml {
-            Some(ml) => format!(" за {ml} мл"),
-            None => " за шт".into(),
+        // Масло — литрами и канистрами, на вес — килограммами (SPEC-27 §4), не миллилитрами.
+        let per = match (p.unit.as_str(), p.container_ml) {
+            (_, Some(ml)) => format!(" за канистру {}", crate::domain::qty::liters(ml)),
+            ("g", None) => " за кг".into(),
+            ("ml", None) => " за литр".into(),
+            _ => " за шт".into(),
         };
-        let mut parts = vec![format!("остаток {}", qty_text(p.stock_qty, &p.unit))];
+        let mut parts = vec![format!(
+            "остаток {}",
+            crate::domain::qty::stock_text(p.stock_qty, &p.unit, p.container_ml)
+        )];
         if p.min_stock > 0 {
-            parts.push(format!("минимум {}", qty_text(p.min_stock, &p.unit)));
+            parts.push(format!(
+                "минимум {}",
+                crate::domain::qty::qty_text(p.min_stock, &p.unit)
+            ));
         }
         parts.push(format!("цена {}{per}", format_som(p.sale_price_tyiyn)));
         if let Some(pour) = p.pour_price_per_l_tyiyn {
-            parts.push(format!("налив {} за литр", format_som(pour)));
+            parts.push(format!("розлив {} за литр", format_som(pour)));
         }
         if let Some(c) = p.avg_cost_tyiyn {
             parts.push(format!("средняя себестоимость {}{per}", format_som(c)));

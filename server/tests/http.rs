@@ -8686,7 +8686,7 @@ async fn oil_transfer_by_admin_with_permission_hides_cost(pool: PgPool) {
     // Владелец — уведомление о каждом переливе администратора, с себестоимостью.
     let notes = notice_of(&app, &owner, "oil.transfer_admin").await;
     assert_eq!(notes.len(), 1);
-    assert!(notes[0]["details"].as_str().unwrap().contains("1000 мл"));
+    assert!(notes[0]["details"].as_str().unwrap().contains("1 л"));
     // Отмена — только владелец.
     let rev = format!(
         "/api/v1/oil/transfers/{}/reverse",

@@ -729,7 +729,20 @@ async fn get_shift(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<ShiftOut>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(load_shift(&mut conn, user.branch_id, id).await?))
+    let shift = load_shift(&mut conn, user.branch_id, id).await?;
+    // Администратору — те же последние 7 дней, что и в списке смен (SPEC-05); открытая смена
+    // видна всегда — с ней работают на кассе.
+    if !user.is_owner() && shift.closed_at.is_some() {
+        let earliest = sqlx::query_scalar!(
+            r#"select ((now() at time zone 'Asia/Bishkek')::date - 6) as "d!""#
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if shift.business_date < earliest {
+            return Err(AppError::NotFound);
+        }
+    }
+    Ok(Json(shift))
 }
 
 #[derive(Deserialize)]
