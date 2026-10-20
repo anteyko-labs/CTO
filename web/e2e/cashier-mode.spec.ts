@@ -113,6 +113,16 @@ test('режим кассы: крупно, без меню, продажа эк�
   await tapKeys(page, '2000')
   await expect(received).toHaveValue('2000')
   await expect(page.getByText('Сдача').locator('..')).toContainText(/500\sс/)
+  // Клавиатура — рядом с полем «Получено», не поверх него, и целиком на экране.
+  {
+    const f = await received.boundingBox()
+    const k = await page.getByTestId('keypad').boundingBox()
+    expect(f && k).toBeTruthy()
+    const overlap = f!.x < k!.x + k!.width && k!.x < f!.x + f!.width && f!.y < k!.y + k!.height && k!.y < f!.y + f!.height
+    expect(overlap).toBe(false)
+    const view = page.viewportSize()!
+    expect(k!.x >= 0 && k!.y >= 0 && k!.x + k!.width <= view.width && k!.y + k!.height <= view.height).toBe(true)
+  }
 
   // Цели касания: поля и кнопки не ниже 56 точек, оплата и «Провести чек» — не ниже 64.
   for (const l of [page.getByRole('button', { name: 'Больше' }), page.getByRole('button', { name: 'Меньше' }), page.getByRole('button', { name: 'Удалить строку' })]) {

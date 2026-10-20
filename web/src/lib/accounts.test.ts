@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, enoughOn, feeShort, handoverChoices, isDefaultFor, isTill, payAccounts, payCaption } from './accounts'
+import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, feeShort, overdrawText, handoverChoices, isDefaultFor, isTill, payAccounts, payCaption } from './accounts'
 import { PAYMENT_LABELS } from './types'
 import { formatSom } from './format'
 import type { CashAccount } from './types'
@@ -62,12 +62,15 @@ describe('обзор счетов', () => {
     expect(defaultBankId(snap, 'card')).toBe('c')
     expect(defaultBankId(snap, 'transfer')).toBe('b')
   })
+})
 
-  it('хватит ли денег: с разрешённым минусом — всегда', () => {
-    expect(enoughOn(list[0], 50_000)).toBe(true)
-    expect(enoughOn(list[0], 50_001)).toBe(false)
-    expect(enoughOn({ balance_tyiyn: 0, allow_negative: true }, 1_000_000)).toBe(true)
-    expect(enoughOn(undefined, 1)).toBe(true)
+describe('списание больше остатка', () => {
+  it('предупреждает, но только когда сумма больше остатка', () => {
+    expect(overdrawText(1_050_000, 1_050_000)).toBe('')
+    expect(overdrawText(1_050_000, null)).toBe('')
+    expect(overdrawText(1_050_000, 0)).toBe('')
+    expect(overdrawText(1_050_000, 1_250_000)).toBe(`Больше, чем на счёте (${formatSom(1_050_000)}): после списания будет ${formatSom(-200_000)}`)
+    expect(overdrawText(-100, 1)).not.toBe('')
   })
 })
 

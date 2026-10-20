@@ -42,8 +42,6 @@ export function usePageState(key: string, scope = '') {
   return { page, size, setPage, setSize }
 }
 
-export type PageState = ReturnType<typeof usePageState>
-
 /** Список пришёл целиком: страница из него. Смена длины списка возвращает в границы. */
 export function usePager<T>(rows: readonly T[], key: string, scope = '') {
   const st = usePageState(key, scope)

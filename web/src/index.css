@@ -240,8 +240,9 @@ html.cashier-mode {
 /* Отметки вне слоя: размер из утилит (h-3.5) для пальца мал. */
 html.cashier-mode input[type='checkbox'],
 html.cashier-mode input[type='radio'] {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
 /* Мелкие подписи и поиск товара в режиме — крупнее (вне слоя: перекрывают утилиты text-xs/sm). */
 html.cashier-mode main .text-xs {

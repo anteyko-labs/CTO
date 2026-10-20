@@ -56,7 +56,7 @@ export default function Suppliers() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty icon="incoming" action={<Button onClick={openAdd}>Добавить поставщика</Button>}>
+          <Empty icon="truck" action={<Button onClick={openAdd}>Добавить поставщика</Button>}>
             Поставщиков пока нет. Их выбирают в приходной накладной.
           </Empty>
         ) : (

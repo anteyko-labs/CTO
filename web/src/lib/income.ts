@@ -116,3 +116,35 @@ export function sortDebts(rows: DebtRow[], key: DebtSortKey, desc: boolean): Deb
     return (desc ? -c : c) || a.name.localeCompare(b.name, 'ru')
   })
 }
+
+/**
+ * Продажи смены так, чтобы числа складывались: продано (чеки продажи) − возвраты = итого,
+ * а суммы по способам оплаты — уже с учётом возвратов и в сумме дают итого. Способы — только
+ * ненулевые, в порядке экрана; `rest` — разница, если сервер прислал суммы, которые не сходятся
+ * (например, исправленные чеки), чтобы расхождение было видно, а не пряталось.
+ */
+export function shiftSales(s: {
+  sales_count?: number
+  sales_total_tyiyn?: number
+  returns_tyiyn?: number
+  cash_sales_tyiyn: number
+  card_tyiyn: number
+  transfer_tyiyn: number
+  debt_tyiyn: number
+  bonus_tyiyn?: number
+  battery_tyiyn?: number
+}): { count: number; gross: number; returns: number; net: number; methods: { key: string; label: string; value: number }[]; rest: number } {
+  const gross = s.sales_total_tyiyn ?? 0
+  const returns = s.returns_tyiyn ?? 0
+  const net = gross - returns
+  const all = [
+    { key: 'cash', label: 'Наличными', value: s.cash_sales_tyiyn },
+    { key: 'card', label: 'Карта / QR банка', value: s.card_tyiyn },
+    { key: 'transfer', label: 'QR владельцу', value: s.transfer_tyiyn },
+    { key: 'debt', label: 'В долг', value: s.debt_tyiyn },
+    { key: 'bonus', label: 'Баллами', value: s.bonus_tyiyn ?? 0 },
+    { key: 'battery', label: 'Аккумуляторами', value: s.battery_tyiyn ?? 0 },
+  ]
+  const sum = all.reduce((a, m) => a + m.value, 0)
+  return { count: s.sales_count ?? 0, gross, returns, net, methods: all.filter((m) => m.value !== 0), rest: net - sum }
+}

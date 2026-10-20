@@ -66,7 +66,7 @@ interface NavItem {
 }
 
 // Меню: рабочие экраны сверху, справочники и настройки ниже. Категории живут внутри «Товаров»,
-// поставщики — внутри «Прихода», этикетки, документы, Телеграм и пользователи — в «Настройках».
+// поставщики — в «Складе» (и в «Настройках»), этикетки, документы, Телеграм и пользователи — в «Настройках».
 const NAV: { title?: string; items: NavItem[] }[] = [
   {
     items: [
@@ -84,17 +84,18 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/expenses', label: 'Расходы', icon: 'expenses' },
       { to: '/payroll', label: 'Расчёт', icon: 'payroll' },
       { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
-      { to: '/income', label: 'Поступления', icon: 'incoming' },
+      { to: '/income', label: 'Поступления', icon: 'income' },
       { to: '/accounts', label: 'Счета', icon: 'wallet' },
       { to: '/money', label: 'Внести / Изъять', icon: 'plus' },
-      { to: '/bank', label: 'Счёт', icon: 'expenses', ownerOnly: true },
+      { to: '/bank', label: 'Счёт', icon: 'bank', ownerOnly: true },
     ],
   },
   {
     title: 'Склад',
     items: [
       { to: '/receipts', label: 'Приход', icon: 'incoming' },
-      { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'back' },
+      { to: '/suppliers', label: 'Поставщики', icon: 'truck' },
+      { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return' },
       { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/products', label: 'Товары', icon: 'products' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },

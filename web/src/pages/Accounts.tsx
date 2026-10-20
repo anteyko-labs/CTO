@@ -194,7 +194,7 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
           <Empty>Счетов нет</Empty>
         ) : (
           <>
-            <Table head={['Счёт', 'Тип', 'Сумма, сом', 'Отрицательный баланс', 'Комиссия банка', '']}>
+            <Table head={['Счёт', 'Тип', 'Сумма, с', 'Отрицательный баланс', 'Комиссия банка', '']}>
               {pager.shown.map((a) => (
                 <tr key={a.id} data-testid="account-row" className={a.active ? '' : 'text-slate-400'}>
                   <td className="px-2 py-2">

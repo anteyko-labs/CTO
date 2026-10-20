@@ -37,3 +37,50 @@ export function applyKey(value: string, key: KeypadKey, opts: KeyOptions): strin
   const next = base === '0' && opts.kind !== 'digits' ? key : base + key
   return next.length > maxLength ? value : next
 }
+
+/** Прямоугольник на экране, точки (как у getBoundingClientRect). */
+export interface Box {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, Math.max(lo, hi)))
+
+/**
+ * Где поставить клавиатуру: рядом с полем и не поверх него, целиком на экране. Поле в окне —
+ * сначала сбоку от окна (видны и поле, и кнопки окна); иначе справа или слева от поля, затем под
+ * или над ним. Места нет нигде (узкий телефон) — у нижнего края; `scroll` — на сколько точек
+ * прокрутить страницу вниз, чтобы поле поднялось над клавиатурой (0 — поле и так видно).
+ */
+export function padPlace(
+  field: Box,
+  pad: { width: number; height: number },
+  view: { width: number; height: number },
+  dialog?: Box | null,
+  gap = 12,
+): { left: number; top: number; scroll: number } {
+  const { width: w, height: h } = pad
+  const maxLeft = view.width - w - gap
+  const maxTop = view.height - h - gap
+  const sideTop = clamp(field.top + field.height / 2 - h / 2, gap, maxTop)
+  const fits = (left: number, top: number) => left >= gap && left <= maxLeft && top >= gap && top <= maxTop
+  const right = field.left + field.width
+  const bottom = field.top + field.height
+  const candidates: { left: number; top: number }[] = []
+  if (dialog) {
+    candidates.push({ left: dialog.left + dialog.width + gap, top: sideTop }, { left: dialog.left - gap - w, top: sideTop })
+  }
+  candidates.push(
+    { left: right + gap, top: sideTop },
+    { left: field.left - gap - w, top: sideTop },
+    { left: clamp(field.left, gap, maxLeft), top: bottom + gap },
+    { left: clamp(field.left, gap, maxLeft), top: field.top - gap - h },
+  )
+  const hit = candidates.find((c) => fits(c.left, c.top))
+  if (hit) return { ...hit, scroll: 0 }
+  // Нет места рядом: у нижнего края, а страницу прокрутить так, чтобы поле было над клавиатурой.
+  const top = clamp(maxTop, gap, maxTop)
+  return { left: clamp(view.width - w - gap, gap, maxLeft), top, scroll: Math.max(0, bottom + gap - top) }
+}

@@ -39,3 +39,17 @@ export function labelText(p: LabelProduct, s: Pick<LabelSettings, 'show_name' | 
     spec: s.show_spec !== false ? specText(p) : '',
   }
 }
+
+/**
+ * Товар для предпросмотра этикетки: масло (литры или категория «масло») с брендом и
+ * характеристиками, чтобы отметки «Бренд» и «Характеристики» были видны на образце. Лучше —
+ * со штрихкодом и ценой. Подходящего нет — null (берётся встроенный образец масла).
+ */
+export function previewPick<T extends LabelProduct & Pick<Product, 'barcodes' | 'sale_price_tyiyn'>>(list: readonly T[]): T | null {
+  const oil = list.filter((p) => {
+    if (p.unit !== 'ml' && p.category_kind !== 'oil') return false
+    const t = labelText(p, { show_name: true, show_brand: true, show_spec: true })
+    return Boolean(t.brand) && Boolean(t.spec)
+  })
+  return oil.find((p) => p.barcodes.length > 0 && p.sale_price_tyiyn > 0) ?? oil[0] ?? null
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeRange, periodDays, quickOf, quickRange, rangeTitle, sortDebts } from './income'
+import { normalizeRange, periodDays, quickOf, quickRange, rangeTitle, shiftSales, sortDebts } from './income'
 import { VS_PREV_DAY, VS_PREV_PERIOD, vsYesterday } from './dashboard'
 import type { DebtRow } from './types'
 
@@ -72,5 +72,23 @@ describe('экран «Долги»', () => {
   it('по просрочке и по имени', () => {
     expect(sortDebts(rows, 'overdue', true)[0].name).toBe('Бакыт')
     expect(sortDebts(rows, 'name', false).map((r) => r.name)).toEqual(['Айбек', 'Бакыт', 'Вика'])
+  })
+})
+
+describe('продажи смены складываются', () => {
+  it('продано − возвраты = итого = сумма по способам', () => {
+    const r = shiftSales({ sales_total_tyiyn: 84_000, returns_tyiyn: 56_000, cash_sales_tyiyn: 0, card_tyiyn: 0, transfer_tyiyn: 28_000, debt_tyiyn: 0 })
+    expect(r.gross).toBe(84_000)
+    expect(r.returns).toBe(56_000)
+    expect(r.net).toBe(28_000)
+    expect(r.methods).toEqual([{ key: 'transfer', label: 'QR владельцу', value: 28_000 }])
+    expect(r.rest).toBe(0)
+  })
+
+  it('расхождение не прячется', () => {
+    const r = shiftSales({ sales_total_tyiyn: 10_000, cash_sales_tyiyn: 6_000, card_tyiyn: 3_000, transfer_tyiyn: 0, debt_tyiyn: 0, bonus_tyiyn: 0 })
+    expect(r.net).toBe(10_000)
+    expect(r.methods.map((m) => m.key)).toEqual(['cash', 'card'])
+    expect(r.rest).toBe(1_000)
   })
 })

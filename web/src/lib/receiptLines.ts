@@ -85,6 +85,21 @@ export function lastText(r: LastReceipt): string {
   return ['в прошлый раз: ' + formatSom(r.price_tyiyn), d, r.supplier_name].filter(Boolean).join(', ')
 }
 
+/** Насколько цена по накладной может отойти от прошлой закупки без предупреждения, %. */
+export const PRICE_JUMP_PERCENT = 30
+
+/**
+ * Предупреждение, когда цена по накладной отличается от прошлой закупки больше чем на 30 %:
+ * «Цена ниже, чем в прошлый раз (420 с), больше чем на 30 % — проверьте». Не запрет: цена могла
+ * измениться. Сравнение целыми тыйынами, без деления.
+ */
+export function priceJumpText(price: string, last: Pick<LastReceipt, 'price_tyiyn'> | null | undefined): string {
+  if (!last || last.price_tyiyn <= 0) return ''
+  const p = parseSom(price)
+  if (p === null || p <= 0) return ''
+  if (Math.abs(p - last.price_tyiyn) * 100 <= last.price_tyiyn * PRICE_JUMP_PERCENT) return ''
+  return `Цена ${p > last.price_tyiyn ? 'выше' : 'ниже'}, чем в прошлый раз (${formatSom(last.price_tyiyn)}), больше чем на ${PRICE_JUMP_PERCENT} % — проверьте`
+}
 
 /**
  * Цена по накладной за единицу цены товара (штуку, канистру, килограмм) из проведённой строки:

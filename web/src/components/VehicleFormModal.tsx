@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { get, patch, post } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { modelsOf, type MileageUnit } from '../lib/carDict'
+import { carName, modelsOf, type MileageUnit } from '../lib/carDict'
 import type { CarMake, PartyVehicle } from '../lib/types'
 import { Button, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
@@ -35,7 +35,10 @@ export function VehicleFormModal({
 
   const save = () =>
     void act.run(async () => {
-      const body = { plate: form.plate.trim(), brand: form.brand.trim(), model: form.model.trim(), mileage_unit: form.unit }
+      // Написание — как в справочнике: «rx 350» не заводит в нём новую модель (SPEC-29 §21).
+      const brand = carName(form.brand, makes.map((m) => m.name))
+      const model = carName(form.model, modelsOf(makes, brand).map((m) => m.name))
+      const body = { plate: form.plate.trim(), brand, model, mileage_unit: form.unit }
       const v = vehicle
         ? await patch<PartyVehicle>(`/parties/${partyId}/vehicles/${vehicle.id}`, { ...body, comment: vehicle.comment })
         : await post<PartyVehicle>(`/parties/${partyId}/vehicles`, body)
@@ -57,6 +60,7 @@ export function VehicleFormModal({
               autoComplete="off"
               value={form.brand}
               onChange={(e) => setForm({ ...form, brand: e.target.value })}
+              onBlur={() => setForm((f) => ({ ...f, brand: carName(f.brand, makes.map((m) => m.name)) }))}
             />
           </Field>
           <Field label="Модель">
@@ -66,6 +70,7 @@ export function VehicleFormModal({
               autoComplete="off"
               value={form.model}
               onChange={(e) => setForm({ ...form, model: e.target.value })}
+              onBlur={() => setForm((f) => ({ ...f, model: carName(f.model, modelsOf(makes, f.brand).map((m) => m.name)) }))}
             />
           </Field>
         </div>

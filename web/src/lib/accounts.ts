@@ -71,10 +71,11 @@ export function defaultBankId(
   return bankChoices(accounts, method)[0]?.id ?? ''
 }
 
-/** Хватит ли на счёте денег на расход: с разрешённым минусом — всегда. */
-export function enoughOn(a: Pick<CashAccount, 'balance_tyiyn' | 'allow_negative'> | undefined, amount: number): boolean {
-  if (!a) return true
-  return a.allow_negative || amount <= a.balance_tyiyn
+/** Предупреждение, что после списания счёт уйдёт в минус: «на счёте 10 500 с — после списания −2 000 с».
+ *  Не запрет: отрицательный баланс разрешён (ADR-077), решает сервер. Хватает — ''. */
+export function overdrawText(balance: number, amount: number | null): string {
+  if (amount === null || amount <= 0 || amount <= balance) return ''
+  return `Больше, чем на счёте (${formatSom(balance)}): после списания будет ${formatSom(balance - amount)}`
 }
 
 /** Счёт с остатком для выбора: «Касса — 12 300 с» (SPEC-29 §12). Остаток — с сервера, как есть. */

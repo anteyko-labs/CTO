@@ -13,7 +13,7 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },
   { to: '/users', title: 'Пользователи', text: 'Кто входит в систему: владелец и администраторы', icon: 'employees', ownerOnly: true },
   { to: '/categories', title: 'Категории товаров', text: 'Масла, фильтры, аккумуляторы и их характеристики', icon: 'stock' },
-  { to: '/suppliers', title: 'Поставщики', text: 'У кого покупаем, долги поставщикам', icon: 'incoming' },
+  { to: '/suppliers', title: 'Поставщики', text: 'У кого покупаем, долги поставщикам', icon: 'truck' },
 ]
 
 export default function SettingsHub() {

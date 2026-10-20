@@ -193,7 +193,19 @@ export default function Clients() {
                 <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
               </Field>
               <Field label={company ? 'ИНН' : 'ПИН (14 цифр с паспорта)'} required={company}>
-                <input id="new-client-inn" inputMode="numeric" value={form.inn} onChange={(e) => setForm({ ...form, inn: e.target.value })} />
+                <input
+                  id="new-client-inn"
+                  inputMode="numeric"
+                  value={form.inn}
+                  onChange={(e) => setForm({ ...form, inn: e.target.value })}
+                  onKeyDown={(e) => {
+                    // Enter в последнем поле — как «Добавить» (ui-rules §4).
+                    if (e.key === 'Enter' && !create.busy && notFilled.length === 0) {
+                      e.preventDefault()
+                      add()
+                    }
+                  }}
+                />
               </Field>
             </div>
             <ErrorBox error={create.error} />

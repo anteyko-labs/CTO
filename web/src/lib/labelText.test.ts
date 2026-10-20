@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { labelText, specText } from './labelText'
+import { labelText, previewPick, specText } from './labelText'
 
 const on = { show_name: true, show_brand: true, show_spec: true }
 
@@ -23,5 +23,19 @@ describe('этикетка', () => {
 
   it('прочее — без характеристик', () => {
     expect(specText({ name: 'Ветошь', brand: '', attrs: {}, unit: 'piece', container_ml: null, category_kind: 'other' })).toBe('')
+  })
+})
+
+describe('образец для предпросмотра этикетки', () => {
+  type P = { name: string; brand: string; attrs: Record<string, string>; unit: 'piece' | 'ml' | 'g'; container_ml: number | null; barcodes: string[]; sale_price_tyiyn: number }
+  const base: Omit<P, 'name' | 'brand'> = { attrs: {}, unit: 'piece', container_ml: null, barcodes: ['1'], sale_price_tyiyn: 100 }
+  it('масло с брендом и характеристиками, лучше со штрихкодом и ценой', () => {
+    const rag: P = { ...base, name: 'Ветошь', brand: '' }
+    const oilNoBrand: P = { ...base, name: 'Масло 5W-40', brand: '', unit: 'ml', container_ml: 4000, attrs: { viscosity: '5W-40' } }
+    const oilNoCode: P = { ...base, name: 'Magnatec', brand: 'Castrol', unit: 'ml', container_ml: 4000, barcodes: [], attrs: { viscosity: '5W-30' } }
+    const oil: P = { ...oilNoCode, name: 'Super 3000', brand: 'Mobil', barcodes: ['2'] }
+    expect(previewPick([rag, oilNoBrand, oilNoCode, oil])).toBe(oil)
+    expect(previewPick([rag, oilNoCode])).toBe(oilNoCode)
+    expect(previewPick([rag, oilNoBrand])).toBeNull()
   })
 })

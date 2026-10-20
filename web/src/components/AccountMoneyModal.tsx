@@ -2,7 +2,7 @@
 // экране «Смена» (SPEC-05) — внесение и изъятие `/cash/movements`, перевод `/cash/transfers`.
 // Права и минус проверяет сервер (ADR-076/077): у владельца — любой действующий счёт.
 import { useState } from 'react'
-import { accountLabel } from '../lib/accounts'
+import { accountLabel, overdrawText } from '../lib/accounts'
 import { newOpId, post } from '../lib/api'
 import { formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -54,9 +54,11 @@ export function AccountMoneyModal({
     [kind === 'transfer' || Boolean(comment.trim()), 'за что', '#account-money-comment'],
   )
 
+  const overdraw = kind !== 'cash_in' && account ? overdrawText(account.balance_tyiyn, value) : ''
+
   const save = () =>
     void act.run(async () => {
-      if (value === null || !account) return
+      if (value === null || !account || missing.length > 0) return
       if (kind === 'transfer') {
         await post('/cash/transfers', { op_id: opId, from_account_id: account.id, to_account_id: to, amount_tyiyn: value, comment })
       } else {
@@ -102,8 +104,24 @@ export function AccountMoneyModal({
           <input id="account-money-sum" autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
         </Field>
         <Field label="Комментарий" required={kind !== 'transfer'}>
-          <input id="account-money-comment" value={comment} onChange={(e) => setComment(e.target.value)} />
+          <input
+            id="account-money-comment"
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter в последнем поле — как главная кнопка (ui-rules §4).
+              if (e.key === 'Enter' && !act.busy && missing.length === 0) {
+                e.preventDefault()
+                save()
+              }
+            }}
+          />
         </Field>
+        {overdraw && (
+          <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="account-money-overdraw">
+            {overdraw}
+          </div>
+        )}
         <Missing items={missing} />
         <ErrorBox error={act.error} />
         <div className="flex justify-end gap-2">

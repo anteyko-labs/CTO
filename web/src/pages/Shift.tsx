@@ -10,8 +10,8 @@ import { StaffPayList } from '../components/StaffPayList'
 import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
-import { MOVEMENT_LABELS } from '../lib/income'
-import { accountLabel, handoverChoices, isTill, payAccounts } from '../lib/accounts'
+import { MOVEMENT_LABELS, shiftSales } from '../lib/income'
+import { accountLabel, handoverChoices, isTill, overdrawText, payAccounts } from '../lib/accounts'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
 import { correctionMarks, loadCorrections, numberText } from '../lib/corrections'
 import { movementDoc, movementFields, transferDoc, transferFields, type MovementDoc, type TransferDoc } from '../lib/moneyFix'
@@ -98,6 +98,8 @@ export default function Shift() {
   const act = useAction()
 
   const shift = current.data ?? null
+  // Продано − возвраты = итого = сумма по способам оплаты: числа на экране складываются.
+  const sales = shift ? shiftSales(shift) : null
   const cashiers = (employees.data ?? []).filter((e) => e.active && e.is_cashier)
   const accs = accounts.data ?? []
   // Выручку сдают в сейф магазина; в сейф владельца деньги перекладывает он сам (ADR-037).
@@ -273,6 +275,10 @@ export default function Shift() {
   const fromAccounts = owner ? accs : accs.filter((a) => isTill(a))
   // Касса смены: её остаток — «должно быть» на начало новой смены (SPEC-29 §16).
   const till = accs.find((a) => isTill(a))
+  // Списание больше остатка — предупреждение, не запрет (ADR-077); при исправлении не показываем:
+  // исходная сумма вернётся на счёт.
+  const moneySource = money && money.kind !== 'cash_in' ? (money.from ? accs.find((a) => a.id === money.from) : till) : undefined
+  const moneyOverdraw = money && !money.fix && moneySource ? overdrawText(moneySource.balance_tyiyn, parseSom(money.sum)) : ''
   // Исправление: поля окна заполняются исходным документом, как только он пришёл с сервера.
   const fixDraft = correction.draft.data
   if (money?.fix && !money.fix.filled && fixDraft && fixDraft.original_id === money.fix.id) {
@@ -376,21 +382,30 @@ export default function Shift() {
                 ))}
               <Row label="Должно быть в кассе" value={shift.expected_tyiyn} strong />
             </div>
-            <div>
-              <div className="mb-1 font-medium">
-                Продано: {shift.sales_count ?? 0} чек. на {formatSom(shift.sales_total_tyiyn ?? 0)}
-              </div>
-              <Row label="Наличными" value={shift.cash_sales_tyiyn} />
-              <Row label="Карта / QR банка" value={shift.card_tyiyn} />
-              <Row label="QR владельцу" value={shift.transfer_tyiyn} />
-              {(shift.bank_split ?? []).length > 1 &&
-                (shift.bank_split ?? []).map((b) => <Row key={b.account_id} label={`  на «${b.name}»`} value={b.total_tyiyn} />)}
-              {shift.debt_tyiyn !== 0 && <Row label="В долг" value={shift.debt_tyiyn} />}
-              {(shift.bonus_tyiyn ?? 0) !== 0 && <Row label="Баллами" value={shift.bonus_tyiyn ?? 0} />}
-              {(shift.battery_tyiyn ?? 0) !== 0 && <Row label="Аккумуляторами" value={shift.battery_tyiyn ?? 0} />}
+            {sales && (
+            <div data-testid="shift-sales">
+              <div className="mb-1 font-medium">Продажи смены</div>
+              <Row label={`Продано: ${sales.count} чек.`} value={sales.gross} />
+              {sales.returns !== 0 && <Row label="Возвраты" value={-sales.returns} signed />}
+              {sales.returns !== 0 && <Row label="Итого за вычетом возвратов" value={sales.net} strong />}
+              {sales.methods.length > 0 && (
+                <div className="mt-2 text-xs text-slate-500">По способам оплаты{sales.returns !== 0 ? ' (с учётом возвратов)' : ''}:</div>
+              )}
+              {sales.methods.map((m) => (
+                <Row key={m.key} label={m.label} value={m.value} />
+              ))}
+              {sales.rest !== 0 && <Row label="Исправления и прочее" value={sales.rest} signed />}
+              {(shift.bank_split ?? []).length > 1 && (
+                <>
+                  <div className="mt-2 text-xs text-slate-500">Безнал по счетам:</div>
+                  {(shift.bank_split ?? []).map((b) => (
+                    <Row key={b.account_id} label={`на «${b.name}»`} value={b.total_tyiyn} />
+                  ))}
+                </>
+              )}
               {shift.bank_fee_tyiyn > 0 && <Row label="Комиссия банка" value={-shift.bank_fee_tyiyn} signed />}
-              {(shift.returns_tyiyn ?? 0) !== 0 && <Row label="Возвраты" value={-(shift.returns_tyiyn ?? 0)} signed />}
             </div>
+            )}
             <div>
               <div className="mb-1 font-medium">Заработали в этот день</div>
               <StaffPayList staff={shift.pay ?? []} />
@@ -776,8 +791,25 @@ export default function Shift() {
               <input id="money-sum" autoFocus inputMode="decimal" value={money.sum} onChange={(e) => setMoney({ ...money, sum: e.target.value })} />
             </Field>
             <Field label="Комментарий" required={money.kind !== 'transfer'}>
-              <input id="money-comment" value={money.comment} onChange={(e) => setMoney({ ...money, comment: e.target.value })} />
+              <input
+                id="money-comment"
+                value={money.comment}
+                onChange={(e) => setMoney({ ...money, comment: e.target.value })}
+                onKeyDown={(e) => {
+                  // Enter в последнем поле — как главная кнопка (ui-rules §4).
+                  if (e.key !== 'Enter' || moneyMissing.length > 0) return
+                  e.preventDefault()
+                  if (money.fix) {
+                    if (!correction.busy && money.fix.filled) void submitFix()
+                  } else if (!act.busy) submitMoney()
+                }}
+              />
             </Field>
+            {moneyOverdraw && (
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="money-overdraw">
+                {moneyOverdraw}
+              </div>
+            )}
             <Missing items={moneyMissing} />
             <ErrorBox error={money.fix ? correction.error : act.error} />
             <div className="flex justify-end gap-2">

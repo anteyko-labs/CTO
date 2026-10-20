@@ -20,7 +20,7 @@ import { get, newOpId, post } from '../lib/api'
 import { postCorrection } from '../lib/corrections'
 import type { ReceiptFixState } from '../lib/receiptFix'
 import { formatLiters, formatSom, parseSom } from '../lib/format'
-import { initialPrices, isOil, lastText, lineCalc, parseCount, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
+import { initialPrices, isOil, lastText, lineCalc, parseCount, priceJumpText, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
 import { useFocusAfterRender } from '../lib/focus'
 import { useUser } from '../lib/auth'
@@ -318,6 +318,19 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
     })
   }
 
+  // Ctrl+Enter проводит документ, как в кассе (ui-rules §4); при открытом окне сочетание относится к окну.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      const dialog = Boolean(document.querySelector('[role="dialog"]'))
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !dialog && !save.busy && missing.length === 0) {
+        e.preventDefault()
+        submit()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
   const activeSuppliers = (suppliers.data ?? []).filter((s) => s.active)
   const submitText = fix ? 'Сохранить исправление' : stockIn ? 'Провести оприходование' : 'Провести приход'
 
@@ -490,6 +503,11 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                       {l.last && (
                         <div className="mt-1 text-xs text-slate-500" data-testid="last-receipt">
                           {lastText(l.last)}
+                        </div>
+                      )}
+                      {priceJumpText(l.price, l.last) && (
+                        <div className="mt-1 max-w-[14rem] rounded bg-amber-50 px-1.5 py-1 text-xs text-amber-800" data-testid="price-jump">
+                          {priceJumpText(l.price, l.last)}
                         </div>
                       )}
                     </td>

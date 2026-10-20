@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { initialPrices, lastText, unitCost, lineCalc, withCost, withMarkup, withSalePrice } from './receiptLines'
+import { initialPrices, lastText, priceJumpText, unitCost, lineCalc, withCost, withMarkup, withSalePrice } from './receiptLines'
 import type { Product } from './types'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
@@ -73,5 +73,19 @@ describe('строка прихода', () => {
     expect(nb(lastText({ receipt_id: 'r', number: 7, price_tyiyn: 35_000, created_at: '2026-10-12T05:00:00Z', supplier_name: null }))).toBe(
       'в прошлый раз: 350 с, 12.10',
     )
+  })
+})
+
+describe('цена по накладной сильно отличается от прошлой', () => {
+  it('предупреждает при отличии больше 30 %, без запрета', () => {
+    const last = { price_tyiyn: 42_000 }
+    expect(priceJumpText('420', last)).toBe('')
+    expect(priceJumpText('546', last)).toBe('')
+    expect(priceJumpText('294', last)).toBe('')
+    expect(priceJumpText('50', last)).toMatch(/^Цена ниже, чем в прошлый раз/)
+    expect(priceJumpText('547', last)).toMatch(/^Цена выше/)
+    expect(priceJumpText('', last)).toBe('')
+    expect(priceJumpText('50', null)).toBe('')
+    expect(priceJumpText('50', { price_tyiyn: 0 })).toBe('')
   })
 })

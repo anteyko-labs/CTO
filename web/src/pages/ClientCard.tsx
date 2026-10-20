@@ -144,18 +144,16 @@ const KIND_TONE: Record<PartyTimelineItem['kind'], 'slate' | 'green' | 'amber' |
   adjust: 'sky',
 }
 
-/** Погашение долга или правка баланса владельцем. */
-function MoneyModal({
+/** Правка баланса владельцем (погашение — `RepaymentModal`). */
+function AdjustModal({
   title,
   party,
-  adjust,
   fixId,
   onClose,
   onDone,
 }: {
   title: string
   party: Party
-  adjust: boolean
   /** «Исправить» проведённую правку баланса (SPEC-29 §24): id записи долга; окно заполняется ею. */
   fixId?: string
   onClose: () => void
@@ -163,7 +161,7 @@ function MoneyModal({
 }) {
   const [sum, setSum] = useState('')
   const [comment, setComment] = useState('')
-  const [sign, setSign] = useState<1 | -1>(adjust ? 1 : 1)
+  const [sign, setSign] = useState<1 | -1>(1)
   const { busy, error, run } = useAction()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
   const [opId] = useState(newOpId)
@@ -192,13 +190,9 @@ function MoneyModal({
     run(async () => {
       const v = parseSom(sum)
       if (v === null || v <= 0) throw new Error('Неверная сумма')
-      if (adjust) {
-        if (!comment.trim()) throw new Error('Укажите причину правки')
-        await post('/debts/adjust', { op_id: opId, party_id: party.id, amount_tyiyn: sign * v, comment })
-      } else {
-        await post('/debts/repayments', { op_id: opId, party_id: party.id, amount_tyiyn: v, comment })
-      }
-      toast(adjust ? 'Баланс исправлен' : 'Погашение записано')
+      if (!comment.trim()) throw new Error('Укажите причину правки')
+      await post('/debts/adjust', { op_id: opId, party_id: party.id, amount_tyiyn: sign * v, comment })
+      toast('Баланс исправлен')
       onDone()
     })
 
@@ -210,36 +204,29 @@ function MoneyModal({
         <div className="text-sm text-slate-600">
           {party.name}: {balanceText(party.balance_tyiyn)}
         </div>
-        {adjust && (
-          <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-sm">
-            {(
-              [
-                [1, 'Увеличить долг'],
-                [-1, 'Простить долг'],
-              ] as const
-            ).map(([v, label]) => (
-              <button
-                key={v}
-                type="button"
-                className={`min-h-[42px] py-2 ${sign === v ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
-                onClick={() => setSign(v)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-sm">
+          {(
+            [
+              [1, 'Увеличить долг'],
+              [-1, 'Простить долг'],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              className={`min-h-[42px] py-2 ${sign === v ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+              onClick={() => setSign(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <Field label="Сумма, с" required>
           <input autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
         </Field>
-        <Field label="Комментарий" required={adjust}>
+        <Field label="Комментарий" required>
           <input value={comment} onChange={(e) => setComment(e.target.value)} />
         </Field>
-        {!adjust && (
-          <div className="text-xs text-slate-500">
-            Деньги попадут в кассу вместе со сменой на этапе «День»; сейчас записывается только долг.
-          </div>
-        )}
         <ErrorBox error={fixId ? correction.error : error} />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
@@ -537,7 +524,7 @@ export default function ClientCard() {
         >
           Машины и масляная книжка
         </CardTitle>
-        <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable partyId={party.id} />
+        <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable partyId={party.id} onAdd={() => setAdding('vehicle')} />
       </section>
 
       {party.role === 'customer' && <FrequentProducts partyId={party.id} />}
@@ -649,11 +636,10 @@ export default function ClientCard() {
         />
       )}
       {fixing?.kind === 'adjust' && (
-        <MoneyModal
+        <AdjustModal
           key={fixing.ledgerId}
           title="Исправить правку баланса"
           party={party}
-          adjust
           fixId={fixing.ledgerId}
           onClose={() => setFixing(null)}
           onDone={() => {
@@ -664,10 +650,9 @@ export default function ClientCard() {
         />
       )}
       {money === 'adjust' && (
-        <MoneyModal
+        <AdjustModal
           title="Правка баланса"
           party={party}
-          adjust
           onClose={() => setMoney(null)}
           onDone={() => {
             setMoney(null)

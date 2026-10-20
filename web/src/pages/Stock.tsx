@@ -11,6 +11,7 @@ import { polarityMark, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom, formatKg, parseSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { nextStockSort, sortStock, type StockSort, type StockSortKey } from '../lib/stockSort'
 import type { Category, Product, StockMismatch } from '../lib/types'
 
 type Mismatch = StockMismatch & { product?: Product }
@@ -42,6 +43,8 @@ export default function Stock() {
   const staleSave = useAction()
   const [editing, setEditing] = useState<Product | null>(null)
   const [tab, setTab] = useState<'stock' | 'defects'>('stock')
+  // Сортировка по заголовкам: название, остаток, стоимость (стоимость — только владельцу).
+  const [sort, setSort] = useState<StockSort>({ key: null, desc: false })
   const [marking, setMarking] = useState<Product | null>(null)
   const query = useDebounced(q.trim())
   const categories = useLoad(() => get<Category[]>('/categories'), [])
@@ -63,7 +66,7 @@ export default function Stock() {
   const outCount = all.filter(isOut).length
   const reviewCount = all.filter((p) => p.needs_review).length
   const stale = new Map((staleList.data?.items ?? []).map((i) => [i.product_id, i]))
-  const rows =
+  const filtered =
     filter === 'low'
       ? all.filter(isLow)
       : filter === 'out'
@@ -73,10 +76,11 @@ export default function Stock() {
           : filter === 'stale'
             ? all.filter((p) => stale.has(p.id))
             : all
+  const rows = sortStock(filtered, owner || sort.key !== 'value' ? sort : { key: null, desc: false })
   const categoryName = new Map((categories.data ?? []).map((c) => [c.id, c.name]))
   // Стоимость — по всему отбору; на экране — страница. Смена отбора — первая страница.
   const totalValue = rows.reduce((acc, p) => acc + (p.stock_value_tyiyn ?? 0), 0)
-  const pager = usePager(rows, 'stock', `${query}:${categoryId}:${filter}:${polarity}`)
+  const pager = usePager(rows, 'stock', `${query}:${categoryId}:${filter}:${polarity}:${sort.key ?? ''}:${sort.desc}`)
 
   const runVerify = () => {
     void verify.run(async () => {
@@ -175,8 +179,30 @@ export default function Stock() {
     </>
   )
 
-  const head = ['Товар', 'Артикул', 'Категория', <span key="qty" className="block text-right">Остаток</span>, <span key="min" className="block text-right">Минимум</span>, '']
-  if (owner) head.splice(5, 0, <span key="avg" className="block text-right">Средняя цена</span>, <span key="value" className="block text-right">Стоимость</span>)
+  /** Заголовок-кнопка: щелчок сортирует, повторный — в обратную сторону. */
+  const sortHead = (key: StockSortKey, label: string, right = false) => (
+    <button
+      key={key}
+      type="button"
+      aria-label={`${label}: сортировать${sort.key === key ? (sort.desc ? ', сейчас по убыванию' : ', сейчас по возрастанию') : ''}`}
+      className={`inline-flex items-center gap-1 uppercase hover:text-slate-800 ${right ? 'w-full justify-end' : ''} ${sort.key === key ? 'text-slate-800' : ''}`}
+      onClick={() => setSort((s) => nextStockSort(s, key))}
+    >
+      {label}
+      <span aria-hidden className="text-[10px]">
+        {sort.key === key ? (sort.desc ? '▼' : '▲') : '↕'}
+      </span>
+    </button>
+  )
+  const head = [sortHead('name', 'Товар'), 'Артикул', 'Категория', sortHead('qty', 'Остаток', true), <span key="min" className="block text-right">Минимум</span>, '']
+  if (owner) head.splice(5, 0, <span key="avg" className="block text-right">Средняя цена</span>, sortHead('value', 'Стоимость', true))
+  const sortOptions: [string, string][] = [
+    ['', 'как есть'],
+    ['name:asc', 'по названию'],
+    ['qty:desc', 'остаток: больше сверху'],
+    ['qty:asc', 'остаток: меньше сверху'],
+    ...(owner ? ([['value:desc', 'стоимость: больше сверху']] as [string, string][]) : []),
+  ]
 
   return (
     <div>
@@ -305,6 +331,23 @@ export default function Stock() {
           </Empty>
         ) : (
           <>
+            <label className="mb-2 flex items-center justify-end gap-2 text-sm text-slate-600 md:hidden">
+              Сортировка
+              <select
+                className="w-auto"
+                value={sort.key ? `${sort.key}:${sort.desc ? 'desc' : 'asc'}` : ''}
+                onChange={(e) => {
+                  const [key, dir] = e.target.value.split(':')
+                  setSort(key ? { key: key as StockSortKey, desc: dir === 'desc' } : { key: null, desc: false })
+                }}
+              >
+                {sortOptions.map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <ul className="-mx-4 divide-y divide-slate-100 border-y border-slate-100 md:hidden">
               {pager.shown.map((p) => (
                 <li key={p.id} className={rowTone(p)}>

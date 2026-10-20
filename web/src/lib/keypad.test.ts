@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyKey, type KeypadKey } from './keypad'
+import { applyKey, padPlace, type Box, type KeypadKey } from './keypad'
 
 /** Нажать клавиши подряд, как кассир пальцем. */
 function press(start: string, keys: KeypadKey[], opts: Parameters<typeof applyKey>[2]): string {
@@ -54,5 +54,47 @@ describe('экранная клавиатура', () => {
   it('длина не больше предела поля: PIN — 4 цифры', () => {
     expect(press('', ['1', '2', '3', '4', '5'], { kind: 'int', maxLength: 4 })).toBe('1234')
     expect(press('', Array<KeypadKey>(20).fill('9'), { kind: 'int' })).toBe('9'.repeat(16))
+  })
+})
+
+describe('где стоит экранная клавиатура', () => {
+  const pad = { width: 342, height: 520 }
+  const overlaps = (f: Box, p: { left: number; top: number }) =>
+    p.left < f.left + f.width && f.left < p.left + pad.width && p.top < f.top + f.height && f.top < p.top + pad.height
+  const inside = (p: { left: number; top: number }, v: { width: number; height: number }) =>
+    p.left >= 0 && p.top >= 0 && p.left + pad.width <= v.width && p.top + pad.height <= v.height
+
+  it('моноблок 1920: рядом с полем «Получено», а не в углу', () => {
+    const view = { width: 1920, height: 1080 }
+    const field: Box = { left: 1500, top: 700, width: 300, height: 60 }
+    const p = padPlace(field, pad, view)
+    expect(overlaps(field, p)).toBe(false)
+    expect(inside(p, view)).toBe(true)
+    expect(p.left + pad.width).toBeLessThanOrEqual(field.left)
+    expect(p.scroll).toBe(0)
+  })
+
+  it('поле у левого края — справа от поля; в окне — сбоку от окна', () => {
+    const view = { width: 1366, height: 768 }
+    const field: Box = { left: 40, top: 300, width: 200, height: 56 }
+    const p = padPlace(field, pad, view)
+    expect(p.left).toBe(252)
+    expect(overlaps(field, p)).toBe(false)
+    const dialog: Box = { left: 400, top: 100, width: 500, height: 400 }
+    const inDialog: Box = { left: 420, top: 300, width: 460, height: 56 }
+    expect(padPlace(inDialog, pad, view, dialog).left).toBe(912)
+  })
+
+  it('телефон: места рядом нет — у нижнего края, страница прокручивается над клавиатурой', () => {
+    const view = { width: 390, height: 844 }
+    const top: Box = { left: 16, top: 100, width: 358, height: 56 }
+    const a = padPlace(top, pad, view)
+    expect(overlaps(top, a)).toBe(false)
+    expect(inside(a, view)).toBe(true)
+    const mid: Box = { left: 16, top: 400, width: 358, height: 56 }
+    const b = padPlace(mid, pad, view)
+    expect(inside(b, view)).toBe(true)
+    // Прокрутили на `scroll` — поле над клавиатурой.
+    expect(overlaps({ ...mid, top: mid.top - b.scroll }, b)).toBe(false)
   })
 })

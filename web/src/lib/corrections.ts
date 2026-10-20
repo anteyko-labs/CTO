@@ -89,11 +89,3 @@ export function correctionMarks(list: Correction[]): Map<string, CorrectionMark>
   return out
 }
 
-/** «исправлен → № 15» / «исправление № 12» — короткая подпись для строки списка. */
-export function markText(m: CorrectionMark | undefined): string[] {
-  if (!m) return []
-  const out: string[] = []
-  if (m.correctionOf) out.push(['исправление', numberText(m.correctionOf.original_number)].filter(Boolean).join(' '))
-  if (m.correctedTo) out.push(['исправлен →', numberText(m.correctedTo.new_number) || 'новый'].join(' '))
-  return out
-}

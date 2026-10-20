@@ -386,7 +386,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
  * В карточке клиента (`partyId`) можно показать и машины, которые клиент убрал в боте,
  * с их историей, и вернуть их (ADR-062).
  */
-export function OilBookList({ path, editable, partyId }: { path: string; editable: boolean; partyId?: string }) {
+export function OilBookList({ path, editable, partyId, onAdd }: { path: string; editable: boolean; partyId?: string; onAdd?: () => void }) {
   const [showRemoved, setShowRemoved] = useState(false)
   const url = partyId && showRemoved ? `${path}?removed=true` : path
   const books = useLoad(() => get<VehicleBook[]>(url), [url])
@@ -404,7 +404,22 @@ export function OilBookList({ path, editable, partyId }: { path: string; editabl
   if (list.length === 0)
     return (
       <div className="flex flex-col gap-2">
-        <Empty>{showRemoved ? 'Машин нет, убранных тоже' : 'Машин нет — их добавляют в карточке клиента или прямо в кассе'}</Empty>
+        <Empty
+          action={
+            !showRemoved &&
+            onAdd && (
+              <Button variant="secondary" onClick={onAdd}>
+                + Добавить машину
+              </Button>
+            )
+          }
+        >
+          {showRemoved
+            ? 'Машин нет, убранных тоже'
+            : onAdd
+              ? 'Машин пока нет. Добавьте машину — по ней ведётся книжка замен масла; в кассе её тоже можно добавить при продаже.'
+              : 'Машин пока нет'}
+        </Empty>
         {toggle}
       </div>
     )

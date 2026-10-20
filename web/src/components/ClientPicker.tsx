@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { get, patch, post, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
@@ -100,7 +100,19 @@ function NewClientModal({ initial, onClose, onCreated }: { initial: string; onCl
           required={company}
           hint={company ? 'Нужен для документа о долге' : 'Нужен, если берёт в долг'}
         >
-          <input id="client-inn" inputMode="numeric" value={form.inn} onChange={(e) => setForm({ ...form, inn: e.target.value })} />
+          <input
+            id="client-inn"
+            inputMode="numeric"
+            value={form.inn}
+            onChange={(e) => setForm({ ...form, inn: e.target.value })}
+            onKeyDown={(e) => {
+              // Enter в последнем поле — как «Создать» (ui-rules §4).
+              if (e.key === 'Enter' && !busy && notFilled.length === 0) {
+                e.preventDefault()
+                void save()
+              }
+            }}
+          />
         </Field>
         <Missing items={notFilled} />
         <ErrorBox error={error} />
@@ -203,7 +215,9 @@ export function ClientPicker({
   )
   const card = useLoad(
     () =>
-      party ? get<{ contacts: PartyContact[]; vehicles: PartyVehicle[] }>(`/parties/${party.id}/card`) : Promise.resolve(null),
+      party
+        ? get<{ contacts: PartyContact[]; vehicles: PartyVehicle[] }>(`/parties/${party.id}/card`).then((c) => ({ ...c, partyId: party.id }))
+        : Promise.resolve(null),
     [party?.id],
   )
 
@@ -224,6 +238,21 @@ export function ClientPicker({
     if (v && !vehicleId) onVehicle(v.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card.data, platePick])
+
+  // У клиента одна машина — ставим её сразу (пробег и книжка появляются без лишнего нажатия).
+  // Один раз на выбранного клиента: если кассир убрал машину, обратно не подставляем.
+  const autoPicked = useRef<string | null>(null)
+  useEffect(() => {
+    if (!party) {
+      autoPicked.current = null
+      return
+    }
+    if (!card.data || card.data.partyId !== party.id || autoPicked.current === party.id) return
+    autoPicked.current = party.id
+    const active = card.data.vehicles.filter((v) => v.active)
+    if (active.length === 1 && !vehicleId && !platePick) onVehicle(active[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [party?.id, card.data])
 
   if (party) {
     const contacts = card.data?.contacts.filter((c) => c.active) ?? []

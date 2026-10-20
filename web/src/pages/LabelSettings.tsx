@@ -4,7 +4,8 @@ import { labelsHtml } from '../components/labels'
 import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader } from '../components/ui'
 import { get, put, qs } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
-import type { LabelSettings, Product } from '../lib/types'
+import { previewPick } from '../lib/labelText'
+import type { Category, LabelSettings, Product } from '../lib/types'
 
 const PRESETS: [number, number][] = [
   [58, 40],
@@ -78,11 +79,14 @@ function toSettings(f: Form): LabelSettings | null {
   }
 }
 
-/** Для предпросмотра берём настоящий товар со штрихкодом и ценой; нет товаров — образец. */
+/** Для предпросмотра — настоящее масло с брендом и характеристиками (видно, что меняют отметки);
+ *  такого нет — встроенный образец масла (SPEC-02). */
 async function previewProduct(): Promise<Product> {
   try {
-    const list = await get<Product[]>(`/products${qs({ limit: 20 })}`)
-    return list.find((p) => p.barcodes.length > 0 && p.sale_price_tyiyn > 0) ?? list[0] ?? SAMPLE
+    const cats = await get<Category[]>('/categories')
+    const oilCats = cats.filter((c) => c.kind === 'oil').slice(0, 3)
+    const lists = await Promise.all(oilCats.map((c) => get<Product[]>(`/products${qs({ category_id: c.id, limit: 50 })}`)))
+    return previewPick(lists.flat()) ?? SAMPLE
   } catch {
     return SAMPLE
   }

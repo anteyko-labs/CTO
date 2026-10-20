@@ -1,8 +1,8 @@
 // Экранная цифровая клавиатура режима кассы (SPEC-29, «Режим кассы»). Появляется у любого
 // числового поля с `data-keypad` (количество, литры, «Получено», вес и цена аккумулятора, PIN при
 // открытии смены, суммы в окнах) и вводит в него цифры касанием — физическая клавиатура не нужна.
-import { useEffect, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { applyKey, type KeypadKey, type KeypadKind } from '../lib/keypad'
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { applyKey, padPlace, type KeypadKey, type KeypadKind } from '../lib/keypad'
 
 function isPadField(el: unknown): el is HTMLInputElement {
   return el instanceof HTMLInputElement && el.dataset.keypad !== undefined && !el.disabled && !el.readOnly
@@ -30,8 +30,9 @@ function fieldLabel(el: HTMLInputElement): string {
   return ''
 }
 
-/** Ширина клавиатуры, точки: 18rem при шрифте режима 19 px. */
+/** Ширина клавиатуры, точки: 18rem при шрифте режима 19 px; высота — до первого замера. */
 const PAD_WIDTH = 342
+const PAD_HEIGHT = 540
 
 const DIGITS: KeypadKey[] = ['7', '8', '9', '4', '5', '6', '1', '2', '3']
 
@@ -89,6 +90,61 @@ export function Keypad() {
     }
   }, [])
 
+  // Размер клавиатуры — замером после показа (с быстрыми суммами она выше).
+  const [padSize, setPadSize] = useState({ width: PAD_WIDTH, height: PAD_HEIGHT })
+  useLayoutEffect(() => {
+    const el = padRef.current
+    if (!target || !el) return
+    const measure = () => {
+      const r = el.getBoundingClientRect()
+      setPadSize((cur) => (Math.abs(r.width - cur.width) > 1 || Math.abs(r.height - cur.height) > 1 ? { width: r.width, height: r.height } : cur))
+    }
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [target])
+  // Прокрутка и поворот экрана двигают поле — клавиатура идёт за ним.
+  useEffect(() => {
+    if (!target) return
+    const move = () => rerender()
+    window.addEventListener('scroll', move, true)
+    window.addEventListener('resize', move)
+    return () => {
+      window.removeEventListener('scroll', move, true)
+      window.removeEventListener('resize', move)
+    }
+  }, [target])
+  // Узкий экран: места рядом с полем нет — клавиатура внизу, а страница прокручивается, чтобы
+  // поле было над ней. Запас снизу — на время показа, чтобы было куда прокрутить.
+  const scrolledFor = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (!target || scrolledFor.current === target) return
+    const t = setTimeout(() => {
+      if (!target.isConnected) return
+      scrolledFor.current = target
+      const dialog = target.closest('[role="dialog"]')?.getBoundingClientRect()
+      const { scroll } = padPlace(target.getBoundingClientRect(), padSize, { width: window.innerWidth, height: window.innerHeight }, dialog)
+      if (scroll <= 0) return
+      const root = document.documentElement
+      root.style.paddingBottom = `${padSize.height + 24}px`
+      const box = target.closest('[role="dialog"] .overflow-y-auto, [role="dialog"]')
+      if (box instanceof HTMLElement && box.scrollHeight > box.clientHeight) box.scrollBy({ top: scroll })
+      else window.scrollBy({ top: scroll })
+    }, 0)
+    return () => clearTimeout(t)
+  }, [target, padSize])
+  useEffect(() => {
+    if (target) return
+    scrolledFor.current = null
+    document.documentElement.style.paddingBottom = ''
+  }, [target])
+  useEffect(
+    () => () => {
+      document.documentElement.style.paddingBottom = ''
+    },
+    [],
+  )
+
   // Поле исчезло (строку удалили, окно закрыли) — клавиатура тоже.
   useEffect(() => {
     if (!target) return
@@ -106,20 +162,9 @@ export function Keypad() {
   const kind: KeypadKind = target.dataset.keypad === 'decimal' ? 'decimal' : target.dataset.keypad === 'digits' ? 'digits' : 'int'
   const decimals = Number(target.dataset.keypadDecimals) || 2
   const quick = (target.dataset.keypadQuick ?? '').split(';').filter(Boolean)
-  const rect = target.getBoundingClientRect()
-  // Клавиатура — у противоположного края экрана, чтобы не закрыть поле; поле в окне — сбоку от
-  // окна, если там хватает места, чтобы были видны и поле, и кнопки окна.
-  const gap = 12
+  // Рядом с полем и не поверх него, целиком на экране (поле в окне — сбоку от окна).
   const dialog = target.closest('[role="dialog"]')?.getBoundingClientRect()
-  const onRight = rect.left + rect.width / 2 > window.innerWidth / 2
-  const place =
-    dialog && window.innerWidth - dialog.right >= PAD_WIDTH + gap
-      ? { left: dialog.right + gap }
-      : dialog && dialog.left >= PAD_WIDTH + gap
-        ? { right: window.innerWidth - dialog.left + gap }
-        : onRight
-          ? { left: gap }
-          : { right: gap }
+  const place = padPlace(target.getBoundingClientRect(), padSize, { width: window.innerWidth, height: window.innerHeight }, dialog)
 
   const write = (value: string) => {
     applying.current = true
@@ -147,8 +192,8 @@ export function Keypad() {
       role="group"
       aria-label="Цифровая клавиатура"
       data-testid="keypad"
-      className="no-print fixed bottom-3 z-50 w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-slate-300 bg-slate-100 p-3 shadow-2xl"
-      style={place}
+      className="no-print fixed z-50 max-h-[calc(100dvh-1.5rem)] w-[min(18rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-slate-300 bg-slate-100 p-3 shadow-2xl"
+      style={{ left: place.left, top: place.top }}
       onPointerDown={keepFocus}
       onMouseDown={keepFocus}
     >

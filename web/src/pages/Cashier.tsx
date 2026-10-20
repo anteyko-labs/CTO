@@ -918,7 +918,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             <div className="min-w-0 flex-1">
               <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
             </div>
-            <Button variant="secondary" className="shrink-0" onClick={() => setServicesOpen(true)}>
+            <Button variant="secondary" className={`shrink-0 ${touch ? 'min-h-14!' : ''}`} onClick={() => setServicesOpen(true)}>
               <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z" />
               </svg>
@@ -1163,7 +1163,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                           />
                           <button
                             type="button"
-                            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-sky-700"
+                            // Значок мал, а цель нажатия — не меньше 42 точек (ui-rules §5): невидимая рамка вокруг.
+                            className="relative rounded p-1 text-slate-400 after:absolute after:-inset-2.5 after:content-[''] hover:bg-slate-100 hover:text-sky-700"
                             aria-label="Изменить цену"
                             onClick={() => document.getElementById(`price-${l.key}`)?.focus()}
                           >
@@ -1320,12 +1321,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </Field>
           )}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-            <label className="inline-flex cursor-pointer items-center gap-1.5 text-sky-700">
-              <input type="checkbox" className="h-3.5 w-3.5" checked={delivery !== null} onChange={(e) => setDelivery(e.target.checked ? '' : null)} />
+            <label className={`inline-flex cursor-pointer items-center gap-1.5 text-sky-700 ${touch ? 'min-h-14 gap-3 pr-2' : 'max-lg:min-h-[42px]'}`}>
+              <input type="checkbox" className="h-3.5 w-3.5 max-lg:h-5 max-lg:w-5" checked={delivery !== null} onChange={(e) => setDelivery(e.target.checked ? '' : null)} />
               Доставка (бесплатно)
             </label>
             {!commentOpen && !comment && (
-              <button type="button" className="text-sky-700 hover:underline" onClick={() => setCommentOpen(true)}>
+              <button type="button" className="text-sky-700 hover:underline max-lg:min-h-[42px]" onClick={() => setCommentOpen(true)}>
                 + комментарий
               </button>
             )}
@@ -1371,7 +1372,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 key={m}
                 type="button"
                 // 3 + 2: наличные, карта, QR сверху — частые; долг и смешанная ниже.
-                className={`${touch ? 'min-h-16 text-xl font-medium' : 'min-h-12'} py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                // На телефоне в режиме кассы треть ширины узка для крупного шрифта: мельче и с переносом.
+                className={`${touch ? 'min-h-16 px-1 text-[15px] leading-tight font-medium break-words hyphens-auto sm:text-xl' : 'min-h-12'} py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                 onClick={() => setPayMode(m)}
               >
                 {m === 'mixed' ? 'Смешанная' : PAYMENT_LABELS[m]}
@@ -1390,7 +1392,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               {!batteryPay && (
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+                  className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline max-lg:min-h-[42px]"
                   disabled={batteryLoad.busy || !navigator.onLine}
                   title={navigator.onLine ? 'Старый аккумулятор в счёт оплаты: вес × цена приёма за кг' : 'Нет связи с сервером: цену приёма считает сервер'}
                   onClick={() =>
@@ -1406,7 +1408,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 </button>
               )}
               {!bonus && (
-                <button type="button" className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline" onClick={() => setBonusOpen(true)}>
+                <button type="button" className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline max-lg:min-h-[42px]" onClick={() => setBonusOpen(true)}>
                   <Icon name="star" className="h-3.5 w-3.5" />
                   Баллы клиента
                 </button>
@@ -1631,13 +1633,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           <div className={`hidden text-center text-xs text-slate-400 ${touch ? '' : 'lg:block'}`}>Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
           {!fix && lines.length > 0 && (
             <div className="flex gap-2">
-              <Button variant="secondary" className="flex-1" onClick={park}>
+              <Button variant="secondary" className={`flex-1 ${touch ? 'min-h-14!' : ''}`} onClick={park}>
                 Отложить
               </Button>
               {confirmClear ? (
                 <Button
                   variant="ghost"
-                  className="flex-1 text-rose-700"
+                  className={`flex-1 text-rose-700 ${touch ? 'min-h-14!' : ''}`}
                   onClick={() => {
                     setConfirmClear(false)
                     setParkedId(null)
@@ -1648,7 +1650,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   Точно очистить?
                 </Button>
               ) : (
-                <Button variant="ghost" className="flex-1" onClick={() => setConfirmClear(true)}>
+                <Button variant="ghost" className={`flex-1 ${touch ? 'min-h-14!' : ''}`} onClick={() => setConfirmClear(true)}>
                   Очистить
                 </Button>
               )}
