@@ -1,14 +1,17 @@
 ﻿# Восстановление базы из копии. Запускать от имени администратора.
 # Скрипт показывает файл, просит ввести ВОССТАНОВИТЬ, останавливает сервер и делает копию текущей
-# базы avtodom-ДАТА-before-restore-ЧЧММ.dump (не удалась — ничего не трогает). Если восстановление
-# упало, сервер не запускается и скрипт пишет, какой копией вернуть всё как было.
+# базы avtodom-ДАТА-before-restore-ЧЧММ.dump (не удалась — ничего не трогает). Затем пересоздаёт
+# базу и восстанавливает копию в чистую — так встаёт и копия прежней версии программы. Если
+# восстановление упало, сервер не запускается и скрипт пишет, какой копией вернуть всё как было.
 #   powershell -ExecutionPolicy Bypass -File restore.ps1 -Dump 'C:\Avtodom\backups\avtodom-2026-10-12.dump'
 # Проверка копии без касания рабочей базы: восстановить во временную базу avtodom_check,
 # посчитать продажи и удалить её (раз в месяц, см. README):
 #   powershell -ExecutionPolicy Bypass -File restore.ps1 -Dump 'C:\Avtodom\backups\avtodom-2026-10-12.dump' -Check
 param(
   [Parameter(Mandatory = $true)][string]$Dump,
-  [switch]$Check
+  [switch]$Check,
+  # Без вопроса «ВОССТАНОВИТЬ»: только для rollback.ps1, который спросил сам.
+  [switch]$Yes
 )
 $ErrorActionPreference = 'Stop'
 # Остановка задачи сервера и чтение C:\Avtodom (доступ только администраторам) — без прав упадёт на полпути.
@@ -65,10 +68,12 @@ if ($Check) {
 
 Write-Host ''
 Write-Host 'Рабочая база будет заменена содержимым этой копии. Всё, что внесено позже, пропадёт.' -ForegroundColor Yellow
-$answer = Read-Host 'Чтобы продолжить, введите ВОССТАНОВИТЬ'
-if ("$answer".Trim() -ne 'ВОССТАНОВИТЬ') {
-  Write-Host 'Отменено, ничего не изменено.'
-  exit 1
+if (-not $Yes) {
+  $answer = Read-Host 'Чтобы продолжить, введите ВОССТАНОВИТЬ'
+  if ("$answer".Trim() -ne 'ВОССТАНОВИТЬ') {
+    Write-Host 'Отменено, ничего не изменено.'
+    exit 1
+  }
 }
 
 Stop-ScheduledTask -TaskName 'Avtodom сервер'
@@ -92,13 +97,26 @@ if ($code -ne 0 -or -not (Test-Path $safety)) {
 Add-Content -Encoding UTF8 "$Root\logs\backup.log" "$(Get-Date -Format s) копия перед восстановлением: $safety"
 Write-Host "Копия текущей базы: $safety"
 
-& "$PgBin\pg_restore.exe" -U avtodom -h 127.0.0.1 -d avtodom --clean --if-exists --no-owner $item.FullName
+# Восстанавливаем в чистую базу: копия прежней версии программы не ложится поверх базы новой
+# версии (--clean падает на таблицах, которых в копии нет). Сервер при запуске сам доведёт
+# базу до своей версии (ADR-089). Удалить и создать базу может только postgres.
+$env:PGPASSWORD = $PgSuperPassword
+& "$PgBin\dropdb.exe" -U postgres -h 127.0.0.1 --force --if-exists avtodom
 $code = $LASTEXITCODE
+if ($code -eq 0) {
+  & "$PgBin\createdb.exe" -U postgres -h 127.0.0.1 -O avtodom avtodom
+  $code = $LASTEXITCODE
+}
+if ($code -eq 0) {
+  $env:PGPASSWORD = $DbPassword
+  & "$PgBin\pg_restore.exe" -U avtodom -h 127.0.0.1 -d avtodom --no-owner $item.FullName
+  $code = $LASTEXITCODE
+}
 Remove-Item Env:PGPASSWORD
 if ($code -ne 0) {
   Add-Content -Encoding UTF8 "$Root\logs\backup.log" "$(Get-Date -Format s) ОШИБКА: восстановление из $($item.FullName) не удалось (код $code), сервер остановлен"
   Write-Host ''
-  Write-Host "pg_restore завершился с ошибкой ($code). База могла восстановиться не полностью — СЕРВЕР НЕ ЗАПУЩЕН." -ForegroundColor Red
+  Write-Host "Восстановление завершилось с ошибкой ($code). База могла восстановиться не полностью — СЕРВЕР НЕ ЗАПУЩЕН." -ForegroundColor Red
   Write-Host 'Вернуть базу как было до восстановления:' -ForegroundColor Red
   Write-Host "  powershell -ExecutionPolicy Bypass -File $Root\restore.ps1 -Dump '$safety'" -ForegroundColor Red
   Write-Host '(после удачного восстановления сервер запустится сам)'

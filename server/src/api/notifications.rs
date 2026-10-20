@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 59] = [
+pub(crate) const WATCHED: [&str; 60] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -59,6 +59,7 @@ pub(crate) const WATCHED: [&str; 59] = [
     "settings.loyalty",
     "gift.rule_toggle",
     "backup.failed",
+    "backup.size",
     "telegram.code_flood",
     "telegram.customer_ambiguous",
     "receipt.reverse_negative",
@@ -787,6 +788,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             String::new(),
         ),
         "backup.failed" => ("⚠️ Копия базы не создана".into(), text("reason")),
+        "backup.size" => ("⚠️ Копии базы занимают много места".into(), text("reason")),
         "telegram.code_flood" => (
             "Подбирают код привязки Телеграма".into(),
             format!(

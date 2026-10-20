@@ -1,9 +1,10 @@
 ﻿# Ночная копия базы в C:\Avtodom\backups. В облако её уносит Google Drive: эта папка добавлена
 # в «Синхронизацию папок компьютера» (задача работает от SYSTEM и не видит диск G:). Без Google Drive
 # копия делается так же, только остаётся на этом компьютере.
-# Хранение: ночные копии — 30 дней, но 7 последних годных не удаляются никогда; копии перед
-# обновлением и восстановлением (before-update, before-restore) — 90 дней. Если копия сегодня
-# не удалась, старые не удаляются, а владелец получает «backup.failed» в «Уведомлениях» и в Телеграме.
+# Хранение: 7 последних годных ночных — за каждый день, затем по одной на неделю (4 недели)
+# и на месяц (3 месяца); копии перед обновлением и восстановлением — 30 дней, две последние —
+# всегда. Если копия сегодня не удалась, старые не удаляются, а владелец получает
+# «backup.failed» в «Уведомлениях» и в Телеграме.
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Backups = "$Root\backups"
 $Log = "$Root\logs\backup.log"
@@ -20,9 +21,9 @@ $env:PGPASSWORD = $DbPassword
 
 # Запись в журнал действий сервера: владелец увидит её в «Уведомлениях» и в Телеграме.
 # Если база недоступна совсем, запись не пройдёт — тогда остаётся только backup.log.
-function Send-Failure([string]$Reason) {
+function Send-Failure([string]$Reason, [string]$Action = 'backup.failed') {
   $sqlReason = $Reason.Replace("'", "''")
-  $sql = "insert into audit_log (id, branch_id, action, entity, data) select gen_random_uuid(), id, 'backup.failed', 'backup', jsonb_build_object('reason', '$sqlReason') from branches;"
+  $sql = "insert into audit_log (id, branch_id, action, entity, data) select gen_random_uuid(), id, '$Action', 'backup', jsonb_build_object('reason', '$sqlReason') from branches;"
   # Через файл в UTF-8 без BOM: русский текст в аргументах psql на Windows искажается.
   $sqlFile = "$Root\logs\backup-failed.sql"
   [IO.File]::WriteAllText($sqlFile, $sql, (New-Object Text.UTF8Encoding $false))
@@ -73,21 +74,41 @@ Write-Log "копия готова: $file ($([math]::Round((Get-Item $file).Leng
 # Чистка — только после удачной копии.
 $now = Get-Date
 $dumps = @(Get-ChildItem $Backups -Filter 'avtodom-*.dump')
-# Ночные: от новых к старым; 7 последних годных храним всегда, остальные — 30 дней.
-$kept = 0
-foreach ($f in ($dumps | Where-Object { $_.Name -match '^avtodom-\d{4}-\d{2}-\d{2}\.dump$' } | Sort-Object Name -Descending)) {
-  if ($kept -lt 7 -and -not (Test-Dump $f.FullName)) { $kept++; continue }
+# Ночные, от новых к старым: 7 последних годных — за каждый день, затем по одной годной на
+# неделю (4 недели) и на месяц (3 месяца). Остальные удаляются: в копиях лежат и фото накладных,
+# 30 полных копий быстро заняли бы весь Google Диск (ADR-089).
+$keep = @{}
+$days = 0
+$weeks = @{}
+$months = @{}
+foreach ($f in ($dumps | Where-Object { $_.Name -match '^avtodom-(\d{4}-\d{2}-\d{2})\.dump$' } | Sort-Object Name -Descending)) {
+  $day = [datetime]::ParseExact($f.Name.Substring(8, 10), 'yyyy-MM-dd', $null)
+  if (Test-Dump $f.FullName) { continue }
+  if ($days -lt 7) { $keep[$f.Name] = $true; $days++; continue }
+  $week = $day.AddDays(-(([int]$day.DayOfWeek + 6) % 7)).ToString('yyyy-MM-dd')
+  if ($weeks.Count -lt 4 -and -not $weeks.ContainsKey($week)) { $weeks[$week] = $true; $keep[$f.Name] = $true; continue }
+  $month = $day.ToString('yyyy-MM')
+  if ($months.Count -lt 3 -and -not $months.ContainsKey($month)) { $months[$month] = $true; $keep[$f.Name] = $true; continue }
+}
+foreach ($f in ($dumps | Where-Object { $_.Name -match '^avtodom-\d{4}-\d{2}-\d{2}\.dump$' })) {
+  # Негодные и лишние — старше недели; свежие не трогаем, даже если они не прошли проверку.
+  if (-not $keep.ContainsKey($f.Name) -and $f.LastWriteTime -lt $now.AddDays(-7)) {
+    Remove-Item -Force $f.FullName
+    Write-Log "удалена старая копия: $($f.Name)"
+  }
+}
+# Перед обновлением и восстановлением — 30 дней, но две последние остаются всегда (откат).
+$special = @($dumps | Where-Object { $_.Name -match '^avtodom-\d{4}-\d{2}-\d{2}-before-(update|restore)-\d{4}\.dump$' } | Sort-Object LastWriteTime -Descending)
+for ($i = 2; $i -lt $special.Count; $i++) {
+  $f = $special[$i]
   if ($f.LastWriteTime -lt $now.AddDays(-30)) {
     Remove-Item -Force $f.FullName
     Write-Log "удалена старая копия: $($f.Name)"
   }
 }
-# Перед обновлением и восстановлением — 90 дней.
-foreach ($f in ($dumps | Where-Object { $_.Name -match '^avtodom-\d{4}-\d{2}-\d{2}-before-(update|restore)-\d{4}\.dump$' })) {
-  if ($f.LastWriteTime -lt $now.AddDays(-90)) {
-    Remove-Item -Force $f.FullName
-    Write-Log "удалена старая копия: $($f.Name)"
-  }
-}
+# Сколько занимают копии: больше 10 ГБ — владельцу в «Уведомления», чтобы место на Google
+# Диске не кончилось молча.
+$size = (Get-ChildItem $Backups -Filter 'avtodom-*.dump' | Measure-Object -Property Length -Sum).Sum
+if ($size -gt 10GB) { Send-Failure "копии базы занимают $([math]::Round($size / 1GB, 1)) ГБ — проверьте место на Google Диске" 'backup.size' }
 # Брошенные временные файлы (прерванная копия).
 Get-ChildItem $Backups -Filter '*.part' | Where-Object { $_.LastWriteTime -lt $now.AddDays(-1) } | Remove-Item -Force
