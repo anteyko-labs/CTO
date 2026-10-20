@@ -1,6 +1,6 @@
 //! Касса: продажа и возврат (SPEC-04).
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
@@ -638,8 +638,8 @@ async fn insert_payments(
     sale_id: Uuid,
     payments: &[PaymentReq],
     sign: i64,
-    // Возврат: комиссия исходного чека по карте и переводу (`None` — продажа).
-    mut back: Option<FeeBack>,
+    // Возврат: комиссия исходного чека по карте и переводу по каждому счёту (`None` — продажа).
+    mut back: Option<HashMap<Uuid, FeeBack>>,
     // Учётный день чека: ставка банка берётся действовавшая в него.
     on: NaiveDate,
 ) -> AppResult<()> {
@@ -659,7 +659,8 @@ async fn insert_payments(
         };
         // Ставка — того счёта, куда легли деньги, в учётный день чека (ADR-077).
         let fee = match (bank, back.as_mut()) {
-            (Some(_), Some(b)) => -b.take(p.amount_tyiyn),
+            // Комиссия возвращается тому счёту, который её заплатил, и не больше его доли (ADR-077).
+            (Some(bank_id), Some(b)) => -b.get_mut(&bank_id).map_or(0, |f| f.take(p.amount_tyiyn)),
             (Some(bank_id), None) => crate::api::fees::fee_on(conn, bank_id, on, amount).await?,
             _ => 0,
         };
@@ -1459,6 +1460,68 @@ async fn refund_account(
     }
 }
 
+/// Куда вернуть безнал `p`: на счета исходной оплаты, каждому — не больше того, что он получил
+/// по этому чеку за вычетом прежних возвратов. Сначала счёт, указанный кассой, если он был в
+/// исходной оплате, затем счета того же способа, затем другого безналичного; что не легло —
+/// по прежнему правилу [`refund_account`].
+async fn refund_split(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    sale_id: Uuid,
+    p: &PaymentReq,
+) -> AppResult<Vec<(Uuid, i64)>> {
+    let rows = sqlx::query!(
+        r#"select p.account_id as "account_id!",
+                  bool_or(p.method = $2 and s.id = $1) as "same!",
+                  (coalesce(sum(p.amount_tyiyn) filter (where s.id = $1), 0)
+                   + coalesce(sum(p.amount_tyiyn) filter (where s.id <> $1), 0))::bigint as "left!"
+           from sale_payments p join sales s on s.id = p.sale_id
+           join cash_accounts a on a.id = p.account_id
+           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer') and a.active
+           group by p.account_id"#,
+        sale_id,
+        p.method
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut order: Vec<(bool, bool, i64, Uuid)> = rows
+        .into_iter()
+        .filter(|r| r.left > 0)
+        .map(|r| {
+            (
+                Some(r.account_id) == p.account_id,
+                r.same,
+                r.left,
+                r.account_id,
+            )
+        })
+        .collect();
+    order.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then(b.2.cmp(&a.2))
+            .then(a.3.cmp(&b.3))
+    });
+    let mut rest = p.amount_tyiyn;
+    let mut out = Vec::new();
+    for (_, _, left, account_id) in order {
+        if rest <= 0 {
+            break;
+        }
+        let take = rest.min(left);
+        out.push((account_id, take));
+        rest -= take;
+    }
+    if rest > 0 {
+        let account_id = refund_account(conn, user, sale_id, p).await?;
+        match out.iter_mut().find(|(a, _)| *a == account_id) {
+            Some(x) => x.1 += rest,
+            None => out.push((account_id, rest)),
+        }
+    }
+    Ok(out)
+}
+
 /// Часть величины `part` для `qty` из `orig_qty`; последняя часть забирает точный остаток.
 fn share(orig: i64, already: i64, qty: i64, orig_qty: i64, returned_qty: i64) -> AppResult<i64> {
     if returned_qty + qty == orig_qty {
@@ -1636,11 +1699,17 @@ pub async fn return_sale_tx(
     for p in &req.payments {
         let mut p = p.clone();
         p.grams = None;
-        p.account_id = if matches!(p.method.as_str(), "card" | "transfer") {
-            Some(refund_account(conn, &ctx.user, id, &p).await?)
-        } else {
-            None
-        };
+        if matches!(p.method.as_str(), "card" | "transfer") {
+            // Безнал возвращается на те счета, куда он пришёл, не больше их доли (ADR-076).
+            for (account_id, amount) in refund_split(conn, &ctx.user, id, &p).await? {
+                let mut part = p.clone();
+                part.account_id = Some(account_id);
+                part.amount_tyiyn = amount;
+                payments.push(part);
+            }
+            continue;
+        }
+        p.account_id = None;
         if p.method == "battery" {
             let g = if p.amount_tyiyn == bat_left {
                 bat.grams.saturating_sub(bat.grams_back)
@@ -1843,30 +1912,43 @@ pub async fn return_sale_tx(
         )
         .await?;
     }
-    // Комиссия банка возвращается из записанной в исходном чеке, а не по ставке (ADR-070).
+    // Комиссия банка возвращается из записанной в исходном чеке, а не по ставке (ADR-070), и по
+    // каждому счёту отдельно: счёт без комиссии не получает чужую (ADR-077).
     let fb = sqlx::query!(
-        r#"select coalesce(sum(p.fee_tyiyn) filter (where s.id = $1), 0)::bigint as "fee!",
+        r#"select p.account_id as "account_id!",
+                  coalesce(sum(p.fee_tyiyn) filter (where s.id = $1), 0)::bigint as "fee!",
                   coalesce(sum(p.amount_tyiyn) filter (where s.id = $1), 0)::bigint as "base!",
                   coalesce(sum(-p.amount_tyiyn) filter (where s.id <> $1), 0)::bigint as "refunded!",
                   coalesce(sum(-p.fee_tyiyn) filter (where s.id <> $1), 0)::bigint as "fee_back!"
            from sale_payments p join sales s on s.id = p.sale_id
-           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer')"#,
+           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer')
+             and p.account_id is not null
+           group by p.account_id"#,
         id
     )
-    .fetch_one(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
+    let back: HashMap<Uuid, FeeBack> = fb
+        .into_iter()
+        .map(|r| {
+            (
+                r.account_id,
+                FeeBack {
+                    fee: r.fee,
+                    base: r.base,
+                    refunded: r.refunded,
+                    fee_back: r.fee_back,
+                },
+            )
+        })
+        .collect();
     insert_payments(
         conn,
         ctx,
         rid,
         &payments,
         -1,
-        Some(FeeBack {
-            fee: fb.fee,
-            base: fb.base,
-            refunded: fb.refunded,
-            fee_back: fb.fee_back,
-        }),
+        Some(back),
         orig.business_date,
     )
     .await?;

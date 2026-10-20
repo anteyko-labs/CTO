@@ -296,13 +296,21 @@ pub async fn add_movement_id(
     // Сумма каждой операции проверена на её входе; здесь — предел остатка кассы.
     ops::check_balance(e.amount)?;
     let acc = sqlx::query!(
-        "select name, balance_tyiyn, allow_negative from cash_accounts where id = $1 and branch_id = $2 for update",
+        "select name, balance_tyiyn, allow_negative, active from cash_accounts where id = $1 and branch_id = $2 for update",
         e.account_id,
         ctx.user.branch_id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("касса не найдена"))?;
+    // Счёт в архиве денег не принимает и не отдаёт — и сторно тоже: иначе остаток
+    // «невидимого» счёта разошёлся бы с итогами (ADR-088). Вернуть из архива можно в «Счетах».
+    if !acc.active {
+        return Err(AppError::Conflict(format!(
+            "счёт «{}» в архиве — верните его из архива в «Счетах» и повторите",
+            acc.name
+        )));
+    }
     let balance = acc.balance_tyiyn;
     let next = balance
         .checked_add(e.amount)
@@ -595,6 +603,7 @@ pub(crate) async fn load_shift(
                   h.to_safe_tyiyn as "to_safe?", h.left_tyiyn as "left?"
            from shift_closes c
            left join shift_handovers h on h.close_id = c.id
+             and (h.transfer_id is null or not exists (select 1 from cash_transfers x where x.reversal_of = h.transfer_id))
            where c.shift_id = $1
              and not exists (select 1 from shift_reopens r where r.close_id = c.id)
            order by c.seq desc limit 1"#,
@@ -1335,7 +1344,8 @@ async fn handover_shift(
     lock_accounts(&mut tx, branch_id, &[shift.account_id, safe]).await?;
     let close = sqlx::query!(
         r#"select c.id, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,
-                  exists (select 1 from shift_handovers h where h.close_id = c.id) as "done!"
+                  exists (select 1 from shift_handovers h where h.close_id = c.id
+                          and (h.transfer_id is null or not exists (select 1 from cash_transfers x where x.reversal_of = h.transfer_id))) as "done!"
            from shift_closes c
            where c.shift_id = $1
              and not exists (select 1 from shift_reopens r where r.close_id = c.id)
@@ -1601,8 +1611,10 @@ async fn check_reverse_window(
     if ctx.user.is_owner() {
         return Ok(());
     }
+    // Администратор сторнирует только движения открытой смены (SPEC-05): у счёта без смен
+    // (сейф, банк) смены нет ни у движения, ни открытой — это не «та же смена» (ADR-088).
     let open = open_shift_id(conn, ctx.user.branch_id, account_id).await?;
-    if shift_id != open {
+    if shift_id.is_none() || shift_id != open {
         return Err(AppError::Forbidden);
     }
     Ok(())
@@ -2017,7 +2029,14 @@ pub(crate) async fn movements_between(
     }
     let rows = sqlx::query_as!(
         MovementOut,
-        r#"select m.id, m.kind, m.amount_tyiyn, m.comment, m.doc_type, m.doc_id,
+        r#"select m.id, m.kind, m.amount_tyiyn,
+                  -- Личные расходы владельца администратору — только суммой (SPEC-06, ADR-088):
+                  -- остаток кассы должен сходиться, а на что потрачено — не его дело.
+                  case when not $6 and m.doc_type = 'expense' and exists (
+                         select 1 from expenses e join expense_articles a on a.id = e.article_id
+                         where e.id = m.doc_id and a.owner_only)
+                       then 'расход владельца' else m.comment end as "comment!",
+                  m.doc_type, m.doc_id,
                   u.full_name as user_name, m.created_at,
                   case
                     when m.doc_type = 'manual' then not exists (
@@ -2036,7 +2055,8 @@ pub(crate) async fn movements_between(
         user.branch_id,
         period.map(|p| p.0),
         period.map(|p| p.1),
-        limit
+        limit,
+        user.is_owner()
     )
     .fetch_all(&mut *conn)
     .await?;

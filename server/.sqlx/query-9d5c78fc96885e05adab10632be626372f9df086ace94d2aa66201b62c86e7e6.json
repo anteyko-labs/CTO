@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select c.closed_at, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,\n                  h.to_safe_tyiyn as \"to_safe?\", h.left_tyiyn as \"left?\"\n           from shift_closes c\n           left join shift_handovers h on h.close_id = c.id\n           where c.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n           order by c.seq desc limit 1",
+  "query": "select c.closed_at, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,\n                  h.to_safe_tyiyn as \"to_safe?\", h.left_tyiyn as \"left?\"\n           from shift_closes c\n           left join shift_handovers h on h.close_id = c.id\n             and (h.transfer_id is null or not exists (select 1 from cash_transfers x where x.reversal_of = h.transfer_id))\n           where c.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n           order by c.seq desc limit 1",
   "describe": {
     "columns": [
       {
@@ -48,5 +48,5 @@
       false
     ]
   },
-  "hash": "7a36365f37353f2211274038362a6109628243f1f74ae2df9855f5df48438719"
+  "hash": "9d5c78fc96885e05adab10632be626372f9df086ace94d2aa66201b62c86e7e6"
 }

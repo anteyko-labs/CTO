@@ -50,12 +50,38 @@ pub fn text(value: i32, unit: &str) -> String {
         }
         out.push(ch);
     }
-    format!("{out} {}", if unit == "mi" { "миль" } else { "км" })
+    format!(
+        "{out} {}",
+        if unit == "mi" {
+            miles_word(value)
+        } else {
+            "км"
+        }
+    )
+}
+
+/// «1 миля», «3 мили», «57 791 миля», «12 миль».
+pub fn miles_word(value: i32) -> &'static str {
+    let n = value.unsigned_abs();
+    match (n % 10, n % 100) {
+        (1, x) if x != 11 => "миля",
+        (2..=4, x) if !(12..=14).contains(&x) => "мили",
+        _ => "миль",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn miles_agree_with_number() {
+        assert_eq!(text(57_791, "mi"), "57 791 миля");
+        assert_eq!(text(62_762, "mi"), "62 762 мили");
+        assert_eq!(text(53_000, "mi"), "53 000 миль");
+        assert_eq!(text(11, "mi"), "11 миль");
+        assert_eq!(text(93_000, "km"), "93 000 км");
+    }
 
     #[test]
     fn miles_and_km_convert_with_one_rounding() {

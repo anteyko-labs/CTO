@@ -1446,8 +1446,14 @@ pub async fn post_repayment_tx(
     )
     .await?;
     if !supplier {
-        crate::api::payroll::accrue_on_repayment(&mut *conn, ctx, req.party_id, req.amount_tyiyn)
-            .await?;
+        crate::api::payroll::accrue_on_repayment(
+            &mut *conn,
+            ctx,
+            req.party_id,
+            req.amount_tyiyn,
+            ledger_id,
+        )
+        .await?;
     }
     ops::audit(
         &mut *conn,
@@ -1529,8 +1535,14 @@ pub async fn post_adjust_tx(
     .await?;
     // Прощённый долг не будет погашен: процент кассира по нему не ждём.
     if req.amount_tyiyn < 0 {
-        crate::api::payroll::forgive_pending(&mut *conn, ctx, req.party_id, -req.amount_tyiyn)
-            .await?;
+        crate::api::payroll::forgive_pending(
+            &mut *conn,
+            ctx,
+            req.party_id,
+            -req.amount_tyiyn,
+            ledger_id,
+        )
+        .await?;
     }
     ops::audit(
         &mut *conn,
@@ -1855,9 +1867,10 @@ pub async fn reverse_ledger_tx(
     // Деньги погашения уходят из той же кассы; для кассы смены нужна открытая смена.
     if l.kind == "repayment" && l.doc_type == "repayment" {
         let moves = sqlx::query!(
-            // Комиссию банк не возвращает: она остаётся расходом дня погашения (ADR-022).
-            r#"select account_id, amount_tyiyn from cash_movements
-               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2 and kind <> 'bank_fee'"#,
+            // Комиссия возвращается вместе с деньгами, как при возврате по чеку (ADR-070,
+            // ADR-088): иначе «Исправить» погашение взяло бы её второй раз.
+            r#"select account_id, amount_tyiyn, kind from cash_movements
+               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2"#,
             branch_id,
             l.doc_id
         )
@@ -1865,25 +1878,33 @@ pub async fn reverse_ledger_tx(
         .await?;
         for m in moves {
             crate::api::cash::require_open_shift(&mut *tx, branch_id, m.account_id).await?;
+            // Возвращённая комиссия — той же статьёй «комиссия банка» по тому же погашению:
+            // отчёты считают её по этим движениям (SPEC-08).
+            let fee = m.kind == "bank_fee";
             crate::api::cash::add_movement(
                 &mut *tx,
                 ctx,
                 crate::api::cash::CashEntry {
                     account_id: m.account_id,
-                    kind: "reversal",
+                    kind: if fee { "bank_fee" } else { "reversal" },
                     amount: -m.amount_tyiyn,
-                    doc_type: "ledger_reversal",
-                    doc_id: Some(id),
+                    doc_type: if fee { "repayment" } else { "ledger_reversal" },
+                    doc_id: Some(if fee { l.doc_id.unwrap_or(id) } else { id }),
                     comment: req.comment.trim(),
                 },
             )
             .await?;
         }
-        // Процент кассира, начисленный за это погашение, тоже откатывается (ADR-035).
-        if l.role == "customer" {
+        // Процент кассира, начисленный за это погашение, тоже откатывается — с тех чеков, по
+        // которым он начислен (ADR-035, ADR-088).
+        if l.role == "customer" && !crate::api::payroll::reverse_takes(&mut *tx, ctx, id).await? {
             crate::api::payroll::reverse_repayment(&mut *tx, ctx, l.party_id, -l.amount_tyiyn)
                 .await?;
         }
+    }
+    // Прощение долга отменили: процент кассира по этим чекам снова ждёт оплаты (ADR-088).
+    if l.kind == "adjust" && l.amount_tyiyn < 0 && l.role == "customer" {
+        crate::api::payroll::reverse_takes(&mut *tx, ctx, id).await?;
     }
     let balance = sqlx::query_scalar!(
         "select balance_tyiyn from parties where id = $1 for update",
@@ -2013,9 +2034,16 @@ pub(crate) async fn debt_dues(
         .fetch_one(&mut *conn)
         .await?;
     let rows = sqlx::query!(
-        r#"select party_id, business_date, amount_tyiyn from party_ledger
-           where party_id = any($1) and kind in ('debt', 'adjust') and amount_tyiyn > 0
-           order by party_id, business_date desc, created_at desc"#,
+        r#"select * from (
+             select l.party_id, l.business_date, l.created_at, (l.amount_tyiyn
+                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x join sales r on r.id = x.doc_id
+                              where l.doc_type = 'sale' and x.doc_type = 'sale_return'
+                                and r.reversal_of = l.doc_id and x.party_id = l.party_id), 0)
+                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x where x.reversal_of = l.id), 0))::bigint as "amount_tyiyn!"
+             from party_ledger l
+             where l.party_id = any($1) and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+           ) d where d."amount_tyiyn!" > 0
+           order by d.party_id, d.business_date desc, d.created_at desc"#,
         &ids
     )
     .fetch_all(&mut *conn)
@@ -2149,12 +2177,20 @@ async fn open_debts(
     let mut conn = state.pool.acquire().await?;
     let party = load_party(&mut conn, user.branch_id, id).await?;
     let rows = sqlx::query!(
-        r#"select l.id, l.business_date, l.created_at, l.kind, l.amount_tyiyn, l.comment,
-                  s.id as "sale_id?", s.number as "sale_number?"
-           from party_ledger l
-           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
-           where l.party_id = $1 and l.branch_id = $2 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
-           order by l.business_date desc, l.created_at desc"#,
+        // Долг записи — за вычетом возвратов по этому чеку и сторно самой записи: возвращённый
+        // чек и отменённая правка не висят «неоплаченными» (ADR-088).
+        r#"select * from (
+             select l.id, l.business_date, l.created_at, l.kind, (l.amount_tyiyn
+                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x join sales r on r.id = x.doc_id
+                              where l.doc_type = 'sale' and x.doc_type = 'sale_return'
+                                and r.reversal_of = l.doc_id and x.party_id = l.party_id), 0)
+                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x where x.reversal_of = l.id), 0))::bigint as "amount_tyiyn!",
+                    l.comment, s.id as "sale_id?", s.number as "sale_number?"
+             from party_ledger l
+             left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
+             where l.party_id = $1 and l.branch_id = $2 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+           ) d where d."amount_tyiyn!" > 0
+           order by d.business_date desc, d.created_at desc"#,
         id,
         user.branch_id
     )

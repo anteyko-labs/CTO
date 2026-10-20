@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select * from (\n             select l.id, l.business_date, l.created_at, l.kind, (l.amount_tyiyn\n                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x join sales r on r.id = x.doc_id\n                              where l.doc_type = 'sale' and x.doc_type = 'sale_return'\n                                and r.reversal_of = l.doc_id and x.party_id = l.party_id), 0)\n                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x where x.reversal_of = l.id), 0))::bigint as \"amount_tyiyn!\",\n                    l.comment, s.id as \"sale_id?\", s.number as \"sale_number?\"\n             from party_ledger l\n             left join sales s on l.doc_type = 'sale' and s.id = l.doc_id\n             where l.party_id = $1 and l.branch_id = $2 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0\n           ) d where d.\"amount_tyiyn!\" > 0\n           order by d.business_date desc, d.created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "sale_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dc30c19f9a72eedc6897ea002da96fa3080981a6b35855d0ebf85f8863eed517"
+}

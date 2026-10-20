@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select source = 'outside' as \"v!\" from payouts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "371f1f5287c4246b88992c8d4a360d45473b4a94b0bf7d2824e688d84b86acb6"
+}

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.account_id as \"account_id!\",\n                  bool_or(p.method = $2 and s.id = $1) as \"same!\",\n                  (coalesce(sum(p.amount_tyiyn) filter (where s.id = $1), 0)\n                   + coalesce(sum(p.amount_tyiyn) filter (where s.id <> $1), 0))::bigint as \"left!\"\n           from sale_payments p join sales s on s.id = p.sale_id\n           join cash_accounts a on a.id = p.account_id\n           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer') and a.active\n           group by p.account_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "same!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "left!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "879945e23b49639f7bce4e64e3ab16b2f2015df16245581dbc834209bc199d7d"
+}

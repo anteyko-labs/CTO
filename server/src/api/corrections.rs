@@ -1000,6 +1000,63 @@ async fn check_correctable(
     kind: Kind,
     id: Uuid,
 ) -> AppResult<()> {
+    check_kind_rules(conn, branch_id, kind, id).await?;
+    // Документ проведён мимо касс («из своих» до ADR-079 или накладная, оплаченная до выбора
+    // кассы, ADR-062): верный документ без кассы провести уже нельзя, а с кассой — деньги
+    // ушли бы оттуда, откуда их не брали. Честный отказ вместо тихой подмены (ADR-088).
+    let outside = match kind {
+        Kind::Expense => sqlx::query_scalar!(
+            r#"select source = 'outside' as "v!" from expenses where id = $1"#,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(false),
+        Kind::Payout => sqlx::query_scalar!(
+            r#"select source = 'outside' as "v!" from payouts where id = $1"#,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(false),
+        Kind::Receipt => sqlx::query_scalar!(
+            r#"select coalesce(r.paid_from = 'outside', false)
+                      or (r.paid_from is null
+                          and not exists (select 1 from party_ledger l
+                                          where l.doc_type = 'receipt' and l.doc_id = r.id)) as "v!"
+               from receipts r where r.id = $1"#,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(false),
+        Kind::Ledger => sqlx::query_scalar!(
+            r#"select l.kind = 'repayment' and l.doc_type = 'repayment'
+                      and not exists (select 1 from cash_movements m
+                                      where m.doc_type = 'repayment' and m.doc_id = l.doc_id) as "v!"
+               from party_ledger l where l.id = $1"#,
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(false),
+        _ => false,
+    };
+    if outside {
+        return Err(AppError::Conflict(
+            "документ проведён мимо касс — исправить нельзя: сторнируйте его и проведите верный со счёта".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Запреты исправления по виду документа: сторнирован, сам сторно, чек с возвратом и т. п.
+async fn check_kind_rules(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    kind: Kind,
+    id: Uuid,
+) -> AppResult<()> {
     if let Some(n) = sqlx::query_scalar!(
         "select new_number from doc_corrections where original_id = $1",
         id
@@ -1248,9 +1305,10 @@ async fn reverse(
             )
             .fetch_all(&mut *conn)
             .await?;
+            // Каждая оплата — на свой счёт: безнал двух банков не перекладывается между ними.
             let pays = sqlx::query!(
-                r#"select method, sum(amount_tyiyn)::bigint as "amount!" from sale_payments
-                   where sale_id = $1 group by method order by method"#,
+                r#"select method, account_id, sum(amount_tyiyn)::bigint as "amount!" from sale_payments
+                   where sale_id = $1 group by method, account_id order by method, account_id"#,
                 id
             )
             .fetch_all(&mut *conn)
@@ -1276,7 +1334,7 @@ async fn reverse(
                             amount_tyiyn: p.amount,
                             grams: None,
                             price_per_kg_tyiyn: None,
-                            account_id: None,
+                            account_id: p.account_id,
                         })
                         .collect(),
                     battery_cash: false,
@@ -1724,11 +1782,17 @@ async fn load_correction(
              and ($2::uuid is null or c.id = $2)
              and ($3::uuid is null or c.original_id = $3)
              and ($4::uuid is null or c.new_id = $4)
+             -- Исправления личных расходов владельца администратору не видны, как и сами
+             -- расходы (SPEC-06, ADR-088).
+             and ($5 or not (c.kind = 'expense' and exists (
+                   select 1 from expenses e join expense_articles a on a.id = e.article_id
+                   where e.id = c.original_id and a.owner_only)))
            limit 1"#,
         user.branch_id,
         id,
         original_id,
-        new_id
+        new_id,
+        user.is_owner()
     )
     .fetch_optional(&mut *conn)
     .await?;

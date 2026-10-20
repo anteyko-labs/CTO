@@ -1285,6 +1285,7 @@ pub async fn accrue_on_repayment(
     ctx: &Ctx,
     party_id: Uuid,
     mut amount: i64,
+    ledger_id: Uuid,
 ) -> AppResult<()> {
     let rows = sqlx::query!(
         r#"select id, sale_id, employee_id, rule_id, rate_bp, gross_tyiyn,
@@ -1331,6 +1332,7 @@ pub async fn accrue_on_repayment(
         )
         .execute(&mut *conn)
         .await?;
+        record_take(conn, ctx, r.id, ledger_id, take, base, accrued).await?;
         amount -= take;
     }
     Ok(())
@@ -1343,6 +1345,7 @@ pub async fn forgive_pending(
     ctx: &Ctx,
     party_id: Uuid,
     mut amount: i64,
+    ledger_id: Uuid,
 ) -> AppResult<()> {
     let rows = sqlx::query!(
         r#"select id, debt_remaining_tyiyn from payroll_pending
@@ -1365,9 +1368,107 @@ pub async fn forgive_pending(
         )
         .execute(&mut *conn)
         .await?;
+        record_take(conn, ctx, r.id, ledger_id, take, 0, 0).await?;
         amount -= take;
     }
     Ok(())
+}
+
+/// Сколько записи журнала долга сняли с ожидания процента (ADR-088).
+async fn record_take(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    pending_id: Uuid,
+    ledger_id: Uuid,
+    take: i64,
+    base: i64,
+    accrued: i64,
+) -> AppResult<()> {
+    sqlx::query!(
+        r#"insert into payroll_pending_takes (id, branch_id, pending_id, ledger_id, take_tyiyn,
+                                              base_tyiyn, accrued_tyiyn)
+           values ($1, $2, $3, $4, $5, $6, $7)"#,
+        Uuid::now_v7(),
+        ctx.user.branch_id,
+        pending_id,
+        ledger_id,
+        take,
+        base,
+        accrued
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Сторно погашения или прощения долга: ожидание процента возвращается ровно на то, что эта
+/// запись сняла, и начисленный за неё процент снимается — с того же чека (ADR-088). Записи,
+/// проведённые до учёта по записям, — прежним порядком: погашение — от последних чеков,
+/// прощение — ничего. Возвращает `false`, если у записи нет учёта.
+pub async fn reverse_takes(conn: &mut PgConnection, ctx: &Ctx, ledger_id: Uuid) -> AppResult<bool> {
+    let rows = sqlx::query!(
+        r#"select t.pending_id, p.sale_id, p.employee_id, p.rule_id,
+                  sum(t.take_tyiyn)::bigint as "take!", sum(t.base_tyiyn)::bigint as "base!",
+                  sum(t.accrued_tyiyn)::bigint as "accrued!"
+           from payroll_pending_takes t join payroll_pending p on p.id = t.pending_id
+           where t.ledger_id = $1 and t.branch_id = $2
+           group by t.pending_id, p.sale_id, p.employee_id, p.rule_id
+           order by t.pending_id"#,
+        ledger_id,
+        ctx.user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    for r in rows {
+        if r.take == 0 && r.accrued == 0 {
+            continue;
+        }
+        sqlx::query!(
+            "select id from payroll_pending where id = $1 for update",
+            r.pending_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if r.accrued != 0 {
+            add_accrual(
+                conn,
+                ctx,
+                None,
+                Accrual {
+                    employee_id: r.employee_id,
+                    kind: "revenue_percent",
+                    amount: -r.accrued,
+                    base: Some(-r.base),
+                    rule_id: r.rule_id,
+                    doc_type: "sale",
+                    doc_id: Some(r.sale_id),
+                    comment: "сторно погашения долга",
+                },
+            )
+            .await?;
+        }
+        sqlx::query!(
+            "update payroll_pending set debt_remaining_tyiyn = debt_remaining_tyiyn + $2 where id = $1",
+            r.pending_id,
+            r.take
+        )
+        .execute(&mut *conn)
+        .await?;
+        record_take(
+            conn,
+            ctx,
+            r.pending_id,
+            ledger_id,
+            -r.take,
+            -r.base,
+            -r.accrued,
+        )
+        .await?;
+    }
+    Ok(true)
 }
 
 /// Блокирует сотрудника филиала: выплаты и оклады по нему идут по очереди,

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.kind = 'repayment' and l.doc_type = 'repayment'\n                      and not exists (select 1 from cash_movements m\n                                      where m.doc_type = 'repayment' and m.doc_id = l.doc_id) as \"v!\"\n               from party_ledger l where l.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a781b05d378c6ed4e33bab7801d4aa6e5479579d95e8c49182afb11854b161a8"
+}

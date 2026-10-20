@@ -2196,9 +2196,18 @@ async fn forgiven_debt_does_not_pay_cashier_later(pool: PgPool) {
     };
     assert_eq!(pending().await, 50_000);
     let mut tx = pool.begin().await.unwrap();
-    avtodom_server::api::payroll::forgive_pending(&mut tx, &w.owner, party, 50_000)
-        .await
-        .unwrap();
+    avtodom_server::api::parties::post_adjust_tx(
+        &mut tx,
+        &w.owner,
+        avtodom_server::api::parties::AdjustReq {
+            op_id: Uuid::now_v7(),
+            party_id: party,
+            amount_tyiyn: -50_000,
+            comment: "прощаем".into(),
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(pending().await, 0);
 }

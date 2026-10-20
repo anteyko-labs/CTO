@@ -21,7 +21,15 @@ export const fromKm = (km: number, unit: MileageUnit): number => (unit === 'mi' 
 /** Единица словом: «км», «миль». */
 export const unitLabel = (unit: MileageUnit | undefined): string => (unit === 'mi' ? 'миль' : 'км')
 
-/** «93 000 км», «57 790 миль». */
+/** «1 миля», «3 мили», «12 миль» — как `domain::mileage::miles_word` на сервере. */
+export function milesWord(value: number): string {
+  const n = Math.abs(value)
+  if (n % 10 === 1 && n % 100 !== 11) return 'миля'
+  if (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) return 'мили'
+  return 'миль'
+}
+
+/** «93 000 км», «57 791 миля». */
 export function mileageText(value: number, unit: MileageUnit | undefined = 'km'): string {
-  return `${value.toLocaleString('ru-RU').replace(/\s/g, ' ')} ${unitLabel(unit)}`
+  return `${value.toLocaleString('ru-RU').replace(/\s/g, ' ')} ${unit === 'mi' ? milesWord(value) : 'км'}`
 }

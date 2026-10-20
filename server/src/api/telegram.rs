@@ -1226,18 +1226,6 @@ async fn link_customer(
     })
 }
 
-pub(crate) fn km(v: i32) -> String {
-    let s = v.to_string();
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(' ');
-        }
-        out.push(ch);
-    }
-    format!("{out} км")
-}
-
 /// Масляная книжка клиента текстом: по машинам — последняя замена и следующая.
 fn points(v: i64) -> String {
     // «12,50 с» → «12,50»: баллы показываем без валюты.
@@ -1526,10 +1514,11 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
                     .map(|n| slot_genitive(&n.slot))
                     .collect::<Vec<_>>()
                     .join(", ");
+                // Пробег — в единице машины, как в книжке бота (ADR-084).
                 let km_part = slots
                     .iter()
-                    .find_map(|n| n.next_km)
-                    .map(|k| format!(" или на {}", km(k)))
+                    .find_map(|n| n.next_mileage.map(|v| (v, n.unit.clone())))
+                    .map(|(v, unit)| format!(" или на {}", crate::domain::mileage::text(v, &unit)))
                     .unwrap_or_default();
                 out.push(Reminder {
                     chat_id: l.chat_id,

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select source = 'outside' as \"v!\" from expenses where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cc0063c3fd754703d30563770b0382d6b462b3de002805bc5c43e83e10e87530"
+}

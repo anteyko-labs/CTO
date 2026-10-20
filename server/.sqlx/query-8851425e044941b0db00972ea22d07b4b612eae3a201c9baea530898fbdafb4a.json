@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(r.paid_from = 'outside', false)\n                      or (r.paid_from is null\n                          and not exists (select 1 from party_ledger l\n                                          where l.doc_type = 'receipt' and l.doc_id = r.id)) as \"v!\"\n               from receipts r where r.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8851425e044941b0db00972ea22d07b4b612eae3a201c9baea530898fbdafb4a"
+}

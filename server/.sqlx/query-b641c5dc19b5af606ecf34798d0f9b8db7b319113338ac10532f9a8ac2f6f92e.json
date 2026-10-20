@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.pending_id, p.sale_id, p.employee_id, p.rule_id,\n                  sum(t.take_tyiyn)::bigint as \"take!\", sum(t.base_tyiyn)::bigint as \"base!\",\n                  sum(t.accrued_tyiyn)::bigint as \"accrued!\"\n           from payroll_pending_takes t join payroll_pending p on p.id = t.pending_id\n           where t.ledger_id = $1 and t.branch_id = $2\n           group by t.pending_id, p.sale_id, p.employee_id, p.rule_id\n           order by t.pending_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pending_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "rule_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "take!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "base!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "accrued!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b641c5dc19b5af606ecf34798d0f9b8db7b319113338ac10532f9a8ac2f6f92e"
+}

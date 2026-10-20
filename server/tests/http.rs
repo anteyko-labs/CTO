@@ -1400,6 +1400,27 @@ async fn shift_close_handover_and_cash_reversals(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(drift, 0);
+
+    // После сторно сдачи смена снова ждёт сдачи, и кассу сдают заново (ADR-088).
+    let (s, _, shift) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/shifts/{sid}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(shift["handover_pending"], json!(true), "{shift}");
+    let (s, _, again) = post(
+        &admin,
+        format!("/api/v1/shifts/{sid}/handover"),
+        json!({ "op_id": op(), "amount_tyiyn": 300_000 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(again["to_safe_tyiyn"], 300_000);
+    assert_eq!(again["handover_pending"], json!(false));
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -9730,4 +9751,147 @@ async fn purchase_reversals_keep_stock_value_sane(pool: PgPool) {
     post("/api/v1/sales", sell(&c, 1, 600_000)).await;
     let (_, _, verify) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
     assert_eq!(verify.as_array().map(Vec::len), Some(0), "{verify}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn refunds_fees_and_forgiveness_reverse_exactly(pool: PgPool) {
+    // Проверка 20.10.2026 (ADR-088): комиссия возвращается по своему счёту; «Исправить»
+    // погашения картой не берёт комиссию дважды; отмена прощения долга возвращает ожидание 2 %.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let safe = owner_safe(&app, &owner).await;
+    let post = |path: String, body: Value| {
+        let app = app.clone();
+        let owner = owner.clone();
+        async move {
+            let (s, _, v) = call(&app, "POST", &path, Some(&owner), Some(body)).await;
+            assert_eq!(s, StatusCode::OK, "{path}: {v}");
+            v
+        }
+    };
+    let balance = |id: String| {
+        let pool = pool.clone();
+        async move { balance_of(&pool, &id).await }
+    };
+    let (_, bank, _) = accounts_of(&app, &owner).await;
+    let personal = post(
+        "/api/v1/cash/accounts".into(),
+        json!({ "op_id": Uuid::now_v7(), "name": "Карта владельца", "kind": "bank" }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let p = product(&app, &owner, "Масло", 100_000, 0).await;
+    post(
+        "/api/v1/receipts".into(),
+        json!({ "op_id": Uuid::now_v7(), "paid_from": safe,
+                "lines": [{ "product_id": p, "qty": 10, "cost_tyiyn": 600_000 }] }),
+    )
+    .await;
+
+    // 1. Чек: карта 1 000 на «Счёт» (0,5 %) + перевод 1 000 на личный (0 %). Возврат одной
+    //    штуки переводом: личный счёт — ровно 0, комиссия «Счёта» не трогается.
+    let sale = post(
+        "/api/v1/sales".into(),
+        json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                "lines": [{ "kind": "piece", "product_id": p, "qty": 2, "unit_price_tyiyn": 100_000 }],
+                "payments": [
+                    { "method": "card", "amount_tyiyn": 100_000, "account_id": bank },
+                    { "method": "transfer", "amount_tyiyn": 100_000, "account_id": personal }
+                ] }),
+    )
+    .await;
+    let bank_after_sale = balance(bank.clone()).await;
+    assert_eq!(balance(personal.clone()).await, 100_000);
+    post(
+        format!("/api/v1/sales/{}/return", sale["id"].as_str().unwrap()),
+        json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                "payments": [{ "method": "transfer", "amount_tyiyn": 100_000 }] }),
+    )
+    .await;
+    assert_eq!(balance(personal.clone()).await, 0);
+    assert_eq!(balance(bank.clone()).await, bank_after_sale);
+
+    // 2. Погашение 500 картой (комиссия 2,50), «Исправить» на 400: как будто сразу 400 —
+    //    на «Счёт» пришло 398, комиссии 2,00.
+    let client = post(
+        "/api/v1/parties".into(),
+        json!({ "name": "ОсОО Должник", "kind": "company", "inn": "01234567890123" }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    post(
+        "/api/v1/sales".into(),
+        json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier, "party_id": client,
+                "lines": [{ "kind": "piece", "product_id": p, "qty": 1, "unit_price_tyiyn": 100_000 }],
+                "payments": [{ "method": "debt", "amount_tyiyn": 100_000 }] }),
+    )
+    .await;
+    let before = balance(bank.clone()).await;
+    let paid = post(
+        "/api/v1/debts/repayments".into(),
+        json!({ "op_id": Uuid::now_v7(), "party_id": client, "amount_tyiyn": 50_000, "method": "card" }),
+    )
+    .await;
+    assert_eq!(balance(bank.clone()).await - before, 49_750);
+    let ledger = paid["ledger_id"].as_str().unwrap().to_string();
+    let (s, _, mut draft) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/corrections/draft/ledger/{ledger}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{draft}");
+    draft["doc"]["amount_tyiyn"] = json!(40_000);
+    post(
+        "/api/v1/corrections".into(),
+        json!({ "op_id": Uuid::now_v7(), "kind": "ledger", "original_id": ledger,
+                "comment": "не та сумма", "doc": draft["doc"] }),
+    )
+    .await;
+    assert_eq!(balance(bank.clone()).await - before, 39_800);
+
+    // 3. Прощение долга −600 отменили и остаток оплатили — 2 % кассиру с этой части начислены.
+    let percent = || {
+        let pool = pool.clone();
+        let cashier = cashier.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals
+                 where employee_id = $1::uuid and kind = 'revenue_percent'",
+            )
+            .bind(cashier)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let start = percent().await;
+    let forgiven = post(
+        "/api/v1/debts/adjust".into(),
+        json!({ "op_id": Uuid::now_v7(), "party_id": client, "amount_tyiyn": -60_000, "comment": "прощаем" }),
+    )
+    .await;
+    post(
+        format!(
+            "/api/v1/debts/ledger/{}/reverse",
+            forgiven["ledger_id"].as_str().unwrap()
+        ),
+        json!({ "op_id": Uuid::now_v7(), "comment": "передумали" }),
+    )
+    .await;
+    post(
+        "/api/v1/debts/repayments".into(),
+        json!({ "op_id": Uuid::now_v7(), "party_id": client, "amount_tyiyn": 60_000, "method": "card" }),
+    )
+    .await;
+    // Ожидание: валовая 400 с на долг 1 000 с; оплата 600 с после отмены прощения даёт 2 % от
+    // 240 с = 4,80 с (без отмены — 0).
+    assert_eq!(percent().await - start, 480);
 }
