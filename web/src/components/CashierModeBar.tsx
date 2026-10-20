@@ -2,28 +2,26 @@
 // чеков, во весь экран и выход из режима. Меню приложения в режиме скрыто.
 import { useEffect, useState } from 'react'
 import { enterFullscreen, exitFullscreen, setCashierMode } from '../lib/cashierMode'
-import { pendingCount, watchOutbox } from '../lib/offline'
+import { isOwnItem, pendingCount, watchOutbox } from '../lib/offline'
+import { useUser } from '../lib/auth'
+import { useServerOnline } from '../lib/hooks'
 import type { Shift } from '../lib/types'
 
 export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | undefined; onOpenShift: () => void }) {
-  const [online, setOnline] = useState(navigator.onLine)
+  // Связь — с сервером, а не только сеть устройства; не отправлено — чеки вошедшего пользователя.
+  const online = useServerOnline()
+  const me = useUser().id
   const [waiting, setWaiting] = useState(0)
   const [full, setFull] = useState(() => Boolean(document.fullscreenElement))
   useEffect(() => {
-    const on = () => setOnline(true)
-    const off = () => setOnline(false)
     const fs = () => setFull(Boolean(document.fullscreenElement))
-    window.addEventListener('online', on)
-    window.addEventListener('offline', off)
     document.addEventListener('fullscreenchange', fs)
-    const stop = watchOutbox((items) => setWaiting(pendingCount(items)))
+    const stop = watchOutbox((items) => setWaiting(pendingCount(items.filter((i) => isOwnItem(i, me)))))
     return () => {
-      window.removeEventListener('online', on)
-      window.removeEventListener('offline', off)
       document.removeEventListener('fullscreenchange', fs)
       stop()
     }
-  }, [])
+  }, [me])
   const canFull = typeof document.documentElement.requestFullscreen === 'function'
 
   return (

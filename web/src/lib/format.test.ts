@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLiters, formatOilStock, litersInput, formatPercentBp, formatSom, formatSomExact, parseLiters, parsePercentBp, parseSom, shiftDate, somInput } from './format'
+import { formatLiters, formatOilStock, formatPercentBp, formatSom, formatSomExact, litersInput, parseLiters, parsePercentBp, parseSom, plural, shiftDate, somInput } from './format'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
 
@@ -73,5 +73,23 @@ describe('формат', () => {
     expect(parsePercentBp('-1')).toBeNull()
     expect(nb(formatPercentBp(50))).toBe('0,50 %')
     expect(nb(formatPercentBp(200))).toBe('2,00 %')
+  })
+})
+
+describe('слово при числе', () => {
+  it('позиция, позиции, позиций', () => {
+    const f = ['позиция', 'позиции', 'позиций'] as const
+    expect([1, 3, 5, 11, 12, 21, 22, 25, 111, 1003].map((n) => `${n} ${plural(n, f)}`)).toEqual([
+      '1 позиция',
+      '3 позиции',
+      '5 позиций',
+      '11 позиций',
+      '12 позиций',
+      '21 позиция',
+      '22 позиции',
+      '25 позиций',
+      '111 позиций',
+      '1003 позиции',
+    ])
   })
 })

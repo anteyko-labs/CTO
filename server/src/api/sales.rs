@@ -110,12 +110,16 @@ pub struct SaleReq {
     /// состоялась, поэтому нарушение цены не отклоняет его, а уходит владельцу.
     #[serde(default)]
     pub offline: bool,
+    /// Чей это чек на устройстве, если его отправляет владелец от себя (SPEC-09, ADR-093).
+    #[serde(default)]
+    pub claimed_user_id: Option<Uuid>,
     /// Пробег машины при замене — в масляную книжку (SPEC-16).
-    #[serde(default)]
-    pub mileage_km: Option<i32>,
-    /// Пробег, как его вписали, и единица (ADR-084); без единицы — единица машины.
-    #[serde(default)]
-    pub mileage: Option<i32>,
+    #[serde(default, deserialize_with = "crate::api::oil_book::lenient_mileage")]
+    pub mileage_km: Option<i64>,
+    /// Пробег, как его вписали, и единица (ADR-084); без единицы — единица машины. Любое число:
+    /// слишком большое не роняет чек ошибкой формата (ADR-093).
+    #[serde(default, deserialize_with = "crate::api::oil_book::lenient_mileage")]
+    pub mileage: Option<i64>,
     #[serde(default)]
     pub mileage_unit: Option<String>,
     /// «Через сколько менять»: интервал строк книжки этой машины, поставленный в чеке
@@ -812,14 +816,49 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.delivery_address.chars().count() > 300 {
         return Err(invalid("адрес доставки не длиннее 300 знаков"));
     }
-    // Чек без сети признаём, только если он и правда пролежал на устройстве: признак ставит
-    // клиент, а время чека — раньше отправки хотя бы на полминуты (ADR-042).
-    let offline = req.offline
-        && req
-            .client_time
-            .is_some_and(|t| t < Utc::now() - chrono::Duration::seconds(30));
+    // Чек без сети — признак `offline` ставит только отправка очереди устройства, вместе со
+    // временем чека (ADR-093). Чек мог уйти из очереди и через секунды после продажи, поэтому
+    // давность не проверяется. Признак только смягчает проверки, а не даёт прав: всё, что
+    // онлайн-продажа отклонила бы, уходит владельцу (`sale.offline_bypass`), права на счета и
+    // скрытые от администратора данные проверяются так же, как онлайн.
+    let offline = req.offline && req.client_time.is_some();
     // Что чек без сети обошёл из проверок онлайн-продажи — владельцу одним уведомлением (ADR-062).
     let mut bypass: Vec<String> = Vec::new();
+    if offline
+        && let Some(t) = req.client_time
+        && (t < Utc::now() - chrono::Duration::days(2)
+            || t > Utc::now() + chrono::Duration::minutes(5))
+    {
+        // Часы устройства сбиты (или оно давно не включалось): день чека — день проведения (SPEC-08).
+        // Бишкек — UTC+6 круглый год.
+        let shown = chrono::FixedOffset::east_opt(6 * 3600).map_or_else(
+            || t.format("%d.%m.%Y %H:%M UTC").to_string(),
+            |tz| t.with_timezone(&tz).format("%d.%m.%Y %H:%M").to_string(),
+        );
+        bypass.push(format!(
+            "время на устройстве {shown} расходится с сервером больше чем на 2 дня — проверьте часы кассы; чек записан днём проведения"
+        ));
+    }
+    // Чек другого пользователя этой кассы владелец отправляет от себя (SPEC-09): сервер
+    // проводит его от владельца, а в журнал пишет, чей он был.
+    let claimed_user = match req.claimed_user_id {
+        Some(u) if u != ctx.user.id => {
+            if !ctx.user.is_owner() {
+                return Err(AppError::Forbidden);
+            }
+            Some(
+                sqlx::query_scalar!(
+                    "select full_name from users where id = $1 and branch_id = $2",
+                    u,
+                    branch_id
+                )
+                .fetch_optional(&mut *conn)
+                .await?
+                .ok_or_else(|| invalid("пользователь чека не найден"))?,
+            )
+        }
+        _ => None,
+    };
     let has_service = req.lines.iter().any(|l| l.kind == "service");
     match req.sale_type.as_str() {
         "takeaway" if has_service => return Err(invalid("услуги только в продаже «в сервис»")),
@@ -1403,7 +1442,11 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         KIND,
         "sale",
         Some(id),
-        json!({ "number": number, "total": total, "offline": offline, "client_time": req.client_time }),
+        json!({
+            "number": number, "total": total, "offline": offline, "client_time": req.client_time,
+            "claimed_user_id": claimed_user.as_ref().and(req.claimed_user_id),
+            "claimed_user_name": claimed_user,
+        }),
     )
     .await?;
     let out = load_sale(conn, &ctx.user, id).await?;

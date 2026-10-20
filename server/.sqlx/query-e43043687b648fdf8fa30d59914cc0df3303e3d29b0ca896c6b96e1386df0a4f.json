@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name from users where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e43043687b648fdf8fa30d59914cc0df3303e3d29b0ca896c6b96e1386df0a4f"
+}

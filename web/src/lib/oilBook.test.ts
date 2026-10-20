@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { overdueSlots, recordLines, recordText, slotNextText, slotsWithNext, type OilRecord, type VehicleBook } from './oilBook'
+import { categorySlotText, overdueSlots, recordLines, recordText, slotNextText, slotsWithNext, type OilRecord, type VehicleBook } from './oilBook'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
   id: '1',
@@ -49,5 +49,16 @@ describe('пробег в милях в книжке (ADR-084)', () => {
     expect(recordMileage(rec({ mileage_km: 85_000 }))).toBe('85 000 км')
     expect(recordMileage(rec({ mileage_km: null }))).toBeNull()
     expect(slotNextText({ next_km: 85_295, next_mileage: 53_000, unit: 'mi', next_date: null })).toBe('на 53 000 миль')
+  })
+})
+
+describe('строка книжки категории', () => {
+  it('фильтры — по типу фильтра товара, без типа — строка категории', () => {
+    const filters = [{ key: 'filter_type' }, { key: 'cross' }]
+    expect(categorySlotText({ book_slot: 'oil_filter', attributes: filters })).toEqual({ main: 'По типу фильтра', note: 'без типа — фильтр масляный' })
+    expect(categorySlotText({ book_slot: 'air_filter', attributes: filters })).toEqual({ main: 'По типу фильтра', note: 'без типа — фильтр воздушный' })
+    expect(categorySlotText({ book_slot: 'oil_filter', attributes: [] })).toEqual({ main: 'Фильтр масляный', note: null })
+    expect(categorySlotText({ book_slot: 'oil', attributes: [] })).toEqual({ main: 'Масло двигателя', note: null })
+    expect(categorySlotText({ book_slot: 'none', attributes: filters })).toEqual({ main: '—', note: null })
   })
 })

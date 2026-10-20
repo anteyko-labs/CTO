@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { get, post } from '../lib/api'
+import { get, noServerAnswer, post } from '../lib/api'
+import { readSnapshot } from '../lib/offline'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -23,7 +24,16 @@ export function ServicePicker({
   onBatterySale?: () => void
 }) {
   const owner = useUser().role === 'owner'
-  const list = useLoad(() => get<Service[]>('/services'), [])
+  // Без связи — услуги из снимка кассы: работа уже сделана, чек пробивается (SPEC-09).
+  const list = useLoad(
+    () =>
+      get<Service[]>('/services').catch(async (e: unknown) => {
+        const snap = noServerAnswer(e) ? await readSnapshot() : null
+        if (!snap?.services) throw e
+        return snap.services
+      }),
+    [],
+  )
   const [query, setQuery] = useState('')
   const [form, setForm] = useState<{ name: string; price: string; fee: string } | null>(null)
   const { busy, error, run } = useAction()

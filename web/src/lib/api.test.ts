@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, noServerAnswer } from './api'
+import { ApiError, api, noServerAnswer, uuidv7 } from './api'
 
 const reply = (body: string, status: number) => vi.fn(async () => new Response(body, { status }))
 
@@ -60,5 +60,14 @@ describe('нет ответа сервера', () => {
     expect(noServerAnswer(new ApiError(200, 'bad_response', ''))).toBe(true)
     expect(noServerAnswer(new ApiError(400, 'validation', ''))).toBe(false)
     expect(noServerAnswer(new ApiError(409, 'conflict', ''))).toBe(false)
+  })
+})
+
+describe('идентификатор операции', () => {
+  it('UUID версии 7: время в начале, версия и вариант на месте', () => {
+    const id = uuidv7(Date.parse('2026-10-20T00:00:00Z'))
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(parseInt(id.replace(/-/g, '').slice(0, 12), 16)).toBe(Date.parse('2026-10-20T00:00:00Z'))
+    expect(uuidv7(1) < uuidv7(2)).toBe(true)
   })
 })

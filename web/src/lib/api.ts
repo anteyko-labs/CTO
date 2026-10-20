@@ -16,8 +16,47 @@ function readDeviceId(): string {
 
 export const deviceId = readDeviceId()
 
+/**
+ * UUID версии 7: первые 48 бит — время в миллисекундах, остальное случайно. Идентификаторы
+ * операций с устройства идут по времени, как и созданные на сервере (стек: UUID v7).
+ */
+export function uuidv7(now: number = Date.now()): string {
+  const b = new Uint8Array(16)
+  crypto.getRandomValues(b)
+  let ms = Math.max(0, Math.floor(now))
+  for (let i = 5; i >= 0; i--) {
+    b[i] = ms % 256
+    ms = Math.floor(ms / 256)
+  }
+  b[6] = (b[6] & 0x0f) | 0x70
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 /** Новый идентификатор операции для защиты от повторной отправки. */
-export const newOpId = (): string => crypto.randomUUID()
+export const newOpId = (): string => uuidv7()
+
+// ---------- Связь с сервером ----------
+
+let reachable = true
+const reachListeners = new Set<(up: boolean) => void>()
+
+/** Сервер отвечает: по последнему запросу, а не по `navigator.onLine` — сеть может быть, а сервера нет. */
+export const serverReachable = (): boolean => reachable
+
+export function setServerReachable(up: boolean): void {
+  if (up === reachable) return
+  reachable = up
+  for (const l of reachListeners) l(up)
+}
+
+export function watchServerReachable(fn: (up: boolean) => void): () => void {
+  reachListeners.add(fn)
+  return () => {
+    reachListeners.delete(fn)
+  }
+}
 
 export class ApiError extends Error {
   readonly status: number
@@ -72,8 +111,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     })
   } catch {
     clearTimeout(timer)
+    setServerReachable(false)
     throw new ApiError(0, 'network', 'Нет связи с сервером')
   }
+  setServerReachable(![502, 503, 504, 530].includes(res.status))
   let text: string
   try {
     text = await res.text()

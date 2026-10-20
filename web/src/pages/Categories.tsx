@@ -9,13 +9,13 @@ import { get, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { categorySlotText } from '../lib/oilBook'
 import { BOOK_SLOT_LABELS, KIND_LABELS, type AttributeDef, type BookSlot, type Category, type CategoryKind } from '../lib/types'
 
 const KINDS = Object.keys(KIND_LABELS) as CategoryKind[]
 
 const SLOTS = Object.keys(BOOK_SLOT_LABELS) as BookSlot[]
 
-const slotText = (c: Category): string => (c.book_slot === 'none' ? '—' : BOOK_SLOT_LABELS[c.book_slot])
 
 const TYPE_LABELS: Record<AttributeDef['type'], string> = {
   text: 'Текст',
@@ -105,7 +105,7 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
         </div>
 
         <div className="grid gap-3 rounded-md border border-slate-200 p-3 sm:grid-cols-3">
-          <Field label="Строка книжки" hint="Куда товар этой категории пишется в масляной книжке">
+          <Field label="Строка книжки" hint={category.kind === 'filter' ? 'Фильтр с указанным «Типом» пишется в свою строку; здесь — строка для фильтров без типа' : 'Куда товар этой категории пишется в масляной книжке'}>
             <select
               id="book-slot"
               disabled={!owner}
@@ -255,7 +255,8 @@ export default function Categories() {
                 <td className="px-2 py-2 font-medium">{c.name}</td>
                 <td className="px-2 py-2">{KIND_LABELS[c.kind]}</td>
                 <td className="px-2 py-2">
-                  {slotText(c)}
+                  {categorySlotText(c).main}
+                  {categorySlotText(c).note && <span className="block text-xs text-slate-500">{categorySlotText(c).note}</span>}
                   {c.book_interval_km !== null && c.book_interval_days !== null && (
                     <span className="ml-1 text-xs text-slate-500">
                       ({c.book_interval_km.toLocaleString('ru-RU')} км / {c.book_interval_days} дн.)

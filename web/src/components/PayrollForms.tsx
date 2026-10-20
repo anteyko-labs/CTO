@@ -3,7 +3,7 @@
 import { useState, type ReactNode } from 'react'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { accountLabel, isTill, payAccounts } from '../lib/accounts'
+import { accountLabel, isBank, isTill, payAccounts } from '../lib/accounts'
 import { amountInput, fixedText } from '../lib/docFix'
 import { formatSom, parseSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -113,7 +113,7 @@ export function PayoutForm({
     <div className="flex flex-col gap-3">
       {fix && <FixBanner fix={fix} />}
       <div className="text-sm text-slate-600">
-        {balance !== undefined && `К выплате ${formatSom(balance)}, `}деньги уйдут {fromAcc && !isTill(fromAcc) ? `со счёта «${fromAcc.name}»` : 'из кассы'}
+        {balance !== undefined && `К выплате ${formatSom(balance)}, `}деньги уйдут {fromAcc ? `${isBank(fromAcc) ? 'со счёта' : 'из'} «${fromAcc.name}»` : 'из кассы смены'}
       </div>
       {payFrom.length > 1 ? (
         <Field label="Откуда">

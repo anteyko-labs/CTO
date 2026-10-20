@@ -6,13 +6,14 @@ import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money, Notice, PageHeader, toast } from '../components/ui'
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom } from '../lib/format'
+import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, plural } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { canisterPourPrice } from '../lib/money'
 import { presetFromHit } from '../lib/oldCatalog'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
-import { readXlsx, somToTyiyn } from '../lib/xlsx'
+import { mapUmagRows } from '../lib/umag'
+import { readXlsx } from '../lib/xlsx'
 
 type Hit = OldCatalogHit
 
@@ -56,36 +57,6 @@ const emptyForm = (barcode: string, categoryId: string): Form => ({
   count: '',
   from: null,
 })
-
-/** Строки выгрузки старой программы → строки для сервера; столбцы ищем по заголовкам. */
-function mapRows(rows: string[][]) {
-  const head = rows[0]?.map((h) => h.toLowerCase()) ?? []
-  const col = (...names: string[]) => head.findIndex((h) => names.some((n) => h.includes(n)))
-  const c = {
-    name: col('название', 'наименование'),
-    barcode: col('штрихкод', 'штрих-код'),
-    article: col('артикул'),
-    extra: col('доп. код', 'доп код'),
-    cost: col('закуп'),
-    price: col('прод. цена', 'цена прод', 'розн'),
-    unit: col('ед. изм', 'ед изм', 'единица'),
-    supplier: col('поставщик'),
-    category: col('категория'),
-  }
-  if (c.name < 0) throw new Error('Не нашёл столбец «Название товара» в первой строке файла')
-  const at = (r: string[], i: number) => (i >= 0 ? (r[i] ?? '') : '')
-  return rows.slice(1).map((r) => ({
-    name: at(r, c.name),
-    barcode: at(r, c.barcode),
-    article: at(r, c.article),
-    extra_code: at(r, c.extra),
-    cost_tyiyn: somToTyiyn(at(r, c.cost)),
-    price_tyiyn: somToTyiyn(at(r, c.price)),
-    unit: at(r, c.unit),
-    supplier: at(r, c.supplier),
-    category: at(r, c.category),
-  }))
-}
 
 export default function ProductIntake() {
   const owner = useUser().role === 'owner'
@@ -316,7 +287,7 @@ export default function ProductIntake() {
 
   const onUpload = (file: File) =>
     void upload.run(async () => {
-      const rows = mapRows(await readXlsx(file))
+      const rows = mapUmagRows(await readXlsx(file))
       const r = await put<{ rows: number }>('/old-catalog', rows)
       stats.reload()
       toast(`Загружено позиций: ${r.rows.toLocaleString('ru-RU')}`)
@@ -339,7 +310,7 @@ export default function ProductIntake() {
           Список старой программы:{' '}
           {stats.data?.rows ? (
             <>
-              <b>{stats.data.rows.toLocaleString('ru-RU')}</b> позиций
+              <b>{stats.data.rows.toLocaleString('ru-RU')}</b> {plural(stats.data.rows, ['позиция', 'позиции', 'позиций'])}
               {stats.data.imported_at && <> · загружен {formatDateTime(stats.data.imported_at)}</>}
             </>
           ) : (

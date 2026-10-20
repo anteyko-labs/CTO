@@ -5,15 +5,15 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'reac
 import { AuthProvider, useAuth } from './lib/auth'
 import { can } from './lib/permissions'
 import type { Permission } from './lib/types'
-import { startOfflineLoop } from './lib/offline'
+import { logoutWarning, outboxItems, startOfflineLoop } from './lib/offline'
 import { useTouchMode } from './lib/cashierMode'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
 import { UpdateBanner } from './components/UpdateBanner'
 import { startUpdates } from './lib/updates'
-import { Loading, Toaster } from './components/ui'
+import { Button, Loading, Modal, Toaster } from './components/ui'
 import { Icon, type IconName } from './components/icons'
-import { get } from './lib/api'
+import { get, serverReachable } from './lib/api'
 import SettingsHub from './pages/SettingsHub'
 import Cashier from './pages/Cashier'
 import Accounts from './pages/Accounts'
@@ -186,7 +186,18 @@ function Shell() {
   const [theme, setTheme] = useTheme()
   const unseen = useUnseen(user?.role === 'owner')
   // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
-  useEffect(() => (user ? startOfflineLoop() : undefined), [user])
+  useEffect(() => (user ? startOfflineLoop({ id: user.id, full_name: user.full_name, role: user.role }) : undefined), [user])
+  // Выход с неотправленными чеками или без связи — сначала предупреждение (SPEC-09): очередь
+  // остаётся за этим пользователем, без связи войти снова не получится.
+  const [logoutAsk, setLogoutAsk] = useState<string | null>(null)
+  const askLogout = () => {
+    if (!user) return
+    void outboxItems().then((items) => {
+      const warning = logoutWarning(items, user.id, navigator.onLine && serverReachable())
+      if (warning) setLogoutAsk(warning)
+      else void logout()
+    })
+  }
   // Режим кассы (SPEC-29): на экране «Касса» — без меню, всё крупнее, цифры экранной клавиатурой.
   const touch = useTouchMode()
   useEffect(() => {
@@ -254,7 +265,7 @@ function Shell() {
             {user.full_name !== roleLabel && ` · ${roleLabel}`}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-4">
-            <button type="button" className="text-xs text-sky-300 hover:underline" onClick={() => void logout()}>
+            <button type="button" className="text-xs text-sky-300 hover:underline" onClick={askLogout}>
               Выйти
             </button>
             {themeButton}
@@ -271,6 +282,27 @@ function Shell() {
       <main className={`min-w-0 flex-1 ${touch ? 'pb-4' : 'pb-24'}`}>
         <UpdateBanner />
         <OfflineBar />
+        {logoutAsk && (
+          <Modal title="Выйти из программы?" onClose={() => setLogoutAsk(null)}>
+            <div className="flex flex-col gap-4" data-testid="logout-warning">
+              <div className="text-sm text-slate-700">{logoutAsk}</div>
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" onClick={() => setLogoutAsk(null)}>
+                  Остаться
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    setLogoutAsk(null)
+                    void logout()
+                  }}
+                >
+                  Выйти, чеки останутся на устройстве
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        )}
         <div className={touch ? 'px-3 pb-3 md:px-4' : 'p-4 md:p-6'}>
         <Routes>
           <Route path="/" element={<Cashier />} />
@@ -388,7 +420,7 @@ function Shell() {
               </div>
             ))}
             <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-sm">
-              <button type="button" className="text-sky-700" onClick={() => void logout()}>
+              <button type="button" className="text-sky-700" onClick={askLogout}>
                 Выйти
               </button>
               <button

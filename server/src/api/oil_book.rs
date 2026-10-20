@@ -772,10 +772,11 @@ struct ManualLine {
 #[derive(Deserialize)]
 struct ManualReq {
     change_date: NaiveDate,
-    mileage_km: Option<i32>,
+    #[serde(default, deserialize_with = "lenient_mileage")]
+    mileage_km: Option<i64>,
     /// Пробег в единице машины или в `mileage_unit` (ADR-084).
-    #[serde(default)]
-    mileage: Option<i32>,
+    #[serde(default, deserialize_with = "lenient_mileage")]
+    mileage: Option<i64>,
     #[serde(default)]
     mileage_unit: Option<String>,
     #[serde(default)]
@@ -789,7 +790,20 @@ struct ManualReq {
     comment: String,
 }
 
-fn check_mileage(m: Option<i32>) -> AppResult<()> {
+/// Пробег из запроса любым числом (ADR-093): слишком большое, дробное или строка не роняют весь
+/// запрос ошибкой формата — такое значение вне диапазона, и его отклонит проверка пробега, а чек
+/// без сети проведётся без пробега (ADR-090). Пустая строка — пробега нет.
+pub fn lenient_mileage<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => Some(n.as_i64().unwrap_or(i64::MAX)),
+        Some(serde_json::Value::String(t)) if t.trim().is_empty() => None,
+        Some(serde_json::Value::String(t)) => Some(t.trim().parse::<i64>().unwrap_or(i64::MAX)),
+        Some(_) => Some(i64::MAX),
+    })
+}
+
+fn check_mileage(m: Option<i64>) -> AppResult<()> {
     if m.is_some_and(|m| !(0..=5_000_000).contains(&m)) {
         return Err(invalid("пробег от 0 до 5 000 000 км"));
     }
@@ -807,9 +821,9 @@ pub struct Mileage {
 /// Пробег из запроса: `mileage` в единице `mileage_unit` (без неё — в единице машины) или
 /// прежнее поле `mileage_km` (в км). Ничего нет — `None`.
 pub fn resolve_mileage(
-    mileage: Option<i32>,
+    mileage: Option<i64>,
     unit: Option<&str>,
-    legacy_km: Option<i32>,
+    legacy_km: Option<i64>,
     car_unit: &str,
 ) -> AppResult<Option<Mileage>> {
     let (value, unit) = match (mileage, legacy_km) {
@@ -827,6 +841,7 @@ pub fn resolve_mileage(
             "пробег от 0 до 5 000 000 км"
         }));
     }
+    let value = i32::try_from(value).map_err(|_| crate::error::overflow())?;
     let km = crate::domain::mileage::to_km(value, unit).ok_or_else(crate::error::overflow)?;
     Ok(Some(Mileage {
         km,
@@ -942,10 +957,11 @@ async fn manual(
 
 #[derive(Deserialize)]
 struct EditReq {
-    mileage_km: Option<i32>,
+    #[serde(default, deserialize_with = "lenient_mileage")]
+    mileage_km: Option<i64>,
     /// Пробег в единице машины или в `mileage_unit` (ADR-084).
-    #[serde(default)]
-    mileage: Option<i32>,
+    #[serde(default, deserialize_with = "lenient_mileage")]
+    mileage: Option<i64>,
     #[serde(default)]
     mileage_unit: Option<String>,
     comment: Option<String>,

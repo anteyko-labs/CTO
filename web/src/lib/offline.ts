@@ -3,11 +3,17 @@
 // кода и для онлайна, и для офлайна, поэтому обрыв связи ничего не теряет.
 
 import { openDB, type IDBPDatabase } from 'idb'
-import { ApiError, api, deviceId, noServerAnswer } from './api'
-import type { Product } from './types'
+import { ApiError, api, deviceId, noServerAnswer, serverReachable, setServerReachable } from './api'
+import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 
 export interface SnapshotProduct extends Product {
   barcodes: string[]
+}
+
+/** Клиент из снимка: касса без сети выбирает его для долга и машину для замены (ADR-093). */
+export interface SnapshotClient extends Party {
+  contacts: Pick<PartyContact, 'id' | 'full_name' | 'position' | 'active'>[]
+  vehicles: PartyVehicle[]
 }
 
 export interface Snapshot {
@@ -15,6 +21,10 @@ export interface Snapshot {
   server_time: string
   products: SnapshotProduct[]
   employees: { id: string; full_name: string; is_cashier: boolean; is_master: boolean }[]
+  /** Услуги, категории и клиенты для работы без сети (ADR-093); у старого снимка — нет. */
+  services?: Service[]
+  categories?: { id: string; name: string; kind: CategoryKind }[]
+  clients?: SnapshotClient[]
   /** Безналичные счета для карты и перевода без сети (ADR-076); у старого снимка — нет. */
   bank_accounts?: { id: string; name: string; default_card?: boolean; default_transfer?: boolean; fee_rate_bp?: number }[]
   oil_change_master_fee_tyiyn: number
@@ -34,6 +44,22 @@ export interface OutboxItem {
   last_error: string
   body: unknown
   server_number?: number
+  /** Кто пробил чек: очередь отправляет только чеки вошедшего пользователя (SPEC-09). */
+  user_id?: string
+  user_name?: string
+  /** Владелец взял чужой чек на себя: уйдёт от владельца с `claimed_user_id`. */
+  claimed_by?: string
+  /** Раньше этого времени чек не повторяем: пауза 30 с → 1 мин → 5 мин после сбоя. */
+  next_try_at?: string
+  /** Чек для печати: строки с названиями, итог, оплаты — повторная печать из очереди. */
+  receipt?: Sale
+}
+
+/** Кто сейчас работает на кассе: чьи чеки отправлять из очереди. */
+export interface QueueUser {
+  id: string
+  full_name: string
+  role: string
 }
 
 const DB_NAME = 'avtodom'
@@ -62,7 +88,7 @@ export async function readSnapshot(): Promise<Snapshot | null> {
   }
 }
 
-/** Тянет снимок с сервера; 304 оставляет прежний. Без сети молча пропускает. */
+/** Тянет снимок с сервера; 304 — прежний снимок, но проверенный сейчас. Без сети молча пропускает. */
 export async function refreshSnapshot(): Promise<Snapshot | null> {
   const current = await readSnapshot()
   try {
@@ -70,14 +96,84 @@ export async function refreshSnapshot(): Promise<Snapshot | null> {
       headers: current?.version ? { 'if-none-match': `"${current.version}"` } : {},
       credentials: 'same-origin',
     })
-    if (res.status === 304) return current
+    setServerReachable(![502, 503, 504, 530].includes(res.status))
+    if (res.status === 304 && current) {
+      // Сервер подтвердил, что снимок не менялся: он свежий, предупреждение «устарел» уходит.
+      const fresh = { ...current, saved_at: new Date().toISOString() }
+      await (await db()).put(SNAP, fresh, 'current')
+      return fresh
+    }
     if (!res.ok) return current
     const snap = (await res.json()) as Snapshot
     snap.saved_at = new Date().toISOString()
     await (await db()).put(SNAP, snap, 'current')
     return snap
   } catch {
+    setServerReachable(false)
     return current
+  }
+}
+
+/**
+ * После своего чека без сети остаток в снимке уменьшается сразу: следующий покупатель видит,
+ * что товара стало меньше (SPEC-09). `units` — в единицах учёта (мл, шт, г).
+ */
+export async function takeFromSnapshot(lines: { product_id: string; units: number }[]): Promise<void> {
+  try {
+    const snap = await readSnapshot()
+    if (!snap || lines.length === 0) return
+    await (await db()).put(SNAP, subtractStock(snap, lines), 'current')
+  } catch {
+    // Без хранилища остаток обновится со следующим снимком.
+  }
+}
+
+export function subtractStock(snap: Snapshot, lines: { product_id: string; units: number }[]): Snapshot {
+  const by = new Map<string, number>()
+  for (const l of lines) by.set(l.product_id, (by.get(l.product_id) ?? 0) + l.units)
+  return { ...snap, products: snap.products.map((p) => (by.has(p.id) ? { ...p, stock_qty: p.stock_qty - (by.get(p.id) ?? 0) } : p)) }
+}
+
+const plateKey = (v: string) => v.replace(/[\s-]/g, '').toUpperCase()
+
+/** Поиск клиента в снимке: имя, телефон (по цифрам), ПИН/ИНН и госномер машины. */
+export function searchSnapshotClients(snap: Snapshot | null, query: string, limit = 8): SnapshotClient[] {
+  const q = query.trim().toLowerCase()
+  if (!snap?.clients || q.length < 2) return []
+  const digits = q.replace(/\D/g, '')
+  const plate = plateKey(q)
+  return snap.clients
+    .filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (digits.length >= 3 && (c.phone.replace(/\D/g, '').includes(digits) || c.inn.includes(digits))) ||
+        (plate.length >= 3 && c.vehicles.some((v) => plateKey(v.plate).includes(plate))),
+    )
+    .slice(0, limit)
+}
+
+// ---------- Последняя известная смена ----------
+
+const SHIFT_KEY = 'avtodom.shift'
+
+/**
+ * Последняя известная смена (номер, кассир): без связи касса не сбрасывает её и не начинает
+ * спрашивать кассира посреди смены, в том числе после перезагрузки (SPEC-09).
+ */
+export function saveKnownShift(shift: Shift | null): void {
+  try {
+    localStorage.setItem(SHIFT_KEY, JSON.stringify(shift))
+  } catch {
+    // Без хранилища смена помнится до перезагрузки.
+  }
+}
+
+export function knownShift(): Shift | null | undefined {
+  try {
+    const raw = localStorage.getItem(SHIFT_KEY)
+    return raw === null ? undefined : (JSON.parse(raw) as Shift | null)
+  } catch {
+    return undefined
   }
 }
 
@@ -160,6 +256,52 @@ export function watchOutbox(fn: (items: OutboxItem[]) => void): () => void {
 export const pendingCount = (items: OutboxItem[]): number =>
   items.filter((i) => i.status === 'pending' || i.status === 'sending').length
 
+export const rejectedItems = (items: OutboxItem[]): OutboxItem[] => items.filter((i) => i.status === 'rejected')
+
+/** Чек этого пользователя (старые записи без пользователя — общие) или взятый им на себя. */
+export const isOwnItem = (i: OutboxItem, userId: string): boolean => !i.user_id || i.user_id === userId || i.claimed_by === userId
+
+/** Неотправленные чеки других пользователей: «N чеков <имя> ждут его входа» (SPEC-09). */
+export function foreignWaiting(items: OutboxItem[], userId: string): { user_id: string; user_name: string; count: number }[] {
+  const by = new Map<string, { user_id: string; user_name: string; count: number }>()
+  for (const i of items) {
+    if (isOwnItem(i, userId) || (i.status !== 'pending' && i.status !== 'sending') || !i.user_id) continue
+    const cur = by.get(i.user_id) ?? { user_id: i.user_id, user_name: i.user_name ?? '', count: 0 }
+    cur.count += 1
+    by.set(i.user_id, cur)
+  }
+  return [...by.values()]
+}
+
+/** «1 чек», «3 чека», «5 чеков». */
+export function receiptsWord(n: number): string {
+  const m10 = n % 10
+  const m100 = n % 100
+  if (m10 === 1 && m100 !== 11) return 'чек'
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'чека'
+  return 'чеков'
+}
+
+/** Пауза перед повтором после сбоя: 30 с → 1 мин → 5 мин (SPEC-09). */
+export function retryDelayMs(attempts: number): number {
+  if (attempts <= 1) return 30_000
+  if (attempts === 2) return 60_000
+  return 5 * 60_000
+}
+
+/** Отправленные чеки хранятся неделю для повторной печати (SPEC-09). */
+const KEEP_DONE_MS = 7 * 24 * 60 * 60 * 1000
+
+export function expiredDone(items: OutboxItem[], now: number = Date.now()): OutboxItem[] {
+  return items.filter((i) => i.status === 'done' && now - new Date(i.created_at).getTime() > KEEP_DONE_MS)
+}
+
+/** Чек из записи очереди для печати: номер сервера, если он уже есть, иначе временный. */
+export function receiptOf(i: OutboxItem): Sale | null {
+  if (!i.receipt) return null
+  return { ...i.receipt, number: (i.server_number ?? i.temp_no) as unknown as number }
+}
+
 const TEMP_COUNTER_KEY = 'avtodom.temp_no'
 
 /** Временный номер из хвоста устройства и порядкового номера: «Ч-1A2B-0042». */
@@ -192,12 +334,14 @@ export function staleSending(items: OutboxItem[]): OutboxItem[] {
 
 let recovered: Promise<void> | null = null
 
-/** Один раз за запуск: повтор безопасен, сервер узнает чек по `op_id`. */
+/** Один раз за запуск: повтор безопасен, сервер узнает чек по `op_id`. Отправленные старше недели убираются. */
 function recover(): Promise<void> {
   recovered ??= (async () => {
     try {
       const d = await db()
-      for (const item of staleSending(await allItems())) await d.put(OUTBOX, item)
+      const items = await allItems()
+      for (const item of staleSending(items)) await d.put(OUTBOX, item)
+      for (const item of expiredDone(items)) await d.delete(OUTBOX, item.op_id)
     } catch {
       // Без IndexedDB восстанавливать нечего.
     }
@@ -209,16 +353,24 @@ function recover(): Promise<void> {
  * Кладёт чек в очередь со статусом «отправляется»: касса сама шлёт его на сервер,
  * фоновая отправка его не трогает. Возвращает запись с временным номером.
  */
-export async function enqueueSale(op_id: string, body: unknown): Promise<OutboxItem> {
+export async function enqueueSale(
+  op_id: string,
+  body: unknown,
+  who?: { user?: QueueUser | null; receipt?: (temp_no: string) => Sale },
+): Promise<OutboxItem> {
   await recover()
+  const temp_no = tempNumber()
   const item: OutboxItem = {
     op_id,
-    temp_no: tempNumber(),
+    temp_no,
     created_at: new Date().toISOString(),
     status: 'sending',
     attempts: 0,
     last_error: '',
     body,
+    user_id: who?.user?.id,
+    user_name: who?.user?.full_name,
+    receipt: who?.receipt?.(temp_no),
   }
   await (await db()).put(OUTBOX, item)
   await emit()
@@ -252,6 +404,27 @@ async function put(item: OutboxItem): Promise<void> {
   await emit()
 }
 
+/** Убрать отклонённый чек с устройства: владелец о нём уже знает (запись принята сервером). */
+export async function removeRejected(op_id: string): Promise<void> {
+  const d = await db()
+  const item: OutboxItem | undefined = await d.get(OUTBOX, op_id)
+  if (item?.status !== 'rejected') return
+  await d.delete(OUTBOX, op_id)
+  await emit()
+}
+
+/** Владелец отправит чеки другого пользователя от себя (SPEC-09): сервер запишет, чьи они. */
+export async function claimForeign(user_id: string, owner: QueueUser): Promise<void> {
+  if (owner.role !== 'owner') return
+  const d = await db()
+  for (const item of await allItems()) {
+    if (item.user_id === user_id && (item.status === 'pending' || item.status === 'sending')) {
+      await d.put(OUTBOX, { ...item, claimed_by: owner.id, next_try_at: undefined })
+    }
+  }
+  await emit()
+}
+
 export async function dropDone(): Promise<void> {
   const d = await db()
   for (const item of await allItems()) {
@@ -265,6 +438,13 @@ export async function dropDone(): Promise<void> {
 const MAX_CONFLICTS = 5
 
 let syncing = false
+
+/** Кто вошёл: очередь отправляет только его чеки (SPEC-09). Ставит фоновая работа кассы. */
+let queueUser: QueueUser | null = null
+
+export function setQueueUser(u: QueueUser | null): void {
+  queueUser = u
+}
 
 /**
  * Ответ сервера не значит, что чек отклонён по существу: связи нет, сервер упал (5xx) или
@@ -288,14 +468,27 @@ export function sendOutcome(e: unknown, conflicts: number): 'conflict_retry' | '
  * Сервер отказал по существу. «Отклонён» чек становится, только когда сервер принял отчёт
  * об отказе (о нём узнал владелец); иначе чек ждёт и отчёт повторится (ADR-062).
  */
-export function afterRejection(item: OutboxItem, error: string, reported: boolean): OutboxItem {
-  if (reported) return { ...item, status: 'rejected', last_error: error }
+export function afterRejection(item: OutboxItem, error: string, reported: boolean, now: number = Date.now()): OutboxItem {
+  if (reported) return { ...item, status: 'rejected', last_error: error, next_try_at: undefined }
   return {
     ...item,
     status: 'pending',
     attempts: item.attempts + 1,
+    next_try_at: new Date(now + retryDelayMs(item.attempts + 1)).toISOString(),
     last_error: `${error} — отказ ещё не передан владельцу, повторим`,
   }
+}
+
+/** Чек ждёт паузы после сбоя — сейчас его не трогаем (кроме «Отправить сейчас» и появления сети). */
+export const waitsRetry = (i: OutboxItem, now: number = Date.now()): boolean =>
+  Boolean(i.next_try_at && new Date(i.next_try_at).getTime() > now)
+
+/** Тело запроса из очереди: признак «без сети» (продажа уже состоялась, ADR-042, ADR-093) и, если
+ *  владелец отправляет чужой чек, чей он. */
+export function queuedBody(item: OutboxItem): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...(item.body as object), offline: true }
+  if (item.claimed_by && item.user_id && item.user_id !== item.claimed_by) body.claimed_user_id = item.user_id
+  return body
 }
 
 /** Проведён ли уже чек с этим op_id — например, от имени другого пользователя кассы. */
@@ -307,58 +500,78 @@ async function postedNumber(op_id: string): Promise<number | null> {
   }
 }
 
+/** Сообщить владельцу об отказе: да — принято (или уже было принято), нет — повторить позже. */
+async function reportRejection(item: OutboxItem, error: string): Promise<'reported' | 'posted' | 'later' | 'no_server'> {
+  try {
+    await api('POST', '/sales/offline-rejected', { op_id: item.op_id, error, body: item.body })
+    return 'reported'
+  } catch (e) {
+    // «op_id уже использован»: отказ уже сообщили (другой пользователь кассы) или чек проведён —
+    // очередь не встаёт на этом чеке (ADR-093).
+    if (e instanceof ApiError && e.status === 409) return (await postedNumber(item.op_id)) !== null ? 'posted' : 'reported'
+    if (e instanceof ApiError && noServerAnswer(e)) return 'no_server'
+    return 'later'
+  }
+}
+
+const backoff = (item: OutboxItem, error: string): OutboxItem => ({
+  ...item,
+  status: 'pending',
+  attempts: item.attempts + 1,
+  next_try_at: new Date(Date.now() + retryDelayMs(item.attempts + 1)).toISOString(),
+  last_error: error,
+})
+
 /**
- * Отправляет накопившиеся чеки по одному. Повтор с тем же `op_id` безопасен:
- * сервер вернёт уже проведённый чек (ADR-013).
+ * Отправляет накопившиеся чеки вошедшего пользователя по одному. Повтор с тем же `op_id`
+ * безопасен: сервер вернёт уже проведённый чек (ADR-013). Один чек не держит очередь: сбой
+ * сервера по нему — пауза для этого чека, остальные идут дальше; нет связи — ждут все.
  */
-export async function syncOutbox(): Promise<void> {
-  if (syncing || !navigator.onLine) return
+export async function syncOutbox(force = false): Promise<void> {
+  if (syncing || !navigator.onLine || !queueUser) return
+  const me = queueUser
   syncing = true
   try {
     await recover()
     for (const item of await allItems()) {
-      if (item.status !== 'pending') continue
+      if (item.status !== 'pending' || !isOwnItem(item, me.id)) continue
+      if (!force && waitsRetry(item)) continue
       await put({ ...item, status: 'sending' })
       try {
-        // Чек из очереди проведён без сети: продажа уже была, сервер не отклонит его за цену (ADR-042).
-        const sale = await api<{ number: number }>('POST', '/sales', { ...(item.body as object), offline: true })
-        await put({ ...item, status: 'done', server_number: sale.number, last_error: '' })
+        const sale = await api<{ number: number }>('POST', '/sales', queuedBody(item))
+        await put({ ...item, status: 'done', server_number: sale.number, last_error: '', next_try_at: undefined })
       } catch (e) {
         // «op_id уже использован»: чек мог уйти раньше от другого пользователя этой кассы —
         // тогда он проведён, а не отклонён.
         if (e instanceof ApiError && e.status === 409) {
           const number = await postedNumber(item.op_id)
           if (number !== null) {
-            await put({ ...item, status: 'done', server_number: number, last_error: '' })
+            await put({ ...item, status: 'done', server_number: number, last_error: '', next_try_at: undefined })
             continue
           }
         }
+        const message = e instanceof Error ? e.message : 'нет связи'
         const outcome = sendOutcome(e, item.conflicts ?? 0)
         if (outcome === 'conflict_retry') {
-          await put({ ...item, status: 'pending', conflicts: (item.conflicts ?? 0) + 1, last_error: e instanceof Error ? e.message : '' })
+          await put({ ...item, status: 'pending', conflicts: (item.conflicts ?? 0) + 1, last_error: message })
           continue
         }
-        if (outcome === 'reject' && e instanceof ApiError) {
+        if (outcome === 'reject') {
           // Сервер отказал по существу: чек не исчезает, о нём узнаёт владелец.
-          const reported = await api('POST', '/sales/offline-rejected', {
-            op_id: item.op_id,
-            error: e.message,
-            body: item.body,
-          }).then(
-            () => true,
-            () => false,
-          )
-          await put(afterRejection(item, e.message, reported))
-          if (!reported) break
-        } else {
-          await put({
-            ...item,
-            status: 'pending',
-            attempts: item.attempts + 1,
-            last_error: e instanceof Error ? e.message : 'нет связи',
-          })
-          break
+          const report = await reportRejection(item, message)
+          if (report === 'posted') {
+            const number = await postedNumber(item.op_id)
+            await put({ ...item, status: 'done', server_number: number ?? undefined, last_error: '', next_try_at: undefined })
+            continue
+          }
+          await put(afterRejection(item, message, report === 'reported'))
+          if (report === 'no_server') break
+          continue
         }
+        await put(backoff(item, message))
+        // Нет связи или истёк вход — остальные чеки тоже не уйдут; сбой сервера по одному чеку
+        // остальных не держит.
+        if (!(e instanceof ApiError) || noServerAnswer(e) || e.status === 401) break
       }
     }
   } finally {
@@ -366,10 +579,17 @@ export async function syncOutbox(): Promise<void> {
   }
 }
 
-/** Фоновая работа кассы: обновление снимка и отправка очереди. */
-export function startOfflineLoop(): () => void {
+/** Фоновая работа кассы: обновление снимка и отправка очереди вошедшего пользователя. */
+export function startOfflineLoop(user: QueueUser): () => void {
+  setQueueUser(user)
   const tick = () => {
+    // Сервер не отвечал — проверяем его дешёвым запросом снимка (304), а не ждём 10 минут.
+    if (!serverReachable()) void refreshSnapshot()
     void syncOutbox()
+  }
+  const back = () => {
+    void refreshSnapshot()
+    void syncOutbox(true)
   }
   const refresh = () => {
     void refreshSnapshot()
@@ -378,12 +598,27 @@ export function startOfflineLoop(): () => void {
   tick()
   const t1 = setInterval(tick, 30_000)
   const t2 = setInterval(refresh, 10 * 60_000)
-  window.addEventListener('online', tick)
-  window.addEventListener('online', refresh)
+  window.addEventListener('online', back)
   return () => {
     clearInterval(t1)
     clearInterval(t2)
-    window.removeEventListener('online', tick)
-    window.removeEventListener('online', refresh)
+    window.removeEventListener('online', back)
+    setQueueUser(null)
   }
 }
+
+/**
+ * Предупреждение перед выходом (SPEC-09): неотправленные чеки этого пользователя останутся на
+ * устройстве и уйдут, когда он снова войдёт; без связи войти снова не получится, пока она не появится.
+ * `null` — выходить можно без вопросов.
+ */
+export function logoutWarning(items: OutboxItem[], userId: string, online: boolean): string | null {
+  const n = pendingCount(items.filter((i) => isOwnItem(i, userId)))
+  const parts: string[] = []
+  if (n > 0) parts.push(`${n} ${receiptsWord(n)} ещё не ${n === 1 ? 'отправлен' : 'отправлены'} на сервер. Они останутся на этом устройстве и уйдут, когда вы снова войдёте (или владелец отправит их от себя).`)
+  if (!online) parts.push('Нет связи с сервером: войти снова получится только при связи.')
+  return parts.length > 0 ? parts.join(' ') : null
+}
+
+/** Все записи очереди — для проверки перед выходом. */
+export const outboxItems = (): Promise<OutboxItem[]> => allItems()

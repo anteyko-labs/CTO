@@ -25,9 +25,9 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, toast } from '../components/ui'
-import { ApiError, get, newOpId, patch, post, qs } from '../lib/api'
+import { ApiError, get, newOpId, noServerAnswer, patch, post, qs } from '../lib/api'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
-import { enqueueSale, keepInQueue, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage } from '../lib/offline'
+import { enqueueSale, keepInQueue, knownShift, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage, saveKnownShift, takeFromSnapshot } from '../lib/offline'
 import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
 import { useUser } from '../lib/auth'
 import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../lib/cashierMode'
@@ -36,7 +36,7 @@ import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { useFocusAfterRender } from '../lib/focus'
 import { missingWithFocus } from '../lib/forms'
-import { useAction, useLoad, usePolling } from '../lib/hooks'
+import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
 import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
 
@@ -213,13 +213,25 @@ export interface CashierFix {
 export default function Cashier({ fix }: { fix?: CashierFix }) {
   const navigate = useNavigate()
   const focusAfterRender = useFocusAfterRender()
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
+  // Связь с сервером, а не только сеть устройства: баллы и аккумулятор считает сервер.
+  const online = useServerOnline()
   // Режим кассы для сенсорного моноблока (SPEC-29): без меню, всё крупнее, цифры — экранной
   // клавиатурой. В исправлении чека владельцем режима нет.
   const touch = useTouchMode() && !fix
   const num = useNumField()
   const [shiftOpen, setShiftOpen] = useState<{ till: CashAccount | undefined } | null>(null)
-  const employees = useLoad(() => get<Employee[]>('/employees'), [])
+  // Без связи — сотрудники из снимка кассы: кассир и мастер выбираются и после перезагрузки (SPEC-09).
+  const employees = useLoad(
+    () =>
+      get<Employee[]>('/employees').catch(async (e: unknown) => {
+        const snap = noServerAnswer(e) ? await readSnapshot() : null
+        if (!snap) throw e
+        return snap.employees.map((x) => ({ ...x, active: true }))
+      }),
+    [],
+  )
   // Куда идут карта и QR: у каждого способа свой счёт по умолчанию, кассир может выбрать другой
   // банк для этого чека (ADR-076, ADR-077).
   const banks = useLoad(loadBanks, [])
@@ -229,11 +241,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     bankList.some((b) => b.id === bankPick[method]) ? bankPick[method] : defaultBankId(bankList, method)
   // Плашка смены: продавать можно и без неё, но деньги потом не с чем сверить (SPEC-05).
   // Без связи остаётся последняя известная смена: касса не начнёт спрашивать кассира посреди смены.
-  const lastShift = useRef<Shift | null | undefined>(undefined)
+  // Она переживает и перезагрузку страницы: хранится на устройстве (SPEC-09).
+  const lastShift = useRef<Shift | null | undefined>(fix ? undefined : knownShift())
   const shift = useLoad(
     () =>
       get<Shift | null>('/shifts/current')
-        .then((s) => (lastShift.current = s))
+        .then((s) => {
+          if (!fix) saveKnownShift(s)
+          return (lastShift.current = s)
+        })
         .catch(() => lastShift.current),
     [],
   )
@@ -588,7 +604,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Прошлый пробег машины: лишний ноль уйдёт в книжку, на печать и клиенту в бот.
   const book = useLoad(() => (vehicleId ? get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`) : Promise.resolve(null)), [vehicleId])
   // Пробег — в единице машины (км или мили, ADR-084); прошлый — переведён в неё же.
-  const carUnit: MileageUnit = book.data?.mileage_unit ?? 'km'
+  // Без связи книжки нет — единица машины из снимка кассы (ADR-093).
+  const snapUnit = useLoad(
+    () =>
+      vehicleId
+        ? readSnapshot().then((snap) => snap?.clients?.flatMap((c) => c.vehicles).find((v) => v.id === vehicleId)?.mileage_unit ?? null)
+        : Promise.resolve(null),
+    [vehicleId],
+  )
+  const carUnit: MileageUnit = book.data?.mileage_unit ?? snapUnit.data ?? 'km'
   const lastKmRaw = book.data?.records.find((r) => r.mileage_km !== null)?.mileage_km ?? null
   const lastKm = lastKmRaw === null ? null : fromKm(lastKmRaw, carUnit)
   const mileageWarning = (() => {
@@ -695,10 +719,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
     [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента'],
     [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново'],
-    [!bonus || navigator.onLine, 'баллы списываются только при связи с сервером'],
+    [!bonus || online, 'баллы списываются только при связи с сервером'],
     [!batteryPay || (batteryGrams !== null && batteryGrams > 0), 'вес сданного аккумулятора', '#battery-kg'],
     [!batteryPay || (batteryPerKg !== null && batteryPerKg > 0), 'цена аккумулятора за кг', '#battery-per-kg'],
-    [!batteryPay || navigator.onLine, 'аккумулятор в оплату — только при связи с сервером'],
+    [!batteryPay || online, 'аккумулятор в оплату — только при связи с сервером'],
     [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
     [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
@@ -750,29 +774,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
       const opId = attempt.current.opId
       const body = { op_id: opId, client_time: new Date().toISOString(), ...content }
-      // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
-      const queued = await enqueueSale(opId, body)
-      let sale: Sale
-      try {
-        sale = await post<Sale>('/sales', body)
-      } catch (e) {
-        // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504), сервер упал (500)
-        // или истёк вход (401): чек остаётся в очереди и уйдёт сам; повтор с тем же op_id второй
-        // продажи не создаст (ADR-013, ADR-062).
-        const noAnswer = e instanceof ApiError ? keepInQueue(e) : !navigator.onLine
-        if (!noAnswer) {
-          // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
-          await removeSale(opId).catch(() => undefined)
-          throw e
-        }
-        await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
-        const offlineSale = {
+      // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
+      // нет связи, и после отправки (SPEC-09).
+      const cashierName = (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? ''
+      const receipt = (temp_no: string): Sale =>
+        ({
           id: '',
-          number: queued.temp_no,
+          number: temp_no,
           kind: 'sale',
           sale_type: saleType,
-          cashier_name: (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? '',
-          master_name: masters.find((m) => m.id === masterId)?.full_name ?? null,
+          cashier_name: cashierName,
+          master_name: saleType === 'service' ? (masters.find((m) => m.id === masterId)?.full_name ?? null) : null,
+          party_name: party?.name ?? null,
           total_tyiyn: total,
           created_at: new Date().toISOString(),
           lines: lines.map((l, i) => ({
@@ -787,7 +800,26 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             list_price_tyiyn: listPrice(l),
           })),
           payments,
-        } as unknown as Sale
+        }) as unknown as Sale
+      // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
+      const queued = await enqueueSale(opId, body, { user, receipt })
+      let sale: Sale
+      try {
+        sale = await post<Sale>('/sales', body)
+      } catch (e) {
+        // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504), сервер упал (500)
+        // или истёк вход (401): чек остаётся в очереди и уйдёт сам; повтор с тем же op_id второй
+        // продажи не создаст (ADR-013, ADR-062).
+        const noAnswer = e instanceof ApiError ? keepInQueue(e) : !navigator.onLine
+        if (!noAnswer) {
+          // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
+          await removeSale(opId).catch(() => undefined)
+          throw e
+        }
+        await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
+        // Остаток в снимке уменьшается сразу: следующий покупатель видит, что товара стало меньше.
+        void takeFromSnapshot(lines.filter((l) => l.product).map((l) => ({ product_id: l.product?.id ?? '', units: lineUnits(l) })))
+        const offlineSale = queued.receipt ?? receipt(queued.temp_no)
         setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
         if (parkedId) dropParked(parkedId)
         setParkedId(null)
@@ -1277,7 +1309,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   required
                   hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку"
                 >
-                  <input id="mileage" {...num('int')} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, ''))} />
+                  {/* Не больше 7 цифр: пробег до 5 000 000, лишняя цифра — опечатка (ADR-093). */}
+                  <input id="mileage" {...num('int')} maxLength={7} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, '').slice(0, 7))} />
                   {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
                 </Field>
                 {every && (
@@ -1393,8 +1426,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline max-lg:min-h-[42px]"
-                  disabled={batteryLoad.busy || !navigator.onLine}
-                  title={navigator.onLine ? 'Старый аккумулятор в счёт оплаты: вес × цена приёма за кг' : 'Нет связи с сервером: цену приёма считает сервер'}
+                  disabled={batteryLoad.busy || !online}
+                  title={online ? 'Старый аккумулятор в счёт оплаты: вес × цена приёма за кг' : 'Нет связи с сервером: цену приёма считает сервер'}
                   onClick={() =>
                     void batteryLoad.run(async () => {
                       const info = await get<BatteryInfo>('/batteries')
@@ -1404,7 +1437,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   }
                 >
                   Сдал аккумулятор
-                  {touch && !navigator.onLine && <span className="text-slate-500">(нет связи)</span>}
+                  {touch && !online && <span className="text-slate-500">(нет связи)</span>}
                 </button>
               )}
               {!bonus && (

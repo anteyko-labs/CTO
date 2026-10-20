@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::money::format_som;
-use crate::domain::qty::{fixed3, liters, qty_text};
+use crate::domain::qty::{fixed3, liters, qty_text, sale_qty_text};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops::{self, new_id};
 use crate::state::AppState;
@@ -235,15 +235,6 @@ struct Doc {
     number: Option<i64>,
     draft: Value,
     desc: Desc,
-}
-
-fn sale_qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
-    match (kind, container_ml) {
-        ("container", Some(c)) => format!("{qty} кан. × {}", liters(c)),
-        ("pour", _) => liters(qty),
-        ("weight", _) => format!("{} кг", fixed3(qty)),
-        _ => format!("{qty} шт"),
-    }
 }
 
 fn method_text(m: &str) -> &str {

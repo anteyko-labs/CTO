@@ -142,7 +142,7 @@ test('масляная книжка по каждому фильтру: стро
   await page.locator('#book-km').fill('20000')
   await page.locator('#book-days').fill('60')
   await page.getByRole('button', { name: 'Сохранить' }).click()
-  await expect(page.getByRole('row', { name: new RegExp(airName) })).toContainText('Фильтр воздушный')
+  await expect(page.getByRole('row', { name: new RegExp(airName) })).toContainText(/фильтр воздушный/i)
 
   const oil = await goods(page.request, oilCat.id, `Масло строки ${RUN}`, 700_000, 520_000, { container_ml: 4000 })
   const filter = await goods(page.request, filterCat.id, `Фильтр W712 ${RUN}`, 50_000, 20_000)

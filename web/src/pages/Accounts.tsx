@@ -1,6 +1,7 @@
 // «Обзор счетов» (SPEC-28 §5, ADR-076, ADR-077): кассы и безналичные счета как в старой программе —
 // счёт, тип, сумма, отрицательный баланс, комиссия банка, правка и история. Заводит и правит счета
-// только владелец: у банка — ставка комиссии с датой и отметки «по умолчанию для карты / перевода».
+// только владелец: у банка — ставка комиссии с датой и отметки «по умолчанию для карты / QR банка»
+// и «для QR владельцу» — и при заведении счёта.
 // Администратор видит счета без «только владелец», без правки. Остатки и права — на сервере.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -148,6 +149,8 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
           allow_negative: form.allow_negative,
           owner_only: form.owner_only,
           fee_rate_bp: formBank && feeBp ? feeBp : undefined,
+          default_card: formBank && !form.owner_only && form.default_card ? true : undefined,
+          default_transfer: formBank && !form.owner_only && form.default_transfer ? true : undefined,
         })
         toast('Счёт заведён')
       }
@@ -312,13 +315,17 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
                 )}
               </div>
             )}
-            {form.id && formBank && form.active && !form.owner_only && (
+            {/* Отметки по умолчанию — и у нового счёта (проверка 20.10.2026); подписи — как кнопки кассы. */}
+            {formBank && form.active && !form.owner_only && (
               <>
                 {!current?.default_card && (
-                  <Checkbox label="По умолчанию для карты" checked={form.default_card} onChange={(v) => setForm({ ...form, default_card: v })} />
+                  <Checkbox label="По умолчанию для карты / QR банка" checked={form.default_card} onChange={(v) => setForm({ ...form, default_card: v })} />
                 )}
                 {!current?.default_transfer && (
-                  <Checkbox label="По умолчанию для перевода / QR" checked={form.default_transfer} onChange={(v) => setForm({ ...form, default_transfer: v })} />
+                  <Checkbox label="По умолчанию для QR владельцу" checked={form.default_transfer} onChange={(v) => setForm({ ...form, default_transfer: v })} />
+                )}
+                {!form.id && (
+                  <div className="text-xs text-slate-500">Первый безналичный счёт становится счётом по умолчанию сам; отмеченный здесь заменит прежний.</div>
                 )}
               </>
             )}

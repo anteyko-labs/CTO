@@ -102,6 +102,24 @@ fn default_book_slot(kind: &str) -> &'static str {
     }
 }
 
+/// Строка книжки новой категории фильтров по её названию: «Воздушные фильтры» — воздушный,
+/// а не масляный (проверка 20.10.2026). Без подсказки в названии — `None` (по виду категории).
+fn book_slot_by_name(kind: &str, name: &str) -> Option<&'static str> {
+    if kind != "filter" {
+        return None;
+    }
+    let n = name.to_lowercase();
+    [
+        ("воздуш", "air_filter"),
+        ("салон", "cabin_filter"),
+        ("топлив", "fuel_filter"),
+        ("масл", "oil_filter"),
+    ]
+    .into_iter()
+    .find(|(word, _)| n.contains(word))
+    .map(|(_, slot)| slot)
+}
+
 fn attr(key: &str, label: &str, kind: &str, options: &[&str]) -> AttributeDef {
     AttributeDef {
         key: key.into(),
@@ -222,8 +240,10 @@ async fn create_category(
         .unwrap_or_else(|| default_attributes(&req.kind));
     check_attributes(&defs)?;
     let attributes = to_json(&defs)?;
-    // Строку книжки задаёт владелец (SPEC-27); без неё — по виду категории.
-    let explicit = req.book.is_some();
+    // Строку книжки задаёт владелец (SPEC-27); без неё — по названию фильтров («Воздушные
+    // фильтры» — воздушный), иначе по виду категории.
+    let by_name = book_slot_by_name(&req.kind, &name);
+    let explicit = req.book.is_some() || by_name.is_some();
     let book = match req.book {
         Some(b) => {
             if !ctx.user.is_owner() {
@@ -233,7 +253,9 @@ async fn create_category(
             b
         }
         None => BookReq {
-            slot: default_book_slot(&req.kind).into(),
+            slot: by_name
+                .unwrap_or_else(|| default_book_slot(&req.kind))
+                .into(),
             interval_km: None,
             interval_days: None,
         },
@@ -1743,4 +1765,32 @@ async fn merge_product(
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+#[cfg(test)]
+mod book_slot_tests {
+    use super::{book_slot_by_name, default_book_slot};
+
+    #[test]
+    fn filter_category_slot_follows_its_name() {
+        assert_eq!(
+            book_slot_by_name("filter", "Воздушные фильтры"),
+            Some("air_filter")
+        );
+        assert_eq!(
+            book_slot_by_name("filter", "Фильтры салонные"),
+            Some("cabin_filter")
+        );
+        assert_eq!(
+            book_slot_by_name("filter", "Топливные фильтры"),
+            Some("fuel_filter")
+        );
+        assert_eq!(
+            book_slot_by_name("filter", "Масляные фильтры"),
+            Some("oil_filter")
+        );
+        assert_eq!(book_slot_by_name("filter", "Фильтры"), None);
+        assert_eq!(book_slot_by_name("oil", "Масло воздушное"), None);
+        assert_eq!(default_book_slot("filter"), "oil_filter");
+    }
 }

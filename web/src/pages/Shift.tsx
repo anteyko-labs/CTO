@@ -496,7 +496,7 @@ export default function Shift() {
         {(past.data ?? []).length === 0 ? (
           <Empty>Смен ещё не было</Empty>
         ) : (
-          <Table head={['№', 'День', 'Кассир', 'Ожидали', 'Факт', 'Расхождение', 'В сейф', '']}>
+          <Table head={['№', 'День', 'Кассир', 'Ожидали', 'Факт', 'Расхождение', 'Сдано', '']}>
             {pastPager.shown.map((s, i) => (
               <tr key={s.id}>
                 <td className="px-2 py-2 font-medium">{s.number}</td>

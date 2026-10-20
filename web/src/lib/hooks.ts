@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ApiError } from './api'
+import { ApiError, serverReachable, watchServerReachable } from './api'
 import { todayBishkek } from './format'
 import { normalizeRange, type Range } from './income'
 
@@ -99,4 +99,26 @@ export function useRangeParam(): [Range, string, (r: Range) => void] {
     setParams({ from: r.from, to: r.to }, { replace: true })
   }
   return [range, today, change]
+}
+
+/**
+ * Есть ли связь с сервером: сеть устройства включена и последний запрос дошёл до сервера.
+ * `navigator.onLine` видит только сеть устройства — сервер при этом может быть недоступен.
+ */
+export function useServerOnline(): boolean {
+  const [net, setNet] = useState(() => navigator.onLine)
+  const [up, setUp] = useState(serverReachable)
+  useEffect(() => {
+    const on = () => setNet(true)
+    const off = () => setNet(false)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    const stop = watchServerReachable(setUp)
+    return () => {
+      window.removeEventListener('online', on)
+      window.removeEventListener('offline', off)
+      stop()
+    }
+  }, [])
+  return net && up
 }

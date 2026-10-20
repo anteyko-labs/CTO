@@ -135,3 +135,13 @@ export function formatPermille(p: number): string {
   const abs = Math.abs(p)
   return `${p < 0 ? '−' : ''}${Math.trunc(abs / 10)},${abs % 10}\u00a0%`
 }
+
+/** Слово при числе: plural(3, ['позиция', 'позиции', 'позиций']) → «позиции» (11–14 — третья форма). */
+export function plural(n: number, forms: readonly [string, string, string]): string {
+  const a = Math.abs(n)
+  const d = a % 10
+  const h = a % 100
+  if (d === 1 && h !== 11) return forms[0]
+  if (d >= 2 && d <= 4 && (h < 12 || h > 14)) return forms[1]
+  return forms[2]
+}

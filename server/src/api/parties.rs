@@ -1722,11 +1722,8 @@ pub(crate) async fn party_card_data(
     .await?;
     let mut goods: std::collections::HashMap<Uuid, Vec<String>> = std::collections::HashMap::new();
     for r in line_rows {
-        let qty = if r.kind == "pour" {
-            format!("{} мл", r.qty)
-        } else {
-            format!("{} шт", r.qty)
-        };
+        // Розлив — литрами, канистры — с объёмом, лом — кг (проверка 20.10.2026).
+        let qty = crate::domain::qty::sale_qty_text(&r.kind, r.qty, r.container_ml);
         goods
             .entry(r.sale_id)
             .or_default()

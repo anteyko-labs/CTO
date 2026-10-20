@@ -1,14 +1,15 @@
 // Самые продаваемые товары за период: количество и выручка с фильтром по категории (SPEC-27 §4).
-// Две вкладки (SPEC-28 §4): «Чаще берут» — по количеству, чекам или выручке, открыта и
+// Две вкладки (SPEC-28 §4): «Чаще берут» — по числу чеков (как часто покупают) или по выручке, открыта и
 // администратору; «Больше приносят» — по валовой прибыли, только владельцу: администратору сервер
-// прибыль не отдаёт вовсе (инвариант 13).
+// прибыль не отдаёт вовсе (инвариант 13). Сортировки «по количеству» нет: литры, килограммы и штуки
+// не сравнить между собой — масло всегда было бы сверху (проверка 20.10.2026).
 import { useState } from 'react'
-import { stockText } from '../components/ProductPicker'
 import { Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { formatSom, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useUser } from '../lib/auth'
+import { qtyText } from '../lib/units'
 import type { Category, TopProducts as TopProductsOut } from '../lib/types'
 
 export default function TopProducts() {
@@ -17,7 +18,7 @@ export default function TopProducts() {
   const [categoryId, setCategoryId] = useState('')
   const owner = useUser().role === 'owner'
   const [tab, setTab] = useState<'often' | 'profit'>('often')
-  const [sort, setSort] = useState<'amount' | 'qty' | 'checks'>('qty')
+  const [sort, setSort] = useState<'amount' | 'checks'>('checks')
   const byProfit = owner && tab === 'profit'
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const top = useLoad(
@@ -76,9 +77,8 @@ export default function TopProducts() {
             <div className="text-sm text-slate-600 sm:pb-2">По валовой прибыли: выручка минус себестоимость, за вычетом возвратов</div>
           ) : (
             <Field label="Порядок">
-              <select value={sort} onChange={(e) => setSort(e.target.value as 'amount' | 'qty' | 'checks')}>
-                <option value="qty">по количеству</option>
-                <option value="checks">по числу чеков</option>
+              <select value={sort} onChange={(e) => setSort(e.target.value as 'amount' | 'checks')}>
+                <option value="checks">как часто берут (по числу чеков)</option>
                 <option value="amount">по выручке</option>
               </select>
             </Field>
@@ -96,7 +96,7 @@ export default function TopProducts() {
                 <tr key={r.product_id}>
                   <td className="px-2 py-2 tabular-nums text-slate-500">{i + 1}</td>
                   <td className="px-2 py-2 font-medium">{r.name}</td>
-                  <td className="whitespace-nowrap px-2 py-2 tabular-nums">{stockText({ unit: r.unit, container_ml: r.container_ml, stock_qty: r.qty })}</td>
+                  <td className="whitespace-nowrap px-2 py-2 tabular-nums">{qtyText(r.unit, r.qty)}</td>
                   <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(r.amount_tyiyn)}</td>
                   {showProfit && (
                     <td className={`whitespace-nowrap px-2 py-2 text-right tabular-nums ${byProfit ? 'font-semibold' : ''}`}>{formatSom(r.profit_tyiyn ?? 0)}</td>
@@ -112,7 +112,7 @@ export default function TopProducts() {
                   {' · '}прибыль: <span className="font-semibold tabular-nums">{formatSom(profit)}</span>
                 </>
               )}
-              <div className="text-xs text-slate-500">Продажи за вычетом возвратов, без подарков. Масло — в литрах: канистры и розлив вместе.</div>
+              <div className="text-xs text-slate-500">Продажи за вычетом возвратов, без подарков. Масло — в литрах (канистры и розлив вместе), весовой товар — в кг.</div>
             </div>
           </>
         )}

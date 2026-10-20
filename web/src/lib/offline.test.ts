@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './api'
-import { afterRejection, formatTempNumber, keepInQueue, pendingCount, sendOutcome, staleSending, type OutboxItem } from './offline'
+import {
+  afterRejection,
+  expiredDone,
+  foreignWaiting,
+  formatTempNumber,
+  isOwnItem,
+  keepInQueue,
+  logoutWarning,
+  pendingCount,
+  queuedBody,
+  receiptOf,
+  receiptsWord,
+  retryDelayMs,
+  searchSnapshotClients,
+  sendOutcome,
+  staleSending,
+  subtractStock,
+  waitsRetry,
+  type OutboxItem,
+  type Snapshot,
+} from './offline'
+import type { Sale } from './types'
 
 const item = (op_id: string, status: OutboxItem['status']): OutboxItem => ({
   op_id,
@@ -55,5 +76,90 @@ describe('ошибки отправки чека (ADR-062)', () => {
     expect(back.status).toBe('pending')
     expect(back.attempts).toBe(3)
     expect(back.last_error).toContain('кассир не найден')
+  })
+})
+
+describe('очередь по пользователям и повторы (ADR-093)', () => {
+  const mine = { ...item('a', 'pending'), user_id: 'u1', user_name: 'Админ' }
+  const theirs = { ...item('b', 'pending'), user_id: 'u2', user_name: 'Эрбол' }
+  const theirs2 = { ...item('c', 'sending'), user_id: 'u2', user_name: 'Эрбол' }
+
+  it('свои чеки и старые без пользователя — свои; чужие ждут входа хозяина', () => {
+    expect(isOwnItem(mine, 'u1')).toBe(true)
+    expect(isOwnItem(item('x', 'pending'), 'u1')).toBe(true)
+    expect(isOwnItem(theirs, 'u1')).toBe(false)
+    expect(isOwnItem({ ...theirs, claimed_by: 'u1' }, 'u1')).toBe(true)
+    expect(foreignWaiting([mine, theirs, theirs2, { ...item('d', 'done'), user_id: 'u2' }], 'u1')).toEqual([
+      { user_id: 'u2', user_name: 'Эрбол', count: 2 },
+    ])
+  })
+
+  it('чужой чек, взятый владельцем, уходит с отметкой, чей он; всегда — без сети', () => {
+    expect(queuedBody({ ...theirs, body: { op_id: 'b' }, claimed_by: 'owner' })).toEqual({ op_id: 'b', offline: true, claimed_user_id: 'u2' })
+    expect(queuedBody({ ...mine, body: { op_id: 'a' } })).toEqual({ op_id: 'a', offline: true })
+  })
+
+  it('пауза после сбоя: 30 с → 1 мин → 5 мин', () => {
+    expect([1, 2, 3, 9].map(retryDelayMs)).toEqual([30_000, 60_000, 300_000, 300_000])
+    const now = Date.parse('2026-10-20T10:00:00Z')
+    const back = afterRejection(mine, 'нет', false, now)
+    expect(back.next_try_at).toBe('2026-10-20T10:00:30.000Z')
+    expect(waitsRetry(back, now)).toBe(true)
+    expect(waitsRetry(back, now + 31_000)).toBe(false)
+    expect(afterRejection(mine, 'нет', true, now).next_try_at).toBeUndefined()
+  })
+
+  it('отправленные хранятся неделю', () => {
+    const now = Date.parse('2026-10-20T00:00:00Z')
+    const old = { ...item('o', 'done'), created_at: '2026-10-12T00:00:00Z' }
+    const fresh = { ...item('f', 'done'), created_at: '2026-10-15T00:00:00Z' }
+    const oldRejected = { ...item('r', 'rejected'), created_at: '2026-09-01T00:00:00Z' }
+    expect(expiredDone([old, fresh, oldRejected], now)).toEqual([old])
+  })
+
+  it('чеки словом и предупреждение перед выходом', () => {
+    expect([1, 2, 5, 11, 21, 22].map(receiptsWord)).toEqual(['чек', 'чека', 'чеков', 'чеков', 'чек', 'чека'])
+    expect(logoutWarning([mine, theirs], 'u1', true)).toContain('1 чек ещё не отправлен')
+    expect(logoutWarning([theirs], 'u1', true)).toBeNull()
+    expect(logoutWarning([], 'u1', false)).toContain('Нет связи')
+  })
+
+  it('печать из очереди: номер сервера, если он уже есть', () => {
+    const receipt = { id: '', number: 'Ч-1', total_tyiyn: 100 } as unknown as Sale
+    expect(receiptOf({ ...mine, temp_no: 'Ч-1', receipt })?.number).toBe('Ч-1')
+    expect(receiptOf({ ...mine, temp_no: 'Ч-1', receipt, server_number: 42 })?.number).toBe(42)
+    expect(receiptOf(mine)).toBeNull()
+  })
+})
+
+describe('снимок кассы без сети', () => {
+  const snap = {
+    version: '1',
+    server_time: '',
+    saved_at: '',
+    oil_change_master_fee_tyiyn: 0,
+    employees: [],
+    products: [{ id: 'p1', stock_qty: 8000 }, { id: 'p2', stock_qty: 3 }],
+    clients: [
+      { id: 'c1', name: 'Улан Исаков', phone: '+996 555 12-34-56', inn: '', contacts: [], vehicles: [{ id: 'v1', plate: '01KG 093 AAA' }] },
+      { id: 'c2', name: 'ОсОО Транс', phone: '', inn: '01234567890123', contacts: [], vehicles: [] },
+    ],
+  } as unknown as Snapshot
+
+  it('свой чек без сети уменьшает остаток в снимке', () => {
+    const next = subtractStock(snap, [
+      { product_id: 'p1', units: 4000 },
+      { product_id: 'p1', units: 1000 },
+      { product_id: 'p2', units: 5 },
+    ])
+    expect(next.products.map((p) => p.stock_qty)).toEqual([3000, -2])
+  })
+
+  it('клиент находится по имени, телефону, ИНН и госномеру', () => {
+    expect(searchSnapshotClients(snap, 'исаков').map((c) => c.id)).toEqual(['c1'])
+    expect(searchSnapshotClients(snap, '5551234').map((c) => c.id)).toEqual(['c1'])
+    expect(searchSnapshotClients(snap, '012345678').map((c) => c.id)).toEqual(['c2'])
+    expect(searchSnapshotClients(snap, '093aaa').map((c) => c.id)).toEqual(['c1'])
+    expect(searchSnapshotClients(null, 'исаков')).toEqual([])
   })
 })

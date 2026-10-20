@@ -5,6 +5,7 @@ use axum::{Json, Router, routing};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::auth::{Ctx, CurrentUser};
@@ -25,6 +26,7 @@ pub fn routes() -> Router<AppState> {
             "/services",
             routing::get(list_services).post(create_service),
         )
+        .route("/services/import", routing::post(import_services))
         .route("/services/{id}", routing::patch(update_service))
         .route(
             "/suppliers",
@@ -476,6 +478,112 @@ async fn create_service(
         master_fee_tyiyn: fee,
         active: true,
     }))
+}
+
+/// Строка загрузки услуг из выгрузки старой программы: название и цена.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ServiceImportItem {
+    pub name: String,
+    pub price_tyiyn: i64,
+}
+
+/// Загрузка услуг списком (SPEC-02 §услуги, проверка 20.10.2026): одна операция с `op_id`.
+#[derive(Deserialize, Debug)]
+pub struct ServicesImportReq {
+    pub op_id: Uuid,
+    pub items: Vec<ServiceImportItem>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ServicesImportOut {
+    /// Заведено новых услуг.
+    pub created: i64,
+    /// Пропущено: такое название уже есть (без учёта регистра) или повтор в самом списке.
+    pub skipped: Vec<String>,
+}
+
+async fn import_services(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<ServicesImportReq>,
+) -> AppResult<Json<ServicesImportOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = import_services_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Услуги из выгрузки старой программы на новой точке: только владелец, одной транзакцией.
+/// Названия, которые уже есть (без учёта регистра и пробелов по краям), пропускаются; ставка
+/// мастера — 0, её задаёт владелец в карточке услуги.
+pub async fn import_services_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: ServicesImportReq,
+) -> AppResult<ServicesImportOut> {
+    const KIND: &str = "service.import";
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if req.items.is_empty() {
+        return Err(invalid("отметьте хотя бы одну услугу"));
+    }
+    if req.items.len() > 1000 {
+        return Err(invalid("за один раз — не больше 1000 услуг"));
+    }
+    let mut items = Vec::with_capacity(req.items.len());
+    for i in &req.items {
+        let name = required(&i.name, "название услуги")?;
+        if name.chars().count() > 200 {
+            return Err(invalid(format!("название «{name}» длиннее 200 знаков")));
+        }
+        if i.price_tyiyn < 0 {
+            return Err(invalid("суммы не отрицательны"));
+        }
+        ops::check_amount(i.price_tyiyn)?;
+        items.push((name, i.price_tyiyn));
+    }
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
+    }
+    let existing = sqlx::query_scalar!(
+        r#"select lower(btrim(name)) as "name!" from services where branch_id = $1"#,
+        ctx.user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut seen: std::collections::HashSet<String> = existing.into_iter().collect();
+    let mut created = 0i64;
+    let mut skipped = Vec::new();
+    for (name, price) in items {
+        if !seen.insert(name.to_lowercase()) {
+            skipped.push(name);
+            continue;
+        }
+        let id = new_id();
+        sqlx::query!(
+            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn) values ($1, $2, $3, $4, 0)",
+            id,
+            ctx.user.branch_id,
+            name,
+            price
+        )
+        .execute(&mut *conn)
+        .await?;
+        ops::audit(
+            &mut *conn,
+            ctx,
+            "service.create",
+            "service",
+            Some(id),
+            json!({ "name": name, "price": price, "fee": 0, "import": true }),
+        )
+        .await?;
+        created += 1;
+    }
+    let out = ServicesImportOut { created, skipped };
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
 }
 
 #[derive(Deserialize)]

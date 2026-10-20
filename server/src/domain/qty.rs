@@ -62,6 +62,16 @@ pub fn stock_text(qty: i64, unit: &str, container_ml: Option<i64>) -> String {
     }
 }
 
+/// Количество строки чека: «2 кан. × 4 л», «3,5 л» (розлив), «12 кг» (лом), «3 шт».
+pub fn sale_qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
+    match (kind, container_ml) {
+        ("container", Some(c)) => format!("{qty} кан. × {}", liters(c)),
+        ("pour", _) => liters(qty),
+        ("weight", _) => format!("{} кг", fixed3(qty)),
+        _ => format!("{qty} шт"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +102,16 @@ mod tests {
         assert_eq!(oil_stock(0, 4000), "0 л");
         assert_eq!(stock_text(3, "piece", None), "3 шт");
         assert_eq!(stock_text(9000, "ml", Some(4500)), "9 л = 2 кан. по 4,5 л");
+    }
+
+    #[test]
+    fn sale_line_quantity_in_liters_and_canisters() {
+        // История клиента: «3500 мл» читается как «3,5 л» (проверка 20.10.2026).
+        assert_eq!(sale_qty_text("pour", 3500, Some(4000)), "3,5 л");
+        assert_eq!(sale_qty_text("container", 2, Some(4000)), "2 кан. × 4 л");
+        assert_eq!(sale_qty_text("weight", 12_000, None), "12 кг");
+        assert_eq!(sale_qty_text("piece", 3, None), "3 шт");
+        assert_eq!(sale_qty_text("service", 1, None), "1 шт");
     }
 }
 

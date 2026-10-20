@@ -120,3 +120,17 @@ export function slotsWithNext(b: VehicleBook): SlotNext[] {
 export function overdueSlots(b: VehicleBook, today: string): SlotNext[] {
   return (b.slots ?? []).filter((n) => n.next_date !== null && n.next_date < today)
 }
+
+/**
+ * Строка книжки категории в списке категорий. У фильтров товар пишется по своему «Типу фильтра»
+ * (как на сервере, `product_slot`); строка категории — только для товаров без типа. Поэтому
+ * «Воздушные фильтры» со строкой по умолчанию не показываются как «Фильтр масляный» (проверка 20.10.2026).
+ */
+export function categorySlotText(c: { book_slot: BookSlot | 'none'; attributes: { key: string }[] }): { main: string; note: string | null } {
+  if (c.book_slot === 'none') return { main: '—', note: null }
+  const label = slotLabel(c.book_slot)
+  if (c.book_slot.endsWith('_filter') && c.attributes.some((a) => a.key === 'filter_type')) {
+    return { main: 'По типу фильтра', note: `без типа — ${label.toLowerCase()}` }
+  }
+  return { main: label, note: null }
+}

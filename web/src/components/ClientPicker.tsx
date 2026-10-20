@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { get, patch, post, qs } from '../lib/api'
+import { get, noServerAnswer, patch, post, qs } from '../lib/api'
+import { readSnapshot, searchSnapshotClients } from '../lib/offline'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { Party, PartyContact, PartyVehicle } from '../lib/types'
@@ -210,13 +211,23 @@ export function ClientPicker({
     () =>
       query.length < 2
         ? Promise.resolve<Party[]>([])
-        : get<Party[]>(`/parties${qs({ role: 'customer', q: query, limit: 8 })}`),
+        : get<Party[]>(`/parties${qs({ role: 'customer', q: query, limit: 8 })}`).catch(async (e: unknown) => {
+            // Без связи — клиенты из снимка кассы: должники и недавние покупатели с машинами (ADR-093).
+            if (!noServerAnswer(e)) throw e
+            return searchSnapshotClients(await readSnapshot(), query)
+          }),
     [query],
   )
   const card = useLoad(
     () =>
       party
-        ? get<{ contacts: PartyContact[]; vehicles: PartyVehicle[] }>(`/parties/${party.id}/card`).then((c) => ({ ...c, partyId: party.id }))
+        ? get<{ contacts: PartyContact[]; vehicles: PartyVehicle[] }>(`/parties/${party.id}/card`)
+            .catch(async (e: unknown) => {
+              const known = noServerAnswer(e) ? (await readSnapshot())?.clients?.find((c) => c.id === party.id) : undefined
+              if (!known) throw e
+              return { contacts: known.contacts as PartyContact[], vehicles: known.vehicles }
+            })
+            .then((c) => ({ ...c, partyId: party.id }))
         : Promise.resolve(null),
     [party?.id],
   )

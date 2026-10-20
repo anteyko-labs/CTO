@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.id, p.name, p.brand, p.article, p.category_id, p.unit,\n                  p.container_ml as \"container_ml?\",\n                  coalesce(bp.sale_price_tyiyn, 0) as \"sale_price_tyiyn!\",\n                  coalesce(bp.stock_qty, 0) as \"stock_qty!\",\n                  coalesce((select array_agg(b.code order by b.created_at)\n                            from product_barcodes b where b.product_id = p.id), '{}') as \"barcodes!: Vec<String>\"\n           from products p\n           left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1\n           where not p.archived\n           order by p.name",
+  "query": "select p.id, p.name, p.brand, p.article, p.category_id, c.kind as category_kind, p.unit,\n                  p.container_ml as \"container_ml?\",\n                  coalesce(bp.sale_price_tyiyn, 0) as \"sale_price_tyiyn!\",\n                  coalesce(bp.stock_qty, 0) as \"stock_qty!\",\n                  coalesce((select array_agg(b.code order by b.created_at)\n                            from product_barcodes b where b.product_id = p.id), '{}') as \"barcodes!: Vec<String>\"\n           from products p\n           join categories c on c.id = p.category_id\n           left join branch_products bp on bp.product_id = p.id and bp.branch_id = $1\n           where not p.archived\n           order by p.name",
   "describe": {
     "columns": [
       {
@@ -30,26 +30,31 @@
       },
       {
         "ordinal": 5,
-        "name": "unit",
+        "name": "category_kind",
         "type_info": "Text"
       },
       {
         "ordinal": 6,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
         "name": "container_ml?",
         "type_info": "Int8"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "sale_price_tyiyn!",
         "type_info": "Int8"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "stock_qty!",
         "type_info": "Int8"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "barcodes!: Vec<String>",
         "type_info": "TextArray"
       }
@@ -66,11 +71,12 @@
       false,
       false,
       false,
+      false,
       true,
       null,
       null,
       null
     ]
   },
-  "hash": "467d1ac304af78576d6527c671bc7c911d662c0f5e291254d10e7b4b5ac4f501"
+  "hash": "54b0247c316e438c07dfa00b717dd6e549804b90503c1af5017bae1389031967"
 }

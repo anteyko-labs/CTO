@@ -9,23 +9,36 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader
 import { get, newOpId, post, put, qs } from '../lib/api'
 import { polarityMark, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
-import { formatLiters, formatSom, formatKg, parseSom } from '../lib/format'
+import { formatSom, parseSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { avgPrice, qtyText } from '../lib/units'
 import { nextStockSort, sortStock, type StockSort, type StockSortKey } from '../lib/stockSort'
 import type { Category, Product, StockMismatch } from '../lib/types'
 
 type Mismatch = StockMismatch & { product?: Product }
 
-const minText = (p: Product): string => (p.unit === 'ml' ? formatLiters(p.min_stock) : `${p.min_stock} шт`)
-
-/** Цена за единицу учёта: «за шт», для масла — «за 4 л» / «за 200 л» по объёму тары. */
-const perUnit = (p: Product): string => (p.unit === 'ml' && p.container_ml ? `за ${formatLiters(p.container_ml)}` : 'за шт')
+const minText = (p: Product): string => qtyText(p.unit, p.min_stock)
 
 /** Остаток коротко для телефона: без расшифровки по канистрам. */
-const stockShort = (p: Product): string => (p.unit === 'ml' ? formatLiters(p.stock_qty) : p.unit === 'g' ? formatKg(p.stock_qty) : `${p.stock_qty} шт`)
+const stockShort = (p: Product): string => qtyText(p.unit, p.stock_qty)
 
-const qtyText = (unit: Product['unit'] | undefined, qty: number): string =>
-  unit === 'ml' ? formatLiters(qty) : unit === 'g' ? formatKg(qty) : `${qty} шт`
+/** Средняя цена: весовой товар — за кг, масло — за канистру, остальное — за шт. */
+function avgCell(p: Product) {
+  const a = avgPrice(p)
+  if (!a) return '—'
+  return (
+    <>
+      {formatSom(a.tyiyn)}
+      <span className="text-xs text-slate-500"> {a.per}</span>
+    </>
+  )
+}
+
+/** Строка под остатком на телефоне: «минимум 5 кг · средняя цена 80 с за кг». */
+function mobileDetails(p: Product, owner: boolean): string {
+  const a = owner ? avgPrice(p) : null
+  return [p.min_stock > 0 ? `минимум ${minText(p)}` : '', a ? `средняя цена ${formatSom(a.tyiyn)} ${a.per}` : ''].filter(Boolean).join(' · ')
+}
 
 export default function Stock() {
   const owner = useUser().role === 'owner'
@@ -358,6 +371,7 @@ export default function Stock() {
                         {[p.article, categoryName.get(p.category_id)].filter(Boolean).join(' · ') || '—'}
                       </div>
                       {(isOut(p) || isLow(p) || p.needs_review || stale.has(p.id)) && <div className="mt-1 flex flex-wrap gap-1">{badges(p)}</div>}
+                      {mobileDetails(p, owner) && <div className="mt-0.5 text-xs text-slate-500">{mobileDetails(p, owner)}</div>}
                     </div>
                     <div className={`shrink-0 text-right text-lg font-bold tabular-nums ${qtyTone(p)}`}>{stockShort(p)}</div>
                   </button>
@@ -384,14 +398,7 @@ export default function Stock() {
                     <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-500">{minText(p)}</td>
                     {owner && (
                       <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
-                        {p.avg_cost_tyiyn != null ? (
-                          <>
-                            {formatSom(p.avg_cost_tyiyn)}
-                            <span className="text-xs text-slate-500"> {perUnit(p)}</span>
-                          </>
-                        ) : (
-                          '—'
-                        )}
+                        {avgCell(p)}
                       </td>
                     )}
                     {owner && (

@@ -323,6 +323,8 @@ export default function Products() {
       {editing && (
         <ProductFormModal
           product={editing === 'new' ? undefined : editing}
+          // Новый товар при выбранной категории — сразу в ней (проверка 20.10.2026).
+          presetCategoryId={editing === 'new' ? categoryId || undefined : undefined}
           onClose={() => {
             setEditing(null)
             list.reload()

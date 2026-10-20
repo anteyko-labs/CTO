@@ -9,6 +9,7 @@ import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { CashAccount, OpenDebt, OpenDebts, Party, SupplierInvoice, SupplierInvoices } from '../lib/types'
 import { accountLabel, bankChoices, isBank, isTill } from '../lib/accounts'
 import { repaymentDoc, repaymentFields, type RepaymentDoc } from '../lib/moneyFix'
+import { invoicePayPreview, repayNote } from '../lib/supplierPay'
 import { CorrectionBanner, useCorrection } from './Correction'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
@@ -25,6 +26,13 @@ const METHOD_HINTS: Record<Method, string> = {
   cash: 'Деньги в кассе смены: смена должна быть открыта.',
   card: 'Карта или официальный QR банка: деньги на безналичный счёт, банк возьмёт комиссию.',
   transfer: 'QR на личный счёт владельца: без комиссии банка.',
+}
+
+/** Поставщику платим мы: деньги уходят с выбранной кассы или счёта (проверка 20.10.2026). */
+const SUPPLIER_METHOD_HINTS: Record<Method, string> = {
+  cash: 'Наличными из выбранной кассы.',
+  card: 'С безналичного счёта (карта / QR банка).',
+  transfer: 'С личного счёта владельца (QR владельцу).',
 }
 
 /** Накладная, которую оплачиваем: сумма не больше её остатка (SPEC-27). */
@@ -72,7 +80,7 @@ export function RepaymentModal({
   const accountOrdered = method === 'card' || method === 'transfer' ? bankChoices(accountOptions, method) : accountOptions
   const accountId = accountOrdered.some((a) => a.id === accountPick) ? accountPick : (accountOrdered[0]?.id ?? '')
   const [comment, setComment] = useState('')
-  const [done, setDone] = useState<{ paid: number; before: number; after: number } | null>(null)
+  const [done, setDone] = useState<{ paid: number; before: number; after: number; invoiceBefore?: number; invoiceAfter?: number } | null>(null)
   const { busy, error, run } = useAction()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит оплату.
   const [opId] = useState(newOpId)
@@ -100,6 +108,9 @@ export function RepaymentModal({
   const overdue = details.data?.kind === 'customer' ? details.data.d.overdue_tyiyn : 0
   const overdueDays = details.data?.kind === 'customer' ? details.data.d.overdue_days : 0
   const dueDate = details.data?.kind === 'customer' ? details.data.d.due_date : null
+  // Оплата накладной: остаток накладной и общий долг поставщику — отдельно (проверка 20.10.2026).
+  const supplierDebt = details.data?.kind === 'supplier' ? details.data.d.debt_tyiyn : invoice ? null : debt
+  const preview = invoice && value !== null ? invoicePayPreview(invoice.left_tyiyn, supplierDebt, value) : null
   // После оплаты окно показывает итог; закрытие любым способом обновляет экран под ним.
   const close = () => (done ? onDone(supplier ? -done.after : done.after) : onClose())
 
@@ -122,7 +133,12 @@ export function RepaymentModal({
             ? 'Оплата поставщику записана'
             : `Оплата долга принята: ${formatSom(value)}`,
       )
-      setDone({ paid: value, before: debt, after: Math.abs(res.balance_tyiyn) })
+      const after = Math.abs(res.balance_tyiyn)
+      setDone(
+        invoice
+          ? { paid: value, before: supplierDebt ?? debt, after, invoiceBefore: invoice.left_tyiyn, invoiceAfter: Math.max(0, invoice.left_tyiyn - value) }
+          : { paid: value, before: debt, after },
+      )
       details.reload()
     })
 
@@ -143,7 +159,16 @@ export function RepaymentModal({
       <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <section className="flex min-w-0 flex-col gap-4" aria-label="Долг">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Stat label={supplier ? 'Должны мы' : 'Должен нам'} value={formatSom(done ? done.after : debt)} tone={supplier ? 'slate' : 'amber'} testId="repay-debt" />
+            {invoice ? (
+              <Stat
+                label="Всего должны поставщику"
+                value={done ? formatSom(done.after) : supplierDebt === null ? '…' : formatSom(supplierDebt)}
+                tone="slate"
+                testId="repay-debt"
+              />
+            ) : (
+              <Stat label={supplier ? 'Должны мы' : 'Должен нам'} value={formatSom(done ? done.after : debt)} tone={supplier ? 'slate' : 'amber'} testId="repay-debt" />
+            )}
             {!supplier && (
               <Stat
                 label="Просрочено"
@@ -152,7 +177,7 @@ export function RepaymentModal({
                 tone={overdue > 0 ? 'rose' : 'slate'}
               />
             )}
-            {invoice && <Stat label="Осталось по накладной" value={formatSom(invoice.left_tyiyn)} tone="slate" />}
+            {invoice && <Stat label={`Осталось по накладной № ${invoice.number}`} value={formatSom(done?.invoiceAfter ?? invoice.left_tyiyn)} tone="slate" />}
           </div>
           <div>
             <h3 className="mb-2 text-sm font-semibold text-slate-700">{supplier ? 'Неоплаченные накладные' : 'Неоплаченные чеки'}</h3>
@@ -173,9 +198,21 @@ export function RepaymentModal({
               <div className="text-lg font-semibold text-emerald-800">
                 {supplier ? 'Оплачено' : 'Принято'} {formatSom(done.paid)}
               </div>
-              <div className="text-sm text-slate-700">
-                Долг был {formatSom(done.before)} — стал <span className="font-semibold">{formatSom(done.after)}</span>
-              </div>
+              {invoice && done.invoiceBefore !== undefined ? (
+                <>
+                  <div className="text-sm text-slate-700">
+                    По накладной № {invoice.number}: было {formatSom(done.invoiceBefore)} — стало{' '}
+                    <span className="font-semibold">{formatSom(done.invoiceAfter ?? 0)}</span>
+                  </div>
+                  <div className="text-sm text-slate-700">
+                    Всего должны поставщику: <span className="font-semibold">{formatSom(done.after)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm text-slate-700">
+                  Долг был {formatSom(done.before)} — стал <span className="font-semibold">{formatSom(done.after)}</span>
+                </div>
+              )}
               <div className="text-xs text-slate-500">{METHOD_LABELS[method]}{comment.trim() ? ` · ${comment.trim()}` : ''}</div>
               <div className="flex justify-end">
                 <Button onClick={close}>Готово</Button>
@@ -195,7 +232,17 @@ export function RepaymentModal({
               {!invoice && !fixId && value !== null && value > owed && owed > 0 && (
                 <div className="text-xs text-amber-700">Больше долга: разница станет {supplier ? 'нашим авансом поставщику' : 'авансом клиента'}.</div>
               )}
-              {!fixId && value !== null && value > 0 && (
+              {!fixId && invoice && preview && value !== null && value > 0 && (
+                <div className="text-sm text-slate-600" data-testid="repay-after">
+                  По накладной останется: <span className="font-semibold tabular-nums">{formatSom(preview.invoiceAfter)}</span>
+                  {preview.supplierAfter !== null && (
+                    <>
+                      {' · '}всего поставщику: <span className="font-semibold tabular-nums">{formatSom(preview.supplierAfter)}</span>
+                    </>
+                  )}
+                </div>
+              )}
+              {!fixId && !invoice && value !== null && value > 0 && (
                 <div className="text-sm text-slate-600" data-testid="repay-after">
                   После оплаты долг: <span className="font-semibold tabular-nums">{formatSom(Math.max(0, debt - value))}</span>
                   {/* Переплата видна суммой: она станет авансом (проверка 20.10.2026). */}
@@ -242,7 +289,7 @@ export function RepaymentModal({
                 </div>
               )}
               <div className="text-xs text-slate-500">
-                {METHOD_HINTS[method]} В прибыль оплата долга не идёт: выручка и прибыль по чеку учтены в день продажи.
+                {(supplier ? SUPPLIER_METHOD_HINTS : METHOD_HINTS)[method]} {repayNote(supplier)}
               </div>
               <Field label="Комментарий">
                 <input value={comment} onChange={(e) => setComment(e.target.value)} />

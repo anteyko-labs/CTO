@@ -10030,3 +10030,221 @@ async fn list_summaries_cover_the_whole_selection(pool: PgPool) {
         (json!(50_000), json!(20_000))
     );
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_queue_rules_adr_093(pool: PgPool) {
+    // Чек из очереди устройства (ADR-093): признак без сети действует и через секунды после
+    // продажи; огромный пробег не роняет чек ошибкой формата; часы устройства, сбитые на дни, —
+    // причина владельцу; чужой чек владелец отправляет от себя; отказ сообщается один раз.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр ADR-093", 50_000, 0).await;
+    let (_, _, master) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&owner),
+        Some(json!({ "full_name": "Мастер Бакыт", "is_master": true })),
+    )
+    .await;
+    let (_, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&admin),
+        Some(json!({ "kind": "person", "first_name": "Улан", "last_name": "Исаков" })),
+    )
+    .await;
+    let pid = p["id"].as_str().unwrap().to_string();
+    let (s, _, car) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/parties/{pid}/vehicles"),
+        Some(&admin),
+        Some(json!({ "plate": "01KG093AAA" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{car}");
+    let sale = |offline: bool, secs_ago: i64| {
+        let mut body = json!({
+            "op_id": Uuid::now_v7(), "sale_type": "service", "cashier_id": cashier,
+            "master_id": master["id"], "party_id": pid, "vehicle_id": car["id"],
+            "mileage": 12_345_678_901_i64,
+            "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 40_000,
+                        "seen_list_price_tyiyn": 40_000 }],
+            "payments": [{ "method": "cash", "amount_tyiyn": 40_000 }]
+        });
+        if offline {
+            body["offline"] = json!(true);
+            body["client_time"] =
+                json!((chrono::Utc::now() - chrono::Duration::seconds(secs_ago)).to_rfc3339());
+        }
+        body
+    };
+    // Онлайн — понятная ошибка пробега, а не «неверный формат запроса».
+    let (s, _, e) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(false, 0)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert!(e.to_string().contains("пробег"), "{e}");
+    // Из очереди через 5 с после продажи — чек без сети: проводится без пробега, цена из
+    // снимка (40 с при прайсе 50 с) — старая цена, а не правка кассира.
+    let (s, _, off) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(true, 5)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{off}");
+    let id = off["id"].as_str().unwrap();
+    let reasons: Vec<Value> = sqlx::query_scalar(
+        "select data from audit_log where action = 'sale.offline_bypass' and entity_id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.to_string().contains("пробег не записан")),
+        "{reasons:?}"
+    );
+    let overrides: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'sale.price_override' and entity_id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(overrides, 0);
+    let stale: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'sale.stale_price' and entity_id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stale, 1);
+    // Дробный пробег и строка — тоже не ошибка формата.
+    let mut odd = sale(true, 60);
+    odd["mileage"] = json!(1.5);
+    assert_eq!(
+        call(&app, "POST", "/api/v1/sales", Some(&admin), Some(odd))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Часы устройства отстали на 3 дня — чек днём проведения, владельцу причина.
+    let mut late = sale(true, 3 * 24 * 3600);
+    late["mileage"] = json!(120_000);
+    let (s, _, late) = call(&app, "POST", "/api/v1/sales", Some(&admin), Some(late)).await;
+    assert_eq!(s, StatusCode::OK, "{late}");
+    let reasons: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'sale.offline_bypass' and entity_id = $1::uuid",
+    )
+    .bind(late["id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        reasons.to_string().contains("проверьте часы кассы"),
+        "{reasons}"
+    );
+
+    // Чек другого пользователя кассы: администратор от себя отправить не может, владелец — может,
+    // в журнале — чей он был.
+    let admin_id: Uuid = sqlx::query_scalar("select id from users where login = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut foreign = sale(true, 600);
+    foreign["mileage"] = json!(121_000);
+    foreign["claimed_user_id"] = json!(owner_id);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/sales",
+            Some(&admin),
+            Some(foreign.clone())
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    foreign["claimed_user_id"] = json!(admin_id);
+    let (s, _, claimed) = call(&app, "POST", "/api/v1/sales", Some(&owner), Some(foreign)).await;
+    assert_eq!(s, StatusCode::OK, "{claimed}");
+    let post: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'sale.post' and entity_id = $1::uuid",
+    )
+    .bind(claimed["id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(post["claimed_user_id"], json!(admin_id), "{post}");
+    assert_eq!(post["claimed_user_name"], "Админ", "{post}");
+
+    // Отказ по чеку сообщают один раз; повтор от другого пользователя той же кассы — не 409.
+    let op = Uuid::now_v7();
+    let report = json!({ "op_id": op, "error": "товар не найден", "body": { "lines": [] } });
+    for who in [&admin, &owner] {
+        let (s, _, r) = call(
+            &app,
+            "POST",
+            "/api/v1/sales/offline-rejected",
+            Some(who),
+            Some(report.clone()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}");
+    }
+    assert_eq!(
+        actions(&pool, "sale.offline_rejected")
+            .await
+            .iter()
+            .filter(|a| a["op_id"] == json!(op))
+            .count(),
+        1
+    );
+
+    // Снимок кассы без сети: вид категории у товара, услуги, клиент с машиной.
+    let (_, _, snap) = call(&app, "GET", "/api/v1/offline/snapshot", Some(&admin), None).await;
+    let prod = snap["products"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == json!(item))
+        .unwrap();
+    assert_eq!(prod["category_kind"], "filter");
+    assert!(snap["services"].is_array(), "{snap}");
+    assert!(
+        snap["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["kind"] == "filter")
+    );
+    let client = snap["clients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == json!(pid))
+        .unwrap();
+    assert_eq!(client["vehicles"][0]["plate"], "01KG093AAA");
+    assert!(client.get("cost").is_none());
+}

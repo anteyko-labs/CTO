@@ -285,6 +285,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         lines,
         payments,
         offline: false,
+        claimed_user_id: None,
         mileage_km: None,
         mileage: None,
         mileage_unit: None,
@@ -9512,4 +9513,147 @@ async fn battery_payment_price_set_in_the_sale(pool: PgPool) {
     assert_eq!((bat.amount_tyiyn, bat.grams), (84_000, Some(12_000)));
     let scrap = scrap_id(&pool).await;
     assert_eq!(pool_of(&pool, scrap).await, (12_000, 84_000, false));
+}
+
+// ---------- Проверка 20.10.2026: «Чаще берут», загрузка услуг ----------
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn often_bought_counts_checks_not_mixed_units(pool: PgPool) {
+    // «Чаще берут» — по числу чеков: фильтр в трёх чеках выше масла, проданного 8 л одним
+    // чеком; в штуках и литрах масло было бы сверху всегда.
+    use avtodom_server::api::reports::{TopQuery, top_products_data};
+    let w = seed(&pool).await;
+    receive(&pool, &w.owner, w.filter, 20, 200_000).await;
+    receive(&pool, &w.owner, w.oil, 8000, 300_000).await;
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            vec![line("container", w.oil, 2, 200_000)],
+            cash(400_000),
+        ),
+    )
+    .await
+    .unwrap();
+    for _ in 0..3 {
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+        )
+        .await
+        .unwrap();
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    let often = top_products_data(
+        &mut conn,
+        &w.admin.user,
+        TopQuery {
+            sort: Some("checks".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let rows: Vec<_> = often
+        .items
+        .iter()
+        .map(|r| (r.product_id, r.unit.as_str(), r.qty, r.checks))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(w.filter, "piece", 3, 3), (w.oil, "ml", 8000, 1)]
+    );
+    // По выручке масло (4000 с) выше фильтра (1500 с).
+    let by_amount = top_products_data(&mut conn, &w.admin.user, TopQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(by_amount.items[0].product_id, w.oil);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn services_import_skips_existing_names(pool: PgPool) {
+    use avtodom_server::api::refs::{
+        ServiceImportItem, ServicesImportOut, ServicesImportReq, import_services_tx,
+    };
+    let w = seed(&pool).await;
+    let item = |name: &str, price: i64| ServiceImportItem {
+        name: name.into(),
+        price_tyiyn: price,
+    };
+    let op_id = Uuid::now_v7();
+    let req = || ServicesImportReq {
+        op_id,
+        items: vec![
+            // «Замена масла» уже есть в справочнике — в другом регистре тоже пропуск.
+            item("  замена МАСЛА ", 30_000),
+            item("Мойка двигателя", 50_000),
+            item("Замена антифриза", 40_000),
+            item("мойка двигателя", 55_000),
+        ],
+    };
+    // Администратор — отказ: справочник услуг из файла заводит владелец.
+    let mut tx = pool.begin().await.unwrap();
+    assert!(matches!(
+        import_services_tx(&mut tx, &w.admin, req()).await,
+        Err(AppError::Forbidden)
+    ));
+    drop(tx);
+    let mut tx = pool.begin().await.unwrap();
+    let out = import_services_tx(&mut tx, &w.owner, req()).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        out,
+        ServicesImportOut {
+            created: 2,
+            skipped: vec!["замена МАСЛА".into(), "мойка двигателя".into()],
+        }
+    );
+    // Повтор с тем же op_id — тот же ответ, без вторых записей.
+    let mut tx = pool.begin().await.unwrap();
+    let again = import_services_tx(&mut tx, &w.owner, req()).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(again, out);
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "select name, price_tyiyn, master_fee_tyiyn from services where branch_id = $1 order by name",
+    )
+    .bind(w.owner.user.branch_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("Замена антифриза".into(), 40_000, 0),
+            ("Замена масла".into(), 20_000, 3000),
+            ("Мойка двигателя".into(), 50_000, 0),
+        ]
+    );
+    // Пустой список и отрицательная цена — отказ.
+    let mut tx = pool.begin().await.unwrap();
+    assert!(matches!(
+        import_services_tx(
+            &mut tx,
+            &w.owner,
+            ServicesImportReq {
+                op_id: Uuid::now_v7(),
+                items: vec![],
+            },
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
+    assert!(matches!(
+        import_services_tx(
+            &mut tx,
+            &w.owner,
+            ServicesImportReq {
+                op_id: Uuid::now_v7(),
+                items: vec![item("Шиномонтаж", -1)],
+            },
+        )
+        .await,
+        Err(AppError::Validation(_))
+    ));
 }
