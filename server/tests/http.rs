@@ -9631,3 +9631,103 @@ async fn old_single_line_stock_ins_survive_migration(pool: PgPool) {
     assert_eq!(stock_of(&pool, &item).await, (0, 0));
     assert_stock_matches_movements(&app, &owner).await;
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn purchase_reversals_keep_stock_value_sane(pool: PgPool) {
+    // Сторно закупки после продаж (ADR-044, ADR-086, ADR-087): последней закупочной становится
+    // живая закупка любого вида, и остаток оценивается по ней, а не по цене отменённого документа.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let safe = owner_safe(&app, &owner).await;
+    let receipt = |p: &str, qty: i64, cost: i64| {
+        json!({ "op_id": Uuid::now_v7(), "paid_from": safe,
+                "lines": [{ "product_id": p, "qty": qty, "cost_tyiyn": cost }] })
+    };
+    let sell = |p: &str, qty: i64, price: i64| {
+        json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                "lines": [{ "kind": "piece", "product_id": p, "qty": qty, "unit_price_tyiyn": price }],
+                "payments": [{ "method": "cash", "amount_tyiyn": qty * price }] })
+    };
+    let post = |path: &'static str, body: Value| {
+        let app = app.clone();
+        let owner = owner.clone();
+        async move {
+            let (s, _, v) = call(&app, "POST", path, Some(&owner), Some(body)).await;
+            assert_eq!(s, StatusCode::OK, "{path}: {v}");
+            v
+        }
+    };
+
+    // 1. Оприходование с лишним нулём в цене, продажа, сторно оприходования: 5 шт по цене прихода.
+    let a = product(&app, &owner, "Хомут", 500_000, 0).await;
+    post("/api/v1/receipts", receipt(&a, 10, 100_000)).await;
+    let si = post(
+        "/api/v1/stock-ins",
+        json!({ "op_id": Uuid::now_v7(), "comment": "со склада",
+                "lines": [{ "product_id": a, "qty": 1, "price_tyiyn": 1_000_000 }] }),
+    )
+    .await;
+    post("/api/v1/sales", sell(&a, 5, 500_000)).await;
+    assert_eq!(stock_of(&pool, &a).await, (6, 600_000));
+    let path = format!("/api/v1/stock-ins/{}/reverse", si["id"].as_str().unwrap());
+    let (s, _, v) = call(
+        &app,
+        "POST",
+        &path,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "лишний ноль" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(stock_of(&pool, &a).await, (5, 50_000));
+
+    // 2. Сторно прихода, когда после него было оприходование: последняя закупочная — оприходование.
+    let b = product(&app, &owner, "Шайба", 50_000, 0).await;
+    let r = post("/api/v1/receipts", receipt(&b, 10, 100_000)).await;
+    post(
+        "/api/v1/stock-ins",
+        json!({ "op_id": Uuid::now_v7(), "comment": "нашли",
+                "lines": [{ "product_id": b, "qty": 5, "price_tyiyn": 20_000 }] }),
+    )
+    .await;
+    let path = format!("/api/v1/receipts/{}/reverse", r["id"].as_str().unwrap());
+    let (s, _, v) = call(
+        &app,
+        "POST",
+        &path,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "не тот поставщик" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let last: (i64, i64) = sqlx::query_as(
+        "select last_cost_qty, last_cost_tyiyn from branch_products where product_id = $1::uuid",
+    )
+    .bind(&b)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(last, (5, 100_000));
+
+    // 3. Сторно дешёвого прихода после продаж: остаток не дороже самой дорогой живой закупки,
+    //    лишнее — переоценкой; товар продаётся по обычной цене.
+    let c = product(&app, &owner, "Фильтр", 600_000, 0).await;
+    let cheap = post("/api/v1/receipts", receipt(&c, 2, 30_000)).await;
+    post("/api/v1/receipts", receipt(&c, 6, 3_000_000)).await;
+    post("/api/v1/sales", sell(&c, 5, 600_000)).await;
+    let path = format!("/api/v1/receipts/{}/reverse", cheap["id"].as_str().unwrap());
+    let (s, _, v) = call(
+        &app,
+        "POST",
+        &path,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(stock_of(&pool, &c).await, (1, 500_000));
+    post("/api/v1/sales", sell(&c, 1, 600_000)).await;
+    let (_, _, verify) = call(&app, "GET", "/api/v1/stock/verify", Some(&owner), None).await;
+    assert_eq!(verify.as_array().map(Vec::len), Some(0), "{verify}");
+}

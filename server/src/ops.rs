@@ -233,6 +233,67 @@ pub struct Movement<'a> {
     pub doc_id: Uuid,
 }
 
+/// Живые закупки товара вместе с влитыми в него дублями, новые первыми: приходы и
+/// оприходования без сторно, приёмы аккумуляторов без отмены, аккумуляторы в оплату чека.
+/// Из них берётся «последняя закупочная» (SPEC-03, ADR-086) и потолок стоимости остатка
+/// после сторно закупки (ADR-087). Документ, который сейчас сторнируется, уже не живой:
+/// запись сторно вставляется до вызова.
+async fn live_purchases(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    product_id: Uuid,
+) -> AppResult<Vec<(i64, i64)>> {
+    let rows = sqlx::query!(
+        r#"with recursive fam as (
+             select $2::uuid as id
+             union select p.id from products p join fam on p.merged_into = fam.id
+           )
+           select m.qty_delta as "qty!", m.value_delta_tyiyn as "cost!"
+           from stock_movements m
+           where m.branch_id = $1 and m.product_id in (select id from fam) and m.qty_delta > 0
+             and (
+               (m.doc_type = 'receipt'
+                 and not exists (select 1 from receipts x where x.reversal_of = m.doc_id))
+               or (m.doc_type = 'stock_in' and m.value_delta_tyiyn > 0
+                 and not exists (select 1 from stock_ins x where x.reversal_of = m.doc_id))
+               or (m.doc_type = 'battery_intake'
+                 and not exists (select 1 from battery_intake_reversals x where x.intake_id = m.doc_id))
+               or m.doc_type = 'battery_tradein'
+             )
+           order by m.created_at desc, m.id desc"#,
+        branch_id,
+        product_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(|r| (r.qty, r.cost)).collect())
+}
+
+/// После сторно или отмены закупки «последней закупочной» становится последняя живая
+/// закупка любого вида; не осталось ни одной — ноль. Вызывать до движения сторно: если
+/// стоимость остатка уйдёт в минус, переоценка возьмёт уже восстановленную цену (ADR-044).
+pub async fn restore_last_cost(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    product_id: Uuid,
+) -> AppResult<()> {
+    let (qty, cost) = live_purchases(conn, branch_id, product_id)
+        .await?
+        .first()
+        .copied()
+        .unwrap_or((0, 0));
+    sqlx::query!(
+        "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+        branch_id,
+        product_id,
+        qty,
+        cost
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Движение склада и обновление кэша остатка в одной транзакции (инвариант 6).
 /// Строка остатка должна быть заблокирована через [`lock_pool`].
 pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResult<()> {
@@ -300,6 +361,27 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
         } else {
             0
         })
+    } else if qty > 0
+        && value > 0
+        && matches!(
+            m.doc_type,
+            "receipt_reversal" | "stock_in_reversal" | "battery_intake_reversal"
+        )
+    {
+        // Сторно дешёвой закупки после продаж оставляет остатку завышенную стоимость: продажи
+        // считались по средней с этой закупкой. Остаток не дороже самой дорогой живой закупки,
+        // лишнее — переоценкой в себестоимость дня (ADR-087).
+        let max = live_purchases(conn, m.branch_id, m.product_id)
+            .await?
+            .into_iter()
+            .filter(|(q, _)| *q > 0)
+            .max_by(|a, b| {
+                (i128::from(a.1) * i128::from(b.0)).cmp(&(i128::from(b.1) * i128::from(a.0)))
+            });
+        match max.and_then(|(q, c)| per_unit(c, q)) {
+            Some(cap) if value > cap => Some(cap),
+            _ => None,
+        }
     } else {
         None
     };

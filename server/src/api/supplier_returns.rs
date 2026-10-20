@@ -346,6 +346,12 @@ pub async fn post_tx(
     // Товар влитой карточки лежит на основной: возвращаем с неё (ADR-044).
     let mut targets = Vec::with_capacity(req.lines.len());
     for l in &req.lines {
+        let exists = sqlx::query_scalar!("select id from products where id = $1", l.product_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_none() {
+            return Err(invalid("товар не найден"));
+        }
         targets.push(ops::live_product(conn, l.product_id).await?);
     }
     let distinct: BTreeSet<Uuid> = targets.iter().copied().collect();
@@ -385,7 +391,15 @@ pub async fn post_tx(
                     i128::from(price_unit(&p.unit, p.container_ml)),
                 )
                 .ok_or_else(overflow)?,
-                None => cost,
+                // Средняя себестоимость — только владельцу (ADR-008, инвариант 13): остальные
+                // называют сумму сами, если от этого поставщика товар не приходил.
+                None if ctx.user.is_owner() => cost,
+                None => {
+                    return Err(invalid(format!(
+                        "«{}»: от этого поставщика не приходил — укажите сумму возврата",
+                        p.name
+                    )));
+                }
             },
         };
         ops::check_amount(amount)?;

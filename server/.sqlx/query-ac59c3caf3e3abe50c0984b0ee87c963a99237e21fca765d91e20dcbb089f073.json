@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with recursive fam as (\n             select $2::uuid as id\n             union select p.id from products p join fam on p.merged_into = fam.id\n           )\n           select m.qty_delta as \"qty!\", m.value_delta_tyiyn as \"cost!\"\n           from stock_movements m\n           where m.branch_id = $1 and m.product_id in (select id from fam) and m.qty_delta > 0\n             and (\n               (m.doc_type = 'receipt'\n                 and not exists (select 1 from receipts x where x.reversal_of = m.doc_id))\n               or (m.doc_type = 'stock_in' and m.value_delta_tyiyn > 0\n                 and not exists (select 1 from stock_ins x where x.reversal_of = m.doc_id))\n               or (m.doc_type = 'battery_intake'\n                 and not exists (select 1 from battery_intake_reversals x where x.intake_id = m.doc_id))\n               or m.doc_type = 'battery_tradein'\n             )\n           order by m.created_at desc, m.id desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "qty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cost!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ac59c3caf3e3abe50c0984b0ee87c963a99237e21fca765d91e20dcbb089f073"
+}

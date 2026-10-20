@@ -496,27 +496,9 @@ pub async fn reverse_intake_tx(
             AppError::from(e)
         }
     })?;
-    // Ошибочная цена не должна остаться «последней закупочной»: берём её из последнего
-    // неотменённого приёма, иначе обнуляем — как при сторно прихода (SPEC-03).
-    let last = sqlx::query!(
-        r#"select grams, amount_tyiyn from battery_intakes i
-           where i.branch_id = $1 and i.id <> $2
-             and not exists (select 1 from battery_intake_reversals r where r.intake_id = i.id)
-           order by i.created_at desc limit 1"#,
-        branch_id,
-        id
-    )
-    .fetch_optional(&mut *conn)
-    .await?;
-    sqlx::query!(
-        "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
-        branch_id,
-        product,
-        last.as_ref().map_or(0, |r| r.grams),
-        last.as_ref().map_or(0, |r| r.amount_tyiyn)
-    )
-    .execute(&mut *conn)
-    .await?;
+    // Ошибочная цена не должна остаться «последней закупочной»: берём её из последней живой
+    // закупки лома — приёма или аккумулятора в оплату чека; не было — ноль (SPEC-03).
+    ops::restore_last_cost(conn, branch_id, product).await?;
     ops::apply_movement(
         conn,
         Movement {

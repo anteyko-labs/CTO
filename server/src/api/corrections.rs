@@ -6,7 +6,7 @@
 //! Документ для формы («черновик») и описание для сравнения строятся одной функцией [`load_doc`]
 //! из проведённого документа — исходного и нового одинаково, поэтому сравнение честное.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
@@ -944,6 +944,54 @@ async fn load_ledger_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> 
     })
 }
 
+/// Остатки всех товаров исправления — старого документа и нового — блокируются сразу и по
+/// порядку id, как в чеке: иначе сторно держит свои товары, проведение добирает остальные,
+/// и встречный чек с теми же товарами ловит взаимную блокировку базы.
+async fn prelock_products(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    original_id: Uuid,
+    doc: &Value,
+) -> AppResult<()> {
+    fn collect(v: &Value, out: &mut Vec<Uuid>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    if k == "product_id"
+                        && let Some(id) = x.as_str().and_then(|s| Uuid::parse_str(s).ok())
+                    {
+                        out.push(id);
+                    }
+                    collect(x, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| collect(x, out)),
+            _ => {}
+        }
+    }
+    let mut raw: Vec<Uuid> = sqlx::query_scalar!(
+        "select distinct product_id from stock_movements where branch_id = $1 and doc_id = $2",
+        branch_id,
+        original_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    collect(doc, &mut raw);
+    let mut ids = BTreeSet::new();
+    for id in raw {
+        let exists = sqlx::query_scalar!("select id from products where id = $1", id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_some() {
+            ids.insert(ops::live_product(&mut *conn, id).await?);
+        }
+    }
+    for id in ids {
+        ops::lock_pool(&mut *conn, branch_id, id).await?;
+    }
+    Ok(())
+}
+
 /// Можно ли исправлять документ: он проведён, не сторно и не сторнирован, не исправлен. Остальные
 /// запреты — у функции сторно (брак по приходу, товар продан, смена закрыта и т. п.).
 async fn check_correctable(
@@ -1595,6 +1643,7 @@ pub async fn correct_tx(
     .await?;
     check_correctable(&mut *conn, branch_id, kind, req.original_id).await?;
     let before = load_doc(&mut *conn, &ctx.user, kind, req.original_id).await?;
+    prelock_products(&mut *conn, branch_id, req.original_id, &req.doc).await?;
     let reversal_id = reverse(
         &mut *conn,
         ctx,
@@ -1730,6 +1779,19 @@ async fn draft(
     let kind = Kind::parse(&kind)?;
     let mut conn = state.pool.acquire().await?;
     check_correctable(&mut conn, user.branch_id, kind, id).await?;
+    // Запреты сторно (брак по приходу, товар уже продан, нужна открытая смена…) — сразу, до
+    // формы: сторно пробуется в транзакции, которая всегда откатывается (SPEC-29 §24).
+    {
+        let mut tx = state.pool.begin().await?;
+        let probe = Ctx {
+            user: user.clone(),
+            device_id: Uuid::nil(),
+            bot_chat: None,
+        };
+        let tried = reverse(&mut tx, &probe, kind, id, "проверка исправления").await;
+        tx.rollback().await?;
+        tried?;
+    }
     let doc = load_doc(&mut conn, &user, kind, id).await?;
     Ok(Json(DraftOut {
         kind: kind.as_str().into(),

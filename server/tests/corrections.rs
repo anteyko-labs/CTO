@@ -524,16 +524,25 @@ async fn failed_correction_changes_nothing(pool: PgPool) {
     .await;
     let rid = receipt["id"].as_str().unwrap().to_string();
     let before = w.snapshot().await;
-    let mut draft = w.draft("receipt", &rid).await;
-    draft["doc"]["lines"][0]["qty"] = json!(5);
-    let (s, e) = w
-        .correct(Uuid::now_v7(), "receipt", &rid, draft["doc"].clone())
-        .await;
+    // Отказ — ещё до формы (SPEC-29 §24): черновик пробует сторно и откатывает его.
+    let (s, e) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/corrections/draft/receipt/{rid}"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(
         e["error"]["message"].as_str().unwrap().contains("брак"),
         "{e}"
     );
+    // И само исправление — тот же отказ.
+    let doc = json!({ "supplier_id": supplier, "payment": "debt",
+                      "lines": [{ "product_id": oil, "qty": 5, "cost_tyiyn": 100_000 }] });
+    let (s, e) = w.correct(Uuid::now_v7(), "receipt", &rid, doc).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert_eq!(w.snapshot().await, before);
     assert_eq!(w.count("doc_corrections").await, 0);
 

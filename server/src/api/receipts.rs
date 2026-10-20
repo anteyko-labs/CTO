@@ -859,35 +859,15 @@ pub async fn reverse_receipt_tx(
         )
         .execute(&mut *conn)
         .await?;
-        // Ошибочная цена не должна остаться «последней закупочной»: берём её из последнего
-        // непогашенного прихода, иначе обнуляем (SPEC-03). До движения: если остаток уйдёт
-        // в минус по стоимости, переоценка возьмёт уже восстановленную цену (ADR-044).
-        // Ищем по основной карточке и всем, что в неё влиты: цена дубля не должна затереть основную.
-        let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
-        let last = sqlx::query!(
-            r#"with recursive fam as (
-                 select $2::uuid as id
-                 union select p.id from products p join fam on p.merged_into = fam.id
-               )
-               select l.qty, l.cost_tyiyn from receipt_lines l join receipts r on r.id = l.receipt_id
-               where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
-                 and r.reversal_of is null and r.id <> $3
-                 and not exists (select 1 from receipts x where x.reversal_of = r.id)
-               order by r.created_at desc, l.line_no desc limit 1"#,
-            branch_id,
-            target,
-            id
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
-        sqlx::query!(
-            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
+        // Ошибочная цена не должна остаться «последней закупочной»: берём её из последней живой
+        // закупки — прихода, оприходования, приёма аккумулятора (SPEC-03, ADR-086). До движения:
+        // если остаток уйдёт в минус по стоимости, переоценка возьмёт уже восстановленную цену
+        // (ADR-044). Цена ищется по основной карточке и всем, что в неё влиты.
+        ops::restore_last_cost(
+            conn,
             branch_id,
             live.get(&l.product_id).copied().unwrap_or(l.product_id),
-            last.as_ref().map_or(0, |r| r.qty),
-            last.as_ref().map_or(0, |r| r.cost_tyiyn)
         )
-        .execute(&mut *conn)
         .await?;
         let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
         ops::apply_movement(

@@ -47,15 +47,15 @@ pub fn fifo_estimate(stock: i64, inflows: &[(bool, i64)], cap: i64) -> i64 {
     mine.min(cap.max(0)).min(stock.max(0))
 }
 
-/// Приход товара на склад: накладная или товар взамен брака (у него накладной нет).
+/// Приход товара на склад: накладная, товар взамен брака или оприходование (у них накладной нет).
 pub struct Inflow {
     pub supplier_id: Option<Uuid>,
     pub receipt_id: Option<Uuid>,
     pub qty: i64,
 }
 
-/// Все приходы товаров `ids` (основных карточек, с влитыми в них) от всех поставщиков и товар
-/// взамен брака — от новых к старым. Общая основа оценок «первым продаётся пришедшее раньше»:
+/// Все приходы товаров `ids` (основных карточек, с влитыми в них) от всех поставщиков, товар
+/// взамен брака и оприходования без поставщика (ADR-086) — от новых к старым. Общая основа оценок «первым продаётся пришедшее раньше»:
 /// поставки поставщика (SPEC-26) и проданное по накладным (SPEC-27 §6).
 pub(crate) async fn inflows(
     conn: &mut PgConnection,
@@ -85,6 +85,13 @@ pub(crate) async fn inflows(
              where x.branch_id = $1 and fam.root = any($2) and x.kind = 'replace'
                and x.reversal_of is null and x.replace_qty > 0
                and not exists (select 1 from defect_resolutions y where y.reversal_of = x.id)
+             union all
+             select fam.root, null::uuid, null::uuid, l.qty, s.created_at, l.line_no
+             from stock_in_lines l join stock_ins s on s.id = l.stock_in_id
+             join fam on fam.id = l.product_id
+             where s.branch_id = $1 and fam.root = any($2) and l.qty > 0
+               and s.reversal_of is null
+               and not exists (select 1 from stock_ins x where x.reversal_of = s.id)
            ) u
            order by u.at desc, u.ord desc"#,
         branch_id,

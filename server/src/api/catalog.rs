@@ -1535,6 +1535,27 @@ async fn merge_product(
     )
     .fetch_all(&mut *tx)
     .await?;
+    // Пересчитанная в ревизии карточка не принимает остаток дубля: ревизия сочла бы его
+    // товаром, пришедшим после пересчёта, и записала бы излишек из ничего.
+    let in_revision = sqlx::query_scalar!(
+        r#"select distinct r.number from revisions r join revision_lines l on l.revision_id = r.id
+           where r.branch_id = $1 and r.status = 'draft' and l.product_id = any($2)
+           order by r.number"#,
+        branch_id,
+        &both[..]
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    if !in_revision.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "товар пересчитан в ревизии № {} — проведите или отмените её, потом объединяйте",
+            in_revision
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
     let dup = sqlx::query!(
         "select name, unit, container_ml, archived from products where id = $1",
         id

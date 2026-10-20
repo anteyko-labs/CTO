@@ -530,6 +530,19 @@ pub async fn reverse_tx(
     )
     .execute(&mut *conn)
     .await?;
+    // Ошибочная цена не остаётся «последней закупочной»: берём последнюю живую закупку любого
+    // вида (ADR-086). До движений: если стоимость остатка уйдёт в минус, переоценка возьмёт уже
+    // восстановленную цену, а не цену сторнируемого документа (ADR-044).
+    let priced: BTreeSet<Uuid> = orig
+        .lines
+        .iter()
+        .zip(&targets)
+        .filter(|(l, _)| l.price_tyiyn > 0)
+        .map(|(_, t)| *t)
+        .collect();
+    for target in priced {
+        ops::restore_last_cost(conn, branch_id, target).await?;
+    }
     for (l, target) in orig.lines.iter().zip(&targets) {
         sqlx::query!(
             r#"insert into stock_in_lines (id, stock_in_id, line_no, product_id, qty, price_tyiyn, cost_tyiyn)
@@ -555,51 +568,6 @@ pub async fn reverse_tx(
                 doc_id: rid,
             },
         )
-        .await?;
-    }
-    // Ошибочная цена не остаётся «последней закупочной»: берём последнюю живую закупку —
-    // приход или другое оприходование; не было — ноль (как при сторно прихода, SPEC-03).
-    let priced: BTreeSet<Uuid> = orig
-        .lines
-        .iter()
-        .zip(&targets)
-        .filter(|(l, _)| l.price_tyiyn > 0)
-        .map(|(_, t)| *t)
-        .collect();
-    for target in priced {
-        let last = sqlx::query!(
-            r#"with recursive fam as (
-                 select $2::uuid as id
-                 union select p.id from products p join fam on p.merged_into = fam.id
-               )
-               select qty as "qty!", cost as "cost!" from (
-                 select l.qty, l.cost_tyiyn as cost, r.created_at as at, l.line_no
-                 from receipt_lines l join receipts r on r.id = l.receipt_id
-                 where r.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
-                   and r.reversal_of is null
-                   and not exists (select 1 from receipts x where x.reversal_of = r.id)
-                 union all
-                 select l.qty, l.cost_tyiyn, s.created_at, l.line_no
-                 from stock_in_lines l join stock_ins s on s.id = l.stock_in_id
-                 where s.branch_id = $1 and l.product_id in (select id from fam) and l.qty > 0
-                   and s.id <> $3 and l.price_tyiyn > 0 and s.reversal_of is null
-                   and not exists (select 1 from stock_ins x where x.reversal_of = s.id)
-               ) u
-               order by at desc, line_no desc limit 1"#,
-            branch_id,
-            target,
-            id
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
-        sqlx::query!(
-            "update branch_products set last_cost_qty = $3, last_cost_tyiyn = $4 where branch_id = $1 and product_id = $2",
-            branch_id,
-            target,
-            last.as_ref().map_or(0, |r| r.qty),
-            last.as_ref().map_or(0, |r| r.cost)
-        )
-        .execute(&mut *conn)
         .await?;
     }
     let audit_lines: Vec<_> = orig
