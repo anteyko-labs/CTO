@@ -11275,4 +11275,21 @@ async fn invoice_payment_lands_on_its_account(pool: PgPool) {
     )
     .await;
     assert_eq!(third["payments"][0]["account_id"], json!(card_bank));
+
+    // Долг юрлица гасится «По счёту»: на тот же безналичный счёт, без комиссии.
+    let mut debt = sale(Some(&firm), 1);
+    debt["payments"] = json!([{ "method": "debt", "amount_tyiyn": 50_000 }]);
+    let (s, _, d) = call(&app, "POST", "/api/v1/sales", Some(&admin), Some(debt)).await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    let before = balance_of(&pool, &card_bank).await;
+    let (s, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/debts/repayments",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "party_id": firm, "amount_tyiyn": 50_000, "method": "invoice" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(balance_of(&pool, &card_bank).await, before + 50_000);
 }

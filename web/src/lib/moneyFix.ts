@@ -107,7 +107,7 @@ export function transferDoc(f: MoneyFields): TransferDoc | null {
 
 // ---------- Оплата долга и правка баланса ----------
 
-export type PayMethod = 'cash' | 'card' | 'transfer'
+export type PayMethod = 'cash' | 'card' | 'transfer' | 'invoice'
 
 export interface RepaymentDoc {
   type?: 'repayment'

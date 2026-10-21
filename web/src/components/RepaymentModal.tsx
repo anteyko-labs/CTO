@@ -15,18 +15,20 @@ import { useTouchMode } from '../lib/cashierMode'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 // «Вне кассы» (из своих) больше нет — сервер отвечает 422 (ADR-079).
-type Method = 'cash' | 'card' | 'transfer'
+type Method = 'cash' | 'card' | 'transfer' | 'invoice'
 
 const METHOD_LABELS: Record<Method, string> = {
   cash: 'Наличные',
   card: 'Карта / QR банка',
   transfer: 'QR владельцу',
+  invoice: 'По счёту',
 }
 
 const METHOD_HINTS: Record<Method, string> = {
   cash: 'Деньги в кассе смены: смена должна быть открыта.',
   card: 'Карта или официальный QR банка: деньги на безналичный счёт, банк возьмёт комиссию.',
   transfer: 'QR на личный счёт владельца: без комиссии банка.',
+  invoice: 'Перечисление юрлица по счёту: на безналичный счёт, без комиссии банка.',
 }
 
 /** Поставщику платим мы: деньги уходят с выбранной кассы или счёта (проверка 20.10.2026). */
@@ -34,6 +36,7 @@ const SUPPLIER_METHOD_HINTS: Record<Method, string> = {
   cash: 'Наличными из выбранной кассы.',
   card: 'С безналичного счёта (карта / QR банка).',
   transfer: 'С личного счёта владельца (QR владельцу).',
+  invoice: 'С безналичного счёта по счёту.',
 }
 
 /** Накладная, которую оплачиваем: сумма не больше её остатка (SPEC-27). */
@@ -78,9 +81,9 @@ export function RepaymentModal({
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const [accountPick, setAccountPick] = useState('')
   const accountOptions = (accounts.data ?? []).filter((a) =>
-    method === 'card' || method === 'transfer' ? bankChoices([a]).length > 0 : method === 'cash' && !isBank(a) && (owner || isTill(a)),
+    method !== 'cash' ? bankChoices([a]).length > 0 : method === 'cash' && !isBank(a) && (owner || isTill(a)),
   )
-  const accountOrdered = method === 'card' || method === 'transfer' ? bankChoices(accountOptions, method) : accountOptions
+  const accountOrdered = method !== 'cash' ? bankChoices(accountOptions, method) : accountOptions
   const accountId = accountOrdered.some((a) => a.id === accountPick) ? accountPick : (accountOrdered[0]?.id ?? '')
   const [comment, setComment] = useState('')
   const [done, setDone] = useState<{ paid: number; before: number; after: number; invoiceBefore?: number; invoiceAfter?: number } | null>(null)
@@ -100,7 +103,8 @@ export function RepaymentModal({
     setFilled(true)
   }
   // Администратор поставщику платит только из кассы смены.
-  const methods: Method[] = owner || !supplier ? ['cash', 'card', 'transfer'] : ['cash']
+  // «По счёту» — перечисление юрлица, без комиссии (ADR-095); поставщику платим как раньше.
+  const methods: Method[] = supplier ? (owner ? ['cash', 'card', 'transfer'] : ['cash']) : ['cash', 'card', 'transfer', 'invoice']
   const value = parseSom(sum)
   const notFilled = missingWithFocus(
     [value !== null && value > 0, 'сумму', '#repay-sum'],

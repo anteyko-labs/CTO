@@ -1346,13 +1346,14 @@ pub(crate) async fn repayment_account(
             }
             Ok(Some(id))
         }
-        ("card" | "transfer", None) => {
+        // «По счёту» — перечисление юрлица на счёт по умолчанию для способа, без комиссии (ADR-095).
+        ("card" | "transfer" | "invoice", None) => {
             crate::api::cash::bank_account(&mut *conn, branch_id, method)
                 .await?
                 .ok_or_else(|| invalid("нет безналичного счёта"))
                 .map(Some)
         }
-        ("card" | "transfer", Some(id)) => {
+        ("card" | "transfer" | "invoice", Some(id)) => {
             let mut ignored = Vec::new();
             crate::api::cash::sale_bank_account(
                 &mut *conn,
@@ -1400,8 +1401,8 @@ pub async fn post_repayment_tx(
     if method == "outside" {
         return Err(invalid(crate::api::receipts::NO_OUTSIDE));
     }
-    if !matches!(method.as_str(), "cash" | "card" | "transfer") {
-        return Err(invalid("чем платят: наличные, карта или перевод"));
+    if !matches!(method.as_str(), "cash" | "card" | "transfer" | "invoice") {
+        return Err(invalid("чем платят: наличные, карта, перевод или по счёту"));
     }
     let branch_id = ctx.user.branch_id;
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
