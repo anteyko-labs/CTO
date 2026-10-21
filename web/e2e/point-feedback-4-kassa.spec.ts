@@ -101,7 +101,7 @@ test('«Остатки» ведут на «Товары» с теми же от�
   await expect(page.getByRole('heading', { name: 'Товары' })).toBeVisible()
   const chip = (name: RegExp) => page.getByRole('group', { name: 'Отбор по складу' }).getByRole('button', { name })
   await expect(chip(/^Ниже минимума/)).toHaveAttribute('aria-pressed', 'true')
-  await page.getByLabel('Поиск').fill(`Склад ${RUN}`)
+  await page.getByLabel('Поиск', { exact: true }).fill(`Склад ${RUN}`)
   await expect(page.getByRole('row', { name: new RegExp(low) })).toContainText('ниже минимума')
   await expect(page.getByRole('row', { name: new RegExp(low) })).toContainText(/мин\.\s5\sшт/)
   await expect(page.getByRole('row', { name: new RegExp(plenty) })).toHaveCount(0)

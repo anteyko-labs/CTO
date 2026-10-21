@@ -43,7 +43,7 @@ test('брак: отметка, возврат поставщику со ски�
 
   // «Товары» (бывшие «Остатки», SPEC-30 §11) → «В брак»: поставщик подставлен из прихода.
   await page.goto('/products')
-  await page.getByLabel('Поиск').fill(name)
+  await page.getByLabel('Поиск', { exact: true }).fill(name)
   const row = page.getByRole('row', { name: new RegExp(name) })
   await row.getByRole('button', { name: 'Ещё действия' }).click()
   await page.getByRole('menuitem', { name: 'В брак' }).click()

@@ -118,7 +118,7 @@ test('оприходование без поставщика: из строки 
   const name = `Хомут ${RUN}`
   const p = await product(page.request, cat.id, name, `49${RUN}303`, 10_000)
   await page.goto('/products')
-  await page.getByLabel('Поиск').fill(name)
+  await page.getByLabel('Поиск', { exact: true }).fill(name)
   const row = page.getByRole('row', { name: new RegExp(name) })
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: 'Ещё действия' }).click()

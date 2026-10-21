@@ -33,7 +33,7 @@ test('клиенты по страницам: 25 на странице, втор
   }
 
   await page.goto('/clients')
-  await page.getByLabel('Поиск').fill(prefix)
+  await page.getByLabel('Поиск', { exact: true }).fill(prefix)
   const pager = page.getByRole('navigation', { name: 'Страницы клиентов' })
   const range = pager.getByTestId('pager-range')
   // По умолчанию 50 на странице: все 30 на одной.
@@ -64,7 +64,7 @@ test('клиенты по страницам: 25 на странице, втор
   await expect(range).toHaveText('1–25 / 30')
   await expect(page.getByRole('row', { name: new RegExp(`${prefix} 01`) })).toBeVisible()
   await page.reload()
-  await page.getByLabel('Поиск').fill(prefix)
+  await page.getByLabel('Поиск', { exact: true }).fill(prefix)
   await expect(page.getByRole('navigation', { name: 'Страницы клиентов' }).getByTestId('pager-range')).toHaveText('1–25 / 30')
 })
 
