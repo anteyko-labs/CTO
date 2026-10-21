@@ -132,6 +132,10 @@ pub struct SaleReq {
     /// Отказанные работы для масляной книжки: «воздушный фильтр» (ADR-055).
     #[serde(default)]
     pub declined: String,
+    /// Строки, удалённые из чека до проведения (SPEC-30 §8, ADR-099): как прислала касса;
+    /// неверная строка пропускается, а не отклоняет чек.
+    #[serde(default)]
+    pub removed_lines: serde_json::Value,
     /// Чек проводит «Исправить» владельца (SPEC-29 §24): кассир — из исправления, а не смены,
     /// учётный день — заданный. С экрана не приходит.
     #[serde(skip)]
@@ -1442,6 +1446,18 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             unknown_amount,
             unknown,
         },
+    )
+    .await?;
+    // Строки, удалённые из чека до проведения, — в «Отменённые товары» (SPEC-30 §8).
+    crate::api::cancelled_lines::record(
+        conn,
+        ctx,
+        crate::api::cancelled_lines::Target {
+            op_id: req.op_id,
+            sale_id: Some(id),
+            shift: at_shift.as_ref().map(|s| (s.id, s.cashier_employee_id)),
+        },
+        crate::api::cancelled_lines::lines_of(&req.removed_lines),
     )
     .await?;
     ops::audit(

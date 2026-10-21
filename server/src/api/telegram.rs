@@ -1943,93 +1943,29 @@ fn checks_word(n: i64) -> String {
     format!("{n} {word}")
 }
 
+/// «💵 Смена»: отчёт открытой смены коротко (SPEC-30 §7) и кто сколько заработал; смена не
+/// открыта — отчёт последней смены кассы.
 pub(crate) async fn shift(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
     let till = crate::api::cash::default_account(conn, branch_id).await?;
-    let Some(id) = crate::api::cash::open_shift_id(conn, branch_id, till).await? else {
+    if let Some(id) = crate::api::cash::open_shift_id(conn, branch_id, till).await? {
+        let r = crate::api::shift_report::load(conn, branch_id, true, id).await?;
+        let earned = format!("👥 Заработали\n{}", staff_lines(&r.shift.pay));
+        return Ok(crate::api::shift_report::report_text(&r, &[earned]));
+    }
+    let last = sqlx::query_scalar!(
+        "select id from shifts where branch_id = $1 and account_id = $2 order by opened_at desc limit 1",
+        branch_id,
+        till
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(id) = last else {
         return Ok("💵 Смена не открыта.".into());
     };
-    let s = crate::api::cash::load_shift(conn, branch_id, id).await?;
-    // Наличные в кассе: с чего начали и что двигало деньги.
-    let mut cash = vec![format!(
-        "  на начало (размен): {}",
-        format_som(s.opening_expected_tyiyn)
-    )];
-    if let Some(rows) = s.breakdown.as_array() {
-        for r in rows {
-            let kind = r.get("kind").and_then(Value::as_str).unwrap_or("");
-            let sum = r.get("sum_tyiyn").and_then(Value::as_i64).unwrap_or(0);
-            if sum == 0 {
-                continue;
-            }
-            let what = match kind {
-                "sale" => "продажи наличными",
-                "sale_return" => "возвраты",
-                "cash_in" => "внесли",
-                "cash_out" => "изъяли",
-                "transfer_in" => "переведено в кассу",
-                "transfer_out" => "переведено из кассы",
-                "expense" => "расходы из кассы",
-                "payout" => "выплаты сотрудникам",
-                "supplier_payment" => "оплата поставщикам",
-                "supplier_refund" => "возмещения поставщиков за брак",
-                "debt_repayment" => "погашения долгов",
-                "battery_intake" => "приём аккумуляторов",
-                "count_diff" => "пересчёт",
-                "reversal" => "сторно",
-                other => other,
-            };
-            let sign = if sum > 0 { "+" } else { "−" };
-            cash.push(format!("  {sign} {what}: {}", format_som(sum.abs())));
-        }
-    }
-    let mut pays = vec![
-        format!("  наличными: {}", format_som(s.cash_sales_tyiyn)),
-        format!("  карта / QR банка: {}", format_som(s.card_tyiyn)),
-        format!("  QR владельцу: {}", format_som(s.transfer_tyiyn)),
-    ];
-    if s.debt_tyiyn != 0 {
-        pays.push(format!("  в долг: {}", format_som(s.debt_tyiyn)));
-    }
-    if s.bonus_tyiyn != 0 {
-        pays.push(format!("  баллами: {}", format_som(s.bonus_tyiyn)));
-    }
-    if s.battery_tyiyn != 0 {
-        pays.push(format!("  аккумуляторами: {}", format_som(s.battery_tyiyn)));
-    }
-    if s.bank_fee_tyiyn != 0 {
-        pays.push(format!(
-            "  (комиссия банка {})",
-            format_som(s.bank_fee_tyiyn)
-        ));
-    }
-    // Несколько безналичных счетов — куда сколько пришло (ADR-076).
-    if s.bank_split.len() > 1 {
-        for b in &s.bank_split {
-            pays.push(format!(
-                "  на «{}»: карта / QR банка {}, QR владельцу {}",
-                b.name,
-                format_som(b.card_tyiyn),
-                format_som(b.transfer_tyiyn)
-            ));
-        }
-    }
-    let returns = if s.returns_tyiyn != 0 {
-        format!(", возвраты {}", format_som(s.returns_tyiyn))
-    } else {
-        String::new()
-    };
+    let r = crate::api::shift_report::load(conn, branch_id, true, id).await?;
     Ok(format!(
-        "💵 Смена № {} с {}, кассир {}\n\n💵 В кассе должно быть: {}\n{}\n\n🧾 Продано: {} на {}{returns}\n{}\n\n👥 Заработали\n{}",
-        s.number,
-        // Бишкек — всегда UTC+6, без перехода на летнее время.
-        (s.opened_at + chrono::Duration::hours(6)).format("%d.%m %H:%M"),
-        s.cashier_name,
-        format_som(s.expected_tyiyn),
-        cash.join("\n"),
-        checks_word(s.sales_count),
-        format_som(s.sales_total_tyiyn),
-        pays.join("\n"),
-        staff_lines(&s.pay),
+        "💵 Смена не открыта. Последняя смена:\n\n{}",
+        crate::api::shift_report::report_text(&r, &[])
     ))
 }
 

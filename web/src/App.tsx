@@ -42,6 +42,7 @@ import SaleView from './pages/SaleView'
 import SalesDay from './pages/SalesDay'
 import Services from './pages/Services'
 import Shift from './pages/Shift'
+import ShiftReport from './pages/ShiftReport'
 import DebtDocsSettings from './pages/DebtDocsSettings'
 import OilTransfer from './pages/OilTransfer'
 import Revision from './pages/Revision'
@@ -321,6 +322,7 @@ function Shell() {
           <Route path="/top-products" element={<TopProducts />} />
           <Route path="/intake" element={<Navigate to="/revision?tab=scan" replace />} />
           <Route path="/shift" element={<Shift />} />
+          <Route path="/shifts/:id" element={<ByParam><ShiftReport /></ByParam>} />
           {can(user, 'expenses') && <Route path="/expenses" element={<Expenses />} />}
           <Route path="/payroll" element={<Payroll />} />
           {owner && <Route path="/summary" element={<OwnerDashboard />} />}

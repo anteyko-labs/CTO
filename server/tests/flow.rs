@@ -308,6 +308,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         book_intervals: Vec::new(),
         delivery_address: String::new(),
         declined: String::new(),
+        removed_lines: serde_json::Value::Null,
         correction: None,
     }
 }

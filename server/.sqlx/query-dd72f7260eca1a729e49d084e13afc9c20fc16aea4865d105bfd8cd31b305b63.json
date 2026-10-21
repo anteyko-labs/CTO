@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name || case attrs ->> 'polarity' when 'прямая' then ' (Л)'\n                                                                when 'обратная' then ' (П)' else '' end as \"name!\"\n                           from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dd72f7260eca1a729e49d084e13afc9c20fc16aea4865d105bfd8cd31b305b63"
+}

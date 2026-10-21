@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.id, c.removed_at, c.reason, c.kind, c.name, c.qty, c.unit_price_tyiyn,\n                  c.amount_tyiyn, u.full_name as user_name, e.full_name as \"cashier_name?\",\n                  c.sale_id, s.number as \"sale_number?\"\n           from cancelled_lines c\n           join users u on u.id = c.user_id\n           left join employees e on e.id = c.cashier_employee_id\n           left join sales s on s.id = c.sale_id\n           where c.shift_id = $1\n           order by c.removed_at, c.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "removed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "unit_price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "cashier_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "d3546052b892b886e8b49649bef4d18a623a98186890896c27b911ff5b80abab"
+}

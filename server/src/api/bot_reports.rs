@@ -3,7 +3,6 @@
 //! длинные списки — первые N строк и «и ещё N». Только чтение, только филиал владельца.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use serde_json::Value;
 use sqlx::PgConnection;
 
 use crate::api::bot_drafts::{find_party, norm, qty_text, sounds_like};
@@ -510,74 +509,10 @@ pub async fn money(
             let Some(id) = id else {
                 return Ok(format!("Смены № {n} нет."));
             };
-            let s = crate::api::cash::load_shift(conn, user.branch_id, id).await?;
-            let mut lines = vec![
-                format!(
-                    "Смена № {} за {}, кассир {}, открыл {} в {}",
-                    s.number,
-                    day(s.business_date),
-                    s.cashier_name,
-                    s.opened_by,
-                    local(s.opened_at)
-                ),
-                format!(
-                    "На начало (размен): {}",
-                    format_som(s.opening_expected_tyiyn)
-                ),
-            ];
-            if let Some(rows) = s.breakdown.as_array() {
-                for r in rows {
-                    let kind = r.get("kind").and_then(Value::as_str).unwrap_or("");
-                    let sum = r.get("sum_tyiyn").and_then(Value::as_i64).unwrap_or(0);
-                    if sum != 0 {
-                        lines.push(format!(
-                            "— {}: {}",
-                            movement_kind(kind),
-                            format_som_signed(sum)
-                        ));
-                    }
-                }
-            }
-            lines.push(format!(
-                "Чеков {} на {}, возвраты {}; наличными {}, картой {}, переводом {}, в долг {}, баллами {}, комиссия банка {}",
-                s.sales_count,
-                format_som(s.sales_total_tyiyn),
-                format_som(s.returns_tyiyn),
-                format_som(s.cash_sales_tyiyn),
-                format_som(s.card_tyiyn),
-                format_som(s.transfer_tyiyn),
-                format_som(s.debt_tyiyn),
-                format_som(s.bonus_tyiyn),
-                format_som(s.bank_fee_tyiyn)
-            ));
-            match (s.closed_at, s.counted_tyiyn, s.diff_tyiyn) {
-                (Some(at), Some(c), Some(d)) => {
-                    lines.push(format!(
-                        "Закрыта {}: должно было быть {}, пересчитано {}, расхождение {}",
-                        local(at),
-                        format_som(s.expected_tyiyn),
-                        format_som(c),
-                        format_som_signed(d)
-                    ));
-                    match (s.to_safe_tyiyn, s.left_tyiyn) {
-                        (Some(safe), Some(left)) => lines.push(format!(
-                            "Сдали {}, оставлено на размен {}",
-                            format_som(safe),
-                            format_som(left)
-                        )),
-                        _ => lines.push("Что сделали с деньгами, ещё не отмечено.".into()),
-                    }
-                }
-                _ => lines.push(format!(
-                    "Открыта, в кассе должно быть {}",
-                    format_som(s.expected_tyiyn)
-                )),
-            }
-            lines.push(format!(
-                "Заработали:\n{}",
-                crate::api::telegram::staff_lines(&s.pay)
-            ));
-            Ok(lines.join("\n"))
+            // Отчёт смены коротко, как в «💵 Смена» (SPEC-30 §7).
+            let r =
+                crate::api::shift_report::load(conn, user.branch_id, user.is_owner(), id).await?;
+            Ok(crate::api::shift_report::report_text(&r, &[]))
         }
         "expenses_list" => {
             let rows = crate::api::expenses::list_data(

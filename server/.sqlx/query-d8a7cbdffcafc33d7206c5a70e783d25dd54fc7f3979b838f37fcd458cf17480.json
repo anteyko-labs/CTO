@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.number, p.created_at, e.full_name as employee_name, p.amount_tyiyn,\n                  p.comment, a.name as \"account_name?\", p.reversal_of is not null as \"reversal!\",\n                  u.full_name as user_name\n           from payouts p\n           join employees e on e.id = p.employee_id\n           join users u on u.id = p.user_id\n           left join cash_accounts a on a.id = p.account_id\n           where p.branch_id = $1 and p.created_at >= $2 and p.created_at <= coalesce($3, now())\n             and (a.id is null or not a.owner_only or $4)\n           order by p.created_at, p.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "employee_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversal!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "d8a7cbdffcafc33d7206c5a70e783d25dd54fc7f3979b838f37fcd458cf17480"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.closed_at from shift_closes c\n           where c.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n           order by c.seq desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "closed_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5da728e9bf033439e0eb7a8132b93584a8cc914d690ee9dac75edc9c870538b0"
+}

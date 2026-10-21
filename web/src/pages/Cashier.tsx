@@ -29,6 +29,7 @@ import { ApiError, get, newOpId, noServerAnswer, patch, post, qs } from '../lib/
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, knownShift, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage, saveKnownShift, takeFromSnapshot } from '../lib/offline'
 import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
+import { forServer, removedLine, sendCancelled, unremove, type CancelReason, type RemovedLine } from '../lib/cancelledLines'
 import { useUser } from '../lib/auth'
 import { can } from '../lib/permissions'
 import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../lib/cashierMode'
@@ -135,6 +136,8 @@ interface Parked {
   declined?: string
   /** «Через сколько менять» масло: в единице машины и днях (SPEC-29 §23). */
   nextEvery?: NextEvery | null
+  /** Строки, удалённые крестиком до того, как чек отложили (SPEC-30 §8). */
+  dropped?: RemovedLine[]
 }
 
 /** Интервал следующей замены масла из чека: как ввёл кассир (единица машины) и дни. */
@@ -172,6 +175,7 @@ interface Draft {
   delivery?: string | null
   declined?: string
   nextEvery?: NextEvery | null
+  dropped?: RemovedLine[]
 }
 
 function loadDraft(): Draft | null {
@@ -292,6 +296,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [cashierId, setCashierId] = useState(() => fix?.state.cashierId ?? remembered(CASHIER_KEY))
   const [masterId, setMasterId] = useState(draft?.masterId ?? '')
   const [lines, setLines] = useState<CartLine[]>(draft?.lines ?? [])
+  // Строки, удалённые крестиком: уйдут с чеком в «Отменённые товары» (SPEC-30 §8).
+  const [dropped, setDropped] = useState<RemovedLine[]>(draft?.dropped ?? [])
   const [comment, setComment] = useState(draft?.comment ?? '')
   const [payMode, setPayMode] = useState<PayMode>(fix?.state.payMode ?? 'cash')
   const [received, setReceived] = useState('')
@@ -371,8 +377,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const masters = employees.data?.filter((e) => e.is_master && (e.active || e.id === fix?.state.masterId)) ?? []
 
   useEffect(() => {
-    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery })
-  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery])
+    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery, dropped })
+  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery, dropped])
 
   // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
   const [storageAtRisk, setStorageAtRisk] = useState(false)
@@ -605,6 +611,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   const reset = () => {
     setLines([])
+    setDropped([])
     setRemoved(null)
     setComment('')
     setReceived('')
@@ -694,6 +701,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       delivery,
       declined,
       nextEvery,
+      dropped,
     }
     return [...list.filter((p) => p.id !== id), item]
   }
@@ -717,6 +725,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setSaleType(p.saleType)
     setMasterId(p.masterId)
     setLines(p.lines)
+    setDropped(p.dropped ?? [])
     setComment(p.comment)
     setParty(p.party)
     setContactId(p.contactId)
@@ -735,6 +744,34 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     const next = parked.filter((p) => p.id !== id)
     setParked(next)
     saveParked(next)
+  }
+
+  // Отменённые товары (SPEC-30 §8): исправление владельцем их не пишет — это не работа кассы.
+  const asRemoved = (l: CartLine, reason: CancelReason): RemovedLine | null =>
+    fix
+      ? null
+      : removedLine(
+          {
+            key: l.key,
+            kind: l.kind,
+            product_id: l.product?.id ?? null,
+            service_id: l.service?.id ?? null,
+            name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
+            qty: lineQty(l),
+            price: parseSom(l.priceText),
+            gift: l.gift,
+          },
+          reason,
+        )
+  /** «Очистить» и удаление отложенного: весь чек и удалённые раньше строки — отдельной записью. */
+  const cancelAll = (ls: CartLine[], before: RemovedLine[], reason: CancelReason) => {
+    if (fix) return
+    const all = [...before, ...ls.map((l) => asRemoved(l, reason)).filter((x): x is RemovedLine => x !== null)]
+    void sendCancelled(all, shift.data?.id ?? null, user)
+  }
+  const discardParked = (p: Parked) => {
+    cancelAll(p.lines, p.dropped ?? [], 'held')
+    dropParked(p.id)
   }
 
   const blockers = missingWithFocus(
@@ -803,7 +840,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       const key = JSON.stringify(content)
       if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
       const opId = attempt.current.opId
-      const body = { op_id: opId, client_time: new Date().toISOString(), ...content }
+      const body = { op_id: opId, client_time: new Date().toISOString(), ...content, removed_lines: forServer(dropped) }
       // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
       // нет связи, и после отправки (SPEC-09).
       const cashierName = (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? ''
@@ -929,11 +966,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const removeLine = (l: CartLine) => {
     const index = lines.findIndex((x) => x.key === l.key)
     setLines((ls) => ls.filter((x) => x.key !== l.key))
+    const rec = asRemoved(l, 'remove')
+    if (rec) setDropped((d) => [...d, rec])
     if (touch) setRemoved({ line: l, index })
   }
   const undoRemove = () => {
     if (!removed) return
     setLines((ls) => [...ls.slice(0, removed.index), removed.line, ...ls.slice(removed.index)])
+    setDropped((d) => unremove(d, removed.line.key))
     setRemoved(null)
   }
   // Кнопки режима кассы (ui-rules §9): под палец, с видимым нажатием, без мелких ссылок.
@@ -963,6 +1003,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               className={`flex-1 text-rose-700 ${touch ? 'min-h-[56px]! border border-rose-300 bg-rose-50 text-lg!' : ''}`}
               onClick={() => {
                 setConfirmClear(false)
+                cancelAll(lines, dropped, 'clear')
                 setParkedId(null)
                 setGiftRule(null)
                 reset()
@@ -1022,7 +1063,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   type="button"
                   className="text-slate-400 hover:text-rose-600"
                   aria-label="Удалить отложенный чек"
-                  onClick={() => dropParked(p.id)}
+                  onClick={() => discardParked(p)}
                 >
                   ✕
                 </button>

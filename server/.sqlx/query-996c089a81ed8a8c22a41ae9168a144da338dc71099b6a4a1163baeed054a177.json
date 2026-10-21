@@ -1,0 +1,109 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.id, m.created_at, m.kind, m.doc_type, m.amount_tyiyn, m.comment,\n                  a.name as account_name, u.full_name as user_name,\n                  (select o.kind from cash_movements o\n                   where m.doc_type = 'cash_movement' and o.id = m.doc_id) as \"orig_kind?\",\n                  (select o.comment from cash_movements o\n                   where m.doc_type = 'cash_movement' and o.id = m.doc_id) as \"orig_comment?\",\n                  ea.name as \"article?\", ea.owner_only as \"article_owner_only?\",\n                  (select emp.full_name from payouts p join employees emp on emp.id = p.employee_id\n                   where m.doc_type = 'payout' and p.id = m.doc_id) as \"employee?\",\n                  (select pt.name from party_ledger l join parties pt on pt.id = l.party_id\n                   where (m.doc_type = 'repayment' and l.doc_type = 'repayment' and l.doc_id = m.doc_id)\n                      or (m.doc_type = 'ledger_reversal' and l.id = m.doc_id)\n                   limit 1) as \"party?\",\n                  (select sp.name from receipts r join suppliers sp on sp.id = r.supplier_id\n                   where m.doc_type in ('receipt', 'receipt_reversal') and r.id = m.doc_id) as \"supplier?\"\n           from cash_movements m\n           join cash_accounts a on a.id = m.account_id\n           join users u on u.id = m.user_id\n           left join expenses e on m.doc_type = 'expense' and e.id = m.doc_id\n           left join expense_articles ea on ea.id = e.article_id\n           where m.branch_id = $1 and m.created_at >= $2 and m.created_at <= coalesce($3, now())\n             and m.kind not in ('sale', 'sale_return', 'bank_fee', 'count_diff', 'transfer_in', 'transfer_out')\n             and m.doc_type <> 'transfer'\n             and (not a.owner_only or $4)\n           order by m.created_at, m.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "account_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "orig_kind?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "orig_comment?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "article?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "article_owner_only?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "employee?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "party?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "supplier?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "996c089a81ed8a8c22a41ae9168a144da338dc71099b6a4a1163baeed054a177"
+}

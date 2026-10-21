@@ -53,7 +53,13 @@ export interface OutboxItem {
   next_try_at?: string
   /** Чек для печати: строки с названиями, итог, оплаты — повторная печать из очереди. */
   receipt?: Sale
+  /** Не чек, а другая запись кассы — куда её отправить (отменённые строки, SPEC-30 §8). На экранах
+   *  очереди такие записи не видны и чеками не считаются; принятая сервером — удаляется. */
+  path?: string
 }
+
+/** Запись очереди — чек (а не, например, отменённые строки). */
+export const isSaleItem = (i: OutboxItem): boolean => !i.path
 
 /** Кто сейчас работает на кассе: чьи чеки отправлять из очереди. */
 export interface QueueUser {
@@ -240,8 +246,9 @@ async function allItems(): Promise<OutboxItem[]> {
   }
 }
 
+/** Экраны очереди видят только чеки: отменённые строки уходят сами и чеками не считаются. */
 async function emit(): Promise<void> {
-  const items = await allItems()
+  const items = (await allItems()).filter(isSaleItem)
   for (const l of listeners) l(items)
 }
 
@@ -388,6 +395,33 @@ async function update(op_id: string, patch: Partial<OutboxItem>): Promise<void> 
 /** Сервер принял чек. */
 export const markSent = (op_id: string, server_number: number): Promise<void> =>
   update(op_id, { status: 'done', server_number, last_error: '' })
+
+/**
+ * Запись кассы, которая не чек (отменённые строки, SPEC-30 §8): ложится в очередь и уходит той же
+ * отправкой, что чеки; повтор безопасен — сервер узнаёт её по `op_id`.
+ */
+export async function enqueueOp(op_id: string, path: string, body: unknown, user?: QueueUser | null): Promise<void> {
+  try {
+    await recover()
+    const item: OutboxItem = {
+      op_id,
+      temp_no: '',
+      created_at: new Date().toISOString(),
+      status: 'pending',
+      attempts: 0,
+      last_error: '',
+      body,
+      user_id: user?.id,
+      user_name: user?.full_name,
+      path,
+    }
+    await (await db()).put(OUTBOX, item)
+  } catch {
+    // Без хранилища запись пропадёт — это след для владельца, а не чек: касса не встаёт.
+    return
+  }
+  void syncOutbox()
+}
 
 /** Связи нет: чек ждёт фоновой отправки. */
 export const markPending = (op_id: string, last_error: string): Promise<void> =>
@@ -536,6 +570,22 @@ export async function syncOutbox(force = false): Promise<void> {
     for (const item of await allItems()) {
       if (item.status !== 'pending' || !isOwnItem(item, me.id)) continue
       if (!force && waitsRetry(item)) continue
+      if (item.path) {
+        // Не чек: принят — удаляется; отказ по существу или «op_id уже был» — тоже (это след, а
+        // не продажа, и повтор его не исправит); нет связи — ждёт, как чеки.
+        try {
+          await api('POST', item.path, item.body)
+          await (await db()).delete(OUTBOX, item.op_id)
+        } catch (e) {
+          if (!keepInQueue(e)) {
+            await (await db()).delete(OUTBOX, item.op_id)
+            continue
+          }
+          await (await db()).put(OUTBOX, backoff(item, e instanceof Error ? e.message : 'нет связи'))
+          if (!(e instanceof ApiError) || noServerAnswer(e) || e.status === 401) break
+        }
+        continue
+      }
       await put({ ...item, status: 'sending' })
       try {
         const sale = await api<{ number: number }>('POST', '/sales', queuedBody(item))
@@ -620,5 +670,5 @@ export function logoutWarning(items: OutboxItem[], userId: string, online: boole
   return parts.length > 0 ? parts.join(' ') : null
 }
 
-/** Все записи очереди — для проверки перед выходом. */
-export const outboxItems = (): Promise<OutboxItem[]> => allItems()
+/** Все чеки очереди — для проверки перед выходом. */
+export const outboxItems = async (): Promise<OutboxItem[]> => (await allItems()).filter(isSaleItem)

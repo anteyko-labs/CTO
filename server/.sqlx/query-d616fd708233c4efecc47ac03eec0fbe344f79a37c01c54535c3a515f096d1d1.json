@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select cashier_employee_id from shifts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cashier_employee_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d616fd708233c4efecc47ac03eec0fbe344f79a37c01c54535c3a515f096d1d1"
+}

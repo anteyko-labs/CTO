@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(total_tyiyn), 0)::bigint as \"v!\" from sales\n           where branch_id = $1 and created_at >= $2 and created_at <= $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d8faa50312f4c78c4847ad0e668b0ec0c1fe0ebd261c24113ca126a4bd58bdc3"
+}

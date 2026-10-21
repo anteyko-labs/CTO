@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select now() as \"t!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "t!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e5749e1fcba314e11cece8cb594e16797eac6ed8926a8f13ec36ed5adbd74d44"
+}

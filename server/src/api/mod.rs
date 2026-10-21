@@ -10,6 +10,7 @@ pub mod bot_drafts;
 pub mod bot_reports;
 pub mod bot_staff;
 pub mod cabinet;
+pub mod cancelled_lines;
 pub mod cars;
 pub mod cash;
 pub mod catalog;
@@ -36,6 +37,7 @@ pub mod refs;
 pub mod reports;
 pub mod revisions;
 pub mod sales;
+pub mod shift_report;
 pub mod stock_in;
 pub mod supplier_debts;
 pub mod supplier_returns;
@@ -51,6 +53,7 @@ pub fn routes() -> Router<AppState> {
         .merge(auth::routes())
         .merge(batteries::routes())
         .merge(cabinet::routes())
+        .merge(cancelled_lines::routes())
         .merge(cash::routes())
         .merge(cars::routes())
         .merge(catalog::routes())
@@ -76,6 +79,7 @@ pub fn routes() -> Router<AppState> {
         .merge(reports::routes())
         .merge(revisions::routes())
         .merge(sales::routes())
+        .merge(shift_report::routes())
         .merge(stock_in::routes())
         .merge(supplier_debts::routes())
         .merge(supplier_returns::routes())

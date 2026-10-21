@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, Notice, PageHeader, Table, toast } from '../components/ui'
 import { Icon } from '../components/icons'
 import { Pager, usePageState, usePager } from '../components/Pager'
@@ -429,6 +430,14 @@ export default function Shift() {
                 </Button>
               </>
             )}
+            {/* Отчёт смены, как в Умаге (SPEC-30 §7): движение денег, выручка, операции, отменённые товары. */}
+            <Link
+              to={`/shifts/${shift.id}`}
+              className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
+            >
+              <Icon name="history" className="h-4 w-4" />
+              Отчёт смены
+            </Link>
             <Button onClick={startClosing}>Закрыть смену</Button>
           </div>
         </Card>
@@ -507,7 +516,11 @@ export default function Shift() {
           <Table head={['№', 'День', 'Кассир', 'Ожидали', 'Факт', 'Расхождение', 'Сдано', '']}>
             {pastPager.shown.map((s, i) => (
               <tr key={s.id}>
-                <td className="px-2 py-2 font-medium">{s.number}</td>
+                <td className="px-2 py-2 font-medium">
+                  <Link to={`/shifts/${s.id}`} className="text-sky-700 hover:underline" aria-label={`Отчёт смены № ${s.number}`}>
+                    {s.number}
+                  </Link>
+                </td>
                 <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatDate(s.business_date)}</td>
                 <td className="px-2 py-2">{s.cashier_name}</td>
                 <td className="px-2 py-2 text-right">{s.counted_tyiyn === null ? '—' : <Money value={s.expected_tyiyn} />}</td>
@@ -519,6 +532,10 @@ export default function Shift() {
                   {s.handover_pending ? <Badge tone="amber">не сдана</Badge> : s.to_safe_tyiyn === null ? '—' : <Money value={s.to_safe_tyiyn} />}
                 </td>
                 <td className="px-2 py-2 text-right">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Link to={`/shifts/${s.id}`} className="inline-flex min-h-9 items-center rounded-md border border-slate-300 bg-white px-3 py-1 text-sm font-medium text-slate-800 hover:bg-slate-50">
+                    Отчёт
+                  </Link>
                   {/* Переоткрыть можно только последнюю смену: после более поздней — 409 (ADR-071). */}
                   {owner && pastPager.page === 0 && i === 0 && s.counted_tyiyn !== null && !shift && (
                     <Button
@@ -532,6 +549,7 @@ export default function Shift() {
                       Переоткрыть
                     </Button>
                   )}
+                  </div>
                 </td>
               </tr>
             ))}

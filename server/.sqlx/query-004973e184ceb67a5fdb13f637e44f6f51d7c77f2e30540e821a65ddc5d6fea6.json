@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name from services where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "004973e184ceb67a5fdb13f637e44f6f51d7c77f2e30540e821a65ddc5d6fea6"
+}

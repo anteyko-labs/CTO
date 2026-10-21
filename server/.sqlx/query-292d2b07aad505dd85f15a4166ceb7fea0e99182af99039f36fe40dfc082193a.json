@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.name from shift_handovers h\n           join shift_closes c on c.id = h.close_id\n           join cash_transfers t on t.id = h.transfer_id\n           join cash_accounts a on a.id = t.to_account_id\n           where h.shift_id = $1\n             and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n             and not exists (select 1 from cash_transfers x where x.reversal_of = t.id)\n           order by c.seq desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "292d2b07aad505dd85f15a4166ceb7fea0e99182af99039f36fe40dfc082193a"
+}

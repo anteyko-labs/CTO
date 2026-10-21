@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.id, t.created_at, t.amount_tyiyn, t.comment, t.reversal_of,\n                  t.from_account_id, fa.name as from_name, fa.owner_only as from_owner_only,\n                  t.to_account_id, ta.name as to_name, ta.owner_only as to_owner_only,\n                  u.full_name as user_name\n           from cash_transfers t\n           join cash_accounts fa on fa.id = t.from_account_id\n           join cash_accounts ta on ta.id = t.to_account_id\n           join users u on u.id = t.user_id\n           where t.branch_id = $1 and t.created_at >= $2 and t.created_at <= coalesce($3, now())\n           order by t.created_at, t.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "from_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "from_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "from_owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "to_account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "to_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "to_owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "user_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ed70a5d76f0c0ba7723694d331e57f7ae93f4a5c4e165ec5c6bc86a700cc9a18"
+}
