@@ -175,10 +175,10 @@ export function qs(params: Record<string, string | number | boolean | undefined 
  * Файл телом запроса как есть (фото накладной, SPEC-29 §3): тип — в заголовке, повтор той же
  * загрузки сервер узнаёт по `op_id` в адресе. Ответ — JSON, ошибки — как у остальных запросов.
  */
-export async function upload<T>(path: string, data: Blob, contentType: string): Promise<T> {
+export async function upload<T>(path: string, data: Blob, contentType: string, timeoutMs = 120_000): Promise<T> {
   let res: Response
   const abort = new AbortController()
-  const timer = setTimeout(() => abort.abort(), 120_000)
+  const timer = setTimeout(() => abort.abort(), timeoutMs)
   try {
     res = await fetch(`/api/v1${path}`, {
       method: 'POST',

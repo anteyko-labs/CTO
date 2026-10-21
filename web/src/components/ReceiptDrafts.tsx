@@ -95,7 +95,8 @@ export function FillFromPhoto({ onDraft, disabled }: { onDraft: (d: Draft) => vo
     if (!f) return
     void act.run(async () => {
       const p = await prepareFile(f)
-      const d = await upload<Draft>(`/receipt-drafts${qs({ op_id: newOpId(), name: p.name })}`, p.blob, p.type)
+      // Распознавание — обычно до минуты, с повторами сервиса — до четырёх: ждём пять.
+      const d = await upload<Draft>(`/receipt-drafts${qs({ op_id: newOpId(), name: p.name })}`, p.blob, p.type, 300_000)
       onDraft(d)
     })
   }
@@ -108,7 +109,7 @@ export function FillFromPhoto({ onDraft, disabled }: { onDraft: (d: Draft) => vo
         <Button variant="ghost" disabled={disabled || act.busy} onClick={() => file.current?.click()}>
           из файла
         </Button>
-        {act.busy && <span className="text-xs text-slate-500">распознавание занимает до минуты</span>}
+        {act.busy && <span className="text-xs text-slate-500">распознавание обычно занимает до минуты</span>}
       </div>
       <input ref={camera} type="file" accept="image/*" capture="environment" className="hidden" onChange={pick} />
       <input

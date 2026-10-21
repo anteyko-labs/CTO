@@ -27,8 +27,10 @@ const JPEG: [u8; 12] = [0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0
 
 #[derive(Clone, Default)]
 struct Fake {
+    /// Ответы по очереди: код и тело; `Value::Null` — пустое тело.
     replies: Arc<Mutex<VecDeque<(u16, Value)>>>,
     seen: Arc<Mutex<Vec<(axum::http::HeaderMap, Value)>>>,
+    paths: Arc<Mutex<Vec<String>>>,
 }
 
 impl Fake {
@@ -46,31 +48,48 @@ impl Fake {
     fn key(&self, i: usize) -> String {
         self.seen.lock().unwrap()[i]
             .0
-            .get("x-api-key")
+            .get("x-goog-api-key")
             .map(|v| v.to_str().unwrap().to_string())
             .unwrap_or_default()
+    }
+    fn path(&self, i: usize) -> String {
+        self.paths.lock().unwrap()[i].clone()
     }
 }
 
 async fn fake_messages(
     axum::extract::State(f): axum::extract::State<Fake>,
+    axum::extract::Path(path): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<Value>,
-) -> (StatusCode, axum::Json<Value>) {
+) -> (StatusCode, String) {
+    f.paths.lock().unwrap().push(path);
     f.seen.lock().unwrap().push((headers, body));
     match f.replies.lock().unwrap().pop_front() {
-        Some((code, v)) => (StatusCode::from_u16(code).unwrap(), axum::Json(v)),
+        Some((code, Value::Null)) => (StatusCode::from_u16(code).unwrap(), String::new()),
+        Some((code, v)) => (StatusCode::from_u16(code).unwrap(), v.to_string()),
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({ "type": "error", "error": { "type": "api_error" } })),
+            error(500, "INTERNAL").to_string(),
         ),
     }
+}
+
+/// Ошибка сервиса: `{"error": {"code", "message", "status"}}`.
+fn error(code: u16, status: &str) -> Value {
+    json!({ "error": { "code": code, "message": "test", "status": status } })
+}
+
+/// Подключение к подставному сервису; повторы — без пауз.
+fn assistant(url: String) -> Assistant {
+    Assistant::new(KEY.into(), Some(url), None, 100)
+        .with_retry_pauses(vec![std::time::Duration::ZERO; 2])
 }
 
 async fn fake_service() -> (String, Fake) {
     let fake = Fake::default();
     let router = Router::new()
-        .route("/v1/messages", axum::routing::post(fake_messages))
+        .route("/v1beta/models/{*rest}", axum::routing::post(fake_messages))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -80,18 +99,20 @@ async fn fake_service() -> (String, Fake) {
     (format!("http://{addr}"), fake)
 }
 
-/// Ответ сервиса: размышление (пустое) и текст — JSON накладной.
+/// Ответ сервиса: размышление и текст — JSON накладной (с подписью размышления).
 fn answer(invoice: &Value) -> Value {
     json!({
-        "id": "msg_1",
-        "type": "message",
-        "role": "assistant",
-        "content": [
-            { "type": "thinking", "thinking": "", "signature": "sig" },
-            { "type": "text", "text": invoice.to_string() }
-        ],
-        "stop_reason": "end_turn",
-        "usage": { "input_tokens": 1500, "output_tokens": 300 }
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    { "text": "Читаю накладную.", "thought": true },
+                    { "text": invoice.to_string(), "thoughtSignature": "sig" }
+                ]
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": { "promptTokenCount": 1500, "candidatesTokenCount": 250, "thoughtsTokenCount": 50 }
     })
 }
 
@@ -323,7 +344,7 @@ async fn audit_count(pool: &PgPool, action: &str) -> i64 {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn photo_draft_fills_receipt_and_photo_goes_to_it(pool: PgPool) {
     let (url, fake) = fake_service().await;
-    let w = setup(pool, Some(Assistant::new(KEY.into(), Some(url), None, 100))).await;
+    let w = setup(pool, Some(assistant(url))).await;
     let supplier_id = supplier(&w, "Автоснаб", "0123-4567-8901-23").await;
     fake.push(200, answer(&invoice()));
 
@@ -374,24 +395,25 @@ async fn photo_draft_fills_receipt_and_photo_goes_to_it(pool: PgPool) {
     let reqs = fake.requests();
     assert_eq!(reqs.len(), 1);
     let r = &reqs[0];
-    assert_eq!(r["model"], DEFAULT_INVOICE_MODEL);
+    assert_eq!(
+        fake.path(0),
+        format!("{DEFAULT_INVOICE_MODEL}:generateContent")
+    );
     assert_eq!(fake.key(0), KEY);
-    let block = &r["messages"][0]["content"][0];
-    assert_eq!(block["type"], "image");
-    assert_eq!(block["source"]["type"], "base64");
-    assert_eq!(block["source"]["media_type"], "image/jpeg");
     assert!(
-        block["source"]["data"]
+        r["systemInstruction"]["parts"][0]["text"]
             .as_str()
             .unwrap()
-            .starts_with("/9j/4A")
+            .contains("накладн")
     );
-    assert_eq!(r["output_config"]["format"]["type"], "json_schema");
-    assert_eq!(
-        r["output_config"]["format"]["schema"]["additionalProperties"],
-        false
-    );
-    assert_eq!(r["fallbacks"], "default");
+    let block = &r["contents"][0]["parts"][1]["inline_data"];
+    assert_eq!(block["mime_type"], "image/jpeg");
+    assert!(block["data"].as_str().unwrap().starts_with("/9j/4A"));
+    let config = &r["generationConfig"];
+    assert_eq!(config["responseMimeType"], "application/json");
+    assert_eq!(config["responseJsonSchema"]["type"], "object");
+    assert_eq!(config["thinkingConfig"]["thinkingLevel"], "low");
+    assert_eq!(config["responseJsonSchema"]["additionalProperties"], false);
 
     // Повтор той же загрузки — тот же черновик, сервис второй раз не спрашивают.
     let (s, again) = upload(&w.app, &w.admin, op, &JPEG).await;
@@ -561,7 +583,7 @@ async fn photo_draft_fills_receipt_and_photo_goes_to_it(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn supplier_by_name_and_unknown_supplier(pool: PgPool) {
     let (url, fake) = fake_service().await;
-    let w = setup(pool, Some(Assistant::new(KEY.into(), Some(url), None, 100))).await;
+    let w = setup(pool, Some(assistant(url))).await;
     let supplier_id = supplier(&w, "Автоснаб", "").await;
     // ИНН не совпал ни с кем — по названию без кавычек и формы собственности.
     fake.push(200, answer(&invoice()));
@@ -621,7 +643,7 @@ async fn supplier_by_name_and_unknown_supplier(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn without_key_failure_fallback_and_hour_limit(pool: PgPool) {
+async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
     // Без ключа: экран — понятный отказ, бот — фото сохранено без распознавания.
     let w = setup(pool.clone(), None).await;
     let (s, v) = upload(&w.app, &w.owner, Uuid::now_v7(), &JPEG).await;
@@ -721,24 +743,22 @@ async fn without_key_failure_fallback_and_hour_limit(pool: PgPool) {
 
     // Сервис ответил ошибкой — черновик с фото без строк и «Не удалось распознать».
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(KEY.into(), Some(url), None, 100)
-        .with_invoice_model(Some("invoice-test-model".into()));
-    fake.push(
-        500,
-        json!({ "type": "error", "error": { "type": "api_error" } }),
-    );
+    let a = assistant(url).with_invoice_model(Some("invoice-test-model".into()));
+    fake.push(400, error(400, "INVALID_ARGUMENT"));
     let text = receipt_drafts::from_bot(&w.pool, Some(&a), chat, chat, file())
         .await
         .unwrap();
     assert!(text.starts_with(receipt_drafts::FAILED), "{text}");
-    assert_eq!(fake.requests()[0]["model"], "invoice-test-model");
+    assert_eq!(fake.path(0), "invoice-test-model:generateContent");
+    // Ошибка в запросе не повторяется.
+    assert_eq!(fake.requests().len(), 1);
     let failed: (String, Option<String>) =
         sqlx::query_as("select recognition, error from receipt_drafts where recognition <> 'off'")
             .fetch_one(&w.pool)
             .await
             .unwrap();
     assert_eq!(failed.0, "failed");
-    assert!(failed.1.unwrap().contains("500"));
+    assert!(failed.1.unwrap().contains("400 INVALID_ARGUMENT"));
     // Ключ сервиса никуда не записан.
     let leaked: i64 = sqlx::query_scalar(
         "select (select count(*) from receipt_drafts where receipt_drafts::text like '%' || $1 || '%')
@@ -750,8 +770,9 @@ async fn without_key_failure_fallback_and_hour_limit(pool: PgPool) {
     .unwrap();
     assert_eq!(leaked, 0);
 
-    // Резервная модель не принята сервисом — повтор без неё, распознано.
-    fake.push(400, json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "fallbacks: not available" } }));
+    // Перегрузка и пустой 404 сервиса — повтор, с третьей попытки распознано.
+    fake.push(503, error(503, "UNAVAILABLE"));
+    fake.push(404, Value::Null);
     fake.push(200, answer(&invoice()));
     let text = receipt_drafts::from_bot(&w.pool, Some(&a), chat, chat, file())
         .await
@@ -760,13 +781,19 @@ async fn without_key_failure_fallback_and_hour_limit(pool: PgPool) {
         text.starts_with("Накладная распознана: ОсОО \"Автоснаб\", 4 строки, итого 11 200"),
         "{text}"
     );
-    let reqs = fake.requests();
-    assert_eq!(reqs.len(), 3);
-    assert_eq!(reqs[1]["fallbacks"], "default");
-    assert!(reqs[2].get("fallbacks").is_none());
+    assert_eq!(fake.requests().len(), 4);
+    // Ответ оборван по длине — не распознано, повтора нет.
+    let mut cut = answer(&invoice());
+    cut["candidates"][0]["finishReason"] = json!("MAX_TOKENS");
+    fake.push(200, cut);
+    let text = receipt_drafts::from_bot(&w.pool, Some(&a), chat, chat, file())
+        .await
+        .unwrap();
+    assert!(text.starts_with(receipt_drafts::FAILED), "{text}");
+    assert_eq!(fake.requests().len(), 5);
 
-    // Лимит часа общий с вопросами: 17 вопросов + 2 накладные = 19 — ещё можно; 20 — нет.
-    for _ in 0..17 {
+    // Лимит часа общий с вопросами: 16 вопросов + 3 накладные = 19 — ещё можно; 20 — нет.
+    for _ in 0..16 {
         sqlx::query("insert into bot_questions (id, chat_id, user_id, branch_id, question) values ($1, $2, $3, $4, 'вопрос')")
             .bind(Uuid::now_v7())
             .bind(chat)
@@ -788,7 +815,7 @@ async fn without_key_failure_fallback_and_hour_limit(pool: PgPool) {
         text.starts_with("Лимит распознаваний на этот час исчерпан"),
         "{text}"
     );
-    assert_eq!(fake.requests().len(), 4);
+    assert_eq!(fake.requests().len(), 6);
     let limited: i64 =
         sqlx::query_scalar("select count(*) from receipt_drafts where recognition = 'limit'")
             .fetch_one(&w.pool)
@@ -812,13 +839,13 @@ async fn without_key_failure_fallback_and_hour_limit(pool: PgPool) {
         "{}",
         ans.text
     );
-    assert_eq!(fake.requests().len(), 4);
+    assert_eq!(fake.requests().len(), 6);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn screen_limit_is_429(pool: PgPool) {
     let (url, fake) = fake_service().await;
-    let w = setup(pool, Some(Assistant::new(KEY.into(), Some(url), None, 100))).await;
+    let w = setup(pool, Some(assistant(url))).await;
     for _ in 0..20 {
         sqlx::query("insert into bot_questions (id, chat_id, user_id, branch_id, question) values ($1, 1, $2, $3, 'вопрос')")
             .bind(Uuid::now_v7())
@@ -878,7 +905,7 @@ fn photo_update(chat: i64, extra: Value) -> Value {
 async fn bot_photo_from_owner_is_accepted_others_refused(pool: PgPool) {
     use avtodom_server::api::telegram::{Api, Keys, handle_update};
     let (url, _fake) = fake_service().await;
-    let a = Assistant::new(KEY.into(), Some(url), None, 100);
+    let a = assistant(url);
     let w = setup(pool, Some(a.clone())).await;
     let chat = 960_001i64;
     link_owner_chat(&w, chat).await;

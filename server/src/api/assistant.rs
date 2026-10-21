@@ -1,19 +1,23 @@
 //! Вопросы владельца боту обычным текстом (SPEC-21, ADR-060). Сюда текст приходит только из
 //! режима «💬 Спросить» чата владельца и только о делах точки (ADR-067).
 //!
-//! Текст разбирает языковая модель Claude (Anthropic) через Messages API: модель только выбирает
-//! отчёт из закрытого списка и пишет ответ. Операции владельца (SPEC-24, ADR-068) модель лишь
-//! предлагает черновиком (`api::bot_drafts`): сервер проверяет его и показывает владельцу,
-//! проводит только кнопка «✅ Провести» — инструмента, который проводит, у модели нет.
-//! Цифры приходят из тех же расчётов, что экраны программы, готовыми строками — модель деньги
-//! не считает и не округляет (инвариант 1).
+//! Текст разбирает языковая модель Google Gemini через Gemini API (`generateContent`): модель
+//! только выбирает отчёт из закрытого списка (вызов функций) и пишет ответ. Операции владельца
+//! (SPEC-24, ADR-068) модель лишь предлагает черновиком (`api::bot_drafts`): сервер проверяет его
+//! и показывает владельцу, проводит только кнопка «✅ Провести» — функции, которая проводит,
+//! у модели нет. Цифры приходят из тех же расчётов, что экраны программы, готовыми строками —
+//! модель деньги не считает и не округляет (инвариант 1).
 //! Это единственный модуль, где названы поставщик и модель (`.githooks/forbidden-allow`).
 //! Запросы — через `reqwest`: официальной библиотеки поставщика для Rust нет.
 //!
 //! Здесь же — чтение фото документа по JSON-схеме (`read_document`): накладная по фото
 //! (SPEC-30 §9, ADR-098). Что извлекать, решает `api::receipt_drafts`; здесь только запрос:
-//! снимок блоком `image` (PDF — `document`) в base64, ответ строго по схеме
-//! (`output_config.format`), модель — `ASSISTANT_INVOICE_MODEL` (по умолчанию Claude Opus 5.5).
+//! снимок или PDF частью `inline_data` в base64, ответ строго по схеме
+//! (`responseMimeType: application/json` и `responseJsonSchema`), модель —
+//! `ASSISTANT_INVOICE_MODEL`.
+//!
+//! Обмен с сервисом — один клиент с повторами (`generate`): 5xx, 429, пустой 404 и обрыв
+//! соединения повторяются ещё до двух раз с паузами 2 и 5 с.
 
 use std::time::{Duration, Instant};
 
@@ -31,19 +35,19 @@ use crate::domain::money::{format_som, format_som_signed};
 use crate::error::{AppError, AppResult};
 use crate::ops;
 
-/// Адрес API по умолчанию; `ASSISTANT_API_URL` меняет его только для тестов.
-pub const DEFAULT_URL: &str = "https://api.anthropic.com";
-/// Модель по умолчанию (SPEC-21); меняется переменной `ASSISTANT_MODEL`.
-pub const DEFAULT_MODEL: &str = "claude-haiku-5-5";
-/// Модель для накладных по фото (ADR-098): точнее, чем для вопросов; меняется переменной
-/// `ASSISTANT_INVOICE_MODEL`.
-pub const DEFAULT_INVOICE_MODEL: &str = "claude-opus-5-5";
-const API_VERSION: &str = "2023-06-01";
-const MAX_TOKENS: u32 = 4096;
+/// Адрес Gemini API по умолчанию; `ASSISTANT_API_URL` меняет его (для тестов).
+pub const DEFAULT_URL: &str = "https://generativelanguage.googleapis.com";
+/// Модель по умолчанию для вопросов (SPEC-21); меняется переменной `ASSISTANT_MODEL`.
+/// Модели 2.5 новым ключам уже недоступны (404).
+pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
+/// Модель для накладных по фото (ADR-098); меняется переменной `ASSISTANT_INVOICE_MODEL`.
+pub const DEFAULT_INVOICE_MODEL: &str = "gemini-3.8-flash";
+/// Паузы перед повторами запроса: всего до трёх попыток (5xx, 429, пустой 404).
+const RETRY_PAUSES: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
 /// Не больше 4 вызовов отчётов на один вопрос — считаются вызовы, а не запросы к модели.
 const MAX_TOOL_CALLS: usize = 4;
-/// Ответ ждём не дольше 30 секунд на весь вопрос.
-const DEADLINE: Duration = Duration::from_secs(30);
+/// Ответ на вопрос ждём не дольше 90 секунд: сервис отвечает от 5 до 60 секунд.
+const DEADLINE: Duration = Duration::from_secs(90);
 /// Обращений к сервису в час на филиал — вопросы и накладные по фото вместе (ADR-098).
 pub const HOURLY_LIMIT: i64 = 20;
 /// Память разговора: последние 6 сообщений за 30 минут.
@@ -101,6 +105,8 @@ pub struct Assistant {
     model: String,
     invoice_model: String,
     daily_limit: i64,
+    /// Паузы перед повторами запроса; пусто — без повторов.
+    pauses: Vec<Duration>,
 }
 
 impl std::fmt::Debug for Assistant {
@@ -126,7 +132,14 @@ impl Assistant {
             model: model.unwrap_or_else(|| DEFAULT_MODEL.into()),
             invoice_model: DEFAULT_INVOICE_MODEL.into(),
             daily_limit,
+            pauses: RETRY_PAUSES.to_vec(),
         }
+    }
+
+    /// Другие паузы перед повторами (для тестов); пусто — одна попытка.
+    pub fn with_retry_pauses(mut self, pauses: Vec<Duration>) -> Self {
+        self.pauses = pauses;
+        self
     }
 
     /// Модель для накладных по фото (`ASSISTANT_INVOICE_MODEL`); `None` — по умолчанию.
@@ -195,25 +208,106 @@ pub struct Answer {
     pub draft: Option<Shown>,
 }
 
-#[derive(Deserialize)]
-struct ApiResponse {
+/// Ответ `generateContent`: кандидаты (берём первый), причина отказа, расход.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GenResponse {
     #[serde(default)]
-    content: Vec<Value>,
-    stop_reason: Option<String>,
+    candidates: Vec<Candidate>,
     #[serde(default)]
-    usage: Usage,
+    prompt_feedback: Option<Value>,
+    #[serde(default)]
+    usage_metadata: GenUsage,
 }
 
 #[derive(Deserialize, Default)]
-struct Usage {
+#[serde(rename_all = "camelCase")]
+struct Candidate {
+    /// `{"role": "model", "parts": [...]}` — как есть, с подписями размышлений.
     #[serde(default)]
-    input_tokens: i64,
+    content: Option<Value>,
     #[serde(default)]
-    output_tokens: i64,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GenUsage {
     #[serde(default)]
-    cache_read_input_tokens: Option<i64>,
+    prompt_token_count: i64,
     #[serde(default)]
-    cache_creation_input_tokens: Option<i64>,
+    tool_use_prompt_token_count: i64,
+    #[serde(default)]
+    candidates_token_count: i64,
+    #[serde(default)]
+    thoughts_token_count: i64,
+}
+
+impl GenUsage {
+    /// Входные токены (с закешированными — они входят в `promptTokenCount`).
+    fn input(&self) -> i64 {
+        self.prompt_token_count
+            .saturating_add(self.tool_use_prompt_token_count)
+    }
+
+    /// Выходные токены вместе с размышлениями — так их считают в оплате.
+    fn output(&self) -> i64 {
+        self.candidates_token_count
+            .saturating_add(self.thoughts_token_count)
+    }
+}
+
+impl GenResponse {
+    /// Первый кандидат; нет — почему: отказ по правилам сервиса или пустой ответ.
+    fn first(self) -> Result<(Value, Option<String>), Failure> {
+        let block = self
+            .prompt_feedback
+            .as_ref()
+            .and_then(|f| f.get("blockReason"))
+            .and_then(Value::as_str)
+            .map(|r| r.chars().take(MAX_ARG_CHARS).collect::<String>());
+        match self.candidates.into_iter().next() {
+            Some(c) => Ok((c.content.unwrap_or(Value::Null), c.finish_reason)),
+            None => Err(Failure::Unusable(match block {
+                Some(r) => format!("сервис отказался отвечать: {r}"),
+                None => "пустой ответ".into(),
+            })),
+        }
+    }
+}
+
+/// Части ответа модели.
+fn parts(content: &Value) -> &[Value] {
+    content
+        .get("parts")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Текст ответа: части с текстом, кроме размышлений (`thought: true`); подписи размышлений
+/// (`thoughtSignature`) не нужны.
+fn answer_text(content: &Value) -> String {
+    parts(content)
+        .iter()
+        .filter(|p| p.get("thought").and_then(Value::as_bool) != Some(true))
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect()
+}
+
+/// Почему модель закончила не так, как нужно: обрыв по длине, отказ, другое.
+fn bad_finish(reason: Option<&str>) -> Option<Failure> {
+    match reason {
+        None | Some("STOP") => None,
+        Some("MAX_TOKENS") => Some(Failure::Unusable("ответ оборван по длине".into())),
+        Some(
+            "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "IMAGE_SAFETY"
+            | "LANGUAGE",
+        ) => Some(Failure::Unusable("модель отказалась отвечать".into())),
+        Some(other) => Some(Failure::Unusable(format!(
+            "неожиданное завершение: {}",
+            other.chars().take(MAX_ARG_CHARS).collect::<String>()
+        ))),
+    }
 }
 
 /// Для чего вызываются отчёты: филиал и права владельца, чат — для черновиков.
@@ -295,17 +389,21 @@ pub async fn answer(
     let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
         .fetch_one(&mut *conn)
         .await?;
+    // Память разговора — простым текстом; ответы бота в ней — роль модели.
     let mut messages: Vec<Value> = history
         .iter()
-        .map(|m| json!({ "role": m.role, "content": m.content }))
+        .map(|m| {
+            let role = if m.role == "user" { "user" } else { "model" };
+            json!({ "role": role, "parts": [{ "text": m.content }] })
+        })
         .collect();
     messages.push(json!({
         "role": "user",
-        "content": format!(
+        "parts": [{ "text": format!(
             "Сегодня {}, {} (Бишкек).\n\n{question}",
             today.format("%d.%m.%Y"),
             weekday(today)
-        ),
+        ) }],
     }));
 
     let ctx = ToolCtx {
@@ -472,7 +570,7 @@ async fn converse(
     ctx: &ToolCtx,
     mut messages: Vec<Value>,
 ) -> Outcome {
-    let started = Instant::now();
+    let deadline = Instant::now() + DEADLINE;
     let mut out = Outcome {
         answer: Err(Failure::Unusable("нет ответа".into())),
         tools: Vec::new(),
@@ -482,160 +580,157 @@ async fn converse(
     };
     let mut calls_made = 0usize;
     loop {
-        let Some(left) = DEADLINE
-            .checked_sub(started.elapsed())
-            .filter(|d| !d.is_zero())
-        else {
-            out.answer = Err(Failure::Offline("нет ответа за 30 секунд".into()));
-            return out;
-        };
-        let resp = match call(a, &messages, left).await {
+        let body = json!({
+            // Инструкция и список отчётов одинаковы для всех вопросов: сервис кеширует их сам.
+            "systemInstruction": { "parts": [{ "text": SYSTEM }] },
+            "contents": messages,
+            "tools": [{ "functionDeclarations": tools() }],
+            "toolConfig": { "functionCallingConfig": { "mode": "AUTO" } },
+            "generationConfig": { "thinkingConfig": { "thinkingLevel": "low" } },
+        });
+        let resp = match generate(a, &a.model, &body, deadline, DEADLINE, "разбор вопросов").await
+        {
             Ok(r) => r,
             Err(f) => {
                 out.answer = Err(f);
                 return out;
             }
         };
-        out.input_tokens = out
-            .input_tokens
-            .saturating_add(resp.usage.input_tokens)
-            .saturating_add(resp.usage.cache_read_input_tokens.unwrap_or(0))
-            .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
-        out.output_tokens = out.output_tokens.saturating_add(resp.usage.output_tokens);
-        match resp.stop_reason.as_deref() {
-            Some("tool_use") => {
-                // Блоки читаем по типу, не по месту: перед вызовом могут идти размышления и текст.
-                let calls: Vec<(String, String, Value)> = resp
-                    .content
-                    .iter()
-                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
-                    .map(|b| {
-                        (
-                            b.get("id")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            b.get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            b.get("input").cloned().unwrap_or(Value::Null),
-                        )
-                    })
-                    .collect();
-                if calls.is_empty() {
-                    out.answer = Err(Failure::Unusable("вызов отчёта без отчёта".into()));
-                    return out;
-                }
-                calls_made = calls_made.saturating_add(calls.len());
-                if calls_made > MAX_TOOL_CALLS {
-                    out.answer = Err(Failure::Unusable(format!(
-                        "больше {MAX_TOOL_CALLS} обращений к отчётам"
-                    )));
-                    return out;
-                }
-                // Ответ модели возвращаем целиком и без изменений, вместе с блоками размышлений.
-                messages.push(json!({ "role": "assistant", "content": resp.content }));
-                let mut results = Vec::with_capacity(calls.len());
-                for (id, name, input) in calls {
-                    let r = if is_draft_tool(&name) {
-                        match draft_tool(conn, ctx, &name, &input).await {
-                            Ok((text, shown)) => {
-                                if shown.is_some() {
-                                    out.draft = shown;
-                                }
-                                Ok(text)
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        run_tool(conn, ctx, &name, &input).await
-                    };
-                    out.tools.push(json!({
-                        "name": name.chars().take(MAX_ARG_CHARS).collect::<String>(),
-                        "input": input,
-                        "error": r.is_err(),
-                    }));
-                    results.push(match r {
-                        Ok(text) => json!({
-                            "type": "tool_result",
-                            "tool_use_id": id,
-                            "content": text,
-                        }),
-                        Err(text) => json!({
-                            "type": "tool_result",
-                            "tool_use_id": id,
-                            "content": text,
-                            "is_error": true,
-                        }),
-                    });
-                }
-                messages.push(json!({ "role": "user", "content": results }));
-            }
-            Some("end_turn") | Some("stop_sequence") => {
-                let text = resp
-                    .content
-                    .iter()
-                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                    .filter_map(|b| b.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let text = text.trim();
-                out.answer = if text.is_empty() {
-                    Err(Failure::Unusable("пустой ответ".into()))
-                } else {
-                    Ok(text.chars().take(MAX_ANSWER_CHARS).collect())
-                };
+        out.input_tokens = out.input_tokens.saturating_add(resp.usage_metadata.input());
+        out.output_tokens = out
+            .output_tokens
+            .saturating_add(resp.usage_metadata.output());
+        let (mut content, finish) = match resp.first() {
+            Ok(c) => c,
+            Err(f) => {
+                out.answer = Err(f);
                 return out;
             }
-            Some("max_tokens") => {
-                out.answer = Err(Failure::Unusable("ответ оборван по длине".into()));
+        };
+        // Вызовы отчётов читаем по виду части, не по месту: перед ними бывают размышления и текст.
+        let calls: Vec<(Option<Value>, String, Value)> = parts(&content)
+            .iter()
+            .filter_map(|p| p.get("functionCall"))
+            .map(|c| {
+                (
+                    c.get("id").cloned(),
+                    c.get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    c.get("args").cloned().unwrap_or_else(|| json!({})),
+                )
+            })
+            .collect();
+        if calls.is_empty() {
+            if let Some(f) = bad_finish(finish.as_deref()) {
+                out.answer = Err(f);
                 return out;
             }
-            Some("refusal") => {
-                out.answer = Err(Failure::Unusable("модель отказалась отвечать".into()));
-                return out;
-            }
-            other => {
-                out.answer = Err(Failure::Unusable(format!(
-                    "неожиданное завершение: {}",
-                    other
-                        .unwrap_or("нет")
-                        .chars()
-                        .take(MAX_ARG_CHARS)
-                        .collect::<String>()
-                )));
-                return out;
-            }
+            let text = answer_text(&content);
+            let text = text.trim();
+            out.answer = if text.is_empty() {
+                Err(Failure::Unusable("пустой ответ".into()))
+            } else {
+                Ok(text.chars().take(MAX_ANSWER_CHARS).collect())
+            };
+            return out;
         }
+        calls_made = calls_made.saturating_add(calls.len());
+        if calls_made > MAX_TOOL_CALLS {
+            out.answer = Err(Failure::Unusable(format!(
+                "больше {MAX_TOOL_CALLS} обращений к отчётам"
+            )));
+            return out;
+        }
+        // Ответ модели возвращаем целиком и без изменений — с размышлениями и их подписями
+        // (иначе сервис отвечает 400).
+        if let Some(obj) = content.as_object_mut() {
+            obj.entry("role").or_insert_with(|| json!("model"));
+        }
+        messages.push(content);
+        let mut results = Vec::with_capacity(calls.len());
+        for (id, name, input) in calls {
+            let r = if is_draft_tool(&name) {
+                match draft_tool(conn, ctx, &name, &input).await {
+                    Ok((text, shown)) => {
+                        if shown.is_some() {
+                            out.draft = shown;
+                        }
+                        Ok(text)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                run_tool(conn, ctx, &name, &input).await
+            };
+            out.tools.push(json!({
+                "name": name.chars().take(MAX_ARG_CHARS).collect::<String>(),
+                "input": input,
+                "error": r.is_err(),
+            }));
+            // Ответ функции — объект: результат или ошибка в параметрах.
+            let response = match r {
+                Ok(text) => json!({ "result": text }),
+                Err(text) => json!({ "error": text }),
+            };
+            let mut part = json!({ "name": name, "response": response });
+            if let (Some(id), Some(obj)) = (id, part.as_object_mut()) {
+                obj.insert("id".into(), id);
+            }
+            results.push(json!({ "functionResponse": part }));
+        }
+        // Все ответы на вызовы этого шага — одним сообщением.
+        messages.push(json!({ "role": "user", "parts": results }));
     }
 }
 
-/// Один запрос к Messages API.
-async fn call(
+/// Запрос `generateContent` с повторами: 5xx, 429, пустой 404 и обрыв соединения — ещё до двух
+/// попыток (паузы 2 и 5 с), пока не вышло время. Попытка — не дольше `per_try` и оставшегося.
+async fn generate(
     a: &Assistant,
-    messages: &[Value],
+    model: &str,
+    body: &Value,
+    deadline: Instant,
+    per_try: Duration,
+    what: &'static str,
+) -> Result<GenResponse, Failure> {
+    let mut attempt = 0usize;
+    loop {
+        let Some(left) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+        else {
+            return Err(Failure::Offline("нет ответа вовремя".into()));
+        };
+        let (result, retry) = generate_once(a, model, body, left.min(per_try), what).await;
+        let f = match result {
+            Ok(r) => return Ok(r),
+            Err(f) => f,
+        };
+        let pause = match a.pauses.get(attempt) {
+            Some(p) if retry && Instant::now() + *p < deadline => *p,
+            _ => return Err(f),
+        };
+        attempt += 1;
+        tracing::info!(attempt, what, "сервис: повтор запроса");
+        tokio::time::sleep(pause).await;
+    }
+}
+
+/// Одна попытка. Второе значение — стоит ли повторить.
+async fn generate_once(
+    a: &Assistant,
+    model: &str,
+    body: &Value,
     timeout: Duration,
-) -> Result<ApiResponse, Failure> {
-    let body = json!({
-        "model": a.model,
-        "max_tokens": MAX_TOKENS,
-        // Инструкция и список отчётов одинаковы для всех вопросов — кешируются.
-        "system": [{
-            "type": "text",
-            "text": SYSTEM,
-            "cache_control": { "type": "ephemeral" },
-        }],
-        "tools": tools(),
-        "messages": messages,
-        "output_config": { "effort": "low" },
-    });
+    what: &'static str,
+) -> (Result<GenResponse, Failure>, bool) {
     let sent = a
         .http
-        .post(format!("{}/v1/messages", a.url))
-        .header("x-api-key", &a.key)
-        .header("anthropic-version", API_VERSION)
-        .json(&body)
+        .post(format!("{}/v1beta/models/{model}:generateContent", a.url))
+        .header("x-goog-api-key", &a.key)
+        .json(body)
         .timeout(timeout)
         .send()
         .await;
@@ -643,57 +738,62 @@ async fn call(
         Ok(r) => r,
         Err(e) => {
             // Текст ошибки сети не берём: только вид, без адресов и заголовков.
-            let what = if e.is_timeout() {
-                "таймаут"
+            let (kind, retry) = if e.is_timeout() {
+                ("таймаут", false)
             } else if e.is_connect() {
-                "нет соединения"
+                ("нет соединения", true)
             } else {
-                "ошибка запроса"
+                ("ошибка запроса", false)
             };
-            tracing::warn!(error = what, "разбор вопросов: нет связи");
-            return Err(Failure::Offline(format!("нет связи: {what}")));
+            tracing::warn!(error = kind, what, "сервис: нет связи");
+            return (Err(Failure::Offline(format!("нет связи: {kind}"))), retry);
         }
     };
-    let status = resp.status();
-    if !status.is_success() {
-        // Вид ошибки из ответа сервиса ({"error": {"type": ...}}), без текста и заголовков.
-        let kind = resp
-            .json::<Value>()
-            .await
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        let raw = resp.bytes().await.unwrap_or_default();
+        // Вид ошибки из ответа ({"error": {"code", "message", "status"}}), без текста.
+        let kind = serde_json::from_slice::<Value>(&raw)
             .ok()
             .and_then(|v| {
                 v.get("error")
-                    .and_then(|e| e.get("type"))
+                    .and_then(|e| e.get("status"))
                     .and_then(Value::as_str)
                     .map(|s| s.chars().take(MAX_ARG_CHARS).collect::<String>())
             })
             .unwrap_or_default();
-        let note = a.redact(&format!("сервис ответил {} {kind}", status.as_u16()));
-        // В журнал сервера — только код ответа.
-        tracing::warn!(status = status.as_u16(), "разбор вопросов: ошибка сервиса");
-        return Err(if matches!(status.as_u16(), 400 | 401 | 403) {
+        let empty = raw.iter().all(u8::is_ascii_whitespace);
+        let note = a.redact(format!("сервис ответил {status} {kind}").trim_end());
+        tracing::warn!(status, what, "сервис: ошибка");
+        // Пустой 404 у сервиса бывает мимолётным — его повторяем; 404 с телом — нет модели.
+        let retry = status >= 500 || status == 429 || (status == 404 && empty);
+        let f = if matches!(status, 400 | 401 | 403) || (status == 404 && !empty) {
             Failure::Rejected(note)
         } else {
             Failure::Offline(note)
-        });
+        };
+        return (Err(f), retry);
     }
-    resp.json::<ApiResponse>().await.map_err(|_| {
-        tracing::warn!("разбор вопросов: непонятный ответ сервиса");
-        Failure::Offline("непонятный ответ сервиса".into())
-    })
+    match resp.json::<GenResponse>().await {
+        Ok(r) => (Ok(r), false),
+        Err(_) => {
+            tracing::warn!(what, "сервис: непонятный ответ");
+            (
+                Err(Failure::Offline("непонятный ответ сервиса".into())),
+                false,
+            )
+        }
+    }
 }
 
 // ---------- Чтение документа по фото (SPEC-30 §9, ADR-098) ----------
 
-/// Ответ по фото ждём не дольше 100 секунд: экран ждёт загрузку 120.
-const DOCUMENT_DEADLINE: Duration = Duration::from_secs(100);
-/// Длинная накладная (сотни строк) — длинный ответ; запрос без потока, поэтому не больше 16 000.
-const DOCUMENT_MAX_TOKENS: u32 = 16_000;
-/// Резервная модель, если модель откажется по правилам безопасности: сервис сам выбирает её
-/// по виду отказа (`fallbacks: "default"`).
-const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-/// Снимок в запросе — не больше 5 МБ: предел сервиса на одно изображение.
-pub const MAX_DOCUMENT_BYTES: usize = 5 * 1024 * 1024;
+/// Одна попытка чтения — не дольше 120 секунд: ответ приходит за 5–60 с.
+const DOCUMENT_TRY: Duration = Duration::from_secs(120);
+/// Всё чтение с повторами — не дольше 4 минут (экран ждёт загрузку 5 минут).
+const DOCUMENT_DEADLINE: Duration = Duration::from_secs(240);
+/// Файл в запросе — не больше 4 МБ (весь запрос у сервиса — до 20 МБ).
+pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Итог чтения документа: ответ строго по схеме или причина, почему его нет (для журнала,
 /// без ключа), и расход.
@@ -728,146 +828,60 @@ pub async fn read_document(
         return DocumentRead::failed("пустой файл");
     }
     if data.len() > MAX_DOCUMENT_BYTES {
-        return DocumentRead::failed("файл больше 5 МБ");
+        return DocumentRead::failed("файл больше 4 МБ");
     }
-    let file = match media_type {
-        "image/jpeg" | "image/png" | "image/webp" => json!({
-            "type": "image",
-            "source": { "type": "base64", "media_type": media_type, "data": base64(data) },
-        }),
-        "application/pdf" => json!({
-            "type": "document",
-            "source": { "type": "base64", "media_type": media_type, "data": base64(data) },
-        }),
-        _ => return DocumentRead::failed("вид файла не поддерживается"),
-    };
-    let mut body = json!({
-        "model": a.invoice_model,
-        "max_tokens": DOCUMENT_MAX_TOKENS,
-        "system": system,
-        // Снимок — перед текстом задания.
-        "messages": [{ "role": "user", "content": [file, { "type": "text", "text": prompt }] }],
-        "output_config": {
-            "effort": "medium",
-            "format": { "type": "json_schema", "schema": schema },
+    if !matches!(
+        media_type,
+        "image/jpeg" | "image/png" | "image/webp" | "application/pdf"
+    ) {
+        return DocumentRead::failed("вид файла не поддерживается");
+    }
+    let body = json!({
+        "systemInstruction": { "parts": [{ "text": system }] },
+        "contents": [{
+            "role": "user",
+            "parts": [
+                { "text": prompt },
+                { "inline_data": { "mime_type": media_type, "data": base64(data) } },
+            ],
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": schema,
+            "thinkingConfig": { "thinkingLevel": "low" },
         },
-        "fallbacks": "default",
     });
-    let started = Instant::now();
-    let mut sent = post_document(a, &body, Some(FALLBACK_BETA), DOCUMENT_DEADLINE).await;
-    // Резервная модель — бета-возможность сервиса: если её не приняли, повторяем без неё.
-    if let Err((_, true)) = &sent
-        && let Some(left) = DOCUMENT_DEADLINE
-            .checked_sub(started.elapsed())
-            .filter(|d| !d.is_zero())
+    let deadline = Instant::now() + DOCUMENT_DEADLINE;
+    let resp = match generate(
+        a,
+        &a.invoice_model,
+        &body,
+        deadline,
+        DOCUMENT_TRY,
+        "чтение документа",
+    )
+    .await
     {
-        if let Some(obj) = body.as_object_mut() {
-            obj.remove("fallbacks");
-        }
-        sent = post_document(a, &body, None, left).await;
-    }
-    let resp = match sent {
         Ok(r) => r,
-        Err((f, _)) => return DocumentRead::failed(a.redact(f.note())),
+        Err(f) => return DocumentRead::failed(a.redact(f.note())),
     };
-    let input_tokens = resp
-        .usage
-        .input_tokens
-        .saturating_add(resp.usage.cache_read_input_tokens.unwrap_or(0))
-        .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
-    let output_tokens = resp.usage.output_tokens;
-    let result = match resp.stop_reason.as_deref() {
-        Some("end_turn") | Some("stop_sequence") => {
-            // Перед ответом могут идти блоки размышлений: берём только текст.
-            let text = resp
-                .content
-                .iter()
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
-                .collect::<String>();
-            serde_json::from_str::<Value>(text.trim())
+    let input_tokens = resp.usage_metadata.input();
+    let output_tokens = resp.usage_metadata.output();
+    let result = match resp.first() {
+        Err(f) => Err(f.note().to_string()),
+        Ok((content, finish)) => match bad_finish(finish.as_deref()) {
+            Some(f) => Err(f.note().to_string()),
+            None => serde_json::from_str::<Value>(answer_text(&content).trim())
                 .ok()
                 .filter(Value::is_object)
-                .ok_or_else(|| "ответ не по схеме".to_string())
-        }
-        Some("max_tokens") => Err("ответ оборван по длине".into()),
-        Some("refusal") => Err("сервис отказался читать документ".into()),
-        other => Err(format!(
-            "неожиданное завершение: {}",
-            other
-                .unwrap_or("нет")
-                .chars()
-                .take(MAX_ARG_CHARS)
-                .collect::<String>()
-        )),
+                .ok_or_else(|| "ответ не по схеме".to_string()),
+        },
     };
     DocumentRead {
         result,
         input_tokens,
         output_tokens,
     }
-}
-
-/// Один запрос с документом. `Err((сбой, true))` — сервис не принял бета-возможность
-/// (резервную модель): тогда запрос повторяют без неё.
-async fn post_document(
-    a: &Assistant,
-    body: &Value,
-    beta: Option<&str>,
-    timeout: Duration,
-) -> Result<ApiResponse, (Failure, bool)> {
-    let mut req = a
-        .http
-        .post(format!("{}/v1/messages", a.url))
-        .header("x-api-key", &a.key)
-        .header("anthropic-version", API_VERSION);
-    if let Some(b) = beta {
-        req = req.header("anthropic-beta", b);
-    }
-    let sent = req.json(body).timeout(timeout).send().await;
-    let resp = match sent {
-        Ok(r) => r,
-        Err(e) => {
-            let what = if e.is_timeout() {
-                "таймаут"
-            } else if e.is_connect() {
-                "нет соединения"
-            } else {
-                "ошибка запроса"
-            };
-            tracing::warn!(error = what, "чтение документа: нет связи");
-            return Err((Failure::Offline(format!("нет связи: {what}")), false));
-        }
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        let v = resp.json::<Value>().await.ok();
-        let err = v.as_ref().and_then(|v| v.get("error"));
-        let kind = err
-            .and_then(|e| e.get("type"))
-            .and_then(Value::as_str)
-            .map(|s| s.chars().take(MAX_ARG_CHARS).collect::<String>())
-            .unwrap_or_default();
-        // Текст ошибки не пишем никуда — только смотрим, не о резервной ли модели он.
-        let about_fallback = status.as_u16() == 400
-            && beta.is_some()
-            && err
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-                .is_some_and(|m| m.contains("fallback") || m.contains("anthropic-beta"));
-        let note = a.redact(&format!("сервис ответил {} {kind}", status.as_u16()));
-        tracing::warn!(status = status.as_u16(), "чтение документа: ошибка сервиса");
-        let f = if matches!(status.as_u16(), 400 | 401 | 403) {
-            Failure::Rejected(note)
-        } else {
-            Failure::Offline(note)
-        };
-        return Err((f, about_fallback));
-    }
-    resp.json::<ApiResponse>().await.map_err(|_| {
-        tracing::warn!("чтение документа: непонятный ответ сервиса");
-        (Failure::Offline("непонятный ответ сервиса".into()), false)
-    })
 }
 
 /// Base64 (стандартный алфавит, с `=`) — так сервис принимает файл в запросе.
@@ -915,52 +929,52 @@ fn tools() -> Value {
         {
             "name": "profit_totals",
             "description": "Итоги за период (дни учёта по Бишкеку): число чеков, выручка (товары и работы), закупка проданного, валовая прибыль, оплата труда, комиссия банка, расходы, скидки баллами, недостача / излишек кассы (минус — недостача, плюс — излишек), чистая прибыль. Тот же расчёт, что отчёт о прибыли в программе. Период не больше 366 дней.",
-            "input_schema": period
+            "parametersJsonSchema": period
         },
         {
             "name": "profit_by_day",
             "description": "Те же строки, что profit_totals, отдельно по каждому дню периода. Период не больше 62 дней.",
-            "input_schema": period
+            "parametersJsonSchema": period
         },
         {
             "name": "shift_today",
             "description": "Смена сейчас: открыта ли, номер, кассир, сколько наличных должно быть в кассе, продажи и оплаты по способам, кто сколько заработал за смену.",
-            "input_schema": none
+            "parametersJsonSchema": none
         },
         {
             "name": "money_balances",
             "description": "Деньги сейчас по кассам: «Касса» (наличные), «Счёт» (безнал), «Сейф владельца».",
-            "input_schema": none
+            "parametersJsonSchema": none
         },
         {
             "name": "debtors",
             "description": "Долги сейчас, как экран «Долги»: кто должен точке (общая сумма и список по убыванию долга с просрочкой) и кому должна точка (поставщики и переплаты клиентов).",
-            "input_schema": none
+            "parametersJsonSchema": none
         },
         {
             "name": "client_debt",
             "description": "Долг одного клиента сейчас: долг, лимит, срок оплаты, просрочка и последние 10 записей. Если по запросу найдено несколько клиентов — их список для уточнения.",
-            "input_schema": query("Название, имя, телефон или госномер машины клиента")
+            "parametersJsonSchema": query("Название, имя, телефон или госномер машины клиента")
         },
         {
             "name": "product_info",
             "description": "Товар: остаток на складе, цена продажи, средняя себестоимость, минимальный остаток. До 10 совпадений.",
-            "input_schema": query("Название, бренд, артикул или штрихкод товара")
+            "parametersJsonSchema": query("Название, бренд, артикул или штрихкод товара")
         },
         {
             "name": "low_stock",
             "description": "Товары, у которых остаток ниже минимального (что кончается).",
-            "input_schema": none
+            "parametersJsonSchema": none
         },
         {
             "name": "expenses",
             "description": "Расходы за период по статьям, включая личные расходы владельца, и итог. Зарплата сюда не входит.",
-            "input_schema": period
+            "parametersJsonSchema": period
         },
         {
             "name": "staff_pay_month",
             "description": "Оплата сотрудникам за календарный месяц: остаток на начало, начислено по видам, выплачено, к выплате на конец по каждому сотруднику.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "month": { "type": "string", "description": "Любой день нужного месяца, ГГГГ-ММ-ДД" }
@@ -972,12 +986,12 @@ fn tools() -> Value {
         {
             "name": "recent_events",
             "description": "20 последних важных событий экрана «Уведомления»: возвраты, сторно, смена цен, недостачи, долги сверх лимита, доступы.",
-            "input_schema": none
+            "parametersJsonSchema": none
         },
         {
             "name": "sales_report",
             "description": "Отчёты о продажах, как в программе. report: dashboard — сводка владельца за день или период (без дат — на сейчас) (выручка, прибыль, средний чек, сравнение с вчера, деньги, долги, склад); categories — продажи по категориям товаров за период (выручка, закупка, валовая); hours — продажи по часам за один день (день = to); weekdays — по дням недели и часам за последние 28 дней; checks — чеки за один день (день = to) с оплатами; gifts — подарки за период; staff — кто сколько заработал за период; top — самые продаваемые товары за период (количество, выручка, прибыль, чеков); top_profit — товары, которые больше всех приносят: по валовой прибыли за период; services — замены по видам за период (сколько раз, сколько заплатили клиенты, сколько мастерам, какие масла залиты). Период не больше 366 дней; без дат — сегодня.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "report": { "type": "string", "enum": ["dashboard", "categories", "hours", "weekdays", "checks", "gifts", "staff", "top", "top_profit", "services"] },
@@ -991,7 +1005,7 @@ fn tools() -> Value {
         {
             "name": "money_report",
             "description": "Деньги и смены, как в программе. report: movements — последние движения одной кассы (account — название: «Касса», «Счёт», «Сейф владельца», «Сейф магазина»); shifts — смены за период с закрытием, пересчётом и расхождением; shift — одна смена подробно по номеру (number); expenses_list — расходы за период по документам; bank — экран «Счёт» за период по одному безналичному счёту (account — его название; без него — основной): поступления картой и переводом (чеки и погашения долга), комиссия банка, списания, остаток на начало и конец; accounts — «Обзор счетов»: все кассы и счета с типом (наличный, безналичный), остатком и признаками, итог наличными и безналом; income — «Куда сколько поступило» за период: оплаты чеков по способам (наличные, карта, перевод, долг, баллы, аккумулятор), деньги по кассам, выручка по категориям. Без дат — сегодня.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "report": { "type": "string", "enum": ["movements", "shifts", "shift", "expenses_list", "bank", "accounts", "income"] },
@@ -1007,7 +1021,7 @@ fn tools() -> Value {
         {
             "name": "stock_report",
             "description": "Склад, как в программе. report: stock — остатки и стоимость склада на сейчас (query — фильтр по названию, необязательно); stale — залежалые товары без продаж; receipts — приходы (накладные) за период; revisions — последние ревизии; oil_transfers — последние переливы масла; defects — брак: что ждёт решения владельца и что решено за период (списано, возвращено поставщику); receipts_sold — накладные за период: сколько из привезённого продано, сколько осталось и сколько заработано (оценка). Без дат — сегодня.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "report": { "type": "string", "enum": ["stock", "stale", "receipts", "revisions", "oil_transfers", "defects", "receipts_sold"] },
@@ -1022,7 +1036,7 @@ fn tools() -> Value {
         {
             "name": "party_report",
             "description": "Клиент или поставщик, как в программе. report: card — карточка (баланс, покупки, долг, машины, последние записи); reconciliation — акт сверки за период (без дат — за всё время); loyalty — бонусные баллы клиента; oil_book — масляная книжка машин клиента (можно искать по госномеру); deliveries — что привёз поставщик по товарам за период (без дат — за всё время): количество, сумма, возвраты брака, остаток и оценка, сколько из остатка от него. Если найдено несколько — список для уточнения.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "report": { "type": "string", "enum": ["card", "reconciliation", "loyalty", "oil_book", "deliveries"] },
@@ -1037,7 +1051,7 @@ fn tools() -> Value {
         {
             "name": "draft_expense",
             "description": "Черновик расхода по статье. Ничего не проводит: сервер проверит и покажет черновик владельцу с кнопкой «✅ Провести». Статьи: «На развитие», «Хозтовары», «Налоги», «Личные расходы», «Прочее» (по «Прочее» нужен комментарий) и свои статьи владельца.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "article": { "type": "string", "description": "Статья расхода словами владельца" },
@@ -1053,7 +1067,7 @@ fn tools() -> Value {
         {
             "name": "draft_money",
             "description": "Черновик движения денег: внесение в кассу, изъятие из кассы или перевод между кассами («сдать в сейф» — перевод из «Касса» в «Сейф владельца»). Ничего не проводит: сервер проверит и покажет черновик владельцу.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "operation": { "type": "string", "enum": ["внесение", "изъятие", "перевод"] },
@@ -1070,7 +1084,7 @@ fn tools() -> Value {
         {
             "name": "draft_debt",
             "description": "Черновик по долгу: погашение долга клиентом, оплата поставщику или перенос старого долга из тетради (клиент должен нам или мы должны поставщику). Ничего не проводит: сервер проверит и покажет черновик владельцу.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "operation": { "type": "string", "enum": ["погашение долга клиентом", "оплата поставщику", "перенос долга из тетради"] },
@@ -1086,7 +1100,7 @@ fn tools() -> Value {
         {
             "name": "draft_staff",
             "description": "Черновик по сотруднику: премия, удержание (с причиной), выплата заработанного, аванс сверх заработанного или оклад за месяц. Ничего не проводит: сервер проверит и покажет черновик владельцу.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "operation": { "type": "string", "enum": ["премия", "удержание", "выплата", "аванс", "оклад"] },
@@ -1103,7 +1117,7 @@ fn tools() -> Value {
         {
             "name": "draft_product",
             "description": "Черновик по товару: новая цена продажи (за штуку или канистру), цена закупки для товара, проданного без прихода, или минимальный остаток (штуки; для масла — литры). Ничего не проводит: сервер проверит и покажет черновик владельцу.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "operation": { "type": "string", "enum": ["цена продажи", "цена закупки", "минимальный остаток"] },
@@ -1117,7 +1131,7 @@ fn tools() -> Value {
         {
             "name": "draft_receipt",
             "description": "Черновик прихода товара от поставщика. Строки: товар, количество (штуки или канистры) и цена за единицу — как сказал владелец; сумму строк считает сервер. Оплачен сразу (откуда) или в долг поставщику. Новые товары через бот не заводятся. Ничего не проводит: сервер проверит и покажет черновик владельцу.",
-            "input_schema": {
+            "parametersJsonSchema": {
                 "type": "object",
                 "properties": {
                     "supplier": { "type": "string", "description": "Поставщик (обязателен для прихода в долг)" },

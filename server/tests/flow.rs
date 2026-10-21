@@ -3480,6 +3480,7 @@ enum Step {
 struct FakeService {
     steps: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Step>>>,
     seen: std::sync::Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, serde_json::Value)>>>,
+    paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl FakeService {
@@ -3501,13 +3502,37 @@ impl FakeService {
             .map(|v| v.to_str().unwrap().to_string())
             .unwrap_or_default()
     }
+    fn path(&self, i: usize) -> String {
+        self.paths.lock().unwrap()[i].clone()
+    }
+}
+
+/// Результаты функций последнего сообщения запроса — текстом.
+fn function_results(body: &serde_json::Value) -> String {
+    let last = body["contents"].as_array().unwrap().last().unwrap().clone();
+    last["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let r = &p["functionResponse"]["response"];
+            r["result"]
+                .as_str()
+                .or_else(|| r["error"].as_str())
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn fake_messages(
     axum::extract::State(f): axum::extract::State<FakeService>,
+    axum::extract::Path(path): axum::extract::Path<String>,
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    f.paths.lock().unwrap().push(path);
     f.seen.lock().unwrap().push((headers, body.clone()));
     let step = f.steps.lock().unwrap().pop_front();
     match step {
@@ -3515,20 +3540,13 @@ async fn fake_messages(
             axum::http::StatusCode::from_u16(code).unwrap(),
             axum::Json(v),
         ),
-        Some(Step::Echo) => {
-            let last = body["messages"].as_array().unwrap().last().unwrap().clone();
-            let text = last["content"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|b| b["content"].as_str().unwrap().to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            (axum::http::StatusCode::OK, axum::Json(final_text(&text)))
-        }
+        Some(Step::Echo) => (
+            axum::http::StatusCode::OK,
+            axum::Json(final_text(&function_results(&body))),
+        ),
         None => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({ "type": "error", "error": { "type": "api_error" } })),
+            axum::Json(service_error(500, "INTERNAL", "")),
         ),
     }
 }
@@ -3536,7 +3554,7 @@ async fn fake_messages(
 async fn fake_service() -> (String, FakeService) {
     let fake = FakeService::default();
     let app = axum::Router::new()
-        .route("/v1/messages", axum::routing::post(fake_messages))
+        .route("/v1beta/models/{*rest}", axum::routing::post(fake_messages))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3548,33 +3566,47 @@ async fn fake_service() -> (String, FakeService) {
 
 const SERVICE_KEY: &str = "test-secret-key-7f3a9c";
 
-/// Ответ модели: размышление (пустое, с подписью), текст и вызов отчёта.
+/// Ошибка сервиса: `{"error": {"code", "message", "status"}}`.
+fn service_error(code: u16, status: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({ "error": { "code": code, "message": message, "status": status } })
+}
+
+/// Подключение к подставному сервису: без повторов, как одна попытка.
+fn fake_assistant(url: String) -> avtodom_server::api::assistant::Assistant {
+    avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100)
+        .with_retry_pauses(Vec::new())
+}
+
+/// Ответ модели: размышление, вызов отчёта с подписью размышления.
 fn tool_use(name: &str, input: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "id": "msg_1",
-        "type": "message",
-        "role": "assistant",
-        "content": [
-            { "type": "thinking", "thinking": "", "signature": "sig-abc-123" },
-            { "type": "text", "text": "Смотрю отчёт." },
-            { "type": "tool_use", "id": "tu_1", "name": name, "input": input }
-        ],
-        "stop_reason": "tool_use",
-        "usage": { "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 50 }
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    { "text": "Смотрю отчёт.", "thought": true },
+                    { "functionCall": { "id": "fc_1", "name": name, "args": input }, "thoughtSignature": "sig-abc-123" }
+                ]
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": { "promptTokenCount": 150, "cachedContentTokenCount": 50, "candidatesTokenCount": 20 }
     })
 }
 
 fn final_text(text: &str) -> serde_json::Value {
     serde_json::json!({
-        "id": "msg_2",
-        "type": "message",
-        "role": "assistant",
-        "content": [
-            { "type": "thinking", "thinking": "", "signature": "sig-final" },
-            { "type": "text", "text": text }
-        ],
-        "stop_reason": "end_turn",
-        "usage": { "input_tokens": 150, "output_tokens": 30 }
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    { "text": "Пишу ответ.", "thought": true },
+                    { "text": text, "thoughtSignature": "sig-final" }
+                ]
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": { "promptTokenCount": 150, "candidatesTokenCount": 25, "thoughtsTokenCount": 5 }
     })
 }
 
@@ -3639,7 +3671,6 @@ async fn assert_no_key_stored(pool: &PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn bot_question_answers_from_profit_report(pool: PgPool) {
     // Вопрос → вызов отчёта → результат → ответ с теми же цифрами, что «📊 Сегодня» (SPEC-21).
-    use avtodom_server::api::assistant::Assistant;
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 5, 30_000).await;
     sell(
@@ -3652,7 +3683,7 @@ async fn bot_question_answers_from_profit_report(pool: PgPool) {
     let chat = 880_001i64;
     link_owner(&pool, &w, chat).await;
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let today = bishkek_today(&pool).await;
     fake.push(vec![
         Step::Reply(
@@ -3681,41 +3712,57 @@ async fn bot_question_answers_from_profit_report(pool: PgPool) {
     assert_eq!(fake.requests().len(), 2);
 
     let reqs = fake.requests();
-    // Ключ — в заголовке; без temperature; инструкция кешируется и без даты.
-    assert_eq!(fake.header(0, "x-api-key"), SERVICE_KEY);
-    assert!(reqs[0].get("temperature").is_none());
-    assert_eq!(reqs[0]["max_tokens"], 4096);
-    assert_eq!(reqs[0]["tools"].as_array().unwrap().len(), 21);
-    let system = reqs[0]["system"]
-        .as_array()
-        .unwrap()
-        .last()
-        .unwrap()
-        .clone();
-    assert_eq!(system["cache_control"]["type"], "ephemeral");
-    let dmy = format!("{}.{}.{}", &today[8..10], &today[5..7], &today[0..4]);
-    assert!(!system["text"].as_str().unwrap().contains(&dmy));
-    let first = reqs[0]["messages"].as_array().unwrap();
-    assert_eq!(first.len(), 1);
-    let q = first[0]["content"].as_str().unwrap();
-    assert!(q.contains(&dmy) && q.contains("сколько заработали сегодня?"));
-    // Второй запрос: ответ модели целиком, с размышлением и подписью, затем только результаты.
-    let second = reqs[1]["messages"].as_array().unwrap();
-    assert_eq!(second.len(), 3);
-    assert_eq!(second[1]["role"], "assistant");
+    // Ключ — в заголовке, модель — в адресе; без temperature; инструкция без даты.
+    assert_eq!(fake.header(0, "x-goog-api-key"), SERVICE_KEY);
     assert_eq!(
-        second[1]["content"],
+        fake.path(0),
+        format!(
+            "{}:generateContent",
+            avtodom_server::api::assistant::DEFAULT_MODEL
+        )
+    );
+    assert!(reqs[0]["generationConfig"].get("temperature").is_none());
+    assert_eq!(
+        reqs[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "low"
+    );
+    assert_eq!(
+        reqs[0]["tools"][0]["functionDeclarations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        21
+    );
+    assert_eq!(
+        reqs[0]["toolConfig"]["functionCallingConfig"]["mode"],
+        "AUTO"
+    );
+    let system = reqs[0]["systemInstruction"]["parts"][0]["text"]
+        .as_str()
+        .unwrap();
+    let dmy = format!("{}.{}.{}", &today[8..10], &today[5..7], &today[0..4]);
+    assert!(!system.contains(&dmy));
+    let first = reqs[0]["contents"].as_array().unwrap();
+    assert_eq!(first.len(), 1);
+    let q = first[0]["parts"][0]["text"].as_str().unwrap();
+    assert!(q.contains(&dmy) && q.contains("сколько заработали сегодня?"));
+    // Второй запрос: ответ модели целиком, с размышлением и подписью, затем ответ функции.
+    let second = reqs[1]["contents"].as_array().unwrap();
+    assert_eq!(second.len(), 3);
+    assert_eq!(
+        second[1],
         tool_use(
             "profit_totals",
             serde_json::json!({ "from": today, "to": today })
-        )["content"]
+        )["candidates"][0]["content"]
     );
     assert_eq!(second[2]["role"], "user");
-    let results = second[2]["content"].as_array().unwrap();
+    let results = second[2]["parts"].as_array().unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["type"], "tool_result");
-    assert_eq!(results[0]["tool_use_id"], "tu_1");
-    assert!(results[0].get("is_error").is_none());
+    let fr = &results[0]["functionResponse"];
+    assert_eq!(fr["name"], "profit_totals");
+    assert_eq!(fr["id"], "fc_1");
+    assert!(fr["response"]["result"].is_string() && fr["response"].get("error").is_none());
 
     // Журнал: отчёт, токены, ответ.
     let (tools, input, output, answer, error): (
@@ -3742,12 +3789,17 @@ async fn bot_question_answers_from_profit_report(pool: PgPool) {
         ask(&mut conn, &a, chat, "а спасибо за ответ").await,
         "Пожалуйста."
     );
-    let third = fake.requests()[2]["messages"].as_array().unwrap().clone();
+    let third = fake.requests()[2]["contents"].as_array().unwrap().clone();
     assert_eq!(third.len(), 3);
-    assert_eq!(third[0]["content"], "сколько заработали сегодня?");
-    assert_eq!(third[1]["role"], "assistant");
-    assert_eq!(third[1]["content"].as_str(), Some(reply.as_str()));
-    assert!(third[2]["content"].as_str().unwrap().contains("а спасибо"));
+    assert_eq!(third[0]["parts"][0]["text"], "сколько заработали сегодня?");
+    assert_eq!(third[1]["role"], "model");
+    assert_eq!(third[1]["parts"][0]["text"].as_str(), Some(reply.as_str()));
+    assert!(
+        third[2]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("а спасибо")
+    );
     assert_no_key_stored(&pool).await;
 
     // «Сколько заработали вчера» — та же чистая прибыль, что отчёт о прибыли за вчера.
@@ -3794,7 +3846,6 @@ async fn bot_question_answers_from_profit_report(pool: PgPool) {
 async fn bot_question_debts_match_buttons(pool: PgPool) {
     // «Кто должен больше всех» — первая строка «📒 Долги»; два клиента «Ромашка» — список и
     // просьба уточнить (SPEC-21).
-    use avtodom_server::api::assistant::Assistant;
     let w = seed(&pool).await;
     for (name, debt) in [
         ("ООО Ромашка", 1_500_050i64),
@@ -3813,7 +3864,7 @@ async fn bot_question_debts_match_buttons(pool: PgPool) {
     let chat = 880_002i64;
     link_owner(&pool, &w, chat).await;
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let mut conn = pool.acquire().await.unwrap();
     start_asking(&mut conn, &a, chat).await;
     fake.push(vec![
@@ -3854,15 +3905,16 @@ async fn bot_question_debts_match_buttons(pool: PgPool) {
     ]);
     ask(&mut conn, &a, chat, "прибыль по дням за год").await;
     let reqs = fake.requests();
-    let last = reqs.last().unwrap()["messages"]
+    let last = reqs.last().unwrap()["contents"]
         .as_array()
         .unwrap()
         .last()
         .unwrap()
         .clone();
-    assert_eq!(last["content"][0]["is_error"], true);
+    let response = &last["parts"][0]["functionResponse"]["response"];
+    assert!(response.get("result").is_none());
     assert!(
-        last["content"][0]["content"]
+        response["error"]
             .as_str()
             .unwrap()
             .contains("не больше 62 дней")
@@ -3873,7 +3925,6 @@ async fn bot_question_debts_match_buttons(pool: PgPool) {
 async fn bot_question_guards_errors_and_customers(pool: PgPool) {
     // Без ключа — как SPEC-18; сумма без отчёта не проходит; ошибки сервиса — понятный ответ и
     // запись с ошибкой; клиентский чат сервис не вызывает; журнал не правится (SPEC-21).
-    use avtodom_server::api::assistant::Assistant;
     // Журнал сервера этого теста — в память: ключа в нём быть не должно.
     let logs = LogBuf::default();
     let _logs = tracing::subscriber::set_default(
@@ -3886,7 +3937,7 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
     let chat = 880_003i64;
     link_owner(&pool, &w, chat).await;
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let mut conn = pool.acquire().await.unwrap();
 
     // Без ключа — подсказка с кнопками, как раньше.
@@ -3926,10 +3977,14 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
 
     // Сбой сервиса, отказ по ключу, нет соединения — понятный ответ.
     fake.push(vec![
-        Step::Reply(500, serde_json::json!({ "type": "error", "error": { "type": "api_error" } })),
+        Step::Reply(500, service_error(500, "INTERNAL", "")),
         Step::Reply(
             401,
-            serde_json::json!({ "type": "error", "error": { "type": "authentication_error", "message": format!("invalid x-api-key {SERVICE_KEY}") } }),
+            service_error(
+                401,
+                "UNAUTHENTICATED",
+                &format!("API key not valid {SERVICE_KEY}"),
+            ),
         ),
     ]);
     assert!(
@@ -3943,12 +3998,7 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
             .await
             .starts_with("Ключ сервиса разбора вопросов не подходит")
     );
-    let offline = Assistant::new(
-        SERVICE_KEY.into(),
-        Some("http://127.0.0.1:1".into()),
-        None,
-        100,
-    );
+    let offline = fake_assistant("http://127.0.0.1:1".into());
     assert!(
         ask(&mut conn, &offline, chat, "кто должен?")
             .await
@@ -3964,10 +4014,10 @@ async fn bot_question_guards_errors_and_customers(pool: PgPool) {
     assert_eq!(errors.len(), 5);
     assert_eq!(errors[0].as_deref(), Some("сумма в ответе без отчёта"));
     assert!(errors[1].is_none());
-    assert_eq!(errors[2].as_deref(), Some("сервис ответил 500 api_error"));
+    assert_eq!(errors[2].as_deref(), Some("сервис ответил 500 INTERNAL"));
     assert_eq!(
         errors[3].as_deref(),
-        Some("сервис ответил 401 authentication_error")
+        Some("сервис ответил 401 UNAUTHENTICATED")
     );
     assert_eq!(errors[4].as_deref(), Some("нет связи: нет соединения"));
 
@@ -4051,7 +4101,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn bot_question_limit_makes_no_call(pool: PgPool) {
     // 101-й вопрос за сутки — сообщение о лимите, обращения к сервису нет (SPEC-21).
-    use avtodom_server::api::assistant::Assistant;
     let w = seed(&pool).await;
     let chat = 880_006i64;
     link_owner(&pool, &w, chat).await;
@@ -4070,7 +4119,7 @@ async fn bot_question_limit_makes_no_call(pool: PgPool) {
     .await
     .unwrap();
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let mut conn = pool.acquire().await.unwrap();
     start_asking(&mut conn, &a, chat).await;
     fake.push(vec![Step::Reply(200, final_text("не должно прийти"))]);
@@ -4100,13 +4149,13 @@ async fn bot_questions_only_in_ask_mode(pool: PgPool) {
     // Вопросы — только после «💬 Спросить»: вне режима текст — подсказка без обращения к
     // сервису; команды работают в режиме и его не закрывают; «✖ Закончить» и 10 минут без
     // сообщений закрывают режим; без ключа кнопки и режима нет (ADR-067).
-    use avtodom_server::api::assistant::{Assistant, OFF_TOPIC};
+    use avtodom_server::api::assistant::OFF_TOPIC;
     use avtodom_server::api::telegram::{Keys, handle_message, handle_message_with};
     let w = seed(&pool).await;
     let chat = 880_010i64;
     link_owner(&pool, &w, chat).await;
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let mut conn = pool.acquire().await.unwrap();
     let mode_rows = |pool: PgPool| async move {
         sqlx::query_scalar::<_, i64>("select count(*) from bot_question_mode")
@@ -4168,7 +4217,9 @@ async fn bot_questions_only_in_ask_mode(pool: PgPool) {
     );
     let reqs = fake.requests();
     assert_eq!(reqs.len(), 1);
-    let system = reqs[0]["system"][0]["text"].as_str().unwrap();
+    let system = reqs[0]["systemInstruction"]["parts"][0]["text"]
+        .as_str()
+        .unwrap();
     assert!(system.contains(&format!("«{OFF_TOPIC}»")));
 
     // Кнопки команд в режиме работают сами и режим не закрывают.
@@ -5033,8 +5084,7 @@ async fn bot_customer_link_is_unambiguous_and_rechecked(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0);
     let (url, service) = fake_service().await;
-    let a =
-        avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     for t in ["🚗 Мои машины", "⭐ Баллы", "Да, отключиться"] {
         assert!(
             ask(&mut conn, &a, owner_chat, t)
@@ -5292,21 +5342,20 @@ async fn bot_plate_conflicts_and_car_count_are_capped(pool: PgPool) {
 async fn bot_question_counts_report_calls_and_hourly_limit(pool: PgPool) {
     // Не больше 4 вызовов отчётов на вопрос (вызовов, а не запросов); 21-й вопрос за час —
     // «лимит на этот час» (ADR-063).
-    use avtodom_server::api::assistant::Assistant;
     let w = seed(&pool).await;
     let chat = 995_001i64;
     link_owner(&pool, &w, chat).await;
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let mut conn = pool.acquire().await.unwrap();
     start_asking(&mut conn, &a, chat).await;
     let calls = |n: usize| {
-        let content: Vec<serde_json::Value> = (0..n)
-            .map(|i| serde_json::json!({ "type": "tool_use", "id": format!("tu_{i}"), "name": "money_balances", "input": {} }))
+        let parts: Vec<serde_json::Value> = (0..n)
+            .map(|i| serde_json::json!({ "functionCall": { "id": format!("fc_{i}"), "name": "money_balances", "args": {} } }))
             .collect();
         serde_json::json!({
-            "id": "msg", "type": "message", "role": "assistant", "content": content,
-            "stop_reason": "tool_use", "usage": { "input_tokens": 10, "output_tokens": 5 }
+            "candidates": [{ "content": { "role": "model", "parts": parts }, "finishReason": "STOP" }],
+            "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 5 }
         })
     };
     fake.push(vec![Step::Reply(200, calls(5))]);
@@ -5935,7 +5984,6 @@ async fn handle_message(
 async fn bot_employee_is_rechecked_limited_and_never_asked(pool: PgPool) {
     // Свободный текст работника не уходит в разбор вопросов; 30 действий в минуту; сменили
     // телефон или отключили сотрудника — при следующем обращении чат отвязан (SPEC-23).
-    use avtodom_server::api::assistant::Assistant;
     use avtodom_server::api::bot_staff::RESHARE;
     use avtodom_server::api::telegram::{Keys, handle_callback, handle_message_with};
     let w = seed(&pool).await;
@@ -5947,7 +5995,7 @@ async fn bot_employee_is_rechecked_limited_and_never_asked(pool: PgPool) {
         Keys::Employee
     );
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     for q in [
         "💬 Спросить",
         "сколько я заработал за неделю?",
@@ -6033,7 +6081,6 @@ async fn bot_employee_is_rechecked_limited_and_never_asked(pool: PgPool) {
 async fn bot_shows_cash_diff_like_profit_report(pool: PgPool) {
     // Строка «Недостача / излишек кассы» в «📊 Сегодня» и в отчётах для вопросов — та же, что в
     // отчёте о прибыли (ADR-065).
-    use avtodom_server::api::assistant::Assistant;
     use avtodom_server::domain::money::format_som_signed;
     let w = seed(&pool).await;
     let branch = w.owner.user.branch_id;
@@ -6079,7 +6126,7 @@ async fn bot_shows_cash_diff_like_profit_report(pool: PgPool) {
     )));
 
     let (url, fake) = fake_service().await;
-    let a = Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let day = bishkek_today(&pool).await;
     fake.push(vec![
         Step::Reply(
@@ -6155,13 +6202,18 @@ fn draft_buttons(r: &avtodom_server::api::telegram::Reply) -> (String, String) {
 /// Что сервер вернул модели последним результатом инструмента.
 fn last_tool_result(fake: &FakeService) -> String {
     let reqs = fake.requests();
-    let last = reqs.last().unwrap()["messages"]
+    let last = reqs.last().unwrap()["contents"]
         .as_array()
         .unwrap()
         .last()
         .unwrap()
         .clone();
-    last["content"][0]["content"].as_str().unwrap().to_string()
+    let r = &last["parts"][0]["functionResponse"]["response"];
+    r["result"]
+        .as_str()
+        .or_else(|| r["error"].as_str())
+        .unwrap()
+        .to_string()
 }
 
 /// Черновик, подготовленный и проведённый кнопкой; ответ на нажатие.
@@ -6197,8 +6249,7 @@ async fn owner_asking(
 ) -> (avtodom_server::api::assistant::Assistant, FakeService) {
     link_owner(pool, w, chat).await;
     let (url, fake) = fake_service().await;
-    let a =
-        avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     let mut conn = pool.acquire().await.unwrap();
     start_asking(&mut conn, &a, chat).await;
     (a, fake)
@@ -6268,7 +6319,7 @@ async fn bot_expense_posts_only_by_button_like_the_program(pool: PgPool) {
     let told = last_tool_result(&fake);
     assert!(told.contains("НЕ проведён"), "{told}");
     // Модели не дан инструмент, который проводит: только отчёты и черновики.
-    let names: Vec<String> = fake.requests()[0]["tools"]
+    let names: Vec<String> = fake.requests()[0]["tools"][0]["functionDeclarations"]
         .as_array()
         .unwrap()
         .iter()
@@ -6280,7 +6331,7 @@ async fn bot_expense_posts_only_by_button_like_the_program(pool: PgPool) {
             .all(|n| n.starts_with("draft_") || !n.contains("post"))
     );
     assert!(
-        fake.requests()[0]["system"][0]["text"]
+        fake.requests()[0]["systemInstruction"]["parts"][0]["text"]
             .as_str()
             .unwrap()
             .contains("Никогда не пиши, что операция проведена")
@@ -7813,8 +7864,7 @@ async fn bot_answers_only_private_chats_and_the_linking_owner(pool: PgPool) {
     );
 
     let (url, fake) = fake_service().await;
-    let a =
-        avtodom_server::api::assistant::Assistant::new(SERVICE_KEY.into(), Some(url), None, 100);
+    let a = fake_assistant(url);
     start_asking(&mut conn, &a, chat).await;
     let r = draft_turn(
         &mut conn,

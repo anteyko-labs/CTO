@@ -40,12 +40,8 @@ test.beforeAll(async () => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(
         JSON.stringify({
-          id: 'msg_e2e',
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'text', text: JSON.stringify(INVOICE) }],
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 1000, output_tokens: 200 },
+          candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(INVOICE) }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 200 },
         }),
       )
     })

@@ -4402,12 +4402,19 @@ async fn fake_model_messages(
 ) -> axum::Json<Value> {
     let step = f.steps.lock().unwrap().pop_front().flatten();
     axum::Json(step.unwrap_or_else(|| {
-        let last = body["messages"].as_array().unwrap().last().unwrap().clone();
-        let text = last["content"]
+        let last = body["contents"].as_array().unwrap().last().unwrap().clone();
+        let text = last["parts"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|b| b["content"].as_str().unwrap().to_string())
+            .map(|p| {
+                let r = &p["functionResponse"]["response"];
+                r["result"]
+                    .as_str()
+                    .or_else(|| r["error"].as_str())
+                    .unwrap()
+                    .to_string()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         model_text(&text)
@@ -4416,24 +4423,34 @@ async fn fake_model_messages(
 
 fn model_text(text: &str) -> Value {
     json!({
-        "content": [{ "type": "text", "text": text }],
-        "stop_reason": "end_turn",
-        "usage": { "input_tokens": 10, "output_tokens": 5 }
+        "candidates": [{
+            "content": { "role": "model", "parts": [{ "text": text }] },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 5 }
     })
 }
 
 fn model_tool(name: &str, input: Value) -> Value {
     json!({
-        "content": [{ "type": "tool_use", "id": "tu_1", "name": name, "input": input }],
-        "stop_reason": "tool_use",
-        "usage": { "input_tokens": 10, "output_tokens": 5 }
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "functionCall": { "name": name, "args": input }, "thoughtSignature": "sig" }]
+            },
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 5 }
     })
 }
 
 async fn fake_model() -> (String, FakeModel) {
     let fake = FakeModel::default();
     let app = Router::new()
-        .route("/v1/messages", axum::routing::post(fake_model_messages))
+        .route(
+            "/v1beta/models/{*rest}",
+            axum::routing::post(fake_model_messages),
+        )
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4521,7 +4538,7 @@ async fn bot_operations_and_reports_match_the_screens(pool: PgPool) {
         .await
         .unwrap();
     let (url, fake) = fake_model().await;
-    let a = Assistant::new("test-key".into(), Some(url), None, 100);
+    let a = Assistant::new("test-key".into(), Some(url), None, 100).with_retry_pauses(Vec::new());
     let mut conn = pool.acquire().await.unwrap();
     let ask = |steps: Vec<Option<Value>>| {
         fake.steps.lock().unwrap().extend(steps);
