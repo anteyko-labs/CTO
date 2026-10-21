@@ -23,7 +23,16 @@ function toEdit(t: FavoriteTile): EditItem | null {
   return null
 }
 
-export function CashierFavorites({ onProduct, onService }: { onProduct: (p: Product) => void; onService: (s: Service) => void }) {
+/** `compact` — режим кассы: плитки ниже, «Настроить» — плиткой, а не мелкой ссылкой (ui-rules §9). */
+export function CashierFavorites({
+  onProduct,
+  onService,
+  compact = false,
+}: {
+  onProduct: (p: Product) => void
+  onService: (s: Service) => void
+  compact?: boolean
+}) {
   const owner = useUser().role === 'owner'
   const tiles = useLoad(() => get<FavoriteTile[]>('/settings/favorites'), [])
   const [editing, setEditing] = useState(false)
@@ -35,7 +44,7 @@ export function CashierFavorites({ onProduct, onService }: { onProduct: (p: Prod
 
   return (
     <div className="flex flex-col gap-2">
-      {list.length > 0 && owner && (
+      {list.length > 0 && owner && !compact && (
         <div className="flex justify-end">
           <button type="button" className="text-xs text-sky-700 hover:underline" onClick={() => setEditing(true)}>
             Настроить
@@ -51,10 +60,10 @@ export function CashierFavorites({ onProduct, onService }: { onProduct: (p: Prod
             <button
               key={`${t.kind}-${p?.id ?? s?.id}`}
               type="button"
-              className="flex min-h-24 flex-col justify-between rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100"
+              className={`flex flex-col justify-between rounded-lg border border-slate-200 bg-white text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100 ${compact ? 'min-h-[80px] px-2.5 py-2' : 'min-h-24 p-3'}`}
               onClick={() => (p ? onProduct(p) : s && onService(s))}
             >
-              <span className="line-clamp-2 text-base font-medium leading-snug">{p?.name ?? s?.name}</span>
+              <span className={`line-clamp-2 font-medium ${compact ? 'text-[15px] leading-tight' : 'text-base leading-snug'}`}>{p?.name ?? s?.name}</span>
               <span className="mt-1 flex items-baseline justify-between gap-2">
                 <Money value={p ? p.sale_price_tyiyn : (s?.price_tyiyn ?? 0)} className="text-base font-semibold text-sky-700" />
                 <span className={`truncate text-sm ${out ? 'text-rose-700' : 'text-slate-500'}`}>{p ? stockText(p) : 'услуга'}</span>
@@ -62,6 +71,16 @@ export function CashierFavorites({ onProduct, onService }: { onProduct: (p: Prod
             </button>
           )
         })}
+        {list.length > 0 && owner && compact && (
+          <button
+            type="button"
+            className="flex min-h-[80px] items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 text-base text-slate-600 active:bg-slate-100"
+            onClick={() => setEditing(true)}
+          >
+            <Icon name="settings" className="h-5 w-5" />
+            Настроить
+          </button>
+        )}
         {list.length === 0 && owner && (
           <button
             type="button"

@@ -124,7 +124,7 @@ test('режим кассы: крупно, без меню, продажа эк�
     expect(k!.x >= 0 && k!.y >= 0 && k!.x + k!.width <= view.width && k!.y + k!.height <= view.height).toBe(true)
   }
 
-  // Цели касания: поля и кнопки не ниже 56 точек, оплата и «Провести чек» — не ниже 64.
+  // Цели касания: поля и кнопки не ниже 56 точек, оплата — не ниже 64, «Провести чек» — не ниже 72.
   for (const l of [page.getByRole('button', { name: 'Больше' }), page.getByRole('button', { name: 'Меньше' }), page.getByRole('button', { name: 'Удалить строку' })]) {
     const s = await size(l)
     expect(s.height).toBeGreaterThanOrEqual(56)
@@ -137,7 +137,9 @@ test('режим кассы: крупно, без меню, продажа эк�
     expect((await size(page.locator('[data-pay]').getByRole('button', { name: label, exact: true }))).height).toBeGreaterThanOrEqual(64)
   }
   const submit = page.getByRole('button', { name: 'Провести чек' })
-  expect((await size(submit)).height).toBeGreaterThanOrEqual(64)
+  // Сумма — на самой кнопке.
+  await expect(submit).toContainText(/1\s500\sс/)
+  expect((await size(submit)).height).toBeGreaterThanOrEqual(72)
   for (const k of ['1', '0', 'Стереть', 'Готово']) {
     expect((await size(page.getByTestId('keypad').getByRole('button', { name: k, exact: true }))).height).toBeGreaterThanOrEqual(56)
   }
@@ -180,5 +182,133 @@ test('режим кассы: крупно, без меню, продажа эк�
   await expect(page.getByRole('link', { name: 'Сводка' })).toBeVisible()
   await expect(page.getByTestId('cashier-mode-bar')).toHaveCount(0)
 
+  await closeOpenShift(page.request)
+})
+
+/** Страница не прокручивается: всё помещается в окно. */
+async function noPageScroll(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.scrollingElement ?? document.documentElement
+    return el.scrollHeight <= window.innerHeight + 1 && el.scrollWidth <= window.innerWidth + 1
+  })
+}
+
+/** Элемент целиком в окне. */
+async function inView(page: Page, l: Locator): Promise<boolean> {
+  const box = await l.boundingBox()
+  const view = page.viewportSize()
+  return Boolean(box && view && box.y >= 0 && box.x >= 0 && box.y + box.height <= view.height + 1 && box.x + box.width <= view.width + 1)
+}
+
+test('режим кассы: во весь экран без прокрутки страницы, длинный чек прокручивается внутри', async ({ page }) => {
+  test.setTimeout(180_000)
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Экран ${RUN}`, kind: 'other' })
+  const names: string[] = []
+  const ids: string[] = []
+  for (let i = 1; i <= 15; i++) {
+    const name = `Экран ${RUN} товар ${String(i).padStart(2, '0')}`
+    const p = await apiPost<{ id: string }>(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, sale_price_tyiyn: 10_000 * i })
+    names.push(name)
+    ids.push(p.id)
+  }
+  await apiPost(page.request, '/receipts', {
+    op_id: crypto.randomUUID(),
+    paid_from: await ownerSafe(page.request),
+    lines: ids.map((id) => ({ product_id: id, qty: 5, cost_tyiyn: 25_000 })),
+  })
+  const cashier = await apiPost<{ id: string }>(page.request, '/employees', { full_name: `Кассир экран ${RUN}`, is_cashier: true, pin: '1357' })
+  await closeOpenShift(page.request)
+  await apiPost(page.request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: cashier.id, cashier_pin: '1357' })
+
+  await page.goto('/')
+  await page.evaluate(() => localStorage.setItem('avtodom.cashier_mode', '1'))
+  await page.reload()
+  await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
+  await expect(page.getByText('Чек пуст')).toBeVisible()
+  const submit = page.getByRole('button', { name: 'Провести чек' })
+  for (const view of [{ width: 1366, height: 768 }, { width: 1920, height: 1080 }, { width: 1280, height: 800 }]) {
+    await page.setViewportSize(view)
+    expect(await noPageScroll(page), `пустой чек ${view.width}×${view.height}`).toBe(true)
+    expect(await inView(page, submit)).toBe(true)
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-${view.width}-empty.png` })
+  }
+
+  await page.setViewportSize({ width: 1366, height: 768 })
+  const picker = page.getByPlaceholder(PICKER)
+  const cart = page.getByTestId('cart')
+  const add = async (from: number, to: number) => {
+    for (let i = from; i < to; i++) {
+      await picker.fill(names[i])
+      // Найденный товар, а не «+ Завести товар …» (он появляется раньше списка).
+      await page.getByRole('button', { name: new RegExp(`^${names[i]}`) }).first().tap()
+      await expect(cart.locator('li')).toHaveCount(i + 1)
+    }
+  }
+  await add(0, 12)
+  for (const view of [{ width: 1366, height: 768 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(view)
+    expect(await noPageScroll(page), `12 строк ${view.width}×${view.height}`).toBe(true)
+    if (SHOTS) {
+      await page.screenshot({ path: `${SHOTS}/kassa-${view.width}-12.png` })
+      await page.locator('[data-received]').tap()
+      await expect(page.getByTestId('keypad')).toBeVisible()
+      expect(await noPageScroll(page)).toBe(true)
+      await page.screenshot({ path: `${SHOTS}/kassa-${view.width}-12-keypad.png` })
+      await page.getByTestId('keypad').getByRole('button', { name: 'Готово' }).tap()
+    }
+  }
+
+  await page.setViewportSize({ width: 1366, height: 768 })
+  await add(12, 15)
+  for (const view of [{ width: 1366, height: 768 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(view)
+    // 15 строк: страница на месте, прокручивается только список чека, последняя строка видна.
+    expect(await noPageScroll(page), `15 строк ${view.width}×${view.height}`).toBe(true)
+    const last = cart.locator('li').last()
+    await expect(last).toContainText(names[14])
+    expect(await inView(page, last)).toBe(true)
+    const cartBox = (await cart.boundingBox())!
+    const lastBox = (await last.boundingBox())!
+    expect(lastBox.y + lastBox.height).toBeLessThanOrEqual(cartBox.y + cartBox.height + 1)
+    // Главные кнопки на экране и крупные.
+    expect(await inView(page, submit)).toBe(true)
+    await expect(submit).toContainText(/12\s000\sс/)
+    expect((await size(submit)).height).toBeGreaterThanOrEqual(72)
+    for (const label of ['Наличные', 'Карта / QR банка', 'QR владельцу', 'В долг', 'Смешанная']) {
+      const b = page.locator('[data-pay]').getByRole('button', { name: label, exact: true })
+      expect(await inView(page, b), label).toBe(true)
+      expect((await size(b)).height).toBeGreaterThanOrEqual(64)
+    }
+    for (const l of [last.getByRole('button', { name: 'Больше' }), last.getByRole('button', { name: 'Меньше' }), last.getByRole('button', { name: 'Удалить строку' })]) {
+      const s = await size(l)
+      expect(s.height).toBeGreaterThanOrEqual(56)
+      expect(s.width).toBeGreaterThanOrEqual(56)
+    }
+    for (const label of ['Отложить', 'Очистить', 'Выбрать клиента']) {
+      expect((await size(page.getByRole('button', { name: label, exact: true }))).height).toBeGreaterThanOrEqual(56)
+    }
+  }
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1920-15.png` })
+
+  // Удаление строки — без вопроса, но с «Вернуть».
+  await cart.locator('li').last().getByRole('button', { name: 'Удалить строку' }).tap()
+  await expect(cart.locator('li')).toHaveCount(14)
+  await page.getByRole('button', { name: 'Вернуть', exact: true }).tap()
+  await expect(cart.locator('li')).toHaveCount(15)
+  await expect(cart.locator('li').last()).toContainText(names[14])
+
+  // Клиент выбирается в окне; в колонке — короткая строка.
+  await page.getByRole('button', { name: 'Выбрать клиента' }).tap()
+  const clientDialog = page.getByRole('dialog', { name: 'Клиент и машина' })
+  await expect(clientDialog.getByPlaceholder('Госномер, телефон, имя или ИНН')).toBeVisible()
+  await clientDialog.getByRole('button', { name: 'Готово' }).tap()
+  await expect(clientDialog).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
+  await page.getByRole('button', { name: 'Точно очистить?' }).tap()
+  await expect(page.getByText('Чек пуст')).toBeVisible()
+  await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
+  await expect(page.getByRole('link', { name: 'Сводка' })).toBeVisible()
   await closeOpenShift(page.request)
 })

@@ -236,6 +236,26 @@ async fn catalog_rules(pool: PgPool) {
     .await;
     assert_eq!(found.as_array().map(Vec::len), Some(0));
 
+    // Отбор по виду категории: перелив берёт все масла, сколько бы ни было товаров.
+    let has = |list: &Value| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["id"].as_str() == Some(pid.as_str()))
+    };
+    let (_, _, oils) = call(&app, "GET", "/api/v1/products?kind=oil", Some(&admin), None).await;
+    assert!(has(&oils));
+    assert!(oils.as_array().unwrap().iter().all(|x| x["unit"] == "ml"));
+    let (_, _, other) = call(
+        &app,
+        "GET",
+        "/api/v1/products?kind=battery",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert!(!has(&other));
+
     // Похожие при опечатке.
     let (_, _, similar) = call(
         &app,

@@ -417,6 +417,8 @@ pub struct ProductFilter {
     pub ids: Option<Vec<Uuid>>,
     pub include_archived: bool,
     pub low_only: bool,
+    /// Вид категории (`oil`, `filter`, `battery`, `other`).
+    pub kind: Option<String>,
     pub limit: i64,
     /// Без предела 500 строк: список товаров считает итоги по всему отбору (SPEC-27 §4).
     pub no_limit: bool,
@@ -487,6 +489,7 @@ async fn query_products_raw(
              and ($5::uuid[] is null or p.id = any($5))
              and (not p.archived or $6)
              and (not $7 or coalesce(bp.stock_qty, 0) < coalesce(bp.min_stock, 0))
+             and ($9::text is null or c.kind = $9)
            order by p.name, p.id
            limit $8"#,
         user.branch_id,
@@ -500,7 +503,8 @@ async fn query_products_raw(
             i64::MAX
         } else {
             f.limit.clamp(1, 500)
-        }
+        },
+        f.kind,
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -603,6 +607,7 @@ async fn search_products(
         ids: None,
         include_archived: params.get("archived").is_some_and(|v| v == "true"),
         low_only: params.get("low").is_some_and(|v| v == "true"),
+        kind: params.get("kind").filter(|s| !s.is_empty()).cloned(),
         limit: params
             .get("limit")
             .and_then(|v| v.parse().ok())

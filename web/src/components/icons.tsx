@@ -195,6 +195,13 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M6 14H1M3.5 11.5 1 14l2.5 2.5" />
     </>
   ),
+  // Оплата частями: две полосы разной длины.
+  split: (
+    <>
+      <rect x="3" y="5" width="18" height="6" rx="1.5" />
+      <rect x="3" y="13" width="11" height="6" rx="1.5" />
+    </>
+  ),
   chevron: <path d="m9 6 6 6-6 6" />,
   back: <path d="m15 6-6 6 6 6" />,
   logout: (

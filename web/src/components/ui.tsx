@@ -26,7 +26,8 @@ export function Button({
     <button
       type="button"
       {...props}
-      className={`inline-flex min-h-[42px] items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed ${VARIANTS[variant]} ${className}`}
+      // В режиме кассы (ui-rules §9) кнопка не ниже 56 точек — под палец.
+      className={`inline-flex min-h-[42px] items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed [.cashier-mode_&]:min-h-[56px] ${VARIANTS[variant]} ${className}`}
     />
   )
 }

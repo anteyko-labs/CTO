@@ -279,7 +279,8 @@ function Shell() {
           <span className="text-xs text-slate-300">{user.full_name}</span>
         </div>
       )}
-      <main className={`min-w-0 flex-1 ${touch ? 'pb-4' : 'pb-24'}`}>
+      {/* Режим кассы на широком экране — ровно во весь экран без прокрутки страницы (ui-rules §9). */}
+      <main className={`min-w-0 flex-1 ${touch ? 'pb-3 lg:flex lg:h-dvh lg:flex-col lg:overflow-hidden lg:pb-0' : 'pb-24'}`}>
         <UpdateBanner />
         <OfflineBar />
         {logoutAsk && (
@@ -303,7 +304,7 @@ function Shell() {
             </div>
           </Modal>
         )}
-        <div className={touch ? 'px-3 pb-3 md:px-4' : 'p-4 md:p-6'}>
+        <div className={touch ? 'px-3 pb-3 md:px-4 lg:min-h-0 lg:flex-1' : 'p-4 md:p-6'}>
         <Routes>
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />

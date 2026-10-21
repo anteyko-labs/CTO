@@ -26,7 +26,7 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
 
   return (
     <div
-      className="keep-dark no-print mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-slate-900 px-3 py-2 text-white md:px-4"
+      className="keep-dark no-print mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-slate-900 px-3 py-1 text-white md:px-4"
       data-testid="cashier-mode-bar"
     >
       <span className="text-lg font-bold">Касса</span>
@@ -35,9 +35,9 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
           Смена № {shift.number} · кассир <b>{shift.cashier_name}</b>
         </span>
       ) : shift === null ? (
-        <span className="flex items-center gap-3 text-base text-amber-300">
+        <span className="flex flex-wrap items-center gap-3 text-base text-amber-300">
           Смена не открыта
-          <button type="button" className="rounded-lg bg-amber-500 px-4 font-semibold text-slate-900 active:bg-amber-400" onClick={onOpenShift}>
+          <button type="button" className="rounded-lg bg-amber-500 px-5 font-semibold text-slate-900 active:bg-amber-400" onClick={onOpenShift}>
             Открыть смену
           </button>
         </span>
@@ -49,13 +49,13 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
       </span>
       <span className="ml-auto flex flex-wrap gap-2">
         {canFull && !full && (
-          <button type="button" className="rounded-lg border border-slate-500 px-4 text-base active:bg-slate-700" onClick={enterFullscreen}>
+          <button type="button" className="rounded-lg border border-slate-500 px-5 text-base font-medium active:bg-slate-700" onClick={enterFullscreen}>
             Во весь экран
           </button>
         )}
         <button
           type="button"
-          className="rounded-lg bg-sky-600 px-4 text-base font-semibold text-white active:bg-sky-700"
+          className="rounded-lg bg-sky-600 px-5 text-base font-semibold text-white active:bg-sky-700"
           onClick={() => {
             exitFullscreen()
             setCashierMode(false)
