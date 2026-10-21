@@ -2038,7 +2038,24 @@ async fn debts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
             section(&from_us)
         ));
     }
+    // Клиенты: сколько баллов у них вместе — обязательство точки (SPEC-30 §12).
+    let p = crate::api::loyalty::branch_total(conn, branch_id).await?;
+    out.push_str(&format!("\n\n{}", points_line(p)));
     Ok(out)
+}
+
+/// Строка «Баллы у клиентов» для владельца: сводка и «📒 Долги» (SPEC-30 §12).
+pub(crate) fn points_line(p: crate::api::loyalty::PointsTotal) -> String {
+    if p.clients == 0 {
+        return "⭐ Баллы у клиентов: нет".into();
+    }
+    format!(
+        "⭐ Баллы у клиентов: {} на {} (у {} {})",
+        points(p.points_tyiyn),
+        format_som(p.points_tyiyn),
+        p.clients,
+        crate::domain::qty::plural(p.clients, "клиента", "клиентов", "клиентов")
+    )
 }
 
 // ---------- События журнала в чат владельца ----------
@@ -3500,6 +3517,27 @@ async fn notify_loop(pool: PgPool, api: Api) {
             }
         }
         tokio::time::sleep(wait).await;
+    }
+}
+
+#[cfg(test)]
+mod points_line_tests {
+    use super::points_line;
+    use crate::api::loyalty::PointsTotal;
+
+    #[test]
+    fn points_of_all_clients_in_one_line() {
+        assert_eq!(
+            points_line(PointsTotal::default()),
+            "⭐ Баллы у клиентов: нет"
+        );
+        let line = points_line(PointsTotal {
+            clients: 21,
+            points_tyiyn: 123_450,
+        });
+        assert!(line.starts_with("⭐ Баллы у клиентов: 1"), "{line}");
+        assert!(line.contains("234,50 с"), "{line}");
+        assert!(line.ends_with("(у 21 клиента)"), "{line}");
     }
 }
 

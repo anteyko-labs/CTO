@@ -698,6 +698,8 @@ pub(crate) struct Dashboard {
     pub(crate) needs_review: i64,
     /// Залежалые: остаток есть, продаж нет дольше срока (ADR-039).
     pub(crate) stale_stock: i64,
+    /// Баллы у клиентов — на сейчас (SPEC-30 §12).
+    pub(crate) points: crate::api::loyalty::PointsTotal,
     /// Кто сколько заработал за период.
     pub(crate) staff: Vec<crate::api::payroll::StaffPay>,
     /// «Сколько по карте ушло»: безнал чеков за период (SPEC-27 §6).
@@ -938,6 +940,7 @@ pub(crate) async fn dashboard_data(
     .fetch_one(&mut *conn)
     .await?;
     let (_, stale) = crate::api::receipts::stale_list(&mut *conn, branch_id).await?;
+    let points = crate::api::loyalty::branch_total(&mut *conn, branch_id).await?;
     let revenue = totals.goods_tyiyn.saturating_add(totals.services_tyiyn);
     let (compare, previous) = if from == to {
         // Сегодня — «к этому часу»; прошедший день — целиком.
@@ -1010,6 +1013,7 @@ pub(crate) async fn dashboard_data(
         low_stock: stock.low,
         needs_review: stock.review,
         stale_stock: i64::try_from(stale.len()).unwrap_or(i64::MAX),
+        points,
     })
 }
 

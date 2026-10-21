@@ -4,6 +4,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { ApiError, api, deviceId, noServerAnswer, serverReachable, setServerReachable } from './api'
+import { searchRank } from './pickerResults'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 
 export interface SnapshotProduct extends Product {
@@ -189,6 +190,7 @@ export function searchSnapshot(snap: Snapshot, query: string, limit = 15): Snaps
   if (q.length < 2) return []
   const exact = snap.products.filter((p) => p.barcodes.some((c) => c === q))
   if (exact.length > 0) return exact
+  // Порядок — как на сервере (SPEC-30 §13): точный артикул, название с начала, остальное.
   return snap.products
     .filter(
       (p) =>
@@ -197,7 +199,10 @@ export function searchSnapshot(snap: Snapshot, query: string, limit = 15): Snaps
         p.article.toLowerCase().includes(q) ||
         p.barcodes.some((c) => c.startsWith(q)),
     )
+    .map((p, i) => ({ p, i, rank: searchRank(p, q) }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
     .slice(0, limit)
+    .map((x) => x.p)
 }
 
 export function findByBarcode(snap: Snapshot, code: string): SnapshotProduct | undefined {

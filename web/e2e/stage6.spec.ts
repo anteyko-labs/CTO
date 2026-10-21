@@ -41,11 +41,12 @@ test('брак: отметка, возврат поставщику со ски�
     lines: [{ product_id: product.id, qty: 5, cost_tyiyn: 150_000 }],
   })
 
-  // «Остатки» → «В брак»: поставщик подставлен из прихода.
-  await page.goto('/stock')
+  // «Товары» (бывшие «Остатки», SPEC-30 §11) → «В брак»: поставщик подставлен из прихода.
+  await page.goto('/products')
   await page.getByLabel('Поиск').fill(name)
   const row = page.getByRole('row', { name: new RegExp(name) })
-  await row.getByRole('button', { name: 'В брак' }).click()
+  await row.getByRole('button', { name: 'Ещё действия' }).click()
+  await page.getByRole('menuitem', { name: 'В брак' }).click()
   const dialog = page.getByRole('dialog', { name: `В брак · ${name}` })
   await expect(dialog.getByLabel('Поставщик')).toHaveValue(supplier.id)
   await dialog.getByLabel('Количество, шт').fill('2')

@@ -6,7 +6,7 @@ import { Icon } from '../components/icons'
 import { Pager, usePagedLoad } from '../components/Pager'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table } from '../components/ui'
 import { get, post, qs } from '../lib/api'
-import { formatSom } from '../lib/format'
+import { formatPoints, formatSom, pointsClients } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
@@ -31,7 +31,11 @@ export default function Clients() {
   // раньше «Должны нам» считалось по первым 500 клиентам).
   const filter = qs({ role: 'customer', q: query, kind, only_debtors: onlyDebtors })
   const list = usePagedLoad<Party>(`/parties${filter}`, 'clients')
-  const summary = useLoad(() => get<{ count: number; owe_tyiyn: number; advance_tyiyn: number }>(`/parties/summary${filter}`), [filter])
+  const summary = useLoad(
+    () =>
+      get<{ count: number; owe_tyiyn: number; advance_tyiyn: number; points_tyiyn?: number; points_clients?: number }>(`/parties/summary${filter}`),
+    [filter],
+  )
 
   const reloadList = list.reload
   const reloadSummary = summary.reload
@@ -46,6 +50,9 @@ export default function Clients() {
 
   const owe = summary.data?.owe_tyiyn ?? 0
   const advance = summary.data?.advance_tyiyn ?? 0
+  // Баллы — у всех клиентов вместе, без отбора (SPEC-30 §12); 1 балл = 1 сом.
+  const points = summary.data?.points_tyiyn ?? 0
+  const pointsN = summary.data?.points_clients ?? 0
   const pager = { ...list, shown: list.items }
   const company = form.kind === 'company'
   const notFilled = missingWithFocus(
@@ -106,6 +113,14 @@ export default function Clients() {
           <div>
             <div className="text-xs text-slate-500">Авансы клиентов</div>
             <Money value={advance} className="text-xl font-bold text-sky-700" />
+          </div>
+          <div data-testid="points-total" title="У всех клиентов вместе, без отбора; 1 балл = 1 сом">
+            <div className="text-xs text-slate-500">Баллы у клиентов</div>
+            <div className="text-xl font-bold tabular-nums text-sky-700">{formatPoints(points)}</div>
+            <div className="text-xs text-slate-500">
+              на {formatSom(points)}
+              {pointsN > 0 && ` · ${pointsClients(pointsN)}`}
+            </div>
           </div>
           <div className="self-end text-xs text-slate-400">обновляется каждые 10 секунд</div>
         </div>

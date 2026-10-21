@@ -425,6 +425,8 @@ pub struct ProductFilter {
     pub limit: i64,
     /// Без предела 500 строк: список товаров считает итоги по всему отбору (SPEC-27 §4).
     pub no_limit: bool,
+    /// Отбор по складу в списке товаров (SPEC-30 §11); поиску и складу не нужен.
+    pub stock: StockChip,
 }
 
 fn escape_like(s: &str) -> String {
@@ -459,10 +461,9 @@ async fn query_products_raw(
     user: &CurrentUser,
     f: ProductFilter,
 ) -> AppResult<Vec<(ProductOut, RawPool)>> {
-    let q =
-        f.q.map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|s| escape_like(&s));
+    // Набранное как есть — для точного совпадения кода; экранированное — для поиска по части.
+    let exact = f.q.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let q = exact.as_deref().map(escape_like);
     let rows = sqlx::query!(
         r#"select p.id, p.category_id, c.kind as category_kind, p.name, p.brand, p.article, p.unit,
                   p.container_ml, p.attrs, p.archived,
@@ -493,7 +494,14 @@ async fn query_products_raw(
              and (not p.archived or $6)
              and (not $7 or coalesce(bp.stock_qty, 0) < coalesce(bp.min_stock, 0))
              and ($9::text is null or c.kind = $9)
-           order by p.name, p.id
+           -- Найденное по тексту (SPEC-30 §13): точный штрихкод или артикул, потом название
+           -- с начала, потом остальное; внутри — по названию.
+           order by case when $10::text is null then 0
+                         when exists (select 1 from product_barcodes b where b.product_id = p.id and b.code = $10)
+                              or (p.article <> '' and lower(p.article) = lower($10)) then 0
+                         when p.name ilike $2 || '%' then 1
+                         else 2 end,
+                    p.name, p.id
            limit $8"#,
         user.branch_id,
         q,
@@ -508,6 +516,7 @@ async fn query_products_raw(
             f.limit.clamp(1, 500)
         },
         f.kind,
+        exact,
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -616,6 +625,7 @@ async fn search_products(
             .and_then(|v| v.parse().ok())
             .unwrap_or(50),
         no_limit: false,
+        stock: StockChip::All,
     };
     let mut conn = state.pool.acquire().await?;
     Ok(Json(query_products(&mut conn, &user, f).await?))
@@ -676,6 +686,60 @@ pub fn valuation(p: &ProductOut, raw: &RawPool) -> Option<Valuation> {
     })
 }
 
+/// Залежалый товар в строке списка (ADR-039): сколько дней без продаж и продавался ли вообще.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleMark {
+    pub days: i32,
+    pub sold_ever: bool,
+}
+
+/// Отбор по складу в списке товаров — бывший экран «Остатки» (SPEC-30 §11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StockChip {
+    #[default]
+    All,
+    /// Ниже минимума — как «Заканчивается» в сводке: остаток меньше минимума.
+    Low,
+    /// Нет на складе: ноль или минус.
+    Out,
+    /// Залежалые: остаток есть, продаж нет дольше срока.
+    Stale,
+    /// Отмечен «проверить».
+    Review,
+}
+
+impl StockChip {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "low" => Self::Low,
+            "out" => Self::Out,
+            "stale" => Self::Stale,
+            "review" => Self::Review,
+            _ => Self::All,
+        }
+    }
+
+    fn keeps(self, p: &ProductOut, stale: bool) -> bool {
+        match self {
+            Self::All => true,
+            Self::Low => p.stock_qty < p.min_stock,
+            Self::Out => p.stock_qty <= 0,
+            Self::Stale => stale,
+            Self::Review => p.needs_review,
+        }
+    }
+}
+
+/// Сколько товаров в каждом отборе по складу — числа на кнопках отбора.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StockCounts {
+    pub all: i64,
+    pub low: i64,
+    pub out: i64,
+    pub stale: i64,
+    pub review: i64,
+}
+
 /// Строка списка товаров «как в Умаге» (SPEC-27 §4).
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProductRow {
@@ -683,6 +747,9 @@ pub struct ProductRow {
     pub product: ProductOut,
     /// Код: артикул, а без него — первый штрихкод.
     pub code: String,
+    /// Залежалый товар (ADR-039); нет — не залежался.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<StaleMark>,
     /// Цена закупки за единицу показа — только владельцу.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchase_price_tyiyn: Option<i64>,
@@ -701,6 +768,12 @@ pub struct ProductListTotals {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchase_tyiyn: Option<i64>,
     pub sale_tyiyn: i64,
+    /// Числа отборов по складу — при тех же поиске и категории (SPEC-30 §11).
+    #[serde(default)]
+    pub counts: StockCounts,
+    /// Срок залежалости, дней (ADR-039).
+    #[serde(default)]
+    pub stale_days: i32,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -723,10 +796,41 @@ pub async fn product_list(
     let owner = user.is_owner();
     let limit = usize::try_from(f.limit.clamp(1, 2000)).unwrap_or(2000);
     f.no_limit = true;
+    let chip = f.stock;
     let rows = query_products_raw(conn, user, f).await?;
+    // Залежалые (ADR-039) — тем же запросом, что сводка и бот: числа сходятся.
+    let (stale_days, stale_rows) = crate::api::receipts::stale_list(conn, user.branch_id).await?;
+    let stale: HashMap<Uuid, StaleMark> = stale_rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.product_id,
+                StaleMark {
+                    days: r.days,
+                    sold_ever: r.sold_ever,
+                },
+            )
+        })
+        .collect();
+    let mut counts = StockCounts::default();
     let mut items = Vec::with_capacity(rows.len());
     let (mut purchase, mut sale) = (0i64, 0i64);
     for (mut p, raw) in rows {
+        let mark = stale.get(&p.id).copied();
+        counts.all += 1;
+        for (c, n) in [
+            (StockChip::Low, &mut counts.low),
+            (StockChip::Out, &mut counts.out),
+            (StockChip::Stale, &mut counts.stale),
+            (StockChip::Review, &mut counts.review),
+        ] {
+            if c.keeps(&p, mark.is_some()) {
+                *n += 1;
+            }
+        }
+        if !chip.keeps(&p, mark.is_some()) {
+            continue;
+        }
         let v = valuation(&p, &raw).ok_or_else(crate::error::overflow)?;
         purchase = purchase
             .checked_add(v.stock_purchase)
@@ -745,6 +849,7 @@ pub async fn product_list(
         items.push(ProductRow {
             product: p,
             code,
+            stale: mark,
             purchase_price_tyiyn: if owner { v.purchase_price } else { None },
             stock_purchase_tyiyn: owner.then_some(v.stock_purchase),
             stock_sale_tyiyn: v.stock_sale,
@@ -788,6 +893,8 @@ pub async fn product_list(
             count,
             purchase_tyiyn: owner.then_some(purchase),
             sale_tyiyn: sale,
+            counts,
+            stale_days,
         },
     })
 }
@@ -811,6 +918,9 @@ async fn list_products(
             .get("limit")
             .and_then(|v| v.parse().ok())
             .unwrap_or(500),
+        stock: params
+            .get("stock")
+            .map_or(StockChip::All, |s| StockChip::parse(s)),
         ..Default::default()
     };
     let sort = params.get("sort").map_or("name", String::as_str);

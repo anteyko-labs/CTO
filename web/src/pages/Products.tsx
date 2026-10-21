@@ -1,21 +1,26 @@
 // Справочник товаров: поиск, фильтры по характеристикам, карточка, архив, печать этикеток (SPEC-02).
 // Список «как в Умаге» (SPEC-27): остаток, цены и суммы остатка с итогами по отбору — итоги считает
 // сервер; закупку и стоимость остатка видит только владелец (ADR-008).
-import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+// Бывший экран «Остатки» (SPEC-03) — здесь же (SPEC-30 §11): отборы «ниже минимума», «нет»,
+// залежалые и «проверить», цена закупки и «Проверено», «В брак» и вкладка «Брак» (SPEC-25),
+// сверка остатков с движениями — владельцу.
+import { useMemo, useState, type ReactNode } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { DefectMarkModal, DefectsTab } from '../components/Defects'
 import { printLabels } from '../components/labels'
-import { Pager, usePageState } from '../components/Pager'
+import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, PageHeader, RowMenu } from '../components/ui'
-import { get, patch, qs } from '../lib/api'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
+import { get, newOpId, patch, post, put, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
-import { formatLiters, formatSom } from '../lib/format'
+import { formatLiters, formatSom, parseSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
-import type { Category, Product, ProductList, ProductRow } from '../lib/types'
+import { qtyText } from '../lib/units'
+import type { Category, Product, ProductList, ProductRow, StockChip, StockMismatch } from '../lib/types'
 
 interface Selected {
   product: Product
@@ -23,6 +28,28 @@ interface Selected {
 }
 
 type SortKey = 'name' | 'code' | 'stock' | 'purchase' | 'sale' | 'stock_purchase' | 'stock_sale'
+
+type Mismatch = StockMismatch & { product?: Product }
+
+/** Отборы по складу: подпись кнопки и что сказать, если пусто. */
+const CHIPS: { key: StockChip; label: string; empty: string }[] = [
+  { key: 'all', label: 'Все', empty: 'Товары не найдены' },
+  { key: 'low', label: 'Ниже минимума', empty: 'Ничего не заканчивается: остатки не ниже минимума.' },
+  { key: 'out', label: 'Нет на складе', empty: 'Все товары в наличии.' },
+  { key: 'stale', label: 'Залежалые', empty: 'Залежалых товаров нет.' },
+  { key: 'review', label: 'Проверить', empty: 'Проверять нечего.' },
+]
+
+const chipOf = (v: string | null): StockChip => CHIPS.find((c) => c.key === v)?.key ?? 'all'
+
+/** Сортировка на телефоне: заголовков таблицы там нет. */
+const MOBILE_SORTS: { value: string; label: string; owner?: boolean }[] = [
+  { value: 'name:asc', label: 'по названию' },
+  { value: 'stock:desc', label: 'остаток: больше сверху' },
+  { value: 'stock:asc', label: 'остаток: меньше сверху' },
+  { value: 'stock_purchase:desc', label: 'по закупке: больше сверху', owner: true },
+  { value: 'stock_sale:desc', label: 'по продаже: больше сверху' },
+]
 
 /** «1 товар», «2 товара», «5 товаров». */
 function goodsWord(n: number): string {
@@ -42,8 +69,24 @@ export default function Products() {
   const owner = useUser().role === 'owner'
   // Заводить товары — право администратора «Товары и штрихкоды» (ADR-097).
   const mayAdd = useCan()('products')
-  const [q, setQ] = useState('')
-  const [categoryId, setCategoryId] = useState('')
+  // Отбор по складу и вкладка — в адресе: ссылки сводки и старый адрес «Остатков» ведут сюда.
+  const [search, setSearch] = useSearchParams()
+  const chip = chipOf(search.get('stock'))
+  const tab = search.get('tab') === 'defects' ? 'defects' : 'products'
+  const setUrl = (changes: Record<string, string | null>) =>
+    setSearch(
+      (cur) => {
+        const next = new URLSearchParams(cur)
+        for (const [k, v] of Object.entries(changes)) {
+          if (v === null) next.delete(k)
+          else next.set(k, v)
+        }
+        return next
+      },
+      { replace: true },
+    )
+  const [q, setQ] = useState(() => search.get('q') ?? '')
+  const [categoryId, setCategoryId] = useState(() => search.get('category_id') ?? '')
   const [attrFilters, setAttrFilters] = useState<Record<string, string>>({})
   const [archived, setArchived] = useState(false)
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
@@ -54,10 +97,23 @@ export default function Products() {
   const [message, setMessage] = useState<string | null>(null)
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: 'name', desc: false })
   const { busy, error, run } = useAction()
+  const [marking, setMarking] = useState<Product | null>(null)
+  // Цена закупки товара, проданного без неё: 2 % кассира начислятся после неё (ADR-062).
+  const [pricing, setPricing] = useState<{ product: Product; text: string; opId: string } | null>(null)
+  const priceAct = useAction()
+  const review = useAction()
+  const [mismatches, setMismatches] = useState<Mismatch[] | null>(null)
+  const verify = useAction()
+  const [staleDays, setStaleDays] = useState('')
+  const staleSave = useAction()
 
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const category = categories.data?.find((c) => c.id === categoryId)
   const filterDefs = category?.attributes.filter((a) => a.filterable) ?? []
+  // Полярность аккумуляторов — и без выбранной категории, как было в «Остатках» (SPEC-27).
+  const polarityDef = categoryId
+    ? undefined
+    : categories.data?.flatMap((c) => c.attributes).find((a) => a.key === 'polarity' && a.filterable && a.type === 'select')
 
   const query = useDebounced(q.trim(), 300)
   const attrs = useDebounced(attrFilters, 300)
@@ -68,10 +124,11 @@ export default function Products() {
       archived: archived || undefined,
       sort: sort.key,
       dir: sort.desc ? 'desc' : undefined,
+      stock: chip === 'all' ? undefined : chip,
     }
     for (const [k, v] of Object.entries(attrs)) p[`attr.${k}`] = v.trim()
     return qs(p)
-  }, [query, categoryId, archived, attrs, sort])
+  }, [query, categoryId, archived, attrs, sort, chip])
   // Страницу режет сервер, итоги — по всему отбору; смена отбора или сортировки — снова первая страница.
   const pager = usePageState('products', params)
   const list = useLoad(
@@ -80,6 +137,7 @@ export default function Products() {
   )
   const items = list.data?.items
   const totals = list.data?.totals
+  const counts = totals?.counts
 
   /** Щелчок по заголовку: та же колонка — обратный порядок; числа — сначала большие. */
   const sortBy = (key: SortKey) =>
@@ -140,20 +198,92 @@ export default function Products() {
     list.reload()
   }
 
+  const runVerify = () => {
+    void verify.run(async () => {
+      const found = await get<StockMismatch[]>('/stock/verify')
+      // Названия товаров для расхождений; список обычно пуст.
+      const out: Mismatch[] = []
+      for (const m of found) {
+        const product = await get<Product>(`/products/${m.product_id}`).catch(() => undefined)
+        out.push({ ...m, product })
+      }
+      setMismatches(out)
+    })
+  }
+
+  const markReviewed = (p: Product) =>
+    void review.run(async () => {
+      await post(`/stock/${p.id}/review-done`)
+      list.reload()
+    })
+
+  const savePrice = () => {
+    if (!pricing) return
+    const price = parseSom(pricing.text)
+    if (price === null || price <= 0) {
+      priceAct.setError('Укажите цену закупки')
+      return
+    }
+    void priceAct.run(async () => {
+      const r = await post<{ lines: number; accrued_tyiyn: number }>(`/stock/${pricing.product.id}/purchase-price`, {
+        op_id: pricing.opId,
+        price_tyiyn: price,
+      })
+      setPricing(null)
+      list.reload()
+      toast(`Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}`)
+    })
+  }
+  const priceUnit = (p: Product) => (p.unit === 'g' ? 'за кг' : p.container_ml ? 'за канистру' : 'за штуку')
+  const emptyText = CHIPS.find((c) => c.key === chip)?.empty ?? 'Товары не найдены'
+  const sortValue = `${sort.key}:${sort.desc ? 'desc' : 'asc'}`
+
   return (
     // Снизу место под «+» на телефоне: последние карточки не прячутся под кнопкой.
     <div className="pb-20 md:pb-0">
       <PageHeader
         title="Товары"
         actions={
-          mayAdd && (
-            <Button onClick={() => setEditing('new')} aria-label="Добавить товар" title="Добавить товар: полная карточка">
-              + Товар
-            </Button>
-          )
+          <>
+            {owner && (
+              <Button variant="secondary" disabled={verify.busy} onClick={runVerify} title="Остатки в учёте против суммы движений">
+                Сверить остатки
+              </Button>
+            )}
+            {mayAdd && (
+              <Button onClick={() => setEditing('new')} aria-label="Добавить товар" title="Добавить товар: полная карточка">
+                + Товар
+              </Button>
+            )}
+          </>
         }
       />
-
+      <div className="mb-3 flex gap-2" role="tablist">
+        {(
+          [
+            ['products', 'Товары и остатки'],
+            ['defects', 'Брак'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={`min-h-[38px] rounded-md border px-4 py-2 text-sm font-medium ${tab === key ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
+            onClick={() => setUrl({ tab: key === 'defects' ? 'defects' : null })}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="mb-3 flex flex-col gap-2 empty:hidden">
+        <ErrorBox error={verify.error ?? review.error} />
+      </div>
+      {tab === 'defects' ? (
+        <DefectsTab />
+      ) : (
+        <>
       <Card className="mb-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Поиск">
@@ -199,7 +329,66 @@ export default function Products() {
               )}
             </Field>
           ))}
+          {polarityDef && (
+            <Field label="Полярность">
+              <select value={attrFilters.polarity ?? ''} onChange={(e) => setAttrFilters((f) => ({ ...f, polarity: e.target.value }))}>
+                <option value="">Все</option>
+                {polarityDef.options?.map((o) => (
+                  <option key={o} value={o}>
+                    {POLARITY_LABELS[o] ?? o}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
+        <div className="-mx-1 mt-3 flex gap-2 overflow-x-auto px-1 pb-1 text-sm" role="group" aria-label="Отбор по складу">
+          {CHIPS.map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={chip === key}
+              className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 ${
+                chip === key ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+              onClick={() => setUrl({ stock: key === 'all' ? null : key })}
+            >
+              {label}
+              {counts && <span className={`tabular-nums ${chip === key ? 'text-sky-100' : 'text-slate-400'}`}>{counts[key]}</span>}
+            </button>
+          ))}
+        </div>
+        {chip === 'stale' && totals?.stale_days !== undefined && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+            Залежалым считается товар без продаж {totals.stale_days} дней и больше.
+            {owner && (
+              <>
+                <input
+                  className="w-20"
+                  aria-label="Срок залежалости, дней"
+                  inputMode="numeric"
+                  placeholder={String(totals.stale_days)}
+                  value={staleDays}
+                  onChange={(e) => setStaleDays(e.target.value)}
+                />
+                <Button
+                  variant="secondary"
+                  disabled={staleSave.busy || !/^\d+$/.test(staleDays.trim())}
+                  onClick={() =>
+                    void staleSave.run(async () => {
+                      await put('/settings/stock', { stale_days: Number(staleDays) })
+                      setStaleDays('')
+                      list.reload()
+                    })
+                  }
+                >
+                  Изменить срок
+                </Button>
+              </>
+            )}
+            <ErrorBox error={staleSave.error} />
+          </div>
+        )}
         <div className="mt-3">
           <Checkbox label="Показать архив" checked={archived} onChange={setArchived} />
         </div>
@@ -254,9 +443,29 @@ export default function Products() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !items || (items.length === 0 && !totals?.count) ? (
-          <Empty action={mayAdd && <Button onClick={() => setEditing('new')}>Новый товар</Button>}>Товары не найдены</Empty>
+          <Empty icon="stock" action={chip === 'all' && mayAdd ? <Button onClick={() => setEditing('new')}>Новый товар</Button> : undefined}>
+            {emptyText}
+          </Empty>
         ) : (
           <>
+            <label className="mb-2 flex items-center justify-end gap-2 text-sm text-slate-600 md:hidden">
+              Сортировка
+              <select
+                className="w-auto"
+                value={MOBILE_SORTS.some((o) => o.value === sortValue) ? sortValue : ''}
+                onChange={(e) => {
+                  const [key, dir] = e.target.value.split(':')
+                  if (key) setSort({ key: key as SortKey, desc: dir === 'desc' })
+                }}
+              >
+                {!MOBILE_SORTS.some((o) => o.value === sortValue) && <option value="">как выбрано</option>}
+                {MOBILE_SORTS.filter((o) => owner || !o.owner).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="overflow-x-auto">
               <table className="responsive w-full text-sm" aria-label="Список товаров">
                 <thead>
@@ -283,6 +492,25 @@ export default function Products() {
                       onOpen={() => setEditing(p)}
                       onToggle={(on) => toggle(p, on)}
                       onStockIn={() => navigate(`/receipts/new?kind=stock_in&product=${p.id}`)}
+                      onDefect={() => setMarking(p)}
+                      ownerAction={
+                        !owner ? null : p.cost_pending ? (
+                          <Button
+                            variant="secondary"
+                            className="min-h-[32px] px-2 py-1 text-xs"
+                            onClick={() => {
+                              priceAct.setError(null)
+                              setPricing({ product: p, text: '', opId: newOpId() })
+                            }}
+                          >
+                            Цена закупки
+                          </Button>
+                        ) : p.needs_review ? (
+                          <Button variant="secondary" className="min-h-[32px] px-2 py-1 text-xs" disabled={review.busy} onClick={() => markReviewed(p)}>
+                            Проверено
+                          </Button>
+                        ) : null
+                      }
                       onArchive={() => {
                         if (p.archived || window.confirm(`Убрать «${p.name}» в архив? Он пропадёт из поиска в кассе; вернуть можно через «Показать архив».`)) {
                           void setArchivedFlag(p, !p.archived)
@@ -315,6 +543,8 @@ export default function Products() {
           </>
         )}
       </Card>
+        </>
+      )}
 
       {/* «+» внизу экрана на телефоне: добавить товар (SPEC-29 §7). */}
       {mayAdd && (
@@ -339,7 +569,75 @@ export default function Products() {
           onSaved={onSaved}
         />
       )}
+      {marking && (
+        <DefectMarkModal
+          product={marking}
+          onClose={() => setMarking(null)}
+          onDone={() => {
+            setMarking(null)
+            list.reload()
+          }}
+        />
+      )}
+      {pricing && (
+        <Modal title={`Цена закупки · ${pricing.product.name}`} onClose={() => setPricing(null)}>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-slate-600">
+              Товар продали без цены закупки: себестоимость этих строк неизвестна, и 2 % кассиру с них ещё не начислены. Укажите, почём товар
+              закупается, — процент начислится сегодня, прошлые дни не изменятся.
+            </p>
+            <Field label={`Цена закупки ${priceUnit(pricing.product)}, с`} required>
+              <input
+                autoFocus
+                inputMode="decimal"
+                value={pricing.text}
+                onChange={(e) => setPricing({ ...pricing, text: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') savePrice()
+                }}
+              />
+            </Field>
+            <ErrorBox error={priceAct.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setPricing(null)}>
+                Отмена
+              </Button>
+              <Button disabled={priceAct.busy || !pricing.text.trim()} onClick={savePrice}>
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {mismatches && (
+        <Modal title="Сверка остатков" wide onClose={() => setMismatches(null)}>
+          {mismatches.length === 0 ? <div className="py-4 text-center text-emerald-700">Расхождений нет</div> : <MismatchTable rows={mismatches} />}
+        </Modal>
+      )}
     </div>
+  )
+}
+
+function MismatchTable({ rows }: { rows: Mismatch[] }) {
+  const pager = usePager(rows, 'stock.mismatches')
+  return (
+    <>
+      <Table head={['Товар', 'Остаток в учёте', 'По движениям', 'Стоимость в учёте', 'По движениям']}>
+        {pager.shown.map((m) => {
+          const p = m.product
+          return (
+            <tr key={m.product_id}>
+              <td className="px-2 py-2">{p?.name ?? m.product_id}</td>
+              <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.cached_qty)}</td>
+              <td className="whitespace-nowrap px-2 py-2">{qtyText(p?.unit, m.moved_qty)}</td>
+              <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.cached_value_tyiyn)}</td>
+              <td className="whitespace-nowrap px-2 py-2 text-right">{formatSom(m.moved_value_tyiyn)}</td>
+            </tr>
+          )
+        })}
+      </Table>
+      <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы расхождений" />
+    </>
   )
 }
 
@@ -353,6 +651,8 @@ function ProductTableRow({
   onToggle,
   onArchive,
   onStockIn,
+  onDefect,
+  ownerAction,
 }: {
   p: ProductRow
   owner: boolean
@@ -362,12 +662,27 @@ function ProductTableRow({
   onToggle: (on: boolean) => void
   onArchive: () => void
   onStockIn: () => void
+  onDefect: () => void
+  /** «Цена закупки» или «Проверено» — владельцу, когда нужно. */
+  ownerAction: ReactNode
 }) {
   // Розлив за литр — от цены канистры (ADR-074).
   const pour = pourPricePerL(p)
   const minus = p.stock_qty < 0
+  // Пункты меню строки — по правам администратора (ADR-097).
+  const can = useCan()
+  // Как было в «Остатках»: нет — красным, ниже минимума — жёлтым.
+  const out = p.stock_qty <= 0
+  const low = !out && p.stock_qty < p.min_stock
+  const tone = p.archived
+    ? 'text-slate-400 hover:bg-slate-50'
+    : out && p.min_stock > 0
+      ? 'bg-rose-50 hover:bg-rose-100'
+      : low
+        ? 'bg-amber-50 hover:bg-amber-100'
+        : 'hover:bg-slate-50'
   return (
-    <tr className={`cursor-pointer hover:bg-slate-50 ${p.archived ? 'text-slate-400' : ''}`} onClick={onOpen}>
+    <tr className={`cursor-pointer ${tone}`} onClick={onOpen}>
       <td className="px-2 py-2" data-label="" onClick={(e) => e.stopPropagation()}>
         <input type="checkbox" className="h-4 w-4" aria-label="Выбрать для этикеток" checked={selected} onChange={(e) => onToggle(e.target.checked)} />
       </td>
@@ -375,15 +690,24 @@ function ProductTableRow({
         <div className="font-medium">{productTitle(p)}</div>
         <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
           {[p.brand, category].filter(Boolean).join(' · ')}
-          {p.needs_review && <Badge tone="amber">проверить</Badge>}
+          {out && !p.archived && <Badge tone="rose">нет</Badge>}
+          {low && <Badge tone="amber">ниже минимума</Badge>}
+          {p.needs_review && <Badge tone="rose">проверить</Badge>}
+          {p.cost_pending && <Badge tone="amber">без цены закупки</Badge>}
+          {p.stale && (
+            <Badge tone="slate">
+              {p.stale.sold_ever ? 'не продавался' : 'ни разу не продан'} {p.stale.days} дн.
+            </Badge>
+          )}
           {p.archived && <Badge>архив</Badge>}
         </div>
       </td>
       <td className="px-2 py-2 whitespace-nowrap" data-label="Код">
         {p.code || '—'}
       </td>
-      <td className={`px-2 py-2 text-right tabular-nums ${minus ? 'font-semibold text-rose-700' : ''}`} data-label="Остаток">
+      <td className={`px-2 py-2 text-right tabular-nums ${minus || (out && p.min_stock > 0) ? 'font-semibold text-rose-700' : low ? 'font-semibold text-amber-800' : ''}`} data-label="Остаток">
         {stockText(p)}
+        {p.min_stock > 0 && <div className="whitespace-nowrap text-xs font-normal text-slate-500">мин. {qtyText(p.unit, p.min_stock)}</div>}
       </td>
       {owner && (
         <td className="px-2 py-2 whitespace-nowrap text-right tabular-nums" data-label="Закупка">
@@ -405,14 +729,19 @@ function ProductTableRow({
         {formatSom(p.stock_sale_tyiyn)}
       </td>
       <td className="px-2 py-2 text-right" data-label="" onClick={(e) => e.stopPropagation()}>
-        <RowMenu
-          items={[
-            { label: 'Открыть карточку', onClick: onOpen },
-            ...(p.archived ? [] : [{ label: '+ Оприходовать', onClick: onStockIn }]),
-            { label: selected ? 'Убрать из этикеток' : 'Печать этикетки', onClick: () => onToggle(!selected) },
-            { label: p.archived ? 'Вернуть из архива' : 'В архив', danger: !p.archived, onClick: onArchive },
-          ]}
-        />
+        <div className="flex items-center justify-end gap-2">
+          {ownerAction}
+          <RowMenu
+            items={[
+              { label: 'Открыть карточку', onClick: onOpen },
+              ...(p.archived || !can('stock_in') ? [] : [{ label: '+ Оприходовать', onClick: onStockIn }]),
+              // «В брак» — только из того, что есть на складе (SPEC-25).
+              ...(p.stock_qty > 0 && can('defects') ? [{ label: 'В брак', onClick: onDefect }] : []),
+              { label: selected ? 'Убрать из этикеток' : 'Печать этикетки', onClick: () => onToggle(!selected) },
+              ...(can('products') ? [{ label: p.archived ? 'Вернуть из архива' : 'В архив', danger: !p.archived, onClick: onArchive }] : []),
+            ]}
+          />
+        </div>
       </td>
     </tr>
   )

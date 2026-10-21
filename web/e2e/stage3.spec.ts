@@ -364,6 +364,9 @@ test('подарок по порогу: 1 л розлива мало, канис
   await expect(giftLine).toContainText('подарок')
   // У подарка нет поля цены: «бесплатно», правится только количество.
   await expect(giftLine).toContainText('бесплатно')
+  // Остаток подарка — из карточки товара, а не «undefined» (SPEC-30 §13).
+  await expect(giftLine).toContainText(/Остаток: 10\sшт/)
+  await expect(giftLine).not.toContainText('undefined')
   await expect(giftLine.getByRole('textbox')).toHaveCount(1)
   await expect(giftLine).toContainText(money('0 с'))
 

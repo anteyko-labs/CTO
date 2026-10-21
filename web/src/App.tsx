@@ -1,12 +1,13 @@
 // Каркас приложения: вход, меню по ролям (боковое и нижнее на телефоне), маршруты всех экранов.
 // Какой экран за какую спецификацию отвечает — docs/DEVELOPMENT.md, раздел «Карта кода».
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
 import { can } from './lib/permissions'
 import type { Permission } from './lib/types'
 import { logoutWarning, outboxItems, startOfflineLoop } from './lib/offline'
 import { useTouchMode } from './lib/cashierMode'
+import { stockToProducts } from './lib/stockLink'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
 import { UpdateBanner } from './components/UpdateBanner'
@@ -46,7 +47,6 @@ import ShiftReport from './pages/ShiftReport'
 import DebtDocsSettings from './pages/DebtDocsSettings'
 import OilTransfer from './pages/OilTransfer'
 import Revision from './pages/Revision'
-import Stock from './pages/Stock'
 import StockInCorrect from './pages/StockInCorrect'
 import StockInView from './pages/StockInView'
 import SupplierReturnsPage from './pages/SupplierReturns'
@@ -97,7 +97,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/receipts', label: 'Приход', icon: 'incoming', permission: ['receipts', 'stock_in'] },
       { to: '/suppliers', label: 'Поставщики', icon: 'truck' },
       { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return', permission: 'supplier_returns' },
-      { to: '/stock', label: 'Остатки', icon: 'stock' },
+      // «Остатки» — в «Товарах» (SPEC-30 §11).
       { to: '/products', label: 'Товары', icon: 'products' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },
       { to: '/revision', label: 'Ревизия и товары', icon: 'revision', permission: ['revision', 'products'] },
@@ -128,7 +128,7 @@ const MOBILE_TABS: Record<'owner' | 'admin', NavItem[]> = {
     { to: '/', label: 'Касса', icon: 'cashier' },
     { to: '/sales', label: 'Чеки', icon: 'receipt' },
     { to: '/shift', label: 'Смена', icon: 'shift' },
-    { to: '/stock', label: 'Остатки', icon: 'stock' },
+    { to: '/products', label: 'Товары', icon: 'stock' },
   ],
 }
 
@@ -173,6 +173,12 @@ function useUnseen(enabled: boolean): number {
     }
   }, [enabled])
   return n
+}
+
+/** «Остатки» вошли в «Товары» (SPEC-30 §11): старый адрес — туда же, с теми же отборами. */
+function StockRedirect() {
+  const { search } = useLocation()
+  return <Navigate to={stockToProducts(search)} replace />
 }
 
 /** Пересоздаёт страницу при смене :id, чтобы окна и идентификаторы операций не переносились между документами. */
@@ -317,7 +323,7 @@ function Shell() {
           <Route path="/receipts/new" element={<ReceiptNew />} />
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           {owner && <Route path="/receipts/:id/correct" element={<ByParam><ReceiptCorrect /></ByParam>} />}
-          <Route path="/stock" element={<Stock />} />
+          <Route path="/stock" element={<StockRedirect />} />
           <Route path="/products" element={<Products />} />
           <Route path="/top-products" element={<TopProducts />} />
           <Route path="/intake" element={<Navigate to="/revision?tab=scan" replace />} />

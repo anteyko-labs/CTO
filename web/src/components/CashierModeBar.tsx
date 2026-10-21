@@ -1,7 +1,7 @@
 // Узкая полоса сверху в режиме кассы (SPEC-29, «Режим кассы»): смена и кассир, связь и очередь
-// чеков, во весь экран и выход из режима. Меню приложения в режиме скрыто.
-import { useEffect, useState } from 'react'
-import { enterFullscreen, exitFullscreen, setCashierMode } from '../lib/cashierMode'
+// чеков, экранная клавиатура (ADR-101), во весь экран и выход из режима. Меню приложения в режиме скрыто.
+import { useEffect, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { enterFullscreen, exitFullscreen, setCashierMode, setKeyboardOpen, useKeyboardOpen } from '../lib/cashierMode'
 import { isOwnItem, pendingCount, watchOutbox } from '../lib/offline'
 import { useUser } from '../lib/auth'
 import { useServerOnline } from '../lib/hooks'
@@ -23,6 +23,9 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
     }
   }, [me])
   const canFull = typeof document.documentElement.requestFullscreen === 'function'
+  const keyboard = useKeyboardOpen()
+  // Кнопка клавиатуры не забирает фокус у поля: ввод пойдёт в него.
+  const keepFocus = (e: ReactPointerEvent | ReactMouseEvent) => e.preventDefault()
 
   return (
     <div
@@ -48,6 +51,16 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
         {waiting > 0 && <span className="text-amber-300"> · не отправлено: {waiting}</span>}
       </span>
       <span className="ml-auto flex flex-wrap gap-2">
+        <button
+          type="button"
+          aria-pressed={keyboard}
+          className={`rounded-lg px-5 text-base font-semibold ${keyboard ? 'border-2 border-sky-400 bg-slate-700 text-white active:bg-slate-800' : 'border border-slate-500 active:bg-slate-700'}`}
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={() => setKeyboardOpen(!keyboard)}
+        >
+          ⌨ Клавиатура
+        </button>
         {canFull && !full && (
           <button type="button" className="rounded-lg border border-slate-500 px-5 text-base font-medium active:bg-slate-700" onClick={enterFullscreen}>
             Во весь экран

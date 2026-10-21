@@ -46,6 +46,28 @@ export function useTouchMode(): boolean {
   return mode && pathname === '/'
 }
 
+// Экранная клавиатура режима кассы (ADR-101): сама не появляется — её открывают кнопкой «⌨
+// Клавиатура» в полосе режима или у поля в фокусе, и она остаётся до «Скрыть».
+let keyboard = false
+const keyboardListeners = new Set<() => void>()
+
+function subscribeKeyboard(fn: () => void): () => void {
+  keyboardListeners.add(fn)
+  return () => keyboardListeners.delete(fn)
+}
+
+/** Открыть или скрыть экранную клавиатуру. */
+export function setKeyboardOpen(value: boolean): void {
+  if (keyboard === value) return
+  keyboard = value
+  keyboardListeners.forEach((fn) => fn())
+}
+
+/** Открыта ли экранная клавиатура. */
+export function useKeyboardOpen(): boolean {
+  return useSyncExternalStore(subscribeKeyboard, () => keyboard, () => false)
+}
+
 /** Во весь экран; браузер может отказать (нет жеста пользователя, запрет) — тогда просто окно. */
 export function enterFullscreen(): void {
   try {

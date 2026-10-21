@@ -1,5 +1,6 @@
 // Режим кассы на сенсорном моноблоке (SPEC-29, «Режим кассы»): без меню и крупно, цифры —
 // экранной клавиатурой, режим помнит устройство. Касания — как пальцем (hasTouch).
+// Клавиатура сама не появляется — только по кнопке, и остаётся до «Скрыть» (ADR-101).
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
 
@@ -52,6 +53,20 @@ async function tapKeys(page: Page, keys: string) {
   for (const k of keys) await pad.getByRole('button', { name: k === ',' ? 'Запятая' : k, exact: true }).tap()
 }
 
+/** Поле в фокусе, клавиатура закрыта: сама не появилась, открываем кнопкой «⌨» у поля (ADR-101). */
+async function openPadAt(page: Page, field: Locator) {
+  await field.tap()
+  await expect(page.getByTestId('keypad')).toHaveCount(0)
+  await page.getByTestId('keyboard-field-button').tap()
+  await expect(page.getByTestId('keypad')).toBeVisible()
+}
+
+async function hidePad(page: Page) {
+  await page.getByRole('group', { name: /клавиатура/i }).getByRole('button', { name: 'Скрыть', exact: true }).tap()
+  await expect(page.getByTestId('keypad')).toHaveCount(0)
+  await expect(page.getByTestId('keyboard')).toHaveCount(0)
+}
+
 test('режим кассы: крупно, без меню, продажа экранной клавиатурой, помнится после перезагрузки', async ({ page }) => {
   await login(page)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Сенсор ${RUN}`, kind: 'other' })
@@ -82,17 +97,19 @@ test('режим кассы: крупно, без меню, продажа эк�
   await dialog.locator('#shift-cashier').selectOption({ label: cashier })
   const pin = dialog.locator('#shift-pin')
   await expect(pin).toHaveAttribute('inputmode', 'none')
-  await pin.tap()
-  await expect(page.getByTestId('keypad')).toBeVisible()
+  await openPadAt(page, pin)
   await tapKeys(page, '24689')
   await expect(pin).toHaveValue('2468')
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/cashier-mode-1366-shift.png` })
   await dialog.getByRole('button', { name: 'Открыть', exact: true }).tap()
   await expect(bar.getByTestId('mode-shift')).toContainText(cashier)
+  // Окно закрылось, а клавиатура открыта, пока её не скроют.
+  await expect(bar.getByRole('button', { name: '⌨ Клавиатура' })).toHaveAttribute('aria-pressed', 'true')
+  await hidePad(page)
 
   // Товар — как сканером, дальше только касания.
   await page.getByPlaceholder(PICKER).fill(name)
-  await page.getByRole('button', { name: new RegExp(name) }).first().tap()
+  await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
   const qty = page.getByRole('textbox', { name: 'Кол-во' })
   await expect(qty).toHaveValue('1')
   await expect(qty).toHaveAttribute('inputmode', 'none')
@@ -100,16 +117,19 @@ test('режим кассы: крупно, без меню, продажа эк�
   await expect(qty).toHaveValue('2')
   await page.getByRole('button', { name: 'Меньше' }).tap()
   await expect(qty).toHaveValue('1')
+  // Поле в фокусе — клавиатура открывается кнопкой в полосе режима.
   await qty.tap()
+  await expect(page.getByTestId('keypad')).toHaveCount(0)
+  await bar.getByRole('button', { name: '⌨ Клавиатура' }).tap()
+  await expect(page.getByTestId('keypad')).toBeVisible()
   await tapKeys(page, '3')
   // Первая цифра заменяет подставленную единицу.
   await expect(qty).toHaveValue('3')
-  await page.getByTestId('keypad').getByRole('button', { name: 'Готово' }).tap()
-  await expect(page.getByTestId('keypad')).toHaveCount(0)
+  await hidePad(page)
 
   const received = page.locator('[data-received]')
   await expect(received).toHaveAttribute('inputmode', 'none')
-  await received.tap()
+  await openPadAt(page, received)
   await tapKeys(page, '2000')
   await expect(received).toHaveValue('2000')
   await expect(page.getByText('Сдача').locator('..')).toContainText(/500\sс/)
@@ -140,7 +160,7 @@ test('режим кассы: крупно, без меню, продажа эк�
   // Сумма — на самой кнопке.
   await expect(submit).toContainText(/1\s500\sс/)
   expect((await size(submit)).height).toBeGreaterThanOrEqual(72)
-  for (const k of ['1', '0', 'Стереть', 'Готово']) {
+  for (const k of ['1', '0', 'Стереть', 'Скрыть']) {
     expect((await size(page.getByTestId('keypad').getByRole('button', { name: k, exact: true }))).height).toBeGreaterThanOrEqual(56)
   }
   // Без прокрутки вбок.
@@ -164,10 +184,10 @@ test('режим кассы: крупно, без меню, продажа эк�
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   if (SHOTS) {
     await page.getByPlaceholder(PICKER).fill(name)
-    await page.getByRole('button', { name: new RegExp(name) }).first().tap()
-    await page.locator('[data-received]').tap()
+    await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
+    await openPadAt(page, page.locator('[data-received]'))
     await page.screenshot({ path: `${SHOTS}/cashier-mode-1920.png` })
-    await page.getByTestId('keypad').getByRole('button', { name: 'Готово' }).tap()
+    await hidePad(page)
     await page.getByRole('button', { name: 'В сервис' }).tap()
     await page.screenshot({ path: `${SHOTS}/cashier-mode-1920-service.png`, fullPage: true })
     await page.getByRole('button', { name: 'На вынос' }).tap()
@@ -251,11 +271,10 @@ test('режим кассы: во весь экран без прокрутки 
     expect(await noPageScroll(page), `12 строк ${view.width}×${view.height}`).toBe(true)
     if (SHOTS) {
       await page.screenshot({ path: `${SHOTS}/kassa-${view.width}-12.png` })
-      await page.locator('[data-received]').tap()
-      await expect(page.getByTestId('keypad')).toBeVisible()
+      await openPadAt(page, page.locator('[data-received]'))
       expect(await noPageScroll(page)).toBe(true)
       await page.screenshot({ path: `${SHOTS}/kassa-${view.width}-12-keypad.png` })
-      await page.getByTestId('keypad').getByRole('button', { name: 'Готово' }).tap()
+      await hidePad(page)
     }
   }
 
@@ -311,4 +330,135 @@ test('режим кассы: во весь экран без прокрутки 
   await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
   await expect(page.getByRole('link', { name: 'Сводка' })).toBeVisible()
   await closeOpenShift(page.request)
+})
+
+test('клавиатура режима кассы: только по кнопке, русские буквы и латиница, открыта между полями до «Скрыть»', async ({ page }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Клавиатура ${RUN}`, kind: 'other' })
+  const name = `клав ${RUN} щётка`
+  const p = await apiPost<{ id: string }>(page.request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, sale_price_tyiyn: 20_000 })
+  await apiPost(page.request, '/receipts', {
+    op_id: crypto.randomUUID(),
+    paid_from: await ownerSafe(page.request),
+    lines: [{ product_id: p.id, qty: 5, cost_tyiyn: 50_000 }],
+  })
+
+  await page.goto('/')
+  await page.evaluate(() => localStorage.setItem('avtodom.cashier_mode', '1'))
+  await page.reload()
+  const bar = page.getByTestId('cashier-mode-bar')
+  await expect(bar).toBeVisible()
+  const picker = page.getByPlaceholder(PICKER)
+  const kbdButton = bar.getByRole('button', { name: '⌨ Клавиатура' })
+
+  // Поле в фокусе — клавиатура сама не появилась, рядом с полем только кнопка «⌨».
+  await picker.tap()
+  await expect(page.getByTestId('keyboard')).toHaveCount(0)
+  await expect(page.getByTestId('keyboard-field-button')).toBeVisible()
+  await expect(kbdButton).toHaveAttribute('aria-pressed', 'false')
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/kbd-1366-closed.png` })
+  await kbdButton.tap()
+  const kbd = page.getByTestId('keyboard')
+  await expect(kbd).toBeVisible()
+  await expect(kbdButton).toHaveAttribute('aria-pressed', 'true')
+  // Клавиатура не закрывает поле, страница не прокручивается, клавиши крупные.
+  {
+    const f = (await picker.boundingBox())!
+    const k = (await kbd.boundingBox())!
+    expect(f.y + f.height <= k.y || k.y + k.height <= f.y).toBe(true)
+    const view = page.viewportSize()!
+    expect(k.x >= 0 && k.y >= 0 && k.x + k.width <= view.width && k.y + k.height <= view.height).toBe(true)
+    expect(await noPageScroll(page)).toBe(true)
+    for (const key of ['й', '1', 'Пробел', 'Стереть', 'Скрыть']) {
+      const s = await size(kbd.getByRole('button', { name: key, exact: true }))
+      expect(s.height, key).toBeGreaterThanOrEqual(56)
+      expect(s.width, key).toBeGreaterThanOrEqual(56)
+    }
+  }
+  const tapText = async (text: string) => {
+    for (const ch of text) await kbd.getByRole('button', { name: ch === ' ' ? 'Пробел' : ch, exact: true }).tap()
+  }
+  await tapText(`клав ${RUN}`)
+  await expect(picker).toHaveValue(`клав ${RUN}`)
+  await expect(page.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible()
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/kbd-1366-ru.png` })
+
+  // Латиница, заглавная и стереть.
+  await kbd.getByRole('button', { name: 'Латиница' }).tap()
+  await expect(kbd).toHaveAttribute('data-lang', 'en')
+  await kbd.getByRole('button', { name: 'Заглавная буква' }).tap()
+  await kbd.getByRole('button', { name: 'Q', exact: true }).tap()
+  await kbd.getByRole('button', { name: 'w', exact: true }).tap()
+  await expect(picker).toHaveValue(`клав ${RUN}Qw`)
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/kbd-1366-lat.png` })
+  await kbd.getByRole('button', { name: 'Стереть' }).tap()
+  await kbd.getByRole('button', { name: 'Стереть' }).tap()
+  await expect(picker).toHaveValue(`клав ${RUN}`)
+  await kbd.getByRole('button', { name: 'Русские буквы' }).tap()
+  await expect(kbd).toHaveAttribute('data-lang', 'ru')
+
+  // Enter — как с клавиатуры: товар из найденного по всему тексту.
+  await kbd.getByRole('button', { name: 'Enter' }).tap()
+  const cart = page.getByTestId('cart')
+  await expect(cart.locator('li')).toHaveCount(1)
+  await expect(cart).toContainText(name)
+
+  // Открытая клавиатура остаётся при переходе к другому полю: у «Получено» — цифры.
+  const received = page.locator('[data-received]')
+  await received.tap()
+  await expect(page.getByTestId('keypad')).toBeVisible()
+  await expect(kbd).toHaveCount(0)
+  await tapKeys(page, '500')
+  await expect(received).toHaveValue('500')
+  const qty = page.getByRole('textbox', { name: 'Кол-во' })
+  // Обратно в поиск — снова буквы, без нажатия кнопки.
+  await picker.tap()
+  await expect(kbd).toBeVisible()
+  await tapText('щ')
+  await expect(picker).toHaveValue('щ')
+  await kbd.getByRole('button', { name: 'Стереть' }).tap()
+
+  // Клиент: окно поиска клиента, имя — буквами.
+  await page.getByRole('button', { name: 'Выбрать клиента' }).tap()
+  const clientDialog = page.getByRole('dialog', { name: 'Клиент и машина' })
+  const clientSearch = clientDialog.getByPlaceholder('Госномер, телефон, имя или ИНН')
+  await clientSearch.tap()
+  await expect(kbd).toBeVisible()
+  await tapText('ив')
+  await expect(clientSearch).toHaveValue('ив')
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/kbd-1366-client.png` })
+  await clientDialog.getByRole('button', { name: 'Готово' }).tap()
+
+  // «Скрыть» прячет её, и дальше она сама не появляется.
+  await picker.tap()
+  await kbd.getByRole('button', { name: 'Скрыть', exact: true }).tap()
+  await expect(kbd).toHaveCount(0)
+  await expect(kbdButton).toHaveAttribute('aria-pressed', 'false')
+  await qty.tap()
+  await expect(page.getByTestId('keypad')).toHaveCount(0)
+  await picker.tap()
+  await expect(page.getByTestId('keyboard')).toHaveCount(0)
+
+  // 1920×1080 и тёмная тема: клавиатура по кнопке у поля, страница на месте.
+  await page.setViewportSize({ width: 1920, height: 1080 })
+  await page.getByTestId('keyboard-field-button').tap()
+  await expect(kbd).toBeVisible()
+  expect(await noPageScroll(page)).toBe(true)
+  if (SHOTS) {
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: `${SHOTS}/kbd-1920.png` })
+    await page.setViewportSize({ width: 1366, height: 768 })
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+    // Кнопки меняют фон плавно — снимок после перехода.
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: `${SHOTS}/kbd-1366-dark.png` })
+    await page.evaluate(() => document.documentElement.removeAttribute('data-theme'))
+  }
+  await kbd.getByRole('button', { name: 'Скрыть', exact: true }).tap()
+
+  await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
+  await page.getByRole('button', { name: 'Точно очистить?' }).tap()
+  await expect(page.getByText('Чек пуст')).toBeVisible()
+  await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
+  await expect(page.getByRole('link', { name: 'Сводка' })).toBeVisible()
 })

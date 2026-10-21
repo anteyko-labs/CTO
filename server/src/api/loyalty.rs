@@ -53,6 +53,30 @@ pub async fn balance(conn: &mut PgConnection, party_id: Uuid) -> AppResult<i64> 
     .await?)
 }
 
+/// Баллы у всех клиентов филиала (SPEC-30 §12): сколько клиентов с баллами и сколько баллов
+/// у них вместе. 1 балл = 1 сом, баллы хранятся в тыйынах, как деньги.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PointsTotal {
+    pub clients: i64,
+    pub points_tyiyn: i64,
+}
+
+pub async fn branch_total(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<PointsTotal> {
+    let r = sqlx::query!(
+        r#"select count(*) filter (where b > 0) as "clients!",
+                  coalesce(sum(b) filter (where b > 0), 0)::bigint as "points!"
+           from (select party_id, sum(amount_tyiyn) as b from loyalty_ledger
+                 where branch_id = $1 group by party_id) x"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(PointsTotal {
+        clients: r.clients,
+        points_tyiyn: r.points,
+    })
+}
+
 /// Участник программы — клиент, подключившийся к боту своим номером.
 pub async fn is_member(conn: &mut PgConnection, party_id: Uuid) -> AppResult<bool> {
     Ok(sqlx::query_scalar!(

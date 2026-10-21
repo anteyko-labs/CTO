@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyKey, padPlace, type Box, type KeypadKey } from './keypad'
+import { applyKey, eraseBack, fieldPad, kbdPlace, padPlace, typeText, type Box, type KeypadKey } from './keypad'
 
 /** Нажать клавиши подряд, как кассир пальцем. */
 function press(start: string, keys: KeypadKey[], opts: Parameters<typeof applyKey>[2]): string {
@@ -96,5 +96,56 @@ describe('где стоит экранная клавиатура', () => {
     expect(inside(b, view)).toBe(true)
     // Прокрутили на `scroll` — поле над клавиатурой.
     expect(overlaps({ ...mid, top: mid.top - b.scroll }, b)).toBe(false)
+  })
+})
+
+describe('полная клавиатура с буквами (ADR-101)', () => {
+  it('какая клавиатура у какого поля', () => {
+    expect(fieldPad('INPUT', null, undefined, false)).toBe('letters')
+    expect(fieldPad('INPUT', 'search', undefined, false)).toBe('letters')
+    expect(fieldPad('INPUT', 'tel', undefined, false)).toBe('letters')
+    expect(fieldPad('TEXTAREA', null, undefined, false)).toBe('letters')
+    // Числа и PIN — цифровая, как раньше.
+    expect(fieldPad('INPUT', 'text', 'decimal', false)).toBe('digits')
+    expect(fieldPad('INPUT', 'password', 'digits', false)).toBe('digits')
+    expect(fieldPad('INPUT', 'checkbox', undefined, false)).toBeNull()
+    expect(fieldPad('INPUT', 'date', undefined, false)).toBeNull()
+    expect(fieldPad('SELECT', null, undefined, false)).toBeNull()
+    expect(fieldPad('INPUT', 'text', undefined, true)).toBeNull()
+  })
+
+  it('буквы встают на место курсора, выделенное заменяется', () => {
+    expect(typeText('', null, null, 'м')).toEqual({ value: 'м', caret: 1 })
+    expect(typeText('масо', 3, 3, 'л')).toEqual({ value: 'масло', caret: 4 })
+    expect(typeText('масло 5w30', 6, 10, '10w40')).toEqual({ value: 'масло 10w40', caret: 11 })
+    // Предел длины поля: лишнее не вводится.
+    expect(typeText('01KG', null, null, 'A', 4)).toEqual({ value: '01KG', caret: 4 })
+  })
+
+  it('стереть: знак перед курсором или выделенное', () => {
+    expect(eraseBack('масло', null, null)).toEqual({ value: 'масл', caret: 4 })
+    expect(eraseBack('масло', 2, 2)).toEqual({ value: 'мсло', caret: 1 })
+    expect(eraseBack('масло', 0, 5)).toEqual({ value: '', caret: 0 })
+    expect(eraseBack('масло', 0, 0)).toEqual({ value: 'масло', caret: 0 })
+  })
+
+  it('стоит у нижнего края, а поле внизу — у верхнего; поле не закрыто', () => {
+    const view = { width: 1366, height: 768 }
+    const kbd = { width: 1200, height: 380 }
+    const covers = (f: Box, p: { top: number }) => p.top < f.top + f.height && f.top < p.top + kbd.height
+    // Поиск товара вверху — клавиатура внизу.
+    const search: Box = { left: 24, top: 60, width: 800, height: 64 }
+    const a = kbdPlace(search, kbd, view)
+    expect(a.top).toBe(768 - 380 - 12)
+    expect(a.left).toBe(83)
+    expect(covers(search, a)).toBe(false)
+    // Комментарий внизу правой колонки — клавиатура вверху.
+    const comment: Box = { left: 900, top: 600, width: 400, height: 56 }
+    const b = kbdPlace(comment, kbd, view)
+    expect(b.top).toBe(12)
+    expect(covers(comment, b)).toBe(false)
+    // Узкий телефон: места нет — внизу, страница прокручивается.
+    const phone = kbdPlace({ left: 16, top: 300, width: 358, height: 56 }, { width: 366, height: 380 }, { width: 390, height: 600 })
+    expect(phone.scroll).toBeGreaterThan(0)
   })
 })

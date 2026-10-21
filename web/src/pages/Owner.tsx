@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom'
 import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Money, Notice, PageHeader } from '../components/ui'
 import { Icon } from '../components/icons'
 import { get, qs } from '../lib/api'
-import { formatDate, formatSom, hourBishkek, shiftDate, todayBishkek } from '../lib/format'
+import { formatDate, formatPoints, formatSom, hourBishkek, pointsClients, shiftDate, todayBishkek } from '../lib/format'
+import { productsLink } from '../lib/stockLink'
 import { useLoad, usePolling } from '../lib/hooks'
 import { Heatmap } from '../components/Heatmap'
 import { ProfitChart, type Point, type Series } from '../components/ProfitChart'
@@ -323,7 +324,7 @@ export function OwnerDashboard() {
               </span>
             ))}
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-4">
+          <div className="mt-3 grid grid-cols-2 gap-4 border-t border-slate-200 pt-3 sm:grid-cols-3 xl:grid-cols-5">
             <Link to="/bank" className="rounded-md hover:bg-slate-50" data-testid="noncash">
               <Tile label={`Безнал ${word}`} value={formatSom(data.noncash.total_tyiyn)}>
                 <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500">
@@ -342,6 +343,16 @@ export function OwnerDashboard() {
             <Link to="/debts" className="rounded-md hover:bg-slate-50">
               <Tile label="Мы должны поставщикам" value={formatSom(data.debts_out_tyiyn)} />
             </Link>
+            {data.points && (
+              // Баллы — обязательство точки: клиенты спишут их покупками (SPEC-30 §12).
+              <Link to="/clients" className="rounded-md hover:bg-slate-50" data-testid="points-total">
+                <Tile label="Баллы у клиентов" value={formatPoints(data.points.points_tyiyn)} tone="text-sky-700">
+                  <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500">
+                    на {formatSom(data.points.points_tyiyn)} · {pointsClients(data.points.clients)}
+                  </div>
+                </Tile>
+              </Link>
+            )}
             <Link to={`/income${qs({ from, to })}`} className="flex items-center rounded-md text-sm text-sky-700 hover:bg-slate-50">
               Куда сколько поступило →
             </Link>
@@ -419,14 +430,15 @@ export function OwnerDashboard() {
             <div className="flex flex-col divide-y divide-slate-100 text-sm">
               {(
                 [
-                  [data.needs_review, 'Проверить остаток', 'bg-rose-500'],
-                  [data.low_stock, 'Заканчивается', 'bg-amber-500'],
-                  [data.stale_stock, 'Залежался больше 60 дней', 'bg-slate-400'],
+                  [data.needs_review, 'Проверить остаток', 'bg-rose-500', 'review'],
+                  [data.low_stock, 'Заканчивается', 'bg-amber-500', 'low'],
+                  [data.stale_stock, 'Залежался больше 60 дней', 'bg-slate-400', 'stale'],
                 ] as const
               )
                 .filter(([n]) => n > 0)
-                .map(([n, label, dot]) => (
-                  <Link key={label} to="/stock" className="flex items-center gap-3 py-2 hover:text-sky-700">
+                .map(([n, label, dot, chip]) => (
+                  // Сразу на нужный отбор «Товаров» (SPEC-30 §11).
+                  <Link key={label} to={productsLink(chip)} className="flex items-center gap-3 py-2 hover:text-sky-700">
                     <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot}`} />
                     <span className="flex-1">{label}</span>
                     <span className="font-semibold tabular-nums">{n}</span>

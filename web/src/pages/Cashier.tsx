@@ -17,8 +17,8 @@ import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
 import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
-import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { hasEngineOil, nextChangeProblem } from '../lib/oilChange'
+import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
+import { hasEngineOil } from '../lib/oilChange'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -134,14 +134,9 @@ interface Parked {
   mileage?: string
   delivery?: string | null
   declined?: string
-  /** «Через сколько менять» масло: в единице машины и днях (SPEC-29 §23). */
-  nextEvery?: NextEvery | null
   /** Строки, удалённые крестиком до того, как чек отложили (SPEC-30 §8). */
   dropped?: RemovedLine[]
 }
-
-/** Интервал следующей замены масла из чека: как ввёл кассир (единица машины) и дни. */
-type NextEvery = { dist: string; days: string }
 
 function loadParked(): Parked[] {
   try {
@@ -174,7 +169,6 @@ interface Draft {
   mileage?: string
   delivery?: string | null
   declined?: string
-  nextEvery?: NextEvery | null
   dropped?: RemovedLine[]
 }
 
@@ -285,7 +279,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           mileage: fix.state.mileage,
           delivery: fix.state.delivery,
           declined: fix.state.declined,
-          nextEvery: null,
         }
       : loadDraft(),
   )
@@ -343,8 +336,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
   // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
   const [declined, setDeclined] = useState(draft?.declined ?? '')
-  // «Через сколько менять» (SPEC-29 §23): null — как в книжке, не трогали.
-  const [nextEvery, setNextEvery] = useState<NextEvery | null>(draft?.nextEvery ?? null)
   // «Это замена масла?» (SPEC-29 §18): для этого чека уже спросили — больше не спрашиваем.
   const [oilAsked, setOilAsked] = useState(false)
   const [oilQuestion, setOilQuestion] = useState(false)
@@ -377,8 +368,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const masters = employees.data?.filter((e) => e.is_master && (e.active || e.id === fix?.state.masterId)) ?? []
 
   useEffect(() => {
-    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery, dropped })
-  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, nextEvery, dropped])
+    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped })
+  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped])
 
   // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
   const [storageAtRisk, setStorageAtRisk] = useState(false)
@@ -508,10 +499,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }, [lines, giftRules, giftRule])
 
   const addGift = (g: { product_id: string; qty: number; name: string }) => {
+    const key = nextKey()
     setLines((ls) => [
       ...ls,
       {
-        key: nextKey(),
+        key,
         kind: 'piece',
         product: { id: g.product_id, name: g.name } as Product,
         qtyText: String(g.qty),
@@ -519,6 +511,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         gift: true,
       },
     ])
+    // Строка встаёт сразу, остаток — когда придёт карточка товара (без сети — из снимка).
+    void get<Product>(`/products/${g.product_id}`)
+      .catch(async () => (await readSnapshot())?.products.find((p) => p.id === g.product_id) ?? null)
+      .then((p) => p && setLines((ls) => ls.map((l) => (l.key === key ? { ...l, product: p } : l))))
+      .catch(() => undefined)
     setGiftRule(null)
     focusPicker()
   }
@@ -628,7 +625,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setMileage('')
     setDelivery(null)
     setDeclined('')
-    setNextEvery(null)
     setOilAsked(false)
     setOilQuestion(false)
     setCommentOpen(false)
@@ -659,22 +655,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (m > lastKm + 50_000) return `В прошлый раз было ${mileageText(lastKm, carUnit)} — точно ${mileageText(m, carUnit)}?`
     return null
   })()
-  // Интервал масла этой машины сейчас (машины, категории или по умолчанию) — в её единице.
-  const oilSlot = book.data?.slots?.find((n) => n.slot === 'oil')
-  const curEvery: NextEvery | null =
-    oilSlot && oilSlot.interval_km !== null && oilSlot.interval_days !== null
-      ? { dist: String(fromKm(oilSlot.interval_km, carUnit)), days: String(oilSlot.interval_days) }
-      : book.data
-        ? { dist: String(fromKm(book.data.interval_km, carUnit)), days: String(book.data.interval_days) }
-        : null
-  const every = nextEvery ?? curEvery
-  const bookService = saleType === 'service' && Boolean(party) && Boolean(vehicleId)
-  const everyProblem = bookService && nextEvery ? nextChangeProblem(nextEvery.dist, nextEvery.days, carUnit) : null
-  // В чек уходит, только если кассир поменял интервал: иначе остаётся интервал книжки.
-  const bookIntervals =
-    bookService && nextEvery && !everyProblem && (nextEvery.dist !== curEvery?.dist || nextEvery.days !== curEvery?.days)
-      ? [{ slot: 'oil', interval_km: toKm(Number(nextEvery.dist), carUnit), interval_days: Number(nextEvery.days) }]
-      : []
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
@@ -700,7 +680,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       mileage,
       delivery,
       declined,
-      nextEvery,
       dropped,
     }
     return [...list.filter((p) => p.id !== id), item]
@@ -733,7 +712,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setMileage(p.mileage ?? '')
     setDelivery(p.delivery ?? null)
     setDeclined(p.declined ?? '')
-    setNextEvery(p.nextEvery ?? null)
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -793,7 +771,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
     [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
-    [!everyProblem, everyProblem ?? '', '#next-every-dist'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
     [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
     [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
@@ -811,7 +788,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         // Пробег — как вписали, в единице машины (ADR-084); сервер переведёт в км для интервалов.
         mileage: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
         mileage_unit: party && vehicleId && saleType === 'service' && mileage ? carUnit : null,
-        book_intervals: bookIntervals,
         delivery_address: delivery?.trim() ?? '',
         declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
         comment,
@@ -961,7 +937,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const pickVehicle = (v: string) => {
     setVehicleId(v)
     setMileage('')
-    setNextEvery(null)
   }
   const removeLine = (l: CartLine) => {
     const index = lines.findIndex((x) => x.key === l.key)
@@ -1278,7 +1253,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         )}
                       </div>
                       <div className="text-xs text-slate-500">
-                        {l.product ? `Остаток: ${stockText(l.product)}` : 'Услуга'}
+                        {l.product ? (l.product.stock_qty === undefined ? '' : `Остаток: ${stockText(l.product)}`) : 'Услуга'}
                         {l.product && (analogs[l.product.id] ?? []).length > 0 && (
                           <div className={`mt-1 flex flex-wrap items-center gap-1 ${short ? 'text-rose-700' : 'text-slate-600'}`}>
                             {short ? 'нет на складе — есть аналог:' : 'Аналоги:'}
@@ -1534,34 +1509,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   <input id="mileage" {...num('int')} maxLength={7} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, '').slice(0, 7))} />
                   {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
                 </Field>
-                {every && (
-                  <div className="flex flex-col gap-1" data-testid="next-every">
-                    <span className="text-sm font-medium text-slate-700">Следующая замена масла через</span>
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <input
-                        id="next-every-dist"
-                        aria-label={`Через, ${unitLabel(carUnit)}`}
-                        className="w-24"
-                        {...num('int')}
-                        value={every.dist}
-                        onChange={(e) => setNextEvery({ ...every, dist: e.target.value.replace(/\D/g, '') })}
-                      />
-                      <span>{unitLabel(carUnit)} или</span>
-                      <input
-                        id="next-every-days"
-                        aria-label="Через, дней"
-                        className="w-20"
-                        {...num('int')}
-                        value={every.days}
-                        onChange={(e) => setNextEvery({ ...every, days: e.target.value.replace(/\D/g, '') })}
-                      />
-                      <span>дней</span>
-                    </div>
-                    <span className="text-xs text-slate-500">
-                      {bookIntervals.length > 0 ? 'Запишется интервалом этой машины.' : 'Как в книжке этой машины; поменяйте, если мастер советует другое.'}
-                    </span>
-                  </div>
-                )}
               </>
             ) : (
               <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900">
@@ -2091,7 +2038,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           }}
         />
       )}
-      {debtPay && <DebtorPayment onClose={() => setDebtPay(false)} />}
+      {debtPay && (
+        <DebtorPayment
+          party={party}
+          onClose={() => setDebtPay(false)}
+          // Оплатил клиент чека — его долг в чеке тоже свежий (SPEC-30 §13).
+          onPaid={() => party && void get<Party>(`/parties/${party.id}`).then((p) => setParty((cur) => (cur?.id === p.id ? p : cur))).catch(() => undefined)}
+        />
+      )}
       {batteryIntake && <BatteryIntake onClose={() => setBatteryIntake(false)} />}
       {unknownCode !== null && (
         <UnknownCodeModal

@@ -136,6 +136,16 @@ export function formatPermille(p: number): string {
   return `${p < 0 ? '−' : ''}${Math.trunc(abs / 10)},${abs % 10}\u00a0%`
 }
 
+/** Баллы без валюты: 1 балл = 1 сом, хранятся в тыйынах (SPEC-19) — «12,50». */
+export function formatPoints(tyiyn: number): string {
+  return formatSom(tyiyn).replace(/\s*с$/, '')
+}
+
+/** «у 21 клиента», «у 5 клиентов» — у скольких клиентов есть баллы (SPEC-30 §12). */
+export function pointsClients(n: number): string {
+  return `у ${n} ${plural(n, ['клиента', 'клиентов', 'клиентов'])}`
+}
+
 /** Слово при числе: plural(3, ['позиция', 'позиции', 'позиций']) → «позиции» (11–14 — третья форма). */
 export function plural(n: number, forms: readonly [string, string, string]): string {
   const a = Math.abs(n)

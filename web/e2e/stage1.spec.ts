@@ -96,11 +96,11 @@ test('товар, приход, продажа, возврат и остаток
   await page.getByRole('button', { name: 'Оформить возврат' }).click()
   await expect(page.getByRole('heading', { name: /^Возврат № \d+$/ })).toBeVisible()
 
-  // Остаток: 10 пришло, 1 продано, 1 вернули.
-  await page.getByRole('link', { name: 'Остатки' }).click()
-  // Остатки по страницам (SPEC-28 §2): товар находим поиском, а не листанием.
+  // Остаток: 10 пришло, 1 продано, 1 вернули. «Остатки» — в «Товарах» (SPEC-30 §11).
+  await page.getByRole('link', { name: 'Товары', exact: true }).click()
+  // Товары по страницам (SPEC-28 §2): товар находим поиском, а не листанием.
   await page.getByPlaceholder('Название, бренд, артикул, штрихкод').fill(product)
-  await expect(page.getByRole('row', { name: new RegExp(product) }).filter({ hasText: 'В брак' })).toContainText('10 шт')
+  await expect(page.getByRole('row', { name: new RegExp(product) })).toContainText('10 шт')
 
   // Сверка остатков с движениями.
   await page.getByRole('button', { name: 'Сверить остатки' }).click()
@@ -117,8 +117,10 @@ test('администратор не видит пользователей и �
   const adminPage = await ctx.newPage()
   await login(adminPage, admin, adminPassword)
   await expect(adminPage.getByRole('link', { name: 'Пользователи' })).toHaveCount(0)
-  await adminPage.getByRole('link', { name: 'Остатки' }).click()
-  await expect(adminPage.getByRole('heading', { name: 'Остатки' })).toBeVisible()
+  // «Остатки» — в «Товарах» (SPEC-30 §11): пункта меню нет, сверки у администратора нет.
+  await expect(adminPage.getByRole('link', { name: 'Остатки' })).toHaveCount(0)
+  await adminPage.getByRole('link', { name: 'Товары', exact: true }).first().click()
+  await expect(adminPage.getByRole('heading', { name: 'Товары', exact: true })).toBeVisible()
   await expect(adminPage.getByRole('button', { name: 'Сверить остатки' })).toHaveCount(0)
   const res = await adminPage.request.get('/api/v1/users')
   expect(res.status()).toBe(403)

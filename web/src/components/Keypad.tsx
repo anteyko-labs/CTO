@@ -1,75 +1,124 @@
-// Экранная цифровая клавиатура режима кассы (SPEC-29, «Режим кассы»). Появляется у любого
-// числового поля с `data-keypad` (количество, литры, «Получено», вес и цена аккумулятора, PIN при
-// открытии смены, суммы в окнах) и вводит в него цифры касанием — физическая клавиатура не нужна.
+// Экранная клавиатура режима кассы (SPEC-29, «Режим кассы»; ADR-101). Сама не появляется: её
+// открывает кнопка «⌨ Клавиатура» в полосе режима или маленькая кнопка у поля в фокусе, и она
+// остаётся открытой при переходе между полями, пока её не скроют. У числовых полей с `data-keypad`
+// (количество, литры, «Получено», вес и цена аккумулятора, PIN, суммы в окнах) — цифровая, у
+// текстовых (поиск товара, имя, телефон, госномер, комментарий) — полная: русские буквы, латиница,
+// цифры, пробел, стереть, Enter. Физическая клавиатура не нужна.
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { applyKey, padPlace, type KeypadKey, type KeypadKind } from '../lib/keypad'
+import { setKeyboardOpen, useKeyboardOpen } from '../lib/cashierMode'
+import {
+  KBD_DIGITS,
+  KBD_LETTERS,
+  applyKey,
+  eraseBack,
+  fieldPad,
+  kbdPlace,
+  padPlace,
+  typeText,
+  type FieldPad,
+  type KeypadKey,
+  type KeypadKind,
+  type TextEdit,
+} from '../lib/keypad'
 
-function isPadField(el: unknown): el is HTMLInputElement {
-  return el instanceof HTMLInputElement && el.dataset.keypad !== undefined && !el.disabled && !el.readOnly
+type Field = HTMLInputElement | HTMLTextAreaElement
+
+/** Какая клавиатура нужна элементу (поле внутри самой клавиатуры — никакая). */
+function padOf(el: unknown): FieldPad {
+  if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return null
+  if (el.closest('[data-onscreen-keyboard]')) return null
+  return fieldPad(el.tagName, el.getAttribute('type'), el.dataset.keypad, el.disabled || el.readOnly)
 }
 
 /** Записать значение в поле так, чтобы React увидел изменение (onChange). */
-function setFieldValue(el: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+function setFieldValue(el: Field, value: string): void {
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
   if (setter) setter.call(el, value)
   else el.value = value
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-/** Подпись поля: aria-label или первый текст его подписи (без звёздочки и подсказки). */
-function fieldLabel(el: HTMLInputElement): string {
+/** Курсор поля; у полей без выделения (email, number) — `null`, то есть в конце. */
+function selection(el: Field): [number | null, number | null] {
+  try {
+    return [el.selectionStart, el.selectionEnd]
+  } catch {
+    return [null, null]
+  }
+}
+
+function setCaret(el: Field, caret: number): void {
+  try {
+    el.setSelectionRange(caret, caret)
+  } catch {
+    // У поля нет курсора — набор всё равно идёт в конец.
+  }
+}
+
+/** Подпись поля: aria-label, первый текст подписи или подсказка в поле. */
+function fieldLabel(el: Field): string {
   const aria = el.getAttribute('aria-label')
   if (aria) return aria
   const label = el.labels?.[0]
-  if (!label) return ''
-  const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT)
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    const t = n.textContent?.trim()
-    if (t) return t
+  if (label) {
+    const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT)
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const t = n.textContent?.trim()
+      if (t) return t
+    }
   }
-  return ''
+  return el.placeholder ?? ''
 }
 
-/** Ширина клавиатуры, точки: 18rem при шрифте режима 19 px; высота — до первого замера. */
-const PAD_WIDTH = 342
-const PAD_HEIGHT = 540
+/** Размер до первого замера (цифровая — 18rem × ~540); дальше — замером. */
+const PAD_SIZE = { width: 342, height: 540 }
+/** Кнопка «⌨» у поля, точки. */
+const FIELD_BTN = 52
 
 const DIGITS: KeypadKey[] = ['7', '8', '9', '4', '5', '6', '1', '2', '3']
 
-// Кнопки клавиатуры не забирают фокус у поля: иначе поле потеряет курсор после каждой цифры.
+// Кнопки клавиатуры не забирают фокус у поля: иначе поле потеряет курсор после каждой клавиши.
 const keepFocus = (e: ReactPointerEvent | ReactMouseEvent) => e.preventDefault()
 
 export function Keypad() {
-  const [target, setTarget] = useState<HTMLInputElement | null>(null)
-  const targetRef = useRef<HTMLInputElement | null>(null)
+  const open = useKeyboardOpen()
+  // Поле, куда идёт ввод: последнее выбранное, пока оно на экране.
+  const [target, setTarget] = useState<Field | null>(null)
+  const targetRef = useRef<Field | null>(null)
+  // В фокусе ли сейчас поле — тогда у закрытой клавиатуры рядом с ним кнопка «⌨».
+  const [focused, setFocused] = useState(false)
   const padRef = useRef<HTMLDivElement>(null)
   // Поле только что выбрано — первая цифра заменяет подставленное значение.
   const fresh = useRef(true)
   // Фокус вернула сама клавиатура — это не новый выбор поля.
   const refocusing = useRef(false)
   const applying = useRef(false)
+  const [lang, setLang] = useState<'ru' | 'en'>('ru')
+  const [shift, setShift] = useState(false)
   const [, rerender] = useReducer((n: number) => n + 1, 0)
 
   useEffect(() => {
-    const choose = (el: HTMLInputElement | null) => {
+    const choose = (el: Field | null) => {
       targetRef.current = el
       setTarget(el)
     }
     const onIn = (e: FocusEvent) => {
-      if (isPadField(e.target)) {
+      if (padOf(e.target)) {
         if (!refocusing.current) fresh.current = true
         refocusing.current = false
-        choose(e.target)
+        choose(e.target as Field)
+        setFocused(true)
       } else if (!padRef.current?.contains(e.target as Node)) {
-        choose(null)
+        // Кнопка, список выбора: ввод по-прежнему в последнее поле, но кнопка «⌨» у него не нужна.
+        setFocused(false)
       }
     }
     const onOut = () =>
       setTimeout(() => {
         const a = document.activeElement
-        if (isPadField(a) || padRef.current?.contains(a)) return
-        // Поле осталось на экране и в фокусе ничего нет (касание по пустому месту) — клавиатуру прячем.
-        choose(null)
+        if (padOf(a) || padRef.current?.contains(a)) return
+        setFocused(false)
       }, 0)
     // Набрали с физической клавиатуры — дальше дописываем, значение уже не «подставленное».
     const onInput = (e: Event) => {
@@ -82,28 +131,59 @@ export function Keypad() {
     document.addEventListener('focusout', onOut)
     document.addEventListener('input', onInput)
     // Поле уже в фокусе, когда клавиатура появилась (включили режим с курсором в поле).
-    if (isPadField(document.activeElement)) choose(document.activeElement)
+    if (padOf(document.activeElement)) {
+      choose(document.activeElement as Field)
+      setFocused(true)
+    }
     return () => {
       document.removeEventListener('focusin', onIn)
       document.removeEventListener('focusout', onOut)
       document.removeEventListener('input', onInput)
+      // Вышли из режима кассы — в следующий раз клавиатура снова закрыта.
+      setKeyboardOpen(false)
     }
   }, [])
 
-  // Размер клавиатуры — замером после показа (с быстрыми суммами она выше).
-  const [padSize, setPadSize] = useState({ width: PAD_WIDTH, height: PAD_HEIGHT })
+  // Открыли кнопкой в полосе, а поле не выбрано: ввод — в последнее поле или в поиск товара.
+  useEffect(() => {
+    if (!open) return
+    if (padOf(document.activeElement)) return
+    const last = targetRef.current
+    const next = last?.isConnected ? last : document.querySelector<HTMLInputElement>('[data-picker]')
+    if (next && padOf(next)) {
+      refocusing.current = last === next
+      next.focus()
+    }
+  }, [open])
+
+  const kind: FieldPad = target ? padOf(target) : null
+  // Пока открыта полная клавиатура, системная у текстового поля не выезжает поверх неё.
+  useEffect(() => {
+    if (!open || !target || kind !== 'letters') return
+    const prev = target.getAttribute('inputmode')
+    target.setAttribute('inputmode', 'none')
+    return () => {
+      if (prev === null) target.removeAttribute('inputmode')
+      else target.setAttribute('inputmode', prev)
+    }
+  }, [open, target, kind])
+
+  // Размер клавиатуры — замером после показа (с быстрыми суммами цифровая выше).
+  const [padSize, setPadSize] = useState(PAD_SIZE)
+  const shown = open && Boolean(target?.isConnected)
   useLayoutEffect(() => {
     const el = padRef.current
-    if (!target || !el) return
+    if (!shown || !el) return
     const measure = () => {
       const r = el.getBoundingClientRect()
       setPadSize((cur) => (Math.abs(r.width - cur.width) > 1 || Math.abs(r.height - cur.height) > 1 ? { width: r.width, height: r.height } : cur))
     }
+    measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [target])
-  // Прокрутка и поворот экрана двигают поле — клавиатура идёт за ним.
+  }, [shown, kind])
+  // Прокрутка и поворот экрана двигают поле — клавиатура и кнопка «⌨» идут за ним.
   useEffect(() => {
     if (!target) return
     const move = () => rerender()
@@ -114,16 +194,23 @@ export function Keypad() {
       window.removeEventListener('resize', move)
     }
   }, [target])
+
+  const place = (t: Field) => {
+    const view = { width: window.innerWidth, height: window.innerHeight }
+    const rect = t.getBoundingClientRect()
+    if (padOf(t) === 'letters') return kbdPlace(rect, padSize, view)
+    const dialog = t.closest('[role="dialog"]')?.getBoundingClientRect()
+    return padPlace(rect, padSize, view, dialog)
+  }
   // Узкий экран: места рядом с полем нет — клавиатура внизу, а страница прокручивается, чтобы
   // поле было над ней. Запас снизу — на время показа, чтобы было куда прокрутить.
-  const scrolledFor = useRef<HTMLInputElement | null>(null)
+  const scrolledFor = useRef<Field | null>(null)
   useEffect(() => {
-    if (!target || scrolledFor.current === target) return
+    if (!shown || !target || scrolledFor.current === target) return
     const t = setTimeout(() => {
       if (!target.isConnected) return
       scrolledFor.current = target
-      const dialog = target.closest('[role="dialog"]')?.getBoundingClientRect()
-      const { scroll } = padPlace(target.getBoundingClientRect(), padSize, { width: window.innerWidth, height: window.innerHeight }, dialog)
+      const { scroll } = place(target)
       if (scroll <= 0) return
       const root = document.documentElement
       root.style.paddingBottom = `${padSize.height + 24}px`
@@ -132,12 +219,13 @@ export function Keypad() {
       else window.scrollBy({ top: scroll })
     }, 0)
     return () => clearTimeout(t)
-  }, [target, padSize])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown, target, padSize])
   useEffect(() => {
-    if (target) return
+    if (shown) return
     scrolledFor.current = null
     document.documentElement.style.paddingBottom = ''
-  }, [target])
+  }, [shown])
   useEffect(
     () => () => {
       document.documentElement.style.paddingBottom = ''
@@ -145,28 +233,75 @@ export function Keypad() {
     [],
   )
 
-  // Поле исчезло (строку удалили, окно закрыли) — клавиатура тоже.
+  // Поле исчезло (строку удалили, окно закрыли) — ввод больше некуда, ждём выбора поля.
   useEffect(() => {
     if (!target) return
     const t = setInterval(() => {
       if (!target.isConnected) {
         targetRef.current = null
         setTarget(null)
+        setFocused(false)
       }
     }, 300)
     return () => clearInterval(t)
   }, [target])
 
-  if (!target || !target.isConnected) return null
+  const hide = () => {
+    setKeyboardOpen(false)
+    setShift(false)
+  }
 
-  const kind: KeypadKind = target.dataset.keypad === 'decimal' ? 'decimal' : target.dataset.keypad === 'digits' ? 'digits' : 'int'
-  const decimals = Number(target.dataset.keypadDecimals) || 2
-  const quick = (target.dataset.keypadQuick ?? '').split(';').filter(Boolean)
-  // Рядом с полем и не поверх него, целиком на экране (поле в окне — сбоку от окна).
-  const dialog = target.closest('[role="dialog"]')?.getBoundingClientRect()
-  const place = padPlace(target.getBoundingClientRect(), padSize, { width: window.innerWidth, height: window.innerHeight }, dialog)
+  // Клавиатура закрыта: у поля в фокусе — маленькая кнопка «⌨», она открывает клавиатуру.
+  if (!open) {
+    if (!target || !focused || !target.isConnected) return null
+    const r = target.getBoundingClientRect()
+    if (r.width === 0 && r.height === 0) return null
+    // Узкое поле (количество) — кнопка над ним, чтобы не закрыть цифры; широкое — у правого края внутри.
+    const narrow = r.width < FIELD_BTN * 3
+    const left = Math.min(window.innerWidth - FIELD_BTN - 4, narrow ? r.right - FIELD_BTN : r.right - FIELD_BTN - 4)
+    const top = narrow ? (r.top - FIELD_BTN - 4 >= 0 ? r.top - FIELD_BTN - 4 : r.bottom + 4) : r.top + (r.height - FIELD_BTN) / 2
+    return (
+      <button
+        type="button"
+        data-onscreen-keyboard
+        data-testid="keyboard-field-button"
+        aria-label="Клавиатура"
+        title="Открыть экранную клавиатуру"
+        className="no-print fixed z-50 flex items-center justify-center rounded-lg border border-slate-300 bg-white text-2xl text-slate-700 shadow-md active:bg-sky-100"
+        style={{ left, top, width: FIELD_BTN, height: FIELD_BTN, minHeight: FIELD_BTN, minWidth: FIELD_BTN }}
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
+        onClick={() => setKeyboardOpen(true)}
+      >
+        ⌨
+      </button>
+    )
+  }
 
-  const write = (value: string) => {
+  // Открыта, а поля нет (окно закрыли): узкая полоса, ввод появится, когда выберут поле.
+  if (!target || !target.isConnected || !kind) {
+    return (
+      <div
+        ref={padRef}
+        data-onscreen-keyboard
+        role="group"
+        aria-label="Экранная клавиатура"
+        data-testid="keyboard-idle"
+        className="no-print fixed bottom-3 left-1/2 z-50 flex -translate-x-1/2 items-center gap-4 rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 shadow-2xl"
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
+      >
+        <span className="text-base text-slate-600">⌨ Нажмите на поле, куда вводить</span>
+        <button type="button" className="rounded-lg border border-slate-300 bg-white px-5 font-semibold text-slate-800 active:bg-slate-200" onClick={hide}>
+          Скрыть
+        </button>
+      </div>
+    )
+  }
+
+  const pos = place(target)
+
+  const write = (value: string, caret?: number) => {
     applying.current = true
     setFieldValue(target, value)
     applying.current = false
@@ -175,65 +310,181 @@ export function Keypad() {
       refocusing.current = true
       target.focus()
     }
+    if (caret !== undefined) setCaret(target, caret)
     rerender()
   }
-  const press = (key: KeypadKey) => write(applyKey(target.value, key, { kind, fresh: fresh.current, decimals, maxLength: target.maxLength }))
-  const done = () => {
-    target.blur()
-    targetRef.current = null
-    setTarget(null)
+
+  if (kind === 'digits') {
+    const numKind: KeypadKind = target.dataset.keypad === 'decimal' ? 'decimal' : target.dataset.keypad === 'digits' ? 'digits' : 'int'
+    const decimals = Number(target.dataset.keypadDecimals) || 2
+    const quick = (target.dataset.keypadQuick ?? '').split(';').filter(Boolean)
+    const press = (key: KeypadKey) =>
+      write(applyKey(target.value, key, { kind: numKind, fresh: fresh.current, decimals, maxLength: target instanceof HTMLInputElement ? target.maxLength : 0 }))
+    const base = 'flex min-h-16 items-center justify-center rounded-lg border font-semibold shadow-sm'
+    const key = `${base} border-slate-300 bg-white text-2xl text-slate-900 active:bg-sky-100 disabled:text-slate-300`
+    return (
+      <div
+        ref={padRef}
+        data-onscreen-keyboard
+        role="group"
+        aria-label="Цифровая клавиатура"
+        data-testid="keypad"
+        className="no-print fixed z-50 max-h-[calc(100dvh-1.5rem)] w-[min(18rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-slate-300 bg-slate-100 p-3 shadow-2xl"
+        style={{ left: pos.left, top: pos.top }}
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
+      >
+        <div className="mb-2 min-w-0">
+          <div className="truncate text-sm text-slate-600">{fieldLabel(target) || 'Ввод числа'}</div>
+          <div className="truncate text-2xl font-bold tabular-nums" data-testid="keypad-value">
+            {target instanceof HTMLInputElement && target.type === 'password' ? '•'.repeat(target.value.length) : target.value || '—'}
+          </div>
+        </div>
+        {quick.length > 0 && (
+          <div className="mb-2 grid grid-cols-3 gap-2">
+            {quick.slice(0, 3).map((q) => (
+              <button key={q} type="button" className={`${base} border-sky-300 bg-sky-50 text-xl text-sky-900 active:bg-sky-100`} onClick={() => write(q)}>
+                {q}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="grid grid-cols-3 gap-2">
+          {DIGITS.map((d) => (
+            <button key={d} type="button" className={key} onClick={() => press(d)}>
+              {d}
+            </button>
+          ))}
+          <button type="button" className={key} disabled={numKind !== 'decimal'} aria-label="Запятая" onClick={() => press(',')}>
+            ,
+          </button>
+          <button type="button" className={key} onClick={() => press('0')}>
+            0
+          </button>
+          <button type="button" className={key} aria-label="Стереть" onClick={() => press('back')}>
+            ⌫
+          </button>
+          <button type="button" className={`${base} border-slate-300 bg-white text-xl text-rose-700 active:bg-rose-50`} aria-label="Очистить" onClick={() => press('clear')}>
+            C
+          </button>
+          <button type="button" className={`${base} col-span-2 border-sky-700 bg-sky-600 text-xl text-white active:bg-sky-700`} onClick={hide}>
+            Скрыть
+          </button>
+        </div>
+      </div>
+    )
   }
 
-  const base = 'flex min-h-16 items-center justify-center rounded-lg border font-semibold shadow-sm'
-  const key = `${base} border-slate-300 bg-white text-2xl text-slate-900 active:bg-sky-100 disabled:text-slate-300`
+  // Полная клавиатура: буквы на месте курсора, как с обычной клавиатуры.
+  const edit = (e: TextEdit) => write(e.value, e.caret)
+  const type = (text: string) => {
+    const [a, b] = selection(target)
+    edit(typeText(target.value, a, b, text, target.maxLength))
+  }
+  const letter = (ch: string) => {
+    type(shift ? ch.toUpperCase() : ch)
+    setShift(false)
+  }
+  const erase = () => {
+    const [a, b] = selection(target)
+    edit(eraseBack(target.value, a, b))
+  }
+  const enter = () => {
+    if (target instanceof HTMLTextAreaElement) {
+      type('\n')
+      return
+    }
+    // Enter — как с клавиатуры: поиск товара выбирает найденное, формы отправляются.
+    const init = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }
+    const handled = !target.dispatchEvent(new KeyboardEvent('keydown', init))
+    target.dispatchEvent(new KeyboardEvent('keyup', init))
+    if (!handled && target.form) target.form.requestSubmit()
+  }
+  // Ряд из 12 клавиш одной ширины; широкие клавиши — несколько долей.
+  const unit = (n: number) => ({ flex: `0 0 calc((100% - 11 * 0.375rem) / 12 * ${n} + ${n - 1} * 0.375rem)` })
+  // Клавиши по 56 точек — под палец (ui-rules §9) и без лишней высоты: клавиатура и так в пол-экрана.
+  const base = 'flex h-[56px] items-center justify-center rounded-lg border font-semibold shadow-sm select-none'
+  const key = `${base} border-slate-300 bg-white text-2xl text-slate-900 active:bg-sky-100`
+  const fn = `${base} border-slate-300 bg-slate-200 text-lg text-slate-800 active:bg-slate-300`
+  const rows = KBD_LETTERS[lang]
   return (
     <div
       ref={padRef}
+      data-onscreen-keyboard
       role="group"
-      aria-label="Цифровая клавиатура"
-      data-testid="keypad"
-      className="no-print fixed z-50 max-h-[calc(100dvh-1.5rem)] w-[min(18rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-slate-300 bg-slate-100 p-3 shadow-2xl"
-      style={{ left: place.left, top: place.top }}
+      aria-label={`Экранная клавиатура: ${fieldLabel(target) || 'ввод текста'}`}
+      data-testid="keyboard"
+      data-lang={lang}
+      className="no-print fixed z-50 flex w-[min(64rem,calc(100vw-1.5rem))] flex-col gap-1.5 rounded-xl border border-slate-300 bg-slate-100 p-2 shadow-2xl"
+      style={{ left: pos.left, top: pos.top }}
       onPointerDown={keepFocus}
       onMouseDown={keepFocus}
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-sm text-slate-600">{fieldLabel(target) || 'Ввод числа'}</div>
-          <div className="truncate text-2xl font-bold tabular-nums" data-testid="keypad-value">
-            {target.type === 'password' ? '•'.repeat(target.value.length) : target.value || '—'}
-          </div>
-        </div>
-      </div>
-      {quick.length > 0 && (
-        <div className="mb-2 grid grid-cols-3 gap-2">
-          {quick.slice(0, 3).map((q) => (
-            <button key={q} type="button" className={`${base} border-sky-300 bg-sky-50 text-xl text-sky-900 active:bg-sky-100`} onClick={() => write(q)}>
-              {q}
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="grid grid-cols-3 gap-2">
-        {DIGITS.map((d) => (
-          <button key={d} type="button" className={key} onClick={() => press(d)}>
+      <div className="flex justify-center gap-1.5">
+        {KBD_DIGITS.map((d) => (
+          <button key={d} type="button" className={key} style={unit(1)} onClick={() => type(d)}>
             {d}
           </button>
         ))}
-        <button type="button" className={key} disabled={kind !== 'decimal'} aria-label="Запятая" onClick={() => press(',')}>
-          ,
-        </button>
-        <button type="button" className={key} onClick={() => press('0')}>
-          0
-        </button>
-        <button type="button" className={key} aria-label="Стереть" onClick={() => press('back')}>
+        <button type="button" className={fn} style={unit(1)} aria-label="Стереть" onClick={erase}>
           ⌫
         </button>
-        <button type="button" className={`${base} border-slate-300 bg-white text-xl text-rose-700 active:bg-rose-50`} aria-label="Очистить" onClick={() => press('clear')}>
-          C
+      </div>
+      {rows.slice(0, 2).map((row) => (
+        <div key={row[0]} className="flex justify-center gap-1.5">
+          {row.map((ch) => {
+            const shownCh = shift ? ch.toUpperCase() : ch
+            return (
+              <button key={ch} type="button" className={key} style={unit(1)} aria-label={shownCh} onClick={() => letter(ch)}>
+                {shownCh}
+              </button>
+            )
+          })}
+        </div>
+      ))}
+      <div className="flex justify-center gap-1.5">
+        <button
+          type="button"
+          aria-label="Заглавная буква"
+          aria-pressed={shift}
+          className={shift ? `${base} border-sky-600 bg-sky-100 text-2xl text-sky-900` : fn}
+          style={unit(1)}
+          onClick={() => setShift((s) => !s)}
+        >
+          ⇧
         </button>
-        <button type="button" className={`${base} col-span-2 border-sky-700 bg-sky-600 text-xl text-white active:bg-sky-700`} onClick={done}>
-          Готово
+        {rows[2].map((ch) => {
+          const shownCh = shift ? ch.toUpperCase() : ch
+          return (
+            <button key={ch} type="button" className={key} style={unit(1)} aria-label={shownCh} onClick={() => letter(ch)}>
+              {shownCh}
+            </button>
+          )
+        })}
+        {['.', ','].map((ch) => (
+          <button key={ch} type="button" className={key} style={unit(1)} aria-label={ch === '.' ? 'Точка' : 'Запятая'} onClick={() => type(ch)}>
+            {ch}
+          </button>
+        ))}
+      </div>
+      <div className="flex justify-center gap-1.5">
+        <button
+          type="button"
+          className={fn}
+          style={unit(2)}
+          aria-label={lang === 'ru' ? 'Латиница' : 'Русские буквы'}
+          onClick={() => setLang((l) => (l === 'ru' ? 'en' : 'ru'))}
+        >
+          {lang === 'ru' ? 'РУС → LAT' : 'LAT → РУС'}
+        </button>
+        <button type="button" className={key} style={unit(6)} aria-label="Пробел" onClick={() => type(' ')}>
+          пробел
+        </button>
+        <button type="button" className={`${base} border-sky-700 bg-sky-600 text-lg text-white active:bg-sky-700`} style={unit(2)} aria-label="Enter" onClick={enter}>
+          Enter ↵
+        </button>
+        <button type="button" className={fn} style={unit(2)} onClick={hide}>
+          Скрыть
         </button>
       </div>
     </div>

@@ -97,6 +97,10 @@ pub(crate) struct ListQuery {
     pub(crate) q: Option<String>,
     #[serde(default)]
     pub(crate) only_debtors: bool,
+    /// Только кто должен нам (баланс больше нуля): окно «Оплата долга» на кассе (SPEC-30 §13) —
+    /// авансы клиентов не вытесняют должников из первых 500 строк.
+    #[serde(default)]
+    pub(crate) owes: bool,
 }
 
 async fn list_parties(
@@ -126,9 +130,15 @@ async fn parties_summary(
         .iter()
         .filter(|p| p.balance_tyiyn < 0)
         .fold(0i64, |a, p| a.saturating_sub(p.balance_tyiyn));
-    Ok(Json(
-        json!({ "count": rows.len(), "owe_tyiyn": owe, "advance_tyiyn": advance }),
-    ))
+    // Баллы — у всех клиентов филиала, без отбора (SPEC-30 §12).
+    let points = crate::api::loyalty::branch_total(&mut conn, user.branch_id).await?;
+    Ok(Json(json!({
+        "count": rows.len(),
+        "owe_tyiyn": owe,
+        "advance_tyiyn": advance,
+        "points_tyiyn": points.points_tyiyn,
+        "points_clients": points.clients,
+    })))
 }
 
 /// Поиск контрагентов филиала с долгом и просрочкой — для экрана и для вопросов боту (SPEC-21).
@@ -172,6 +182,7 @@ pub(crate) async fn search_parties(
                              where v.party_id = parties.id and v.active
                                and upper(replace(v.plate, ' ', '')) like '%' || upper(replace($4, ' ', '')) || '%'))
              and (not $5 or balance_tyiyn <> 0)
+             and (not $8 or balance_tyiyn > 0)
            order by (balance_tyiyn <> 0) desc, name
            limit $6"#,
         branch_id,
@@ -180,7 +191,8 @@ pub(crate) async fn search_parties(
         q,
         f.only_debtors,
         crate::api::paging::MAX_ROWS,
-        phone_digits
+        phone_digits,
+        f.owes
     )
     .fetch_all(&mut *conn)
     .await?;

@@ -405,6 +405,7 @@ async fn dashboard(
         "Склад: кончается {}, на проверку себестоимости {}, залежалых {}",
         d.low_stock, d.needs_review, d.stale_stock
     ));
+    lines.push(crate::api::telegram::points_line(d.points));
     Ok(lines.join("\n"))
 }
 

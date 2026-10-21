@@ -241,15 +241,28 @@ export interface LastReceipt {
 /** Строка списка товаров: суммы остатка считает сервер (SPEC-27). */
 export interface ProductRow extends Product {
   code: string
+  /** Залежалый товар (ADR-039): дней без продаж; нет — не залежался. */
+  stale?: { days: number; sold_ever: boolean }
   /** Только владельцу. */
   purchase_price_tyiyn?: number | null
   stock_purchase_tyiyn?: number
   stock_sale_tyiyn: number
 }
 
+/** Отбор по складу на экране «Товары» — бывшие «Остатки» (SPEC-30 §11). */
+export type StockChip = 'all' | 'low' | 'out' | 'stale' | 'review'
+
 export interface ProductList {
   items: ProductRow[]
-  totals: { count: number; purchase_tyiyn?: number; sale_tyiyn: number }
+  totals: {
+    count: number
+    purchase_tyiyn?: number
+    sale_tyiyn: number
+    /** Сколько товаров в каждом отборе по складу — при тех же поиске и категории. */
+    counts?: Record<StockChip, number>
+    /** Срок залежалости, дней. */
+    stale_days?: number
+  }
 }
 
 export interface TopProduct {
@@ -710,6 +723,8 @@ export interface Dashboard {
   low_stock: number
   needs_review: number
   stale_stock: number
+  /** Баллы у всех клиентов на сейчас (SPEC-30 §12). */
+  points?: PointsTotal
   staff: StaffPay[]
   /** «Сколько по карте ушло»: безнал чеков за период (SPEC-27 §6). */
   noncash: Noncash
@@ -724,6 +739,12 @@ export interface Dashboard {
   } | null
   /** Период: те же числа за предыдущий период такой же длины. */
   previous: { from: string; to: string; revenue_tyiyn: number; gross_tyiyn: number; net_tyiyn: number; sales_count: number } | null
+}
+
+/** Баллы у клиентов вместе: 1 балл = 1 сом, в тыйынах (SPEC-30 §12). */
+export interface PointsTotal {
+  clients: number
+  points_tyiyn: number
 }
 
 export interface Noncash {

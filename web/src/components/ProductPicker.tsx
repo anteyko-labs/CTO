@@ -1,11 +1,11 @@
 // Поле сканера и поиска товара для кассы и прихода (SPEC-02, SPEC-04); без сети ищет по снимку каталога (SPEC-09).
 // В приходе и ревизии подсказывает и позиции старой программы (SPEC-20, SPEC-29 §1).
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
 import { productTitle } from '../lib/battery'
 import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
-import { resultsMatch } from '../lib/pickerResults'
+import { resolveEnter, resultsMatch } from '../lib/pickerResults'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
 import type { OldCatalogHit, Product } from '../lib/types'
 
@@ -50,6 +50,14 @@ export function ProductPicker({
   const input = useRef<HTMLInputElement>(null)
   const query = useDebounced(text.trim(), 200)
   const withOld = Boolean(onPickOld)
+  // Что в поле сейчас — для Enter, который ждёт ответа сервера (SPEC-30 §13).
+  const textNow = useRef(text)
+  useLayoutEffect(() => {
+    textNow.current = text
+  }, [text])
+  // Строку выбрали стрелками при этом тексте: Enter берёт её, а не первое из нового ответа.
+  const navigated = useRef<string | null>(null)
+  const entering = useRef(false)
 
   useEffect(() => {
     if (query.length < 2) {
@@ -117,11 +125,40 @@ export function ProductPicker({
     else pickOld(e.h, '')
   }
 
+  /** Найденное по всему тексту — сразу, без задержки набора: свои товары, затем старая программа. */
+  const searchFull = async (q: string): Promise<Entry[]> => {
+    const own = await get<Product[]>(`/products${qs({ q, limit: 15 })}`).catch(async () => {
+      const snap = await readSnapshot()
+      return snap ? searchSnapshot(snap, q) : []
+    })
+    const hits =
+      withOld && own.length === 0
+        ? (await get<OldCatalogHit[]>(`/old-catalog/search${qs({ q })}`).catch(() => [])).filter((x) => !x.linked_product_id).slice(0, 8)
+        : []
+    if (textNow.current.trim() === q) {
+      setResults(own)
+      setOld(hits)
+      setResultsFor(q)
+      setActive(0)
+    }
+    return [...own.map((p) => ({ kind: 'own' as const, p })), ...hits.map((h) => ({ kind: 'old' as const, h }))]
+  }
+
   const submit = async () => {
     const code = text.trim()
-    if (!code) return
-    if (entries.length > 0 && !/^\d{6,}$/.test(code)) {
-      choose(entries[active] ?? entries[0])
+    if (!code || entering.current) return
+    // Enter берёт товар только из найденного по всему набранному тексту (SPEC-30 §13).
+    entering.current = true
+    const out = await resolveEnter(
+      { text, foundFor: fresh ? resultsFor : '', found: entries, active, navigated: navigated.current === code },
+      searchFull,
+      () => textNow.current,
+    ).finally(() => {
+      entering.current = false
+    })
+    if (out.kind === 'stale') return
+    if (out.kind === 'pick') {
+      choose(out.item)
       return
     }
     try {
@@ -169,6 +206,7 @@ export function ProductPicker({
         onChange={(e) => {
           setText(e.target.value)
           setMessage(null)
+          navigated.current = null
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -176,9 +214,11 @@ export function ProductPicker({
             void submit()
           } else if (e.key === 'ArrowDown') {
             e.preventDefault()
+            navigated.current = text.trim()
             setActive((a) => Math.min(a + 1, entries.length - 1))
           } else if (e.key === 'ArrowUp') {
             e.preventDefault()
+            navigated.current = text.trim()
             setActive((a) => Math.max(a - 1, 0))
           } else if (e.key === 'Escape') {
             setResults([])

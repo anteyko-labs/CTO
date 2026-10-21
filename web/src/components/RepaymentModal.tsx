@@ -11,6 +11,7 @@ import { accountLabel, bankChoices, isBank, isTill } from '../lib/accounts'
 import { repaymentDoc, repaymentFields, type RepaymentDoc } from '../lib/moneyFix'
 import { invoicePayPreview, repayNote } from '../lib/supplierPay'
 import { CorrectionBanner, useCorrection } from './Correction'
+import { useTouchMode } from '../lib/cashierMode'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
 // «Вне кассы» (из своих) больше нет — сервер отвечает 422 (ADR-079).
@@ -59,6 +60,8 @@ export function RepaymentModal({
 }) {
   const owner = useUser().role === 'owner'
   const supplier = party.role === 'supplier'
+  // Режим кассы: всё крупнее — сумма долга, поле суммы и кнопки (SPEC-30 §13).
+  const touch = useTouchMode()
   // Что должен и за что: у клиента — неоплаченные чеки, у поставщика — открытые накладные (SPEC-28 §3).
   const details = useLoad<{ kind: 'supplier'; d: SupplierInvoices } | { kind: 'customer'; d: OpenDebts }>(
     () =>
@@ -167,7 +170,7 @@ export function RepaymentModal({
                 testId="repay-debt"
               />
             ) : (
-              <Stat label={supplier ? 'Должны мы' : 'Должен нам'} value={formatSom(done ? done.after : debt)} tone={supplier ? 'slate' : 'amber'} testId="repay-debt" />
+              <Stat label={supplier ? 'Должны мы' : 'Должен нам'} value={formatSom(done ? done.after : debt)} tone={supplier ? 'slate' : 'amber'} testId="repay-debt" big={touch ? 'touch' : true} />
             )}
             {!supplier && (
               <Stat
@@ -227,7 +230,14 @@ export function RepaymentModal({
               {supplier && !invoice && !fixId && <div className="text-xs text-slate-500">Оплата закрывает самые старые неоплаченные накладные.</div>}
               {!supplier && !fixId && <div className="text-xs text-slate-500">Оплата гасит самые старые долги первыми.</div>}
               <Field label="Сумма, с" required>
-                <input id="repay-sum" className="text-lg" autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
+                <input
+                  id="repay-sum"
+                  className={touch ? 'min-h-[64px] text-2xl!' : 'text-lg'}
+                  autoFocus
+                  {...(touch ? { inputMode: 'none' as const, 'data-keypad': 'decimal' } : { inputMode: 'decimal' as const })}
+                  value={sum}
+                  onChange={(e) => setSum(e.target.value)}
+                />
               </Field>
               {!invoice && !fixId && value !== null && value > owed && owed > 0 && (
                 <div className="text-xs text-amber-700">Больше долга: разница станет {supplier ? 'нашим авансом поставщику' : 'авансом клиента'}.</div>
@@ -259,7 +269,7 @@ export function RepaymentModal({
                   <button
                     key={m}
                     type="button"
-                    className={`min-h-[42px] py-2 ${method === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                    className={`${touch ? 'min-h-[64px] text-lg' : 'min-h-[42px]'} py-2 ${method === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                     onClick={() => {
                       setMethod(m)
                       // Новый способ — снова его счёт по умолчанию.
@@ -305,7 +315,7 @@ export function RepaymentModal({
                     Сохранить исправление
                   </Button>
                 ) : (
-                  <Button disabled={busy || notFilled.length > 0} onClick={save}>
+                  <Button className={touch ? 'min-h-[64px]! px-8 text-xl!' : ''} disabled={busy || notFilled.length > 0} onClick={save}>
                     {supplier ? 'Оплатить' : 'Принять оплату'}
                   </Button>
                 )}
@@ -318,12 +328,28 @@ export function RepaymentModal({
   )
 }
 
-function Stat({ label, value, hint, tone, testId }: { label: string; value: string; hint?: string; tone: 'amber' | 'rose' | 'slate'; testId?: string }) {
+function Stat({
+  label,
+  value,
+  hint,
+  tone,
+  testId,
+  big,
+}: {
+  label: string
+  value: string
+  hint?: string
+  tone: 'amber' | 'rose' | 'slate'
+  testId?: string
+  /** Сумма долга крупно; в режиме кассы — ещё крупнее. */
+  big?: boolean | 'touch'
+}) {
   const color = tone === 'amber' ? 'text-amber-700' : tone === 'rose' ? 'text-rose-700' : 'text-slate-900'
+  const size = big === 'touch' ? 'text-4xl' : big ? 'text-3xl' : 'text-xl'
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
       <div className="text-xs uppercase text-slate-500">{label}</div>
-      <div className={`text-xl font-bold tabular-nums ${color}`} data-testid={testId}>
+      <div className={`${size} font-bold tabular-nums ${color}`} data-testid={testId}>
         {value}
       </div>
       {hint && <div className="text-xs text-slate-500">{hint}</div>}
@@ -374,34 +400,82 @@ function SupplierOpen({ invoices, current }: { invoices: SupplierInvoice[]; curr
   )
 }
 
-/** Касса: найти должника и принять от него оплату. */
-export function DebtorPayment({ onClose }: { onClose: () => void }) {
+/**
+ * Касса: найти должника и принять от него оплату. Окно крупное — кассир выбирает пальцем
+ * (SPEC-30 §13); клиент чека с долгом — окно сразу открывается на нём, без поиска.
+ */
+export function DebtorPayment({ party: chequeParty, onClose, onPaid }: { party?: Party | null; onClose: () => void; onPaid?: () => void }) {
+  const touch = useTouchMode()
   const [q, setQ] = useState('')
   const query = useDebounced(q)
-  const list = useLoad(() => get<Party[]>(`/parties${qs({ role: 'customer', only_debtors: true, q: query })}`), [query])
+  // Долг клиента чека — свежий, с сервера: в чеке он мог остаться с прошлого раза.
+  const current = useLoad(
+    () => (chequeParty?.role === 'customer' ? get<Party>(`/parties/${chequeParty.id}`) : Promise.resolve(null)),
+    [chequeParty?.id, chequeParty?.role],
+  )
+  const list = useLoad(() => get<Party[]>(`/parties${qs({ role: 'customer', owes: true, q: query })}`), [query])
   const [party, setParty] = useState<Party | null>(null)
+  // Клиента чека выбрали и закрыли оплату — дальше обычный поиск, а не снова он.
+  const [skipCurrent, setSkipCurrent] = useState(false)
   const debtors = (list.data ?? []).filter((p) => p.balance_tyiyn > 0)
+  const done = () => {
+    onPaid?.()
+    onClose()
+  }
 
-  if (party) return <RepaymentModal party={party} onClose={onClose} onDone={onClose} />
+  const chequeDebtor = !skipCurrent && current.data && current.data.balance_tyiyn > 0 ? current.data : null
+  const chosen = party ?? chequeDebtor
+  if (chosen) {
+    return (
+      <RepaymentModal
+        party={chosen}
+        onClose={() => {
+          // Из окна клиента чека — назад к поиску; выбранного из списка — тоже к списку.
+          setParty(null)
+          setSkipCurrent(true)
+        }}
+        onDone={done}
+      />
+    )
+  }
+  if (chequeParty && current.loading && !current.data && !current.error) {
+    return (
+      <Modal title="Оплата долга" onClose={onClose}>
+        <Loading />
+      </Modal>
+    )
+  }
+  const row = touch ? 'min-h-[72px] px-4 py-3 text-xl' : 'min-h-[60px] px-3 py-2 text-lg'
   return (
-    <Modal title="Оплата долга" onClose={onClose}>
+    <Modal title="Оплата долга" full onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <input autoFocus placeholder="Имя, телефон или ИНН должника" value={q} onChange={(e) => setQ(e.target.value)} />
+        {chequeParty && current.data && current.data.balance_tyiyn <= 0 && (
+          <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600" data-testid="cheque-party-no-debt">
+            У клиента чека «{current.data.name}» долга нет.
+          </div>
+        )}
+        <input
+          autoFocus
+          className={touch ? 'min-h-[64px] text-xl' : 'min-h-[48px] text-lg'}
+          placeholder="Имя, телефон или ИНН должника"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
           <Loading />
-        ) : debtors.length === 0 ? (
+        ) : list.error ? null : debtors.length === 0 ? (
           <Empty>{query ? 'Должник не найден' : 'Должников нет'}</Empty>
         ) : (
-          <ul className="flex max-h-80 flex-col divide-y divide-slate-100 overflow-y-auto">
+          <ul className="flex max-h-[65vh] flex-col divide-y divide-slate-100 overflow-y-auto rounded-md border border-slate-200" data-testid="debtors">
             {debtors.map((p) => (
               <li key={p.id}>
-                <button type="button" className="flex w-full items-center justify-between gap-3 px-2 py-2 text-left hover:bg-slate-50" onClick={() => setParty(p)}>
-                  <span>
-                    <span className="font-medium">{p.name}</span>
-                    {p.phone && <span className="ml-2 text-xs text-slate-500">{p.phone}</span>}
+                <button type="button" className={`flex w-full items-center justify-between gap-4 text-left hover:bg-slate-50 active:bg-sky-50 ${row}`} onClick={() => setParty(p)}>
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium">{p.name}</span>
+                    {p.phone && <span className={`block text-slate-500 ${touch ? 'text-base' : 'text-sm'}`}>{p.phone}</span>}
                   </span>
-                  <span className="font-semibold text-rose-700">{formatSom(p.balance_tyiyn)}</span>
+                  <span className={`shrink-0 font-bold tabular-nums text-rose-700 ${touch ? 'text-3xl' : 'text-2xl'}`}>{formatSom(p.balance_tyiyn)}</span>
                 </button>
               </li>
             ))}

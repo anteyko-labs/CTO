@@ -1,5 +1,6 @@
-// Экранная цифровая клавиатура режима кассы (SPEC-29, «Режим кассы»): как нажатие клавиши меняет
-// текст поля. Одна функция для количества, литров, сумм и PIN — без физической клавиатуры.
+// Экранная клавиатура режима кассы (SPEC-29, «Режим кассы»; ADR-101): как нажатие клавиши меняет
+// текст поля. Цифровая — количество, литры, суммы и PIN; полная — буквы для поиска, имени,
+// госномера и комментария. Без физической клавиатуры.
 
 /** Вид поля: целые (штуки, пробег), с дробной частью через запятую (литры, сомы) или набор
  *  цифр, где ноль впереди значим (PIN, ИНН). */
@@ -83,4 +84,91 @@ export function padPlace(
   // Нет места рядом: у нижнего края, а страницу прокрутить так, чтобы поле было над клавиатурой.
   const top = clamp(maxTop, gap, maxTop)
   return { left: clamp(view.width - w - gap, gap, maxLeft), top, scroll: Math.max(0, bottom + gap - top) }
+}
+
+// ---------- Полная клавиатура: буквы (ADR-101) ----------
+
+/** Какую клавиатуру показать у поля: цифровую, полную или никакую. */
+export type FieldPad = 'digits' | 'letters' | null
+
+/** Поля с буквами: поиск, имя, телефон текстом, госномер, комментарий. */
+const LETTER_TYPES = new Set(['', 'text', 'search', 'tel', 'email', 'url', 'password'])
+
+/**
+ * Клавиатура для поля по его тегу, типу и `data-keypad`: числа — цифровая (как в SPEC-29),
+ * текст — полная; выключенные поля, флажки, даты и выбор из списка — никакой.
+ */
+export function fieldPad(tag: string, type: string | null, keypad: string | undefined, disabled: boolean): FieldPad {
+  if (disabled) return null
+  const t = tag.toLowerCase()
+  if (t === 'textarea') return 'letters'
+  if (t !== 'input') return null
+  if (keypad !== undefined) return 'digits'
+  const kind = (type ?? '').toLowerCase()
+  if (kind === 'number') return 'digits'
+  return LETTER_TYPES.has(kind) ? 'letters' : null
+}
+
+/** Ряд цифр полной клавиатуры (дефис — для «5W-30» и номеров). */
+export const KBD_DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-'] as const
+
+/** Буквы по рядам: ЙЦУКЕН и латиница QWERTY. */
+export const KBD_LETTERS = {
+  ru: [
+    ['й', 'ц', 'у', 'к', 'е', 'н', 'г', 'ш', 'щ', 'з', 'х', 'ъ'],
+    ['ф', 'ы', 'в', 'а', 'п', 'р', 'о', 'л', 'д', 'ж', 'э'],
+    ['я', 'ч', 'с', 'м', 'и', 'т', 'ь', 'б', 'ю'],
+  ],
+  en: [
+    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
+    ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
+  ],
+} as const
+
+/** Текст поля и место курсора после нажатия. */
+export interface TextEdit {
+  value: string
+  caret: number
+}
+
+/** Курсор поля: без выделения (или у поля его нет) — в конце текста. */
+function span(value: string, start: number | null, end: number | null): [number, number] {
+  const a = start === null ? value.length : Math.max(0, Math.min(start, value.length))
+  const b = end === null ? a : Math.max(a, Math.min(end, value.length))
+  return [a, b]
+}
+
+/** Вставить набранное на место курсора (выделенное заменяется); длина — не больше предела поля. */
+export function typeText(value: string, start: number | null, end: number | null, text: string, maxLength?: number): TextEdit {
+  const [a, b] = span(value, start, end)
+  const next = value.slice(0, a) + text + value.slice(b)
+  if (maxLength && maxLength > 0 && next.length > maxLength) return { value, caret: b }
+  return { value: next, caret: a + text.length }
+}
+
+/** «Стереть»: выделенное целиком, иначе знак перед курсором. */
+export function eraseBack(value: string, start: number | null, end: number | null): TextEdit {
+  const [a, b] = span(value, start, end)
+  if (a !== b) return { value: value.slice(0, a) + value.slice(b), caret: a }
+  if (a === 0) return { value, caret: 0 }
+  return { value: value.slice(0, a - 1) + value.slice(a), caret: a - 1 }
+}
+
+/**
+ * Где поставить полную клавиатуру: она широкая, рядом с полем ей места нет — у нижнего края
+ * экрана, а если там поле — у верхнего. Поле не закрывается; не помещается нигде — у нижнего края,
+ * `scroll` — на сколько прокрутить, чтобы поле поднялось над ней.
+ */
+export function kbdPlace(
+  field: Box,
+  pad: { width: number; height: number },
+  view: { width: number; height: number },
+  gap = 12,
+): { left: number; top: number; scroll: number } {
+  const left = Math.max(gap, Math.round((view.width - pad.width) / 2))
+  const bottomTop = Math.max(gap, view.height - pad.height - gap)
+  if (field.top + field.height + gap <= bottomTop) return { left, top: bottomTop, scroll: 0 }
+  if (field.top - gap >= gap + pad.height) return { left, top: gap, scroll: 0 }
+  return { left, top: bottomTop, scroll: Math.max(0, field.top + field.height + gap - bottomTop) }
 }
