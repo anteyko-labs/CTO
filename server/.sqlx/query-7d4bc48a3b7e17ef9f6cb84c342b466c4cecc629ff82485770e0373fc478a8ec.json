@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(s.master_fee_tyiyn - x.lines), 0)::bigint as \"fee!\",\n                  count(*) filter (where s.kind = 'sale' and s.master_fee_tyiyn > x.lines) as \"checks!\"\n           from sales s\n           cross join lateral (select coalesce(sum(l.master_fee_tyiyn), 0)::bigint as lines\n                               from sale_lines l where l.sale_id = s.id) x\n           where s.branch_id = $1 and s.master_id = $2 and s.business_date between $3 and $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "checks!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "7d4bc48a3b7e17ef9f6cb84c342b466c4cecc629ff82485770e0373fc478a8ec"
+}

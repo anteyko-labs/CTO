@@ -64,8 +64,8 @@ describe('исправление чека: исходный чек в кассу
       key,
     )
     expect(s.payMode).toBe('mixed')
-    expect(s.split).toEqual({ cash: '500', card: '1500', transfer: '', debt: '' })
-    expect(s.bankPick).toEqual({ card: 'optima', transfer: '' })
+    expect(s.split).toEqual({ cash: '500', card: '1500', transfer: '', invoice: '', debt: '' })
+    expect(s.bankPick).toEqual({ card: 'optima', transfer: '', invoice: '' })
     expect(s.bonusAmount).toBe(5_000)
     expect(s.battery).toEqual({ kgText: '12,5', perKgText: '40' })
   })

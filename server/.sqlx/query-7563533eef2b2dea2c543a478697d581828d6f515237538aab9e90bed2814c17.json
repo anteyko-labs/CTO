@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with orig as (\n             select s.id from sales s\n             where s.branch_id = $1 and s.kind = 'sale' and s.sale_type = 'service'\n               and s.business_date between $2 and $3\n               and not exists (select 1 from sale_lines l where l.sale_id = s.id and l.kind = 'service')\n           )\n           select count(*) as \"checks!\",\n                  coalesce(sum(s.master_fee_tyiyn), 0)::bigint as \"masters!\",\n                  count(*) filter (where s.kind = 'sale'\n                                     and coalesce((select sum(r.total_tyiyn) from sales r\n                                                   where r.reversal_of = s.id), 0) <> -s.total_tyiyn) as \"kept!\"\n           from sales s\n           where s.id in (select id from orig) or s.reversal_of in (select id from orig)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "checks!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "masters!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "kept!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7563533eef2b2dea2c543a478697d581828d6f515237538aab9e90bed2814c17"
+}

@@ -18,24 +18,24 @@ export function accountType(a: Pick<CashAccount, 'kind'>): 'Наличный' | 
   return isBank(a) ? 'Безналичный' : 'Наличный'
 }
 
-/** Способ безналичной оплаты, у которого свой счёт по умолчанию (ADR-077). */
-export type NoncashMethod = 'card' | 'transfer'
+/** Способ безналичной оплаты, у которого свой счёт по умолчанию (ADR-077, ADR-095). */
+export type NoncashMethod = 'card' | 'transfer' | 'invoice'
 
-type DefaultMarks = { default_card?: boolean; default_transfer?: boolean }
+type DefaultMarks = { default_card?: boolean; default_transfer?: boolean; default_invoice?: boolean }
 
-/** Счёт по умолчанию для способа оплаты. */
+/** Счёт по умолчанию для способа оплаты. «По счёту» без своей отметки идёт на счёт карты. */
 export function isDefaultFor(a: DefaultMarks, method: NoncashMethod): boolean {
+  if (method === 'invoice') return Boolean(a.default_invoice)
   return Boolean(method === 'card' ? a.default_card : a.default_transfer)
 }
 
-/** Пометка рядом с названием: касса смены, «по умолчанию для карты / перевода», сейф. */
+/** Пометка рядом с названием: касса смены, «по умолчанию для карты / перевода / «По счёту»», сейф. */
 export function accountNote(a: Pick<CashAccount, 'kind' | 'is_default'> & DefaultMarks): string {
   if (isTill(a)) return 'касса смены'
   if (isBank(a)) {
-    if (a.default_card && a.default_transfer) return 'по умолчанию для карты / QR банка и QR владельцу'
-    if (a.default_card) return 'по умолчанию для карты / QR банка'
-    if (a.default_transfer) return 'по умолчанию для QR владельцу'
-    return ''
+    const marks = [a.default_card && 'карты / QR банка', a.default_transfer && 'QR владельцу', a.default_invoice && '«По счёту»'].filter(Boolean)
+    if (marks.length === 0) return ''
+    return `по умолчанию для ${marks.length > 1 ? `${marks.slice(0, -1).join(', ')} и ${marks[marks.length - 1]}` : marks[0]}`
   }
   if (a.kind === 'safe') return 'сейф'
   return ''
@@ -53,14 +53,14 @@ export function accountTotals(accounts: readonly CashAccount[]): { cash: number;
   return { cash, bank, total: cash + bank }
 }
 
-/** Безналичные счета для выбора: действующие; счёт по умолчанию для способа — первым. */
+/** Безналичные счета для выбора: действующие; счёт по умолчанию для способа — первым («По счёту»
+ *  без своей отметки — счёт карты, ADR-095). */
 export function bankChoices<T extends Pick<CashAccount, 'id' | 'kind'> & DefaultMarks & { active?: boolean }>(
   accounts: readonly T[],
   method: NoncashMethod = 'card',
 ): T[] {
-  return accounts
-    .filter((a) => isBank(a) && a.active !== false)
-    .sort((x, y) => Number(isDefaultFor(y, method)) - Number(isDefaultFor(x, method)))
+  const rank = (a: T): number => (isDefaultFor(a, method) ? 2 : method === 'invoice' && a.default_card ? 1 : 0)
+  return accounts.filter((a) => isBank(a) && a.active !== false).sort((x, y) => rank(y) - rank(x))
 }
 
 /** Счёт по умолчанию для способа оплаты (или первый действующий); нет банков — ''. */
@@ -113,14 +113,15 @@ export function feeShort(bp: number): string {
 }
 
 /** Подпись под кнопками оплаты на кассе: куда идут деньги и комиссия банка (SPEC-29 §25).
- *  Наличные — в кассу смены; карта и QR банка, QR владельцу — на выбранный счёт или счёт по
- *  умолчанию для способа. Ставка — с сервера или из снимка кассы без сети. */
+ *  Наличные — в кассу смены; карта и QR банка, QR владельцу, «По счёту» — на выбранный счёт или
+ *  счёт по умолчанию для способа. «По счёту» — перечисление, комиссии нет (ADR-095). Ставка — с
+ *  сервера или из снимка кассы без сети. */
 export function payCaption(
   method: 'cash' | NoncashMethod,
   bank?: Pick<CashAccount, 'name'> & { fee_rate_bp?: number },
 ): string {
   if (method === 'cash') return '→ Касса · наличные'
   if (!bank) return '→ счёт по умолчанию'
-  const fee = bank.fee_rate_bp ?? 0
+  const fee = method === 'invoice' ? 0 : (bank.fee_rate_bp ?? 0)
   return `→ ${bank.name} · ${fee > 0 ? `комиссия ${feeShort(fee)}` : 'без комиссии'}`
 }

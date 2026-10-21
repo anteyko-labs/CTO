@@ -1,10 +1,11 @@
-// Справочник услуг и ставка мастера за замену (SPEC-02, SPEC-07). На новой точке владелец
+// Справочник услуг (SPEC-02, SPEC-07, SPEC-30 §2): цена клиенту, «бесплатно с нашим маслом» и
+// ставка мастеру за одну услугу — вид замены в чеке «В сервис» (ADR-096). На новой точке владелец
 // загружает услуги из выгрузки товаров старой программы (Excel) — отмеченные строки разом.
 import { useState, type FormEvent } from 'react'
 import { DirHint } from '../components/DirHint'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { get, newOpId, patch, post, put } from '../lib/api'
+import { get, newOpId, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom, plural, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -13,11 +14,11 @@ import type { Service } from '../lib/types'
 import { mapUmagRows, preselected, serviceCandidates, type ServiceCandidate } from '../lib/umag'
 import { readXlsx } from '../lib/xlsx'
 
-const FEE_HINT = 'Из цены услуги — мастеру, остальное остаётся в кассе. Ставку задаёт владелец'
-const OIL_FEE_HINT = 'Одна ставка на чек с отметкой «в сервис». Замена отдельной строкой в чеке не печатается, цена масла та же.'
+const FEE_HINT = 'Ставка мастеру за одну такую работу: в чеке — количество × ставка. Ставку задаёт владелец'
+const FREE_HINT = 'В чеке есть наше масло — услуга бесплатна; клиент со своим маслом платит цену клиенту'
 const ABOUT =
-  'Услуги появляются в кассе под кнопкой «Услуги». Замена с нашим маслом отмечается в чеке «В сервис» и платится ставкой выше; ' +
-  'если клиент привёз своё масло — заведите для этого услугу, например «Замена масла (масло клиента)».'
+  'Вид замены выбирается в каждом чеке «В сервис» — без него чек не провести. Мастеру начисляется ставка каждой услуги чека. ' +
+  'У услуги «Бесплатно с нашим маслом» цена в чеке с нашим маслом — 0, без него — цена клиенту.'
 
 function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn: number } {
   const p = parseSom(price)
@@ -33,6 +34,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
     name: service.name,
     price: somInput(service.price_tyiyn),
     fee: somInput(service.master_fee_tyiyn),
+    free: Boolean(service.free_with_oil),
     active: service.active,
   })
   const { busy, error, run } = useAction()
@@ -42,6 +44,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
       await patch<Service>(`/services/${service.id}`, {
         name: form.name,
         ...amounts(form.price, form.fee),
+        free_with_oil: form.free,
         active: form.active,
       })
       onSaved()
@@ -54,13 +57,19 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Цена, с" hint={owner ? undefined : 'Цену меняет владелец'}>
-            <input inputMode="decimal" disabled={!owner} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+          <Field label="Цена клиенту, с" hint={owner ? 'Со своим маслом' : 'Цену меняет владелец'}>
+            <input id="service-edit-price" inputMode="decimal" disabled={!owner} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
           </Field>
           <Field label="Мастеру, с" hint={FEE_HINT}>
-            <input inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
+            <input id="service-edit-fee" inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
           </Field>
         </div>
+        {owner ? (
+          <Checkbox label="Бесплатно с нашим маслом" checked={form.free} onChange={(v) => setForm({ ...form, free: v })} />
+        ) : (
+          <div className="text-sm text-slate-600">{form.free ? 'Бесплатно с нашим маслом' : 'Платная и с нашим маслом'} — меняет владелец</div>
+        )}
+        <div className="-mt-2 pl-7 text-xs text-slate-500">{FREE_HINT}</div>
         <Checkbox label="Активна" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
@@ -76,45 +85,17 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
   )
 }
 
-/** Ставка мастера за чек с заменой: замена в чеке строкой не печатается (ADR-027). */
-function OilChangeFee() {
-  const owner = useUser().role === 'owner'
+/** Прежняя ставка за чек (ADR-027) новым чекам не начисляется: её получает только чек без сети со
+ *  старого устройства «в сервис» без вида замены (ADR-096). Здесь — только пояснение. */
+function OldCheckFee() {
   const settings = useLoad(() => get<{ oil_change_master_fee_tyiyn: number }>('/settings/sales'), [])
-  const [fee, setFee] = useState<string | null>(null)
-  const save = useAction()
-  const current = settings.data?.oil_change_master_fee_tyiyn ?? 0
-  const value = fee ?? somInput(current)
-
-  const submit = () =>
-    save.run(async () => {
-      const v = parseSom(value)
-      if (v === null) throw new Error('Неверная ставка')
-      await put('/settings/sales', { oil_change_master_fee_tyiyn: v })
-      setFee(null)
-      settings.reload()
-      toast('Ставка сохранена')
-    })
-
+  const fee = settings.data?.oil_change_master_fee_tyiyn
+  if (fee === undefined) return null
   return (
-    <Card className="mb-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-slate-700">
-            Мастеру за замену, с
-            <DirHint text={OIL_FEE_HINT} />
-          </span>
-          <input className="w-40" inputMode="decimal" disabled={!owner || settings.loading} value={value} onChange={(e) => setFee(e.target.value)} />
-        </label>
-        {owner && (
-          <Button disabled={save.busy || fee === null || !value.trim()} onClick={() => void submit()}>
-            Сохранить
-          </Button>
-        )}
-      </div>
-      <div className="mt-2">
-        <ErrorBox error={settings.error ?? save.error} />
-      </div>
-    </Card>
+    <div className="mb-4 text-xs text-slate-500" data-testid="old-check-fee">
+      Чек без сети со старого устройства «в сервис» без вида замены получит прежнюю ставку за чек — {formatSom(fee)}; владелец увидит его в
+      уведомлениях.
+    </div>
   )
 }
 
@@ -202,7 +183,7 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
 export default function Services() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
-  const [form, setForm] = useState({ name: '', price: '', fee: '' })
+  const [form, setForm] = useState({ name: '', price: '', fee: '', free: false })
   const [adding, setAdding] = useState(false)
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<Service | null>(null)
@@ -221,8 +202,8 @@ export default function Services() {
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
-      await post<Service>('/services', { name: form.name, ...amounts(form.price, form.fee) })
-      setForm({ name: '', price: '', fee: '' })
+      await post<Service>('/services', { name: form.name, ...amounts(form.price, form.fee), free_with_oil: owner && form.free })
+      setForm({ name: '', price: '', fee: '', free: false })
       setAdding(false)
       list.reload()
     })
@@ -230,7 +211,7 @@ export default function Services() {
 
   const setActive = (s: Service, active: boolean) =>
     void toggle.run(async () => {
-      await patch<Service>(`/services/${s.id}`, { name: s.name, price_tyiyn: s.price_tyiyn, master_fee_tyiyn: s.master_fee_tyiyn, active })
+      await patch<Service>(`/services/${s.id}`, { name: s.name, price_tyiyn: s.price_tyiyn, master_fee_tyiyn: s.master_fee_tyiyn, free_with_oil: s.free_with_oil, active })
       toast(active ? 'Услуга включена' : 'Услуга отключена')
       list.reload()
     })
@@ -271,9 +252,9 @@ export default function Services() {
         }
       />
 
-      <OilChangeFee />
+      <OldCheckFee />
 
-      <Card className="[&_th:nth-child(2)]:text-right [&_th:nth-child(3)]:text-right">
+      <Card className="[&_th:nth-child(2)]:text-right [&_th:nth-child(4)]:text-right">
         <CardTitle
           actions={
             (list.data?.length ?? 0) > 5 && (
@@ -296,12 +277,12 @@ export default function Services() {
               </Button>
             }
           >
-            Услуг пока нет. Добавьте, например, «Замена масла (масло клиента)» — она сразу появится в кассе.
+            Услуг пока нет. Добавьте виды замены, например «Замена масла в моторе» и «Замена масла в коробке», — они сразу появятся в кассе.
           </Empty>
         ) : rows.length === 0 ? (
           <Empty>Ничего не найдено</Empty>
         ) : (
-          <Table head={['Название', 'Цена', 'Мастеру', 'Статус', '']}>
+          <Table head={['Название', 'Цена клиенту', 'С нашим маслом', 'Мастеру', 'Статус', '']}>
             {rows.map((s) => (
               <tr
                 key={s.id}
@@ -312,6 +293,7 @@ export default function Services() {
                 <td className="px-2 py-2 md:text-right">
                   <Money value={s.price_tyiyn} />
                 </td>
+                <td className="px-2 py-2">{s.free_with_oil ? <Badge tone="sky">бесплатно</Badge> : <span className="text-slate-500">цена клиенту</span>}</td>
                 <td className="px-2 py-2 md:text-right">
                   <Money value={s.master_fee_tyiyn} zero="—" />
                 </td>
@@ -339,7 +321,7 @@ export default function Services() {
               <input id="service-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </Field>
             <div className="flex flex-wrap gap-3">
-              <Field label="Цена, с" required>
+              <Field label="Цена клиенту, с" required hint="Со своим маслом">
                 <input id="service-price" className="w-40" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
               </Field>
               <label className="flex flex-col gap-1 text-sm">
@@ -347,9 +329,15 @@ export default function Services() {
                   Мастеру, с
                   <DirHint text={FEE_HINT} />
                 </span>
-                <input className="w-40" inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
+                <input id="service-fee" className="w-40" inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
               </label>
             </div>
+            {owner && (
+              <>
+                <Checkbox label="Бесплатно с нашим маслом" checked={form.free} onChange={(v) => setForm({ ...form, free: v })} />
+                <div className="-mt-2 pl-7 text-xs text-slate-500">{FREE_HINT}</div>
+              </>
+            )}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Missing items={notFilled} className="mr-auto" />

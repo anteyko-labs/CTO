@@ -222,7 +222,7 @@ pub(crate) async fn drop_owner_link(
 
 // ---------- Логика бота ----------
 
-const HELP: &str = "Нажмите кнопку внизу:\n📊 Сегодня — выручка и прибыль за день, деньги в кассах\n💵 Смена — открытая смена и сколько должно быть в кассе\n📒 Долги — кто сколько должен";
+const HELP: &str = "Нажмите кнопку внизу:\n📊 Сегодня — выручка и прибыль за день, деньги в кассах\n💵 Смена — открытая смена и сколько должно быть в кассе\n📒 Долги — кто сколько должен\n/замены — замены по видам с начала месяца";
 
 // Кнопки внизу чата: нажатие отправляет их текст, как команду.
 const BTN_TODAY: &str = "📊 Сегодня";
@@ -635,7 +635,7 @@ pub fn is_question(text: &str) -> bool {
     }
     let known = matches!(
         command(text).as_str(),
-        "сегодня" | "today" | "смена" | "shift" | "долги" | "debts"
+        "сегодня" | "today" | "смена" | "shift" | "долги" | "debts" | "замены" | "services"
     );
     !known || words > 1
 }
@@ -1661,6 +1661,7 @@ async fn handle_text(
         "сегодня" | "today" => Some(today(conn, branch_id).await?),
         "смена" | "shift" => Some(shift(conn, branch_id).await?),
         "долги" | "debts" => Some(debts(conn, branch_id).await?),
+        "замены" | "services" => Some(services_month(conn, user_id, branch_id).await?),
         _ => None,
     };
     if let Some(r) = reply {
@@ -1836,6 +1837,27 @@ fn pay_kind(kind: &str, count: i64) -> String {
         "shortage" => "недостача".into(),
         other => other.to_string(),
     }
+}
+
+/// «/замены» — замены по видам с начала месяца (SPEC-30 §10); за другой период — через
+/// «💬 Спросить».
+async fn services_month(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    branch_id: Uuid,
+) -> AppResult<String> {
+    use chrono::Datelike;
+    let day = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    let user = crate::auth::CurrentUser {
+        id: user_id,
+        branch_id,
+        login: String::new(),
+        full_name: String::new(),
+        role: crate::auth::Role::Owner,
+    };
+    crate::api::bot_reports::services_text(conn, &user, day.with_day(1).unwrap_or(day), day).await
 }
 
 async fn today(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
@@ -2680,10 +2702,11 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
     }
 }
 
-/// Чек для владельца: номер, сумма, как платили, кто продал, клиент и машина.
+/// Чек для владельца: номер, сумма, как платили, кто продал, клиент и машина; у чека «в сервис» —
+/// услуги и сколько мастеру (ADR-096).
 pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, String)> {
     let s = sqlx::query!(
-        r#"select s.number, s.total_tyiyn, s.sale_type, c.full_name as cashier,
+        r#"select s.number, s.total_tyiyn, s.sale_type, s.master_fee_tyiyn, c.full_name as cashier,
                   m.full_name as "master?", p.name as "party?", v.plate as "plate?",
                   (select count(*) from sale_lines l where l.sale_id = s.id) as "lines!"
            from sales s
@@ -2708,6 +2731,7 @@ pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, 
             "cash" => "наличными",
             "card" => "картой / QR банка",
             "transfer" => "QR владельцу",
+            "invoice" => "по счёту",
             "debt" => "в долг",
             "bonus" => "баллами",
             // Аккумулятор в оплату: «аккумулятор 12 кг — 600 с» (SPEC-27).
@@ -2733,6 +2757,31 @@ pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, 
         ));
     }
     details.push(who);
+    if s.sale_type == "service" {
+        let works = sqlx::query!(
+            r#"select coalesce(l.name, sv.name, '') as "name!", l.qty
+               from sale_lines l left join services sv on sv.id = l.service_id
+               where l.sale_id = $1 and l.kind = 'service' order by l.line_no"#,
+            id
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|w| {
+            if w.qty > 1 {
+                format!("{} × {}", w.name, w.qty)
+            } else {
+                w.name
+            }
+        })
+        .collect::<Vec<_>>();
+        let fee = format!("мастеру {}", format_som(s.master_fee_tyiyn));
+        details.push(if works.is_empty() {
+            format!("без вида замены, {fee}")
+        } else {
+            format!("{}, {fee}", works.join(", "))
+        });
+    }
     if let Some(p) = s.party {
         details.push(match s.plate {
             Some(plate) => format!("клиент {p}, {plate}"),

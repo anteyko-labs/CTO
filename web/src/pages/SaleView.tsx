@@ -141,7 +141,9 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
                     ? 'Баллы вернутся клиенту'
                     : method === 'cash'
                       ? 'Наличные из кассы'
-                      : 'Возврат на карту / QR через терминал'
+                      : method === 'invoice'
+                        ? 'Перечислением со счёта, куда пришла оплата по счёту'
+                        : 'Возврат на карту / QR через терминал'
               }
             >
               <select value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>

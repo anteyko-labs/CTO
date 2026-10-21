@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update cash_accounts\n           set name = $3, allow_negative = $4, owner_only = $5, active = $6,\n               default_card = default_card or $7, default_transfer = default_transfer or $8,\n               default_invoice = $9\n           where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7200a6be4d5477f2f69fd511359db469fb80e452dcb17b395f63d075a9242072"
+}

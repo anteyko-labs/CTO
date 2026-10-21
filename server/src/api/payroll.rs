@@ -1158,6 +1158,9 @@ pub struct ReturnAccrual {
     pub bonus_back: i64,
     pub counted_back: i64,
     pub full_return: bool,
+    /// Сколько ставок мастера снимает возврат: доли возвращённых строк услуг (ADR-096), при
+    /// возврате целиком — и ставка за чек (ADR-027).
+    pub fee_back: i64,
 }
 
 pub async fn reverse_for_return(
@@ -1198,8 +1201,10 @@ pub async fn reverse_for_return(
             continue;
         }
         let back = match row.kind.as_str() {
-            // Работу мастер сделал: ставка снимается только при возврате чека целиком (ADR-027).
+            // Работу мастер сделал: возврат товара ставку не снимает. Ставка услуги уходит с
+            // возвращённой строкой услуги (ADR-096), ставка за чек — при возврате целиком (ADR-027).
             "service_fee" if r.full_return => row.net,
+            "service_fee" => r.fee_back.clamp(0, row.net),
             "revenue_percent" if row.base > 0 && base_back > 0 => div_round(
                 i128::from(row.accrued) * i128::from(base_back),
                 i128::from(row.base),

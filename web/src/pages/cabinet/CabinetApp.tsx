@@ -40,6 +40,8 @@ interface ClientSale {
   vehicle_plate: string | null
   total_tyiyn: number
   debt_tyiyn: number
+  /** Оплачено «По счёту» — перечислением фирмы (ADR-095). */
+  invoice_tyiyn?: number
   lines: SaleLine[]
 }
 
@@ -179,6 +181,11 @@ function Purchases() {
               {s.debt_tyiyn !== 0 && (
                 <span className="ml-2">
                   <Badge tone="amber">в долг {formatSom(Math.abs(s.debt_tyiyn))}</Badge>
+                </span>
+              )}
+              {(s.invoice_tyiyn ?? 0) !== 0 && (
+                <span className="ml-2">
+                  <Badge tone="sky">по счёту {formatSom(Math.abs(s.invoice_tyiyn ?? 0))}</Badge>
                 </span>
               )}
             </div>

@@ -116,6 +116,9 @@ test('«Это замена масла?» перед чеком на вынос 
   const question = page.getByTestId('oil-question')
   await expect(question).toBeVisible()
   await question.getByRole('button', { name: 'Да, замена' }).click()
+  // Замена — сразу выбор вида замены (ADR-096); закрыли, не выбрав.
+  await expect(page.getByRole('dialog', { name: 'Вид замены' })).toBeVisible()
+  await page.keyboard.press('Escape')
   await expect(page.locator('#master-select')).toBeVisible()
   await expect(page.getByRole('button', { name: 'В сервис' })).toHaveClass(/bg-sky-600/)
   // Передумали: снова на вынос — второй раз для этого чека не спрашиваем.

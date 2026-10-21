@@ -62,6 +62,7 @@ fn movement_kind(kind: &str) -> &str {
         "bank_fee" => "комиссия банка",
         "card" => "оплата картой / QR банка",
         "transfer" => "оплата QR владельцу",
+        "invoice" => "оплата по счёту",
         other => other,
     }
 }
@@ -69,7 +70,7 @@ fn movement_kind(kind: &str) -> &str {
 // ---------- Продажи ----------
 
 /// Продажи: `dashboard`, `categories`, `hours`, `weekdays`, `checks`, `gifts`, `staff`, `top`,
-/// `top_profit`.
+/// `top_profit`, `services` (замены по видам, SPEC-30 §10).
 pub async fn sales(
     conn: &mut PgConnection,
     user: &CurrentUser,
@@ -162,13 +163,18 @@ pub async fn sales(
             let d = crate::api::sales::sales_day(conn, user, Some(to)).await?;
             let t = &d.totals;
             let mut lines = vec![format!(
-                "Чеки {}: продаж {}, итог с возвратами {} (наличными {}, картой {}, переводом {}, в долг {}, баллами {}{})",
+                "Чеки {}: продаж {}, итог с возвратами {} (наличными {}, картой {}, переводом {}{}, в долг {}, баллами {}{})",
                 period_label(d.date, d.date),
                 t.count,
                 format_som(t.total_tyiyn),
                 format_som(t.cash_tyiyn),
                 format_som(t.card_tyiyn),
                 format_som(t.transfer_tyiyn),
+                if t.invoice_tyiyn != 0 {
+                    format!(", по счёту {}", format_som(t.invoice_tyiyn))
+                } else {
+                    String::new()
+                },
                 format_som(t.debt_tyiyn),
                 format_som(t.bonus_tyiyn),
                 if t.battery_tyiyn != 0 {
@@ -247,6 +253,7 @@ pub async fn sales(
             ))
         }
         // «Чаще берут» — по выручке, «больше приносят» — по валовой прибыли (SPEC-28 §4).
+        "services" => services_text(conn, user, from, to).await,
         "top" | "top_profit" => {
             let by_profit = report == "top_profit";
             let t = crate::api::reports::top_products_data(
@@ -297,7 +304,7 @@ pub async fn sales(
             Ok(lines.join("\n"))
         }
         _ => Err(invalid(
-            "report: dashboard, categories, hours, weekdays, checks, gifts, staff, top или top_profit",
+            "report: dashboard, categories, hours, weekdays, checks, gifts, staff, top, top_profit или services",
         )),
     }
 }
@@ -332,9 +339,14 @@ async fn dashboard(
             format_som(d.returns_tyiyn)
         ),
         format!(
-            "Безнал чеков: картой {}, переводом {}{}",
+            "Безнал чеков: картой {}, переводом {}{}{}",
             format_som(d.noncash.total.card_tyiyn),
             format_som(d.noncash.total.transfer_tyiyn),
+            if d.noncash.total.invoice_tyiyn != 0 {
+                format!(", по счёту {}", format_som(d.noncash.total.invoice_tyiyn))
+            } else {
+                String::new()
+            },
             // Несколько безналичных счетов — по каждому, куда пришло (ADR-076).
             if d.noncash.by_account.len() > 1 {
                 format!(
@@ -600,6 +612,7 @@ fn method_name(method: &str) -> &str {
         "cash" => "наличными",
         "card" => "картой / QR банка",
         "transfer" => "QR владельцу",
+        "invoice" => "по счёту",
         "debt" => "в долг",
         "bonus" => "баллами",
         "battery" => "аккумуляторами",
@@ -669,6 +682,9 @@ async fn accounts_text(conn: &mut PgConnection, user: &CurrentUser) -> AppResult
         }
         if a.default_transfer {
             marks.push("по умолчанию для перевода");
+        }
+        if a.default_invoice {
+            marks.push("по умолчанию для «По счёту»");
         }
         let fee = (a.kind == "bank" && a.fee_rate_bp > 0).then(|| {
             format!(
@@ -740,6 +756,7 @@ async fn bank_text(
             format_som(b.transfer.sales_tyiyn),
             format_som(b.transfer.repayments_tyiyn)
         ),
+        format!("По счёту: {}", format_som(b.invoice.total_tyiyn)),
         format!("Комиссия банка: {}", format_som(b.fee_tyiyn)),
         format!(
             "Прочие поступления: {}, списания: {}",
@@ -755,10 +772,11 @@ async fn bank_text(
                 .iter()
                 .map(|d| {
                     format!(
-                        "{}: картой {}, переводом {}, комиссия {}, итог {}",
+                        "{}: картой {}, переводом {}, по счёту {}, комиссия {}, итог {}",
                         day(d.date),
                         format_som(d.card_tyiyn),
                         format_som(d.transfer_tyiyn),
+                        format_som(d.invoice_tyiyn),
                         format_som(d.fee_tyiyn),
                         format_som_signed(d.net_tyiyn)
                     )
@@ -1437,5 +1455,65 @@ fn balance_text(b: i64) -> String {
         0 => "0 с".into(),
         b if b > 0 => format!("{} (должны точке)", format_som(b)),
         b => format!("{} (точка должна)", format_som(-b)),
+    }
+}
+
+/// «Замены по видам» (SPEC-30 §2, §10) текстом: то же `service_kinds_data`, что вкладка
+/// «Замены» экрана «Продаваемые». Без себестоимости.
+pub async fn services_text(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<String> {
+    let r = crate::api::reports::service_kinds_data(conn, user, Some(from), Some(to)).await?;
+    let mut lines = vec![format!(
+        "🔧 Замены по видам {}:",
+        period_label(r.from, r.to)
+    )];
+    if r.kinds.is_empty() {
+        lines.push("Замен не было.".into());
+    }
+    for k in &r.kinds {
+        lines.push(format!(
+            "— {}: {} раз, клиенты заплатили {}, мастерам {}",
+            k.name,
+            k.count,
+            format_som(k.clients_tyiyn),
+            format_som(k.masters_tyiyn)
+        ));
+        for o in k.oils.iter().take(TOP) {
+            lines.push(format!("    {}: {}", o.name, oil_amount(o)));
+        }
+        if k.oils.len() > TOP {
+            lines.push(format!("    и ещё {}", k.oils.len() - TOP));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Сколько масла: «2 кан. по 4 л + 1,5 л розливом = 9,5 л».
+fn oil_amount(o: &crate::api::reports::ServiceOil) -> String {
+    let total = crate::domain::qty::liters(o.total_ml);
+    let mut parts = Vec::new();
+    if o.canisters != 0 {
+        parts.push(format!(
+            "{} кан.{}",
+            o.canisters,
+            o.container_ml
+                .map(|c| format!(" по {}", crate::domain::qty::liters(c)))
+                .unwrap_or_default()
+        ));
+    }
+    if o.pour_ml != 0 {
+        parts.push(format!(
+            "{} розливом",
+            crate::domain::qty::liters(o.pour_ml)
+        ));
+    }
+    if parts.is_empty() {
+        total
+    } else {
+        format!("{} = {total}", parts.join(" + "))
     }
 }

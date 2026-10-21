@@ -137,7 +137,7 @@ fn sum_of(payments: &[PaymentReq], pred: impl Fn(&str) -> bool) -> AppResult<i64
 }
 
 fn is_money(method: &str) -> bool {
-    matches!(method, "cash" | "card" | "transfer")
+    matches!(method, "cash" | "card" | "transfer" | "invoice")
 }
 
 /// Чек: списание баллов (оплата «bonus») и начисление с оплаченного деньгами.

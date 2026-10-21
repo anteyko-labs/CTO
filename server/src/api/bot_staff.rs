@@ -473,6 +473,97 @@ fn item_line(i: &PayItem) -> String {
     }
 }
 
+/// Виды начислений; под «за замены» — заработок мастера по услугам (SPEC-30 §2).
+async fn push_items(
+    conn: &mut PgConnection,
+    e: &Employee,
+    (from, to): (NaiveDate, NaiveDate),
+    items: &[PayItem],
+    lines: &mut Vec<String>,
+) -> AppResult<()> {
+    for i in items {
+        lines.push(format!("  {}", item_line(i)));
+        if i.kind == "service_fee" {
+            lines.extend(
+                by_service(conn, e, from, to)
+                    .await?
+                    .iter()
+                    .map(|l| format!("    — {l}")),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Заработок мастера по услугам за дни учёта: вид, сколько раз, сумма ставок — из строк чеков
+/// и их возвратов (ставка фиксируется в строке, ADR-096). Чеки без вида замены (ставка за чек,
+/// ADR-027) — отдельной строкой.
+async fn by_service(
+    conn: &mut PgConnection,
+    e: &Employee,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<String>> {
+    let rows = sqlx::query!(
+        r#"select sv.name,
+                  coalesce(sum(case when s.kind = 'return' then -l.qty else l.qty end), 0)::bigint as "count!",
+                  coalesce(sum(l.master_fee_tyiyn), 0)::bigint as "fee!"
+           from sale_lines l
+           join sales s on s.id = l.sale_id
+           join services sv on sv.id = l.service_id
+           where s.branch_id = $1 and s.master_id = $2 and s.business_date between $3 and $4
+             and l.kind = 'service'
+           group by sv.name
+           having sum(l.master_fee_tyiyn) <> 0
+           order by 3 desc, sv.name"#,
+        e.branch_id,
+        e.id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out: Vec<String> = rows
+        .iter()
+        .map(|r| times_rate(&r.name, r.count, r.fee))
+        .collect();
+    let legacy = sqlx::query!(
+        r#"select coalesce(sum(s.master_fee_tyiyn - x.lines), 0)::bigint as "fee!",
+                  count(*) filter (where s.kind = 'sale' and s.master_fee_tyiyn > x.lines) as "checks!"
+           from sales s
+           cross join lateral (select coalesce(sum(l.master_fee_tyiyn), 0)::bigint as lines
+                               from sale_lines l where l.sale_id = s.id) x
+           where s.branch_id = $1 and s.master_id = $2 and s.business_date between $3 and $4"#,
+        e.branch_id,
+        e.id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if legacy.fee != 0 {
+        out.push(times_rate(
+            "за чек без вида замены",
+            legacy.checks,
+            legacy.fee,
+        ));
+    }
+    Ok(out)
+}
+
+/// «Замена масла в моторе: 3 × 30 с = 90 с»; ставки разные — «… (3): 95 с».
+fn times_rate(name: &str, count: i64, fee: i64) -> String {
+    if count > 0 && fee % count == 0 {
+        format!(
+            "{name}: {count} × {} = {}",
+            format_som(fee / count),
+            format_som(fee)
+        )
+    } else {
+        format!("{name} ({count}): {}", format_som(fee))
+    }
+}
+
 async fn day_text(conn: &mut PgConnection, e: &Employee) -> AppResult<String> {
     let day = today(conn).await?;
     let mut lines = vec![format!(
@@ -483,7 +574,7 @@ async fn day_text(conn: &mut PgConnection, e: &Employee) -> AppResult<String> {
     match mine(conn, e, day, day).await? {
         None => lines.push("За сегодня пока ничего не начислено.".into()),
         Some(p) => {
-            lines.extend(p.items.iter().map(|i| format!("  {}", item_line(i))));
+            push_items(conn, e, (day, day), &p.items, &mut lines).await?;
             lines.push(format!("Итого за день: {}", format_som(p.total_tyiyn)));
         }
     }
@@ -515,7 +606,7 @@ async fn month(
     let total = row.map_or(0, |r| r.accrued_tyiyn);
     lines.push(format!("Итого за месяц: {}", format_som(total)));
     if let Some(p) = &pay {
-        lines.extend(p.items.iter().map(|i| format!("  {}", item_line(i))));
+        push_items(conn, e, (data.from, data.to), &p.items, &mut lines).await?;
     }
     if let Some(r) = row
         && r.salary_tyiyn == 0
@@ -669,11 +760,16 @@ async fn works_text(conn: &mut PgConnection, e: &Employee) -> AppResult<String> 
             lines.push("  пока нет".into());
         }
         for c in &changes {
-            // Масло из масляной книжки; без неё (замена без машины) — товары чека, без цен.
+            // Масло из масляной книжки; без неё (замена без машины) или когда в книжке вместо
+            // масла — сам вид замены (масло клиента), — товары чека, без цен.
+            let kinds: Vec<&str> = c
+                .services
+                .as_deref()
+                .map_or(Vec::new(), |s| s.split(", ").collect());
             let oil = c
                 .oil
                 .clone()
-                .filter(|o| !o.trim().is_empty())
+                .filter(|o| !o.trim().is_empty() && !kinds.contains(&o.as_str()))
                 .or_else(|| c.goods.clone())
                 .unwrap_or_default();
             let what = [c.services.clone().unwrap_or_default(), oil]
@@ -746,6 +842,18 @@ mod tests {
         assert_eq!(parse_month("2026-10"), NaiveDate::from_ymd_opt(2026, 10, 1));
         assert_eq!(parse_month("2026-13"), None);
         assert_eq!(parse_month("2026-10-05"), None);
+    }
+
+    #[test]
+    fn service_kind_line() {
+        assert_eq!(
+            times_rate("Замена масла в моторе", 3, 9_000),
+            "Замена масла в моторе: 3 × 30 с = 90 с"
+        );
+        assert_eq!(
+            times_rate("Замена масла в коробке", 3, 10_000),
+            "Замена масла в коробке (3): 100 с"
+        );
     }
 
     #[test]

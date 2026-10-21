@@ -5,23 +5,32 @@ import { useUser } from '../lib/auth'
 import { formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { servicePriceText } from '../lib/serviceSale'
 import type { Service } from '../lib/types'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
 
 /**
  * Услуги в кассе: все заведённые работы плитками и новая услуга прямо отсюда (ADR-043).
- * Ставку мастера задаёт владелец, администратор создаёт услугу без неё.
+ * Ставку мастера задаёт владелец, администратор создаёт услугу без неё. «В сервис» открывает
+ * этот же выбор как «Вид замены» (`kinds`): крупные кнопки с ценой клиенту — или «бесплатно —
+ * масло наше», если в чеке наше масло, — и ставкой мастеру (ADR-096).
  */
 export function ServicePicker({
   onPick,
   onClose,
   onBatteryIntake,
   onBatterySale,
+  ourOil = false,
+  kinds = false,
 }: {
   onPick: (s: Service) => void
   onClose: () => void
   onBatteryIntake?: () => void
   onBatterySale?: () => void
+  /** В чеке есть наше масло: услуги «бесплатно с нашим маслом» стоят 0. */
+  ourOil?: boolean
+  /** Выбор вида замены для чека «В сервис». */
+  kinds?: boolean
 }) {
   const owner = useUser().role === 'owner'
   // Без связи — услуги из снимка кассы: работа уже сделана, чек пробивается (SPEC-09).
@@ -35,10 +44,11 @@ export function ServicePicker({
     [],
   )
   const [query, setQuery] = useState('')
-  const [form, setForm] = useState<{ name: string; price: string; fee: string } | null>(null)
+  const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean } | null>(null)
   const { busy, error, run } = useAction()
 
-  const active = (list.data ?? []).filter((s) => s.active)
+  // Виды замены — сверху: их выбирают в каждом чеке «В сервис».
+  const active = (list.data ?? []).filter((s) => s.active).sort((a, b) => Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
   const q = query.trim().toLowerCase()
   const shown = q ? active.filter((s) => s.name.toLowerCase().includes(q)) : active
 
@@ -57,12 +67,13 @@ export function ServicePicker({
         name: form.name.trim(),
         price_tyiyn: parseSom(form.price) ?? 0,
         master_fee_tyiyn: owner && form.fee.trim() ? (parseSom(form.fee) ?? 0) : 0,
+        free_with_oil: owner && form.free,
       })
       onPick(created)
     })
 
   return (
-    <Modal title="Услуги" onClose={onClose} wide>
+    <Modal title={kinds ? 'Вид замены' : 'Услуги'} onClose={onClose} wide>
       <div className="flex flex-col gap-3">
         {!form && (
           <div className="flex flex-wrap gap-2">
@@ -73,13 +84,14 @@ export function ServicePicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <Button variant="secondary" onClick={() => setForm({ name: query.trim(), price: '', fee: '' })}>
+            <Button variant="secondary" onClick={() => setForm({ name: query.trim(), price: '', fee: '', free: false })}>
               + Новая услуга
             </Button>
           </div>
         )}
 
-        {!form && (onBatteryIntake || onBatterySale) && (
+        {!form && kinds && <div className="text-sm text-slate-600">Без вида замены чек «В сервис» не провести. Можно выбрать несколько.</div>}
+        {!form && !kinds && (onBatteryIntake || onBatterySale) && (
           <div className="grid grid-cols-2 gap-2">
             {onBatteryIntake && (
               <button
@@ -109,13 +121,19 @@ export function ServicePicker({
               <input id="service-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Замена масла (масло клиента)" />
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Цена, с" required>
+              <Field label="Цена клиенту, с" required>
                 <input id="service-price" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
               </Field>
               <Field label="Мастеру, с" hint={owner ? 'Из цены — мастеру, остальное — в кассу' : 'Ставку мастера назначит владелец'}>
                 <input id="service-fee" inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
               </Field>
             </div>
+            {owner && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" className="h-4 w-4" checked={form.free} onChange={(e) => setForm({ ...form, free: e.target.checked })} />
+                Бесплатно с нашим маслом
+              </label>
+            )}
             {owner && parseSom(form.price) !== null && parseSom(form.fee) !== null && (
               <div className="text-sm text-slate-600">
                 В кассу останется {formatSom((parseSom(form.price) ?? 0) - (parseSom(form.fee) ?? 0))}
@@ -137,18 +155,22 @@ export function ServicePicker({
         ) : shown.length === 0 ? (
           <Empty>{q ? 'Такой услуги нет — создайте её кнопкой «Новая услуга».' : 'Услуг пока нет. Создайте первую — она сразу встанет в чек.'}</Empty>
         ) : (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <div className={`grid gap-2 ${kinds ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`} data-testid="service-choices">
             {shown.map((s) => (
               <button
                 key={s.id}
                 type="button"
-                className="flex min-h-[76px] flex-col justify-between rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50"
+                className={`flex flex-col justify-between rounded-lg border border-slate-200 bg-white text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100 ${
+                  kinds ? 'min-h-[96px] p-4' : 'min-h-[76px] p-3'
+                }`}
                 onClick={() => onPick(s)}
               >
-                <span className="font-medium leading-snug">{s.name}</span>
+                <span className={`leading-snug font-medium ${kinds ? 'text-lg' : ''}`}>{s.name}</span>
                 <span className="mt-1 flex items-baseline justify-between gap-2">
-                  <span className="text-base font-semibold text-sky-700">{formatSom(s.price_tyiyn)}</span>
-                  {s.master_fee_tyiyn > 0 && <span className="text-xs text-slate-500">мастеру {formatSom(s.master_fee_tyiyn)}</span>}
+                  <span className={`font-semibold text-sky-700 ${kinds ? 'text-lg' : 'text-base'}`}>{servicePriceText(s, ourOil, formatSom)}</span>
+                  {(kinds || s.master_fee_tyiyn > 0) && (
+                    <span className={kinds ? 'text-base text-slate-600' : 'text-xs text-slate-500'}>мастеру {formatSom(s.master_fee_tyiyn)}</span>
+                  )}
                 </span>
               </button>
             ))}

@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name, kind, owner_only, is_default, default_card, default_transfer, default_invoice, allow_negative,\n                  active, balance_tyiyn,\n                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as \"fee_rate_bp!\"\n           from cash_accounts where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "owner_only",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_default",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "default_card",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "default_transfer",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "default_invoice",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "allow_negative",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "fee_rate_bp!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "b110ba5e32fadd212ce3eb0cb08cd83d1817d739c693a00a9a0ab01ad104290e"
+}

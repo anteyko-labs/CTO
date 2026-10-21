@@ -61,6 +61,7 @@ export default function SalesDay() {
           ['Наличные', data.totals.cash_tyiyn],
           ['Карта / QR банка', data.totals.card_tyiyn],
           ['QR владельцу', data.totals.transfer_tyiyn],
+          ['По счёту', data.totals.invoice_tyiyn ?? 0],
           ['В долг', data.totals.debt_tyiyn],
           ['Баллами', data.totals.bonus_tyiyn ?? 0],
           ['Аккумуляторами', data.totals.battery_tyiyn ?? 0],

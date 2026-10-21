@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(l.name, sv.name, '') as \"name!\", l.qty\n               from sale_lines l left join services sv on sv.id = l.service_id\n               where l.sale_id = $1 and l.kind = 'service' order by l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "658fc2a5159bc5798645eaa5e5c25b99450ccc7618c821fc2cb25f9682b05c9a"
+}

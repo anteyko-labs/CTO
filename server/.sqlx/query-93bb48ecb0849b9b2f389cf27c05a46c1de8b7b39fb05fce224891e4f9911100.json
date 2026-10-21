@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name, default_card, default_transfer, default_invoice,\n                  account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as \"fee_rate_bp!\"\n           from cash_accounts\n           where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)\n           order by default_card desc, default_transfer desc, name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "default_card",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "default_transfer",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "default_invoice",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "fee_rate_bp!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "93bb48ecb0849b9b2f389cf27c05a46c1de8b7b39fb05fce224891e4f9911100"
+}

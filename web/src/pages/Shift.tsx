@@ -627,11 +627,18 @@ export default function Shift() {
             <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700" data-testid="close-noncash">
               Безнал за смену: карта / QR банка <b className="tabular-nums">{formatSom(shift.card_tyiyn)}</b> · QR владельцу{' '}
               <b className="tabular-nums">{formatSom(shift.transfer_tyiyn)}</b>
+              {(shift.invoice_tyiyn ?? 0) !== 0 && (
+                <>
+                  {' '}
+                  · по счёту <b className="tabular-nums">{formatSom(shift.invoice_tyiyn ?? 0)}</b>
+                </>
+              )}
               {(shift.bank_split ?? []).length > 1 && (
                 <ul className="mt-1 text-xs" data-testid="close-noncash-banks">
                   {(shift.bank_split ?? []).map((b) => (
                     <li key={b.account_id}>
                       {b.name}: карта / QR банка {formatSom(b.card_tyiyn)} · QR владельцу {formatSom(b.transfer_tyiyn)}
+                      {(b.invoice_tyiyn ?? 0) !== 0 && ` · по счёту ${formatSom(b.invoice_tyiyn ?? 0)}`}
                     </li>
                   ))}
                 </ul>

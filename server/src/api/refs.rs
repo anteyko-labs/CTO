@@ -403,12 +403,15 @@ pub(crate) fn pin_key(employee_id: Uuid) -> String {
 
 // ---------- Услуги ----------
 
+/// Услуга (ADR-096): цена клиенту (со своим маслом), «бесплатно с нашим маслом» и ставка
+/// мастеру за одну услугу.
 #[derive(Serialize)]
 struct ServiceOut {
     id: Uuid,
     name: String,
     price_tyiyn: i64,
     master_fee_tyiyn: i64,
+    free_with_oil: bool,
     active: bool,
 }
 
@@ -418,7 +421,7 @@ async fn list_services(
 ) -> AppResult<Json<Vec<ServiceOut>>> {
     let rows = sqlx::query_as!(
         ServiceOut,
-        "select id, name, price_tyiyn, master_fee_tyiyn, active from services where branch_id = $1 order by name",
+        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active from services where branch_id = $1 order by name",
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -431,6 +434,8 @@ struct ServiceReq {
     name: String,
     price_tyiyn: i64,
     master_fee_tyiyn: Option<i64>,
+    #[serde(default)]
+    free_with_oil: bool,
 }
 
 async fn create_service(
@@ -446,18 +451,20 @@ async fn create_service(
     }
     ops::check_amount(req.price_tyiyn)?;
     ops::check_amount(fee)?;
-    if fee != 0 && !ctx.user.is_owner() {
+    // Ставку мастера и «бесплатно с нашим маслом» задаёт владелец: это цена и оплата труда.
+    if (fee != 0 || req.free_with_oil) && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
-        "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn) values ($1, $2, $3, $4, $5)",
+        "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil) values ($1, $2, $3, $4, $5, $6)",
         id,
         ctx.user.branch_id,
         name,
         req.price_tyiyn,
-        fee
+        fee,
+        req.free_with_oil
     )
     .execute(&mut *tx)
     .await?;
@@ -467,7 +474,7 @@ async fn create_service(
         "service.create",
         "service",
         Some(id),
-        json!({ "name": name, "price": req.price_tyiyn, "fee": fee }),
+        json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil }),
     )
     .await?;
     tx.commit().await?;
@@ -476,6 +483,7 @@ async fn create_service(
         name,
         price_tyiyn: req.price_tyiyn,
         master_fee_tyiyn: fee,
+        free_with_oil: req.free_with_oil,
         active: true,
     }))
 }
@@ -591,6 +599,7 @@ struct ServicePatch {
     name: Option<String>,
     price_tyiyn: Option<i64>,
     master_fee_tyiyn: Option<i64>,
+    free_with_oil: Option<bool>,
     active: Option<bool>,
 }
 
@@ -617,9 +626,13 @@ async fn update_service(
     let mut tx = state.pool.begin().await?;
     // Цену и ставку мастера меняет только владелец (решение заказчика, ADR-047); форма
     // администратора присылает их без изменений.
-    if !ctx.user.is_owner() && (req.master_fee_tyiyn.is_some() || req.price_tyiyn.is_some()) {
+    if !ctx.user.is_owner()
+        && (req.master_fee_tyiyn.is_some()
+            || req.price_tyiyn.is_some()
+            || req.free_with_oil.is_some())
+    {
         let cur = sqlx::query!(
-            "select price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2",
+            "select price_tyiyn, master_fee_tyiyn, free_with_oil from services where id = $1 and branch_id = $2",
             id,
             ctx.user.branch_id
         )
@@ -630,6 +643,7 @@ async fn update_service(
             .master_fee_tyiyn
             .is_some_and(|f| f != cur.master_fee_tyiyn)
             || req.price_tyiyn.is_some_and(|p| p != cur.price_tyiyn)
+            || req.free_with_oil.is_some_and(|f| f != cur.free_with_oil)
         {
             return Err(AppError::Forbidden);
         }
@@ -637,15 +651,17 @@ async fn update_service(
     let out = sqlx::query_as!(
         ServiceOut,
         r#"update services set name = coalesce($3, name), price_tyiyn = coalesce($4, price_tyiyn),
-             master_fee_tyiyn = coalesce($5, master_fee_tyiyn), active = coalesce($6, active)
+             master_fee_tyiyn = coalesce($5, master_fee_tyiyn), active = coalesce($6, active),
+             free_with_oil = coalesce($7, free_with_oil)
            where id = $1 and branch_id = $2
-           returning id, name, price_tyiyn, master_fee_tyiyn, active"#,
+           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active"#,
         id,
         ctx.user.branch_id,
         name,
         req.price_tyiyn,
         req.master_fee_tyiyn,
-        req.active
+        req.active,
+        req.free_with_oil
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -656,7 +672,7 @@ async fn update_service(
         "service.update",
         "service",
         Some(id),
-        json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "active": out.active }),
+        json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "free_with_oil": out.free_with_oil, "active": out.active }),
     )
     .await?;
     tx.commit().await?;

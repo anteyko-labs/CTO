@@ -76,8 +76,8 @@ pub struct PaymentReq {
     /// без неё — цена из настроек.
     #[serde(default)]
     pub price_per_kg_tyiyn: Option<i64>,
-    /// Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076); без него — счёт по
-    /// умолчанию для этого способа (ADR-077).
+    /// Карта, перевод и «По счёту»: безналичный счёт, куда пришли деньги (ADR-076); без него —
+    /// счёт по умолчанию для этого способа (ADR-077, ADR-095).
     /// У возврата не учитывается: деньги уходят со счёта исходной оплаты.
     #[serde(default)]
     pub account_id: Option<Uuid>,
@@ -205,7 +205,8 @@ pub struct SaleOut {
     /// Баланс клиента после чека: сколько он теперь должен.
     pub party_balance_tyiyn: Option<i64>,
     pub total_tyiyn: i64,
-    /// Начисление мастеру за замену: ставка на чек, а не строка услуги (ADR-027).
+    /// Начисление мастеру: сумма ставок услуг чека (ADR-096); у чеков до SPEC-30 и чеков без
+    /// сети без вида замены — ставка за чек (ADR-027).
     pub master_fee_tyiyn: i64,
     pub comment: String,
     /// Куда везти; доставка бесплатная, поэтому только адрес (BLUEPRINT §6, вопросы 16 и 21).
@@ -343,6 +344,8 @@ struct Prepared {
     amount: i64,
     master_fee: i64,
     seen_list: Option<i64>,
+    /// Услуга «бесплатно с нашим маслом» (ADR-096): с маслом в чеке её цена по каталогу — 0.
+    free_with_oil: bool,
 }
 
 async fn prepare_line(
@@ -363,7 +366,7 @@ async fn prepare_line(
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
         // Чек без сети принимаем и с услугой, которую успели отключить: работа уже сделана.
         let s = sqlx::query!(
-            "select name, active, price_tyiyn, master_fee_tyiyn from services where id = $1 and branch_id = $2 and (active or $3)",
+            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil from services where id = $1 and branch_id = $2 and (active or $3)",
             sid,
             branch_id,
             offline
@@ -387,6 +390,7 @@ async fn prepare_line(
             // Ставка мастера за работу фиксируется в строке, как себестоимость (ADR-043).
             master_fee: mul(l.qty, s.master_fee_tyiyn).ok_or_else(overflow)?,
             seen_list: seen_list(l, offline),
+            free_with_oil: s.free_with_oil,
         });
     }
     // Карточку могли влить в другую, пока чек лежал на устройстве: продаём основную.
@@ -448,6 +452,7 @@ async fn prepare_line(
         amount: amount.ok_or_else(overflow)?,
         master_fee: 0,
         seen_list: seen_list(l, offline),
+        free_with_oil: false,
     })
 }
 
@@ -462,6 +467,180 @@ fn seen_list(l: &SaleLineReq, offline: bool) -> Option<i64> {
     }
 }
 
+/// Цена по каталогу услуги «бесплатно с нашим маслом» — 0, если в чеке есть наше масло: товар
+/// категории вида «масло», не подарок (ADR-096). Иначе — цена клиенту из справочника.
+async fn with_our_oil(conn: &mut PgConnection, prepared: &mut [Prepared]) -> AppResult<()> {
+    if !prepared.iter().any(|p| p.free_with_oil) {
+        return Ok(());
+    }
+    let goods: Vec<Uuid> = prepared
+        .iter()
+        .filter(|p| !p.gift)
+        .filter_map(|p| p.product_id)
+        .collect();
+    let oil = sqlx::query_scalar!(
+        r#"select exists (select 1 from products p join categories c on c.id = p.category_id
+                          where p.id = any($1) and c.kind = 'oil') as "e!""#,
+        &goods
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if oil {
+        for p in prepared.iter_mut().filter(|p| p.free_with_oil) {
+            p.list_price = 0;
+        }
+    }
+    Ok(())
+}
+
+/// Клиент назван (ADR-100): фирма — названием, человек — именем и фамилией. У прежних карточек
+/// имя и фамилия отдельно не записаны (ADR-083) — тогда хватает полного имени из двух слов.
+fn full_named(kind: &str, name: &str, first: &str, last: &str) -> bool {
+    if kind == "company" {
+        return !name.trim().is_empty();
+    }
+    let (first, last) = (first.trim(), last.trim());
+    if !first.is_empty() || !last.is_empty() {
+        return !first.is_empty() && !last.is_empty();
+    }
+    name.split_whitespace().count() >= 2
+}
+
+/// Чего не хватает чеку «в сервис» из данных клиента (ADR-100): клиент (человек с именем и
+/// фамилией или фирма), телефон, машина с госномером, пробег. Пусто — всё есть.
+async fn service_client_missing(
+    conn: &mut PgConnection,
+    req: &SaleReq,
+) -> AppResult<Vec<&'static str>> {
+    let mut missing = Vec::new();
+    let party = match req.party_id {
+        Some(id) => {
+            sqlx::query!(
+                "select kind, name, first_name, last_name, phone from parties where id = $1",
+                id
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+        }
+        None => None,
+    };
+    if !party
+        .as_ref()
+        .is_some_and(|p| full_named(&p.kind, &p.name, &p.first_name, &p.last_name))
+    {
+        missing.push("клиент (имя и фамилия или фирма)");
+    }
+    // Телефон — клиента или того, кто приехал от фирмы.
+    let contact_phone = match (req.party_id, req.contact_id) {
+        (Some(pid), Some(cid)) => {
+            sqlx::query_scalar!(
+                "select phone from party_contacts where id = $1 and party_id = $2",
+                cid,
+                pid
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+        }
+        _ => None,
+    };
+    if !party.as_ref().is_some_and(|p| !p.phone.trim().is_empty())
+        && !contact_phone.is_some_and(|p| !p.trim().is_empty())
+    {
+        missing.push("телефон клиента");
+    }
+    let plate = match (req.party_id, req.vehicle_id) {
+        (Some(pid), Some(vid)) => {
+            sqlx::query_scalar!(
+                "select plate from party_vehicles where id = $1 and party_id = $2",
+                vid,
+                pid
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+        }
+        _ => None,
+    };
+    if !plate.is_some_and(|p| !p.trim().is_empty()) {
+        missing.push("машина с госномером");
+    }
+    if !req.mileage.or(req.mileage_km).is_some_and(|m| m > 0) {
+        missing.push("пробег");
+    }
+    Ok(missing)
+}
+
+/// Скидка — цена строки ниже цены по каталогу (ADR-097): у товара, розлива, веса и услуги.
+/// Ставит владелец или администратор с правом «Скидка в чеке». Подарок, баллы (это оплата, а не
+/// цена строки) и цена выше каталожной — не скидка. Чек без сети сверяется с прайсом, который
+/// видела касса: прайс мог смениться, пока чек лежал на устройстве. Без права онлайн — 403,
+/// без сети — чек проводится, а владелец получает причину.
+async fn check_discounts(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    prepared: &[Prepared],
+    claimed: Option<Uuid>,
+    offline: bool,
+    bypass: &mut Vec<String>,
+) -> AppResult<()> {
+    let lines: Vec<(&Prepared, i64)> = prepared
+        .iter()
+        .filter(|p| !p.gift)
+        .map(|p| (p, p.seen_list.unwrap_or(p.list_price)))
+        .filter(|(p, list)| p.unit_price < *list)
+        .collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    // Чек другого пользователя кассы отправил владелец (SPEC-09): право — того, чей это чек.
+    let user = match claimed {
+        Some(id) => {
+            let u = sqlx::query!(
+                "select login, full_name, role from users where id = $1 and branch_id = $2",
+                id,
+                ctx.user.branch_id
+            )
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| invalid("пользователь чека не найден"))?;
+            CurrentUser {
+                id,
+                branch_id: ctx.user.branch_id,
+                login: u.login,
+                full_name: u.full_name,
+                role: crate::auth::Role::parse(&u.role)?,
+            }
+        }
+        None => ctx.user.clone(),
+    };
+    if crate::auth::has_permission(conn, &user, "discount").await? {
+        return Ok(());
+    }
+    if !offline {
+        return Err(AppError::ForbiddenWith("Скидку ставит владелец".into()));
+    }
+    for (p, list) in lines {
+        let name = sqlx::query_scalar!(
+            r#"select coalesce((select name from products where id = $1),
+                               (select name from services where id = $2), '') as "n!""#,
+            p.product_id,
+            p.service_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let per = match p.kind.as_str() {
+            "pour" => " за л",
+            "weight" => " за кг",
+            _ => "",
+        };
+        bypass.push(format!(
+            "скидка без права: {name}, {}{per}, цена по каталогу {}{per}",
+            crate::domain::money::format_som(p.unit_price),
+            crate::domain::money::format_som(list)
+        ));
+    }
+    Ok(())
+}
+
 fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     let mut sum: i64 = 0;
     if payments.iter().filter(|p| p.method == "battery").count() > 1 {
@@ -470,10 +649,10 @@ fn check_payments(payments: &[PaymentReq], total: i64) -> AppResult<()> {
     for p in payments {
         if !matches!(
             p.method.as_str(),
-            "cash" | "card" | "transfer" | "debt" | "bonus" | "battery"
+            "cash" | "card" | "transfer" | "invoice" | "debt" | "bonus" | "battery"
         ) {
             return Err(invalid(
-                "способ оплаты: cash, card, transfer, debt, bonus или battery",
+                "способ оплаты: cash, card, transfer, invoice, debt, bonus или battery",
             ));
         }
         if p.amount_tyiyn <= 0 || p.amount_tyiyn > ops::MAX_AMOUNT_TYIYN {
@@ -696,16 +875,18 @@ async fn insert_payments(
     for p in payments {
         let amount = sign * p.amount_tyiyn;
         // Счёт выбран и проверен до проведения (ADR-076); без него — счёт по умолчанию для
-        // этого способа (ADR-077).
+        // этого способа (ADR-077, ADR-095).
         let bank = match p.method.as_str() {
-            "card" | "transfer" => match p.account_id {
+            "card" | "transfer" | "invoice" => match p.account_id {
                 Some(id) => Some(id),
                 None => cash::bank_account(conn, branch_id, &p.method).await?,
             },
             _ => None,
         };
-        // Ставка — того счёта, куда легли деньги, в учётный день чека (ADR-077).
+        // Ставка — того счёта, куда легли деньги, в учётный день чека (ADR-077). «По счёту» —
+        // перечисление, а не терминал: комиссии нет ни при продаже, ни при возврате (ADR-095).
         let fee = match (bank, back.as_mut()) {
+            _ if p.method == "invoice" => 0,
             // Комиссия возвращается тому счёту, который её заплатил, и не больше его доли (ADR-077).
             (Some(bank_id), Some(b)) => -b.get_mut(&bank_id).map_or(0, |f| f.take(p.amount_tyiyn)),
             (Some(bank_id), None) => crate::api::fees::fee_on(conn, bank_id, on, amount).await?,
@@ -727,7 +908,7 @@ async fn insert_payments(
                 )
                 .await?;
             }
-            "card" | "transfer" => {
+            "card" | "transfer" | "invoice" => {
                 // Комиссия — на тот же счёт.
                 if let Some(bank_id) = bank {
                     let money = CashEntry {
@@ -938,6 +1119,10 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             bypass.extend(reasons);
         }
         None if debt_total > 0 => return Err(invalid("для продажи в долг укажите клиента")),
+        // «По счёту» платит юрлицо по выставленному счёту — без клиента счёт не выставить (ADR-095).
+        None if req.payments.iter().any(|p| p.method == "invoice") => {
+            return Err(invalid("По счёту платит клиент — выберите его"));
+        }
         None if req.contact_id.is_some() || req.vehicle_id.is_some() => {
             return Err(invalid("работник и машина указываются вместе с клиентом"));
         }
@@ -970,6 +1155,40 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         total = total.checked_add(p.amount).ok_or_else(overflow)?;
         prepared.push(p);
     }
+    with_our_oil(conn, &mut prepared).await?;
+    // Чек «в сервис» — с видом замены из справочника (ADR-096) и с данными клиента (ADR-100).
+    // Чек без сети уже состоялся: проводится, а владелец получает причину.
+    let service_kinds = prepared.iter().any(|p| p.service_id.is_some());
+    if req.sale_type == "service" {
+        if !service_kinds {
+            if !offline {
+                return Err(invalid("Выберите вид замены"));
+            }
+            bypass.push("чек «в сервис» без вида замены".into());
+        }
+        let missing = service_client_missing(conn, &req).await?;
+        if !missing.is_empty() {
+            if !offline {
+                return Err(invalid(format!(
+                    "Чек «в сервис» — нужны данные клиента: {}",
+                    missing.join(", ")
+                )));
+            }
+            bypass.push(format!(
+                "в сервис без данных клиента: {}",
+                missing.join(", ")
+            ));
+        }
+    }
+    check_discounts(
+        conn,
+        ctx,
+        &prepared,
+        claimed_user.as_ref().and(req.claimed_user_id),
+        offline,
+        &mut bypass,
+    )
+    .await?;
     let gifts: Vec<Uuid> = prepared
         .iter()
         .filter(|p| p.gift)
@@ -1035,11 +1254,11 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     }
     ops::check_amount(total)?;
     check_payments(&req.payments, total)?;
-    // Карта и перевод — на выбранный безналичный счёт или счёт по умолчанию для способа (ADR-076,
-    // ADR-077). Чек без сети со счётом, который за это время убрали в архив, ложится на счёт по
-    // умолчанию, владелец узнает.
+    // Карта, перевод и «По счёту» — на выбранный безналичный счёт или счёт по умолчанию для
+    // способа (ADR-076, ADR-077, ADR-095). Чек без сети со счётом, который за это время убрали в
+    // архив, ложится на счёт по умолчанию, владелец узнает.
     for p in req.payments.iter_mut() {
-        p.account_id = if matches!(p.method.as_str(), "card" | "transfer") {
+        p.account_id = if matches!(p.method.as_str(), "card" | "transfer" | "invoice") {
             Some(
                 cash::sale_bank_account(
                     conn,
@@ -1055,10 +1274,12 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             None
         };
     }
-    // Мастеру: ставка замены за чек «в сервис» с товаром (ADR-027) плюс ставки услуг из строк.
-    // Чек из одних услуг — клиент приехал со своим маслом — ставку замены не даёт (ADR-043).
+    // Мастеру — сумма ставок услуг чека, ставка фиксируется в строке (ADR-096). Ставка замены
+    // за чек из настроек (ADR-027) новым чекам не начисляется: её получает только чек без сети
+    // со старого устройства «в сервис» без вида замены, с товаром (одни услуги её не давали,
+    // ADR-043).
     let has_goods = prepared.iter().any(|p| p.product_id.is_some() && !p.gift);
-    let check_fee = if req.sale_type == "service" && has_goods {
+    let check_fee = if req.sale_type == "service" && !service_kinds && has_goods {
         oil_change_fee(conn, branch_id).await?
     } else {
         0
@@ -1585,7 +1806,7 @@ async fn refund_account(
     let orig = sqlx::query_scalar!(
         r#"select p.account_id as "account_id!" from sale_payments p
            join cash_accounts a on a.id = p.account_id
-           where p.sale_id = $1 and p.method in ('card', 'transfer') and a.active
+           where p.sale_id = $1 and p.method in ('card', 'transfer', 'invoice') and a.active
            group by p.account_id
            order by bool_or(p.method = $2) desc, sum(p.amount_tyiyn) desc, p.account_id
            limit 1"#,
@@ -1620,7 +1841,8 @@ async fn refund_split(
                    + coalesce(sum(p.amount_tyiyn) filter (where s.id <> $1), 0))::bigint as "left!"
            from sale_payments p join sales s on s.id = p.sale_id
            join cash_accounts a on a.id = p.account_id
-           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer') and a.active
+           where (s.id = $1 or s.reversal_of = $1) and p.method in ('card', 'transfer', 'invoice')
+             and a.active
            group by p.account_id"#,
         sale_id,
         p.method
@@ -1792,6 +2014,7 @@ pub async fn return_sale_tx(
                 amount,
                 master_fee: fee,
                 seen_list: None,
+                free_with_oil: false,
             },
             line_no: rl.line_no,
             amount,
@@ -1861,8 +2084,9 @@ pub async fn return_sale_tx(
     for p in &req.payments {
         let mut p = p.clone();
         p.grams = None;
-        if matches!(p.method.as_str(), "card" | "transfer") {
-            // Безнал возвращается на те счета, куда он пришёл, не больше их доли (ADR-076).
+        if matches!(p.method.as_str(), "card" | "transfer" | "invoice") {
+            // Безнал возвращается на те счета, куда он пришёл, не больше их доли (ADR-076);
+            // «По счёту» — с того же счёта (ADR-095).
             for (account_id, amount) in refund_split(conn, &ctx.user, id, &p).await? {
                 let mut part = p.clone();
                 part.account_id = Some(account_id);
@@ -1986,11 +2210,25 @@ pub async fn return_sale_tx(
         .iter()
         .fold(0i64, |acc, l| acc.saturating_add(l.qty));
     let full_return = returned_qty + now_qty >= sold_qty;
-    let fee_back = if full_return {
-        -orig.master_fee_tyiyn
+    // Ставка услуги (ADR-096) снимается вместе с возвращённой строкой услуги — её долей, как
+    // сумма строки; возврат товара без услуги ставку не трогает: работу мастер сделал. Ставка за
+    // чек у прежних чеков (ADR-027) — только при возврате чека целиком.
+    let lines_fee_back = planned
+        .iter()
+        .try_fold(0i64, |acc, x| acc.checked_add(x.fee))
+        .ok_or_else(overflow)?;
+    let orig_lines_fee = sqlx::query_scalar!(
+        r#"select coalesce(sum(master_fee_tyiyn), 0)::bigint as "v!" from sale_lines where sale_id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let check_fee_back = if full_return {
+        orig.master_fee_tyiyn.saturating_sub(orig_lines_fee).max(0)
     } else {
         0
     };
+    let fee_back = -lines_fee_back.saturating_add(check_fee_back);
 
     let scrap = if battery_grams > 0 {
         Some(crate::api::batteries::scrap_product(conn).await?)
@@ -2204,6 +2442,7 @@ pub async fn return_sale_tx(
                 .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
                 .ok_or_else(overflow)?,
             full_return,
+            fee_back: -fee_back,
         },
     )
     .await?;
@@ -2295,6 +2534,8 @@ pub(crate) struct DayTotals {
     pub(crate) cash_tyiyn: i64,
     pub(crate) card_tyiyn: i64,
     pub(crate) transfer_tyiyn: i64,
+    /// «По счёту» (ADR-095).
+    pub(crate) invoice_tyiyn: i64,
     pub(crate) debt_tyiyn: i64,
     pub(crate) bonus_tyiyn: i64,
     /// Принято аккумуляторами в оплату (SPEC-27).
@@ -2356,6 +2597,7 @@ pub(crate) async fn sales_day(
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'cash'), 0)::bigint as "cash!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as "card!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as "transfer!",
+             coalesce(sum(p.amount_tyiyn) filter (where p.method = 'invoice'), 0)::bigint as "invoice!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'debt'), 0)::bigint as "debt!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'bonus'), 0)::bigint as "bonus!",
              coalesce(sum(p.amount_tyiyn) filter (where p.method = 'battery'), 0)::bigint as "battery!"
@@ -2375,6 +2617,7 @@ pub(crate) async fn sales_day(
         cash_tyiyn: t.cash,
         card_tyiyn: t.card,
         transfer_tyiyn: t.transfer,
+        invoice_tyiyn: t.invoice,
         debt_tyiyn: t.debt,
         bonus_tyiyn: t.bonus,
         battery_tyiyn: t.battery,

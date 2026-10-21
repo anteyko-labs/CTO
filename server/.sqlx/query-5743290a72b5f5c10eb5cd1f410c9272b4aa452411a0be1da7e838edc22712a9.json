@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with orig as (\n             select s.id from sales s\n             where s.branch_id = $1 and s.kind = 'sale' and s.sale_type = 'service'\n               and s.business_date between $2 and $3\n           ), kinds as (\n             select o.id as orig_id, l.service_id\n             from orig o left join sale_lines l on l.sale_id = o.id and l.kind = 'service'\n             group by o.id, l.service_id\n           ), docs as (\n             select o.id as orig_id, o.id as doc_id, false as back from orig o\n             union all\n             select r.reversal_of, r.id, true from sales r join orig o on o.id = r.reversal_of\n           )\n           select k.service_id as \"service_id?\", p.id as \"product_id!\", p.name as \"name!\",\n                  p.container_ml as \"container_ml?\",\n                  coalesce(sum(case when l.kind <> 'container' then 0\n                                    when d.back then -l.qty else l.qty end), 0)::bigint as \"canisters!\",\n                  coalesce(sum(case when l.kind <> 'pour' then 0\n                                    when d.back then -l.qty else l.qty end), 0)::bigint as \"pour_ml!\",\n                  coalesce(sum(case when d.back then -l.units else l.units end), 0)::bigint as \"total_ml!\"\n           from kinds k\n           join docs d on d.orig_id = k.orig_id\n           join sale_lines l on l.sale_id = d.doc_id and not l.gift and l.product_id is not null\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id and c.kind = 'oil'\n           group by k.service_id, p.id, p.name, p.container_ml\n           having sum(case when d.back then -l.units else l.units end) <> 0\n           order by 7 desc, p.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "service_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "container_ml?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "canisters!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "pour_ml!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "total_ml!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "5743290a72b5f5c10eb5cd1f410c9272b4aa452411a0be1da7e838edc22712a9"
+}

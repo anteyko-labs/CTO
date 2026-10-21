@@ -1,7 +1,7 @@
 // «Обзор счетов» (SPEC-28 §5, ADR-076, ADR-077): кассы и безналичные счета как в старой программе —
 // счёт, тип, сумма, отрицательный баланс, комиссия банка, правка и история. Заводит и правит счета
-// только владелец: у банка — ставка комиссии с датой и отметки «по умолчанию для карты / QR банка»
-// и «для QR владельцу» — и при заведении счёта.
+// только владелец: у банка — ставка комиссии с датой и отметки «по умолчанию для карты / QR банка»,
+// «для QR владельцу» и «для «По счёту»» (ADR-095) — и при заведении счёта.
 // Администратор видит счета без «только владелец», без правки. Остатки и права — на сервере.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -39,6 +39,8 @@ type Form = {
   active: boolean
   default_card: boolean
   default_transfer: boolean
+  /** «По счёту» (ADR-095): отметку можно и снять — тогда «По счёту» идёт на счёт карты. */
+  default_invoice: boolean
   /** Ставка комиссии банка, «0,5» (только у безналичного). */
   fee: string
   /** С какого дня действует ставка. */
@@ -89,6 +91,7 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
       active: a.active,
       default_card: Boolean(a.default_card),
       default_transfer: Boolean(a.default_transfer),
+      default_invoice: Boolean(a.default_invoice),
       fee: feeInput(a.fee_rate_bp ?? 0),
       feeFrom: todayBishkek(),
       opId: newOpId(),
@@ -106,6 +109,7 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
       active: true,
       default_card: false,
       default_transfer: false,
+      default_invoice: false,
       fee: '0',
       feeFrom: todayBishkek(),
       opId: newOpId(),
@@ -113,8 +117,8 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
   }
   const current = form?.id ? rows.find((a) => a.id === form.id) : undefined
   const till = current ? isTill(current) : false
-  // Счёт по умолчанию для карты или перевода: в архив и «только владелец» нельзя.
-  const payDefault = Boolean(current?.default_card || current?.default_transfer)
+  // Счёт по умолчанию для способа оплаты: в архив и «только владелец» нельзя.
+  const payDefault = Boolean(current?.default_card || current?.default_transfer || current?.default_invoice)
   const formBank = form ? isBank({ kind: form.kind as CashAccount['kind'] }) : false
   const feeBp = form && formBank ? parsePercentBp(form.fee) : null
   const missing = form
@@ -137,6 +141,7 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
           // Отметку «по умолчанию» ставят у другого счёта; снять её прямо нельзя (ADR-077).
           default_card: form.default_card && !before?.default_card ? true : undefined,
           default_transfer: form.default_transfer && !before?.default_transfer ? true : undefined,
+          default_invoice: form.default_invoice !== Boolean(before?.default_invoice) ? form.default_invoice : undefined,
           // Ставка — с даты; прежние дни сохраняют свою ставку (SPEC-08).
           ...(formBank && feeBp !== null && (feeBp !== (before?.fee_rate_bp ?? 0) || form.feeFrom > todayBishkek())
             ? { fee_rate_bp: feeBp, fee_from: form.feeFrom }
@@ -153,6 +158,7 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
           fee_rate_bp: formBank && feeBp ? feeBp : undefined,
           default_card: formBank && !form.owner_only && form.default_card ? true : undefined,
           default_transfer: formBank && !form.owner_only && form.default_transfer ? true : undefined,
+          default_invoice: formBank && !form.owner_only && form.default_invoice ? true : undefined,
         })
         toast('Счёт заведён')
       }
@@ -331,6 +337,8 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
                 {!current?.default_transfer && (
                   <Checkbox label="По умолчанию для QR владельцу" checked={form.default_transfer} onChange={(v) => setForm({ ...form, default_transfer: v })} />
                 )}
+                <Checkbox label="По умолчанию для «По счёту»" checked={form.default_invoice} onChange={(v) => setForm({ ...form, default_invoice: v })} />
+                <div className="-mt-2 pl-7 text-xs text-slate-500">Перечисления юрлиц, без комиссии банка. Не отмечен ни один счёт — «По счёту» идёт на счёт карты.</div>
                 {!form.id && (
                   <div className="text-xs text-slate-500">Первый безналичный счёт становится счётом по умолчанию сам; отмеченный здесь заменит прежний.</div>
                 )}

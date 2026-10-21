@@ -19,6 +19,7 @@ import { OilHint } from '../components/OilBook'
 import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
+import { CLIENT_NEED_LABELS, isDiscount, serviceClientMissing, servicePrice } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -57,7 +58,7 @@ interface CartLine {
 type PayMode = PaymentMethod | 'mixed'
 
 const CASHIER_KEY = 'avtodom.cashier_id'
-type BankChoice = Pick<CashAccount, 'id' | 'name' | 'kind' | 'default_card' | 'default_transfer'> & { fee_rate_bp?: number }
+type BankChoice = Pick<CashAccount, 'id' | 'name' | 'kind' | 'default_card' | 'default_transfer' | 'default_invoice'> & { fee_rate_bp?: number }
 
 /** Безналичные счета с отметками «по умолчанию для карты / перевода» (ADR-077): с сервера, без
  * связи — из снимка кассы. */
@@ -69,7 +70,7 @@ async function loadBanks(): Promise<BankChoice[]> {
   }
 }
 
-const NO_BANK_PICK: Record<NoncashMethod, string> = { card: '', transfer: '' }
+const NO_BANK_PICK: Record<NoncashMethod, string> = { card: '', transfer: '', invoice: '' }
 
 function remembered(key: string): string {
   try {
@@ -87,8 +88,10 @@ function remember(key: string, value: string): void {
   }
 }
 
-function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>): number {
-  if (l.kind === 'service') return l.service?.price_tyiyn ?? 0
+/** Цена по каталогу; `ourOil` — в чеке есть наше масло: вид замены «бесплатно с нашим маслом»
+ *  стоит 0 (ADR-096). */
+function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>, ourOil = false): number {
+  if (l.kind === 'service') return servicePrice(l.service, ourOil)
   // Розлив — от цены канистры (ADR-074): 4 л розливом стоят как канистра 4 л.
   if (l.kind === 'pour') return (l.product && pourPricePerL(l.product)) ?? 0
   return l.product?.sale_price_tyiyn ?? 0
@@ -201,7 +204,14 @@ function lineUnits(l: CartLine): number {
 const NOTES = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
 
 /** Значки способов оплаты на кнопках режима кассы. */
-const PAY_ICONS: Record<PayMode, IconName> = { cash: 'wallet', card: 'bank', transfer: 'scan', debt: 'debts', mixed: 'split', bonus: 'star', battery: 'stock' }
+const PAY_ICONS: Record<PayMode, IconName> = { cash: 'wallet', card: 'bank', transfer: 'scan', invoice: 'receipt', debt: 'debts', mixed: 'split', bonus: 'star', battery: 'stock' }
+
+/** Способы оплаты кнопками: 3 + 3 — наличные, карта, QR сверху — частые; «По счёту», долг и
+ *  смешанная ниже. */
+const PAY_MODES = ['cash', 'card', 'transfer', 'invoice', 'debt', 'mixed'] as const
+/** Способы в смешанной оплате. */
+const SPLIT_METHODS = ['cash', 'card', 'transfer', 'invoice', 'debt'] as const
+const NO_SPLIT: Record<(typeof SPLIT_METHODS)[number], string> = { cash: '', card: '', transfer: '', invoice: '', debt: '' }
 
 /** Кнопка «−» / «+» у количества: в режиме кассы — отдельный крупный квадрат (ui-rules §9). */
 function qtyBtn(touch: boolean, side: 'l' | 'r'): string {
@@ -225,6 +235,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const owner = user.role === 'owner'
   // Права администратора (ADR-097): без права кнопка или способ оплаты скрыты, проверяет сервер.
   const payAllowed = (m: string) => m !== 'debt' || can(user, 'sale_debt')
+  // Скидка — цена ниже каталожной: владелец или администратор с правом «Скидка в чеке» (ADR-097).
+  // Без права касса не даёт править цену строки; проверяет сервер.
+  const canDiscount = can(user, 'discount')
   // Связь с сервером, а не только сеть устройства: баллы и аккумулятор считает сервер.
   const online = useServerOnline()
   // Режим кассы для сенсорного моноблока (SPEC-29): без меню, всё крупнее, цифры — экранной
@@ -294,7 +307,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [comment, setComment] = useState(draft?.comment ?? '')
   const [payMode, setPayMode] = useState<PayMode>(fix?.state.payMode ?? 'cash')
   const [received, setReceived] = useState('')
-  const [split, setSplit] = useState<Record<Exclude<PaymentMethod, 'bonus' | 'battery'>, string>>(fix?.state.split ?? { cash: '', card: '', transfer: '', debt: '' })
+  const [split, setSplit] = useState<Record<(typeof SPLIT_METHODS)[number], string>>(fix?.state.split ?? NO_SPLIT)
   // Скидка баллами: часть чека оплачивается баллами клиента из бота (SPEC-19).
   const [bonus, setBonus] = useState<BonusUse | null>(() =>
     fix && fix.state.bonusAmount > 0 && fix.state.party
@@ -323,6 +336,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [giftAsked, setGiftAsked] = useState<Record<string, number>>({})
   const [expense, setExpense] = useState(false)
   const [servicesOpen, setServicesOpen] = useState(false)
+  // «В сервис» сразу открывает выбор вида замены (ADR-096).
+  const [kindsOpen, setKindsOpen] = useState(false)
+  const clientFix = useAction()
+  const [clientForm, setClientForm] = useState<{ first: string; last: string; phone: string }>({ first: '', last: '', phone: '' })
   const [debtPay, setDebtPay] = useState(false)
   const [batteryIntake, setBatteryIntake] = useState(false)
   // Средняя закупка аккумуляторов за кг: подсказка «дешевле не продать» (ADR-048).
@@ -419,6 +436,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (l.product) unitsInCart.set(l.product.id, (unitsInCart.get(l.product.id) ?? 0) + lineUnits(l))
   }
 
+  // Наше масло в чеке: вид замены «бесплатно с нашим маслом» стоит 0 (ADR-096).
+  const ourOil = hasEngineOil(lines)
+  const lineList = (l: Pick<CartLine, 'kind' | 'product' | 'service'>): number => listPrice(l, ourOil)
+  // Масло добавили или убрали — цена такого вида замены пересчитывается, если её не меняли руками.
+  useEffect(() => {
+    setLines((ls) => {
+      let changed = false
+      const next = ls.map((l) => {
+        if (l.kind !== 'service' || !l.service?.free_with_oil) return l
+        if (parseSom(l.priceText) !== listPrice(l, !ourOil)) return l
+        changed = true
+        return { ...l, priceText: somInput(listPrice(l, ourOil)) }
+      })
+      return changed ? next : ls
+    })
+  }, [ourOil])
+
   const amounts = lines.map(lineAmount)
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
   const total = amounts.reduce<number>((acc, a) => acc + (a ?? 0), 0)
@@ -430,13 +464,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
 
-  // Карта и QR — с выбранным банком; без выбора сервер возьмёт счёт по умолчанию для способа.
+  // Карта, QR и «По счёту» — с выбранным банком; без выбора сервер возьмёт счёт по умолчанию для способа.
   const withBank = (method: PaymentMethod, amount_tyiyn: number): { method: PaymentMethod; amount_tyiyn: number; account_id?: string } =>
-    (method === 'card' || method === 'transfer') && bankFor(method) ? { method, amount_tyiyn, account_id: bankFor(method) } : { method, amount_tyiyn }
+    (method === 'card' || method === 'transfer' || method === 'invoice') && bankFor(method) ? { method, amount_tyiyn, account_id: bankFor(method) } : { method, amount_tyiyn }
   const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] | null => {
     if (payMode !== 'mixed') return due > 0 ? [withBank(payMode, due)] : []
     const list: { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] = []
-    for (const m of ['cash', 'card', 'transfer', 'debt'] as const) {
+    for (const m of SPLIT_METHODS) {
       if (!split[m].trim()) continue
       const v = parseSom(split[m])
       if (v === null) return null
@@ -445,9 +479,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     return list
   })()
   // Способы безнала в чеке: для каждого — строка выбора банка.
-  const noncashMethods = (['card', 'transfer'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m))
+  const noncashMethods = (['card', 'transfer', 'invoice'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m))
   // Куда идут деньги и комиссия — подпись под кнопками оплаты (SPEC-29 §25), без сети — из снимка.
-  const captionMethods = (['cash', 'card', 'transfer'] as const).filter((m) => (payMode === 'mixed' ? Boolean(split[m].trim()) : payMode === m))
+  const captionMethods = (['cash', 'card', 'transfer', 'invoice'] as const).filter((m) => (payMode === 'mixed' ? Boolean(split[m].trim()) : payMode === m))
   const payCaptions = captionMethods.map((m) =>
     m === 'cash'
       ? payCaption('cash')
@@ -520,14 +554,16 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     focusPicker()
   }
 
-  /** Услуга встаёт строкой, чек становится «в сервис»: работу делает мастер. */
+  /** Услуга встаёт строкой, чек становится «в сервис»: работу делает мастер. Цена — по
+   *  каталогу с учётом масла в чеке (ADR-096). */
   const addService = (s: Service) => {
     setDone(null)
     setServicesOpen(false)
+    setKindsOpen(false)
     setLines((ls) => {
       const same = ls.find((l) => l.kind === 'service' && l.service?.id === s.id)
       if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(same) ?? 0) + 1) } : l))
-      return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(s.price_tyiyn) }]
+      return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, hasEngineOil(ls))) }]
     })
     setSaleType('service')
     focusPicker()
@@ -592,8 +628,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     update(l.key, { kind, qtyText: '1', priceText: somInput(listPrice({ kind, product: l.product })) })
   }
 
-  // Замена масла — отметка чека, а не строка услуги: цена товара от этого не меняется (ADR-027).
-  const changeType = (t: 'takeaway' | 'service') => setSaleType(t)
+  // «В сервис» — сразу выбор вида замены: без него чек не провести (ADR-096).
+  const changeType = (t: 'takeaway' | 'service') => {
+    setSaleType(t)
+    if (t === 'service' && !lines.some((l) => l.kind === 'service')) setKindsOpen(true)
+  }
 
   /** Шаг количества: 1 шт или канистра, 0,5 л для розлива. */
   const step = (l: CartLine, dir: 1 | -1) => {
@@ -612,7 +651,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setRemoved(null)
     setComment('')
     setReceived('')
-    setSplit({ cash: '', card: '', transfer: '', debt: '' })
+    setSplit(NO_SPLIT)
     setBonus(null)
     setBatteryPay(null)
     setPayMode('cash')
@@ -752,12 +791,26 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     dropParked(p.id)
   }
 
+  const invoiceAmount = payments?.filter((p) => p.method === 'invoice').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
+  // Чек «В сервис»: вид замены и данные клиента (ADR-096, ADR-100).
+  const serviceKinds = lines.filter((l) => l.kind === 'service')
+  const clientNeeds =
+    saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
+  // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
+  const discountLines = canDiscount ? [] : lines.filter((l) => isDiscount(parseSom(l.priceText), lineList(l), l.gift))
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]'],
     [lines.length === 0 || valid, 'количество и цены в строках'],
     [Boolean(cashierId), 'кассира', '#cashier-select'],
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select'],
     [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»'],
+    [saleType !== 'service' || serviceKinds.length > 0, 'вид замены', '[data-service-kind]'],
+    // Без связи данные клиента не дописать: чек уйдёт, владелец увидит, чего не хватало.
+    ...(online ? clientNeeds : []).map((n): [boolean, string, string] =>
+      n === 'mileage' ? [false, 'пробег машины — спросите у клиента', '#mileage'] : [false, CLIENT_NEED_LABELS[n], '[data-client]'],
+    ),
+    [discountLines.length === 0, 'цена ниже каталожной — скидку ставит владелец'],
+    [invoiceAmount === 0 || party !== null, 'клиента для оплаты «По счёту»', '[data-client]'],
     [payments !== null, 'сумму оплаты', '[data-pay]'],
     [payments === null || paid === total, `оплату: разнесено ${formatSom((paid ?? 0) - offMoney)} из ${formatSom(due)}`, '[data-pay]'],
     [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
@@ -770,7 +823,6 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [!batteryPay || online, 'аккумулятор в оплату — только при связи с сервером'],
     [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
     [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
-    [saleType !== 'service' || !party || !vehicleId || Boolean(mileage), 'пробег машины — спросите у клиента', '#mileage'],
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
     [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
     [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
@@ -799,7 +851,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           qty: lineQty(l),
           unit_price_tyiyn: parseSom(l.priceText),
           // Прайс, который видела касса: сервер отличит правку кассира от сменившегося прайса.
-          seen_list_price_tyiyn: l.gift ? 0 : listPrice(l),
+          seen_list_price_tyiyn: l.gift ? 0 : lineList(l),
         })),
         payments,
       }
@@ -840,7 +892,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             qty: lineQty(l) ?? 0,
             amount_tyiyn: lineAmount(l) ?? 0,
             unit_price_tyiyn: parseSom(l.priceText) ?? 0,
-            list_price_tyiyn: listPrice(l),
+            list_price_tyiyn: lineList(l),
           })),
           payments,
         }) as unknown as Sale
@@ -932,7 +984,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setParty(p)
     setContactId('')
     setVehicleId('')
-    if (!p && payMode === 'debt') setPayMode('cash')
+    if (!p && (payMode === 'debt' || payMode === 'invoice')) setPayMode('cash')
   }
   const pickVehicle = (v: string) => {
     setVehicleId(v)
@@ -1230,7 +1282,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             <ul className="divide-y divide-slate-100">
               {lines.map((l, i) => {
                 const amount = amounts[i]
-                const changed = parseSom(l.priceText) !== listPrice(l)
+                const changed = parseSom(l.priceText) !== lineList(l)
                 const priceLabel = l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'
                 const short = l.product ? (unitsInCart.get(l.product.id) ?? 0) > l.product.stock_qty : false
                 return (
@@ -1353,20 +1405,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                                   ? ''
                                   : 'cursor-pointer border-transparent bg-transparent text-right font-medium text-slate-800 shadow-none'
                             }`}
-                            {...num('decimal')}
+                            // Без права на скидку цену не правят: ни карандаша, ни клавиатуры (ADR-097).
+                            {...(canDiscount ? num('decimal') : {})}
+                            readOnly={!canDiscount}
                             value={l.priceText}
                             onFocus={(e) => {
+                              if (!canDiscount) return
                               setPriceEdit(l.key)
                               e.target.select()
                             }}
                             onBlur={() => setPriceEdit((k) => (k === l.key ? null : k))}
                             onChange={(e) => update(l.key, { priceText: e.target.value })}
-                            title={changed ? `Прайс: ${formatSom(listPrice(l))}` : 'Изменить цену'}
+                            title={changed ? `Прайс: ${formatSom(lineList(l))}` : canDiscount ? 'Изменить цену' : 'Цену ниже каталожной ставит владелец'}
                           />
-                          {/* В режиме кассы карандаша нет: касание по цене — уже правка. */}
+                          {/* В режиме кассы карандаша нет: касание по цене — уже правка. Без права на скидку — нет нигде. */}
                           <button
                             type="button"
-                            hidden={touch}
+                            hidden={touch || !canDiscount}
                             // Значок мал, а цель нажатия — не меньше 42 точек (ui-rules §5): невидимая рамка вокруг.
                             className="relative rounded p-1 text-slate-400 after:absolute after:-inset-2.5 after:content-[''] hover:bg-slate-100 hover:text-sky-700"
                             aria-label="Изменить цену"
@@ -1376,7 +1431,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                           </button>
                         </span>
                         {/* В режиме кассы подсказок по наведению нет — прайс виден подписью. */}
-                        {touch && changed && <span className="text-amber-700">прайс {formatSom(listPrice(l))}</span>}
+                        {touch && changed && <span className="text-amber-700">прайс {formatSom(lineList(l))}</span>}
                       </div>
                     )}
                     <div className={touch ? 'min-w-24 text-right text-xl font-bold' : 'w-24 text-right text-base font-semibold'}>{amount === null ? '—' : <Money value={amount} />}</div>
@@ -1461,7 +1516,34 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   ))}
                 </select>
               </Field>
-              {!touch && <div className="text-xs text-slate-500">Мастеру начислится ставка за этот чек.</div>}
+              {/* Вид замены обязателен: мастеру — сумма ставок видов замены чека (ADR-096). */}
+              <div className="flex flex-col gap-1" data-testid="service-kinds">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-slate-700">
+                    Вид замены <span className="text-rose-600">*</span>
+                  </span>
+                  <button type="button" data-service-kind className={touch ? tbtn : 'min-h-9 rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50'} onClick={() => setKindsOpen(true)}>
+                    {serviceKinds.length > 0 ? '+ ещё вид' : 'Выбрать вид замены'}
+                  </button>
+                </div>
+                {serviceKinds.length === 0 ? (
+                  <div className="text-sm text-rose-700">Не выбран — без него чек «В сервис» не провести.</div>
+                ) : (
+                  <div className={touch ? 'text-base' : 'text-sm'}>
+                    {serviceKinds.map((l) => (
+                      <div key={l.key}>
+                        {l.service?.name}
+                        {(lineQty(l) ?? 1) > 1 && ` × ${lineQty(l)}`} ·{' '}
+                        {lineList(l) === 0 && l.service?.free_with_oil ? 'бесплатно — масло наше' : formatSom(lineAmount(l) ?? 0)}
+                      </div>
+                    ))}
+                    <div className="text-xs text-slate-500">
+                      Мастеру начислится {formatSom(serviceKinds.reduce((acc, l) => acc + (l.service?.master_fee_tyiyn ?? 0) * (lineQty(l) ?? 0), 0))} — ставки
+                      видов замены.
+                    </div>
+                  </div>
+                )}
+              </div>
             </>
           )}
           {touch ? (
@@ -1497,6 +1579,64 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           )}
           {party && vehicleId && !touch && <OilHint vehicleId={vehicleId} />}
+          {/* Чек «В сервис» — с данными клиента (ADR-100): что не хватает — со звёздочкой; имя и
+              телефон дописываются в карточку прямо здесь. */}
+          {saleType === 'service' && clientNeeds.length > 0 && (
+            <div className="flex flex-col gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900" data-testid="service-client-needs">
+              <div>
+                Для замены нужны:{' '}
+                {clientNeeds.map((n, i) => (
+                  <span key={n}>
+                    {i > 0 && ', '}
+                    {CLIENT_NEED_LABELS[n]} <span className="font-semibold text-rose-600">*</span>
+                  </span>
+                ))}
+                {!online && <div className="text-xs">Нет связи: чек уйдёт без этих данных, владелец увидит, чего не хватало.</div>}
+              </div>
+              {party && online && ((clientNeeds.includes('client') && party.kind === 'person') || clientNeeds.includes('phone')) && (
+                <div className="flex flex-wrap items-end gap-2">
+                  {clientNeeds.includes('client') && party.kind === 'person' && (
+                    <>
+                      <Field label="Имя" required>
+                        <input id="client-first-name" className="w-32" value={clientForm.first} onChange={(e) => setClientForm({ ...clientForm, first: e.target.value })} />
+                      </Field>
+                      <Field label="Фамилия" required>
+                        <input id="client-last-name" className="w-36" value={clientForm.last} onChange={(e) => setClientForm({ ...clientForm, last: e.target.value })} />
+                      </Field>
+                    </>
+                  )}
+                  {clientNeeds.includes('phone') && (
+                    <Field label="Телефон" required>
+                      <input id="client-phone" className="w-40" inputMode="tel" value={clientForm.phone} onChange={(e) => setClientForm({ ...clientForm, phone: e.target.value })} />
+                    </Field>
+                  )}
+                  <Button
+                    variant="secondary"
+                    disabled={
+                      clientFix.busy ||
+                      (clientNeeds.includes('client') && party.kind === 'person' && (!clientForm.first.trim() || !clientForm.last.trim())) ||
+                      (clientNeeds.includes('phone') && !clientForm.phone.trim())
+                    }
+                    onClick={() =>
+                      void clientFix.run(async () => {
+                        const names = clientNeeds.includes('client') && party.kind === 'person'
+                        const saved = await patch<Party>(`/parties/${party.id}`, {
+                          ...(names ? { first_name: clientForm.first.trim(), last_name: clientForm.last.trim() } : {}),
+                          ...(clientNeeds.includes('phone') ? { phone: clientForm.phone.trim() } : {}),
+                        })
+                        setParty({ ...party, ...saved })
+                        setClientForm({ first: '', last: '', phone: '' })
+                        toast('Записано в карточку клиента')
+                      })
+                    }
+                  >
+                    Записать в карточку
+                  </Button>
+                </div>
+              )}
+              <ErrorBox error={clientFix.error} />
+            </div>
+          )}
           {saleType === 'service' &&
             (party && vehicleId ? (
               <>
@@ -1628,14 +1768,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           )}
           {touch ? (
-            // 3 + 2 отдельными крупными кнопками со значками: наличные, карта, QR сверху — частые.
-            <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-2">
-              {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).filter(payAllowed).map((m, i) => (
+            // 3 + 3 отдельными крупными кнопками со значками: наличные, карта, QR сверху — частые.
+            <div data-pay tabIndex={-1} className="grid grid-cols-3 gap-2">
+              {PAY_MODES.filter(payAllowed).map((m) => (
                 <button
                   key={m}
                   type="button"
                   aria-pressed={payMode === m}
-                  className={`flex min-h-[64px] items-center justify-center gap-1.5 rounded-lg border-2 px-1.5 py-1 text-[15px] leading-tight font-semibold break-words hyphens-auto shadow-sm sm:text-[17px] ${i < 3 ? 'col-span-2' : 'col-span-3'} ${
+                  className={`flex min-h-[64px] items-center justify-center gap-1.5 rounded-lg border-2 px-1.5 py-1 text-[15px] leading-tight font-semibold break-words hyphens-auto shadow-sm sm:text-[17px] ${
                     payMode === m ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-800 active:bg-slate-100'
                   }`}
                   onClick={() => setPayMode(m)}
@@ -1646,13 +1786,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               ))}
             </div>
           ) : (
-            <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-px overflow-hidden rounded-md border border-slate-300 bg-slate-300 text-base">
-              {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).filter(payAllowed).map((m, i) => (
+            <div data-pay tabIndex={-1} className="grid grid-cols-3 gap-px overflow-hidden rounded-md border border-slate-300 bg-slate-300 text-base">
+              {PAY_MODES.filter(payAllowed).map((m) => (
                 <button
                   key={m}
                   type="button"
-                  // 3 + 2: наличные, карта, QR сверху — частые; долг и смешанная ниже.
-                  className={`min-h-12 py-2 ${i < 3 ? 'col-span-2' : 'col-span-3'} ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                  // 3 + 3: наличные, карта, QR сверху — частые; «По счёту», долг и смешанная ниже.
+                  aria-pressed={payMode === m}
+                  className={`min-h-12 py-2 ${payMode === m ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
                   onClick={() => setPayMode(m)}
                 >
                   {m === 'mixed' ? 'Смешанная' : PAYMENT_LABELS[m]}
@@ -1804,6 +1945,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               )}
             </div>
           )}
+          {(payMode === 'invoice' || invoiceAmount > 0) && !party && (
+            <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="invoice-needs-client">
+              По счёту платит клиент — выберите его выше: счёт выставляется фирме или человеку.
+            </div>
+          )}
           {(payMode === 'debt' || debtAmount > 0) && (
             <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
               {party ? (
@@ -1890,8 +2036,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
           {payMode === 'mixed' && (
             <div className="flex flex-col gap-2">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {(['cash', 'card', 'transfer', 'debt'] as const).filter(payAllowed).map((m) => (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {SPLIT_METHODS.filter(payAllowed).map((m) => (
                   <Field key={m} label={PAYMENT_LABELS[m]}>
                     <input {...num('decimal')} aria-label={PAYMENT_LABELS[m]} value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
                   </Field>
@@ -1906,7 +2052,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   </span>
                   {mixedLeft > 0 && (
                     <span className="flex flex-wrap gap-1">
-                      {(['cash', 'card', 'transfer', 'debt'] as const).filter(payAllowed).map((m) => (
+                      {SPLIT_METHODS.filter(payAllowed).map((m) => (
                         <button
                           key={m}
                           type="button"
@@ -1957,9 +2103,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 onClick={() => {
                   setOilAsked(true)
                   setOilQuestion(false)
-                  setSaleType('service')
-                  toast('Замена масла: выберите мастера, клиента и машину')
-                  focusAfterRender('#master-select')
+                  changeType('service')
+                  toast('Замена масла: выберите вид замены, мастера, клиента и машину')
                 }}
               >
                 Да, замена
@@ -2020,8 +2165,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           }}
         />
       )}
+      {kindsOpen && <ServicePicker kinds ourOil={ourOil} onPick={addService} onClose={() => setKindsOpen(false)} />}
       {servicesOpen && (
         <ServicePicker
+          ourOil={ourOil}
           onPick={addService}
           onClose={() => setServicesOpen(false)}
           onBatteryIntake={

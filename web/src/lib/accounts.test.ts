@@ -53,6 +53,18 @@ describe('обзор счетов', () => {
     expect(isDefaultFor(list[3], 'transfer')).toBe(false)
   })
 
+  it('«По счёту» (ADR-095): свой счёт по умолчанию, без него — счёт карты', () => {
+    expect(defaultBankId(list, 'invoice')).toBe('Оптима')
+    expect(bankChoices(list, 'invoice').map((a) => a.id)).toEqual(['Оптима', 'Счёт'])
+    const marked = [...list.slice(0, 4), acc('Счёт', 'bank', 20_000, { default_transfer: true, default_invoice: true })]
+    expect(defaultBankId(marked, 'invoice')).toBe('Счёт')
+    expect(isDefaultFor(marked[4], 'invoice')).toBe(true)
+    expect(accountNote(marked[4])).toBe('по умолчанию для QR владельцу и «По счёту»')
+    expect(accountNote(acc('Б', 'bank', 0, { default_card: true, default_transfer: true, default_invoice: true }))).toBe(
+      'по умолчанию для карты / QR банка, QR владельцу и «По счёту»',
+    )
+  })
+
   it('снимок кассы без сети: отметки по умолчанию у банков', () => {
     const snap = [
       { id: 'a', name: 'Счёт', kind: 'bank' as const },
@@ -105,10 +117,13 @@ describe('подпись под кнопками оплаты (SPEC-29 §25)', (
     // Старый снимок кассы без ставки — без комиссии; счёта нет — по умолчанию на сервере.
     expect(payCaption('transfer', { name: 'Карта' })).toBe('→ Карта · без комиссии')
     expect(payCaption('card')).toBe('→ счёт по умолчанию')
+    // «По счёту» — перечисление: комиссии нет и на счёте с комиссией за карту.
+    expect(payCaption('invoice', { name: 'Счёт', fee_rate_bp: 50 })).toBe('→ Счёт · без комиссии')
   })
   it('кнопки оплаты: коды прежние, подписи по устройству точки', () => {
     expect(PAYMENT_LABELS.card).toBe('Карта / QR банка')
     expect(PAYMENT_LABELS.transfer).toBe('QR владельцу')
     expect(PAYMENT_LABELS.cash).toBe('Наличные')
+    expect(PAYMENT_LABELS.invoice).toBe('По счёту')
   })
 })

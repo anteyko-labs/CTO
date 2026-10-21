@@ -42,7 +42,9 @@ struct BankQuery {
 }
 
 /// Способы оплаты чека в постоянном порядке — строки отчёта есть всегда, даже нулевые.
-pub const METHODS: [&str; 6] = ["cash", "card", "transfer", "debt", "bonus", "battery"];
+pub const METHODS: [&str; 7] = [
+    "cash", "card", "transfer", "invoice", "debt", "bonus", "battery",
+];
 
 // ---------- Оплаты чеков по способам ----------
 
@@ -119,6 +121,9 @@ pub async fn methods_for(
 pub struct Noncash {
     pub card_tyiyn: i64,
     pub transfer_tyiyn: i64,
+    /// «По счёту» — перечисления юрлиц (ADR-095).
+    #[serde(default)]
+    pub invoice_tyiyn: i64,
     pub total_tyiyn: i64,
 }
 
@@ -142,13 +147,16 @@ pub async fn noncash_split_for(
     })
 }
 
-/// Безнал чеков одного безналичного счёта (ADR-076): картой, переводом и комиссия банка.
+/// Безнал чеков одного безналичного счёта (ADR-076): картой, переводом, «По счёту» (ADR-095) и
+/// комиссия банка.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct BankSplit {
     pub account_id: Uuid,
     pub name: String,
     pub card_tyiyn: i64,
     pub transfer_tyiyn: i64,
+    #[serde(default)]
+    pub invoice_tyiyn: i64,
     pub fee_tyiyn: i64,
     pub total_tyiyn: i64,
 }
@@ -164,21 +172,22 @@ pub async fn bank_split(
 ) -> AppResult<Vec<BankSplit>> {
     // Два запроса без необязательных условий: от чеков дня или смены к их оплатам (индексы
     // чеков по дню и по времени), а не перебор всех безналичных оплат (ADR-094).
-    let rows: Vec<(Uuid, String, i64, i64, i64)> = if let Some((from, to)) = days {
+    let rows: Vec<(Uuid, String, i64, i64, i64, i64)> = if let Some((from, to)) = days {
         sqlx::query!(
             r#"with x as materialized (
                  select p.account_id,
                         coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
                         coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'invoice'), 0)::bigint as invoice,
                         coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
                  from sales s
                  join sale_payments p on p.sale_id = s.id
                  where p.account_id is not null and s.branch_id = $1 and s.business_date between $2 and $3
-                 and p.method in ('card', 'transfer')
+                 and p.method in ('card', 'transfer', 'invoice')
                  group by p.account_id
                )
                select x.account_id as "account_id!", a.name, x.card as "card!",
-                      x.transfer as "transfer!", x.fee as "fee!"
+                      x.transfer as "transfer!", x.invoice as "invoice!", x.fee as "fee!"
                from x join cash_accounts a on a.id = x.account_id
                order by a.default_card desc, a.name"#,
             branch_id,
@@ -188,7 +197,7 @@ pub async fn bank_split(
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.fee))
+        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.invoice, r.fee))
         .collect()
     } else if let Some(since) = since {
         sqlx::query!(
@@ -196,15 +205,16 @@ pub async fn bank_split(
                  select p.account_id,
                         coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
                         coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'invoice'), 0)::bigint as invoice,
                         coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
                  from sales s
                  join sale_payments p on p.sale_id = s.id
                  where p.account_id is not null and s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
-                 and p.method in ('card', 'transfer')
+                 and p.method in ('card', 'transfer', 'invoice')
                  group by p.account_id
                )
                select x.account_id as "account_id!", a.name, x.card as "card!",
-                      x.transfer as "transfer!", x.fee as "fee!"
+                      x.transfer as "transfer!", x.invoice as "invoice!", x.fee as "fee!"
                from x join cash_accounts a on a.id = x.account_id
                order by a.default_card desc, a.name"#,
             branch_id,
@@ -214,7 +224,7 @@ pub async fn bank_split(
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.fee))
+        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.invoice, r.fee))
         .collect()
     } else {
         sqlx::query!(
@@ -222,14 +232,15 @@ pub async fn bank_split(
                  select p.account_id,
                         coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
                         coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
+                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'invoice'), 0)::bigint as invoice,
                         coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
                  from sales s
                  join sale_payments p on p.sale_id = s.id
-                 where p.account_id is not null and s.branch_id = $1 and p.method in ('card', 'transfer')
+                 where p.account_id is not null and s.branch_id = $1 and p.method in ('card', 'transfer', 'invoice')
                  group by p.account_id
                )
                select x.account_id as "account_id!", a.name, x.card as "card!",
-                      x.transfer as "transfer!", x.fee as "fee!"
+                      x.transfer as "transfer!", x.invoice as "invoice!", x.fee as "fee!"
                from x join cash_accounts a on a.id = x.account_id
                order by a.default_card desc, a.name"#,
             branch_id
@@ -237,19 +248,22 @@ pub async fn bank_split(
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.fee))
+        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.invoice, r.fee))
         .collect()
     };
     Ok(rows
         .into_iter()
-        .map(|(account_id, name, card, transfer, fee)| BankSplit {
-            account_id,
-            name,
-            card_tyiyn: card,
-            transfer_tyiyn: transfer,
-            fee_tyiyn: fee,
-            total_tyiyn: card.saturating_add(transfer),
-        })
+        .map(
+            |(account_id, name, card, transfer, invoice, fee)| BankSplit {
+                account_id,
+                name,
+                card_tyiyn: card,
+                transfer_tyiyn: transfer,
+                invoice_tyiyn: invoice,
+                fee_tyiyn: fee,
+                total_tyiyn: card.saturating_add(transfer).saturating_add(invoice),
+            },
+        )
         .collect())
 }
 
@@ -266,11 +280,12 @@ pub async fn noncash_for(
             .find(|r| r.method == m)
             .map_or(0, |r| r.net_tyiyn)
     };
-    let (card, transfer) = (net("card"), net("transfer"));
+    let (card, transfer, invoice) = (net("card"), net("transfer"), net("invoice"));
     Ok(Noncash {
         card_tyiyn: card,
         transfer_tyiyn: transfer,
-        total_tyiyn: card.saturating_add(transfer),
+        invoice_tyiyn: invoice,
+        total_tyiyn: card.saturating_add(transfer).saturating_add(invoice),
     })
 }
 
@@ -403,6 +418,9 @@ pub struct BankDay {
     pub date: NaiveDate,
     pub card_tyiyn: i64,
     pub transfer_tyiyn: i64,
+    /// «По счёту» (ADR-095).
+    #[serde(default)]
+    pub invoice_tyiyn: i64,
     pub fee_tyiyn: i64,
     /// Прочее: перемещения, оплаты поставщикам, расходы, сторно — со знаком.
     pub other_tyiyn: i64,
@@ -422,6 +440,8 @@ pub(crate) struct BankOut {
     pub closing_tyiyn: i64,
     pub card: BankIncome,
     pub transfer: BankIncome,
+    /// «По счёту» — перечисления юрлиц по чекам (ADR-095); погашений долга этим способом нет.
+    pub invoice: BankIncome,
     /// Комиссия банка (положительное число — сколько удержал банк).
     pub fee_tyiyn: i64,
     /// Прочие поступления: перемещения в счёт, внесения, возмещения.
@@ -507,7 +527,7 @@ pub(crate) async fn bank_data(
     )
     .fetch_all(&mut *conn)
     .await?;
-    // Карта в чеках: оплаты картой чеков, чьи деньги пришли на счёт в этот период.
+    // Карта и «По счёту» в чеках: оплаты чеков, чьи деньги пришли на счёт в этот период.
     let sale_ids: Vec<Uuid> = rows
         .iter()
         .filter(|r| r.doc_type == "sale" && matches!(r.kind.as_str(), "sale" | "sale_return"))
@@ -515,9 +535,11 @@ pub(crate) async fn bank_data(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let card_of_sale: HashMap<Uuid, i64> = sqlx::query!(
-        r#"select sale_id, coalesce(sum(amount_tyiyn), 0)::bigint as "card!"
-           from sale_payments where sale_id = any($1) and method = 'card' and account_id = $2
+    let card_of_sale: HashMap<Uuid, (i64, i64)> = sqlx::query!(
+        r#"select sale_id,
+                  coalesce(sum(amount_tyiyn) filter (where method = 'card'), 0)::bigint as "card!",
+                  coalesce(sum(amount_tyiyn) filter (where method = 'invoice'), 0)::bigint as "invoice!"
+           from sale_payments where sale_id = any($1) and method in ('card', 'invoice') and account_id = $2
            group by sale_id"#,
         &sale_ids,
         account_id
@@ -525,7 +547,7 @@ pub(crate) async fn bank_data(
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
-    .map(|r| (r.sale_id, r.card))
+    .map(|r| (r.sale_id, (r.card, r.invoice)))
     .collect();
     // Способ погашения долга записан в журнале операции (SPEC-10).
     let repay_ids: Vec<Uuid> = rows
@@ -548,10 +570,12 @@ pub(crate) async fn bank_data(
 
     let mut card = BankIncome::default();
     let mut transfer = BankIncome::default();
+    let mut invoice = BankIncome::default();
     let (mut fee, mut other_in, mut outgoing) = (0i64, 0i64, 0i64);
     let mut kinds: BTreeMap<String, KindRow> = BTreeMap::new();
     let mut days: BTreeMap<NaiveDate, BankDay> = BTreeMap::new();
-    // Сумма движений чека на счёт: часть картой — по оплатам чека, остальное — переводом.
+    // Сумма движений чека на счёт: часть картой и «По счёту» — по оплатам чека, остальное —
+    // переводом.
     let mut sale_sums: HashMap<Uuid, (NaiveDate, i64)> = HashMap::new();
     for r in &rows {
         let k = kinds.entry(r.kind.clone()).or_insert_with(|| KindRow {
@@ -599,12 +623,14 @@ pub(crate) async fn bank_data(
         }
     }
     for (id, (day, sum)) in sale_sums {
-        let by_card = card_of_sale.get(&id).copied().unwrap_or(0);
-        let by_transfer = sum.saturating_sub(by_card);
+        let (by_card, by_invoice) = card_of_sale.get(&id).copied().unwrap_or((0, 0));
+        let by_transfer = sum.saturating_sub(by_card).saturating_sub(by_invoice);
         card.sales_tyiyn = card.sales_tyiyn.saturating_add(by_card);
+        invoice.sales_tyiyn = invoice.sales_tyiyn.saturating_add(by_invoice);
         transfer.sales_tyiyn = transfer.sales_tyiyn.saturating_add(by_transfer);
         if let Some(d) = days.get_mut(&day) {
             d.card_tyiyn = d.card_tyiyn.saturating_add(by_card);
+            d.invoice_tyiyn = d.invoice_tyiyn.saturating_add(by_invoice);
             d.transfer_tyiyn = d.transfer_tyiyn.saturating_add(by_transfer);
         }
     }
@@ -612,6 +638,7 @@ pub(crate) async fn bank_data(
     transfer.total_tyiyn = transfer
         .sales_tyiyn
         .saturating_add(transfer.repayments_tyiyn);
+    invoice.total_tyiyn = invoice.sales_tyiyn;
     let change = rows
         .iter()
         .fold(0i64, |s, r| s.saturating_add(r.amount_tyiyn));
@@ -628,6 +655,7 @@ pub(crate) async fn bank_data(
         closing_tyiyn: acc.opening.saturating_add(change),
         card,
         transfer,
+        invoice,
         fee_tyiyn: fee,
         other_in_tyiyn: other_in,
         outgoing_tyiyn: outgoing,

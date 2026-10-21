@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from products p join categories c on c.id = p.category_id\n                          where p.id = any($1) and c.kind = 'oil') as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "069a164b08c2777c1edee8b29d47f69538f750af1ccf11224ae79f72e0efaa3b"
+}

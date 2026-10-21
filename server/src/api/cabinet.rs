@@ -350,6 +350,8 @@ struct SaleOut {
     vehicle_plate: Option<String>,
     total_tyiyn: i64,
     debt_tyiyn: i64,
+    /// Оплачено «По счёту» — перечислением фирмы (ADR-095).
+    invoice_tyiyn: i64,
     lines: Vec<LineOut>,
 }
 
@@ -366,7 +368,9 @@ async fn sales(
         r#"select s.id, s.number, s.kind, s.business_date, s.created_at, s.total_tyiyn,
                   c.full_name as "contact_name?", v.plate as "vehicle_plate?",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
-                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!"
+                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!",
+                  coalesce((select sum(p.amount_tyiyn) from sale_payments p
+                            where p.sale_id = s.id and p.method = 'invoice'), 0)::bigint as "invoice!"
            from sales s
            left join party_contacts c on c.id = s.contact_id
            left join party_vehicles v on v.id = s.vehicle_id
@@ -417,6 +421,7 @@ async fn sales(
             vehicle_plate: h.vehicle_plate,
             total_tyiyn: h.total_tyiyn,
             debt_tyiyn: h.debt,
+            invoice_tyiyn: h.invoice,
         })
         .collect();
     Ok(Json(out))

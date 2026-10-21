@@ -242,6 +242,7 @@ fn method_text(m: &str) -> &str {
         "cash" => "наличные",
         "card" => "карта",
         "transfer" => "перевод",
+        "invoice" => "по счёту",
         "debt" => "в долг",
         "bonus" => "баллы",
         "battery" => "аккумулятор",
@@ -626,7 +627,7 @@ async fn load_sale_doc(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) ->
     let mut pays: Vec<(String, i64)> = Vec::new();
     for p in &s.payments {
         let label = match &p.account_name {
-            Some(a) if matches!(p.method.as_str(), "card" | "transfer") => {
+            Some(a) if matches!(p.method.as_str(), "card" | "transfer" | "invoice") => {
                 format!("Оплата: {} ({a})", method_text(&p.method))
             }
             _ => format!("Оплата: {}", method_text(&p.method)),

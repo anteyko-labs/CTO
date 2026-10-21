@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with x as materialized (\n                 select p.account_id,\n                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,\n                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,\n                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'invoice'), 0)::bigint as invoice,\n                        coalesce(sum(p.fee_tyiyn), 0)::bigint as fee\n                 from sales s\n                 join sale_payments p on p.sale_id = s.id\n                 where p.account_id is not null and s.branch_id = $1 and s.business_date between $2 and $3\n                 and p.method in ('card', 'transfer', 'invoice')\n                 group by p.account_id\n               )\n               select x.account_id as \"account_id!\", a.name, x.card as \"card!\",\n                      x.transfer as \"transfer!\", x.invoice as \"invoice!\", x.fee as \"fee!\"\n               from x join cash_accounts a on a.id = x.account_id\n               order by a.default_card desc, a.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "card!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "transfer!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "invoice!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0680b051b42d4c9d1726bd4f840d7f030d6283c6d3db5be8825db6542b8b8739"
+}

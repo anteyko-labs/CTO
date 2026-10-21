@@ -19,6 +19,7 @@ pub fn routes() -> Router<AppState> {
         .route("/reports/gifts", routing::get(gifts))
         .route("/reports/heatmap", routing::get(heatmap))
         .route("/reports/top-products", routing::get(top_products))
+        .route("/reports/service-kinds", routing::get(service_kinds))
 }
 
 #[derive(Serialize, Default)]
@@ -1194,4 +1195,194 @@ pub async fn top_products_data(
         }
     }
     Ok(TopProducts { from, to, items })
+}
+
+// ---------- Замены по видам (SPEC-30 §2, ADR-096) ----------
+
+#[derive(Deserialize, Default)]
+pub struct ServiceKindsQuery {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+}
+
+/// Масло, залитое в чеках этого вида замены: канистрами (штук), розливом (мл) и всего (мл).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ServiceOil {
+    pub product_id: Uuid,
+    pub name: String,
+    pub container_ml: Option<i64>,
+    pub canisters: i64,
+    pub pour_ml: i64,
+    pub total_ml: i64,
+}
+
+/// Вид замены за период: сколько раз, сколько заплатили клиенты, сколько начислено мастерам и
+/// какие масла в этих чеках. Себестоимости нет — видит и администратор.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ServiceKind {
+    /// `None` — чеки «в сервис» без вида замены: до SPEC-30 и чеки без сети со старого
+    /// устройства (ставка за чек, ADR-027).
+    pub service_id: Option<Uuid>,
+    pub name: String,
+    /// Сколько раз: количество в строках за вычетом возвращённого; у чеков без вида — чеков.
+    pub count: i64,
+    /// Чеков с этим видом.
+    pub checks: i64,
+    pub clients_tyiyn: i64,
+    pub masters_tyiyn: i64,
+    pub oils: Vec<ServiceOil>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ServiceKinds {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub kinds: Vec<ServiceKind>,
+}
+
+async fn service_kinds(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<ServiceKindsQuery>,
+) -> AppResult<Json<ServiceKinds>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(
+        service_kinds_data(&mut conn, &user, q.from, q.to).await?,
+    ))
+}
+
+/// Замены по видам за период — экран «Продаваемые» → «Замены» и бот владельца. Чеки «в сервис»
+/// учётных дней периода вместе с их возвратами (когда бы ни вернули): вид замены — услуга из
+/// справочника в чеке. Масло чека относится к каждому виду замены этого чека.
+pub async fn service_kinds_data(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+) -> AppResult<ServiceKinds> {
+    let (from, to) = resolve_period(&mut *conn, from, to).await?;
+    let branch_id = user.branch_id;
+    let kinds = sqlx::query!(
+        r#"with orig as (
+             select s.id from sales s
+             where s.branch_id = $1 and s.kind = 'sale' and s.sale_type = 'service'
+               and s.business_date between $2 and $3
+           ), docs as (
+             select o.id as orig_id, o.id as doc_id, false as back from orig o
+             union all
+             select r.reversal_of, r.id, true from sales r join orig o on o.id = r.reversal_of
+           )
+           select l.service_id as "service_id!", sv.name as "name!",
+                  coalesce(sum(case when d.back then -l.qty else l.qty end), 0)::bigint as "count!",
+                  count(distinct d.orig_id) as "checks!",
+                  coalesce(sum(l.amount_tyiyn), 0)::bigint as "clients!",
+                  coalesce(sum(l.master_fee_tyiyn), 0)::bigint as "masters!"
+           from docs d
+           join sale_lines l on l.sale_id = d.doc_id and l.kind = 'service'
+           join services sv on sv.id = l.service_id
+           group by l.service_id, sv.name
+           order by 3 desc, sv.name"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    // Чеки без вида замены: ставка за чек — в заголовке чека и его возвратов.
+    let legacy = sqlx::query!(
+        r#"with orig as (
+             select s.id from sales s
+             where s.branch_id = $1 and s.kind = 'sale' and s.sale_type = 'service'
+               and s.business_date between $2 and $3
+               and not exists (select 1 from sale_lines l where l.sale_id = s.id and l.kind = 'service')
+           )
+           select count(*) as "checks!",
+                  coalesce(sum(s.master_fee_tyiyn), 0)::bigint as "masters!",
+                  count(*) filter (where s.kind = 'sale'
+                                     and coalesce((select sum(r.total_tyiyn) from sales r
+                                                   where r.reversal_of = s.id), 0) <> -s.total_tyiyn) as "kept!"
+           from sales s
+           where s.id in (select id from orig) or s.reversal_of in (select id from orig)"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let oils = sqlx::query!(
+        r#"with orig as (
+             select s.id from sales s
+             where s.branch_id = $1 and s.kind = 'sale' and s.sale_type = 'service'
+               and s.business_date between $2 and $3
+           ), kinds as (
+             select o.id as orig_id, l.service_id
+             from orig o left join sale_lines l on l.sale_id = o.id and l.kind = 'service'
+             group by o.id, l.service_id
+           ), docs as (
+             select o.id as orig_id, o.id as doc_id, false as back from orig o
+             union all
+             select r.reversal_of, r.id, true from sales r join orig o on o.id = r.reversal_of
+           )
+           select k.service_id as "service_id?", p.id as "product_id!", p.name as "name!",
+                  p.container_ml as "container_ml?",
+                  coalesce(sum(case when l.kind <> 'container' then 0
+                                    when d.back then -l.qty else l.qty end), 0)::bigint as "canisters!",
+                  coalesce(sum(case when l.kind <> 'pour' then 0
+                                    when d.back then -l.qty else l.qty end), 0)::bigint as "pour_ml!",
+                  coalesce(sum(case when d.back then -l.units else l.units end), 0)::bigint as "total_ml!"
+           from kinds k
+           join docs d on d.orig_id = k.orig_id
+           join sale_lines l on l.sale_id = d.doc_id and not l.gift and l.product_id is not null
+           join products p on p.id = l.product_id
+           join categories c on c.id = p.category_id and c.kind = 'oil'
+           group by k.service_id, p.id, p.name, p.container_ml
+           having sum(case when d.back then -l.units else l.units end) <> 0
+           order by 7 desc, p.name"#,
+        branch_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let oils_of = |id: Option<Uuid>| -> Vec<ServiceOil> {
+        oils.iter()
+            .filter(|o| o.service_id == id)
+            .map(|o| ServiceOil {
+                product_id: o.product_id,
+                name: o.name.clone(),
+                container_ml: o.container_ml,
+                canisters: o.canisters,
+                pour_ml: o.pour_ml,
+                total_ml: o.total_ml,
+            })
+            .collect()
+    };
+    let mut out: Vec<ServiceKind> = kinds
+        .iter()
+        .map(|k| ServiceKind {
+            service_id: Some(k.service_id),
+            name: k.name.clone(),
+            count: k.count,
+            checks: k.checks,
+            clients_tyiyn: k.clients,
+            masters_tyiyn: k.masters,
+            oils: oils_of(Some(k.service_id)),
+        })
+        .collect();
+    if legacy.checks > 0 {
+        out.push(ServiceKind {
+            service_id: None,
+            name: "Без вида замены".into(),
+            count: legacy.kept,
+            checks: legacy.kept,
+            clients_tyiyn: 0,
+            masters_tyiyn: legacy.masters,
+            oils: oils_of(None),
+        });
+    }
+    Ok(ServiceKinds {
+        from,
+        to,
+        kinds: out,
+    })
 }

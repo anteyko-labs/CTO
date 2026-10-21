@@ -200,9 +200,11 @@ test('масляная книжка: замена с пробегом, след�
     sale_price_tyiyn: 700_000,
   })
   await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(page.request), lines: [{ product_id: oil.id, qty: 8000, cost_tyiyn: 1_040_000 }] })
-  const party = await apiPost<{ id: string }>(page.request, '/parties', { name: `Книжкин ${RUN}`, kind: 'person' })
+  const party = await apiPost<{ id: string }>(page.request, '/parties', { name: `Книжкин ${RUN}`, kind: 'person', phone: `0555${RUN.slice(-6)}` })
   const plate = `01KG${RUN.slice(-3)}AAA`
   const vehicle = await apiPost<{ id: string }>(page.request, `/parties/${party.id}/vehicles`, { plate })
+  // Чек «В сервис» — с видом замены (ADR-096).
+  const kind = await apiPost<{ id: string }>(page.request, '/services', { name: `Замена книжки ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
   await apiPost(page.request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'service',
@@ -211,7 +213,10 @@ test('масляная книжка: замена с пробегом, след�
     party_id: party.id,
     vehicle_id: vehicle.id,
     mileage_km: 85_000,
-    lines: [{ kind: 'container', gift: false, product_id: oil.id, qty: 1, unit_price_tyiyn: 700_000 }],
+    lines: [
+      { kind: 'container', gift: false, product_id: oil.id, qty: 1, unit_price_tyiyn: 700_000 },
+      { kind: 'service', gift: false, service_id: kind.id, qty: 1, unit_price_tyiyn: 0 },
+    ],
     payments: [{ method: 'cash', amount_tyiyn: 700_000 }],
   })
 

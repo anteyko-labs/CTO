@@ -27,6 +27,7 @@ export const METHOD_LABELS: Record<string, string> = {
   cash: 'Наличные',
   card: 'Карта / QR банка',
   transfer: 'QR владельцу',
+  invoice: 'По счёту',
   debt: 'В долг',
   bonus: 'Баллы',
   battery: 'Аккумулятор',
@@ -130,6 +131,7 @@ export function shiftSales(s: {
   cash_sales_tyiyn: number
   card_tyiyn: number
   transfer_tyiyn: number
+  invoice_tyiyn?: number
   debt_tyiyn: number
   bonus_tyiyn?: number
   battery_tyiyn?: number
@@ -141,6 +143,7 @@ export function shiftSales(s: {
     { key: 'cash', label: 'Наличными', value: s.cash_sales_tyiyn },
     { key: 'card', label: 'Карта / QR банка', value: s.card_tyiyn },
     { key: 'transfer', label: 'QR владельцу', value: s.transfer_tyiyn },
+    { key: 'invoice', label: 'По счёту', value: s.invoice_tyiyn ?? 0 },
     { key: 'debt', label: 'В долг', value: s.debt_tyiyn },
     { key: 'bonus', label: 'Баллами', value: s.bonus_tyiyn ?? 0 },
     { key: 'battery', label: 'Аккумуляторами', value: s.battery_tyiyn ?? 0 },

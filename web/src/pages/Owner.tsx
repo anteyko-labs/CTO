@@ -329,6 +329,7 @@ export function OwnerDashboard() {
               <Tile label={`Безнал ${word}`} value={formatSom(data.noncash.total_tyiyn)}>
                 <div className="mt-1 whitespace-nowrap text-xs tabular-nums text-slate-500">
                   карта / QR банка {formatSom(data.noncash.card_tyiyn)} · QR владельцу {formatSom(data.noncash.transfer_tyiyn)}
+                  {(data.noncash.invoice_tyiyn ?? 0) !== 0 && ` · по счёту ${formatSom(data.noncash.invoice_tyiyn ?? 0)}`}
                 </div>
                 {(data.noncash.by_account ?? []).length > 1 && (
                   <div className="text-xs tabular-nums text-slate-500" data-testid="noncash-banks">

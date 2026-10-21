@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.role, p.kind, p.name, p.first_name, p.last_name, p.phone, p.inn, p.comment,\n                  p.credit_limit_tyiyn as \"credit_limit_tyiyn?\", p.due_days as \"due_days?\",\n                  p.active, p.balance_tyiyn\n           from parties p\n           left join lateral (select max(s.created_at) as last_at from sales s\n                              where s.party_id = p.id and s.branch_id = $1) s on true\n           where p.branch_id = $1 and p.role = 'customer' and p.active\n             and (p.balance_tyiyn <> 0 or s.last_at > now() - interval '180 days'\n                  or exists (select 1 from party_vehicles v where v.party_id = p.id and v.active))\n           order by (p.balance_tyiyn <> 0) desc, s.last_at desc nulls last, p.name, p.id\n           limit $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "credit_limit_tyiyn?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "due_days?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1530b4ba2942482246e5f6802b0ef429f8a7dd1898a21a1beeb9f29d024268fd"
+}

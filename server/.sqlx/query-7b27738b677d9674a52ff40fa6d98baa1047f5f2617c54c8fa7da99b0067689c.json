@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with orig as (\n             select s.id from sales s\n             where s.branch_id = $1 and s.kind = 'sale' and s.sale_type = 'service'\n               and s.business_date between $2 and $3\n           ), docs as (\n             select o.id as orig_id, o.id as doc_id, false as back from orig o\n             union all\n             select r.reversal_of, r.id, true from sales r join orig o on o.id = r.reversal_of\n           )\n           select l.service_id as \"service_id!\", sv.name as \"name!\",\n                  coalesce(sum(case when d.back then -l.qty else l.qty end), 0)::bigint as \"count!\",\n                  count(distinct d.orig_id) as \"checks!\",\n                  coalesce(sum(l.amount_tyiyn), 0)::bigint as \"clients!\",\n                  coalesce(sum(l.master_fee_tyiyn), 0)::bigint as \"masters!\"\n           from docs d\n           join sale_lines l on l.sale_id = d.doc_id and l.kind = 'service'\n           join services sv on sv.id = l.service_id\n           group by l.service_id, sv.name\n           order by 3 desc, sv.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "service_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "checks!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "clients!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "masters!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7b27738b677d9674a52ff40fa6d98baa1047f5f2617c54c8fa7da99b0067689c"
+}

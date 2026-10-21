@@ -190,6 +190,7 @@ test('режим кассы: крупно, без меню, продажа эк�
     await hidePad(page)
     await page.getByRole('button', { name: 'В сервис' }).tap()
     await page.screenshot({ path: `${SHOTS}/cashier-mode-1920-service.png`, fullPage: true })
+    await page.keyboard.press('Escape')
     await page.getByRole('button', { name: 'На вынос' }).tap()
     await page.getByRole('button', { name: 'Удалить строку' }).tap()
   }

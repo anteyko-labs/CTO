@@ -572,10 +572,11 @@ async fn sale_correction_is_as_if_the_right_sale_was_posted(pool: PgPool) {
     );
     w.verify_stock().await;
 
+    // Масло по 450 с при прайсе 500 с — скидка: верный чек сразу проводит владелец (ADR-097).
     assert_as_if(&w, &s0, || async {
         let mut body = right.clone();
         body["op_id"] = json!(Uuid::now_v7());
-        ok(&w.app, "POST", "/api/v1/sales", &w.admin, body).await;
+        ok(&w.app, "POST", "/api/v1/sales", &w.owner, body).await;
     })
     .await;
 }

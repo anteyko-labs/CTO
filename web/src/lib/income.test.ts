@@ -82,6 +82,13 @@ describe('продажи смены складываются', () => {
     expect(r.returns).toBe(56_000)
     expect(r.net).toBe(28_000)
     expect(r.methods).toEqual([{ key: 'transfer', label: 'QR владельцу', value: 28_000 }])
+    // «По счёту» — отдельной строкой (ADR-095).
+    const inv = shiftSales({ sales_total_tyiyn: 50_000, cash_sales_tyiyn: 20_000, card_tyiyn: 0, transfer_tyiyn: 0, invoice_tyiyn: 30_000, debt_tyiyn: 0 })
+    expect(inv.methods.map((m) => [m.label, m.value])).toEqual([
+      ['Наличными', 20_000],
+      ['По счёту', 30_000],
+    ])
+    expect(inv.rest).toBe(0)
     expect(r.rest).toBe(0)
   })
 

@@ -84,7 +84,7 @@ async fn seed(pool: &PgPool) -> World {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("insert into services (id, branch_id, name, price_tyiyn) values ($1, $2, 'Замена масла', 20000)")
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, free_with_oil) values ($1, $2, 'Замена масла', 20000, true)")
         .bind(service)
         .bind(branch)
         .execute(pool)
@@ -326,6 +326,91 @@ async fn sell(
     r
 }
 
+/// Право администратора сверх роли (ADR-082, ADR-097), например «Скидка в чеке». Ограничение
+/// списка прав в базе снимается: тест не зависит от того, какие права в нём уже перечислены.
+async fn grant(pool: &PgPool, w: &World, permission: &str) {
+    sqlx::query(
+        "alter table user_permissions drop constraint if exists user_permissions_permission_check",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into user_permissions (user_id, branch_id, permission, granted_by) values ($1, $2, $3, $4) on conflict do nothing",
+    )
+    .bind(w.admin.user.id)
+    .bind(w.admin.user.branch_id)
+    .bind(permission)
+    .bind(w.owner.user.id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Данные клиента для чека «В сервис» (ADR-100): имя и фамилия, телефон. Телефон — и в привязке
+/// бота клиента, чтобы подключение осталось действующим.
+async fn ready_for_service(pool: &PgPool, party: Uuid) {
+    sqlx::query(
+        "update parties set first_name = case when kind = 'person' and first_name = '' then 'Имя' else first_name end,
+                            last_name = case when kind = 'person' and last_name = '' then 'Фамилия' else last_name end,
+                            phone = case when phone = '' then '0555000111' else phone end
+         where id = $1",
+    )
+    .bind(party)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update telegram_customers set phone = '0555000111' where party_id = $1 and phone = ''",
+    )
+    .bind(party)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Клиент для чека «В сервис»: человек с именем, фамилией и телефоном и его машина.
+async fn service_client(pool: &PgPool, w: &World) -> (Uuid, Uuid) {
+    let (party, vehicle) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, first_name, last_name, phone) values ($1, $2, 'customer', 'person', 'Асанов Бакыт', 'Бакыт', 'Асанов', '0700 11-22-33')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG900XYZ', '01KG900XYZ')")
+        .bind(vehicle)
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(pool)
+        .await
+        .unwrap();
+    (party, vehicle)
+}
+
+/// Вид замены из справочника строкой чека (ADR-096).
+fn kind_line(service: Uuid, qty: i64, price: i64) -> SaleLineReq {
+    SaleLineReq {
+        kind: "service".into(),
+        gift: false,
+        product_id: None,
+        service_id: Some(service),
+        qty,
+        unit_price_tyiyn: price,
+        seen_list_price_tyiyn: None,
+    }
+}
+
+/// Чек «В сервис»: мастер, клиент с машиной и пробег (ADR-100).
+fn in_service(w: &World, (party, vehicle): (Uuid, Uuid), mut req: SaleReq) -> SaleReq {
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.party_id = Some(party);
+    req.vehicle_id = Some(vehicle);
+    req.mileage_km = Some(85_000);
+    req
+}
+
 async fn assert_stock_consistent(pool: &PgPool, w: &World) {
     let mut conn = pool.acquire().await.unwrap();
     let diff = verify_stock_tx(&mut conn, w.owner.user.branch_id)
@@ -365,6 +450,8 @@ async fn weighted_average_and_full_sellout(pool: PgPool) {
 async fn oil_container_and_pour(pool: PgPool) {
     let w = seed(&pool).await;
     // 2 канистры по 4 л за 1200 с каждая: литр закупки 300 с, розлив по 333,33 — не дешевле.
+    // Розлив дешевле прайса — скидка: у администратора есть право (ADR-097).
+    grant(&pool, &w, "discount").await;
     receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
     // Последняя закупочная цена — за канистру, видна и администратору.
     let mut conn = pool.acquire().await.unwrap();
@@ -452,15 +539,34 @@ async fn payments_must_match_total(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn oil_change_is_a_mark_not_a_service_line(pool: PgPool) {
+async fn service_needs_kind_and_pays_its_rate(pool: PgPool) {
+    // «В сервис» — только с видом замены (ADR-096): мастеру — ставка услуги, ставка за чек из
+    // настроек новым чекам не начисляется; возврат товара ставку не снимает, возврат услуги — снимает.
     let w = seed(&pool).await;
     // Возврат наличными — только в открытую смену (ADR-065).
     open_till(&pool, &w).await;
     receive(&pool, &w.admin, w.filter, 10, 100).await;
+    let client = service_client(&pool, &w).await;
+    sqlx::query("insert into settings (branch_id, key, value) values ($1, 'sales', '{\"oil_change_master_fee_tyiyn\": 5000}')")
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // «В сервис» без мастера не проводится.
-    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
-    req.sale_type = "service".into();
+    let mut req = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 1, 50_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            cash(70_000),
+        ),
+    );
+    req.master_id = None;
     assert!(matches!(
         sell(&pool, &w.owner, req).await,
         Err(AppError::Validation(_))
@@ -474,46 +580,65 @@ async fn oil_change_is_a_mark_not_a_service_line(pool: PgPool) {
         Err(AppError::Validation(_))
     ));
 
-    // Чек с заменой: ставка одна на чек, строк услуг в чеке нет (ADR-027).
-    let mut req = takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000));
-    req.sale_type = "service".into();
-    req.master_id = Some(w.master);
+    // Без вида замены — 422 «Выберите вид замены».
+    let req = in_service(
+        &w,
+        client,
+        takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
+    );
+    match sell(&pool, &w.owner, req).await {
+        Err(AppError::Validation(m)) => assert_eq!(m, "Выберите вид замены"),
+        other => panic!("ждали 422, получили {:?}", other.map(|s| s.number)),
+    }
+
+    // С видом замены: фильтр — не масло, услуга по цене клиенту; мастеру — ставка услуги (30 с),
+    // а не 50 с за чек из настроек.
+    let req = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 2, 50_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            cash(120_000),
+        ),
+    );
     let service_sale = sell(&pool, &w.owner, req).await.unwrap();
     assert_eq!(service_sale.master_fee_tyiyn, 3000);
-    assert!(service_sale.lines.iter().all(|l| l.kind != "service"));
+    assert_eq!(service_sale.lines[1].list_price_tyiyn, 20_000);
+    assert_eq!(service_sale.lines[1].master_fee_tyiyn, 3000);
 
-    // Тот же товар на вынос стоит столько же, но мастеру не идёт ничего.
-    let takeaway_sale = sell(
-        &pool,
-        &w.owner,
-        takeaway(&w, vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
-    )
-    .await
-    .unwrap();
-    assert_eq!(takeaway_sale.total_tyiyn, service_sale.total_tyiyn);
-    assert_eq!(takeaway_sale.master_fee_tyiyn, 0);
-
-    // Частичный возврат ставку не снимает, полный — снимает.
-    let ret = |qty| ReturnReq {
+    // Возврат фильтра ставку не снимает, возврат услуги — снимает.
+    let ret = |line_no, amount| ReturnReq {
         op_id: Uuid::now_v7(),
         battery_cash: false,
         comment: String::new(),
-        lines: vec![ReturnLineReq { line_no: 1, qty }],
-        payments: cash(50_000 * qty),
+        lines: vec![ReturnLineReq { line_no, qty: 1 }],
+        payments: cash(amount),
         business_date: None,
     };
     let mut tx = pool.begin().await.unwrap();
-    let partial = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(1))
+    let partial = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(1, 50_000))
         .await
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(partial.master_fee_tyiyn, 0);
     let mut tx = pool.begin().await.unwrap();
-    let full = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(1))
+    let back = return_sale_tx(&mut tx, &w.owner, service_sale.id, ret(2, 20_000))
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(full.master_fee_tyiyn, -3000);
+    assert_eq!(back.master_fee_tyiyn, -3000);
+    let accrued: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from payroll_accruals where employee_id = $1",
+    )
+    .bind(w.master)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(accrued, 0);
     assert_stock_consistent(&pool, &w).await;
 }
 
@@ -536,9 +661,12 @@ async fn service_line_pays_master_its_own_rate(pool: PgPool) {
         unit_price_tyiyn: 40_000,
         seen_list_price_tyiyn: None,
     };
-    let mut req = takeaway(&w, vec![service_line.clone()], cash(40_000));
-    req.sale_type = "service".into();
-    req.master_id = Some(w.master);
+    let client = service_client(&pool, &w).await;
+    let req = in_service(
+        &w,
+        client,
+        takeaway(&w, vec![service_line.clone()], cash(40_000)),
+    );
     let sale = sell(&pool, &w.owner, req).await.unwrap();
     assert_eq!(sale.lines[0].list_price_tyiyn, 40_000);
     assert_eq!(sale.lines[0].master_fee_tyiyn, 20_000);
@@ -552,16 +680,18 @@ async fn service_line_pays_master_its_own_rate(pool: PgPool) {
     .unwrap();
     assert_eq!(accrued, 20_000);
 
-    // С товаром в чеке: ставка замены за чек плюс ставка услуги.
-    let mut req = takeaway(
+    // С товаром в чеке: ставки за чек больше нет (ADR-096) — мастеру только ставка услуги.
+    let req = in_service(
         &w,
-        vec![line("piece", w.filter, 1, 500), service_line],
-        cash(40_500),
+        client,
+        takeaway(
+            &w,
+            vec![line("piece", w.filter, 1, 500), service_line],
+            cash(40_500),
+        ),
     );
-    req.sale_type = "service".into();
-    req.master_id = Some(w.master);
     let sale = sell(&pool, &w.owner, req).await.unwrap();
-    assert_eq!(sale.master_fee_tyiyn, 3_000 + 20_000);
+    assert_eq!(sale.master_fee_tyiyn, 20_000);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -831,12 +961,40 @@ async fn full_return_takes_back_master_fee(pool: PgPool) {
         .await
         .unwrap()
     };
-    let mut req = takeaway(&w, vec![line("piece", w.filter, 2, 5_000)], cash(10_000));
-    req.sale_type = "service".into();
-    req.master_id = Some(w.master);
+    let client = service_client(&pool, &w).await;
+    let req = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 2, 5_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            cash(30_000),
+        ),
+    );
     let sale = sell(&pool, &w.owner, req).await.unwrap();
     let paid = master_total(pool.clone(), w.master).await;
     assert_eq!(paid, 3_000);
+    // Вид замены возвращают отдельно: ставка уходит вместе с ним.
+    let mut tx = pool.begin().await.unwrap();
+    return_sale_tx(
+        &mut tx,
+        &w.owner,
+        sale.id,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            battery_cash: false,
+            comment: String::new(),
+            lines: vec![ReturnLineReq { line_no: 2, qty: 1 }],
+            payments: cash(20_000),
+            business_date: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     for _ in 0..2 {
         let mut tx = pool.begin().await.unwrap();
         return_sale_tx(
@@ -973,6 +1131,8 @@ async fn posted_documents_are_immutable(pool: PgPool) {
 async fn price_below_cost_is_refused_except_gifts(pool: PgPool) {
     // Дешевле закупки не продаём; подарок можно; чек без сети принимается и уходит владельцу (ADR-042).
     let w = seed(&pool).await;
+    // Цены ниже прайса — скидка: право у администратора есть (ADR-097).
+    grant(&pool, &w, "discount").await;
     receive(&pool, &w.admin, w.filter, 10, 30_000).await;
     let below = takeaway(&w, vec![line("piece", w.filter, 1, 2_000)], cash(2_000));
     assert!(matches!(
@@ -1010,6 +1170,8 @@ async fn price_below_cost_is_refused_except_gifts(pool: PgPool) {
 async fn gift_needs_threshold(pool: PgPool) {
     // Подарок к маслу от 3 л: литр — нельзя, канистра 4 л — можно, но не больше одного (SPEC-11).
     let w = seed(&pool).await;
+    // Розлив ниже прайса — скидка: право у администратора есть (ADR-097).
+    grant(&pool, &w, "discount").await;
     receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let rule = Uuid::now_v7();
@@ -1219,6 +1381,7 @@ async fn empty_stock_keeps_no_value(pool: PgPool) {
 async fn debt_needs_pin_or_inn(pool: PgPool) {
     // Долг без ПИН или ИНН покупателя не проводится: расписка без него недействительна (SPEC-10).
     let w = seed(&pool).await;
+    grant(&pool, &w, "discount").await;
     receive(&pool, &w.admin, w.filter, 5, 500).await;
     let party = Uuid::now_v7();
     sqlx::query(
@@ -1651,6 +1814,7 @@ async fn oil_book_records_service_change(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    ready_for_service(&pool, party).await;
     sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG123ABC', '01KG123ABC')")
         .bind(vehicle)
         .bind(w.owner.user.branch_id)
@@ -1658,7 +1822,8 @@ async fn oil_book_records_service_change(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    let service = |lines: Vec<SaleLineReq>, total: i64| {
+    let service = |mut lines: Vec<SaleLineReq>, total: i64| {
+        lines.push(kind_line(w.service, 1, 0));
         let mut req = takeaway(&w, lines, cash(total));
         req.sale_type = "service".into();
         req.master_id = Some(w.master);
@@ -1715,6 +1880,7 @@ async fn oil_book_records_service_change(pool: PgPool) {
             lines: vec![
                 ReturnLineReq { line_no: 1, qty: 1 },
                 ReturnLineReq { line_no: 2, qty: 1 },
+                ReturnLineReq { line_no: 3, qty: 1 },
             ],
             payments: cash(250_000),
             business_date: None,
@@ -1743,6 +1909,7 @@ async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    ready_for_service(&pool, party).await;
     sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG777AAA', '01KG777AAA')")
         .bind(vehicle)
         .bind(w.owner.user.branch_id)
@@ -2351,6 +2518,7 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    ready_for_service(&pool, party).await;
     sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm, brand) values ($1, $2, $3, '01KG123ABC', '01KG123ABC', 'Toyota')")
         .bind(vehicle)
         .bind(w.owner.user.branch_id)
@@ -2360,7 +2528,10 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
         .unwrap();
     let mut req = takeaway(
         &w,
-        vec![line("container", w.oil, 1, 200_000)],
+        vec![
+            line("container", w.oil, 1, 200_000),
+            kind_line(w.service, 1, 0),
+        ],
         cash(200_000),
     );
     req.sale_type = "service".into();
@@ -2539,6 +2710,8 @@ async fn offline_sale_after_shift_close_notifies_owner(pool: PgPool) {
     // Чек без сети с наличными пришёл, когда его смена уже закрыта: деньги легли в кассу
     // после пересчёта — владелец получает уведомление с суммой (ADR-059).
     let w = seed(&pool).await;
+    // Цены ниже прайса — скидка: право у администратора есть (ADR-097).
+    grant(&pool, &w, "discount").await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let branch = w.owner.user.branch_id;
     let mut conn = pool.acquire().await.unwrap();
@@ -2716,13 +2889,16 @@ async fn staff_car(pool: &PgPool, w: &World, party: Uuid, plate: &str, active: b
     id
 }
 
-/// Замена в сервисе: канистра масла и фильтр на 2 500 с, пробег 85 000.
+/// Замена в сервисе: канистра масла и фильтр на 2 500 с, вид замены (бесплатно с нашим маслом),
+/// пробег 85 000.
 async fn service_change(pool: &PgPool, w: &World, party: Uuid, vehicle: Uuid) -> Uuid {
+    ready_for_service(pool, party).await;
     let mut req = takeaway(
         w,
         vec![
             line("container", w.oil, 1, 200_000),
             line("piece", w.filter, 1, 50_000),
+            kind_line(w.service, 1, 0),
         ],
         cash(250_000),
     );
@@ -4044,6 +4220,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
 async fn seen_price_is_trusted_only_offline(pool: PgPool) {
     // Прайс «который видела касса» онлайн не принимается: правка цены видна по прайсу сервера.
     let w = seed(&pool).await;
+    grant(&pool, &w, "discount").await;
     receive(&pool, &w.admin, w.filter, 10, 100_000).await;
     let mut l = line("piece", w.filter, 1, 40_000);
     l.seen_list_price_tyiyn = Some(40_000);
@@ -5350,6 +5527,7 @@ async fn battery_intake_can_be_reversed_once(pool: PgPool) {
 async fn receipt_reversal_of_sold_goods_is_owner_only(pool: PgPool) {
     // Сторно прихода, товар которого уже продан, — только владелец, и ему уведомление (ADR-065).
     let w = seed(&pool).await;
+    grant(&pool, &w, "discount").await;
     let sold = receive_on_debt(&pool, &w.admin, w.filter, 5, 5_000).await;
     let intact = receive_on_debt(&pool, &w.admin, w.oil, 4000, 100_000).await;
     sell(
@@ -7716,6 +7894,7 @@ async fn bot_drafts_are_one_line_exact_and_rechecked(pool: PgPool) {
                 fee_rate_bp: None,
                 default_card: None,
                 default_transfer: None,
+                default_invoice: None,
             },
         )
         .await
@@ -8333,6 +8512,7 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
     }
     let chat = 990_001i64;
     let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    ready_for_service(&pool, me).await;
     let car = staff_car(&pool, &w, me, "01KG555AAA", true).await;
     let mut req = takeaway(
         &w,
@@ -8342,6 +8522,7 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
             line("piece", air, 1, 30_000),
             line("piece", antifreeze, 1, 30_000),
             line("piece", wiper, 1, 30_000),
+            kind_line(w.service, 1, 0),
         ],
         cash(340_000),
     );
@@ -9419,6 +9600,7 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
             fee_rate_bp: None,
             default_card: None,
             default_transfer: None,
+            default_invoice: None,
         },
     )
     .await
@@ -9435,6 +9617,7 @@ async fn bot_lists_all_accounts_with_balances(pool: PgPool) {
             fee_rate_bp: None,
             default_card: None,
             default_transfer: None,
+            default_invoice: None,
         },
     )
     .await
@@ -9673,4 +9856,348 @@ async fn services_import_skips_existing_names(pool: PgPool) {
         .await,
         Err(AppError::Validation(_))
     ));
+}
+
+// ---------- SPEC-30 §2–4: вид замены, данные клиента, скидка ----------
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn service_kinds_price_by_our_oil_and_report(pool: PgPool) {
+    // С нашим маслом вид замены «бесплатно с нашим маслом» стоит 0, мастеру — ставка услуги;
+    // две услуги — две ставки; без масла — цена клиенту (ADR-096). Отчёт «Замены по видам».
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w.admin, w.oil, 12_000, 360_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let gearbox = Uuid::now_v7();
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil) values ($1, $2, 'Замена масла в коробке', 15000, 4000, true)")
+        .bind(gearbox)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let client = service_client(&pool, &w).await;
+    // Наше масло (канистра и литр розливом) и два вида замены — оба бесплатно.
+    let with_oil = sell(
+        &pool,
+        &w.admin,
+        in_service(
+            &w,
+            client,
+            takeaway(
+                &w,
+                vec![
+                    line("container", w.oil, 1, 200_000),
+                    line("pour", w.oil, 1000, 50_000),
+                    kind_line(w.service, 1, 0),
+                    kind_line(gearbox, 1, 0),
+                ],
+                cash(250_000),
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(with_oil.lines[2].list_price_tyiyn, 0);
+    assert_eq!(with_oil.lines[3].list_price_tyiyn, 0);
+    assert_eq!(with_oil.master_fee_tyiyn, 3_000 + 4_000);
+    // Цена выше каталожной — не скидка: администратор без права ставит 100 с за «бесплатную».
+    let above = sell(
+        &pool,
+        &w.admin,
+        in_service(
+            &w,
+            client,
+            takeaway(
+                &w,
+                vec![
+                    line("container", w.oil, 1, 200_000),
+                    kind_line(w.service, 1, 10_000),
+                ],
+                cash(210_000),
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(above.lines[1].list_price_tyiyn, 0);
+    // В чеке только фильтр (не масло) — цена клиенту 200 с.
+    let no_oil = sell(
+        &pool,
+        &w.admin,
+        in_service(
+            &w,
+            client,
+            takeaway(
+                &w,
+                vec![
+                    line("piece", w.filter, 1, 50_000),
+                    kind_line(w.service, 1, 20_000),
+                ],
+                cash(70_000),
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(no_oil.lines[1].list_price_tyiyn, 20_000);
+    // Ниже этой цены — скидка: администратор без права не проведёт.
+    let cheap = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 1, 50_000),
+                kind_line(w.service, 1, 0),
+            ],
+            cash(50_000),
+        ),
+    );
+    match sell(&pool, &w.admin, cheap).await {
+        Err(AppError::ForbiddenWith(m)) => assert_eq!(m, "Скидку ставит владелец"),
+        other => panic!("ждали 403, получили {:?}", other.map(|s| s.number)),
+    }
+
+    // Отчёт: по видам — сколько раз, сколько заплатили клиенты и мастерам, масла в этих чеках.
+    let mut conn = pool.acquire().await.unwrap();
+    let r = avtodom_server::api::reports::service_kinds_data(&mut conn, &w.admin.user, None, None)
+        .await
+        .unwrap();
+    let kind = |name: &str| r.kinds.iter().find(|k| k.name == name).unwrap().clone();
+    let motor = kind("Замена масла");
+    assert_eq!(
+        (motor.count, motor.clients_tyiyn, motor.masters_tyiyn),
+        (3, 30_000, 9_000)
+    );
+    let oil = motor.oils.iter().find(|o| o.product_id == w.oil).unwrap();
+    assert_eq!((oil.canisters, oil.pour_ml, oil.total_ml), (2, 1000, 9000));
+    let gear = kind("Замена масла в коробке");
+    assert_eq!(
+        (gear.count, gear.clients_tyiyn, gear.masters_tyiyn),
+        (1, 0, 4_000)
+    );
+    assert_eq!(gear.oils[0].total_ml, 5000);
+    drop(conn);
+    // Бот: отчёт владельцу и лента — услуги и сколько мастеру.
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let text =
+        avtodom_server::api::bot_reports::services_text(&mut conn, &w.owner.user, today, today)
+            .await
+            .unwrap();
+    assert!(
+        text.contains("— Замена масла: 3 раз, клиенты заплатили 300 с, мастерам 90 с"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Масло 5W-30 4л: 2 кан. по 4 л + 1 л розливом = 9 л"),
+        "{text}"
+    );
+    let (_, details) = avtodom_server::api::telegram::sale_text(&mut conn, with_oil.id)
+        .await
+        .unwrap();
+    assert!(
+        details.contains("Замена масла, Замена масла в коробке, мастеру 70 с"),
+        "{details}"
+    );
+    drop(conn);
+    // Возврат вида замены уменьшает «сколько раз» и ставку мастера.
+    let mut tx = pool.begin().await.unwrap();
+    let back = return_sale_tx(
+        &mut tx,
+        &w.owner,
+        with_oil.id,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            battery_cash: false,
+            comment: String::new(),
+            lines: vec![ReturnLineReq { line_no: 4, qty: 1 }],
+            payments: Vec::new(),
+            business_date: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(back.master_fee_tyiyn, -4_000);
+    let mut conn = pool.acquire().await.unwrap();
+    let r = avtodom_server::api::reports::service_kinds_data(&mut conn, &w.owner.user, None, None)
+        .await
+        .unwrap();
+    let gear = r
+        .kinds
+        .iter()
+        .find(|k| k.name == "Замена масла в коробке")
+        .unwrap();
+    assert_eq!((gear.count, gear.masters_tyiyn), (0, 0));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn service_needs_client_data_offline_reports_reasons(pool: PgPool) {
+    // «В сервис» без телефона, машины и пробега — 422 со списком (ADR-100); чек без сети со старого
+    // устройства без вида замены — по прежней ставке за чек и с причинами владельцу (ADR-096).
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    sqlx::query("insert into settings (branch_id, key, value) values ($1, 'sales', '{\"oil_change_master_fee_tyiyn\": 5000}')")
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, first_name, last_name) values ($1, $2, 'customer', 'person', 'Асанов Бакыт', 'Бакыт', 'Асанов')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let with_kind = || {
+        let mut req = takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 1, 50_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            cash(70_000),
+        );
+        req.sale_type = "service".into();
+        req.master_id = Some(w.master);
+        req
+    };
+    let mut req = with_kind();
+    req.party_id = Some(party);
+    match sell(&pool, &w.admin, req).await {
+        Err(AppError::Validation(m)) => assert_eq!(
+            m,
+            "Чек «в сервис» — нужны данные клиента: телефон клиента, машина с госномером, пробег"
+        ),
+        other => panic!("ждали 422, получили {:?}", other.map(|s| s.number)),
+    }
+    // Без клиента вовсе — и клиент в списке.
+    match sell(&pool, &w.admin, with_kind()).await {
+        Err(AppError::Validation(m)) => {
+            assert!(m.contains("клиент (имя и фамилия или фирма)"), "{m}");
+        }
+        other => panic!("ждали 422, получили {:?}", other.map(|s| s.number)),
+    }
+    // Без сети: старое устройство, «в сервис» без вида замены и без клиента — проводится.
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(3));
+    let sale = sell(&pool, &w.admin, req).await.unwrap();
+    assert_eq!(sale.master_fee_tyiyn, 5_000);
+    let text = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
+    assert!(text.contains("чек «в сервис» без вида замены"), "{text}");
+    assert!(
+        text.contains("в сервис без данных клиента: клиент (имя и фамилия или фирма), телефон клиента, машина с госномером, пробег"),
+        "{text}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn discount_needs_right(pool: PgPool) {
+    // Цена ниже каталожной — только владелец или право «Скидка в чеке» (ADR-097): без права онлайн
+    // — 403, без сети — проведено с причиной; подарок, баллы и цена выше — не скидка.
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 20, 20_000).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    let cheap = || takeaway(&w, vec![line("piece", w.filter, 1, 45_000)], cash(45_000));
+    match sell(&pool, &w.admin, cheap()).await {
+        Err(AppError::ForbiddenWith(m)) => assert_eq!(m, "Скидку ставит владелец"),
+        other => panic!("ждали 403, получили {:?}", other.map(|s| s.number)),
+    }
+    sell(&pool, &w.owner, cheap()).await.unwrap();
+    // Без сети без права — проводится, владельцу причина с товаром и ценами.
+    let mut offline = cheap();
+    offline.offline = true;
+    offline.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(2));
+    sell(&pool, &w.admin, offline).await.unwrap();
+    let reasons = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
+    assert!(
+        reasons.contains("скидка без права: Фильтр W712, 450 с, цена по каталогу 500 с"),
+        "{reasons}"
+    );
+    // Цена выше каталожной — не скидка.
+    sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![line("piece", w.filter, 1, 55_000)], cash(55_000)),
+    )
+    .await
+    .unwrap();
+    // Подарок по правилу — не скидка.
+    let rule = Uuid::now_v7();
+    sqlx::query("insert into gift_rules (id, branch_id, trigger_product_id, user_id, min_units) values ($1, $2, $3, $4, 3000)")
+        .bind(rule)
+        .bind(w.owner.user.branch_id)
+        .bind(w.oil)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into gift_rule_items (rule_id, gift_product_id, gift_qty) values ($1, $2, 1)",
+    )
+    .bind(rule)
+    .bind(w.filter)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut gift = line("piece", w.filter, 1, 0);
+    gift.gift = true;
+    sell(
+        &pool,
+        &w.admin,
+        takeaway(
+            &w,
+            vec![line("container", w.oil, 1, 200_000), gift],
+            cash(200_000),
+        ),
+    )
+    .await
+    .unwrap();
+    // Баллы — оплата, а не цена строки: не скидка.
+    let party = Uuid::now_v7();
+    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Баллов Азат', '0555123456')")
+        .bind(party)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into telegram_customers (chat_id, party_id, phone) values (78, $1, '0555123456')",
+    )
+    .bind(party)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into loyalty_ledger (id, branch_id, party_id, kind, amount_tyiyn, doc_type, doc_id) values ($1, $2, $3, 'accrual', 10000, 'adjust', $1)")
+        .bind(Uuid::now_v7())
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let pay = |method: &str, amount: i64| PaymentReq {
+        account_id: None,
+        price_per_kg_tyiyn: None,
+        method: method.into(),
+        amount_tyiyn: amount,
+        grams: None,
+    };
+    let mut req = takeaway(
+        &w,
+        vec![line("piece", w.filter, 1, 50_000)],
+        vec![pay("bonus", 10_000), pay("cash", 40_000)],
+    );
+    req.party_id = Some(party);
+    sell(&pool, &w.admin, req).await.unwrap();
+    // С правом администратор ставит скидку сам.
+    grant(&pool, &w, "discount").await;
+    sell(&pool, &w.admin, cheap()).await.unwrap();
 }

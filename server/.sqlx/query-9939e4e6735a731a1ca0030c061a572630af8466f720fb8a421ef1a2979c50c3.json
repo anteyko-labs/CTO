@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select price_tyiyn, master_fee_tyiyn, free_with_oil from services where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "free_with_oil",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9939e4e6735a731a1ca0030c061a572630af8466f720fb8a421ef1a2979c50c3"
+}

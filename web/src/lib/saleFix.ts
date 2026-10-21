@@ -32,7 +32,7 @@ export interface FixLine {
   gift?: boolean
 }
 
-export type MoneyMethod = 'cash' | 'card' | 'transfer' | 'debt'
+export type MoneyMethod = 'cash' | 'card' | 'transfer' | 'invoice' | 'debt'
 
 export interface SaleFixState {
   saleType: 'takeaway' | 'service'
@@ -50,11 +50,11 @@ export interface SaleFixState {
   split: Record<MoneyMethod, string>
   bonusAmount: number
   battery: { kgText: string; perKgText: string } | null
-  bankPick: { card: string; transfer: string }
+  bankPick: { card: string; transfer: string; invoice: string }
   businessDate: string
 }
 
-const MONEY: MoneyMethod[] = ['cash', 'card', 'transfer', 'debt']
+const MONEY: MoneyMethod[] = ['cash', 'card', 'transfer', 'invoice', 'debt']
 
 /** Количество строки текстом: розлив и вес — литры/килограммы с тысячными, остальное — целым. */
 export const qtyInput = (kind: SaleLineKind, qty: number): string => (kind === 'pour' || kind === 'weight' ? litersInput(qty) : String(qty))
@@ -87,12 +87,12 @@ export function saleFixState(
   }
   // Деньги: один способ — он и выбран; несколько — «Смешанная» с суммами по способам.
   const money = doc.payments.filter((p): p is SaleDraftDoc['payments'][number] & { method: MoneyMethod } => MONEY.includes(p.method as MoneyMethod))
-  const sums: Record<MoneyMethod, number> = { cash: 0, card: 0, transfer: 0, debt: 0 }
+  const sums: Record<MoneyMethod, number> = { cash: 0, card: 0, transfer: 0, invoice: 0, debt: 0 }
   for (const p of money) sums[p.method] += p.amount_tyiyn
   const used = MONEY.filter((m) => sums[m] > 0)
-  const split: Record<MoneyMethod, string> = { cash: '', card: '', transfer: '', debt: '' }
+  const split: Record<MoneyMethod, string> = { cash: '', card: '', transfer: '', invoice: '', debt: '' }
   if (used.length > 1) for (const m of used) split[m] = somInput(sums[m])
-  const bank = (m: 'card' | 'transfer') => money.find((p) => p.method === m && p.account_id)?.account_id ?? ''
+  const bank = (m: 'card' | 'transfer' | 'invoice') => money.find((p) => p.method === m && p.account_id)?.account_id ?? ''
   const battery = doc.payments.find((p) => p.method === 'battery')
   return {
     saleType: doc.sale_type,
@@ -113,7 +113,7 @@ export function saleFixState(
       battery && battery.grams
         ? { kgText: litersInput(battery.grams), perKgText: battery.price_per_kg_tyiyn != null ? somInput(battery.price_per_kg_tyiyn) : '' }
         : null,
-    bankPick: { card: bank('card'), transfer: bank('transfer') },
+    bankPick: { card: bank('card'), transfer: bank('transfer'), invoice: bank('invoice') },
     businessDate: doc.business_date,
   }
 }

@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select sv.name,\n                  coalesce(sum(case when s.kind = 'return' then -l.qty else l.qty end), 0)::bigint as \"count!\",\n                  coalesce(sum(l.master_fee_tyiyn), 0)::bigint as \"fee!\"\n           from sale_lines l\n           join sales s on s.id = l.sale_id\n           join services sv on sv.id = l.service_id\n           where s.branch_id = $1 and s.master_id = $2 and s.business_date between $3 and $4\n             and l.kind = 'service'\n           group by sv.name\n           having sum(l.master_fee_tyiyn) <> 0\n           order by 3 desc, sv.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "c1513878d4cfced732d1a38d87caac4d74926b8763f260e92cba1b94e594bf2a"
+}

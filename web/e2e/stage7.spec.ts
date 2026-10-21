@@ -147,7 +147,9 @@ test('масляная книжка по каждому фильтру: стро
   const oil = await goods(page.request, oilCat.id, `Масло строки ${RUN}`, 700_000, 520_000, { container_ml: 4000 })
   const filter = await goods(page.request, filterCat.id, `Фильтр W712 ${RUN}`, 50_000, 20_000)
   const air = await goods(page.request, airCat.id, `Фильтр A1 ${RUN}`, 60_000, 20_000)
-  const party = await api<{ id: string }>(page.request, 'POST', '/parties', { name: `Фильтров ${RUN}`, kind: 'person' })
+  const party = await api<{ id: string }>(page.request, 'POST', '/parties', { name: `Фильтров ${RUN}`, kind: 'person', phone: `0700${RUN.slice(-6)}` })
+  // Чек «В сервис» — с видом замены (ADR-096).
+  const kind = await api<{ id: string }>(page.request, 'POST', '/services', { name: `Замена фильтров ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
   const plate = `01KG${RUN.slice(-3)}FFF`
   const vehicle = await api<{ id: string }>(page.request, 'POST', `/parties/${party.id}/vehicles`, { plate })
   await api(page.request, 'POST', '/sales', {
@@ -162,6 +164,7 @@ test('масляная книжка по каждому фильтру: стро
       { kind: 'container', gift: false, product_id: oil.id, qty: 1, unit_price_tyiyn: 700_000 },
       { kind: 'piece', gift: false, product_id: filter.id, qty: 1, unit_price_tyiyn: 50_000 },
       { kind: 'piece', gift: false, product_id: air.id, qty: 1, unit_price_tyiyn: 60_000 },
+      { kind: 'service', gift: false, service_id: kind.id, qty: 1, unit_price_tyiyn: 0 },
     ],
     payments: [{ method: 'cash', amount_tyiyn: 810_000 }],
   })

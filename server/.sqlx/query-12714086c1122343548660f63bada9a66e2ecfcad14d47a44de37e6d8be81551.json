@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.account_id as \"account_id!\" from sale_payments p\n           join cash_accounts a on a.id = p.account_id\n           where p.sale_id = $1 and p.method in ('card', 'transfer', 'invoice') and a.active\n           group by p.account_id\n           order by bool_or(p.method = $2) desc, sum(p.amount_tyiyn) desc, p.account_id\n           limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "12714086c1122343548660f63bada9a66e2ecfcad14d47a44de37e6d8be81551"
+}

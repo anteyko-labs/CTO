@@ -13,7 +13,8 @@ export interface SnapshotProduct extends Product {
 
 /** Клиент из снимка: касса без сети выбирает его для долга и машину для замены (ADR-093). */
 export interface SnapshotClient extends Party {
-  contacts: Pick<PartyContact, 'id' | 'full_name' | 'position' | 'active'>[]
+  /** Телефон работника фирмы — в новом снимке (ADR-100). */
+  contacts: (Pick<PartyContact, 'id' | 'full_name' | 'position' | 'active'> & { phone?: string })[]
   vehicles: PartyVehicle[]
 }
 
@@ -26,8 +27,9 @@ export interface Snapshot {
   services?: Service[]
   categories?: { id: string; name: string; kind: CategoryKind }[]
   clients?: SnapshotClient[]
-  /** Безналичные счета для карты и перевода без сети (ADR-076); у старого снимка — нет. */
-  bank_accounts?: { id: string; name: string; default_card?: boolean; default_transfer?: boolean; fee_rate_bp?: number }[]
+  /** Безналичные счета для карты, перевода и «По счёту» без сети (ADR-076, ADR-095); у старого
+   *  снимка — нет. */
+  bank_accounts?: { id: string; name: string; default_card?: boolean; default_transfer?: boolean; default_invoice?: boolean; fee_rate_bp?: number }[]
   oil_change_master_fee_tyiyn: number
   saved_at: string
 }

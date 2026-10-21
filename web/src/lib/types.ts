@@ -114,8 +114,12 @@ export interface Employee {
 export interface Service {
   id: string
   name: string
+  /** Цена клиенту — со своим маслом (ADR-096). */
   price_tyiyn: number
+  /** Ставка мастеру за одну услугу. */
   master_fee_tyiyn: number
+  /** «Бесплатно с нашим маслом»: с маслом в чеке услуга стоит 0 (ADR-096). */
+  free_with_oil?: boolean
   active: boolean
 }
 
@@ -314,7 +318,7 @@ export interface StockMismatch {
 }
 
 export type SaleLineKind = 'piece' | 'container' | 'pour' | 'service' | 'weight'
-export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'debt' | 'bonus' | 'battery'
+export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'invoice' | 'debt' | 'bonus' | 'battery'
 
 export interface SaleLine {
   line_no: number
@@ -338,7 +342,7 @@ export interface Payment {
   amount_tyiyn: number
   /** Аккумулятор в оплату: вес в граммах (у возврата — с минусом). */
   grams?: number | null
-  /** Карта и перевод: безналичный счёт, куда пришли деньги (ADR-076). */
+  /** Карта, перевод и «По счёту»: безналичный счёт, куда пришли деньги (ADR-076, ADR-095). */
   account_id?: string | null
   account_name?: string | null
 }
@@ -361,7 +365,7 @@ export interface Sale {
   /** Адрес доставки; пусто — забрали сами. */
   delivery_address: string
   total_tyiyn: number
-  /** Начисление мастеру за замену: ставка на чек, а не строка услуги. */
+  /** Начисление мастеру: сумма ставок услуг чека (ADR-096); у старых чеков — ставка за чек. */
   master_fee_tyiyn: number
   comment: string
   reversal_of: string | null
@@ -398,6 +402,7 @@ export interface SalesDay {
     cash_tyiyn: number
     card_tyiyn: number
     transfer_tyiyn: number
+    invoice_tyiyn?: number
     debt_tyiyn: number
     bonus_tyiyn?: number
     battery_tyiyn?: number
@@ -410,6 +415,8 @@ export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   card: 'Карта / QR банка',
   // Код прежний, чтобы не трогать проведённые чеки: QR на личный счёт владельца, без комиссии.
   transfer: 'QR владельцу',
+  // Юрлицо перечислением по выставленному счёту, без комиссии банка (ADR-095).
+  invoice: 'По счёту',
   debt: 'В долг',
   bonus: 'Баллы',
   battery: 'Аккумулятор',
@@ -541,6 +548,8 @@ export interface CashAccount {
   default_card?: boolean
   /** Безналичный счёт по умолчанию для перевода / QR (ADR-077). */
   default_transfer?: boolean
+  /** Безналичный счёт по умолчанию для «По счёту» (ADR-095); ни у одного — счёт карты. */
+  default_invoice?: boolean
   /** Ставка комиссии банка на сегодня, сотые доли процента (ADR-077). */
   fee_rate_bp?: number
   /** Отрицательный баланс разрешён (ADR-076; по умолчанию — да, ADR-077). */
@@ -556,6 +565,7 @@ export interface BankSplit {
   name: string
   card_tyiyn: number
   transfer_tyiyn: number
+  invoice_tyiyn?: number
   fee_tyiyn: number
   total_tyiyn: number
 }
@@ -580,6 +590,8 @@ export interface Shift {
   cash_sales_tyiyn: number
   card_tyiyn: number
   transfer_tyiyn: number
+  /** «По счёту» (ADR-095). */
+  invoice_tyiyn?: number
   debt_tyiyn: number
   bonus_tyiyn?: number
   battery_tyiyn?: number
@@ -750,6 +762,7 @@ export interface PointsTotal {
 export interface Noncash {
   card_tyiyn: number
   transfer_tyiyn: number
+  invoice_tyiyn?: number
   total_tyiyn: number
   /** По безналичным счетам (ADR-076). */
   by_account?: BankSplit[]
@@ -780,11 +793,12 @@ export interface BankReport {
   closing_tyiyn: number
   card: BankIncome
   transfer: BankIncome
+  invoice?: BankIncome
   fee_tyiyn: number
   other_in_tyiyn: number
   outgoing_tyiyn: number
   kinds: KindRow[]
-  days: { date: string; card_tyiyn: number; transfer_tyiyn: number; fee_tyiyn: number; other_tyiyn: number; net_tyiyn: number }[]
+  days: { date: string; card_tyiyn: number; transfer_tyiyn: number; invoice_tyiyn?: number; fee_tyiyn: number; other_tyiyn: number; net_tyiyn: number }[]
   movements: CashMovement[]
   movements_count: number
 }
@@ -1080,4 +1094,33 @@ export interface OldCatalogHit {
   exact: boolean
   /** Товар учёта с этим штрихкодом уже заведён. */
   linked_product_id: string | null
+}
+
+// ---------- Замены по видам (SPEC-30 §2) ----------
+
+/** Масло в чеках вида замены: канистрами, розливом (мл) и всего (мл). */
+export interface ServiceOil {
+  product_id: string
+  name: string
+  container_ml: number | null
+  canisters: number
+  pour_ml: number
+  total_ml: number
+}
+
+/** Вид замены за период; без `service_id` — чеки «в сервис» без вида замены (ставка за чек). */
+export interface ServiceKind {
+  service_id: string | null
+  name: string
+  count: number
+  checks: number
+  clients_tyiyn: number
+  masters_tyiyn: number
+  oils: ServiceOil[]
+}
+
+export interface ServiceKinds {
+  from: string
+  to: string
+  kinds: ServiceKind[]
 }

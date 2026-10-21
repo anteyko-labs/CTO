@@ -174,6 +174,11 @@ test('услуга «масло клиента»: ставка мастера и
   await employee(page.request, cashier, { is_cashier: true, pin: '1234' })
   const m = await employee(page.request, master, { is_master: true })
   const service = `Замена масла (масло клиента) ${RUN}`
+  // Чек «В сервис» — с клиентом, телефоном, машиной и пробегом (ADR-100).
+  const client = `Услугин Клиент${RUN}`
+  const party = await apiSend<{ id: string }>(page.request, 'POST', '/parties', { name: client, kind: 'person', phone: `0700${RUN.slice(-6)}` })
+  const plate = `01KG${RUN.slice(-3)}SRV`
+  await apiSend(page.request, 'POST', `/parties/${party.id}/vehicles`, { plate })
 
   await page.goto('/')
   await page.getByRole('button', { name: 'Услуги' }).click()
@@ -191,6 +196,13 @@ test('услуга «масло клиента»: ставка мастера и
   await expect(page.getByRole('button', { name: 'В сервис' })).toHaveClass(/bg-sky-600/)
   await pickCashier(page, cashier)
   await page.locator('#master-select').selectOption({ label: master })
+  // Без клиента не провести: касса отмечает недостающее.
+  await expect(page.getByTestId('service-client-needs')).toContainText('телефон клиента')
+  await expect(page.getByRole('button', { name: 'Провести чек' })).toBeDisabled()
+  await page.locator('[data-client-input]').fill(plate)
+  await page.getByRole('button', { name: new RegExp(`^${client}`) }).click()
+  await page.locator('#mileage').fill('64000')
+  await expect(page.getByTestId('service-client-needs')).toHaveCount(0)
   await page.getByRole('button', { name: 'Без сдачи' }).click()
   await page.getByRole('button', { name: 'Провести чек' }).click()
   await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()

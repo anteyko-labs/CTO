@@ -96,6 +96,64 @@ async fn call(
     (status, cookie, json)
 }
 
+/// Вид замены для чеков «В сервис» (ADR-096): бесплатно с нашим маслом, мастеру 30 с.
+async fn oil_change_kind(app: &Router, owner: &str) -> String {
+    let (s, _, sv) = call(
+        app,
+        "POST",
+        "/api/v1/services",
+        Some(owner),
+        Some(json!({ "name": "Замена масла в моторе", "price_tyiyn": 0, "master_fee_tyiyn": 3000, "free_with_oil": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sv}");
+    sv["id"].as_str().unwrap().to_string()
+}
+
+/// Клиент для чека «В сервис» (ADR-100): человек с именем, фамилией и телефоном и его машина.
+async fn service_client(app: &Router, admin: &str, plate: &str) -> (String, String) {
+    let (s, _, p) = call(
+        app,
+        "POST",
+        "/api/v1/parties",
+        Some(admin),
+        Some(json!({ "kind": "person", "first_name": "Бакыт", "last_name": "Асанов", "phone": "0700 11-22-33" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let pid = p["id"].as_str().unwrap().to_string();
+    let (s, _, car) = call(
+        app,
+        "POST",
+        &format!("/api/v1/parties/{pid}/vehicles"),
+        Some(admin),
+        Some(json!({ "plate": plate })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{car}");
+    (pid, car["id"].as_str().unwrap().to_string())
+}
+
+/// Право администратора сверх роли (ADR-082, ADR-097) — прямо в базе: ограничение списка прав
+/// снимается, тест не зависит от того, какие права в нём уже перечислены.
+async fn grant_admin(pool: &PgPool, permission: &str) {
+    sqlx::query(
+        "alter table user_permissions drop constraint if exists user_permissions_permission_check",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into user_permissions (user_id, branch_id, permission, granted_by)
+         select a.id, a.branch_id, $1, o.id from users a join users o on o.branch_id = a.branch_id and o.role = 'owner'
+         where a.login = 'admin' on conflict do nothing",
+    )
+    .bind(permission)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// «Сейф владельца»: из него тесты платят за приходы для склада — «из своих» больше нет (ADR-079).
 async fn owner_safe(app: &Router, owner: &str) -> String {
     let (s, _, list) = call(app, "GET", "/api/v1/cash/accounts", Some(owner), None).await;
@@ -4119,6 +4177,9 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{shift}");
     let sid = shift["id"].as_str().unwrap().to_string();
     let mut totals = Vec::new();
+    // Замены — с видом замены (мастеру 30 с) и данными клиента (ADR-096, ADR-100).
+    let kind_id = oil_change_kind(&app, &owner).await;
+    let (pid, vid) = service_client(&app, &admin, "01KG404CAB").await;
     for (kind, qty) in [("takeaway", 2), ("service", 1), ("service", 1)] {
         let mut body = json!({
             "op_id": Uuid::now_v7(), "sale_type": kind, "cashier_id": cashier,
@@ -4127,6 +4188,13 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
         });
         if kind == "service" {
             body["master_id"] = json!(master);
+            body["party_id"] = json!(pid);
+            body["vehicle_id"] = json!(vid);
+            body["mileage"] = json!(100_000);
+            body["lines"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({ "kind": "service", "service_id": kind_id, "qty": 1, "unit_price_tyiyn": 0 }));
         }
         let (s, _, sale) = post(&admin, "/api/v1/sales".into(), body).await;
         assert_eq!(s, StatusCode::OK, "{sale}");
@@ -4223,6 +4291,8 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
     let r = bot(&pool, mchat, Some("💼 Сегодня"), None).await;
     assert!(
         r.text.contains("за замены: 2 × 30 с = 60 с")
+            // Заработок мастера по услугам (SPEC-30 §2).
+            && r.text.contains("— Замена масла в моторе: 2 × 30 с = 60 с")
             && r.text
                 .contains(&format!("Итого за день: {}", format_som(m_day))),
         "{}",
@@ -4230,6 +4300,11 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
     );
     replies.push(r.text);
     let r = bot(&pool, mchat, Some("/месяц"), None).await;
+    assert!(
+        r.text.contains("— Замена масла в моторе: 2 × 30 с = 60 с"),
+        "{}",
+        r.text
+    );
     assert!(
         r.text
             .contains(&format!("Итого за месяц: {}", format_som(m_month)))
@@ -9040,7 +9115,7 @@ async fn car_from_dictionary_miles_and_interval_in_sale(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         Some(&admin),
-        Some(json!({ "kind": "person", "first_name": "Нурлан", "last_name": "Абдыкадыров" })),
+        Some(json!({ "kind": "person", "first_name": "Нурлан", "last_name": "Абдыкадыров", "phone": "0555 10-20-30" })),
     )
     .await;
     let pid = p["id"].as_str().unwrap().to_string();
@@ -9140,12 +9215,14 @@ async fn car_from_dictionary_miles_and_interval_in_sale(pool: PgPool) {
     )
     .await;
     let vid = car["id"].as_str().unwrap().to_string();
+    let kind_id = oil_change_kind(&app, &owner).await;
     let sale = |intervals: Value| {
         json!({
             "op_id": Uuid::now_v7(), "sale_type": "service", "cashier_id": cashier,
             "master_id": master["id"], "party_id": pid, "vehicle_id": vid,
             "mileage": 50_000, "book_intervals": intervals,
-            "lines": [{ "kind": "container", "product_id": oil["id"], "qty": 1, "unit_price_tyiyn": 200_000 }],
+            "lines": [{ "kind": "container", "product_id": oil["id"], "qty": 1, "unit_price_tyiyn": 200_000 },
+                      { "kind": "service", "service_id": kind_id, "qty": 1, "unit_price_tyiyn": 0 }],
             "payments": [{ "method": "card", "amount_tyiyn": 200_000 }]
         })
     };
@@ -10136,7 +10213,7 @@ async fn offline_queue_rules_adr_093(pool: PgPool) {
         "POST",
         "/api/v1/parties",
         Some(&admin),
-        Some(json!({ "kind": "person", "first_name": "Улан", "last_name": "Исаков" })),
+        Some(json!({ "kind": "person", "first_name": "Улан", "last_name": "Исаков", "phone": "0555 20-30-40" })),
     )
     .await;
     let pid = p["id"].as_str().unwrap().to_string();
@@ -10149,13 +10226,17 @@ async fn offline_queue_rules_adr_093(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{car}");
+    // Вид замены (ADR-096); 40 с при прайсе 50 с онлайн — скидка: право у администратора есть (ADR-097).
+    let kind_id = oil_change_kind(&app, &owner).await;
+    grant_admin(&pool, "discount").await;
     let sale = |offline: bool, secs_ago: i64| {
         let mut body = json!({
             "op_id": Uuid::now_v7(), "sale_type": "service", "cashier_id": cashier,
             "master_id": master["id"], "party_id": pid, "vehicle_id": car["id"],
             "mileage": 12_345_678_901_i64,
             "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 40_000,
-                        "seen_list_price_tyiyn": 40_000 }],
+                        "seen_list_price_tyiyn": 40_000 },
+                      { "kind": "service", "service_id": kind_id, "qty": 1, "unit_price_tyiyn": 0 }],
             "payments": [{ "method": "cash", "amount_tyiyn": 40_000 }]
         });
         if offline {
@@ -10960,4 +11041,221 @@ async fn admin_pays_only_masters(pool: PgPool) {
     let (s, _, err) = pay(&admin, &master).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     assert_eq!(err["error"]["message"], "Нет права: Выплаты мастерам");
+}
+
+// ---------- SPEC-30 §1: оплата «По счёту» ----------
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn invoice_payment_lands_on_its_account(pool: PgPool) {
+    // «По счёту» (ADR-095): без клиента — 422; деньги — на счёт по умолчанию для «По счёту», без
+    // него — на счёт карты; комиссии нет; возврат — с того же счёта; видно в смене, чеках дня,
+    // «Поступлениях» и кабинете юрлица.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (_, card_bank, _) = accounts_of(&app, &owner).await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let item = product(&app, &owner, "Фильтр по счёту", 50_000, 0).await;
+    let inn = "01204201910777";
+    let (_, _, firm) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&admin),
+        Some(json!({ "name": "ОсОО Транзит", "kind": "company", "inn": inn })),
+    )
+    .await;
+    let firm = firm["id"].as_str().unwrap().to_string();
+    let (s, _, shift) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{shift}");
+    let sale = |party: Option<&str>, qty: i64| {
+        let mut body = json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+            "lines": [{ "kind": "piece", "product_id": item, "qty": qty, "unit_price_tyiyn": 50_000 }],
+            "payments": [{ "method": "invoice", "amount_tyiyn": 50_000 * qty }]
+        });
+        if let Some(p) = party {
+            body["party_id"] = json!(p);
+        }
+        body
+    };
+    // Без клиента — 422.
+    let (s, _, e) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(None, 1)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        e["error"]["message"],
+        "По счёту платит клиент — выберите его"
+    );
+    // Счёта для «По счёту» нет — деньги на счёте карты, комиссии нет (у счёта карты она 0,5 %).
+    let before = balance_of(&pool, &card_bank).await;
+    let (s, _, first) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(Some(&firm), 2)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    assert_eq!(first["payments"][0]["method"], "invoice");
+    assert_eq!(first["payments"][0]["account_id"], json!(card_bank));
+    assert_eq!(balance_of(&pool, &card_bank).await, before + 100_000);
+    let fees: i64 = sqlx::query_scalar(
+        "select coalesce(sum(fee_tyiyn), 0)::bigint from sale_payments where method = 'invoice'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(fees, 0);
+
+    // Свой счёт для «По счёту» отмечает владелец; «только владелец» для него нельзя.
+    let (s, _, settle) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/accounts",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "name": "Расчётный счёт", "kind": "bank",
+                     "fee_rate_bp": 70, "default_invoice": true }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{settle}");
+    assert_eq!(settle["default_invoice"], true);
+    let settle = settle["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{settle}"),
+        Some(&owner),
+        Some(json!({ "owner_only": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, second) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(Some(&firm), 1)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{second}");
+    assert_eq!(second["payments"][0]["account_id"], json!(settle));
+    assert_eq!(balance_of(&pool, &settle).await, 50_000);
+
+    // Возврат — с того же счёта, без комиссии.
+    let sid = first["id"].as_str().unwrap();
+    let (s, _, ret) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/sales/{sid}/return"),
+        Some(&admin),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                     "payments": [{ "method": "invoice", "amount_tyiyn": 50_000 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{ret}");
+    assert_eq!(ret["payments"][0]["account_id"], json!(card_bank));
+    assert_eq!(balance_of(&pool, &card_bank).await, before + 50_000);
+    assert_eq!(balance_of(&pool, &settle).await, 50_000);
+
+    // Смена, чеки дня, «Поступления» — «По счёту» отдельной строкой.
+    let (_, _, cur) = call(&app, "GET", "/api/v1/shifts/current", Some(&admin), None).await;
+    assert_eq!(cur["invoice_tyiyn"], 100_000);
+    let (_, _, day) = call(&app, "GET", "/api/v1/sales", Some(&admin), None).await;
+    assert_eq!(day["totals"]["invoice_tyiyn"], 100_000);
+    let (_, _, income) = call(&app, "GET", "/api/v1/reports/income", Some(&admin), None).await;
+    let row = income["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["method"] == "invoice")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (
+            row["sales_tyiyn"].clone(),
+            row["returns_tyiyn"].clone(),
+            row["fee_tyiyn"].clone()
+        ),
+        (json!(150_000), json!(50_000), json!(0))
+    );
+    let (_, _, bank) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/cash/bank?account_id={settle}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(bank["invoice"]["total_tyiyn"], 50_000);
+    assert_eq!(bank["transfer"]["total_tyiyn"], 0);
+
+    // Кабинет юрлица: у чека — сколько «По счёту».
+    let (s, cookie, _) = call(
+        &app,
+        "POST",
+        "/api/v1/client/login",
+        None,
+        Some(json!({ "inn": inn, "password": "avtodom2026" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let c = cookie.unwrap();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/client/password",
+        Some(&c),
+        Some(json!({ "old_password": "avtodom2026", "new_password": "transit-pass-7" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, sales) = call(&app, "GET", "/api/v1/client/sales", Some(&c), None).await;
+    let mine = sales
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == second["id"])
+        .unwrap()
+        .clone();
+    assert_eq!(mine["invoice_tyiyn"], 50_000);
+
+    // Отметку можно снять — «По счёту» снова идёт на счёт карты.
+    let (s, _, a) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/cash/accounts/{settle}"),
+        Some(&owner),
+        Some(json!({ "default_invoice": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{a}");
+    assert_eq!(a["default_invoice"], false);
+    let (_, _, third) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(sale(Some(&firm), 1)),
+    )
+    .await;
+    assert_eq!(third["payments"][0]["account_id"], json!(card_bank));
 }

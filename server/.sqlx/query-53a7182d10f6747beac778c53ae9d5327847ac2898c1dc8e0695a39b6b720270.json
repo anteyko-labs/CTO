@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from cash_accounts where branch_id = $1 and kind = 'bank' and active\n           order by (case $2 when 'transfer' then default_transfer\n                             when 'invoice' then default_invoice\n                             else default_card end) desc,\n                    default_card desc, created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "53a7182d10f6747beac778c53ae9d5327847ac2898c1dc8e0695a39b6b720270"
+}

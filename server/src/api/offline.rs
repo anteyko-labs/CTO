@@ -75,6 +75,8 @@ struct SnapService {
     name: String,
     price_tyiyn: i64,
     master_fee_tyiyn: i64,
+    /// «Бесплатно с нашим маслом» (ADR-096): касса без сети считает цену услуги так же.
+    free_with_oil: bool,
     active: bool,
 }
 
@@ -89,6 +91,7 @@ struct SnapCategory {
 struct SnapContact {
     id: Uuid,
     full_name: String,
+    phone: String,
     position: String,
     active: bool,
 }
@@ -112,6 +115,9 @@ struct SnapClient {
     role: String,
     kind: String,
     name: String,
+    /// Имя и фамилия (ADR-083): касса без сети отмечает недостающее для чека «в сервис» (ADR-100).
+    first_name: String,
+    last_name: String,
     phone: String,
     inn: String,
     comment: String,
@@ -143,6 +149,8 @@ struct SnapBank {
     name: String,
     default_card: bool,
     default_transfer: bool,
+    /// По умолчанию для «По счёту» (ADR-095).
+    default_invoice: bool,
     /// Ставка комиссии банка на сегодня, сотые доли процента: подпись у кнопок оплаты без сети.
     fee_rate_bp: i32,
 }
@@ -214,7 +222,7 @@ async fn snapshot(
     .await?;
     let services = sqlx::query_as!(
         SnapService,
-        r#"select id, name, price_tyiyn, master_fee_tyiyn, active from services
+        r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active from services
            where branch_id = $1 and active order by name"#,
         user.branch_id
     )
@@ -231,7 +239,7 @@ async fn snapshot(
     crate::api::cash::ensure_accounts(&mut conn, user.branch_id).await?;
     let bank_accounts = sqlx::query_as!(
         SnapBank,
-        r#"select id, name, default_card, default_transfer,
+        r#"select id, name, default_card, default_transfer, default_invoice,
                   account_fee_on(id, (now() at time zone 'Asia/Bishkek')::date) as "fee_rate_bp!"
            from cash_accounts
            where branch_id = $1 and kind = 'bank' and active and (not owner_only or $2)
@@ -296,7 +304,7 @@ async fn snapshot_clients(
     branch_id: Uuid,
 ) -> AppResult<Vec<SnapClient>> {
     let rows = sqlx::query!(
-        r#"select p.id, p.role, p.kind, p.name, p.phone, p.inn, p.comment,
+        r#"select p.id, p.role, p.kind, p.name, p.first_name, p.last_name, p.phone, p.inn, p.comment,
                   p.credit_limit_tyiyn as "credit_limit_tyiyn?", p.due_days as "due_days?",
                   p.active, p.balance_tyiyn
            from parties p
@@ -336,7 +344,7 @@ async fn snapshot_clients(
     let mut contacts: std::collections::HashMap<Uuid, Vec<SnapContact>> =
         std::collections::HashMap::new();
     for c in sqlx::query!(
-        r#"select id, party_id, full_name, position, active
+        r#"select id, party_id, full_name, phone, position, active
            from party_contacts where party_id = any($1) and active order by full_name"#,
         &ids
     )
@@ -346,6 +354,7 @@ async fn snapshot_clients(
         contacts.entry(c.party_id).or_default().push(SnapContact {
             id: c.id,
             full_name: c.full_name,
+            phone: c.phone,
             position: c.position,
             active: c.active,
         });
@@ -359,6 +368,8 @@ async fn snapshot_clients(
             role: r.role,
             kind: r.kind,
             name: r.name,
+            first_name: r.first_name,
+            last_name: r.last_name,
             phone: r.phone,
             inn: r.inn,
             comment: r.comment,

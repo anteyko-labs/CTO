@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(master_fee_tyiyn), 0)::bigint as \"v!\" from sale_lines where sale_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0579736805c96cd3b5e95af65c6b5c7bc000e1a0950a64efcaf0a81e961b7015"
+}

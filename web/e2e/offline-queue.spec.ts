@@ -87,6 +87,8 @@ test('без сети: перезагрузка, клиент из снимка,
     lines: [{ product_id: prod.id, qty: 5, cost_tyiyn: 150000 }],
   })
   const party = await apiPost<{ id: string }>(page.request, '/parties', { kind: 'person', first_name: 'Снимок', last_name: `Клиент${RUN}` })
+  // Вид замены — в снимке кассы: без сети выбирается так же (ADR-096).
+  await apiPost(page.request, '/services', { name: `Вид снимка ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
   await apiPost(page.request, `/parties/${party.id}/vehicles`, { plate })
   // Смена открыта: без связи касса не должна начать спрашивать кассира.
   let shift = (await (await page.request.get('/api/v1/shifts/current')).json()) as { cashier_name: string } | null
@@ -117,6 +119,8 @@ test('без сети: перезагрузка, клиент из снимка,
   await picker.press('Enter')
   await expect(page.getByText(product).first()).toBeVisible()
   await page.getByRole('button', { name: 'В сервис' }).click()
+  await page.getByRole('dialog', { name: 'Вид замены' }).getByPlaceholder('Найти услугу').fill(`Вид снимка ${RUN}`)
+  await page.getByTestId('service-choices').getByRole('button', { name: new RegExp(`Вид снимка ${RUN}`) }).click()
   await page.locator('#master-select').selectOption({ label: `Мастер снимка ${RUN}` })
   await page.locator('[data-client-input]').fill(plate)
   await page.getByRole('button', { name: new RegExp(`Клиент${RUN}`) }).click()
