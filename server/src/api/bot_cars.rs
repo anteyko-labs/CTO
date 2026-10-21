@@ -1,6 +1,8 @@
 //! Машины клиента в Телеграм-боте: список, карточка с историей замен, добавление по госномеру,
-//! удаление и пометки (SPEC-22, ADR-061). Клиент видит и меняет только машины своей карточки:
-//! каждая выборка ограничена его `party_id`, номер машины из кнопки сам по себе ничего не открывает.
+//! удаление и пометки (SPEC-22, ADR-061). Карточка показывает книжку машины целиком, длинная
+//! уходит несколькими сообщениями (SPEC-30 §10, `api::bot_book`). Клиент видит и меняет только
+//! машины своей карточки: каждая выборка ограничена его `party_id`, номер машины из кнопки сам
+//! по себе ничего не открывает.
 
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
@@ -8,7 +10,6 @@ use uuid::Uuid;
 
 use crate::api::oil_book::{OilRecord, books};
 use crate::api::telegram::{Button, Keys, Reply};
-use crate::domain::money::format_som;
 use crate::domain::plate;
 use crate::error::AppResult;
 use crate::ops::new_id;
@@ -23,10 +24,6 @@ pub const NOTE_LEN: usize = 500;
 const BRAND_LEN: usize = 60;
 /// Действий в минуту на чат (добавление, пометка, удаление).
 pub const RATE_PER_MIN: i64 = 30;
-/// Замен в одном сообщении; дальше — кнопка «Ещё».
-const PAGE: usize = 10;
-/// Предел текста сообщения: у Телеграма 4096, оставляем запас.
-const MAX_TEXT: usize = 3900;
 /// Машин кнопками в списке; остальные открываются по номеру (ADR-063).
 pub const LIST_CARS: usize = 20;
 /// Машин у клиента всего, вместе с убранными: дальше добавляет только точка (ADR-063).
@@ -354,20 +351,6 @@ async fn cars(
     Ok(Reply::with_buttons(with_header(header, text), rows))
 }
 
-/// Замена для карточки: дата, пробег, сумма чека за вычетом возвратов и строки книжки.
-fn record_text(r: &OilRecord) -> String {
-    let mut head = vec![r.change_date.format("%d.%m.%Y").to_string()];
-    if let Some(m) = r.mileage {
-        head.push(crate::domain::mileage::text(m, &r.mileage_unit));
-    }
-    // Запись из тетради — без чека, суммы нет.
-    head.push(r.sale_total_tyiyn.map_or_else(|| "—".into(), format_som));
-    let mut lines = vec![head.join(" · ")];
-    // По строкам книжки: масло, фильтры по видам, прочие работы (SPEC-27).
-    lines.extend(crate::api::oil_book::record_lines(r, "  "));
-    lines.join("\n")
-}
-
 /// Обрезка по знакам, а не байтам.
 fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
@@ -377,12 +360,12 @@ fn cut(s: &str, n: usize) -> String {
     }
 }
 
-/// Карточка машины: следующая замена, замены (по 10, дальше «Ещё»), пометки клиента.
+/// Карточка машины: следующая замена, вся история замен от новой к старой (SPEC-30 §10),
+/// пометки клиента. Длинная карточка уходит несколькими сообщениями, кнопки — под последним.
 async fn card(
     conn: &mut PgConnection,
     c: &Customer,
     id: Uuid,
-    offset: usize,
     header: Option<&str>,
 ) -> AppResult<Reply> {
     if own_car(conn, c, id).await?.is_none() {
@@ -396,66 +379,32 @@ async fn card(
         return Ok(Reply::new(NOT_FOUND, Keys::Customer));
     };
     let name = car_name(&b.plate, &b.brand, &b.model);
-    let page: Vec<&OilRecord> = b.records.iter().skip(offset).take(PAGE).collect();
-    let more = b.records.len() > offset.saturating_add(PAGE);
-    let mut text = Vec::new();
-    if offset == 0 {
-        text.push(format!("🚗 {name}"));
-        // Следующая замена по каждой строке книжки (SPEC-27).
-        let next = crate::api::oil_book::next_lines(&b, "  ");
-        if !next.is_empty() {
-            text.push("Следующая замена — что наступит раньше:".into());
-            text.extend(next);
-        }
-        text.push(String::new());
-        if page.is_empty() {
-            text.push("Замен на точке пока не было.".into());
-        } else {
-            text.push("Замены:".into());
-        }
-    } else {
-        text.push(format!("🚗 {name} — замены, продолжение:"));
-    }
-    for r in &page {
-        text.push(record_text(r));
-    }
-    let mut text = text.join("\n");
+    let records: Vec<&OilRecord> = b.records.iter().collect();
+    let x = crate::api::bot_book::extras(conn, &records).await?;
+    let mut text = crate::api::bot_book::full_book(&b, &x, format!("🚗 {name}"));
     let notes: Vec<_> = b.client_notes.iter().filter(|n| !n.deleted).collect();
-    if offset == 0 && !notes.is_empty() {
+    if !notes.is_empty() {
         text.push_str("\n\n📝 Пометки:");
-        for (i, n) in notes.iter().enumerate() {
+        for n in &notes {
             // Бишкек — UTC+6 круглый год.
-            let line = format!(
+            text.push_str(&format!(
                 "\n{} — {}",
                 (n.created_at + chrono::Duration::hours(6)).format("%d.%m"),
                 n.text
-            );
-            if text.chars().count() + line.chars().count() > MAX_TEXT {
-                text.push_str(&format!("\n… и ещё {} пометок", notes.len() - i));
-                break;
-            }
-            text.push_str(&line);
+            ));
         }
     }
     if c.company {
         text.push_str(&format!("\n\n{COMPANY}"));
     }
-    let text = cut(&with_header(header, text), MAX_TEXT);
+    let text = with_header(header, text);
 
     let mut rows = Vec::new();
-    if offset == 0 && !c.company {
+    if !c.company {
         rows.push(vec![
             button("📝 Пометка", format!("note:{id}")),
             button("🗑 Убрать машину", format!("rm:{id}")),
         ]);
-    }
-    if more {
-        rows.push(vec![button(
-            "Ещё",
-            format!("more:{id}:{}", offset.saturating_add(PAGE)),
-        )]);
-    }
-    if offset == 0 && !c.company {
         for n in &notes {
             rows.push(vec![button(
                 format!(
@@ -491,15 +440,8 @@ pub async fn callback(
     }
     let id = || arg.split(':').next().and_then(|s| Uuid::parse_str(s).ok());
     match (verb, id()) {
-        ("car", Some(id)) => card(conn, &c, id, 0, None).await,
-        ("more", Some(id)) => {
-            let offset = arg
-                .split(':')
-                .nth(1)
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-            card(conn, &c, id, offset, None).await
-        }
+        // «Ещё» из прежних сообщений (замены по 10) — теперь карточка целиком (SPEC-30 §10).
+        ("car" | "more", Some(id)) => card(conn, &c, id, None).await,
         ("add", _) => start_add(conn, &c, chat_id).await,
         ("skip", _) => match pending(conn, chat_id).await? {
             Some(p) if p.kind == "brand" => {
@@ -635,7 +577,7 @@ async fn find_entered(
     match found {
         Some(id) => {
             clear_input(conn, chat_id).await?;
-            card(conn, c, id, 0, None).await
+            card(conn, c, id, None).await
         }
         None => Ok(Reply::new(
             "Среди ваших машин такого номера нет. Напишите другой номер или нажмите кнопку меню.",
@@ -664,7 +606,7 @@ async fn plate_entered(
         }
         clear_input(&mut tx, chat_id).await?;
         tx.commit().await?;
-        return card(conn, c, id, 0, Some(FOUND)).await;
+        return card(conn, c, id, Some(FOUND)).await;
     }
     if active_cars(&mut tx, c).await? >= MAX_CARS {
         clear_input(&mut tx, chat_id).await?;
@@ -728,7 +670,7 @@ async fn brand_entered(
         tx.commit().await?;
         return match refused {
             Some(r) => Ok(Reply::new(r, Keys::Customer)),
-            None => card(conn, c, id, 0, Some(FOUND)).await,
+            None => card(conn, c, id, Some(FOUND)).await,
         };
     }
     if active_cars(&mut tx, c).await? >= MAX_CARS {
@@ -801,7 +743,7 @@ async fn brand_entered(
     .await?;
     clear_input(&mut tx, chat_id).await?;
     tx.commit().await?;
-    card(conn, c, id, 0, Some(&added_text(&norm))).await
+    card(conn, c, id, Some(&added_text(&norm))).await
 }
 
 // ---------- Убрать машину ----------
@@ -926,7 +868,7 @@ async fn note_entered(
     .await?;
     clear_input(&mut tx, chat_id).await?;
     tx.commit().await?;
-    card(conn, c, car.id, 0, Some("Сохранено.")).await
+    card(conn, c, car.id, Some("Сохранено.")).await
 }
 
 async fn delete_note(
@@ -974,7 +916,7 @@ async fn delete_note(
     )
     .await?;
     tx.commit().await?;
-    card(conn, c, note.vehicle_id, 0, Some("Пометка удалена.")).await
+    card(conn, c, note.vehicle_id, Some("Пометка удалена.")).await
 }
 
 #[cfg(test)]

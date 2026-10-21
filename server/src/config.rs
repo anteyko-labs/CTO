@@ -16,6 +16,8 @@ pub struct Config {
     /// Модель и адрес сервиса; пусто — значения по умолчанию из `api::assistant`.
     pub assistant_model: Option<String>,
     pub assistant_url: Option<String>,
+    /// Модель для накладных по фото (SPEC-30 §9); пусто — по умолчанию из `api::assistant`.
+    pub assistant_invoice_model: Option<String>,
     /// Сколько вопросов в сутки на филиал.
     pub assistant_daily_limit: i64,
 }
@@ -72,6 +74,7 @@ impl Config {
             assistant_key: non_empty("ASSISTANT_API_KEY").map(SecretKey),
             assistant_model: non_empty("ASSISTANT_MODEL"),
             assistant_url: non_empty("ASSISTANT_API_URL"),
+            assistant_invoice_model: non_empty("ASSISTANT_INVOICE_MODEL"),
             assistant_daily_limit,
         })
     }

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from products\n               where not archived\n                 and greatest(similarity(name, $1), similarity(brand || ' ' || name, $1)) >= 0.4\n               order by greatest(similarity(name, $1), similarity(brand || ' ' || name, $1)) desc, name\n               limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c95ebedfd636a888ce3640abf7753af57affc8bab42e29eeecdc086be1c3ad89"
+}

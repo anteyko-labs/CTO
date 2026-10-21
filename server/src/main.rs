@@ -46,18 +46,22 @@ async fn run() -> Result<(), String> {
     let mut state = build_state(pool.clone(), config.cookie_secure)
         .await
         .map_err(|e| e.to_string())?;
+    // Внешний сервис по ключу: вопросы боту (SPEC-21) и накладные по фото (SPEC-30 §9).
+    let assistant = config.assistant_key.clone().map(|k| {
+        avtodom_server::api::assistant::Assistant::new(
+            k.0,
+            config.assistant_url.clone(),
+            config.assistant_model.clone(),
+            config.assistant_daily_limit,
+        )
+        .with_invoice_model(config.assistant_invoice_model.clone())
+    });
+    // Накладная по фото с экрана работает и без бота.
+    state.assistant = assistant.clone();
     // Телеграм-бот владельца — только если задан ключ (ADR-050).
     if let Some(token) = config.telegram_token.clone() {
         state.telegram_bot = true;
         // Вопросы владельца текстом — только если задан и ключ сервиса разбора (SPEC-21).
-        let assistant = config.assistant_key.clone().map(|k| {
-            avtodom_server::api::assistant::Assistant::new(
-                k.0,
-                config.assistant_url.clone(),
-                config.assistant_model.clone(),
-                config.assistant_daily_limit,
-            )
-        });
         state.assistant_daily_limit = assistant.as_ref().map(|a| a.daily_limit());
         avtodom_server::api::telegram::spawn(pool, token, assistant);
     }

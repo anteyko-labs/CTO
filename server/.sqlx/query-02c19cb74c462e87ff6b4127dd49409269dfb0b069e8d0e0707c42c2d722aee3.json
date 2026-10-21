@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.id, d.source, d.status, d.recognition, d.recognized, d.created_at, d.name,\n                  d.content_type, u.full_name as user_name\n           from receipt_drafts d join users u on u.id = d.user_id\n           where d.branch_id = $1 and d.status = 'new'\n           order by d.created_at desc, d.id desc\n           limit $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "recognition",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "recognized",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "02c19cb74c462e87ff6b4127dd49409269dfb0b069e8d0e0707c42c2d722aee3"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from bot_questions\n           where branch_id = $1 and asked_at > now() - interval '1 hour'\n             and error is distinct from $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "15f3fa71dd1857aa528dc8ba3e75300f90e38ef14d42af4d78d54d2d570b0bea"
+}

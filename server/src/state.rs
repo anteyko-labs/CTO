@@ -14,4 +14,7 @@ pub struct AppState {
     pub telegram_bot: bool,
     /// Вопросы боту текстом включены (SPEC-21): дневной предел; `None` — выключены.
     pub assistant_daily_limit: Option<i64>,
+    /// Внешний сервис по ключу `ASSISTANT_API_KEY`: накладные по фото с экрана «Новый приход»
+    /// (SPEC-30 §9); `None` — распознавание не настроено.
+    pub assistant: Option<crate::api::assistant::Assistant>,
 }

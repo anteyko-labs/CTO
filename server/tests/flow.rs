@@ -2586,7 +2586,8 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     assert!(linked.text.contains("85 000 км") && linked.text.contains("на 93 000 км"));
     // Команды владельца клиенту не отвечают — только его книжка.
     let book = say(&mut conn, chat, "/сегодня").await;
-    assert!(book.contains("Последняя замена") && !book.contains("Выручка"));
+    // Одна машина — книжка целиком (SPEC-30 §10).
+    assert!(book.contains("Замены:") && !book.contains("Выручка"));
 
     // Через 31 день — не сегодня; ставим интервал 7 дней: напоминание «за неделю».
     assert!(due_reminders(&mut conn).await.unwrap().is_empty());
@@ -3312,33 +3313,154 @@ async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
     );
     assert!(!card.contains(&format_som(250_000)));
 
-    // Больше 10 замен — кнопка «Ещё» со следующими.
-    for d in 1..=10 {
-        sqlx::query("insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, oil_text, user_id) values ($1, $2, $3, $4, $5, 'старое', $6)")
+    // Мастер чека — в записи (SPEC-30 §10).
+    assert!(card.contains("  Мастер: Мастер"), "{card}");
+
+    // Книжка целиком, от новой к старой (SPEC-30 §10): «Ещё» больше нет, длинная книжка уходит
+    // несколькими сообщениями, запись не рвётся между ними.
+    for d in 1..=28 {
+        sqlx::query("insert into oil_changes (id, branch_id, vehicle_id, party_id, change_date, mileage_km, oil_text, filter_text, declined, user_id) values ($1, $2, $3, $4, $5, $6, $7, 'Фильтр Sakura C-1821', 'воздушный фильтр', $8)")
             .bind(Uuid::now_v7())
             .bind(w.owner.user.branch_id)
             .bind(car)
             .bind(me)
             .bind(chrono::NaiveDate::from_ymd_opt(2025, 1, d).unwrap())
+            .bind(10_000 + i32::try_from(d).unwrap() * 1000)
+            .bind("Масло Totachi Niro LV 0W-20, 4 литра, синтетика ".repeat(3))
             .bind(w.owner.user.id)
             .execute(&pool)
             .await
             .unwrap();
     }
     let card = press(&mut conn, chat, &format!("car:{car}")).await;
-    let more = card
-        .inline
-        .iter()
-        .flatten()
-        .find(|b| b.text == "Ещё")
-        .unwrap()
-        .data
-        .clone();
-    let next = press(&mut conn, chat, &more).await.text;
     assert!(
-        next.contains("продолжение") && next.contains("01.01.2025"),
-        "{next}"
+        !card.inline.iter().flatten().any(|b| b.text == "Ещё"),
+        "{:?}",
+        card.inline
     );
+    let text = &card.text;
+    assert!(
+        text.contains("01.01.2025 · 11 000 км · —") && text.contains("28.01.2025 · 38 000 км"),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("Мастер рекомендовал: воздушный фильтр")
+            .count(),
+        28
+    );
+    // Новые сверху: замена по чеку раньше тетрадной 10.01.2026, та — раньше январских 2025.
+    let pos = |s: &str| text.find(s).unwrap();
+    assert!(pos("85 000 км") < pos("10.01.2026") && pos("10.01.2026") < pos("28.01.2025"));
+    assert!(pos("28.01.2025") < pos("01.01.2025"));
+    let parts = avtodom_server::api::telegram::split_message(text);
+    assert!(parts.len() > 1, "{}", parts.len());
+    for d in 1..=28 {
+        let head = format!("{d:02}.01.2025 · ");
+        let part = parts.iter().find(|p| p.contains(&head)).unwrap();
+        // Вся запись — в одном сообщении: дата и рекомендация мастера рядом.
+        let rest = &part[part.find(&head).unwrap()..];
+        assert!(
+            rest.split("\n\n")
+                .next()
+                .unwrap()
+                .contains("Мастер рекомендовал"),
+            "{rest}"
+        );
+    }
+    // Старая кнопка «Ещё» открывает ту же карточку целиком.
+    let old = press(&mut conn, chat, &format!("more:{car}:10")).await.text;
+    assert!(
+        old.contains("01.01.2025") && old.contains("85 000 км"),
+        "{old}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_book_shows_master_and_services(pool: PgPool) {
+    // В записи книжки: масло литрами или канистрами, фильтры, услуги чека, мастер и что он
+    // рекомендовал (SPEC-30 §10).
+    use avtodom_server::api::telegram::customer_book;
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.oil, 8000, 240_000).await;
+    receive(&pool, &w.admin, w.filter, 5, 5_000).await;
+    let (cat, washer) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into categories (id, name, kind) values ($1, 'Автохимия', 'other')")
+        .bind(cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into products (id, category_id, name, unit) values ($1, $2, 'Омыватель', 'piece')",
+    )
+    .bind(washer)
+    .bind(cat)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into branch_products (branch_id, product_id, sale_price_tyiyn) values ($1, $2, 30000)",
+    )
+    .bind(w.owner.user.branch_id)
+    .bind(washer)
+    .execute(&pool)
+    .await
+    .unwrap();
+    receive(&pool, &w.admin, washer, 3, 15_000).await;
+    let chat = 720_101i64;
+    let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    let car = staff_car(&pool, &w, me, "01KG555XYZ", true).await;
+    let mut service = line("piece", washer, 1, 30_000);
+    service.kind = "service".into();
+    service.product_id = None;
+    service.service_id = Some(w.service);
+    service.unit_price_tyiyn = 20_000;
+    let mut req = takeaway(
+        &w,
+        vec![
+            line("container", w.oil, 1, 200_000),
+            line("piece", w.filter, 1, 50_000),
+            line("piece", washer, 1, 30_000),
+            service,
+        ],
+        cash(300_000),
+    );
+    req.sale_type = "service".into();
+    req.master_id = Some(w.master);
+    req.party_id = Some(me);
+    req.vehicle_id = Some(car);
+    req.mileage_km = Some(91_000);
+    req.declined = "салонный фильтр".into();
+    sell(&pool, &w.owner, req).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let book = customer_book(&mut conn, me).await.unwrap();
+    assert!(
+        book.contains("01KG555XYZ") && book.contains("Замены:"),
+        "{book}"
+    );
+    assert!(book.contains("91 000 км"), "{book}");
+    assert!(
+        book.contains("  Масло двигателя: Масло 5W-30 4л · 1 кан. × 4 л")
+            && book.contains("  Фильтр масляный: Фильтр W712 · 1 шт"),
+        "{book}"
+    );
+    // Услуги чека — да; товар категории «не в книжке» — нет (решение владельца, SPEC-27).
+    assert!(book.contains("  Услуги: Замена масла"), "{book}");
+    assert!(!book.contains("Омыватель"), "{book}");
+    assert!(book.contains("  Мастер: Мастер"), "{book}");
+    assert!(
+        book.contains("  Мастер рекомендовал: салонный фильтр"),
+        "{book}"
+    );
+    // Больше трёх машин — по последней замене, вся история — в карточке машины.
+    for i in 0..3 {
+        staff_car(&pool, &w, me, &format!("02KG{i:03}AAA"), true).await;
+    }
+    let book = customer_book(&mut conn, me).await.unwrap();
+    assert!(
+        book.contains("Последняя замена: ") && book.contains("Вся история машины"),
+        "{book}"
+    );
+    assert!(book.contains("  Мастер: Мастер"), "{book}");
 }
 
 // ---------- Вопросы владельца боту текстом (SPEC-21) ----------

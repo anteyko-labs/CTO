@@ -1,14 +1,17 @@
 // Список приходов за период (SPEC-03): накладные поставщиков и оприходования без поставщика вместе,
-// по дате, с отбором по виду (SPEC-29 §8, ADR-086).
+// по дате, с отбором по виду (SPEC-29 §8, ADR-086). Вверху — «Накладные по фото» из бота и с экрана
+// (SPEC-30 §9): «Открыть» заполняет «Новый приход».
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
 import { CorrectionBadges } from '../components/Correction'
+import { ReceiptDraftsBlock } from '../components/ReceiptDrafts'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
+import type { DraftList } from '../lib/receiptDrafts'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
-import { qs } from '../lib/api'
+import { get, qs } from '../lib/api'
 import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
 import type { ReceiptListItem } from '../lib/types'
 
@@ -42,6 +45,8 @@ export default function Receipts() {
   const can = useCan()
   const mayAdd = can('receipts') || can('stock_in')
   const newReceipt = () => navigate(kind === 'stock_in' || !can('receipts') ? '/receipts/new?kind=stock_in' : '/receipts/new')
+  // Накладные по фото — с правом «Приход» (ADR-097, ADR-098).
+  const drafts = useLoad(() => (can('receipts') ? get<DraftList>('/receipt-drafts') : Promise.resolve(null)), [])
   /** Отметки строки: вид, сторно, оплата накладной, исправления. */
   const badges = (r: ReceiptListItem) => (
     <>
@@ -79,6 +84,14 @@ export default function Receipts() {
   return (
     <div>
       <PageHeader title="Приход" actions={mayAdd && <Button onClick={newReceipt}>Новый приход</Button>} />
+      <div className="mb-4 flex flex-col gap-2">
+        <ErrorBox error={drafts.error} />
+        <ReceiptDraftsBlock
+          items={drafts.data?.items ?? []}
+          onOpen={(id) => navigate(`/receipts/new?draft=${id}`)}
+          onChanged={drafts.reload}
+        />
+      </div>
       <Card>
         <div className="mb-4 grid grid-cols-2 gap-3 sm:max-w-2xl sm:grid-cols-3">
           <Field label="С">

@@ -1226,7 +1226,7 @@ async fn link_customer(
 }
 
 /// Масляная книжка клиента текстом: по машинам — последняя замена и следующая.
-fn points(v: i64) -> String {
+pub(crate) fn points(v: i64) -> String {
     // «12,50 с» → «12,50»: баллы показываем без валюты.
     format_som(v).trim_end_matches(" с").to_string()
 }
@@ -1346,73 +1346,12 @@ pub async fn mark_bonus_notice(conn: &mut PgConnection, n: &BonusNotice) -> AppR
     Ok(())
 }
 
-/// Машин в книжке одним сообщением; остальные — по номеру или кнопкой «🚗 Мои машины».
-pub const BOOK_CARS: usize = 20;
+/// Машин в книжке одним ответом; остальные — по номеру или кнопкой «🚗 Мои машины».
+pub const BOOK_CARS: usize = crate::api::bot_book::BOOK_CARS;
 
+/// Масляная книжка клиента целиком (SPEC-30 §10) — `api::bot_book`.
 pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
-    let branch_id = sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
-        .fetch_one(&mut *conn)
-        .await?;
-    let bonus = format!(
-        "⭐ Баллов: {} — подробнее кнопкой «⭐ Баллы»",
-        points(crate::api::loyalty::balance(conn, party_id).await?)
-    );
-    let books = crate::api::oil_book::books(conn, branch_id, Some(party_id), None).await?;
-    if books.is_empty() {
-        return Ok(format!(
-            "{bonus}\n\nМашин у вас пока не записано — назовите госномер кассиру при замене."
-        ));
-    }
-    let mut parts: Vec<String> = books
-        .iter()
-        .take(BOOK_CARS)
-        .map(|b| {
-            let car = [b.brand.as_str(), b.model.as_str()]
-                .into_iter()
-                .filter(|x| !x.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let head = if car.is_empty() {
-                b.plate.clone()
-            } else {
-                format!("{} ({car})", b.plate)
-            };
-            let Some(last) = b.records.first() else {
-                return format!("{head}\nЗамен пока не было.");
-            };
-            let mut lines = vec![
-                head,
-                format!(
-                    "Последняя замена: {}{}",
-                    last.change_date.format("%d.%m.%Y"),
-                    last.mileage
-                        .map(|m| format!(
-                            ", {}",
-                            crate::domain::mileage::text(m, &last.mileage_unit)
-                        ))
-                        .unwrap_or_default()
-                ),
-            ];
-            lines.extend(crate::api::oil_book::record_lines(last, ""));
-            if !last.declined.is_empty() {
-                lines.push(format!("Мастер рекомендовал: {}", last.declined));
-            }
-            // Следующая замена по каждой строке книжки (SPEC-27).
-            let next = crate::api::oil_book::next_lines(b, "  ");
-            if !next.is_empty() {
-                lines.push("Следующая замена:".into());
-                lines.extend(next);
-            }
-            lines.join("\n")
-        })
-        .collect();
-    if books.len() > BOOK_CARS {
-        parts.push(format!(
-            "… и ещё {} — откройте «🚗 Мои машины» и напишите номер машины.",
-            books.len() - BOOK_CARS
-        ));
-    }
-    Ok(format!("{bonus}\n\n{}", parts.join("\n\n")))
+    crate::api::bot_book::customer_book(conn, party_id).await
 }
 
 // ---------- Напоминания о замене ----------
@@ -2834,6 +2773,47 @@ struct Message {
     from: Option<From>,
     text: Option<String>,
     contact: Option<Contact>,
+    /// Фото — несколько размеров одного снимка, от меньшего к большему (SPEC-30 §9).
+    #[serde(default)]
+    photo: Vec<PhotoSize>,
+    /// Картинка или PDF файлом.
+    document: Option<Document>,
+}
+
+#[derive(Deserialize)]
+struct PhotoSize {
+    file_id: String,
+    file_size: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct Document {
+    file_id: String,
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    file_size: Option<i64>,
+}
+
+/// Файл из сообщения: фото накладной (SPEC-30 §9).
+#[derive(Debug, Clone)]
+pub struct IncomingFile {
+    pub file_id: String,
+    /// Размер по словам Телеграма; `None` — неизвестен.
+    pub size: Option<i64>,
+    pub name: String,
+    /// Вид файла по словам Телеграма (у фото — JPEG).
+    pub mime: String,
+}
+
+/// Наибольший размер фото, который можно сохранить и распознать (не больше 5 МБ); размер не
+/// известен — берётся наибольший. Все больше — самый маленький (ответ «больше 5 МБ»).
+fn pick_photo(sizes: &[PhotoSize]) -> Option<&PhotoSize> {
+    let limit = i64::try_from(crate::api::receipt_files::MAX_FILE_BYTES).unwrap_or(i64::MAX);
+    sizes
+        .iter()
+        .rev()
+        .find(|p| p.file_size.is_none_or(|s| s <= limit))
+        .or_else(|| sizes.first())
 }
 
 #[derive(Deserialize)]
@@ -2872,6 +2852,12 @@ pub enum Incoming {
         from_id: i64,
         data: String,
     },
+    /// Фото или файл (SPEC-30 §9): у владельца — накладная по фото, остальным — отказ.
+    File {
+        chat_id: i64,
+        from_id: i64,
+        file: IncomingFile,
+    },
 }
 
 /// Разбор обновления Телеграма. `None` — не личный чат или нечего обрабатывать.
@@ -2891,6 +2877,28 @@ fn incoming(u: Update) -> Option<Incoming> {
     let m = u.message?;
     if m.chat.kind != "private" {
         return None;
+    }
+    let file = match (pick_photo(&m.photo), &m.document) {
+        (Some(p), _) => Some(IncomingFile {
+            file_id: p.file_id.clone(),
+            size: p.file_size,
+            name: "фото из бота".into(),
+            mime: "image/jpeg".into(),
+        }),
+        (None, Some(d)) => Some(IncomingFile {
+            file_id: d.file_id.clone(),
+            size: d.file_size,
+            name: d.file_name.clone().unwrap_or_default(),
+            mime: d.mime_type.clone().unwrap_or_default(),
+        }),
+        (None, None) => None,
+    };
+    if let Some(file) = file {
+        return Some(Incoming::File {
+            chat_id: m.chat.id,
+            from_id: m.from.as_ref().map_or(m.chat.id, |f| f.id),
+            file,
+        });
     }
     Some(Incoming::Message {
         chat_id: m.chat.id,
@@ -2937,15 +2945,162 @@ async fn handle_incoming(
             data,
             ..
         } => handle_callback_from(conn, assistant, chat_id, from_id, &data).await,
+        Incoming::File {
+            chat_id,
+            from_id,
+            file,
+        } => Ok(file_reply(conn, assistant, chat_id, from_id, &file)
+            .await?
+            .0),
     }
+}
+
+/// Сколько файла скачивать из Телеграма: до 10 МБ (SPEC-30 §9); сохраняется и распознаётся
+/// до 5 МБ.
+pub const MAX_DOWNLOAD: usize = 10 * 1024 * 1024;
+
+/// Первый ответ на фото или файл (SPEC-30 §9) и брать ли его в работу: владельцу — «Принял,
+/// распознаю…», остальным — вежливый отказ с их кнопками.
+pub async fn file_reply(
+    conn: &mut PgConnection,
+    assistant: Option<&Assistant>,
+    chat_id: i64,
+    from_id: i64,
+    file: &IncomingFile,
+) -> AppResult<(Reply, bool)> {
+    use crate::api::receipt_drafts as drafts;
+    let owner = sqlx::query_scalar!(
+        r#"select t.tg_user_id from telegram_links t join users u on u.id = t.user_id
+           where t.chat_id = $1 and u.active and u.role = 'owner'"#,
+        chat_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    // Чат привязал один человек — фото принимаются только от него (ADR-070).
+    if !owner.is_some_and(|t| t.is_none_or(|t| t == from_id)) {
+        let r = sqlx::query!(
+            r#"select exists (select 1 from telegram_customers where chat_id = $1) as "c!",
+                      exists (select 1 from telegram_employees where chat_id = $1) as "e!""#,
+            chat_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let keys = if owner.is_some() {
+            owner_keys(conn, assistant, chat_id).await?
+        } else {
+            section_keys(r.c, r.e)
+        };
+        return Ok((Reply::new(drafts::NOT_OWNER, keys), false));
+    }
+    let keys = owner_keys(conn, assistant, chat_id).await?;
+    let limit = i64::try_from(crate::api::receipt_files::MAX_FILE_BYTES).unwrap_or(i64::MAX);
+    if file.size.is_some_and(|s| s > limit) {
+        return Ok((Reply::new(drafts::TOO_BIG_BOT, keys), false));
+    }
+    let known = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+    if !file.mime.is_empty() && !known.contains(&file.mime.as_str()) {
+        return Ok((Reply::new(drafts::BAD_KIND_BOT, keys), false));
+    }
+    let text = if assistant.is_some() {
+        drafts::ACCEPTED
+    } else {
+        "Принял фото накладной, сохраняю…"
+    };
+    Ok((Reply::new(text, keys), true))
+}
+
+/// Фото накладной владельца: скачать, сохранить черновиком, распознать и ответить (SPEC-30 §9).
+/// Сервис распознавания отвечает до двух минут — отдельной задачей, бот в это время отвечает
+/// другим.
+async fn file_task(
+    pool: PgPool,
+    api: Api,
+    assistant: Option<Assistant>,
+    chat_id: i64,
+    from_id: i64,
+    file: IncomingFile,
+) {
+    let start = match pool.acquire().await {
+        Ok(mut conn) => file_reply(&mut conn, assistant.as_ref(), chat_id, from_id, &file).await,
+        Err(e) => Err(AppError::from(e)),
+    };
+    let accepted = match start {
+        Ok((r, ok)) => {
+            send_reply(&api, chat_id, &r).await;
+            ok
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "телеграм: фото не обработано");
+            api.send(chat_id, "Не получилось, попробуйте позже.").await;
+            false
+        }
+    };
+    if !accepted {
+        return;
+    }
+    let text = match api.download(&file.file_id, MAX_DOWNLOAD).await {
+        Ok(data) => {
+            let f = crate::api::receipt_drafts::BotFile {
+                data,
+                name: file.name.clone(),
+            };
+            crate::api::receipt_drafts::from_bot(&pool, assistant.as_ref(), chat_id, from_id, f)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "телеграм: накладная по фото не сохранена");
+                    "Не получилось сохранить фото, попробуйте позже.".into()
+                })
+        }
+        Err(why) => why.into(),
+    };
+    api.send(chat_id, &text).await;
 }
 
 /// Предел одного сообщения в единицах UTF-16, как считает Телеграм (у него 4096, с запасом).
 pub const MAX_MESSAGE: usize = 4000;
 
-/// Делит текст на части не длиннее `MAX_MESSAGE` по границам строк; строка длиннее предела
-/// режется по знакам.
+/// Делит текст на части не длиннее `MAX_MESSAGE`: сначала по пустым строкам (запись книжки,
+/// блок отчёта не рвутся между сообщениями, SPEC-30 §10), абзац длиннее предела — по строкам,
+/// строка длиннее предела — по знакам.
 pub fn split_message(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut cur_len = 0usize;
+    for para in text.split("\n\n") {
+        let len: usize = para.chars().map(char::len_utf16).sum();
+        let extra = if cur.is_empty() { len } else { len + 2 };
+        if cur_len + extra <= MAX_MESSAGE {
+            if !cur.is_empty() {
+                cur.push_str("\n\n");
+            }
+            cur.push_str(para);
+            cur_len += extra;
+            continue;
+        }
+        if !cur.is_empty() {
+            parts.push(std::mem::take(&mut cur));
+        }
+        cur_len = 0;
+        if len <= MAX_MESSAGE {
+            cur.push_str(para);
+            cur_len = len;
+            continue;
+        }
+        let mut lines = split_lines(para);
+        if let Some(last) = lines.pop() {
+            parts.extend(lines);
+            cur_len = last.chars().map(char::len_utf16).sum();
+            cur = last;
+        }
+    }
+    if !cur.is_empty() || parts.is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// Части не длиннее `MAX_MESSAGE` по границам строк; строка длиннее предела режется по знакам.
+fn split_lines(text: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut cur = String::new();
     let mut cur_len = 0usize;
@@ -3037,6 +3192,8 @@ struct Pace {
 pub struct Api {
     http: reqwest::Client,
     base: String,
+    /// Адрес файлов: тоже с ключом бота, не печатается.
+    files: String,
     pace: std::sync::Arc<tokio::sync::Mutex<Pace>>,
     gap: Duration,
     chat_gap: Duration,
@@ -3048,6 +3205,7 @@ impl Api {
         Self {
             http: reqwest::Client::new(),
             base: format!("{}/bot{token}", url.trim_end_matches('/')),
+            files: format!("{}/file/bot{token}", url.trim_end_matches('/')),
             pace: std::sync::Arc::new(tokio::sync::Mutex::new(Pace {
                 last: None,
                 chats: HashMap::new(),
@@ -3219,6 +3377,63 @@ impl Api {
         }
     }
 
+    /// Скачать файл из сообщения (фото накладной, SPEC-30 §9): `getFile`, затем сам файл, не
+    /// больше `max` байт. `Err` — ответ владельцу, без адреса и ключа.
+    pub async fn download(&self, file_id: &str, max: usize) -> Result<Vec<u8>, &'static str> {
+        #[derive(Deserialize)]
+        struct TgFile {
+            file_path: Option<String>,
+            file_size: Option<i64>,
+        }
+        const NO_FILE: &str = "Не удалось получить фото из Телеграма, пришлите ещё раз.";
+        const TOO_BIG: &str = "Файл больше 10 МБ — пришлите накладную фотографией.";
+        let info = self
+            .http
+            .post(format!("{}/getFile", self.base))
+            .json(&json!({ "file_id": file_id }))
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e.without_url(), "телеграм: файл не получен");
+                NO_FILE
+            })?
+            .json::<TgResponse<TgFile>>()
+            .await
+            .map_err(|_| NO_FILE)?;
+        let f = info.result.filter(|_| info.ok).ok_or(NO_FILE)?;
+        let limit = i64::try_from(max).unwrap_or(i64::MAX);
+        if f.file_size.is_some_and(|s| s > limit) {
+            return Err(TOO_BIG);
+        }
+        let path = f.file_path.ok_or(NO_FILE)?;
+        let resp = self
+            .http
+            .get(format!("{}/{path}", self.files))
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e.without_url(), "телеграм: файл не скачан");
+                NO_FILE
+            })?;
+        if !resp.status().is_success() {
+            tracing::warn!(status = resp.status().as_u16(), "телеграм: файл не скачан");
+            return Err(NO_FILE);
+        }
+        if resp
+            .content_length()
+            .is_some_and(|n| usize::try_from(n).map_or(true, |n| n > max))
+        {
+            return Err(TOO_BIG);
+        }
+        let data = resp.bytes().await.map_err(|_| NO_FILE)?;
+        if data.len() > max {
+            return Err(TOO_BIG);
+        }
+        Ok(data.to_vec())
+    }
+
     async fn username(&self) -> Option<String> {
         #[derive(Deserialize)]
         struct Me {
@@ -3333,7 +3548,9 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
             // Группы и каналы бот не слушает (ADR-070).
             let Some(inc) = incoming(u) else { continue };
             let chat_id = match &inc {
-                Incoming::Message { chat_id, .. } | Incoming::Callback { chat_id, .. } => *chat_id,
+                Incoming::Message { chat_id, .. }
+                | Incoming::Callback { chat_id, .. }
+                | Incoming::File { chat_id, .. } => *chat_id,
             };
             if let Incoming::Callback { id, .. } = &inc {
                 api.answer_callback(id).await;
@@ -3350,6 +3567,26 @@ async fn commands_loop(pool: PgPool, api: Api, assistant: Option<Assistant>) {
                 }
                 _ => false,
             };
+            // Фото накладной (SPEC-30 §9): скачивание и распознавание — до двух минут, отдельной
+            // задачей. Смещение — до запуска: после перезапуска фото не обрабатывается второй раз.
+            if let Incoming::File {
+                chat_id,
+                from_id,
+                file,
+            } = inc
+            {
+                store_offset(&pool, offset).await;
+                tracing::info!(chat_id, "телеграм: фото принято");
+                tokio::spawn(file_task(
+                    pool.clone(),
+                    api.clone(),
+                    assistant.clone(),
+                    chat_id,
+                    from_id,
+                    file,
+                ));
+                continue;
+            }
             if asking && let Some(a) = assistant.as_ref() {
                 // Смещение — до запуска: после перезапуска вопрос не задаётся второй раз
                 // (вопрос, который разбирался в момент остановки, теряется).
@@ -3610,6 +3847,34 @@ mod tests {
         assert_eq!(parts.len(), 3);
         assert_eq!(parts.concat(), long);
         assert_eq!(split_message("коротко"), vec!["коротко".to_string()]);
+    }
+
+    #[test]
+    fn split_keeps_paragraphs_whole() {
+        // Записи книжки по 5 строк через пустую строку: ни одна не рвётся между сообщениями.
+        let records: Vec<String> = (0..60)
+            .map(|i| {
+                format!(
+                    "{i:02}.10.2026 · 85 000 км\n  Масло двигателя: Mobil 5W-30 · 1 кан. × 4 л\n  Фильтр масляный: Mann W712\n  Мастер: Азамат\n  Мастер рекомендовал: {}",
+                    "воздушный фильтр ".repeat(3)
+                )
+            })
+            .collect();
+        let text = records.join("\n\n");
+        let parts = split_message(&text);
+        assert!(parts.len() > 1);
+        for p in &parts {
+            assert!(p.chars().map(char::len_utf16).sum::<usize>() <= MAX_MESSAGE);
+            assert!(!p.starts_with('\n') && !p.ends_with('\n'));
+        }
+        for r in &records {
+            assert_eq!(
+                parts.iter().filter(|p| p.contains(r.as_str())).count(),
+                1,
+                "{r}"
+            );
+        }
+        assert_eq!(parts.join("\n\n"), text);
     }
 
     #[test]

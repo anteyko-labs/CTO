@@ -747,13 +747,26 @@ async fn pay_supplier(
     Ok(())
 }
 
+/// «Провести приход»: накладная и, если её заполнили по фото, черновик — его фото прикрепляется
+/// к накладной в той же транзакции (SPEC-30 §9).
+#[derive(Deserialize)]
+struct PostReceiptBody {
+    #[serde(flatten)]
+    receipt: ReceiptReq,
+    #[serde(default)]
+    draft_id: Option<Uuid>,
+}
+
 async fn post_receipt(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<ReceiptReq>,
+    Json(body): Json<PostReceiptBody>,
 ) -> AppResult<Json<ReceiptOut>> {
     let mut tx = state.pool.begin().await?;
-    let out = post_receipt_tx(&mut tx, &ctx, req).await?;
+    let out = post_receipt_tx(&mut tx, &ctx, body.receipt).await?;
+    if let Some(draft) = body.draft_id {
+        crate::api::receipt_drafts::attach(&mut tx, &ctx, draft, out.id).await?;
+    }
     tx.commit().await?;
     Ok(Json(out))
 }

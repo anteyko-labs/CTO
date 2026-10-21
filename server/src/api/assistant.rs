@@ -9,6 +9,11 @@
 //! не считает и не округляет (инвариант 1).
 //! Это единственный модуль, где названы поставщик и модель (`.githooks/forbidden-allow`).
 //! Запросы — через `reqwest`: официальной библиотеки поставщика для Rust нет.
+//!
+//! Здесь же — чтение фото документа по JSON-схеме (`read_document`): накладная по фото
+//! (SPEC-30 §9, ADR-098). Что извлекать, решает `api::receipt_drafts`; здесь только запрос:
+//! снимок блоком `image` (PDF — `document`) в base64, ответ строго по схеме
+//! (`output_config.format`), модель — `ASSISTANT_INVOICE_MODEL` (по умолчанию Claude Opus 5.5).
 
 use std::time::{Duration, Instant};
 
@@ -30,13 +35,17 @@ use crate::ops;
 pub const DEFAULT_URL: &str = "https://api.anthropic.com";
 /// Модель по умолчанию (SPEC-21); меняется переменной `ASSISTANT_MODEL`.
 pub const DEFAULT_MODEL: &str = "claude-haiku-5-5";
+/// Модель для накладных по фото (ADR-098): точнее, чем для вопросов; меняется переменной
+/// `ASSISTANT_INVOICE_MODEL`.
+pub const DEFAULT_INVOICE_MODEL: &str = "claude-opus-5-5";
 const API_VERSION: &str = "2023-06-01";
 const MAX_TOKENS: u32 = 4096;
 /// Не больше 4 вызовов отчётов на один вопрос — считаются вызовы, а не запросы к модели.
 const MAX_TOOL_CALLS: usize = 4;
 /// Ответ ждём не дольше 30 секунд на весь вопрос.
 const DEADLINE: Duration = Duration::from_secs(30);
-const HOURLY_LIMIT: i64 = 20;
+/// Обращений к сервису в час на филиал — вопросы и накладные по фото вместе (ADR-098).
+pub const HOURLY_LIMIT: i64 = 20;
 /// Память разговора: последние 6 сообщений за 30 минут.
 const DIALOG_MESSAGES: i64 = 6;
 /// Длинный вопрос обрезаем: Телеграм и так не даёт больше 4096 знаков.
@@ -90,6 +99,7 @@ pub struct Assistant {
     key: String,
     url: String,
     model: String,
+    invoice_model: String,
     daily_limit: i64,
 }
 
@@ -98,6 +108,7 @@ impl std::fmt::Debug for Assistant {
         f.debug_struct("Assistant")
             .field("url", &self.url)
             .field("model", &self.model)
+            .field("invoice_model", &self.invoice_model)
             .field("daily_limit", &self.daily_limit)
             .finish_non_exhaustive()
     }
@@ -113,8 +124,17 @@ impl Assistant {
                 .trim_end_matches('/')
                 .to_string(),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.into()),
+            invoice_model: DEFAULT_INVOICE_MODEL.into(),
             daily_limit,
         }
+    }
+
+    /// Модель для накладных по фото (`ASSISTANT_INVOICE_MODEL`); `None` — по умолчанию.
+    pub fn with_invoice_model(mut self, model: Option<String>) -> Self {
+        if let Some(m) = model {
+            self.invoice_model = m;
+        }
+        self
     }
 
     pub fn daily_limit(&self) -> i64 {
@@ -227,9 +247,11 @@ pub async fn answer(
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Часовой лимит общий с накладными по фото (ADR-098); дневной — только вопросы.
+    let invoices = invoices_last_hour(conn, branch_id).await?;
     let limit_text = if used.day >= a.daily_limit {
         Some(LIMIT_TEXT)
-    } else if used.hour >= HOURLY_LIMIT {
+    } else if used.hour.saturating_add(invoices) >= HOURLY_LIMIT {
         Some(HOUR_LIMIT_TEXT)
     } else {
         None
@@ -382,6 +404,33 @@ pub async fn answer(
         None => None,
     };
     Ok(Answer { text: reply, draft })
+}
+
+/// Накладных по фото, отправленных на распознавание за последний час (ADR-098).
+async fn invoices_last_hour(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select count(*) as "n!" from receipt_drafts
+           where branch_id = $1 and recognition in ('pending', 'done', 'failed')
+             and created_at > now() - interval '1 hour'"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Сколько обращений к сервису за последний час у филиала: вопросы (кроме отказов по лимиту)
+/// и накладные по фото — общий часовой лимит (ADR-098).
+pub async fn used_last_hour(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+    let questions = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from bot_questions
+           where branch_id = $1 and asked_at > now() - interval '1 hour'
+             and error is distinct from $2"#,
+        branch_id,
+        LIMIT_ERROR
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(questions.saturating_add(invoices_last_hour(conn, branch_id).await?))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -632,6 +681,214 @@ async fn call(
         tracing::warn!("разбор вопросов: непонятный ответ сервиса");
         Failure::Offline("непонятный ответ сервиса".into())
     })
+}
+
+// ---------- Чтение документа по фото (SPEC-30 §9, ADR-098) ----------
+
+/// Ответ по фото ждём не дольше 100 секунд: экран ждёт загрузку 120.
+const DOCUMENT_DEADLINE: Duration = Duration::from_secs(100);
+/// Длинная накладная (сотни строк) — длинный ответ; запрос без потока, поэтому не больше 16 000.
+const DOCUMENT_MAX_TOKENS: u32 = 16_000;
+/// Резервная модель, если модель откажется по правилам безопасности: сервис сам выбирает её
+/// по виду отказа (`fallbacks: "default"`).
+const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+/// Снимок в запросе — не больше 5 МБ: предел сервиса на одно изображение.
+pub const MAX_DOCUMENT_BYTES: usize = 5 * 1024 * 1024;
+
+/// Итог чтения документа: ответ строго по схеме или причина, почему его нет (для журнала,
+/// без ключа), и расход.
+pub struct DocumentRead {
+    pub result: Result<Value, String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+impl DocumentRead {
+    fn failed(why: impl Into<String>) -> Self {
+        Self {
+            result: Err(why.into()),
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+}
+
+/// Читает фото (JPEG, PNG, WEBP) или PDF и возвращает данные по JSON-схеме `schema`
+/// (структурированный вывод). `system` и `prompt` — что и как извлекать. Модель — для накладных
+/// (`ASSISTANT_INVOICE_MODEL`). Ошибки сервиса не паникуют и не выдают ключ.
+pub async fn read_document(
+    a: &Assistant,
+    system: &str,
+    prompt: &str,
+    schema: &Value,
+    data: &[u8],
+    media_type: &str,
+) -> DocumentRead {
+    if data.is_empty() {
+        return DocumentRead::failed("пустой файл");
+    }
+    if data.len() > MAX_DOCUMENT_BYTES {
+        return DocumentRead::failed("файл больше 5 МБ");
+    }
+    let file = match media_type {
+        "image/jpeg" | "image/png" | "image/webp" => json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": base64(data) },
+        }),
+        "application/pdf" => json!({
+            "type": "document",
+            "source": { "type": "base64", "media_type": media_type, "data": base64(data) },
+        }),
+        _ => return DocumentRead::failed("вид файла не поддерживается"),
+    };
+    let mut body = json!({
+        "model": a.invoice_model,
+        "max_tokens": DOCUMENT_MAX_TOKENS,
+        "system": system,
+        // Снимок — перед текстом задания.
+        "messages": [{ "role": "user", "content": [file, { "type": "text", "text": prompt }] }],
+        "output_config": {
+            "effort": "medium",
+            "format": { "type": "json_schema", "schema": schema },
+        },
+        "fallbacks": "default",
+    });
+    let started = Instant::now();
+    let mut sent = post_document(a, &body, Some(FALLBACK_BETA), DOCUMENT_DEADLINE).await;
+    // Резервная модель — бета-возможность сервиса: если её не приняли, повторяем без неё.
+    if let Err((_, true)) = &sent
+        && let Some(left) = DOCUMENT_DEADLINE
+            .checked_sub(started.elapsed())
+            .filter(|d| !d.is_zero())
+    {
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("fallbacks");
+        }
+        sent = post_document(a, &body, None, left).await;
+    }
+    let resp = match sent {
+        Ok(r) => r,
+        Err((f, _)) => return DocumentRead::failed(a.redact(f.note())),
+    };
+    let input_tokens = resp
+        .usage
+        .input_tokens
+        .saturating_add(resp.usage.cache_read_input_tokens.unwrap_or(0))
+        .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
+    let output_tokens = resp.usage.output_tokens;
+    let result = match resp.stop_reason.as_deref() {
+        Some("end_turn") | Some("stop_sequence") => {
+            // Перед ответом могут идти блоки размышлений: берём только текст.
+            let text = resp
+                .content
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<String>();
+            serde_json::from_str::<Value>(text.trim())
+                .ok()
+                .filter(Value::is_object)
+                .ok_or_else(|| "ответ не по схеме".to_string())
+        }
+        Some("max_tokens") => Err("ответ оборван по длине".into()),
+        Some("refusal") => Err("сервис отказался читать документ".into()),
+        other => Err(format!(
+            "неожиданное завершение: {}",
+            other
+                .unwrap_or("нет")
+                .chars()
+                .take(MAX_ARG_CHARS)
+                .collect::<String>()
+        )),
+    };
+    DocumentRead {
+        result,
+        input_tokens,
+        output_tokens,
+    }
+}
+
+/// Один запрос с документом. `Err((сбой, true))` — сервис не принял бета-возможность
+/// (резервную модель): тогда запрос повторяют без неё.
+async fn post_document(
+    a: &Assistant,
+    body: &Value,
+    beta: Option<&str>,
+    timeout: Duration,
+) -> Result<ApiResponse, (Failure, bool)> {
+    let mut req = a
+        .http
+        .post(format!("{}/v1/messages", a.url))
+        .header("x-api-key", &a.key)
+        .header("anthropic-version", API_VERSION);
+    if let Some(b) = beta {
+        req = req.header("anthropic-beta", b);
+    }
+    let sent = req.json(body).timeout(timeout).send().await;
+    let resp = match sent {
+        Ok(r) => r,
+        Err(e) => {
+            let what = if e.is_timeout() {
+                "таймаут"
+            } else if e.is_connect() {
+                "нет соединения"
+            } else {
+                "ошибка запроса"
+            };
+            tracing::warn!(error = what, "чтение документа: нет связи");
+            return Err((Failure::Offline(format!("нет связи: {what}")), false));
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let v = resp.json::<Value>().await.ok();
+        let err = v.as_ref().and_then(|v| v.get("error"));
+        let kind = err
+            .and_then(|e| e.get("type"))
+            .and_then(Value::as_str)
+            .map(|s| s.chars().take(MAX_ARG_CHARS).collect::<String>())
+            .unwrap_or_default();
+        // Текст ошибки не пишем никуда — только смотрим, не о резервной ли модели он.
+        let about_fallback = status.as_u16() == 400
+            && beta.is_some()
+            && err
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .is_some_and(|m| m.contains("fallback") || m.contains("anthropic-beta"));
+        let note = a.redact(&format!("сервис ответил {} {kind}", status.as_u16()));
+        tracing::warn!(status = status.as_u16(), "чтение документа: ошибка сервиса");
+        let f = if matches!(status.as_u16(), 400 | 401 | 403) {
+            Failure::Rejected(note)
+        } else {
+            Failure::Offline(note)
+        };
+        return Err((f, about_fallback));
+    }
+    resp.json::<ApiResponse>().await.map_err(|_| {
+        tracing::warn!("чтение документа: непонятный ответ сервиса");
+        (Failure::Offline("непонятный ответ сервиса".into()), false)
+    })
+}
+
+/// Base64 (стандартный алфавит, с `=`) — так сервис принимает файл в запросе.
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let sym = |n: u32, shift: u32| {
+        ABC.get(((n >> shift) & 63) as usize)
+            .map_or('=', |b| char::from(*b))
+    };
+    let mut out = String::with_capacity(data.len().div_ceil(3).saturating_mul(4));
+    for chunk in data.chunks(3) {
+        let b0 = chunk.first().copied().unwrap_or(0);
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
+        out.push(sym(n, 18));
+        out.push(sym(n, 12));
+        out.push(if chunk.len() > 1 { sym(n, 6) } else { '=' });
+        out.push(if chunk.len() > 2 { sym(n, 0) } else { '=' });
+    }
+    out
 }
 
 /// Отчёты, которые может открыть модель (таблица SPEC-21). Только чтение, только филиал владельца.
@@ -1572,6 +1829,16 @@ fn has_money(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_like_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xFF, 0xD8, 0xFF, 0xE0]), "/9j/4A==");
+    }
 
     #[test]
     fn off_topic_refusal_is_in_instructions() {

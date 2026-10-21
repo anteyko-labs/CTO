@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update receipt_drafts set status = 'removed', closed_at = now(), closed_by = $2\n                   where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bc53ccc48acde90a520b93b03529301844bc88645542b9bf2cc93a5cfbb6a7ca"
+}

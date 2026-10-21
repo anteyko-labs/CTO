@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number, reversal_of from receipts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "9d39ccc0cc4728d4fa0b4662b15fa55046323bc236d2bf560f685056db5a6e02"
+}

@@ -91,6 +91,10 @@ jobs:
           BOOTSTRAP_OWNER_LOGIN: owner
           BOOTSTRAP_OWNER_PASSWORD: owner-pass-1
           WEB_DIR: ../web/dist
+          # Накладная по фото (SPEC-30 §9): подставной сервис распознавания поднимает сам тест
+          # e2e/receipt-photo.spec.ts на этом порту; настоящий сервис не вызывается.
+          ASSISTANT_API_KEY: e2e-test-key
+          ASSISTANT_API_URL: http://127.0.0.1:8096
         run: |
           nohup ./target/debug/avtodom-server > server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/ > /dev/null && exit 0; sleep 1; done

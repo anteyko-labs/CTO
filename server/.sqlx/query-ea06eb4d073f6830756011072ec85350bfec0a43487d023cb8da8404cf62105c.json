@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update receipt_drafts\n           set recognition = $2, recognized = $3, error = $4, input_tokens = $5, output_tokens = $6\n           where id = $1 and recognition = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ea06eb4d073f6830756011072ec85350bfec0a43487d023cb8da8404cf62105c"
+}

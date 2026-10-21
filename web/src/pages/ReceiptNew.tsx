@@ -5,6 +5,9 @@
 // Ввод подряд с клавиатуры и подсказки из старой программы, часть оплаты сразу, фото накладной (SPEC-29).
 // Вверху — вид документа: «От поставщика» или «Оприходование (без поставщика)» (SPEC-29 §8, ADR-086):
 // те же строки, но без поставщика и оплаты, с обязательным комментарием; количество — как на складе.
+// Накладная по фото (SPEC-30 §9): черновик из бота или «Заполнить по фото» заполняет приход —
+// поставщик, номер, строки (найденные товары, «проверьте», не найденные); итог накладной сверяется
+// с суммой строк; при проведении фото прикрепляется к накладной.
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
@@ -13,13 +16,15 @@ import { ProductFormModal } from '../components/ProductFormModal'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { ProductPicker, stockText, type PickHow } from '../components/ProductPicker'
 import { PendingPhotos, PhotoButtons } from '../components/ReceiptPhotos'
+import { DraftThumb, FillFromPhoto, ReceiptDraftsBlock } from '../components/ReceiptDrafts'
 import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUpload'
-import { Button, Card, Checkbox, Empty, ErrorBox, Field, Missing, PageHeader, Table, toast } from '../components/ui'
+import { docText, splitLines, suggestFor, totalMismatch, type Draft, type DraftLine, type DraftList } from '../lib/receiptDrafts'
+import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Missing, Notice, PageHeader, Table, toast } from '../components/ui'
 import { accountLabel } from '../lib/accounts'
 import { get, newOpId, post } from '../lib/api'
 import { postCorrection } from '../lib/corrections'
 import type { ReceiptFixState } from '../lib/receiptFix'
-import { formatLiters, formatSom, parseSom } from '../lib/format'
+import { formatLiters, formatSom, parseSom, somInput } from '../lib/format'
 import { initialPrices, isOil, lastText, lineCalc, parseCount, priceJumpText, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
 import { missingWithFocus } from '../lib/forms'
 import { useFocusAfterRender } from '../lib/focus'
@@ -47,6 +52,8 @@ interface Line {
   salePrice: string
   /** Прошлая закупка: undefined — ещё грузится, null — закупок не было. */
   last?: LastReceipt | null
+  /** Строка из накладной по фото: как в накладной, «проверьте» у похожего названия, пояснение. */
+  hint?: { invoice: string; check: boolean; note: string | null }
 }
 
 /** Исправление прихода владельцем (SPEC-29 §24): тот же экран, заполненный исходной накладной. */
@@ -60,7 +67,7 @@ export interface ReceiptFix {
 
 export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const navigate = useNavigate()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const [opId] = useState(newOpId)
   // Приход и оприходование — отдельные права администратора (ADR-097): виден только разрешённый вид.
   const can = useCan()
@@ -97,6 +104,13 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const [newSupplier, setNewSupplier] = useState<{ name: string; phone: string } | null>(null)
   const save = useAction()
   const supplierAction = useAction()
+  // Накладная по фото (SPEC-30 §9): открытый черновик, строки без товара и строка, для которой
+  // сейчас выбирают товар в поиске.
+  const drafts = useLoad(() => (fix ? Promise.resolve<DraftList>({ enabled: false, items: [] }) : get<DraftList>('/receipt-drafts')), [])
+  const [draft, setDraft] = useState<Draft | null>(null)
+  const [unmatched, setUnmatched] = useState<DraftLine[]>([])
+  const [target, setTarget] = useState<number | null>(null)
+  const draftAction = useAction()
 
   /** Перейти к полю: выделить текст, чтобы ввод сразу заменил подставленное. Фокус ставится
    *  в той же отрисовке, где появилась строка, — без таймера, который перехватывал набор. */
@@ -110,16 +124,86 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
     focusId(nextField(lineNo, field, lines.length))
   }
 
+  /** Прошлая закупка: цена, дата и поставщик — подсказка рядом с ценой (SPEC-27). */
+  const loadLast = (p: Product) =>
+    void get<LastReceipt | null>(`/products/${p.id}/last-receipt`)
+      .then((last) => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last } : l))))
+      .catch(() => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last: null } : l))))
+
+  /** Строка прихода из строки накладной: количество и цена накладной, цена продажи — текущая. */
+  const draftLine = (p: Product, count: number | null, each: number | null, hint: Line['hint']): Line => {
+    const prices = initialPrices(p)
+    const priced = each === null ? prices : withCost(prices, somInput(each))
+    return { key: crypto.randomUUID(), product: p, count: count === null ? '' : String(count), ...priced, hint }
+  }
+
+  /** Открыть черновик накладной по фото: поставщик, номер, строки (SPEC-30 §9). */
+  const applyDraft = (d: Draft) => {
+    if (d.status !== 'new') {
+      draftAction.setError(
+        d.status === 'used' ? `По этой накладной уже проведён приход № ${d.receipt_number ?? ''}` : 'Эту накладную по фото убрали',
+      )
+      return
+    }
+    setKind('receipt')
+    setDraft(d)
+    setTarget(null)
+    if (d.supplier) setSupplierId(d.supplier.id)
+    const doc = docText(d.invoice)
+    if (doc) setSupplierDoc(doc)
+    const { found, missing } = splitLines(d)
+    const added = found.flatMap((l) =>
+      l.product ? [draftLine(l.product, l.count, l.each_tyiyn, { invoice: l.name, check: l.match === 'similar', note: l.note })] : [],
+    )
+    setLines((ls) => [...ls, ...added])
+    setUnmatched(missing)
+    added.forEach((l) => loadLast(l.product))
+  }
+
+  const openDraft = (id: string) =>
+    void draftAction.run(async () => {
+      applyDraft(await get<Draft>(`/receipt-drafts/${id}`))
+      setParams({ draft: id }, { replace: true })
+    })
+
+  // «Открыть» из «Прихода» и из бота: черновик в адресе (`?draft=`).
+  const draftParam = fix ? null : params.get('draft')
+  useEffect(() => {
+    if (!draftParam) return
+    let alive = true
+    void draftAction.run(async () => {
+      const d = await get<Draft>(`/receipt-drafts/${draftParam}`)
+      if (alive) applyDraft(d)
+    })
+    return () => {
+      alive = false
+    }
+    // Только при открытии экрана: черновик из адреса заполняет приход один раз.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** Товар для строки накладной без товара: количество и цена — из накладной (литры — в канистры). */
+  const assign = (no: number, p: Product) => {
+    const src = unmatched.find((l) => l.no === no)
+    setTarget(null)
+    if (!src) return
+    const s = suggestFor(src, p)
+    setUnmatched((us) => us.filter((l) => l.no !== no))
+    setLines((ls) => [...ls, draftLine(p, s.count, s.each, { invoice: src.name, check: false, note: s.note })])
+    loadLast(p)
+    focusId(`line-${lines.length + 1}-count`)
+  }
+
   const addProduct = (p: Product, how: PickHow = 'search', cost?: string) => {
+    // Выбирают товар для строки накладной по фото — он становится этой строкой.
+    if (target !== null) {
+      assign(target, p)
+      return
+    }
     // Скан — фокус остаётся в поиске (сканируют подряд); выбор из списка — сразу к количеству строки.
     const at = lines.findIndex((l) => l.product.id === p.id)
     if (how === 'search') focusId(`line-${at < 0 ? lines.length + 1 : at + 1}-count`)
-    // Прошлая закупка: цена, дата и поставщик — подсказка рядом с ценой (SPEC-27).
-    if (!lines.some((l) => l.product.id === p.id)) {
-      void get<LastReceipt | null>(`/products/${p.id}/last-receipt`)
-        .then((last) => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last } : l))))
-        .catch(() => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last: null } : l))))
-    }
+    if (!lines.some((l) => l.product.id === p.id)) loadLast(p)
     setLines((ls) => {
       const i = ls.findIndex((l) => l.product.id === p.id)
       if (i < 0) {
@@ -227,8 +311,11 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
         // Исправление: исходная оплата вернётся на счёт, остаток проверит сервер.
         [Boolean(fix) || !paying || !notEnough(sources, source, now), 'денег на выбранном счёте меньше оплаты', '#receipt-paid-from'],
         [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+        [unmatched.length === 0, 'строки накладной без товара — выберите товар или уберите строку', '#draft-unmatched'],
         [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
       )
+  // Итог накладной по фото против суммы строк прихода (SPEC-30 §9).
+  const mismatch = draft && !stockIn ? totalMismatch(draft.total_tyiyn ?? draft.lines_sum_tyiyn, total) : null
 
   const addPhotos = (files: FileList) =>
     void photoAction.run(async () => {
@@ -276,9 +363,10 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
         lines: body,
       }
       // Исправление: сторно исходной накладной и верная — одной операцией (SPEC-29 §24).
+      // Накладная по фото: её фото прикрепится к приходу в той же операции (SPEC-30 §9).
       const r = fix
         ? { id: (await postCorrection({ op_id: opId, kind: 'receipt', original_id: fix.originalId, comment: fixComment.trim(), doc })).new_id }
-        : await post<Receipt>('/receipts', { op_id: opId, ...doc })
+        : await post<Receipt>('/receipts', { op_id: opId, ...doc, ...(draft ? { draft_id: draft.id } : {}) })
       // Фото — после проведения: накладная уже есть, не загрузившееся можно прикрепить в ней.
       if (photos.length) {
         const failed = await uploadPhotos(r.id, photos)
@@ -358,6 +446,10 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
             )}
           </>
         )}
+        {!fix && !draft && (
+          <ReceiptDraftsBlock items={drafts.data?.items ?? []} onOpen={openDraft} onChanged={drafts.reload} />
+        )}
+        <ErrorBox error={draftAction.error ?? drafts.error} />
         {!fix && (
           <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Вид прихода">
             {(
@@ -392,6 +484,51 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
           </Card>
         ) : (
         <Card>
+          {!fix && (draft || drafts.data?.enabled) && (
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
+              {draft ? (
+                <div className="flex flex-wrap items-start gap-3" data-testid="draft-banner">
+                  <DraftThumb id={draft.id} contentType={draft.content_type} size="h-20 w-20" />
+                  <div className="flex flex-col gap-1 text-sm">
+                    <div className="font-medium">Заполнено по фото накладной{draft.source === 'bot' ? ' из бота' : ''}</div>
+                    {draft.message && <div className="text-amber-700">{draft.message}</div>}
+                    {draft.supplier ? (
+                      <div className="text-slate-600">
+                        Поставщик найден по {draft.supplier.by === 'inn' ? 'ИНН' : 'названию'}: {draft.supplier.name}
+                      </div>
+                    ) : (
+                      draft.invoice?.supplier_name && (
+                        <div className="text-amber-700" data-testid="draft-supplier-hint">
+                          Поставщик не найден. В накладной: {draft.invoice.supplier_name}
+                          {draft.invoice.supplier_inn && `, ИНН ${draft.invoice.supplier_inn}`}{' '}
+                          <button
+                            type="button"
+                            className="text-sky-700 underline"
+                            onClick={() => setNewSupplier({ name: draft.invoice?.supplier_name ?? '', phone: '' })}
+                          >
+                            завести
+                          </button>
+                        </div>
+                      )
+                    )}
+                    <div className="text-xs text-slate-500">
+                      Распознанное — подсказка: проверьте строки и цены. Фото прикрепится к приходу при проведении.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <span className="text-sm text-slate-600">Накладная на бумаге? Сфотографируйте — приход заполнится сам.</span>
+              )}
+              {!draft && (
+                <FillFromPhoto
+                  onDraft={(d) => {
+                    applyDraft(d)
+                    setParams({ draft: d.id }, { replace: true })
+                  }}
+                />
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <Field label="Поставщик">
               <div className="flex gap-2">
@@ -445,7 +582,78 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
         </Card>
         )}
 
+        {unmatched.length > 0 && (
+          <Card>
+            <div id="draft-unmatched" tabIndex={-1} data-testid="draft-unmatched">
+              <CardTitle>Строки накладной без товара: {unmatched.length}</CardTitle>
+              <ul className="divide-y divide-slate-100">
+                {unmatched.map((l) => (
+                  <li key={l.no} className="flex flex-wrap items-center gap-2 py-2 text-sm" data-testid="draft-unmatched-line">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium">
+                        {l.no}. {l.name}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {[
+                          l.code && `код ${l.code}`,
+                          l.barcode && `штрихкод ${l.barcode}`,
+                          `${l.quantity} ${l.unit}`.trim(),
+                          l.price_tyiyn !== null && `по ${formatSom(l.price_tyiyn)}`,
+                          l.sum_tyiyn !== null && `сумма ${formatSom(l.sum_tyiyn)}`,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                      <div className="text-xs text-rose-700">не найден — выберите товар или заведите новый</div>
+                    </div>
+                    <Button
+                      variant={target === l.no ? 'primary' : 'secondary'}
+                      onClick={() => {
+                        setTarget(l.no)
+                        focusId('receipt-picker')
+                      }}
+                    >
+                      Выбрать товар
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setTarget(l.no)
+                        setNewProductName(l.name)
+                      }}
+                    >
+                      Новый товар
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      aria-label={`Убрать строку накладной ${l.no}`}
+                      title="Не принимать эту строку"
+                      onClick={() => {
+                        setUnmatched((us) => us.filter((x) => x.no !== l.no))
+                        if (target === l.no) setTarget(null)
+                      }}
+                    >
+                      ✕
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </Card>
+        )}
+
         <Card>
+          {target !== null && (
+            <div className="mb-2" data-testid="draft-target">
+              <Notice tone="sky">
+                Выберите товар для строки накладной «{unmatched.find((l) => l.no === target)?.name}» — найдите его в поиске, в том числе в списке
+                старой программы.{' '}
+                <button type="button" className="underline" onClick={() => setTarget(null)}>
+                  Отмена
+                </button>
+              </Notice>
+            </div>
+          )}
           <div className="mb-3">
             <ProductPicker
               inputId="receipt-picker"
@@ -473,6 +681,13 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                         {l.product.article && <span className="mr-2">{l.product.article}</span>}
                         остаток: {stockText(l.product)}
                       </div>
+                      {l.hint && (
+                        <div className="mt-0.5 max-w-xs text-xs text-slate-600" data-testid="draft-hint">
+                          В накладной: «{l.hint.invoice}»{' '}
+                          {l.hint.check && <Badge tone="amber">проверьте</Badge>}
+                          {l.hint.note && <div className="text-amber-700">{l.hint.note}</div>}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
@@ -642,6 +857,20 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                   <div className="text-sm text-slate-600">
                     По цене продажи: <span className="tabular-nums" data-testid="receipt-sale-total">{totalSale === null ? '—' : formatSom(totalSale)}</span>
                   </div>
+                  {mismatch ? (
+                    <div className="mt-1 rounded bg-amber-50 px-2 py-1 text-sm text-amber-800" data-testid="draft-total-mismatch">
+                      {mismatch}
+                    </div>
+                  ) : (
+                    draft &&
+                    !stockIn &&
+                    total !== null &&
+                    (draft.total_tyiyn ?? draft.lines_sum_tyiyn) !== null && (
+                      <div className="text-xs text-emerald-700" data-testid="draft-total-ok">
+                        сходится с итогом накладной
+                      </div>
+                    )
+                  )}
                 </div>
                 <div className="hidden md:block">
                   <Button disabled={save.busy || missing.length > 0} onClick={submit}>

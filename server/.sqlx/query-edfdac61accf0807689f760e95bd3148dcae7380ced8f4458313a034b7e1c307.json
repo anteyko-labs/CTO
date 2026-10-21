@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from products\n               where not archived and norm_code(article) <> '' and norm_code(article) = norm_code($1)\n               limit 2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "edfdac61accf0807689f760e95bd3148dcae7380ced8f4458313a034b7e1c307"
+}

@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.status, d.receipt_id, d.name, d.content_type, d.size_bytes, d.data, d.user_id,\n                  d.device_id, r.number as \"number?\"\n           from receipt_drafts d left join receipts r on r.id = d.receipt_id\n           where d.id = $1 and d.branch_id = $2 for update of d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "receipt_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "size_bytes",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "data",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "device_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "287029ceaec94dcd070ccc3e784e924e56465d14ab5d53893e33a73c41e0a050"
+}

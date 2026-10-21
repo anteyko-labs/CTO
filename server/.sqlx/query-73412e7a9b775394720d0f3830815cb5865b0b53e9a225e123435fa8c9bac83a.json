@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.sale_id, l.qty, coalesce(nullif(l.name, ''), sv.name, '') as \"name!\"\n           from sale_lines l join services sv on sv.id = l.service_id\n           where l.sale_id = any($1) and not l.gift\n           order by l.sale_id, l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "73412e7a9b775394720d0f3830815cb5865b0b53e9a225e123435fa8c9bac83a"
+}

@@ -4,6 +4,7 @@ pub mod analogs;
 pub mod assistant;
 pub mod auth;
 pub mod batteries;
+pub mod bot_book;
 pub mod bot_cars;
 pub mod bot_debt;
 pub mod bot_drafts;
@@ -31,6 +32,7 @@ pub mod old_catalog;
 pub mod paging;
 pub mod parties;
 pub mod payroll;
+pub mod receipt_drafts;
 pub mod receipt_files;
 pub mod receipts;
 pub mod refs;
@@ -75,6 +77,7 @@ pub fn routes() -> Router<AppState> {
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())
+        .merge(receipt_drafts::routes())
         .merge(receipt_files::routes())
         .merge(reports::routes())
         .merge(revisions::routes())

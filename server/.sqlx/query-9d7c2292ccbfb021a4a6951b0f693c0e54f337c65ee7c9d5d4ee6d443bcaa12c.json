@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.status, r.number as \"number?\" from receipt_drafts d\n           left join receipts r on r.id = d.receipt_id\n           where d.id = $1 and d.branch_id = $2 for update of d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9d7c2292ccbfb021a4a6951b0f693c0e54f337c65ee7c9d5d4ee6d443bcaa12c"
+}
