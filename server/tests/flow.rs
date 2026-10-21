@@ -3408,6 +3408,12 @@ async fn bot_book_shows_master_and_services(pool: PgPool) {
     receive(&pool, &w.admin, washer, 3, 15_000).await;
     let chat = 720_101i64;
     let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
+    // Чек «в сервис» — с именем, фамилией и телефоном клиента (ADR-100).
+    sqlx::query("update parties set first_name = 'Эрлан', last_name = 'Асанов', name = 'Эрлан Асанов', phone = '+996555101010' where id = $1")
+        .bind(me)
+        .execute(&pool)
+        .await
+        .unwrap();
     let car = staff_car(&pool, &w, me, "01KG555XYZ", true).await;
     let mut service = line("piece", washer, 1, 30_000);
     service.kind = "service".into();

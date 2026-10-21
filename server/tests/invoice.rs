@@ -165,10 +165,23 @@ async fn setup(pool: PgPool, assistant: Option<Assistant>) -> World {
             .await
             .unwrap();
     let hash = hash_password("admin-pass-1".into()).await.unwrap();
+    let admin = Uuid::now_v7();
     sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'admin', $3, 'admin', 'Админ')")
-        .bind(Uuid::now_v7())
+        .bind(admin)
         .bind(branch)
         .bind(hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Администратор с правами по умолчанию, как после миграции 0056 (ADR-097).
+    let keys: Vec<String> = avtodom_server::auth::default_permissions()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    sqlx::query("insert into user_permissions (user_id, branch_id, permission) select $1, $2, unnest($3::text[])")
+        .bind(admin)
+        .bind(branch)
+        .bind(keys)
         .execute(&pool)
         .await
         .unwrap();
