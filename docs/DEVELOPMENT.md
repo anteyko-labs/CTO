@@ -25,7 +25,7 @@ updated: 2026-10-08
 | --- | --- | --- | --- |
 | 01 | Вход, роли, журнал, идемпотентность | `auth.rs`, `api/auth.rs`, `ops.rs`, `bootstrap.rs` | `pages/Login.tsx`, `pages/Users.tsx`, `lib/auth.tsx`, `lib/api.ts` |
 | 02 | Каталог, штрихкоды, этикетки, справочники | `api/catalog.rs`, `api/refs.rs`, `domain/barcode.rs` | `pages/Products.tsx`, `Categories.tsx`, `Employees.tsx`, `Services.tsx`, `Suppliers.tsx`, `LabelSettings.tsx`, `components/ProductFormModal.tsx`, `ProductPicker.tsx`, `UnknownCodeModal.tsx`, `labels.ts` |
-| 03 | Приход и остатки | `api/receipts.rs`, `domain/costing.rs` | `pages/Receipts.tsx`, `ReceiptNew.tsx`, `ReceiptView.tsx`, `Stock.tsx` |
+| 03 | Приход и остатки | `api/receipts.rs`, `domain/costing.rs` | `pages/Receipts.tsx`, `ReceiptNew.tsx`, `ReceiptView.tsx`; остатки — в `pages/Products.tsx`, `lib/stockLink.ts` |
 | 04 | Касса: продажа и возврат; режим кассы (SPEC-29) | `api/sales.rs`, `domain/money.rs` | `pages/Cashier.tsx`, `SalesDay.tsx`, `SaleView.tsx`, `components/salePrint.ts`, `ServicePicker.tsx`, `CashierModeBar.tsx`, `Keypad.tsx`, `lib/money.ts`, `lib/cashierMode.ts`, `lib/keypad.ts` |
 | 05 | Смена, кассы, наличные | `api/cash.rs` | `pages/Shift.tsx`, `Bank.tsx`, `components/ShiftOpen.tsx` |
 | 06 | Операционные расходы | `api/expenses.rs` | `pages/Expenses.tsx`, `components/QuickExpense.tsx` |
@@ -41,6 +41,10 @@ updated: 2026-10-08
 | 16 | Масляная книжка | `api/oil_book.rs` | `components/OilBook.tsx` |
 | 18 | Телеграм-бот владельца | `api/telegram.rs`, `api/bot_debt.rs` | `pages/TelegramSettings.tsx` |
 | 17 | Аналоги фильтров | `api/analogs.rs` | `components/ProductFormModal.tsx`, `pages/Cashier.tsx` |
+| 30 | Права администраторов | `auth.rs` (`PERMISSIONS`, `require_permission`) | `lib/permissions.ts`, `pages/Users.tsx` |
+| 30 | Отчёт смены, отменённые товары | `api/shift_report.rs`, `api/cancelled_lines.rs` | `pages/ShiftReport.tsx`, `lib/shiftReport.ts`, `lib/cancelledLines.ts` |
+| 30 | Вид замены, «По счёту», скидка | `api/sales.rs`, `api/reports.rs` (`service-kinds`) | `lib/serviceSale.ts`, `pages/Cashier.tsx` |
+| 30 | Накладные по фото, книжка в боте | `api/receipt_drafts.rs`, `api/assistant.rs`, `api/bot_book.rs` | `components/ReceiptDrafts.tsx`, `lib/receiptDrafts.ts` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:
