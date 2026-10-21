@@ -78,6 +78,8 @@ async fn put_cross(
         seen.entry(n).or_insert_with(|| code.to_string());
     }
     let mut tx = state.pool.begin().await?;
+    // Кросс-номера — часть карточки товара: право администратора `products` (ADR-097).
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     sqlx::query_scalar!("select id from products where id = $1 for update", id)
         .fetch_optional(&mut *tx)
         .await?

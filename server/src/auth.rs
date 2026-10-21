@@ -62,8 +62,124 @@ impl CurrentUser {
     }
 }
 
-/// Права, которые владелец выдал пользователю сверх роли (ADR-082): `oil_transfer` — перелив.
-pub const PERMISSIONS: [&str; 1] = ["oil_transfer"];
+/// Право администратора (SPEC-30 §5, ADR-097): ключ, подпись (экран «Что можно» и ответ 403),
+/// группа на экране и выдаётся ли оно новому администратору.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PermissionDef {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub group: &'static str,
+    pub default: bool,
+}
+
+const fn perm(
+    key: &'static str,
+    label: &'static str,
+    group: &'static str,
+    default: bool,
+) -> PermissionDef {
+    PermissionDef {
+        key,
+        label,
+        group,
+        default,
+    }
+}
+
+/// Права администратора — весь список на сервере в одном месте (на экране — `web/src/lib/permissions.ts`).
+/// Владельцу права не нужны: он может всё. Правом не выдаются себестоимость, прибыль, маржа
+/// (инвариант 6), «Исправить» документов (ADR-085), цены товаров (ADR-032), отмена перелива,
+/// начисления, бонусы и удержания — это только владелец (ADR-097).
+pub const PERMISSIONS: [PermissionDef; 16] = [
+    perm("sale_return", "Возврат по чеку", "Касса", true),
+    perm("sale_debt", "Продажа в долг", "Касса", true),
+    perm("discount", "Скидка в чеке", "Касса", false),
+    perm("debt_payment", "Оплата долга клиента", "Касса", true),
+    perm(
+        "cash_moves",
+        "Внести, изъять, перевести деньги",
+        "Деньги",
+        true,
+    ),
+    perm("expenses", "Расходы", "Деньги", true),
+    perm("payroll_pay", "Выплаты мастерам", "Деньги", true),
+    perm(
+        "receipts",
+        "Приход товара и оплата поставщику",
+        "Склад",
+        true,
+    ),
+    perm("stock_in", "Оприходование", "Склад", true),
+    perm("supplier_returns", "Возврат поставщику", "Склад", true),
+    perm("defects", "Отметка брака", "Склад", true),
+    perm("revision", "Ревизия", "Склад", true),
+    perm("oil_transfer", "Перелив масла", "Склад", false),
+    perm("battery_intake", "Приём аккумуляторов", "Склад", true),
+    perm("products", "Товары и штрихкоды", "Справочники", true),
+    perm("clients", "Клиенты и машины", "Справочники", true),
+];
+
+/// Описание права по ключу; неизвестное — `None`.
+pub fn permission_def(key: &str) -> Option<&'static PermissionDef> {
+    PERMISSIONS.iter().find(|p| p.key == key)
+}
+
+/// Права, которые получает новый администратор (SPEC-30 §5).
+pub fn default_permissions() -> Vec<&'static str> {
+    PERMISSIONS
+        .iter()
+        .filter(|p| p.default)
+        .map(|p| p.key)
+        .collect()
+}
+
+/// Ответ администратору без права: 403 с названием права — «Нет права: Расходы» (ADR-097).
+pub fn no_permission(key: &str) -> AppError {
+    AppError::ForbiddenWith(format!(
+        "Нет права: {}",
+        permission_def(key).map_or(key, |p| p.label)
+    ))
+}
+
+/// Владелец проходит всегда; администратор — если владелец выдал ему право, иначе 403
+/// «Нет права: …» (ADR-097).
+pub async fn require_permission(
+    conn: &mut sqlx::PgConnection,
+    user: &CurrentUser,
+    permission: &str,
+) -> AppResult<()> {
+    if has_permission(conn, user, permission).await? {
+        Ok(())
+    } else {
+        Err(no_permission(permission))
+    }
+}
+
+/// Права по умолчанию новому администратору (SPEC-30 §5); уже выданные не трогаются.
+/// `granted_by` — кто завёл администратора.
+pub async fn grant_default_permissions(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    branch_id: Uuid,
+    granted_by: Uuid,
+) -> AppResult<()> {
+    let keys: Vec<String> = default_permissions()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    sqlx::query!(
+        r#"insert into user_permissions (user_id, branch_id, permission, granted_by)
+           select $1, $2, p, $4 from unnest($3::text[]) as p
+           on conflict do nothing"#,
+        user_id,
+        branch_id,
+        &keys,
+        granted_by
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
 
 /// Права пользователя сверх роли — экран показывает по ним пункты меню, проверяет сервер.
 pub async fn permissions(conn: &mut sqlx::PgConnection, user_id: Uuid) -> AppResult<Vec<String>> {
@@ -75,7 +191,7 @@ pub async fn permissions(conn: &mut sqlx::PgConnection, user_id: Uuid) -> AppRes
     .await?)
 }
 
-/// Владельцу можно всё; администратору — если владелец выдал ему это право (ADR-082).
+/// Владельцу можно всё; администратору — если владелец выдал ему это право (ADR-082, ADR-097).
 pub async fn has_permission(
     conn: &mut sqlx::PgConnection,
     user: &CurrentUser,
@@ -288,8 +404,33 @@ impl FromRequestParts<AppState> for Owner {
 
 #[cfg(test)]
 mod tests {
-    use super::client_addr_with;
+    use super::{PERMISSIONS, client_addr_with, default_permissions};
     use axum::http::Request;
+
+    #[test]
+    fn permissions_match_the_screen_list() {
+        // Список прав (SPEC-30 §5) — на сервере и на экране; ключ, подпись и «по умолчанию»
+        // должны совпадать, иначе «Нет права: …» и флажок назовут право по-разному.
+        assert_eq!(PERMISSIONS.len(), 16);
+        assert_eq!(default_permissions().len(), 14);
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/src/lib/permissions.ts");
+        let Ok(ts) = std::fs::read_to_string(path) else {
+            // Сборка одного сервера без клиента: сверять не с чем.
+            return;
+        };
+        for p in PERMISSIONS {
+            let at = ts
+                .find(&format!("key: '{}'", p.key))
+                .unwrap_or_else(|| panic!("на экране нет права {}", p.key));
+            let entry = &ts[at..at + ts[at..].find('}').unwrap()];
+            assert!(entry.contains(&format!("label: '{}'", p.label)), "{entry}");
+            assert!(entry.contains(&format!("group: '{}'", p.group)), "{entry}");
+            assert!(
+                entry.contains(&format!("default: {}", p.default)),
+                "{entry}"
+            );
+        }
+    }
 
     fn parts(xff: Option<&str>) -> axum::http::request::Parts {
         let mut b = Request::builder().uri("/");

@@ -10,6 +10,7 @@ import { ApiError, del, get, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { Category, Product } from '../lib/types'
 import ProductIntake from './ProductIntake'
 
@@ -320,16 +321,19 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
 /** Один экран: ревизии и сканер товаров («Работа с товарами»). Вкладка — в адресе (`?tab=scan`). */
 export default function RevisionAndGoods() {
   const [params, setParams] = useSearchParams()
-  const tab = params.get('tab') === 'scan' ? 'scan' : 'revision'
+  // Ревизия — право «Ревизия»; сканер товаров — для заведения товаров или пересчёта (ADR-097).
+  const can = useCan()
+  const tabs = (
+    [
+      ['revision', 'Ревизия'],
+      ['scan', 'Сканер товаров'],
+    ] as const
+  ).filter(([key]) => (key === 'revision' ? can('revision') : can('products') || can('revision')))
+  const tab = params.get('tab') === 'scan' || !can('revision') ? 'scan' : 'revision'
   return (
     <div className="flex flex-col gap-4">
       <div className="flex gap-2" role="tablist" aria-label="Ревизия и товары">
-        {(
-          [
-            ['revision', 'Ревизия'],
-            ['scan', 'Сканер товаров'],
-          ] as const
-        ).map(([key, label]) => (
+        {tabs.map(([key, label]) => (
           <button
             key={key}
             type="button"

@@ -143,6 +143,8 @@ pub async fn upload_tx(
     data: &[u8],
 ) -> AppResult<FileOut> {
     const KIND: &str = "receipt.file_add";
+    // Фото накладной — часть прихода: право администратора `receipts` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "receipts").await?;
     if let Some(done) = ops::begin_op(conn, ctx, q.op_id, KIND).await? {
         return Ok(done);
     }

@@ -6,6 +6,7 @@ import { lineQtyText, printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { can } from '../lib/permissions'
 import { batteryShare, paymentLabel } from '../lib/battery'
 import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -252,7 +253,8 @@ export default function SaleView() {
               // Исправить чек целиком: сторно и верный чек одним действием (SPEC-29 §24).
               <FixButton onClick={() => navigate(`/sales/${sale.id}/correct`)} />
             )}
-            {sale.kind === 'sale' && !fullyReturned && (
+            {/* Возврат — право администратора (ADR-097). */}
+            {sale.kind === 'sale' && !fullyReturned && can(user, 'sale_return') && (
               <Button variant="danger-outline" onClick={() => setReturning(true)}>
                 Возврат
               </Button>

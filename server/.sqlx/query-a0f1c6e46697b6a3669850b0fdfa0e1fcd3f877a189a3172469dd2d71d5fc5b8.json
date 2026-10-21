@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select is_master, is_cashier from employees where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_master",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a0f1c6e46697b6a3669850b0fdfa0e1fcd3f877a189a3172469dd2d71d5fc5b8"
+}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { can } from '../lib/permissions'
 import { POLARITY_LABELS } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -67,6 +68,8 @@ export function ProductFormModal({
 }) {
   const user = useUser()
   const owner = user.role === 'owner'
+  // Заводить и править товары и штрихкоды — право администратора (ADR-097); без него — просмотр.
+  const mayEdit = can(user, 'products')
   const editing = Boolean(product)
   const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId, preset))
   const [opId] = useState(newOpId)
@@ -320,7 +323,7 @@ export function ProductFormModal({
                   } else document.getElementById('product-category')?.focus()
                 }}
               />
-              {editing && (
+              {editing && mayEdit && (
                 <>
                   <Button variant="secondary" disabled={busy} onClick={() => void addCode(false)}>
                     Добавить
@@ -354,7 +357,7 @@ export function ProductFormModal({
               {codes.map((c) => (
                 <span key={c} className="inline-flex items-center gap-1">
                   <Badge>{c}</Badge>
-                  {editing && codes.length > 1 && (
+                  {editing && mayEdit && codes.length > 1 && (
                     <button
                       type="button"
                       className="text-xs text-slate-400 hover:text-rose-600"
@@ -483,9 +486,13 @@ export function ProductFormModal({
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || missing.length > 0} onClick={() => void save()}>
-            Сохранить
-          </Button>
+          {mayEdit ? (
+            <Button disabled={busy || missing.length > 0} onClick={() => void save()}>
+              Сохранить
+            </Button>
+          ) : (
+            <span className="self-center text-xs text-slate-500">Править товары — право «Товары и штрихкоды»</span>
+          )}
         </div>
       </div>
     </Modal>

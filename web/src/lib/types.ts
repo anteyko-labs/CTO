@@ -2,8 +2,24 @@
 
 export type Role = 'owner' | 'admin'
 
-/** Права сверх роли, которые владелец выдаёт пользователю (ADR-082). */
-export type Permission = 'oil_transfer'
+/** Права администратора, которые выбирает владелец (ADR-082, ADR-097); список — lib/permissions.ts. */
+export type Permission =
+  | 'sale_return'
+  | 'sale_debt'
+  | 'discount'
+  | 'debt_payment'
+  | 'cash_moves'
+  | 'expenses'
+  | 'payroll_pay'
+  | 'receipts'
+  | 'stock_in'
+  | 'supplier_returns'
+  | 'defects'
+  | 'revision'
+  | 'oil_transfer'
+  | 'battery_intake'
+  | 'products'
+  | 'clients'
 
 export interface User {
   id: string
@@ -11,7 +27,7 @@ export interface User {
   login: string
   full_name: string
   role: Role
-  /** Права сверх роли (ADR-082); у старого ответа сервера — нет. */
+  /** Права администратора (ADR-082, ADR-097); у старого ответа сервера — нет. */
   permissions?: Permission[]
 }
 

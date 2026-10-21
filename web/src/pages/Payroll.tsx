@@ -7,11 +7,15 @@ import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { PayrollRow } from '../lib/types'
 
 /** Расчёт за день: кто сколько заработал и сколько ему должны (SPEC-07). */
 export default function Payroll() {
   const owner = useUser().role === 'owner'
+  // Выплаты — право администратора; кассирам выплачивает владелец, сервер отдаёт администратору
+  // только мастеров (SPEC-30 §6).
+  const mayPay = useCan()('payroll_pay')
   const [view, setView] = useState<'day' | 'month'>('day')
   const [date, setDate] = useState(todayBishkek())
   const [paying, setPaying] = useState<PayrollRow | null>(null)
@@ -103,13 +107,15 @@ export default function Payroll() {
                   </td>
                   <td className="overflow-visible! px-2 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button
-                        className="px-3 py-1 text-xs"
-                        disabled={r.balance_tyiyn <= 0 && !owner}
-                        onClick={() => setPaying(r)}
-                      >
-                        Выплатить
-                      </Button>
+                      {mayPay && (
+                        <Button
+                          className="px-3 py-1 text-xs"
+                          disabled={r.balance_tyiyn <= 0 && !owner}
+                          onClick={() => setPaying(r)}
+                        >
+                          Выплатить
+                        </Button>
+                      )}
                       {owner && (
                         <RowMenu
                           label="Начисления сотруднику"

@@ -9,6 +9,7 @@ import { useUser } from '../lib/auth'
 import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, plural } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { canisterPourPrice } from '../lib/money'
 import { presetFromHit } from '../lib/oldCatalog'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
@@ -60,9 +61,14 @@ const emptyForm = (barcode: string, categoryId: string): Form => ({
 
 export default function ProductIntake() {
   const owner = useUser().role === 'owner'
+  // Пересчёт — право «Ревизия», завести товар или привязать код — «Товары и штрихкоды» (ADR-097).
+  const can = useCan()
+  const mayCount = can('revision')
+  const mayCreate = can('products')
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const stats = useLoad(() => get<{ rows: number; imported_at: string | null }>('/old-catalog'), [])
-  const [revision, setRevision] = useState(read(MODE_KEY) === '1')
+  const [revisionOn, setRevision] = useState(read(MODE_KEY) === '1')
+  const revision = revisionOn && mayCount
   const [text, setText] = useState('')
   const [hits, setHits] = useState<Hit[]>([])
   const [found, setFound] = useState<Product | null>(null)
@@ -299,10 +305,12 @@ export default function ProductIntake() {
         title="Работа с товарами"
         subtitle="Сканируйте штрихкод — товар найдётся у нас или в списке старой программы. Enter не нужен."
         actions={
-          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm">
-            <input type="checkbox" checked={revision} onChange={(e) => setRevision(e.target.checked)} />
-            Пересчёт (ревизия)
-          </label>
+          mayCount && (
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm">
+              <input type="checkbox" checked={revision} onChange={(e) => setRevision(e.target.checked)} />
+              Пересчёт (ревизия)
+            </label>
+          )
         }
       />
       <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">
@@ -446,9 +454,11 @@ export default function ProductIntake() {
                         <span>
                           {p.name} <span className="text-xs">· {p.barcodes.length ? p.barcodes.join(', ') : 'без кода'}</span>
                         </span>
-                        <Button variant="secondary" className="min-h-0 px-2 py-1 text-xs" disabled={act.busy || !form.barcode.trim()} onClick={() => attachTo(p)}>
-                          Это он — привязать код
-                        </Button>
+                        {mayCreate && (
+                          <Button variant="secondary" className="min-h-0 px-2 py-1 text-xs" disabled={act.busy || !form.barcode.trim()} onClick={() => attachTo(p)}>
+                            Это он — привязать код
+                          </Button>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -507,9 +517,13 @@ export default function ProductIntake() {
                 <Button variant="secondary" onClick={reset}>
                   Отмена
                 </Button>
-                <Button disabled={act.busy || formBlockers.length > 0} onClick={saveNew}>
-                  Завести товар
-                </Button>
+                {mayCreate ? (
+                  <Button disabled={act.busy || formBlockers.length > 0} onClick={saveNew}>
+                    Завести товар
+                  </Button>
+                ) : (
+                  <span className="self-center text-xs text-slate-500">Заводить товары — право «Товары и штрихкоды»</span>
+                )}
               </div>
             </Card>
           )}

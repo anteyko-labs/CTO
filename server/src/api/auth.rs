@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/me", routing::get(me))
         .route("/users", routing::get(list_users).post(create_user))
         .route("/users/{id}", routing::patch(update_user))
+        .route("/users/{id}/permissions", routing::put(put_permissions))
 }
 
 #[derive(Deserialize)]
@@ -304,14 +305,14 @@ async fn me(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<
     Ok(Json(MeOut { user, permissions }))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct UserOut {
     id: Uuid,
     login: String,
     full_name: String,
     role: String,
     active: bool,
-    /// Права сверх роли, выданные владельцем (ADR-082).
+    /// Права администратора, выданные владельцем (ADR-082, ADR-097).
     permissions: Vec<String>,
 }
 
@@ -376,13 +377,18 @@ async fn create_user(
     .execute(&mut *tx)
     .await
     .map_err(|e| if is_unique_violation(&e) { AppError::Conflict("логин занят".into()) } else { e.into() })?;
+    // Новому администратору — права по умолчанию, дальше их правит владелец (SPEC-30 §5).
+    if role == Role::Admin {
+        auth::grant_default_permissions(&mut tx, id, ctx.user.branch_id, ctx.user.id).await?;
+    }
+    let permissions = auth::permissions(&mut tx, id).await?;
     ops::audit(
         &mut tx,
         &ctx,
         "user.create",
         "user",
         Some(id),
-        json!({ "login": login, "role": role.as_str() }),
+        json!({ "login": login, "role": role.as_str(), "permissions": permissions }),
     )
     .await?;
     tx.commit().await?;
@@ -392,7 +398,7 @@ async fn create_user(
         full_name,
         role: role.as_str().into(),
         active: true,
-        permissions: Vec::new(),
+        permissions,
     }))
 }
 
@@ -402,8 +408,8 @@ struct UpdateUserReq {
     role: Option<String>,
     active: Option<bool>,
     password: Option<String>,
-    /// Права сверх роли целиком (ADR-082): что не в списке — снимается.
-    permissions: Option<Vec<String>>,
+    // Права меняются отдельной операцией `PUT /users/{id}/permissions` (ADR-097): поле
+    // `permissions` от старого экрана не принимается, чтобы он не снял права, которых не знает.
 }
 
 async fn update_user(
@@ -433,13 +439,14 @@ async fn update_user(
     )
     .fetch_all(&mut *tx)
     .await?;
-    if let Some(list) = &req.permissions
-        && let Some(bad) = list
-            .iter()
-            .find(|p| !auth::PERMISSIONS.contains(&p.as_str()))
-    {
-        return Err(invalid(format!("неизвестное право «{bad}»")));
-    }
+    let before_role = sqlx::query_scalar!(
+        "select role from users where id = $1 and branch_id = $2 for update",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let row = sqlx::query!(
         r#"update users set
              full_name = coalesce($3, full_name),
@@ -458,27 +465,21 @@ async fn update_user(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    let before_perms = auth::permissions(&mut tx, id).await?;
-    if let Some(list) = &req.permissions {
-        sqlx::query!(
-            "delete from user_permissions where user_id = $1 and not (permission = any($2))",
+    // Владелец стал администратором — как новому администратору, права по умолчанию (SPEC-30 §5).
+    if before_role == "owner" && row.role == "admin" {
+        let before = auth::permissions(&mut tx, id).await?;
+        auth::grant_default_permissions(&mut tx, id, ctx.user.branch_id, ctx.user.id).await?;
+        let after = auth::permissions(&mut tx, id).await?;
+        audit_permissions(
+            &mut tx,
+            &ctx,
             id,
-            list
+            &row.login,
+            &row.full_name,
+            &before,
+            &after,
         )
-        .execute(&mut *tx)
         .await?;
-        for p in list {
-            sqlx::query!(
-                r#"insert into user_permissions (user_id, branch_id, permission, granted_by)
-                   values ($1, $2, $3, $4) on conflict do nothing"#,
-                id,
-                ctx.user.branch_id,
-                p,
-                ctx.user.id
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
     }
     let out = UserOut {
         id: row.id,
@@ -514,11 +515,127 @@ async fn update_user(
             "role": out.role,
             "active": out.active,
             "password_changed": hash.is_some(),
-            "permissions_before": before_perms,
-            "permissions": out.permissions,
         }),
     )
     .await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct PermissionsReq {
+    op_id: Uuid,
+    /// Права администратора целиком: что не в списке — снимается (ADR-097).
+    permissions: Vec<String>,
+}
+
+/// Журнал изменения прав `user.permissions` (SPEC-30 §5): кто (пользователь записи), кому, что
+/// включено и что выключено. Ничего не поменялось — записи нет.
+async fn audit_permissions(
+    conn: &mut sqlx::PgConnection,
+    ctx: &Ctx,
+    user_id: Uuid,
+    login: &str,
+    full_name: &str,
+    before: &[String],
+    after: &[String],
+) -> AppResult<()> {
+    let granted: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
+    let revoked: Vec<&String> = before.iter().filter(|p| !after.contains(p)).collect();
+    if granted.is_empty() && revoked.is_empty() {
+        return Ok(());
+    }
+    ops::audit(
+        conn,
+        ctx,
+        "user.permissions",
+        "user",
+        Some(user_id),
+        json!({
+            "login": login,
+            "full_name": full_name,
+            "granted": granted,
+            "revoked": revoked,
+            "permissions": after,
+        }),
+    )
+    .await
+}
+
+/// «Что можно» администратору (SPEC-30 §5, ADR-097): владелец выдаёт и снимает права списком
+/// целиком. Одна операция с `op_id`: повтор возвращает тот же ответ.
+async fn put_permissions(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PermissionsReq>,
+) -> AppResult<Json<UserOut>> {
+    const KIND: &str = "user.permissions";
+    ctx.user.require_owner()?;
+    if let Some(bad) = req
+        .permissions
+        .iter()
+        .find(|p| auth::permission_def(p).is_none())
+    {
+        return Err(invalid(format!("неизвестное право «{bad}»")));
+    }
+    let mut list = req.permissions;
+    list.sort();
+    list.dedup();
+    let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let row = sqlx::query!(
+        "select login, full_name, role, active from users where id = $1 and branch_id = $2 for update",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if row.role != Role::Admin.as_str() {
+        return Err(invalid("владельцу права не нужны: он может всё"));
+    }
+    let before = auth::permissions(&mut tx, id).await?;
+    sqlx::query!(
+        "delete from user_permissions where user_id = $1 and not (permission = any($2))",
+        id,
+        &list
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        r#"insert into user_permissions (user_id, branch_id, permission, granted_by)
+           select $1, $2, p, $4 from unnest($3::text[]) as p
+           on conflict do nothing"#,
+        id,
+        ctx.user.branch_id,
+        &list,
+        ctx.user.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let after = auth::permissions(&mut tx, id).await?;
+    audit_permissions(
+        &mut tx,
+        &ctx,
+        id,
+        &row.login,
+        &row.full_name,
+        &before,
+        &after,
+    )
+    .await?;
+    let out = UserOut {
+        id,
+        login: row.login,
+        full_name: row.full_name,
+        role: row.role,
+        active: row.active,
+        permissions: after,
+    };
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
 }

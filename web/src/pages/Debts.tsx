@@ -8,6 +8,7 @@ import { Button, Card, Empty, ErrorBox, Loading, Money, PageHeader } from '../co
 import { get } from '../lib/api'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { sortDebts, type DebtSortKey } from '../lib/income'
 import type { DebtRow, Party } from '../lib/types'
 
@@ -47,7 +48,8 @@ function Side({
   empty: string
   actionLabel: string
   onOpen: (p: DebtRow) => void
-  onPay: (p: DebtRow) => void
+  /** Без права на оплату (ADR-097) кнопки нет. */
+  onPay?: (p: DebtRow) => void
 }) {
   // Крупные долги сверху; щелчок по заголовку — своя сортировка.
   const [sort, setSort] = useState<{ key: DebtSortKey; desc: boolean }>({ key: 'debt', desc: true })
@@ -137,16 +139,18 @@ function Side({
                       {p.credit_limit_tyiyn === null ? <span className="text-slate-400">—</span> : <Money value={p.credit_limit_tyiyn} />}
                     </td>
                     <td className="px-2 py-2 text-right">
-                      <Button
-                        variant="secondary"
-                        className="min-h-9 px-3 py-1 text-xs"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onPay(p)
-                        }}
-                      >
-                        {actionLabel}
-                      </Button>
+                      {onPay && (
+                        <Button
+                          variant="secondary"
+                          className="min-h-9 px-3 py-1 text-xs"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onPay(p)
+                          }}
+                        >
+                          {actionLabel}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -163,6 +167,8 @@ function Side({
 /** Кто кому должен: клиенты нам, мы поставщикам (SPEC-10). */
 export default function Debts() {
   const navigate = useNavigate()
+  // Принять оплату долга клиента и оплатить поставщику — права администратора (ADR-097).
+  const can = useCan()
   const [paying, setPaying] = useState<Party | null>(null)
   const list = useLoad(() => get<DebtRow[]>('/debts/list'), [])
   const { reload } = list
@@ -193,7 +199,7 @@ export default function Debts() {
             empty="Никто не должен. Долг появляется, когда в кассе выбирают оплату «В долг»."
             actionLabel="Погасить"
             onOpen={open}
-            onPay={setPaying}
+            onPay={can('debt_payment') ? setPaying : undefined}
           />
           <Side
             title="Должны мы"
@@ -203,7 +209,7 @@ export default function Debts() {
             empty="Мы никому не должны. Долг появляется, когда приход проводят с расчётом «В долг»."
             actionLabel="Оплатить"
             onOpen={open}
-            onPay={setPaying}
+            onPay={can('receipts') ? setPaying : undefined}
           />
         </>
       )}

@@ -7,6 +7,7 @@ import { useUser } from '../lib/auth'
 import { RESOLUTION_LABELS, STATUS_LABELS, parseQty, qtyInput, qtyInputLabel, qtyText, refundEffect, type ResolutionKind } from '../lib/defects'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { CashAccount, Defect, Product, Supplier } from '../lib/types'
 
 /** «В брак»: количество в единицах товара, причина и поставщик (по умолчанию — из последнего прихода). */
@@ -216,6 +217,8 @@ function resolutionText(d: Defect): string {
 /** Вкладка «Брак»: ожидают решения и решённые. Решает и отменяет решение только владелец. */
 export function DefectsTab() {
   const owner = useUser().role === 'owner'
+  // Снять отметку брака — право администратора «Отметка брака» (ADR-097).
+  const mayMark = useCan()('defects')
   const [view, setView] = useState<'pending' | 'resolved'>('pending')
   // Страницу режет сервер; другая вкладка — первая страница.
   const list = usePagedLoad<Defect>(`/defects${qs({ status: view })}`, 'defects')
@@ -292,9 +295,11 @@ export function DefectsTab() {
               <td className="whitespace-nowrap px-2 py-2 text-right">
                 {d.status === 'pending' && (
                   <div className="flex justify-end gap-2">
-                    <Button variant="secondary" className="min-h-[36px] py-1 text-xs" disabled={act.busy} onClick={() => unmark(d)}>
-                      Снять отметку
-                    </Button>
+                    {mayMark && (
+                      <Button variant="secondary" className="min-h-[36px] py-1 text-xs" disabled={act.busy} onClick={() => unmark(d)}>
+                        Снять отметку
+                      </Button>
+                    )}
                     {owner && (
                       <Button className="min-h-[36px] py-1 text-xs" onClick={() => setResolving(d)}>
                         Решить

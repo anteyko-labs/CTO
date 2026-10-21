@@ -376,6 +376,8 @@ pub async fn post_receipt_tx(
     req: ReceiptReq,
 ) -> AppResult<ReceiptOut> {
     const KIND: &str = "receipt.post";
+    // Приход и оплата поставщику — право администратора `receipts` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "receipts").await?;
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
@@ -807,6 +809,7 @@ pub async fn reverse_receipt_tx(
     req: ReverseReq,
 ) -> AppResult<ReceiptOut> {
     const KIND: &str = "receipt.reverse";
+    crate::auth::require_permission(&mut *conn, &ctx.user, "receipts").await?;
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }

@@ -12,6 +12,7 @@ import { fixedText, returnLineFromDraft, type DraftReturnLine } from '../lib/doc
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { paySources } from '../lib/receiptPay'
 import { returnAmount, returnQty } from '../lib/supplierReturn'
 import type { CashAccount, Product, SupplierReturn } from '../lib/types'
@@ -246,6 +247,8 @@ function SupplierReturnFixLines({ fix, supplierName, onClose, onDone }: { fix: F
  *  поставщику» (SPEC-29 §25). Страницы режет сервер; сторно и исправление — здесь же. */
 export function SupplierReturnList({ supplierId, from, to, onChanged }: { supplierId?: string; from?: string; to?: string; onChanged: () => void }) {
   const owner = useUser().role === 'owner'
+  // Сторно возврата — право администратора «Возврат поставщику» (ADR-097).
+  const mayReturn = useCan()('supplier_returns')
   const list = usePagedLoad<SupplierReturn>(`/supplier-returns${qs({ supplier_id: supplierId, from, to })}`, supplierId ? 'supplier.returns' : 'supplier-returns')
   const [reversing, setReversing] = useState<{ doc: SupplierReturn; comment: string; opId: string } | null>(null)
   const [fixing, setFixing] = useState<SupplierReturn | null>(null)
@@ -285,7 +288,7 @@ export function SupplierReturnList({ supplierId, from, to, onChanged }: { suppli
               {owner && <td className="whitespace-nowrap px-2 py-2 tabular-nums">{r.diff_tyiyn !== undefined ? formatSom(r.diff_tyiyn) : '—'}</td>}
               <td className="px-2 py-2">{r.user_name}</td>
               <td className="px-2 py-2 text-right">
-                {!r.reversal_of && !r.reversed_by && (
+                {!r.reversal_of && !r.reversed_by && mayReturn && (
                   <span className="inline-flex gap-1">
                     <FixButton small onClick={() => setFixing(r)} />
                     <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ doc: r, comment: '', opId: newOpId() })}>

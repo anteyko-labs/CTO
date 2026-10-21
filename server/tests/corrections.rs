@@ -25,14 +25,34 @@ async fn setup(pool: PgPool) -> Router {
         .await
         .unwrap();
     let hash = hash_password("admin-pass-1".into()).await.unwrap();
+    let admin = Uuid::now_v7();
     sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'admin', $3, 'admin', 'Админ')")
-        .bind(Uuid::now_v7())
+        .bind(admin)
         .bind(branch)
         .bind(hash)
         .execute(&pool)
         .await
         .unwrap();
+    grant_default_permissions(&pool, admin, branch).await;
     app(build_state(pool, false).await.unwrap(), None)
+}
+
+/// Права администратора по умолчанию (SPEC-30 §5): тестовый администратор заводится мимо
+/// `POST /users`, поэтому права ему выдаются здесь — как новому администратору.
+async fn grant_default_permissions(pool: &PgPool, user: Uuid, branch: Uuid) {
+    let keys: Vec<String> = avtodom_server::auth::default_permissions()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    sqlx::query(
+        "insert into user_permissions (user_id, branch_id, permission) select $1, $2, unnest($3::text[])",
+    )
+    .bind(user)
+    .bind(branch)
+    .bind(keys)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn call(

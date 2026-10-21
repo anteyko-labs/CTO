@@ -16,6 +16,7 @@ import { useUser } from '../lib/auth'
 import { formatDate, formatDateTime, formatPercentBp, formatSom, parsePercentBp, shiftDate, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { MOVEMENT_LABELS, type Range } from '../lib/income'
 import type { AccountFlow, CashAccount, CashMovement } from '../lib/types'
 
@@ -72,7 +73,8 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
   // «Внести», «Изъять», «Перевести» у счёта (SPEC-29 §11) — владелец; все счета для «куда».
   // Кнопки над списком — счёт выбирают в окне: владельцу любой действующий, администратору — касса
   // смены, как на экране «Смена» (SPEC-29 §25). Права проверяет сервер.
-  const [money, setMoney] = useState<{ kind: AccountMoneyKind; account?: CashAccount } | null>(openMoney ? { kind: 'cash_in' } : null)
+  const mayMove = useCan()('cash_moves')
+  const [money, setMoney] = useState<{ kind: AccountMoneyKind; account?: CashAccount } | null>(openMoney && mayMove ? { kind: 'cash_in' } : null)
   const choices = payAccounts(rows, owner)
   const act = useAction()
 
@@ -165,12 +167,17 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
         subtitle="Кассы, сейфы и банковские счета: остатки, отрицательный баланс, комиссия банка, история движений"
         actions={
           <div className="flex flex-wrap gap-2" data-testid="money-actions">
-            <Button variant="secondary" onClick={() => setMoney({ kind: 'cash_in' })}>
-              Внести
-            </Button>
-            <Button variant="secondary" onClick={() => setMoney({ kind: 'cash_out' })}>
-              Изъять
-            </Button>
+            {/* Внести и изъять — право администратора (ADR-097). */}
+            {mayMove && (
+              <Button variant="secondary" onClick={() => setMoney({ kind: 'cash_in' })}>
+                Внести
+              </Button>
+            )}
+            {mayMove && (
+              <Button variant="secondary" onClick={() => setMoney({ kind: 'cash_out' })}>
+                Изъять
+              </Button>
+            )}
             {owner && (
               <Button variant="secondary" onClick={() => setMoney({ kind: 'transfer' })}>
                 Перевести

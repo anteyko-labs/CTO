@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into user_permissions (user_id, branch_id, permission, granted_by)\n           select $1, $2, p, $4 from unnest($3::text[]) as p\n           on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "297a2e0f430f11827e48f4b91060bc014a5644f806bee50e50744b40af21d0ce"
+}

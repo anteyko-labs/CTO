@@ -294,6 +294,8 @@ pub async fn post_tx(
     req: ReturnReq,
 ) -> AppResult<SupplierReturnOut> {
     const KIND: &str = "supplier_return.post";
+    // Возврат поставщику — право администратора `supplier_returns` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "supplier_returns").await?;
     if req.lines.is_empty() {
         return Err(invalid("в возврате нет строк"));
     }
@@ -551,6 +553,7 @@ pub async fn reverse_tx(
     req: ReverseReq,
 ) -> AppResult<SupplierReturnOut> {
     const KIND: &str = "supplier_return.reverse";
+    crate::auth::require_permission(&mut *conn, &ctx.user, "supplier_returns").await?;
     let comment = req.comment.trim();
     if comment.is_empty() {
         return Err(invalid("укажите причину сторно"));

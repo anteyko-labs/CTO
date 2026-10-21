@@ -247,6 +247,7 @@ async fn create_party(
         .or_else(|| (kind == "company" && role == "customer").then_some(14));
     let id = new_id();
     let mut tx = state.pool.begin().await?;
+    require_party_right(&mut tx, &ctx.user, &role).await?;
     sqlx::query!(
         r#"insert into parties (id, branch_id, role, kind, name, phone, inn, comment,
                                 credit_limit_tyiyn, due_days, first_name, last_name)
@@ -347,6 +348,20 @@ async fn get_party(
     Ok(Json(load_party(&mut conn, user.branch_id, id).await?))
 }
 
+/// Клиента заводит и правит владелец или администратор с правом `clients` (ADR-097); поставщик
+/// в список прав не входит и правится, как раньше.
+async fn require_party_right(
+    conn: &mut PgConnection,
+    user: &crate::auth::CurrentUser,
+    role: &str,
+) -> AppResult<()> {
+    if role == "customer" {
+        crate::auth::require_permission(conn, user, "clients").await
+    } else {
+        Ok(())
+    }
+}
+
 /// Поля карточки контрагента, которые правятся запросом, — для журнала «было/стало».
 async fn party_fields(
     conn: &mut PgConnection,
@@ -406,6 +421,15 @@ async fn update_party(
         return Err(invalid("вид клиента: физлицо или юрлицо"));
     }
     let mut tx = state.pool.begin().await?;
+    let role = sqlx::query_scalar!(
+        "select role from parties where id = $1 and branch_id = $2",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    require_party_right(&mut tx, &ctx.user, &role).await?;
     let before = party_fields(&mut tx, ctx.user.branch_id, id).await?;
     let kind_now = req
         .kind
@@ -521,6 +545,8 @@ async fn create_contact(
         return Err(invalid("укажите ФИО работника"));
     }
     let mut tx = state.pool.begin().await?;
+    // Работники клиента и машины — право администратора `clients` (ADR-097).
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     load_party(&mut tx, ctx.user.branch_id, id).await?;
     let cid = new_id();
     sqlx::query!(
@@ -563,6 +589,7 @@ async fn update_contact(
     Json(req): Json<ContactReq>,
 ) -> AppResult<Json<ContactOut>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     let before = sqlx::query!(
         r#"select c.full_name, c.phone, c.position, c.inn, c.active from party_contacts c
            join parties p on p.id = c.party_id
@@ -654,6 +681,7 @@ async fn create_vehicle(
     let norm = crate::domain::plate::normalize(&plate);
     let branch_id = ctx.user.branch_id;
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     // Марка и модель — из справочника; новую справочник запоминает (ADR-083).
     let (brand, model) =
         crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
@@ -795,6 +823,7 @@ async fn restore_vehicle(
     Path((id, vehicle_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<VehicleOut>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     restore_vehicle_tx(&mut tx, &ctx, id, vehicle_id, "card").await?;
     let row = sqlx::query_as!(
         VehicleOut,
@@ -823,6 +852,7 @@ async fn update_vehicle(
         .map(crate::domain::plate::normalize);
     check_unit(req.mileage_unit.as_deref())?;
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     let (brand, model) =
         crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
     let before = sqlx::query!(
@@ -1375,6 +1405,13 @@ pub async fn post_repayment_tx(
     .await?
     .ok_or(AppError::NotFound)?;
     let supplier = party.role == "supplier";
+    // Оплата поставщику — право `receipts`, приём оплаты долга клиента — `debt_payment` (ADR-097).
+    crate::auth::require_permission(
+        &mut *conn,
+        &ctx.user,
+        if supplier { "receipts" } else { "debt_payment" },
+    )
+    .await?;
     // Со счёта поставщику платит владелец (SPEC-10, права).
     if !ctx.user.is_owner() && supplier && method != "cash" {
         return Err(AppError::Forbidden);

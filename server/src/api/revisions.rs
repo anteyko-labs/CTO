@@ -225,6 +225,8 @@ async fn create(
     Json(req): Json<CreateReq>,
 ) -> AppResult<Json<RevisionOut>> {
     let mut tx = state.pool.begin().await?;
+    // Ревизия — право администратора `revision` (ADR-097).
+    crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     if let Some(cid) = req.category_id {
         sqlx::query_scalar!("select id from categories where id = $1", cid)
             .fetch_optional(&mut *tx)
@@ -331,6 +333,7 @@ async fn put_line(
     }
     const KIND: &str = "revision.line";
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     if let Some(op_id) = req.op_id
         && let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await?
     {
@@ -424,6 +427,7 @@ async fn new_product(
     }
     let op_id = req.product.op_id;
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await? {
         return Ok(Json(done));
     }
@@ -463,6 +467,7 @@ async fn delete_line(
     Path((id, product_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     lock_draft(&mut tx, ctx.user.branch_id, id).await?;
     let removed = sqlx::query_scalar!(
         "delete from revision_lines where revision_id = $1 and product_id = $2 returning counted_qty",
@@ -637,6 +642,7 @@ async fn cancel(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     lock_draft(&mut tx, ctx.user.branch_id, id).await?;
     sqlx::query!(
         "update revisions set status = 'cancelled' where id = $1",

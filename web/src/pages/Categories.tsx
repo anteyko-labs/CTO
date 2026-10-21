@@ -9,6 +9,7 @@ import { get, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { categorySlotText } from '../lib/oilBook'
 import { BOOK_SLOT_LABELS, KIND_LABELS, type AttributeDef, type BookSlot, type Category, type CategoryKind } from '../lib/types'
 
@@ -201,6 +202,8 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
 }
 
 export default function Categories() {
+  // Категории — часть товаров: заводит и правит владелец или администратор с правом (ADR-097).
+  const mayEdit = useCan()('products')
   const list = useLoad(() => get<Category[]>('/categories'), [])
   const [form, setForm] = useState<{ name: string; kind: CategoryKind }>({ name: '', kind: 'other' })
   const [editing, setEditing] = useState<Category | null>(null)
@@ -233,10 +236,12 @@ export default function Categories() {
         title="Категории"
         back={<StockBackLink />}
         actions={
-          <Button onClick={openAdd}>
-            <Icon name="plus" className="h-4 w-4" />
-            Добавить
-          </Button>
+          mayEdit && (
+            <Button onClick={openAdd}>
+              <Icon name="plus" className="h-4 w-4" />
+              Добавить
+            </Button>
+          )
         }
       />
 
@@ -245,13 +250,13 @@ export default function Categories() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty icon="products" action={<Button onClick={openAdd}>Добавить категорию</Button>}>
+          <Empty icon="products" action={mayEdit && <Button onClick={openAdd}>Добавить категорию</Button>}>
             Категорий пока нет. Начните с одной: «Масла» или «Фильтры» — товар заводится внутри категории.
           </Empty>
         ) : (
           <Table head={['Название', 'Вид', 'Строка книжки', 'Характеристик', '']}>
             {list.data.map((c) => (
-              <tr key={c.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setEditing(c)}>
+              <tr key={c.id} className={mayEdit ? 'cursor-pointer hover:bg-slate-50' : ''} onClick={() => mayEdit && setEditing(c)}>
                 <td className="px-2 py-2 font-medium">{c.name}</td>
                 <td className="px-2 py-2">{KIND_LABELS[c.kind]}</td>
                 <td className="px-2 py-2">
@@ -265,17 +270,19 @@ export default function Categories() {
                 </td>
                 <td className="px-2 py-2">{c.attributes.length}</td>
                 <td className="px-2 py-2 text-right">
-                  <Button
-                    variant="secondary"
-                    className="px-2 py-1 text-xs"
-                    aria-label={`Новый товар в категории ${c.name}`}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setNewProductIn(c)
-                    }}
-                  >
-                    + Товар
-                  </Button>
+                  {mayEdit && (
+                    <Button
+                      variant="secondary"
+                      className="px-2 py-1 text-xs"
+                      aria-label={`Новый товар в категории ${c.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setNewProductIn(c)
+                      }}
+                    >
+                      + Товар
+                    </Button>
+                  )}
                 </td>
               </tr>
             ))}

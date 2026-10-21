@@ -9,6 +9,7 @@ import { get, post, qs } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { Party } from '../lib/types'
 
 /** Таблица долгов обновляется сама, пока экран открыт (ADR-028). */
@@ -22,6 +23,8 @@ export default function Clients() {
   // Человек — имя и фамилия отдельно, обязательны; фирма — название (ADR-083).
   const [form, setForm] = useState({ kind: 'person' as Party['kind'], name: '', first: '', last: '', phone: '', inn: '' })
   const [adding, setAdding] = useState(false)
+  // Заводить клиентов — право администратора «Клиенты и машины» (ADR-097).
+  const mayAdd = useCan()('clients')
   const query = useDebounced(q.trim(), 250)
   const create = useAction()
   // Страницу режет сервер, итоги — отдельным запросом по всему отбору (проверка 20.10.2026:
@@ -70,9 +73,11 @@ export default function Clients() {
       <PageHeader
         title="Клиенты"
         actions={
-          <Button onClick={() => setAdding(true)}>
-            <Icon name="plus" /> Добавить
-          </Button>
+          mayAdd && (
+            <Button onClick={() => setAdding(true)}>
+              <Icon name="plus" /> Добавить
+            </Button>
+          )
         }
       />
 
@@ -112,6 +117,7 @@ export default function Clients() {
           <Empty
             icon="clients"
             action={
+              mayAdd &&
               !query &&
               !kind &&
               !onlyDebtors && (

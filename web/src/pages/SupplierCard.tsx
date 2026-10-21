@@ -7,6 +7,7 @@ import { useUser } from '../lib/auth'
 import { balanceText, qtyText as unitQty } from '../lib/defects'
 import { formatDateTime, formatSom } from '../lib/format'
 import { useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { DeliveryReceipt, DeliveryRow, InvoiceStatus, Party, ReceiptListItem, Supplier, SupplierDeliveries, SupplierInvoices } from '../lib/types'
 import { ReconciliationButton } from '../components/ReconciliationButton'
 import { RepaymentModal, type InvoiceToPay } from '../components/RepaymentModal'
@@ -35,6 +36,8 @@ export default function SupplierCard() {
   const [paying, setPaying] = useState(false)
   const [payingInvoice, setPayingInvoice] = useState<InvoiceToPay | null>(null)
   const owner = useUser().role === 'owner'
+  // Оплата поставщику — право «Приход», возврат — «Возврат поставщику» (ADR-097).
+  const can = useCan()
   const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments' | 'returns'>('deliveries')
   const [returning, setReturning] = useState(false)
   const [returnsKey, setReturnsKey] = useState(0)
@@ -79,9 +82,11 @@ export default function SupplierCard() {
               К списку
             </Button>
             <ReconciliationButton partyId={id} />
-            <Button variant="secondary" onClick={() => setReturning(true)}>
-              Возврат поставщику
-            </Button>
+            {can('supplier_returns') && (
+              <Button variant="secondary" onClick={() => setReturning(true)}>
+                Возврат поставщику
+              </Button>
+            )}
             <Button onClick={() => setEditing(true)}>Изменить</Button>
           </>
         }
@@ -131,7 +136,7 @@ export default function SupplierCard() {
             <div className="font-medium">{formatSom(invoices.data?.advance_tyiyn ?? 0)}</div>
           </div>
         )}
-        {owed > 0 && (
+        {owed > 0 && can('receipts') && (
           <Button onClick={() => setPaying(true)}>Оплатить</Button>
         )}
         {!s.active && <Badge tone="rose">не работаем</Badge>}
@@ -271,7 +276,7 @@ export default function SupplierCard() {
                 <td className="px-2 py-2">{d.user_name}</td>
                 <td className="px-2 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
-                    {st && left > 0 && (
+                    {st && left > 0 && can('receipts') && (
                       <Button
                         variant="secondary"
                         className="px-2 py-1 text-xs"

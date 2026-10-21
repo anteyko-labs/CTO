@@ -13,6 +13,7 @@ import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
 import type { Category, Product, ProductList, ProductRow } from '../lib/types'
 
@@ -39,6 +40,8 @@ const perText = (p: Product): string =>
 
 export default function Products() {
   const owner = useUser().role === 'owner'
+  // Заводить товары — право администратора «Товары и штрихкоды» (ADR-097).
+  const mayAdd = useCan()('products')
   const [q, setQ] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [attrFilters, setAttrFilters] = useState<Record<string, string>>({})
@@ -143,9 +146,11 @@ export default function Products() {
       <PageHeader
         title="Товары"
         actions={
-          <Button onClick={() => setEditing('new')} aria-label="Добавить товар" title="Добавить товар: полная карточка">
-            + Товар
-          </Button>
+          mayAdd && (
+            <Button onClick={() => setEditing('new')} aria-label="Добавить товар" title="Добавить товар: полная карточка">
+              + Товар
+            </Button>
+          )
         }
       />
 
@@ -249,7 +254,7 @@ export default function Products() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !items || (items.length === 0 && !totals?.count) ? (
-          <Empty action={<Button onClick={() => setEditing('new')}>Новый товар</Button>}>Товары не найдены</Empty>
+          <Empty action={mayAdd && <Button onClick={() => setEditing('new')}>Новый товар</Button>}>Товары не найдены</Empty>
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -312,14 +317,16 @@ export default function Products() {
       </Card>
 
       {/* «+» внизу экрана на телефоне: добавить товар (SPEC-29 §7). */}
-      <button
-        type="button"
-        className="fixed bottom-20 right-3 z-20 flex h-12 w-12 items-center justify-center rounded-full bg-sky-600 text-2xl text-white opacity-90 shadow-lg md:hidden"
-        aria-label="Добавить товар"
-        onClick={() => setEditing('new')}
-      >
-        +
-      </button>
+      {mayAdd && (
+        <button
+          type="button"
+          className="fixed bottom-20 right-3 z-20 flex h-12 w-12 items-center justify-center rounded-full bg-sky-600 text-2xl text-white opacity-90 shadow-lg md:hidden"
+          aria-label="Добавить товар"
+          onClick={() => setEditing('new')}
+        >
+          +
+        </button>
+      )}
       {editing && (
         <ProductFormModal
           product={editing === 'new' ? undefined : editing}

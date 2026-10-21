@@ -911,6 +911,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         .filter(|p| p.method == "debt")
         .try_fold(0i64, |acc, p| acc.checked_add(p.amount_tyiyn))
         .ok_or_else(overflow)?;
+    // Продажа в долг — владелец или администратор с правом (ADR-097). Чек без сети уже
+    // состоялся: проводится, а владелец получает причину (инвариант 5).
+    if debt_total > 0 && !crate::auth::has_permission(conn, &ctx.user, "sale_debt").await? {
+        if !offline {
+            return Err(crate::auth::no_permission("sale_debt"));
+        }
+        bypass.push("продажа в долг без права".into());
+    }
     match req.party_id {
         Some(pid) => {
             let reasons = parties::check_sale_party(
@@ -1656,6 +1664,7 @@ pub async fn return_sale_tx(
     req: ReturnReq,
 ) -> AppResult<SaleOut> {
     const KIND: &str = "sale.return";
+    crate::auth::require_permission(conn, &ctx.user, "sale_return").await?;
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }

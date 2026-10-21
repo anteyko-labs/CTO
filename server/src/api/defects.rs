@@ -272,6 +272,8 @@ fn qty_words(qty: i64, unit: &str) -> String {
 /// Отметить брак (администратор или владелец): товар уходит из остатка по средней себестоимости.
 pub async fn mark_tx(conn: &mut PgConnection, ctx: &Ctx, req: MarkReq) -> AppResult<DefectOut> {
     const KIND: &str = "defect.mark";
+    // Отметка брака — право администратора `defects` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "defects").await?;
     if req.qty <= 0 || req.qty > 1_000_000_000 {
         return Err(invalid("количество больше нуля"));
     }
@@ -478,6 +480,7 @@ pub async fn unmark_tx(
     req: CommentReq,
 ) -> AppResult<DefectOut> {
     const KIND: &str = "defect.unmark";
+    crate::auth::require_permission(&mut *conn, &ctx.user, "defects").await?;
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }

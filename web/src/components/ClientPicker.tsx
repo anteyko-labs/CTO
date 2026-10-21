@@ -3,6 +3,7 @@ import { get, noServerAnswer, patch, post, qs } from '../lib/api'
 import { readSnapshot, searchSnapshotClients } from '../lib/offline'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { Party, PartyContact, PartyVehicle } from '../lib/types'
 import { Badge, Button, ErrorBox, Field, Missing, Modal } from './ui'
 import { missingWithFocus } from '../lib/forms'
@@ -200,6 +201,8 @@ export function ClientPicker({
 }) {
   const [q, setQ] = useState('')
   const query = useDebounced(q.trim(), 250)
+  // Заводить и править клиентов и машины — право администратора «Клиенты и машины» (ADR-097).
+  const mayEdit = useCan()('clients')
   // Новый клиент: что набрали в поиске, то и подставим; тип выбирает кассир.
   const [creating, setCreating] = useState<string | null>(null)
   // Нашли клиента по госномеру — машину ставим сразу, как загрузится карточка.
@@ -275,20 +278,22 @@ export function ClientPicker({
             <div className="truncate font-medium">{party.name}</div>
             <div className="text-xs text-slate-600">
               <span className="font-medium">{party.kind === 'company' ? 'Юрлицо' : 'Физлицо'}</span>{' '}
-              <button
-                type="button"
-                className="text-sky-700 underline"
-                disabled={kindAct.busy}
-                onClick={() =>
-                  void kindAct.run(async () => {
-                    const kind = party.kind === 'company' ? 'person' : 'company'
-                    const saved = await patch<Party>(`/parties/${party.id}`, { kind })
-                    onParty({ ...party, kind: saved.kind })
-                  })
-                }
-              >
-                {party.kind === 'company' ? 'это физлицо' : 'это юрлицо'}
-              </button>
+              {mayEdit && (
+                <button
+                  type="button"
+                  className="text-sky-700 underline"
+                  disabled={kindAct.busy}
+                  onClick={() =>
+                    void kindAct.run(async () => {
+                      const kind = party.kind === 'company' ? 'person' : 'company'
+                      const saved = await patch<Party>(`/parties/${party.id}`, { kind })
+                      onParty({ ...party, kind: saved.kind })
+                    })
+                  }
+                >
+                  {party.kind === 'company' ? 'это физлицо' : 'это юрлицо'}
+                </button>
+              )}
               {party.inn && ` · ${party.kind === 'company' ? 'ИНН' : 'ПИН'} ${party.inn}`} · {balanceText(party.balance_tyiyn)}
             </div>
           </div>
@@ -301,9 +306,11 @@ export function ClientPicker({
             <Field
               label="Кто приехал"
               hint={
-                <button type="button" className="text-sky-700 underline" onClick={() => setAdding('contact')}>
-                  + новый работник
-                </button>
+                mayEdit && (
+                  <button type="button" className="text-sky-700 underline" onClick={() => setAdding('contact')}>
+                    + новый работник
+                  </button>
+                )
               }
             >
               <select value={contactId} onChange={(e) => onContact(e.target.value)}>
@@ -321,9 +328,11 @@ export function ClientPicker({
         <Field
           label="Машина"
           hint={
-            <button type="button" className="text-sky-700 underline" onClick={() => setAdding('vehicle')}>
-              + новая машина
-            </button>
+            mayEdit && (
+              <button type="button" className="text-sky-700 underline" onClick={() => setAdding('vehicle')}>
+                + новая машина
+              </button>
+            )
           }
         >
           <select value={vehicleId} onChange={(e) => onVehicle(e.target.value)}>
@@ -380,7 +389,7 @@ export function ClientPicker({
                 onParty(list[0])
                 setPlatePick(query)
                 setQ('')
-              } else if (query.length >= 2) {
+              } else if (query.length >= 2 && mayEdit) {
                 setCreating(query)
               }
             }
@@ -416,11 +425,13 @@ export function ClientPicker({
           {list.length === 0 && !found.loading && (
             <li className="px-3 py-2 text-sm text-slate-500">Никого не нашли по «{query}»</li>
           )}
-          <li className="flex items-center justify-between gap-2 border-t border-slate-200 px-3 py-2">
-            <button type="button" className="text-left text-sm font-medium text-sky-700 hover:underline" onClick={() => setCreating(query)}>
-              + Новый клиент «{query}»
-            </button>
-          </li>
+          {mayEdit && (
+            <li className="flex items-center justify-between gap-2 border-t border-slate-200 px-3 py-2">
+              <button type="button" className="text-left text-sm font-medium text-sky-700 hover:underline" onClick={() => setCreating(query)}>
+                + Новый клиент «{query}»
+              </button>
+            </li>
+          )}
         </ul>
       )}
       {creating !== null && (

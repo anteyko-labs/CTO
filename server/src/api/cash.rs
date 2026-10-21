@@ -1568,6 +1568,8 @@ pub async fn post_movement_tx(
     req: MovementReq,
 ) -> AppResult<BalanceOut> {
     const KIND: &str = "cash.movement";
+    // Внести, изъять, перевести — право администратора `cash_moves` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "cash_moves").await?;
     if !matches!(req.kind.as_str(), "cash_in" | "cash_out") {
         return Err(invalid("вид движения: внесение или изъятие"));
     }
@@ -1672,6 +1674,7 @@ pub async fn reverse_movement_tx(
     req: ReverseReq,
 ) -> AppResult<BalanceOut> {
     const KIND: &str = "cash.reverse";
+    crate::auth::require_permission(&mut *tx, &ctx.user, "cash_moves").await?;
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }
@@ -1844,6 +1847,7 @@ pub async fn post_transfer_tx(
     req: TransferReq,
 ) -> AppResult<Value> {
     const KIND: &str = "cash.transfer";
+    crate::auth::require_permission(&mut *conn, &ctx.user, "cash_moves").await?;
     if req.from_account_id == req.to_account_id {
         return Err(invalid("кассы должны быть разные"));
     }
@@ -1909,6 +1913,7 @@ pub async fn reverse_transfer_tx(
     req: ReverseReq,
 ) -> AppResult<Value> {
     const KIND: &str = "cash.transfer_reverse";
+    crate::auth::require_permission(&mut *tx, &ctx.user, "cash_moves").await?;
     if req.comment.trim().is_empty() {
         return Err(invalid("укажите причину"));
     }

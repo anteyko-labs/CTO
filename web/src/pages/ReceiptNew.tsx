@@ -29,6 +29,7 @@ import { presetFromHit, type CardPreset } from '../lib/oldCatalog'
 import { nextField, type LineField } from '../lib/receiptKeys'
 import { defaultPaySource, notEnough, paidNow, partProblem, paySources, type PayMode } from '../lib/receiptPay'
 import { convertCount, stockInFirstCount, stockInLineCalc, stockInNextCount } from '../lib/stockIn'
+import { useCan } from '../lib/permissions'
 import type { CashAccount, Category, LastReceipt, OldCatalogHit, Product, Receipt, StockIn, Supplier } from '../lib/types'
 
 /** Вид документа на экране: приход от поставщика или оприходование без поставщика. */
@@ -61,7 +62,9 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [opId] = useState(newOpId)
-  const [kind, setKind] = useState<ReceiptKind>(fix?.kind ?? (params.get('kind') === 'stock_in' ? 'stock_in' : 'receipt'))
+  // Приход и оприходование — отдельные права администратора (ADR-097): виден только разрешённый вид.
+  const can = useCan()
+  const [kind, setKind] = useState<ReceiptKind>(fix?.kind ?? (params.get('kind') === 'stock_in' || !can('receipts') ? 'stock_in' : 'receipt'))
   const stockIn = kind === 'stock_in'
   const calcOf = stockIn ? stockInLineCalc : lineCalc
   const suppliers = useLoad(() => get<Supplier[]>('/suppliers'), [])
@@ -362,18 +365,20 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
                 ['receipt', 'От поставщика'],
                 ['stock_in', 'Оприходование (без поставщика)'],
               ] as [ReceiptKind, string][]
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                type="button"
-                role="radio"
-                aria-checked={kind === k}
-                className={`rounded-md border px-4 py-2 text-sm font-medium ${kind === k ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
-                onClick={() => switchKind(k)}
-              >
-                {label}
-              </button>
-            ))}
+            )
+              .filter(([k]) => can(k === 'stock_in' ? 'stock_in' : 'receipts'))
+              .map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="radio"
+                  aria-checked={kind === k}
+                  className={`rounded-md border px-4 py-2 text-sm font-medium ${kind === k ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+                  onClick={() => switchKind(k)}
+                >
+                  {label}
+                </button>
+              ))}
           </div>
         )}
         {stockIn ? (
@@ -445,9 +450,9 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
             <ProductPicker
               inputId="receipt-picker"
               onPick={(p, how) => addProduct(p, how)}
-              onUnknownCode={setUnknownCode}
-              onCreate={setNewProductName}
-              onPickOld={fromOld}
+              onUnknownCode={can('products') ? setUnknownCode : undefined}
+              onCreate={can('products') ? setNewProductName : undefined}
+              onPickOld={can('products') ? fromOld : undefined}
               placeholder="Сканируйте штрихкод или пишите название — подскажем и из старой программы"
             />
           </div>

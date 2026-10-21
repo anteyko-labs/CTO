@@ -238,6 +238,8 @@ async fn post(
 /// цена и новая цена продажи по строкам, журнал.
 pub async fn post_tx(conn: &mut PgConnection, ctx: &Ctx, req: StockInReq) -> AppResult<StockInOut> {
     const KIND: &str = "stock_in.post";
+    // Оприходование — право администратора `stock_in` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "stock_in").await?;
     let op_id = req.op_id;
     let comment = req.comment.trim().to_string();
     if comment.is_empty() {
@@ -456,6 +458,7 @@ pub async fn reverse_tx(
     req: ReverseReq,
 ) -> AppResult<StockInOut> {
     const KIND: &str = "stock_in.reverse";
+    crate::auth::require_permission(&mut *conn, &ctx.user, "stock_in").await?;
     let comment = req.comment.trim();
     if comment.is_empty() {
         return Err(invalid("укажите причину сторно"));

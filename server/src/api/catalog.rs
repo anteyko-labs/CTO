@@ -262,6 +262,8 @@ async fn create_category(
     };
     let id = new_id();
     let mut tx = state.pool.begin().await?;
+    // Заводить и править товары, категории и штрихкоды — право администратора `products` (ADR-097).
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     sqlx::query!(
         r#"insert into categories (id, name, kind, attributes, book_slot, book_interval_km, book_interval_days)
            values ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -328,6 +330,7 @@ async fn update_category(
         check_book(b)?;
     }
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let before = sqlx::query!(
         r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days
            from categories c where c.id = $1 for update"#,
@@ -1002,6 +1005,7 @@ async fn create_product(
     Json(req): Json<CreateProductReq>,
 ) -> AppResult<Json<ProductOut>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let out = create_product_tx(&mut tx, &ctx, req).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -1172,6 +1176,7 @@ async fn update_product(
     Json(req): Json<UpdateProductReq>,
 ) -> AppResult<Json<ProductOut>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let cur = sqlx::query!(
         "select category_id, unit, archived, merged_into from products where id = $1 for update",
         id
@@ -1306,6 +1311,8 @@ pub async fn update_prices_tx(
     id: Uuid,
     req: PricesReq,
 ) -> AppResult<ProductOut> {
+    // Минимальный остаток — правка карточки: право администратора `products` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "products").await?;
     // Менять цену заведённого товара может только владелец (ADR-032).
     if (req.pour_price_per_l_tyiyn.is_some() || req.sale_price_tyiyn.is_some())
         && !ctx.user.is_owner()
@@ -1471,6 +1478,7 @@ async fn add_barcode(
     Json(req): Json<BarcodeReq>,
 ) -> AppResult<Json<BarcodeOut>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let archived = sqlx::query_scalar!("select archived from products where id = $1", id)
         .fetch_optional(&mut *tx)
         .await?
@@ -1513,6 +1521,7 @@ async fn remove_barcode(
     Path((id, code)): Path<(Uuid, String)>,
 ) -> AppResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     // Блокировка товара: два одновременных удаления не оставят его совсем без кода (ADR-026).
     sqlx::query_scalar!("select id from products where id = $1 for update", id)
         .fetch_optional(&mut *tx)

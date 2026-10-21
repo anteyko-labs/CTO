@@ -43,6 +43,22 @@ async fn seed(pool: &PgPool) -> World {
             .execute(pool)
             .await
             .unwrap();
+        // Администратор — с правами по умолчанию, как новый в программе (SPEC-30 §5).
+        if role == "admin" {
+            let keys: Vec<String> = avtodom_server::auth::default_permissions()
+                .into_iter()
+                .map(String::from)
+                .collect();
+            sqlx::query(
+                "insert into user_permissions (user_id, branch_id, permission) select $1, $2, unnest($3::text[])",
+            )
+            .bind(id)
+            .bind(branch)
+            .bind(keys)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
         users.push(Ctx {
             user: CurrentUser {
                 id,

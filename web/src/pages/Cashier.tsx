@@ -30,6 +30,7 @@ import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/
 import { enqueueSale, keepInQueue, knownShift, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage, saveKnownShift, takeFromSnapshot } from '../lib/offline'
 import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
 import { useUser } from '../lib/auth'
+import { can } from '../lib/permissions'
 import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../lib/cashierMode'
 import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
@@ -224,6 +225,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const focusAfterRender = useFocusAfterRender()
   const user = useUser()
   const owner = user.role === 'owner'
+  // Права администратора (ADR-097): без права кнопка или способ оплаты скрыты, проверяет сервер.
+  const payAllowed = (m: string) => m !== 'debt' || can(user, 'sale_debt')
   // Связь с сервером, а не только сеть устройства: баллы и аккумулятор считает сервер.
   const online = useServerOnline()
   // Режим кассы для сенсорного моноблока (SPEC-29): без меню, всё крупнее, цифры — экранной
@@ -1048,7 +1051,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <Card className={touch ? 'p-3' : ''}>
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <ProductPicker onPick={addProduct} onUnknownCode={setUnknownCode} onCreate={setNewProductName} />
+              <ProductPicker
+                onPick={addProduct}
+                onUnknownCode={can(user, 'products') ? setUnknownCode : undefined}
+                onCreate={can(user, 'products') ? setNewProductName : undefined}
+              />
             </div>
             <Button variant="secondary" className={`shrink-0 ${touch ? 'min-h-[64px]! px-5 text-lg!' : ''}`} onClick={() => setServicesOpen(true)}>
               <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1060,35 +1067,45 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           {touch ? (
             // В режиме кассы всё на виду и крупно: без скрытого меню «…» и мелких ссылок.
             <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <button type="button" className={tbtn} onClick={() => setDebtPay(true)}>
-                <Icon name="debts" className="h-5 w-5 shrink-0" />
-                Принять оплату долга
-              </button>
-              <button type="button" className={tbtn} onClick={() => setExpense(true)}>
-                <Icon name="expenses" className="h-5 w-5 shrink-0" />
-                Мелкий расход из кассы
-              </button>
-              <button type="button" className={tbtn} onClick={() => setBatteryIntake(true)}>
-                Приём аккумуляторов
-              </button>
+              {can(user, 'debt_payment') && (
+                <button type="button" className={tbtn} onClick={() => setDebtPay(true)}>
+                  <Icon name="debts" className="h-5 w-5 shrink-0" />
+                  Принять оплату долга
+                </button>
+              )}
+              {can(user, 'expenses') && (
+                <button type="button" className={tbtn} onClick={() => setExpense(true)}>
+                  <Icon name="expenses" className="h-5 w-5 shrink-0" />
+                  Мелкий расход из кассы
+                </button>
+              )}
+              {can(user, 'battery_intake') && (
+                <button type="button" className={tbtn} onClick={() => setBatteryIntake(true)}>
+                  Приём аккумуляторов
+                </button>
+              )}
               <button type="button" className={tbtn} onClick={sellBatteries}>
                 Аккумуляторы на вес
               </button>
             </div>
           ) : (
             <div className={`mt-2 flex-wrap items-center gap-x-1 gap-y-1 ${fix ? 'hidden' : 'flex'}`}>
-              <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setDebtPay(true)}>
-                <Icon name="debts" className="h-4 w-4" />
-                Принять оплату долга
-              </button>
-              <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setExpense(true)}>
-                <Icon name="expenses" className="h-4 w-4" />
-                Мелкий расход из кассы
-              </button>
+              {can(user, 'debt_payment') && (
+                <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setDebtPay(true)}>
+                  <Icon name="debts" className="h-4 w-4" />
+                  Принять оплату долга
+                </button>
+              )}
+              {can(user, 'expenses') && (
+                <button type="button" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setExpense(true)}>
+                  <Icon name="expenses" className="h-4 w-4" />
+                  Мелкий расход из кассы
+                </button>
+              )}
               <RowMenu
                 label="Ещё действия кассы"
                 items={[
-                  { label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) },
+                  ...(can(user, 'battery_intake') ? [{ label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) }] : []),
                   { label: 'Аккумуляторы на вес', onClick: sellBatteries },
                 ]}
               />
@@ -1625,7 +1642,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           {touch ? (
             // 3 + 2 отдельными крупными кнопками со значками: наличные, карта, QR сверху — частые.
             <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-2">
-              {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m, i) => (
+              {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).filter(payAllowed).map((m, i) => (
                 <button
                   key={m}
                   type="button"
@@ -1642,7 +1659,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           ) : (
             <div data-pay tabIndex={-1} className="grid grid-cols-6 gap-px overflow-hidden rounded-md border border-slate-300 bg-slate-300 text-base">
-              {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).map((m, i) => (
+              {(['cash', 'card', 'transfer', 'debt', 'mixed'] as const).filter(payAllowed).map((m, i) => (
                 <button
                   key={m}
                   type="button"
@@ -1886,7 +1903,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           {payMode === 'mixed' && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
+                {(['cash', 'card', 'transfer', 'debt'] as const).filter(payAllowed).map((m) => (
                   <Field key={m} label={PAYMENT_LABELS[m]}>
                     <input {...num('decimal')} aria-label={PAYMENT_LABELS[m]} value={split[m]} onChange={(e) => setSplit({ ...split, [m]: e.target.value })} />
                   </Field>
@@ -1901,7 +1918,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   </span>
                   {mixedLeft > 0 && (
                     <span className="flex flex-wrap gap-1">
-                      {(['cash', 'card', 'transfer', 'debt'] as const).map((m) => (
+                      {(['cash', 'card', 'transfer', 'debt'] as const).filter(payAllowed).map((m) => (
                         <button
                           key={m}
                           type="button"
@@ -2019,10 +2036,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <ServicePicker
           onPick={addService}
           onClose={() => setServicesOpen(false)}
-          onBatteryIntake={() => {
-            setServicesOpen(false)
-            setBatteryIntake(true)
-          }}
+          onBatteryIntake={
+            can(user, 'battery_intake')
+              ? () => {
+                  setServicesOpen(false)
+                  setBatteryIntake(true)
+                }
+              : undefined
+          }
           onBatterySale={() => {
             setServicesOpen(false)
             sellBatteries()

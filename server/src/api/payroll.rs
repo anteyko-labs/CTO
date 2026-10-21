@@ -1628,6 +1628,7 @@ async fn day(
     let owner = user.is_owner();
     let rows = sqlx::query!(
         r#"select e.id as "employee_id!", e.full_name as "full_name!",
+             e.is_master as "is_master!", e.is_cashier as "is_cashier!",
              coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date < $2), 0)::bigint
              - coalesce((select sum(p.amount_tyiyn) from payouts p
@@ -1653,6 +1654,8 @@ async fn day(
     .await?;
     let out = rows
         .into_iter()
+        // Администратор выплачивает только мастерам (SPEC-30 §6): к выплате видит только их.
+        .filter(|r| owner || (r.is_master && !r.is_cashier))
         .map(|r| DayRow {
             employee_id: r.employee_id,
             full_name: r.full_name,
@@ -2060,10 +2063,31 @@ pub async fn post_payout_tx(
     }
     let owner = ctx.user.is_owner();
     let branch_id = ctx.user.branch_id;
+    // Выплаты — право администратора `payroll_pay` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "payroll_pay").await?;
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
     lock_employee(&mut *conn, branch_id, req.employee_id).await?;
+    // Администратор выдаёт деньги только мастерам; кассиру и остальным — владелец (SPEC-30 §6).
+    if !owner {
+        let e = sqlx::query!(
+            "select is_master, is_cashier from employees where id = $1",
+            req.employee_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if e.is_cashier {
+            return Err(AppError::ForbiddenWith(
+                "Кассиру выплачивает владелец".into(),
+            ));
+        }
+        if !e.is_master {
+            return Err(AppError::ForbiddenWith(
+                "Выплачивает владелец: администратор выдаёт деньги только мастерам".into(),
+            ));
+        }
+    }
     let balance = sqlx::query_scalar!(
         r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
                 - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,

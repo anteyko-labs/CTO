@@ -1,11 +1,13 @@
 // Пользователи со входом: владельцы и администраторы; экран только для владельца (SPEC-01).
+// «Что можно» — права администратора, которые выбирает владелец (SPEC-30 §5, ADR-097).
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { get, patch, post } from '../lib/api'
+import { get, newOpId, patch, post, put } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Role, UserRow } from '../lib/types'
+import { PERMISSION_GROUPS, PERMISSIONS } from '../lib/permissions'
+import type { Permission, Role, UserRow } from '../lib/types'
 
 const ROLE_LABELS: Record<Role, string> = {
   owner: 'Владелец',
@@ -32,7 +34,6 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
     role: user.role,
     active: user.active,
     password: '',
-    oilTransfer: (user.permissions ?? []).includes('oil_transfer'),
   })
   const { busy, error, run } = useAction()
 
@@ -44,8 +45,6 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
         role: form.role,
         active: form.active,
         ...(form.password ? { password: form.password } : {}),
-        // Права сверх роли — целиком (ADR-082); владельцу они не нужны.
-        permissions: form.role === 'admin' && form.oilTransfer ? ['oil_transfer'] : [],
       })
       onSaved()
     })
@@ -67,15 +66,6 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
             onChange={(e) => setForm({ ...form, password: e.target.value })}
           />
         </Field>
-        {form.role === 'admin' && (
-          <div className="flex flex-col gap-1 rounded-md border border-slate-200 p-3">
-            <div className="text-sm font-medium">Права</div>
-            <Checkbox label="Перелив масла" checked={form.oilTransfer} onChange={(v) => setForm({ ...form, oilTransfer: v })} />
-            <div className="text-xs text-slate-500">
-              Администратор переливает масло без себестоимости; о каждом переливе вам придёт уведомление, отменяете перелив только вы.
-            </div>
-          </div>
-        )}
         <Checkbox label="Активен" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
@@ -91,6 +81,70 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
   )
 }
 
+/** «Что можно» администратору: флажки по группам, сохраняется списком целиком (SPEC-30 §5). */
+function PermissionsModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => void; onSaved: () => void }) {
+  const [chosen, setChosen] = useState<Set<Permission>>(() => new Set(user.permissions ?? []))
+  // Своя операция на каждый набор флажков: повтор после потерянного ответа не провёл бы другой набор.
+  const [opId, setOpId] = useState(newOpId)
+  const { busy, error, run } = useAction()
+  const toggle = (key: Permission, on: boolean) => {
+    const next = new Set(chosen)
+    if (on) next.add(key)
+    else next.delete(key)
+    setChosen(next)
+    setOpId(newOpId())
+  }
+  const save = () =>
+    run(async () => {
+      await put<UserRow>(`/users/${user.id}/permissions`, {
+        op_id: opId,
+        permissions: PERMISSIONS.map((p) => p.key).filter((k) => chosen.has(k)),
+      })
+      toast('Права сохранены')
+      onSaved()
+    })
+
+  return (
+    <Modal title={`Что можно: ${user.full_name}`} onClose={onClose} wide>
+      <div className="flex flex-col gap-4" data-testid="permissions">
+        <div className="text-sm text-slate-600">
+          Владелец может всё. Отметьте, что можно этому администратору; без права пункты меню и кнопки у него скрыты, а сервер отвечает «Нет права». Себестоимость,
+          прибыль, цены товаров, исправления документов и начисления — только у владельца.
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {PERMISSION_GROUPS.map((group) => (
+            <fieldset key={group} className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+              <legend className="px-1 text-sm font-medium">{group}</legend>
+              {PERMISSIONS.filter((p) => p.group === group).map((p) => (
+                <div key={p.key} className="flex flex-col">
+                  <Checkbox label={p.label} checked={chosen.has(p.key)} onChange={(v) => toggle(p.key, v)} />
+                  {p.hint && <div className="pl-6 text-xs text-slate-500">{p.hint}</div>}
+                </div>
+              ))}
+            </fieldset>
+          ))}
+        </div>
+        <ErrorBox error={error} />
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button disabled={busy} onClick={() => void save()}>
+            Сохранить
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** Сколько прав у администратора — в списке пользователей. */
+function rightsText(u: UserRow): string {
+  if (u.role === 'owner') return 'всё'
+  const n = PERMISSIONS.filter((p) => (u.permissions ?? []).includes(p.key)).length
+  return `${n} из ${PERMISSIONS.length}`
+}
+
 const EMPTY = { login: '', full_name: '', password: '', role: 'admin' as Role }
 
 export default function Users() {
@@ -98,6 +152,7 @@ export default function Users() {
   const [form, setForm] = useState(EMPTY)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<UserRow | null>(null)
+  const [rights, setRights] = useState<UserRow | null>(null)
   const { busy, error, run } = useAction()
   const toggle = useAction()
 
@@ -144,7 +199,7 @@ export default function Users() {
         ) : !list.data?.length ? (
           <Empty>Пользователей нет</Empty>
         ) : (
-          <Table head={['Логин', 'Имя', 'Роль', 'Статус', '']}>
+          <Table head={['Логин', 'Имя', 'Роль', 'Что можно', 'Статус', '']}>
             {list.data.map((u) => (
               <tr
                 key={u.id}
@@ -155,10 +210,14 @@ export default function Users() {
                 <td className="px-2 py-2">{u.full_name}</td>
                 <td className="px-2 py-2">
                   <Badge tone={u.role === 'owner' ? 'amber' : 'sky'}>{ROLE_LABELS[u.role].toLowerCase()}</Badge>
-                  {u.role === 'admin' && (u.permissions ?? []).includes('oil_transfer') && (
-                    <span className="ml-1">
-                      <Badge>перелив</Badge>
-                    </span>
+                </td>
+                <td className="px-2 py-2" onClick={(ev) => ev.stopPropagation()}>
+                  {u.role === 'admin' ? (
+                    <button type="button" className="text-sky-700 hover:underline" onClick={() => setRights(u)}>
+                      {rightsText(u)}
+                    </button>
+                  ) : (
+                    <span className="text-slate-500">{rightsText(u)}</span>
                   )}
                 </td>
                 <td className="px-2 py-2">{u.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
@@ -166,6 +225,7 @@ export default function Users() {
                   <RowMenu
                     items={[
                       { label: 'Изменить или сменить пароль', onClick: () => setEditing(u) },
+                      ...(u.role === 'admin' ? [{ label: 'Что можно', onClick: () => setRights(u) }] : []),
                       u.active
                         ? { label: 'Отключить вход', danger: true, onClick: () => setActive(u, false) }
                         : { label: 'Включить вход', onClick: () => setActive(u, true) },
@@ -197,7 +257,7 @@ export default function Users() {
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
               />
             </Field>
-            <Field label="Роль">
+            <Field label="Роль" hint={form.role === 'admin' ? 'Права — по умолчанию: всё, кроме скидки и перелива; поменять — «Что можно»' : undefined}>
               <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
             </Field>
             <ErrorBox error={error} />
@@ -212,6 +272,17 @@ export default function Users() {
             </div>
           </form>
         </Modal>
+      )}
+
+      {rights && (
+        <PermissionsModal
+          user={rights}
+          onClose={() => setRights(null)}
+          onSaved={() => {
+            setRights(null)
+            list.reload()
+          }}
+        />
       )}
 
       {editing && (

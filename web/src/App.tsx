@@ -61,8 +61,8 @@ interface NavItem {
   icon: IconName
   ownerOnly?: boolean
   adminOnly?: boolean
-  /** Пункт для владельца и администратора с этим правом (ADR-082). */
-  permission?: Permission
+  /** Пункт для владельца и администратора с этим правом (ADR-082, ADR-097); список — с любым из прав. */
+  permission?: Permission | Permission[]
 }
 
 // Меню: рабочие экраны сверху, справочники и настройки ниже. Категории живут внутри «Товаров»,
@@ -81,25 +81,25 @@ const NAV: { title?: string; items: NavItem[] }[] = [
   {
     title: 'Деньги',
     items: [
-      { to: '/expenses', label: 'Расходы', icon: 'expenses' },
+      { to: '/expenses', label: 'Расходы', icon: 'expenses', permission: 'expenses' },
       { to: '/payroll', label: 'Расчёт', icon: 'payroll' },
       { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
       { to: '/income', label: 'Поступления', icon: 'income' },
       { to: '/accounts', label: 'Счета', icon: 'wallet' },
-      { to: '/money', label: 'Внести / Изъять', icon: 'plus' },
+      { to: '/money', label: 'Внести / Изъять', icon: 'plus', permission: 'cash_moves' },
       { to: '/bank', label: 'Счёт', icon: 'bank', ownerOnly: true },
     ],
   },
   {
     title: 'Склад',
     items: [
-      { to: '/receipts', label: 'Приход', icon: 'incoming' },
+      { to: '/receipts', label: 'Приход', icon: 'incoming', permission: ['receipts', 'stock_in'] },
       { to: '/suppliers', label: 'Поставщики', icon: 'truck' },
-      { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return' },
+      { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return', permission: 'supplier_returns' },
       { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/products', label: 'Товары', icon: 'products' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },
-      { to: '/revision', label: 'Ревизия и товары', icon: 'revision' },
+      { to: '/revision', label: 'Ревизия и товары', icon: 'revision', permission: ['revision', 'products'] },
       { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', permission: 'oil_transfer' },
     ],
   },
@@ -208,8 +208,10 @@ function Shell() {
   const owner = user.role === 'owner'
   const roleLabel = owner ? 'Владелец' : 'Администратор'
 
+  // Пункт по праву (ADR-097): без права администратор его не видит.
+  const allowed = (p?: Permission | Permission[]) => !p || (Array.isArray(p) ? p : [p]).some((x) => can(user, x))
   const items = (list: NavItem[]) =>
-    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.permission || can(user, it.permission)))
+    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && allowed(it.permission))
   const badge = (to: string) =>
     to === '/notifications' && unseen > 0 ? (
       <span className="ml-auto rounded-full bg-rose-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{unseen > 99 ? '99+' : unseen}</span>
@@ -319,19 +321,19 @@ function Shell() {
           <Route path="/top-products" element={<TopProducts />} />
           <Route path="/intake" element={<Navigate to="/revision?tab=scan" replace />} />
           <Route path="/shift" element={<Shift />} />
-          <Route path="/expenses" element={<Expenses />} />
+          {can(user, 'expenses') && <Route path="/expenses" element={<Expenses />} />}
           <Route path="/payroll" element={<Payroll />} />
           {owner && <Route path="/summary" element={<OwnerDashboard />} />}
           {owner && <Route path="/profit" element={<Profit />} />}
           {owner && <Route path="/bank" element={<Bank />} />}
           <Route path="/income" element={<Income />} />
           <Route path="/accounts" element={<Accounts />} />
-          <Route path="/money" element={<Accounts key="money" openMoney />} />
+          {can(user, 'cash_moves') && <Route path="/money" element={<Accounts key="money" openMoney />} />}
           {/* Оприходование — вариант прихода (ADR-086): список — «Приход» с отбором. */}
           <Route path="/stock-ins" element={<Navigate to="/receipts?kind=stock_in" replace />} />
           <Route path="/stock-ins/:id" element={<ByParam><StockInView /></ByParam>} />
           {owner && <Route path="/stock-ins/:id/correct" element={<ByParam><StockInCorrect /></ByParam>} />}
-          <Route path="/supplier-returns" element={<SupplierReturnsPage />} />
+          {can(user, 'supplier_returns') && <Route path="/supplier-returns" element={<SupplierReturnsPage />} />}
           <Route path="/debts" element={<Debts />} />
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />

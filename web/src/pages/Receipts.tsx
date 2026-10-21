@@ -7,6 +7,7 @@ import { CorrectionBadges } from '../components/Correction'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { qs } from '../lib/api'
 import { formatDateTime, formatSom, shiftDate, todayBishkek } from '../lib/format'
 import type { ReceiptListItem } from '../lib/types'
@@ -37,7 +38,10 @@ export default function Receipts() {
       Promise.all([loadCorrections('receipt'), loadCorrections('stock_in')]).then(([a, b]) => correctionMarks([...a, ...b])),
     [from, to],
   )
-  const newReceipt = () => navigate(kind === 'stock_in' ? '/receipts/new?kind=stock_in' : '/receipts/new')
+  // Приход и оприходование — отдельные права администратора (ADR-097).
+  const can = useCan()
+  const mayAdd = can('receipts') || can('stock_in')
+  const newReceipt = () => navigate(kind === 'stock_in' || !can('receipts') ? '/receipts/new?kind=stock_in' : '/receipts/new')
   /** Отметки строки: вид, сторно, оплата накладной, исправления. */
   const badges = (r: ReceiptListItem) => (
     <>
@@ -74,7 +78,7 @@ export default function Receipts() {
 
   return (
     <div>
-      <PageHeader title="Приход" actions={<Button onClick={newReceipt}>Новый приход</Button>} />
+      <PageHeader title="Приход" actions={mayAdd && <Button onClick={newReceipt}>Новый приход</Button>} />
       <Card>
         <div className="mb-4 grid grid-cols-2 gap-3 sm:max-w-2xl sm:grid-cols-3">
           <Field label="С">
@@ -97,7 +101,7 @@ export default function Receipts() {
         {list.loading && !list.data ? (
           <Loading />
         ) : list.data && list.total === 0 ? (
-          <Empty icon="incoming" action={<Button onClick={newReceipt}>Новый приход</Button>}>
+          <Empty icon="incoming" action={mayAdd && <Button onClick={newReceipt}>Новый приход</Button>}>
             {kind === 'stock_in' ? 'Оприходований за период нет' : 'Приходов за период нет'}
           </Empty>
         ) : (

@@ -14,6 +14,7 @@ import { markupPermille } from '../lib/money'
 import { unitCost } from '../lib/receiptLines'
 import { useAction, useLoad } from '../lib/hooks'
 import { paidFromText } from '../lib/receiptPay'
+import { useCan } from '../lib/permissions'
 import type { Product, Receipt, ReceiptLine } from '../lib/types'
 
 /** Количество строки: канистры для масла, штуки для штучного товара. */
@@ -36,6 +37,7 @@ function labelCopies(l: ReceiptLine): number {
 export default function ReceiptView() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
+  const can = useCan()
   const receipt = useLoad(() => get<Receipt>(`/receipts/${id}`), [id])
   const [reverseOpen, setReverseOpen] = useState(false)
   const [reverseComment, setReverseComment] = useState('')
@@ -78,6 +80,8 @@ export default function ReceiptView() {
 
   const isReversal = r.reversal_of !== null
   const canReverse = !isReversal && r.reversed_by === null
+  // Сторно, оплата и фото накладной — право администратора «Приход» (ADR-097).
+  const mayReceipts = can('receipts')
 
   return (
     <div className="flex flex-col gap-4">
@@ -97,7 +101,7 @@ export default function ReceiptView() {
               // Исправить накладную: сторно и верная одним действием (SPEC-29 §24).
               <FixButton onClick={() => navigate(`/receipts/${r.id}/correct`)} />
             )}
-            {canReverse && (
+            {canReverse && mayReceipts && (
               <Button variant="danger" onClick={() => setReverseOpen(true)}>
                 Сторно
               </Button>
@@ -175,7 +179,7 @@ export default function ReceiptView() {
                 {formatSom(r.debt.left_tyiyn)}
               </span>
             </div>
-            {r.debt.left_tyiyn > 0 && r.supplier_id && <Button onClick={() => setPaying(true)}>Оплатить</Button>}
+            {r.debt.left_tyiyn > 0 && r.supplier_id && mayReceipts && <Button onClick={() => setPaying(true)}>Оплатить</Button>}
           </div>
           <InvoicePayments payments={r.debt.payments} />
         </Card>
@@ -207,7 +211,7 @@ export default function ReceiptView() {
 
       {!isReversal && (
         <Card>
-          <ReceiptPhotos receiptId={r.id} canAdd />
+          <ReceiptPhotos receiptId={r.id} canAdd={mayReceipts} />
         </Card>
       )}
 

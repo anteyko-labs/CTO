@@ -5,6 +5,7 @@ import { Pager, usePageState, usePager } from '../components/Pager'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { get, getPage, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { useCan } from '../lib/permissions'
 import { ShiftOpenModal } from '../components/ShiftOpen'
 import { StaffPayList } from '../components/StaffPayList'
 import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
@@ -73,6 +74,8 @@ type MoneyForm = { kind: 'cash_in' | 'cash_out' | 'transfer'; sum: string; comme
 /** Смена и кассы: открыть, внести, изъять, перевести, закрыть с пересчётом и сдать кассу (SPEC-05). */
 export default function Shift() {
   const owner = useUser().role === 'owner'
+  // Внести, изъять, перевести и выплатить — права администратора (ADR-097).
+  const can = useCan()
   const current = useLoad(() => get<ShiftRow | null>('/shifts/current'), [])
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
@@ -135,7 +138,8 @@ export default function Shift() {
       current.reload()
       if (fresh) current.setData(fresh)
       // Кому сколько к выдаче: заработанное сегодня и невыплаченное за прошлые дни (SPEC-27).
-      const staff = await get<PayrollRow[]>('/payroll/day')
+      // Администратору сервер отдаёт только мастеров: кассирам выплачивает владелец (SPEC-30 §6).
+      const staff = can('payroll_pay') ? await get<PayrollRow[]>('/payroll/day') : []
       const pay = staff
         .filter((r) => r.balance_tyiyn > 0)
         .map((r) => ({ employee_id: r.employee_id, name: r.full_name, owed: r.balance_tyiyn, on: false, sum: somInput(r.balance_tyiyn), opId: newOpId() }))
@@ -412,15 +416,19 @@ export default function Shift() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => startMoney('cash_in')}>
-              Внести
-            </Button>
-            <Button variant="secondary" onClick={() => startMoney('cash_out')}>
-              Изъять
-            </Button>
-            <Button variant="secondary" onClick={() => startMoney('transfer')}>
-              Перевести
-            </Button>
+            {can('cash_moves') && (
+              <>
+                <Button variant="secondary" onClick={() => startMoney('cash_in')}>
+                  Внести
+                </Button>
+                <Button variant="secondary" onClick={() => startMoney('cash_out')}>
+                  Изъять
+                </Button>
+                <Button variant="secondary" onClick={() => startMoney('transfer')}>
+                  Перевести
+                </Button>
+              </>
+            )}
             <Button onClick={startClosing}>Закрыть смену</Button>
           </div>
         </Card>
@@ -843,6 +851,7 @@ function AccountMoves({ id, tick, onReverse, onFix }: { id: string; tick: number
   const fixes = useLoad(() => Promise.all([loadCorrections('cash_movement'), loadCorrections('cash_transfer')]).then(([a, b]) => correctionMarks([...a, ...b])), [tick])
   const markOf = (m: CashMovement) => fixes.data?.get(m.doc_type === 'transfer' && m.doc_id ? m.doc_id : m.id)
   const rows = moves.data?.items ?? []
+  const mayReverse = useCan()('cash_moves')
   return (
     <div className="mt-4">
       <ErrorBox error={moves.error} />
@@ -868,7 +877,7 @@ function AccountMoves({ id, tick, onReverse, onFix }: { id: string; tick: number
                 <td className="px-2 py-2 text-slate-600">{m.comment}</td>
                 <td className="px-2 py-2">{m.user_name}</td>
                 <td className="px-2 py-2 text-right">
-                  {m.reversible && (
+                  {m.reversible && mayReverse && (
                     <div className="flex items-center justify-end gap-2">
                       <FixButton small onClick={() => onFix(m)} />
                       <Button variant="ghost" onClick={() => onReverse(m)}>

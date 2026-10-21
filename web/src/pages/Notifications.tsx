@@ -33,6 +33,7 @@ const KINDS: Record<string, { tone: Tone; group: Group }> = {
   'gift.rule': { tone: 'slate', group: 'stock' },
   'user.create': { tone: 'slate', group: 'people' },
   'user.update': { tone: 'slate', group: 'people' },
+  'user.permissions': { tone: 'amber', group: 'people' },
 }
 
 const kindOf = (n: NotificationItem) => KINDS[n.action] ?? { tone: 'slate' as Tone, group: 'money' as Group }

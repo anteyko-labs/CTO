@@ -74,15 +74,10 @@ impl TransferOut {
     }
 }
 
-/// Перелив проводит владелец или администратор, которому владелец выдал право (ADR-082).
+/// Перелив проводит владелец или администратор, которому владелец выдал право (ADR-082):
+/// иначе 403 «Нет права: Перелив масла» (ADR-097).
 async fn require_transfer_right(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<()> {
-    if crate::auth::has_permission(conn, user, "oil_transfer").await? {
-        Ok(())
-    } else {
-        Err(AppError::ForbiddenWith(
-            "перелив — владелец или администратор с правом «Перелив масла»".into(),
-        ))
-    }
+    crate::auth::require_permission(conn, user, "oil_transfer").await
 }
 
 async fn oil_state(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<OilState> {

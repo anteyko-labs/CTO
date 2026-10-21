@@ -224,6 +224,8 @@ pub struct IntakeOut {
 /// Средняя за кг складывается из всех приёмов (ADR-011), продать дешевле неё нельзя (ADR-042).
 pub async fn intake_tx(conn: &mut PgConnection, ctx: &Ctx, req: IntakeReq) -> AppResult<IntakeOut> {
     const KIND: &str = "battery.intake";
+    // Приём аккумуляторов — право администратора `battery_intake` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "battery_intake").await?;
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }

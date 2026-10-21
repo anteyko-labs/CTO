@@ -21,14 +21,45 @@ async fn setup(pool: PgPool) -> Router {
         .await
         .unwrap();
     let hash = hash_password("admin-pass-1".into()).await.unwrap();
+    let admin = Uuid::now_v7();
     sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'admin', $3, 'admin', 'Админ')")
-        .bind(Uuid::now_v7())
+        .bind(admin)
         .bind(branch)
         .bind(hash)
         .execute(&pool)
         .await
         .unwrap();
+    grant_default_permissions(&pool, admin, branch).await;
     app(build_state(pool, false).await.unwrap(), None)
+}
+
+/// Права администратора по умолчанию (SPEC-30 §5): тестовый администратор заводится мимо
+/// `POST /users`, поэтому права ему выдаются здесь — как новому администратору.
+async fn grant_default_permissions(pool: &PgPool, user: Uuid, branch: Uuid) {
+    // База до миграции 0056 (проверки миграций): права выдаст сама миграция, как на точке.
+    let ready: bool = sqlx::query_scalar(
+        "select exists (select 1 from pg_constraint where conname = 'user_permissions_permission_check'
+                          and pg_get_constraintdef(oid) like '%sale_return%')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    if !ready {
+        return;
+    }
+    let keys: Vec<String> = avtodom_server::auth::default_permissions()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    sqlx::query(
+        "insert into user_permissions (user_id, branch_id, permission) select $1, $2, unnest($3::text[])",
+    )
+    .bind(user)
+    .bind(branch)
+    .bind(keys)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn call(
@@ -5308,6 +5339,7 @@ async fn sale_takes_the_cashier_of_the_open_shift(pool: PgPool) {
 async fn close_with_payouts_pays_from_the_till(pool: PgPool) {
     // «Выплатить отмеченным и закрыть»: выплаты из кассы смены и закрытие одной операцией,
     // «должно быть» — уже за вычетом выплат; повтор не платит второй раз (SPEC-27).
+    // Администратор выплачивает только мастерам, кассиру — владелец (SPEC-30 §6).
     let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
@@ -5355,21 +5387,22 @@ async fn close_with_payouts_pays_from_the_till(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    // В расчёте дня видно, кому сколько к выдаче.
-    let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&admin), None).await;
-    let owed = |id: &str| {
+    // В расчёте дня видно, кому сколько к выдаче: владельцу — всем, администратору — мастерам.
+    let owed = |day: &Value, id: &str| {
         day.as_array()
             .unwrap()
             .iter()
             .find(|r| r["employee_id"] == json!(id))
-            .unwrap()["balance_tyiyn"]
-            .as_i64()
-            .unwrap()
+            .map(|r| r["balance_tyiyn"].as_i64().unwrap())
     };
-    assert_eq!(owed(&cashier), 30_000);
-    assert_eq!(owed(&master), 20_000);
+    let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&owner), None).await;
+    assert_eq!(owed(&day, &cashier), Some(30_000));
+    assert_eq!(owed(&day, &master), Some(20_000));
+    let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&admin), None).await;
+    assert_eq!(owed(&day, &cashier), None, "{day}");
+    assert_eq!(owed(&day, &master), Some(20_000));
 
-    // Администратор не выдаёт больше заработанного: вся операция отклоняется, смена открыта.
+    // Кассиру администратор не выплачивает — вся операция отклоняется, смена открыта.
     let (s, _, err) = call(
         &app,
         "POST",
@@ -5378,9 +5411,23 @@ async fn close_with_payouts_pays_from_the_till(pool: PgPool) {
         Some(json!({
             "op_id": Uuid::now_v7(), "counted_tyiyn": 50_000,
             "payouts": [
-                { "op_id": Uuid::now_v7(), "employee_id": cashier, "amount_tyiyn": 30_000 },
-                { "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 25_000 }
+                { "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 15_000 },
+                { "op_id": Uuid::now_v7(), "employee_id": cashier, "amount_tyiyn": 30_000 }
             ]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["error"]["message"], "Кассиру выплачивает владелец");
+    // Не выдаёт и больше заработанного.
+    let (s, _, err) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/shifts/{sid}/close"),
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "counted_tyiyn": 50_000,
+            "payouts": [{ "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 25_000 }]
         })),
     )
     .await;
@@ -5392,11 +5439,23 @@ async fn close_with_payouts_pays_from_the_till(pool: PgPool) {
         .unwrap();
     assert_eq!(paid, 0);
 
-    // Кассиру — всё, мастеру — часть; в кассе остаётся 100 − 30 − 15 = 55 с.
+    // Кассиру всё выдаёт владелец из кассы смены, мастеру часть — администратор при закрытии;
+    // в кассе остаётся 100 − 30 − 15 = 55 с.
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "employee_id": cashier, "amount_tyiyn": 30_000,
+            "account_id": till, "comment": "за неделю"
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
     let body = json!({
         "op_id": Uuid::now_v7(), "counted_tyiyn": 55_000,
         "payouts": [
-            { "op_id": Uuid::now_v7(), "employee_id": cashier, "amount_tyiyn": 30_000 },
             { "op_id": Uuid::now_v7(), "employee_id": master, "amount_tyiyn": 15_000 }
         ]
     });
@@ -5435,8 +5494,9 @@ async fn close_with_payouts_pays_from_the_till(pool: PgPool) {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0, cashier);
     assert_eq!(rows[0].1, 30_000);
-    assert!(rows[0].2.contains("при закрытии смены"));
+    assert_eq!(rows[1].0, master);
     assert_eq!(rows[1].1, 15_000);
+    assert!(rows[1].2.contains("при закрытии смены"));
     assert_eq!(balance_of(&pool, &till).await, 55_000);
     let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&admin), None).await;
     let left = day
@@ -8646,14 +8706,16 @@ async fn oil_transfer_by_admin_with_permission_hides_cost(pool: PgPool) {
         .as_str()
         .unwrap()
         .to_string();
-    let user_uri = format!("/api/v1/users/{admin_id}");
+    // Права — отдельной операцией «Что можно» (ADR-097), список целиком.
+    let user_uri = format!("/api/v1/users/{admin_id}/permissions");
+    let with_oil = json!(["oil_transfer", "receipts"]);
     assert_eq!(
         call(
             &app,
-            "PATCH",
+            "PUT",
             &user_uri,
             Some(&owner),
-            Some(json!({ "permissions": ["price_edit"] }))
+            Some(json!({ "op_id": Uuid::now_v7(), "permissions": ["price_edit"] }))
         )
         .await
         .0,
@@ -8662,10 +8724,10 @@ async fn oil_transfer_by_admin_with_permission_hides_cost(pool: PgPool) {
     assert_eq!(
         call(
             &app,
-            "PATCH",
+            "PUT",
             &user_uri,
             Some(&admin),
-            Some(json!({ "permissions": ["oil_transfer"] }))
+            Some(json!({ "op_id": Uuid::now_v7(), "permissions": with_oil }))
         )
         .await
         .0,
@@ -8673,21 +8735,21 @@ async fn oil_transfer_by_admin_with_permission_hides_cost(pool: PgPool) {
     );
     let (s, _, u) = call(
         &app,
-        "PATCH",
+        "PUT",
         &user_uri,
         Some(&owner),
-        Some(json!({ "permissions": ["oil_transfer"] })),
+        Some(json!({ "op_id": Uuid::now_v7(), "permissions": with_oil })),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{u}");
-    assert_eq!(u["permissions"], json!(["oil_transfer"]));
+    assert_eq!(u["permissions"], with_oil);
     let (_, _, me) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
-    assert_eq!(me["permissions"], json!(["oil_transfer"]));
+    assert_eq!(me["permissions"], with_oil);
     assert!(
-        notice_of(&app, &owner, "user.update").await[0]["details"]
+        notice_of(&app, &owner, "user.permissions").await[0]["details"]
             .as_str()
             .unwrap()
-            .contains("Перелив масла")
+            .contains("включено: Перелив масла")
     );
 
     let (s, _, out) = transfer(&admin).await;
@@ -8726,10 +8788,10 @@ async fn oil_transfer_by_admin_with_permission_hides_cost(pool: PgPool) {
     // Право сняли — снова 403.
     call(
         &app,
-        "PATCH",
+        "PUT",
         &user_uri,
         Some(&owner),
-        Some(json!({ "permissions": [] })),
+        Some(json!({ "op_id": Uuid::now_v7(), "permissions": [] })),
     )
     .await;
     assert_eq!(transfer(&admin).await.0, StatusCode::FORBIDDEN);
@@ -10267,4 +10329,635 @@ async fn offline_queue_rules_adr_093(pool: PgPool) {
         .unwrap();
     assert_eq!(client["vehicles"][0]["plate"], "01KG093AAA");
     assert!(client.get("cost").is_none());
+}
+
+/// id тестового администратора «admin».
+async fn admin_id(app: &Router, owner: &str) -> String {
+    let (_, _, users) = call(app, "GET", "/api/v1/users", Some(owner), None).await;
+    users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["login"] == "admin")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Права администратора целиком — «Что можно» (ADR-097).
+async fn set_admin_permissions(app: &Router, owner: &str, permissions: &[&str]) -> Value {
+    let id = admin_id(app, owner).await;
+    let (s, _, u) = call(
+        app,
+        "PUT",
+        &format!("/api/v1/users/{id}/permissions"),
+        Some(owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "permissions": permissions })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    u
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_gives_existing_admins_default_permissions(pool: PgPool) {
+    // Миграция 0056: существующим администраторам — все права «да» по умолчанию, перелив
+    // остаётся у тех, кому его выдали, скидки нет ни у кого; владельцу права не пишутся (SPEC-30 §5).
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version < 56) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    let (branch, owner, plain, oil) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::raw_sql(&format!(
+        "insert into branches (id, name) values ('{branch}', 'Тест');
+         insert into users (id, branch_id, login, password_hash, role, full_name) values
+           ('{owner}', '{branch}', 'o', 'x', 'owner', 'Владелец'),
+           ('{plain}', '{branch}', 'a1', 'x', 'admin', 'Админ'),
+           ('{oil}', '{branch}', 'a2', 'x', 'admin', 'Эрбол');
+         insert into user_permissions (user_id, branch_id, permission, granted_by)
+           values ('{oil}', '{branch}', 'oil_transfer', '{owner}');"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version >= 56) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    let of = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "select permission from user_permissions where user_id = $1 order by permission",
+            )
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let mut defaults: Vec<String> = avtodom_server::auth::default_permissions()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    defaults.sort();
+    assert_eq!(defaults.len(), 14);
+    assert!(
+        !defaults
+            .iter()
+            .any(|p| p == "discount" || p == "oil_transfer")
+    );
+    assert_eq!(of(plain).await, defaults);
+    let mut with_oil = defaults.clone();
+    with_oil.push("oil_transfer".into());
+    with_oil.sort();
+    assert_eq!(of(oil).await, with_oil);
+    assert!(of(owner).await.is_empty());
+    // Выданное владельцем раньше — как было, с «кто выдал».
+    let by: Option<Uuid> = sqlx::query_scalar(
+        "select granted_by from user_permissions where user_id = $1 and permission = 'oil_transfer'",
+    )
+    .bind(oil)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(by, Some(owner));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn owner_sets_admin_permissions_with_journal(pool: PgPool) {
+    // «Что можно»: права — только владелец, списком целиком, повтор `op_id` — тот же ответ без
+    // второй записи; журнал `user.permissions` — кому, что включено и выключено; новый
+    // администратор получает права по умолчанию (SPEC-30 §5, ADR-097).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let id = admin_id(&app, &owner).await;
+    let uri = format!("/api/v1/users/{id}/permissions");
+    let mut defaults: Vec<&str> = avtodom_server::auth::default_permissions();
+    defaults.sort_unstable();
+    let (_, _, me) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+    assert_eq!(me["permissions"], json!(defaults));
+
+    // Администратор сам себе права не выдаёт; неизвестное право — 422.
+    let body = json!({ "op_id": Uuid::now_v7(), "permissions": ["discount"] });
+    let (s, _, _) = call(&app, "PUT", &uri, Some(&admin), Some(body)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let body = json!({ "op_id": Uuid::now_v7(), "permissions": ["price_edit"] });
+    let (s, _, err) = call(&app, "PUT", &uri, Some(&owner), Some(body)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+
+    // Скидку включили, расходы и деньги выключили.
+    let mut next: Vec<&str> = defaults
+        .iter()
+        .copied()
+        .filter(|p| *p != "expenses" && *p != "cash_moves")
+        .collect();
+    next.push("discount");
+    let body = json!({ "op_id": Uuid::now_v7(), "permissions": next });
+    let (s, _, u) = call(&app, "PUT", &uri, Some(&owner), Some(body.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    let got: Vec<String> = serde_json::from_value(u["permissions"].clone()).unwrap();
+    assert!(got.contains(&"discount".to_string()) && !got.contains(&"expenses".to_string()));
+    assert_eq!(got.len(), 13);
+    // Повтор того же запроса — тот же ответ, вторая запись в журнал не пишется.
+    let (s, _, again) = call(&app, "PUT", &uri, Some(&owner), Some(body)).await;
+    assert_eq!((s, &again), (StatusCode::OK, &u));
+    let log = actions(&pool, "user.permissions").await;
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0]["login"], "admin");
+    assert_eq!(log[0]["granted"], json!(["discount"]));
+    assert_eq!(log[0]["revoked"], json!(["cash_moves", "expenses"]));
+    let who: Uuid = sqlx::query_scalar(
+        "select user_id from audit_log where action = 'user.permissions' and entity_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(who, owner_id);
+    let note = notice_of(&app, &owner, "user.permissions").await;
+    assert_eq!(note[0]["title"], "Права администратора: Админ");
+    assert_eq!(
+        note[0]["details"],
+        "включено: Скидка в чеке; выключено: Внести, изъять, перевести деньги, Расходы"
+    );
+    // Тот же набор новой операцией — ничего не поменялось, записи нет.
+    let body = json!({ "op_id": Uuid::now_v7(), "permissions": next });
+    let (s, _, _) = call(&app, "PUT", &uri, Some(&owner), Some(body)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(actions(&pool, "user.permissions").await.len(), 1);
+    let (_, _, me) = call(&app, "GET", "/api/v1/auth/me", Some(&admin), None).await;
+    assert!(
+        !me["permissions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("expenses"))
+    );
+
+    // Владельцу права не нужны.
+    let body = json!({ "op_id": Uuid::now_v7(), "permissions": ["expenses"] });
+    let (s, _, err) = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/users/{owner_id}/permissions"),
+        Some(&owner),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+
+    // Новый администратор — с правами по умолчанию; запись о создании их называет.
+    let (s, _, created) = call(
+        &app,
+        "POST",
+        "/api/v1/users",
+        Some(&owner),
+        Some(json!({ "login": "erbol", "password": "erbol-pass-1", "full_name": "Эрбол", "role": "admin" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{created}");
+    assert_eq!(created["permissions"], json!(defaults));
+    let erbol = login(&app, "erbol", "erbol-pass-1").await;
+    let (_, _, me) = call(&app, "GET", "/api/v1/auth/me", Some(&erbol), None).await;
+    assert_eq!(me["permissions"], json!(defaults));
+    assert_eq!(
+        actions(&pool, "user.create").await[0]["permissions"],
+        json!(defaults)
+    );
+    // Правка имени старым экраном с полем `permissions` права не трогает.
+    let cid = created["id"].as_str().unwrap();
+    let (s, _, u) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/users/{cid}"),
+        Some(&owner),
+        Some(json!({ "full_name": "Эрбол Асанов", "permissions": [] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{u}");
+    assert_eq!(u["permissions"], json!(defaults));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn every_admin_permission_closes_its_actions(pool: PgPool) {
+    // Каждое действие администратора сверяется со своим правом (SPEC-30 §5): без права — 403
+    // «Нет права: …», с правом — проводится. Владельцу права не нужны.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    let (_, _, cats) = call(&app, "GET", "/api/v1/categories", Some(&owner), None).await;
+    let cat = cats[0]["id"].as_str().unwrap().to_string();
+    let sup = new_supplier(&app, &owner, "Автоснаб").await;
+    let (s, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "supplier_id": sup, "payment": "debt",
+                     "lines": [{ "product_id": item, "qty": 50, "cost_tyiyn": 500_000 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let cashier = named_cashier(&app, &owner, "Айбек").await;
+    let (_, _, master) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&owner),
+        Some(json!({ "full_name": "Мастер Нурлан", "is_master": true })),
+    )
+    .await;
+    let master = master["id"].as_str().unwrap().to_string();
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/payroll/accruals",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "employee_id": master, "kind": "bonus",
+                     "amount_tyiyn": 100_000, "comment": "за неделю" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/movements",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 1_000_000, "comment": "размен" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, party) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&owner),
+        Some(json!({ "name": "Эрлан", "phone": "+996 555 12-34-56", "inn": "21201199000123" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{party}");
+    let client = party["id"].as_str().unwrap().to_string();
+    let (s, _, sale) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                     "lines": [{ "kind": "piece", "product_id": item, "qty": 5, "unit_price_tyiyn": 50_000 }],
+                     "payments": [{ "method": "cash", "amount_tyiyn": 250_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sale}");
+    let sale = sale["id"].as_str().unwrap().to_string();
+    let (_, _, articles) = call(&app, "GET", "/api/v1/expense-articles", Some(&admin), None).await;
+    let household = articles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Хозтовары")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (till, _, _) = accounts_of(&app, &owner).await;
+    let (_, _, accs) = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None).await;
+    let shop_safe = accs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "safe" && a["owner_only"] == false)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Право, метод, адрес и тело запроса (каждый раз со своим `op_id`).
+    type Case = (&'static str, &'static str, String, Box<dyn Fn() -> Value>);
+    let op = Uuid::now_v7;
+    let cases: Vec<Case> = vec![
+        (
+            "sale_return",
+            "POST",
+            format!("/api/v1/sales/{sale}/return"),
+            Box::new(move || {
+                json!({ "op_id": op(), "lines": [{ "line_no": 1, "qty": 1 }],
+                        "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }] })
+            }),
+        ),
+        ("sale_debt", "POST", "/api/v1/sales".into(), {
+            let (item, client, cashier) = (item.clone(), client.clone(), cashier.clone());
+            Box::new(move || {
+                json!({ "op_id": op(), "sale_type": "takeaway", "cashier_id": cashier, "party_id": client,
+                        "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+                        "payments": [{ "method": "debt", "amount_tyiyn": 50_000 }] })
+            })
+        }),
+        ("debt_payment", "POST", "/api/v1/debts/repayments".into(), {
+            let client = client.clone();
+            Box::new(
+                move || json!({ "op_id": op(), "party_id": client, "amount_tyiyn": 10_000, "method": "cash" }),
+            )
+        }),
+        (
+            "cash_moves",
+            "POST",
+            "/api/v1/cash/movements".into(),
+            Box::new(
+                move || json!({ "op_id": op(), "kind": "cash_out", "amount_tyiyn": 1_000, "comment": "в банк" }),
+            ),
+        ),
+        ("cash_moves", "POST", "/api/v1/cash/transfers".into(), {
+            let (till, safe) = (till.clone(), shop_safe.clone());
+            Box::new(
+                move || json!({ "op_id": op(), "from_account_id": till, "to_account_id": safe, "amount_tyiyn": 1_000 }),
+            )
+        }),
+        ("expenses", "POST", "/api/v1/expenses".into(), {
+            let article = household.clone();
+            Box::new(
+                move || json!({ "op_id": op(), "article_id": article, "amount_tyiyn": 1_000, "comment": "мыло" }),
+            )
+        }),
+        ("payroll_pay", "POST", "/api/v1/payouts".into(), {
+            let master = master.clone();
+            Box::new(move || json!({ "op_id": op(), "employee_id": master, "amount_tyiyn": 1_000 }))
+        }),
+        ("receipts", "POST", "/api/v1/receipts".into(), {
+            let (item, sup) = (item.clone(), sup.clone());
+            Box::new(move || {
+                json!({ "op_id": op(), "supplier_id": sup, "payment": "debt",
+                        "lines": [{ "product_id": item, "qty": 1, "cost_tyiyn": 10_000 }] })
+            })
+        }),
+        ("receipts", "POST", "/api/v1/debts/repayments".into(), {
+            let sup = sup.clone();
+            Box::new(
+                move || json!({ "op_id": op(), "party_id": sup, "amount_tyiyn": 1_000, "method": "cash" }),
+            )
+        }),
+        ("stock_in", "POST", "/api/v1/stock-ins".into(), {
+            let item = item.clone();
+            Box::new(move || {
+                json!({ "op_id": op(), "comment": "нашли на полке",
+                        "lines": [{ "product_id": item, "qty": 1, "price_tyiyn": 10_000 }] })
+            })
+        }),
+        (
+            "supplier_returns",
+            "POST",
+            "/api/v1/supplier-returns".into(),
+            {
+                let (item, sup) = (item.clone(), sup.clone());
+                Box::new(move || {
+                    json!({ "op_id": op(), "supplier_id": sup, "settle": "debt",
+                        "lines": [{ "product_id": item, "qty": 1 }] })
+                })
+            },
+        ),
+        ("defects", "POST", "/api/v1/defects".into(), {
+            let item = item.clone();
+            Box::new(
+                move || json!({ "op_id": op(), "product_id": item, "qty": 1, "reason": "трещина", "no_supplier": true }),
+            )
+        }),
+        (
+            "revision",
+            "POST",
+            "/api/v1/revisions".into(),
+            Box::new(|| json!({ "category_id": null })),
+        ),
+        (
+            "battery_intake",
+            "POST",
+            "/api/v1/batteries/intake".into(),
+            Box::new(
+                move || json!({ "op_id": op(), "grams": 1_000, "price_per_kg_tyiyn": 10_000 }),
+            ),
+        ),
+        ("products", "POST", "/api/v1/products".into(), {
+            let cat = cat.clone();
+            Box::new(move || {
+                json!({ "op_id": op(), "category_id": cat, "name": format!("Фильтр {}", op()),
+                        "sale_price_tyiyn": 10_000 })
+            })
+        }),
+        (
+            "products",
+            "POST",
+            format!("/api/v1/products/{item}/barcodes"),
+            Box::new(|| json!({})),
+        ),
+        (
+            "products",
+            "POST",
+            "/api/v1/categories".into(),
+            Box::new(move || json!({ "name": format!("Кат {}", op()), "kind": "filter" })),
+        ),
+        (
+            "clients",
+            "POST",
+            "/api/v1/parties".into(),
+            Box::new(move || json!({ "kind": "company", "name": format!("ОсОО {}", op()) })),
+        ),
+        (
+            "clients",
+            "PATCH",
+            format!("/api/v1/parties/{client}"),
+            Box::new(|| json!({ "comment": "постоянный" })),
+        ),
+        (
+            "clients",
+            "POST",
+            format!("/api/v1/parties/{client}/vehicles"),
+            Box::new(
+                move || json!({ "plate": format!("01KG{}", &op().simple().to_string()[26..]) }),
+            ),
+        ),
+    ];
+    let all = avtodom_server::auth::default_permissions();
+    for (perm, method, uri, body) in &cases {
+        let label = avtodom_server::auth::permission_def(perm).unwrap().label;
+        let without: Vec<&str> = all.iter().copied().filter(|p| p != perm).collect();
+        set_admin_permissions(&app, &owner, &without).await;
+        let (s, _, err) = call(&app, method, uri, Some(&admin), Some(body())).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{perm} {uri}: {err}");
+        assert_eq!(
+            err["error"]["message"],
+            format!("Нет права: {label}"),
+            "{perm} {uri}"
+        );
+        set_admin_permissions(&app, &owner, &all).await;
+        let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body())).await;
+        assert_eq!(s, StatusCode::OK, "{perm} {uri}: {out}");
+    }
+    // Каждое право, кроме скидки (её проверяет чек) и перелива (своя проверка), закрывает
+    // хотя бы одно действие из списка.
+    for p in avtodom_server::auth::PERMISSIONS {
+        if p.key != "discount" && p.key != "oil_transfer" {
+            assert!(cases.iter().any(|c| c.0 == p.key), "{} без проверки", p.key);
+        }
+    }
+
+    // Чек в долг без сети без права проводится, владелец получает причину (инвариант 5).
+    let without: Vec<&str> = all.iter().copied().filter(|p| *p != "sale_debt").collect();
+    set_admin_permissions(&app, &owner, &without).await;
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+                     "party_id": client, "offline": true, "client_time": chrono::Utc::now(),
+                     "lines": [{ "kind": "piece", "product_id": item, "qty": 1, "unit_price_tyiyn": 50_000 }],
+                     "payments": [{ "method": "debt", "amount_tyiyn": 50_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let bypass = actions(&pool, "sale.offline_bypass").await;
+    assert!(
+        bypass.iter().any(|b| b["reasons"]
+            .to_string()
+            .contains("продажа в долг без права")),
+        "{bypass:?}"
+    );
+    // Владельцу права не нужны.
+    set_admin_permissions(&app, &owner, &[]).await;
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/expenses",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 1_000,
+                     "account_id": till, "comment": "мыло" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn admin_pays_only_masters(pool: PgPool) {
+    // Администратор с правом выплат выдаёт деньги только мастерам; кассиру и остальным —
+    // владелец (SPEC-30 §6). Расчёт дня администратору — только мастера.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = named_cashier(&app, &owner, "Айбек").await;
+    let mut ids = Vec::new();
+    for body in [
+        json!({ "full_name": "Мастер Нурлан", "is_master": true }),
+        json!({ "full_name": "Уборщица Айгуль" }),
+        json!({ "full_name": "Мастер-кассир Бакыт", "is_master": true, "is_cashier": true }),
+    ] {
+        let (s, _, e) = call(&app, "POST", "/api/v1/employees", Some(&owner), Some(body)).await;
+        assert_eq!(s, StatusCode::OK, "{e}");
+        ids.push(e["id"].as_str().unwrap().to_string());
+    }
+    let (master, other, both) = (ids[0].clone(), ids[1].clone(), ids[2].clone());
+    for emp in [&cashier, &master, &other, &both] {
+        let (s, _, _) = call(
+            &app,
+            "POST",
+            "/api/v1/payroll/accruals",
+            Some(&owner),
+            Some(
+                json!({ "op_id": Uuid::now_v7(), "employee_id": emp, "kind": "bonus",
+                         "amount_tyiyn": 50_000, "comment": "за неделю" }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/movements",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 500_000, "comment": "размен" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let pay = |who: &str, emp: &str| {
+        let (app, who, emp) = (app.clone(), who.to_string(), emp.to_string());
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/payouts",
+                Some(&who),
+                Some(
+                    json!({ "op_id": Uuid::now_v7(), "employee_id": emp, "amount_tyiyn": 10_000 }),
+                ),
+            )
+            .await
+        }
+    };
+    let (s, _, err) = pay(&admin, &cashier).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(err["error"]["message"], "Кассиру выплачивает владелец");
+    let (s, _, _) = pay(&admin, &both).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, err) = pay(&admin, &other).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    let (s, _, out) = pay(&admin, &master).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    for emp in [&cashier, &other, &both] {
+        let (s, _, out) = pay(&owner, emp).await;
+        assert_eq!(s, StatusCode::OK, "{out}");
+    }
+    let names = |day: &Value| -> Vec<String> {
+        day.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["full_name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&admin), None).await;
+    assert_eq!(names(&day), vec!["Мастер Нурлан".to_string()]);
+    let (_, _, day) = call(&app, "GET", "/api/v1/payroll/day", Some(&owner), None).await;
+    assert_eq!(names(&day).len(), 4);
+    // Без права выплат — и мастеру нельзя.
+    let all = avtodom_server::auth::default_permissions();
+    let without: Vec<&str> = all
+        .iter()
+        .copied()
+        .filter(|p| *p != "payroll_pay")
+        .collect();
+    set_admin_permissions(&app, &owner, &without).await;
+    let (s, _, err) = pay(&admin, &master).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(err["error"]["message"], "Нет права: Выплаты мастерам");
 }

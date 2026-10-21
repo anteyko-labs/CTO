@@ -11,6 +11,7 @@ import { polarityMark, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { avgPrice, qtyText } from '../lib/units'
 import { nextStockSort, sortStock, type StockSort, type StockSortKey } from '../lib/stockSort'
 import type { Category, Product, StockMismatch } from '../lib/types'
@@ -42,6 +43,7 @@ function mobileDetails(p: Product, owner: boolean): string {
 
 export default function Stock() {
   const owner = useUser().role === 'owner'
+  const mayDefect = useCan()('defects')
   const [q, setQ] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [filter, setFilter] = useState<'all' | 'low' | 'out' | 'review' | 'stale'>('all')
@@ -161,9 +163,9 @@ export default function Stock() {
       </Button>
     ) : null
 
-  /** «В брак» — администратор и владелец, только из того, что есть на складе. */
+  /** «В брак» — владелец и администратор с правом (ADR-097), только из того, что есть на складе. */
   const defectButton = (p: Product, cls: string) =>
-    p.stock_qty > 0 ? (
+    p.stock_qty > 0 && mayDefect ? (
       <Button
         variant="secondary"
         className={cls}

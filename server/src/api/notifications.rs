@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 61] = [
+pub(crate) const WATCHED: [&str; 62] = [
     "party.limit_request",
     "gift.rule",
     "product.prices",
@@ -81,6 +81,7 @@ pub(crate) const WATCHED: [&str; 61] = [
     "oil.transfer_admin",
     "employee.pin",
     "correction.post",
+    "user.permissions",
 ];
 
 #[derive(Serialize)]
@@ -520,6 +521,33 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             .collect::<Vec<_>>()
             .join(", "),
         ),
+        // Права администратора (SPEC-30 §5): что включено и что выключено.
+        "user.permissions" => {
+            let names = |key: &str| {
+                data.get(key)
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(|k| crate::auth::permission_def(k).map_or(k, |p| p.label))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default()
+            };
+            let who = Some(text("full_name"))
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| text("login"));
+            (
+                format!("Права администратора: {who}"),
+                [("включено", names("granted")), ("выключено", names("revoked"))]
+                    .into_iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        }
         "auth.login_flood" => (
             format!("Подбирают пароль: {}", text("login")),
             format!(
@@ -1261,6 +1289,15 @@ mod tests {
         );
         assert_eq!(title, "Счёт «Касса» ушёл в минус: −1 200 с (расход № 15)");
         assert!(text.contains("−5 000 с"), "{text}");
+        let (title, text) = describe(
+            "user.permissions",
+            &json!({ "login": "erbol", "full_name": "Эрбол", "granted": ["discount"], "revoked": ["expenses", "cash_moves"] }),
+        );
+        assert_eq!(title, "Права администратора: Эрбол");
+        assert_eq!(
+            text,
+            "включено: Скидка в чеке; выключено: Расходы, Внести, изъять, перевести деньги"
+        );
         for action in WATCHED {
             assert_ne!(
                 describe(action, &json!({})).0,

@@ -664,6 +664,8 @@ async fn settings(
         Some((km, days))
     };
     let mut tx = state.pool.begin().await?;
+    // Книжка машины клиента — право администратора `clients` (ADR-097).
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     set_interval_tx(&mut tx, &ctx, id, &req.slot, interval, "card").await?;
     let out = books(&mut tx, ctx.user.branch_id, None, Some(id))
         .await?
@@ -889,6 +891,7 @@ async fn manual(
         return Err(invalid("строка книжки — не длиннее 300 знаков"));
     }
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     let v = sqlx::query!(
         "select party_id, plate, active, mileage_unit from party_vehicles where id = $1 and branch_id = $2",
         id,
@@ -977,6 +980,7 @@ async fn edit(
 ) -> AppResult<Json<VehicleBook>> {
     check_mileage(req.mileage_km)?;
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     let before = sqlx::query!(
         r#"select o.mileage_km, o.comment, o.declined, v.mileage_unit as car_unit
            from oil_changes o join party_vehicles v on v.id = o.vehicle_id

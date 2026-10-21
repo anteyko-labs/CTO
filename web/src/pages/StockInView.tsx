@@ -9,6 +9,7 @@ import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatKg, formatLiters, formatPermille, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { markupPermille } from '../lib/money'
+import { useCan } from '../lib/permissions'
 import type { Product, StockIn, StockInLine } from '../lib/types'
 
 /** Количество строки: штуки, литры масла (и канистры, если целые), килограммы. */
@@ -26,6 +27,7 @@ const perText = (l: StockInLine): string => (l.unit === 'ml' && l.container_ml ?
 export default function StockInView() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
+  const can = useCan()
   const doc = useLoad(() => get<StockIn>(`/stock-ins/${id}`), [id])
   const [reverseOpen, setReverseOpen] = useState(false)
   const [reason, setReason] = useState('')
@@ -75,7 +77,7 @@ export default function StockInView() {
               </Button>
             )}
             {canReverse && <FixButton onClick={() => navigate(`/stock-ins/${d.id}/correct`)} />}
-            {canReverse && (
+            {canReverse && can('stock_in') && (
               <Button variant="danger" onClick={() => setReverseOpen(true)}>
                 Сторно
               </Button>

@@ -360,6 +360,8 @@ pub async fn post_expense_tx(
     req: ExpenseReq,
 ) -> AppResult<ExpenseOut> {
     const KIND: &str = "expense.post";
+    // Расходы — право администратора `expenses` (ADR-097).
+    crate::auth::require_permission(&mut *conn, &ctx.user, "expenses").await?;
     if req.amount_tyiyn <= 0 {
         return Err(invalid("сумма больше нуля"));
     }
@@ -491,6 +493,7 @@ pub async fn reverse_expense_tx(
     req: ReverseReq,
 ) -> AppResult<ExpenseOut> {
     const KIND: &str = "expense.reverse";
+    crate::auth::require_permission(&mut *conn, &ctx.user, "expenses").await?;
     let branch_id = ctx.user.branch_id;
     let tx = conn;
     if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {

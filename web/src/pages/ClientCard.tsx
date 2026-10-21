@@ -14,6 +14,7 @@ import { get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { adjustDoc, adjustFields, type AdjustDoc } from '../lib/moneyFix'
 import type { Party, PartyCard, PartyTimelineItem, TopProducts } from '../lib/types'
@@ -278,6 +279,9 @@ function BonusBox({ partyId }: { partyId: string }) {
 export default function ClientCard() {
   const { id = '' } = useParams()
   const owner = useUser().role === 'owner'
+  // Править клиента и машины и принимать оплату долга — права администратора (ADR-097).
+  const can = useCan()
+  const mayEdit = can('clients')
   const [money, setMoney] = useState<null | 'repay' | 'adjust'>(null)
   const [reversing, setReversing] = useState<{ item: PartyTimelineItem; comment: string; opId: string } | null>(null)
   // «Исправить» оплату долга или правку баланса — той же формой, что их записывает (SPEC-29 §24).
@@ -349,7 +353,7 @@ export default function ClientCard() {
   const phoneItems: MenuItem[] = [
     { label: 'Акт сверки', onClick: () => setReconciling(true) },
     { label: 'Правка баланса', onClick: () => setMoney('adjust'), disabled: !owner },
-    toggleItem,
+    ...(mayEdit ? [toggleItem] : []),
   ]
 
   return (
@@ -372,15 +376,19 @@ export default function ClientCard() {
                 </Button>
               )}
             </span>
-            <Button disabled={party.balance_tyiyn <= 0} onClick={() => setMoney('repay')}>
-              Погасить
-            </Button>
+            {can('debt_payment') && (
+              <Button disabled={party.balance_tyiyn <= 0} onClick={() => setMoney('repay')}>
+                Погасить
+              </Button>
+            )}
             <span className="md:hidden">
               <RowMenu items={phoneItems} />
             </span>
-            <span className="hidden md:inline-block">
-              <RowMenu items={[toggleItem]} />
-            </span>
+            {mayEdit && (
+              <span className="hidden md:inline-block">
+                <RowMenu items={[toggleItem]} />
+              </span>
+            )}
           </>
         }
       />
@@ -418,13 +426,15 @@ export default function ClientCard() {
             <div className="font-medium" data-testid="party-person-name">
               {party.first_name ? `${party.first_name} ${party.last_name ?? ''}` : <span className="text-amber-700">не заполнены</span>}
             </div>
-            <button
-              type="button"
-              className="mt-1 text-xs text-sky-700 underline"
-              onClick={() => setNaming({ first: party.first_name ?? '', last: party.last_name ?? '' })}
-            >
-              {party.first_name ? 'изменить' : 'заполнить'}
-            </button>
+            {mayEdit && (
+              <button
+                type="button"
+                className="mt-1 text-xs text-sky-700 underline"
+                onClick={() => setNaming({ first: party.first_name ?? '', last: party.last_name ?? '' })}
+              >
+                {party.first_name ? 'изменить' : 'заполнить'}
+              </button>
+            )}
           </div>
         )}
         <div>
@@ -487,9 +497,11 @@ export default function ClientCard() {
         <Card>
           <CardTitle
             actions={
-              <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('contact')}>
-                + работник
-              </Button>
+              mayEdit && (
+                <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('contact')}>
+                  + работник
+                </Button>
+              )
             }
           >
             Работники
@@ -517,14 +529,22 @@ export default function ClientCard() {
       <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
         <CardTitle
           actions={
-            <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('vehicle')}>
-              + машина
-            </Button>
+            mayEdit && (
+              <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('vehicle')}>
+                + машина
+              </Button>
+            )
           }
         >
           Машины и масляная книжка
         </CardTitle>
-        <OilBookList key={vehicles.length} path={`/parties/${party.id}/oil-book`} editable partyId={party.id} onAdd={() => setAdding('vehicle')} />
+        <OilBookList
+          key={vehicles.length}
+          path={`/parties/${party.id}/oil-book`}
+          editable={mayEdit}
+          partyId={party.id}
+          onAdd={mayEdit ? () => setAdding('vehicle') : undefined}
+        />
       </section>
 
       {party.role === 'customer' && <FrequentProducts partyId={party.id} />}
