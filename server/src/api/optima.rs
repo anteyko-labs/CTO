@@ -452,6 +452,8 @@ impl Optima {
         let resp = req
             .header("X-API-KEY", &self.key.0)
             .header("Accept", "application/json")
+            // Банк отвечает 415 на любой запрос без Content-Type, даже на GET (проверено на тесте 22.10.2026).
+            .header("Content-Type", "application/json")
             .timeout(timeout)
             .send()
             .await
@@ -563,7 +565,6 @@ impl Optima {
             .send(
                 self.http
                     .post(format!("{}/api/v2/generate/qr", self.url))
-                    .header("Content-Type", "application/json")
                     .body(text),
                 QUICK,
                 "QR",

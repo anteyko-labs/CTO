@@ -67,7 +67,12 @@ fn key_ok(b: &Bank, path: String, headers: &HeaderMap, body: String) -> bool {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let ok = key == KEY;
+    // Как настоящий банк (тест 22.10.2026): без Content-Type запрос не принимается, даже GET.
+    let typed = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    let ok = key == KEY && typed;
     b.seen.lock().unwrap().push((path, key, body));
     ok
 }
