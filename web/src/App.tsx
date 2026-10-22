@@ -21,6 +21,8 @@ import Accounts from './pages/Accounts'
 import Categories from './pages/Categories'
 import ClientCard from './pages/ClientCard'
 import Bank from './pages/Bank'
+import BankRecon from './pages/BankRecon'
+import OptimaSettings from './pages/OptimaSettings'
 import Debts from './pages/Debts'
 import Income from './pages/Income'
 import Clients from './pages/Clients'
@@ -334,6 +336,7 @@ function Shell() {
           {owner && <Route path="/summary" element={<OwnerDashboard />} />}
           {owner && <Route path="/profit" element={<Profit />} />}
           {owner && <Route path="/bank" element={<Bank />} />}
+          {owner && <Route path="/bank/reconcile" element={<BankRecon />} />}
           <Route path="/income" element={<Income />} />
           <Route path="/accounts" element={<Accounts />} />
           {can(user, 'cash_moves') && <Route path="/money" element={<Accounts key="money" openMoney />} />}
@@ -354,6 +357,7 @@ function Shell() {
           {can(user, 'oil_transfer') && <Route path="/oil-transfer" element={<OilTransfer />} />}
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
+          {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />

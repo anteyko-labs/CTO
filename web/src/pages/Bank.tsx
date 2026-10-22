@@ -1,7 +1,7 @@
 // Экран «Счёт» (SPEC-27 §6): безнал отдельно — поступления картой и переводом, комиссия банка,
 // списания и все движения кассы «Счёт» за период. Только владелец; суммы считает сервер.
 import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
@@ -38,7 +38,16 @@ export default function Bank() {
 
   return (
     <div>
-      <PageHeader title={data?.name ?? 'Счёт'} subtitle={`Безнал ${subtitle}: карта / QR банка, QR владельцу, комиссия банка и списания`} />
+      <PageHeader
+        title={data?.name ?? 'Счёт'}
+        subtitle={`Безнал ${subtitle}: карта / QR банка, QR владельцу, комиссия банка и списания`}
+        actions={
+          // Сверка с выпиской Optima Business (SPEC-31): по дням и поправка комиссии.
+          <Link to={`/bank/reconcile${qs({ from: range.from, to: range.to })}`} className="inline-flex min-h-[42px] items-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" data-testid="bank-recon-link">
+            Сверка с банком
+          </Link>
+        }
+      />
       {(banks.data ?? []).length > 1 && (
         <div className="mb-3 flex flex-wrap gap-2" data-testid="bank-pick">
           {(banks.data ?? []).map((a) => {

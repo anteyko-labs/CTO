@@ -15,6 +15,8 @@ import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
+import { BankQrPanel, useBankQr } from '../components/BankQrPanel'
+import { qrForCard, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
 import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
@@ -222,6 +224,9 @@ function priceShown(text: string): string {
   return v === null ? text : formatSom(v)
 }
 
+/** Оплата чека: способ, сумма, безналичный счёт и QR банка, по которому заплатили (SPEC-31). */
+type PayLine = { method: PaymentMethod; amount_tyiyn: number; account_id?: string; bank_qr_id?: string }
+
 /** Купюры для быстрого ввода полученной суммы, тыйын. */
 const NOTES = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
 
@@ -280,6 +285,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Куда идут карта и QR: у каждого способа свой счёт по умолчанию, кассир может выбрать другой
   // банк для этого чека (ADR-076, ADR-077).
   const banks = useLoad(loadBanks, [])
+  // QR на сумму чека банка Optima Business (SPEC-31): кнопка — когда сервер настроен; в
+  // исправлении чека её нет.
+  const optima = useLoad(() => (fix ? Promise.resolve(null) : get<OptimaStatus>('/optima/status').catch(() => null)), [])
+  const bankQr = useBankQr()
   const [bankPick, setBankPick] = useState<Record<NoncashMethod, string>>(fix?.state.bankPick ?? NO_BANK_PICK)
   const bankList = banks.data ?? []
   const bankFor = (method: NoncashMethod): string =>
@@ -497,12 +506,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
 
+  // Сколько к оплате картой: на это QR банка (SPEC-31).
+  const cardDue = payMode === 'card' ? Math.max(due, 0) : payMode === 'mixed' ? Math.max(parseSom(split.card) ?? 0, 0) : 0
   // Карта, QR и «По счёту» — с выбранным банком; без выбора сервер возьмёт счёт по умолчанию для способа.
-  const withBank = (method: PaymentMethod, amount_tyiyn: number): { method: PaymentMethod; amount_tyiyn: number; account_id?: string } =>
-    (method === 'card' || method === 'transfer' || method === 'invoice') && bankFor(method) ? { method, amount_tyiyn, account_id: bankFor(method) } : { method, amount_tyiyn }
-  const moneyPayments = ((): { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] | null => {
+  // Оплата картой по оплаченному QR той же суммы — со ссылкой на него: сервер проверит оплату.
+  const withBank = (method: PaymentMethod, amount_tyiyn: number): PayLine => {
+    const base: PayLine =
+      (method === 'card' || method === 'transfer' || method === 'invoice') && bankFor(method) ? { method, amount_tyiyn, account_id: bankFor(method) } : { method, amount_tyiyn }
+    const qrId = method === 'card' ? qrForCard(bankQr.qr, amount_tyiyn) : undefined
+    return qrId ? { ...base, bank_qr_id: qrId } : base
+  }
+  const moneyPayments = ((): PayLine[] | null => {
     if (payMode !== 'mixed') return due > 0 ? [withBank(payMode, due)] : []
-    const list: { method: PaymentMethod; amount_tyiyn: number; account_id?: string }[] = []
+    const list: PayLine[] = []
     for (const m of SPLIT_METHODS) {
       if (!split[m].trim()) continue
       const v = parseSom(split[m])
@@ -512,7 +528,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     return list
   })()
   // Способы безнала в чеке: для каждого — строка выбора банка.
-  const noncashMethods = (['card', 'transfer', 'invoice'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m))
+  // Карта по оплаченному QR банка ложится на счёт Optima из настройки — банк не выбирают (SPEC-31).
+  const noncashMethods = (['card', 'transfer', 'invoice'] as const).filter((m) => (moneyPayments ?? []).some((p) => p.method === m && !p.bank_qr_id))
   // Куда идут деньги и комиссия — подпись под кнопками оплаты (SPEC-29 §25), без сети — из снимка.
   const captionMethods = (['cash', 'card', 'transfer', 'invoice'] as const).filter((m) => (payMode === 'mixed' ? Boolean(split[m].trim()) : payMode === m))
   const payCaptions = captionMethods.map((m) =>
@@ -520,7 +537,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       ? payCaption('cash')
       : `${captionMethods.length > 1 ? `${PAYMENT_LABELS[m]} ` : ''}${payCaption(m, bankList.find((b) => b.id === bankFor(m)))}`,
   )
-  const payments: { method: PaymentMethod; amount_tyiyn: number; grams?: number; price_per_kg_tyiyn?: number; account_id?: string }[] | null = moneyPayments && [
+  const payments: (PayLine & { grams?: number; price_per_kg_tyiyn?: number })[] | null = moneyPayments && [
     ...moneyPayments,
     ...(bonusAmount > 0 ? [{ method: 'bonus' as const, amount_tyiyn: bonusAmount }] : []),
     ...(batteryAmt > 0 && batteryGrams ? [{ method: 'battery' as const, amount_tyiyn: batteryAmt, grams: batteryGrams, price_per_kg_tyiyn: batteryPerKg ?? undefined }] : []),
@@ -694,6 +711,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     }
   }
 
+  // QR оплачен — оплата картой ставится сама (SPEC-31): смешанная остаётся, остальное — «Карта».
+  const qrPaid = bankQr.qr?.status === 'paid'
+  useEffect(() => {
+    if (qrPaid && payMode !== 'card' && payMode !== 'mixed') setPayMode('card')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrPaid])
+
   const reset = () => {
     setLines([])
     setDropped([])
@@ -719,6 +743,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setPriceEdit(null)
     setError(null)
     setGiftAsked({})
+    bankQr.clear()
     attempt.current = null
   }
 
@@ -1020,7 +1045,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     focusField(focus)
   }
 
-  const canSubmit = !busy && blockers.length === 0
+  // QR банка ждёт оплаты — чек ждёт его (панель QR сама говорит «Ждём оплату»).
+  const canSubmit = !busy && blockers.length === 0 && bankQr.qr?.status !== 'waiting'
   // На вынос с моторным маслом — сначала «Это замена масла?» (SPEC-29 §18): один раз на чек.
   const askOil = !fix && saleType === 'takeaway' && !oilAsked && hasEngineOil(lines)
   const trySubmit = () => {
@@ -1852,6 +1878,17 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-hidden' : 'gap-4'}`}
           data-testid="pay-column"
         >
+        {/* Режим кассы: QR банка — во всю правую колонку, «Провести чек» остаётся внизу. */}
+        {touch && bankQr.qr && bankQr.qr.status !== 'paid' && (
+          <BankQrPanel
+            qr={bankQr.qr}
+            now={bankQr.now}
+            touch
+            busy={bankQr.busy}
+            onCancel={() => void bankQr.cancel()}
+            onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
+          />
+        )}
         <Card
           className={`flex flex-col ${
             touch
@@ -2050,6 +2087,53 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <span key={c}>{c}</span>
               ))}
             </div>
+          )}
+          {/* QR банка на сумму к оплате картой (SPEC-31): без связи — оплата отмечается вручную. */}
+          {!fix && optima.data?.qr && cardDue > 0 && (!bankQr.qr || bankQr.qr.status === 'cancelled') &&
+            (online ? (
+              <button
+                type="button"
+                data-testid="bank-qr-create"
+                className={
+                  touch
+                    ? 'flex min-h-[56px] w-full items-center justify-center gap-2 rounded-lg border-2 border-sky-600 bg-white px-3 text-lg font-semibold text-sky-800 active:bg-sky-50 disabled:opacity-60'
+                    : 'flex min-h-12 w-full items-center justify-center gap-2 rounded-md border border-sky-600 bg-white px-3 text-base font-medium text-sky-800 hover:bg-sky-50 disabled:opacity-60'
+                }
+                disabled={bankQr.busy}
+                onClick={() => void bankQr.create(cardDue)}
+              >
+                <Icon name="scan" className="h-5 w-5 shrink-0" />
+                {bankQr.busy ? 'Создаём QR…' : `QR на сумму ${formatSom(cardDue)}`}
+              </button>
+            ) : (
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="bank-qr-offline">
+                Банк недоступен — отметьте оплату вручную
+              </div>
+            ))}
+          <ErrorBox error={bankQr.error} />
+          {bankQr.qr?.status === 'paid' && (
+            <div
+              className={`rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 ${touch ? 'text-xl' : 'text-base'}`}
+              role="status"
+              data-testid="bank-qr-paid"
+            >
+              <b>Оплачено {formatSom(bankQr.qr.amount_tyiyn)}</b> по QR банка — проведите чек
+              {bankQr.qr.amount_tyiyn !== cardDue && (
+                <div className="mt-1 text-sm text-amber-800">
+                  Картой к оплате {formatSom(cardDue)} — верните сумму {formatSom(bankQr.qr.amount_tyiyn)}, иначе чек уйдёт без QR, а владелец увидит оплату без чека.
+                </div>
+              )}
+            </div>
+          )}
+          {!touch && bankQr.qr && bankQr.qr.status !== 'paid' && (
+            <BankQrPanel
+              qr={bankQr.qr}
+              now={bankQr.now}
+              touch={false}
+              busy={bankQr.busy}
+              onCancel={() => void bankQr.cancel()}
+              onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
+            />
           )}
           {!touch && total > 0 && (!bonus || !batteryPay) && (
             <div className="-mt-1 flex flex-wrap justify-end gap-x-4 gap-y-1">

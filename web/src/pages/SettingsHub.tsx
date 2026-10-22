@@ -1,4 +1,4 @@
-// Настройки одним экраном: этикетки, документы, Телеграм и баллы, комиссия банка, статьи расходов,
+// Настройки одним экраном: этикетки, документы, Телеграм и баллы, Optima Business, комиссия банка, статьи расходов,
 // пользователи, категории и поставщики.
 import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
@@ -9,6 +9,7 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },
   { to: '/settings/telegram', title: 'Телеграм и баллы', text: 'Бот владельца, процент баллов клиентам', icon: 'bell', ownerOnly: true },
+  { to: '/settings/optima', title: 'Optima Business', text: 'QR на сумму чека и сверка с выпиской банка: компания, счёт, точка и касса', icon: 'bank', ownerOnly: true },
   { to: '/accounts', title: 'Комиссия банка', text: 'Ставка у каждого банковского счёта и история ставок — в «Обзоре счетов»', icon: 'profit', ownerOnly: true },
   { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },
   { to: '/users', title: 'Пользователи', text: 'Кто входит в систему: владелец и администраторы', icon: 'employees', ownerOnly: true },

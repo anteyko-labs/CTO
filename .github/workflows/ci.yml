@@ -95,6 +95,9 @@ jobs:
           # e2e/receipt-photo.spec.ts на этом порту; настоящий сервис не вызывается.
           ASSISTANT_API_KEY: e2e-test-key
           ASSISTANT_API_URL: http://127.0.0.1:8096
+          # Optima Business (SPEC-31): подставной банк поднимает e2e/optima-qr.spec.ts на этом порту.
+          OPTIMA_API_KEY: e2e-optima-key
+          OPTIMA_API_URL: http://127.0.0.1:8097
         run: |
           nohup ./target/debug/avtodom-server > server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/ > /dev/null && exit 0; sleep 1; done

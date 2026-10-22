@@ -173,6 +173,8 @@ export interface ShiftReport {
   payouts_tyiyn: number
   cancelled: CancelledRow[]
   cancelled_tyiyn: number
+  /** Оплачено по QR банка за смену, а чека с этой оплатой нет (SPEC-31). */
+  qr_unclaimed?: { id: string; amount_tyiyn: number; paid_at: string | null; user_name: string }[]
 }
 
 /** Вкладки отчёта в порядке Умага. */

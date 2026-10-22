@@ -174,6 +174,21 @@ function Overview({ data }: { data: Report }) {
         />
       </div>
 
+      {(data.qr_unclaimed ?? []).length > 0 && (
+        // Оплачено по QR банка, а чека нет (SPEC-31): деньги у банка, в учёте их нет.
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="qr-unclaimed">
+          QR оплачен, чек не проведён:{' '}
+          {(data.qr_unclaimed ?? []).map((q, i) => (
+            <span key={q.id}>
+              {i > 0 && ', '}
+              <b>{formatSom(q.amount_tyiyn)}</b>
+              {q.paid_at && ` в ${formatTime(q.paid_at)}`} ({q.user_name})
+            </span>
+          ))}
+          . Проведите чек с этой оплатой картой или спросите у кассира.
+        </div>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardTitle>Движение денег</CardTitle>
