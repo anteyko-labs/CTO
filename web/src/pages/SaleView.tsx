@@ -12,6 +12,7 @@ import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '
 import { useAction, useLoad } from '../lib/hooks'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { divRound } from '../lib/money'
+import { returnWithholds } from '../lib/serviceSale'
 import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
@@ -34,6 +35,8 @@ async function loadReturned(sale: Sale): Promise<ReturnedAll> {
   const returns = await Promise.all(sale.returns.map((r) => get<Sale>(`/sales/${r.id}`)))
   for (const r of returns) {
     for (const l of r.lines) {
+      // Удержание за замену — не возврат строки (ADR-104).
+      if (l.withheld_for != null) continue
       const cur = map.get(l.line_no) ?? { qty: 0, amount: 0 }
       map.set(l.line_no, { qty: cur.qty + l.qty, amount: cur.amount - l.amount_tyiyn })
     }
@@ -80,7 +83,16 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
     return { l, left, n, ok, refund: ok && n ? refundOf(l, done, n) : 0 }
   })
   const chosen = rows.filter((r) => r.ok && r.n)
-  const total = chosen.reduce((acc, r) => acc + r.refund, 0)
+  const returnedSum = chosen.reduce((acc, r) => acc + r.refund, 0)
+  // Масло вернули ниже канистры, а бесплатная замена остаётся — её цена удерживается (ADR-104).
+  const withholds = returnWithholds(
+    sale.lines,
+    (n) => returned.data?.lines.get(n)?.qty ?? 0,
+    (n) => chosen.find((r) => r.l.line_no === n)?.n ?? 0,
+    returnedSum,
+  )
+  const withheld = withholds.reduce((acc, w) => acc + w.amount, 0)
+  const total = returnedSum - withheld
   const invalid = rows.some((r) => !r.ok)
   const noShift = method === 'cash' && total > 0 && shift.data === null
   const paidBattery = sale.payments.filter((p) => p.method === 'battery').reduce((acc, p) => acc + p.amount_tyiyn, 0)
@@ -179,6 +191,12 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
               )}
             </Notice>
           )}
+          {withheld > 0 && (
+            <div className="text-right" data-testid="withheld">
+              Удержано за замену: <b>{formatSom(withheld)}</b>
+              <div className="text-xs text-slate-500">Масла осталось меньше канистры — замена больше не бесплатная</div>
+            </div>
+          )}
           <div className="text-right text-lg font-semibold">К возврату: {formatSom(total)}</div>
           {noShift && (
             <Notice tone="rose">
@@ -217,6 +235,8 @@ export default function SaleView() {
   if (!sale) return <ErrorBox error={error} />
 
   const cost = sale.lines.reduce((acc, l) => acc + (l.cost_tyiyn ?? 0), 0)
+  // Удержание за замену (ADR-104) — не строка товара: показывается под таблицей.
+  const goods = sale.lines.filter((l) => l.withheld_for == null)
   const fullyReturned = sale.kind === 'sale' && sale.returns.reduce((acc, r) => acc + r.total_tyiyn, 0) === -sale.total_tyiyn
 
   // Расписка физлица в двух экземплярах или накладная юрлица (SPEC-10).
@@ -235,7 +255,7 @@ export default function SaleView() {
     <div className="flex flex-col gap-4">
       <ErrorBox error={docAct.error} />
       <PageHeader
-        title={`${sale.kind === 'return' ? 'Возврат' : 'Чек'} № ${sale.number}`}
+        title={`${sale.kind === 'return' ? (sale.no_receipt ? 'Возврат без чека' : 'Возврат') : 'Чек'} № ${sale.number}`}
         back={
           <Link to="/sales" className="text-sky-700 hover:underline">
             ← К чекам
@@ -300,7 +320,11 @@ export default function SaleView() {
         )}
         <div>Провёл: {sale.user_name}</div>
         {sale.delivery_address && <div>Доставка: {sale.delivery_address}</div>}
-        {sale.comment && <div>Комментарий: {sale.comment}</div>}
+        {sale.comment && (
+          <div>
+            {sale.kind === 'return' ? 'Причина' : 'Комментарий'}: {sale.comment}
+          </div>
+        )}
         {sale.reversal_of && (
           <div>
             Возврат по <Link className="text-sky-700 hover:underline" to={`/sales/${sale.reversal_of}`}>исходному чеку</Link>
@@ -319,7 +343,7 @@ export default function SaleView() {
       </Card>
       <Card>
         <Table head={['Наименование', 'Кол-во', 'Цена', 'Сумма', ...(owner ? ['Себестоимость'] : [])]}>
-          {sale.lines.map((l) => (
+          {goods.map((l) => (
             <tr key={l.line_no}>
               <td className="px-2 py-2">
                 {l.name}
@@ -345,6 +369,13 @@ export default function SaleView() {
           ))}
         </Table>
         <div className="mt-3 flex flex-col items-end gap-1 text-sm">
+          {sale.lines
+            .filter((l) => l.withheld_for != null)
+            .map((l) => (
+              <div key={l.line_no} data-testid="withheld">
+                Удержано за замену: {formatSom(l.amount_tyiyn)}
+              </div>
+            ))}
           <div className="text-lg font-semibold">Итого: {formatSom(sale.total_tyiyn)}</div>
           {sale.payments.map((p) => (
             <div key={`${p.method}:${p.account_id ?? ''}`}>

@@ -10,15 +10,17 @@ import { useUser } from '../lib/auth'
 import { formatSom, parseSom, plural, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Service } from '../lib/types'
+import type { Category, Service } from '../lib/types'
 import { mapUmagRows, preselected, serviceCandidates, type ServiceCandidate } from '../lib/umag'
 import { readXlsx } from '../lib/xlsx'
 
 const FEE_HINT = 'Ставка мастеру за одну такую работу: в чеке — количество × ставка. Ставку задаёт владелец'
-const FREE_HINT = 'В чеке есть наше масло — услуга бесплатна; клиент со своим маслом платит цену клиенту'
+const FREE_HINT =
+  'В чеке нашего масла этой категории не меньше канистры — услуга бесплатна; клиент со своим маслом или с доливом платит цену клиенту'
 const ABOUT =
   'Вид замены выбирается в каждом чеке «В сервис» — без него чек не провести. Мастеру начисляется ставка каждой услуги чека. ' +
-  'У услуги «Бесплатно с нашим маслом» цена в чеке с нашим маслом — 0, без него — цена клиенту.'
+  'У услуги «Бесплатно с нашим маслом» цена — 0, если в чеке нашего масла её категории не меньше канистры; иначе — цена клиенту. ' +
+  'Если клиент вернёт масло и его останется меньше канистры, цена замены удержится из возврата.'
 
 function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn: number } {
   const p = parseSom(price)
@@ -28,13 +30,56 @@ function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_
   return { price_tyiyn: p, master_fee_tyiyn: f }
 }
 
+/** Категории масла: у флажка «Бесплатно с нашим маслом» выбирается, с каким маслом (ADR-104). */
+function useOilCategories() {
+  return useLoad(() => get<Category[]>('/categories').then((list) => list.filter((c) => c.kind === 'oil')), [])
+}
+
+/** Флажок «Бесплатно с нашим маслом» и категория масла рядом с ним. */
+function FreeWithOil({
+  free,
+  category,
+  categories,
+  onChange,
+  id,
+}: {
+  free: boolean
+  category: string
+  categories: Category[]
+  onChange: (free: boolean, category: string) => void
+  id: string
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <Checkbox label="Бесплатно с нашим маслом" checked={free} onChange={(v) => onChange(v, category)} />
+      {free && (
+        <div className="pl-7">
+          <Field label="Категория масла" required hint="Например, «Моторные масла» — замена в моторе, «Трансмиссионные масла» — в коробке">
+            <select id={id} value={category} onChange={(e) => onChange(free, e.target.value)}>
+              <option value="">— выберите —</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      )}
+      <div className="-mt-1 pl-7 text-xs text-slate-500">{FREE_HINT}</div>
+    </div>
+  )
+}
+
 function EditModal({ service, onClose, onSaved }: { service: Service; onClose: () => void; onSaved: () => void }) {
   const owner = useUser().role === 'owner'
+  const categories = useOilCategories()
   const [form, setForm] = useState({
     name: service.name,
     price: somInput(service.price_tyiyn),
     fee: somInput(service.master_fee_tyiyn),
     free: Boolean(service.free_with_oil),
+    oilCat: service.oil_category_id ?? '',
     active: service.active,
   })
   const { busy, error, run } = useAction()
@@ -45,6 +90,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
         name: form.name,
         ...amounts(form.price, form.fee),
         free_with_oil: form.free,
+        ...(owner && form.oilCat ? { oil_category_id: form.oilCat } : {}),
         active: form.active,
       })
       onSaved()
@@ -65,18 +111,23 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
           </Field>
         </div>
         {owner ? (
-          <Checkbox label="Бесплатно с нашим маслом" checked={form.free} onChange={(v) => setForm({ ...form, free: v })} />
+          <FreeWithOil
+            id="service-edit-oil"
+            free={form.free}
+            category={form.oilCat}
+            categories={categories.data ?? []}
+            onChange={(free, oilCat) => setForm({ ...form, free, oilCat })}
+          />
         ) : (
           <div className="text-sm text-slate-600">{form.free ? 'Бесплатно с нашим маслом' : 'Платная и с нашим маслом'} — меняет владелец</div>
         )}
-        <div className="-mt-2 pl-7 text-xs text-slate-500">{FREE_HINT}</div>
         <Checkbox label="Активна" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || !form.name.trim()} onClick={() => void save()}>
+          <Button disabled={busy || !form.name.trim() || (owner && form.free && !form.oilCat)} onClick={() => void save()}>
             Сохранить
           </Button>
         </div>
@@ -183,7 +234,9 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
 export default function Services() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
-  const [form, setForm] = useState({ name: '', price: '', fee: '', free: false })
+  const [form, setForm] = useState({ name: '', price: '', fee: '', free: false, oilCat: '' })
+  const categories = useOilCategories()
+  const catName = (id: string | null | undefined) => categories.data?.find((c) => c.id === id)?.name
   const [adding, setAdding] = useState(false)
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<Service | null>(null)
@@ -202,8 +255,13 @@ export default function Services() {
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
-      await post<Service>('/services', { name: form.name, ...amounts(form.price, form.fee), free_with_oil: owner && form.free })
-      setForm({ name: '', price: '', fee: '', free: false })
+      await post<Service>('/services', {
+        name: form.name,
+        ...amounts(form.price, form.fee),
+        free_with_oil: owner && form.free,
+        ...(owner && form.free && form.oilCat ? { oil_category_id: form.oilCat } : {}),
+      })
+      setForm({ name: '', price: '', fee: '', free: false, oilCat: '' })
       setAdding(false)
       list.reload()
     })
@@ -219,6 +277,7 @@ export default function Services() {
   const notFilled = missingWithFocus(
     [Boolean(form.name.trim()), 'название', '#service-name'],
     [Boolean(form.price.trim()), 'цену', '#service-price'],
+    [!form.free || Boolean(form.oilCat), 'категорию масла', '#service-oil'],
   )
   const needle = q.trim().toLowerCase()
   const rows = (list.data ?? []).filter((s) => !needle || s.name.toLowerCase().includes(needle))
@@ -293,7 +352,18 @@ export default function Services() {
                 <td className="px-2 py-2 md:text-right">
                   <Money value={s.price_tyiyn} />
                 </td>
-                <td className="px-2 py-2">{s.free_with_oil ? <Badge tone="sky">бесплатно</Badge> : <span className="text-slate-500">цена клиенту</span>}</td>
+                <td className="px-2 py-2">
+                  {!s.free_with_oil ? (
+                    <span className="text-slate-500">цена клиенту</span>
+                  ) : s.oil_category_id ? (
+                    <span className="flex flex-wrap items-center gap-1">
+                      <Badge tone="sky">бесплатно</Badge>
+                      <span className="text-xs text-slate-600">{catName(s.oil_category_id) ?? ''}</span>
+                    </span>
+                  ) : (
+                    <Badge tone="amber">выберите категорию масла</Badge>
+                  )}
+                </td>
                 <td className="px-2 py-2 md:text-right">
                   <Money value={s.master_fee_tyiyn} zero="—" />
                 </td>
@@ -333,10 +403,13 @@ export default function Services() {
               </label>
             </div>
             {owner && (
-              <>
-                <Checkbox label="Бесплатно с нашим маслом" checked={form.free} onChange={(v) => setForm({ ...form, free: v })} />
-                <div className="-mt-2 pl-7 text-xs text-slate-500">{FREE_HINT}</div>
-              </>
+              <FreeWithOil
+                id="service-oil"
+                free={form.free}
+                category={form.oilCat}
+                categories={categories.data ?? []}
+                onChange={(free, oilCat) => setForm({ ...form, free, oilCat })}
+              />
             )}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">

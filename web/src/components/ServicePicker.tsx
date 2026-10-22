@@ -5,9 +5,11 @@ import { useUser } from '../lib/auth'
 import { formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { servicePriceText } from '../lib/serviceSale'
+import { servicePriceText, type OilEnough } from '../lib/serviceSale'
 import type { Service } from '../lib/types'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
+
+const NO_OIL: OilEnough = new Set<string>()
 
 /**
  * Услуги в кассе: все заведённые работы плитками и новая услуга прямо отсюда (ADR-043).
@@ -21,7 +23,7 @@ export function ServicePicker({
   onClose,
   onBatteryIntake,
   onBatterySale,
-  ourOil = false,
+  ourOil = NO_OIL,
   kinds = false,
   selected = [],
   onDone,
@@ -30,8 +32,9 @@ export function ServicePicker({
   onClose: () => void
   onBatteryIntake?: () => void
   onBatterySale?: () => void
-  /** В чеке есть наше масло: услуги «бесплатно с нашим маслом» стоят 0. */
-  ourOil?: boolean
+  /** Категории нашего масла, которого в чеке не меньше канистры: услуги «бесплатно с нашим
+   *  маслом» этой категории стоят 0 (ADR-104). */
+  ourOil?: OilEnough
   /** Выбор вида замены для чека «В сервис». */
   kinds?: boolean
   /** Виды замены, уже стоящие в чеке: отмечены сразу. */

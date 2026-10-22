@@ -19,7 +19,7 @@ import { OilHint } from '../components/OilBook'
 import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
-import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, serviceClientMissing, servicePrice } from '../lib/serviceSale'
+import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -88,9 +88,9 @@ function remember(key: string, value: string): void {
   }
 }
 
-/** Цена по каталогу; `ourOil` — в чеке есть наше масло: вид замены «бесплатно с нашим маслом»
- *  стоит 0 (ADR-096). */
-function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>, ourOil = false): number {
+/** Цена по каталогу; `ourOil` — категории нашего масла, которого в чеке не меньше канистры: вид
+ *  замены «бесплатно с нашим маслом» этой категории стоит 0 (ADR-096, ADR-104). */
+function listPrice(l: Pick<CartLine, 'kind' | 'product' | 'service'>, ourOil: OilEnough = NO_OIL): number {
   if (l.kind === 'service') return servicePrice(l.service, ourOil)
   // Розлив — от цены канистры (ADR-074): 4 л розливом стоят как канистра 4 л.
   if (l.kind === 'pour') return (l.product && pourPricePerL(l.product)) ?? 0
@@ -198,6 +198,21 @@ function lineUnits(l: CartLine): number {
   const qty = lineQty(l) ?? 0
   if (l.kind === 'container') return qty * (l.product?.container_ml ?? 0)
   return qty
+}
+
+const NO_OIL: OilEnough = new Set<string>()
+
+/** Категории нашего масла, которого в чеке не меньше канистры (ADR-104). */
+function cartOil(lines: readonly CartLine[]): OilEnough {
+  return oilEnough(
+    lines.map((l) => ({
+      categoryId: l.product?.category_id,
+      categoryKind: l.product?.category_kind,
+      units: l.product ? lineUnits(l) : 0,
+      containerMl: l.product?.container_ml,
+      gift: l.gift,
+    })),
+  )
 }
 
 /** Цена строки вне правки — общим форматом с разрядами и «с»; неразобранный ввод — как есть. */
@@ -444,22 +459,30 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (l.product) unitsInCart.set(l.product.id, (unitsInCart.get(l.product.id) ?? 0) + lineUnits(l))
   }
 
-  // Наше масло в чеке: вид замены «бесплатно с нашим маслом» стоит 0 (ADR-096).
-  const ourOil = hasEngineOil(lines)
+  // Наше масло в чеке по категориям: вид замены «бесплатно с нашим маслом» той же категории при
+  // канистре и больше стоит 0 (ADR-096, ADR-104).
+  const ourOil = cartOil(lines)
+  const oilKey = [...ourOil].sort().join(',')
+  const prevOil = useRef<OilEnough>(NO_OIL)
   const lineList = (l: Pick<CartLine, 'kind' | 'product' | 'service'>): number => listPrice(l, ourOil)
   // Масло добавили или убрали — цена такого вида замены пересчитывается, если её не меняли руками.
   useEffect(() => {
+    const before = prevOil.current
+    prevOil.current = ourOil
     setLines((ls) => {
       let changed = false
       const next = ls.map((l) => {
         if (l.kind !== 'service' || !l.service?.free_with_oil) return l
-        if (parseSom(l.priceText) !== listPrice(l, !ourOil)) return l
+        if (parseSom(l.priceText) !== listPrice(l, before)) return l
+        const price = listPrice(l, ourOil)
+        if (price === listPrice(l, before)) return l
         changed = true
-        return { ...l, priceText: somInput(listPrice(l, ourOil)) }
+        return { ...l, priceText: somInput(price) }
       })
       return changed ? next : ls
     })
-  }, [ourOil])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oilKey])
 
   const amounts = lines.map(lineAmount)
   const valid = lines.length > 0 && amounts.every((a) => a !== null)
@@ -571,7 +594,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setLines((ls) => {
       const same = ls.find((l) => l.kind === 'service' && l.service?.id === s.id)
       if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(same) ?? 0) + 1) } : l))
-      return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, hasEngineOil(ls))) }]
+      return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, cartOil(ls))) }]
     })
     setSaleType('service')
     focusPicker()
@@ -586,7 +609,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     const fresh = picked.filter((s) => !lines.some((l) => l.kind === 'service' && l.service?.id === s.id))
     setLines((ls) => [
       ...ls.filter((l) => !gone.some((g) => g.key === l.key)),
-      ...fresh.map((s): CartLine => ({ key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, hasEngineOil(ls))) })),
+      ...fresh.map((s): CartLine => ({ key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, cartOil(ls))) })),
     ])
     const recs = gone.map((l) => asRemoved(l, 'remove')).filter((x): x is RemovedLine => x !== null)
     if (recs.length) setDropped((d) => [...d, ...recs])

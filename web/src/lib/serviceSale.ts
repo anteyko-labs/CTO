@@ -4,17 +4,106 @@
 import { formatLiters } from './format'
 import type { Party, Service, ServiceOil } from './types'
 
-/** Цена услуги по каталогу: «бесплатно с нашим маслом» и в чеке есть наше масло — 0, иначе —
- *  цена клиенту из справочника. */
-export function servicePrice(s: Pick<Service, 'price_tyiyn' | 'free_with_oil'> | undefined, ourOil: boolean): number {
+/** Категории масла, которого в чеке не меньше канистры (ADR-104): строки нашего масла (не подарок)
+ *  по категориям, канистра — наименьший объём канистры среди строк категории, розлив — в мл. */
+export type OilEnough = ReadonlySet<string>
+
+export interface OilLine {
+  categoryId?: string | null
+  categoryKind?: string | null
+  /** Сколько мл в строке: канистры × объём или розлив. */
+  units: number
+  containerMl?: number | null
+  gift?: boolean
+}
+
+/** Наименьшая канистра среди строк; нет объёма — null. */
+export function canisterMl(lines: readonly OilLine[]): number | null {
+  const sizes = lines.map((l) => l.containerMl ?? 0).filter((c) => c > 0)
+  return sizes.length ? Math.min(...sizes) : null
+}
+
+export function oilEnough(lines: readonly OilLine[]): OilEnough {
+  const by = new Map<string, OilLine[]>()
+  for (const l of lines) {
+    if (l.gift || l.categoryKind !== 'oil' || !l.categoryId) continue
+    by.set(l.categoryId, [...(by.get(l.categoryId) ?? []), l])
+  }
+  const out = new Set<string>()
+  for (const [cat, list] of by) {
+    const can = canisterMl(list)
+    if (can !== null && list.reduce((acc, l) => acc + l.units, 0) >= can) out.add(cat)
+  }
+  return out
+}
+
+type PricedService = Pick<Service, 'price_tyiyn' | 'free_with_oil' | 'oil_category_id'>
+
+/** Услуга бесплатна: «бесплатно с нашим маслом», категория масла выбрана и такого масла в чеке
+ *  не меньше канистры. Без категории флажок не действует. */
+export function serviceFree(s: PricedService | undefined, enough: OilEnough): boolean {
+  return Boolean(s?.free_with_oil && s.oil_category_id && enough.has(s.oil_category_id))
+}
+
+/** Цена услуги по каталогу: бесплатна по маслу — 0, иначе — цена клиенту из справочника. */
+export function servicePrice(s: PricedService | undefined, enough: OilEnough): number {
   if (!s) return 0
-  return s.free_with_oil && ourOil ? 0 : s.price_tyiyn
+  return serviceFree(s, enough) ? 0 : s.price_tyiyn
 }
 
 /** Подпись цены на кнопке выбора вида замены. */
-export function servicePriceText(s: Pick<Service, 'price_tyiyn' | 'free_with_oil'>, ourOil: boolean, money: (v: number) => string): string {
-  if (s.free_with_oil && ourOil) return 'бесплатно — масло наше'
+export function servicePriceText(s: PricedService, enough: OilEnough, money: (v: number) => string): string {
+  if (serviceFree(s, enough)) return 'бесплатно — масло наше'
   return money(s.price_tyiyn)
+}
+
+/** Удержание за замену при возврате масла (ADR-104) — то же правило, что на сервере: масла
+ *  категории было не меньше канистры, после возврата меньше, а услуга остаётся. */
+export function withholdAmount(beforeMl: number, afterMl: number, canister: number, servicesLeft: number, price: number): number {
+  if (canister <= 0 || servicesLeft <= 0 || price <= 0) return 0
+  return beforeMl >= canister && afterMl < canister ? price * servicesLeft : 0
+}
+
+/** Строка исходного чека для расчёта удержания. */
+export interface ReturnableLine {
+  line_no: number
+  kind: string
+  gift: boolean
+  product_id: string | null
+  container_ml: number | null
+  qty: number
+  units: number
+  oil_category_id?: string | null
+  withhold_price_tyiyn?: number | null
+}
+
+/** Что удержит возврат: по каждой бесплатной замене, ставшей платной. `done` — сколько по строке
+ *  уже вернули, `now` — сколько возвращают сейчас (в единицах строки). Итог не больше `refund`. */
+export function returnWithholds(
+  lines: readonly ReturnableLine[],
+  done: (lineNo: number) => number,
+  now: (lineNo: number) => number,
+  refund: number,
+): { line_no: number; amount: number }[] {
+  const unitsOf = (l: ReturnableLine, qty: number) => (l.qty ? Math.round((l.units * qty) / l.qty) : 0)
+  const out: { line_no: number; amount: number }[] = []
+  let room = refund
+  for (const s of lines) {
+    const price = s.withhold_price_tyiyn ?? 0
+    if (s.kind !== 'service' || !price || !s.oil_category_id) continue
+    const oil = lines.filter((l) => !l.gift && l.product_id && l.oil_category_id === s.oil_category_id)
+    const can = canisterMl(oil.map((l) => ({ units: l.units, containerMl: l.container_ml })))
+    if (can === null) continue
+    const before = oil.reduce((acc, l) => acc + l.units - unitsOf(l, done(l.line_no)), 0)
+    const back = oil.reduce((acc, l) => acc + unitsOf(l, now(l.line_no)), 0)
+    if (back <= 0) continue
+    const amount = Math.min(withholdAmount(before, before - back, can, s.qty - done(s.line_no) - now(s.line_no), price), room)
+    if (amount > 0) {
+      out.push({ line_no: s.line_no, amount })
+      room -= amount
+    }
+  }
+  return out
 }
 
 /** Клиент назван: фирма — названием, человек — именем и фамилией; у прежних карточек без

@@ -23,14 +23,20 @@ export function lineQtyText(l: Pick<SaleLine, 'kind' | 'qty' | 'container_ml'>):
 }
 
 export function saleHtml(sale: Sale, change: number | null): string {
-  const title = sale.kind === 'return' ? 'Возврат' : 'Товарный чек'
+  const title = sale.kind === 'return' ? (sale.no_receipt ? 'Возврат без чека' : 'Возврат') : 'Товарный чек'
+  // Удержание за замену (ADR-104) — отдельной строкой после возвращённого.
+  const held = sale.lines
+    .filter((l) => l.withheld_for != null)
+    .map((l) => `<tr><td>Удержано за замену</td><td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`)
+    .join('')
   const rows = sale.lines
+    .filter((l) => l.withheld_for == null)
     .map(
       (l) => `<tr><td colspan="2">${esc(l.name)}</td></tr>
       <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSomExact(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
       <td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`,
     )
-    .join('')
+    .join('') + held
   const pays = sale.payments
     .map((p) => `<tr><td>${esc(paymentLabel(p))}</td><td class="r">${esc(formatSomExact(p.amount_tyiyn))}</td></tr>`)
     .join('')
@@ -52,6 +58,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     <div>${esc(saleWhen(sale))}</div>
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
+    ${sale.kind === 'return' && sale.comment ? `<div>Причина: ${esc(sale.comment)}</div>` : ''}
     <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
     <div class="center">Спасибо за покупку!</div>
   </body></html>`

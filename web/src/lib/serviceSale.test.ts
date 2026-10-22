@@ -1,21 +1,47 @@
 import { describe, expect, it } from 'vitest'
-import { clientNamed, isDiscount, looksLikePlate, oilAmountText, serviceClientMissing, servicePrice, servicePriceText } from './serviceSale'
+import { clientNamed, isDiscount, looksLikePlate, oilAmountText, oilEnough, returnWithholds, serviceClientMissing, servicePrice, servicePriceText, withholdAmount } from './serviceSale'
 import type { Party } from './types'
 
 const money = (v: number) => `${v / 100} с`
 
-describe('цена вида замены (ADR-096)', () => {
-  const motor = { price_tyiyn: 20_000, free_with_oil: true }
-  const own = { price_tyiyn: 40_000, free_with_oil: false }
-  it('с нашим маслом — бесплатно, без масла — цена клиенту', () => {
-    expect(servicePrice(motor, true)).toBe(0)
-    expect(servicePrice(motor, false)).toBe(20_000)
-    expect(servicePrice(own, true)).toBe(40_000)
-    expect(servicePrice(undefined, true)).toBe(0)
+describe('цена вида замены по маслу того же вида (ADR-096, ADR-104)', () => {
+  const motor = { price_tyiyn: 20_000, free_with_oil: true, oil_category_id: 'motor' }
+  const bare = { price_tyiyn: 30_000, free_with_oil: true, oil_category_id: null }
+  const own = { price_tyiyn: 40_000, free_with_oil: false, oil_category_id: null }
+  const can = (categoryId: string, units: number, containerMl = 4000, gift = false) => ({ categoryId, categoryKind: 'oil', units, containerMl, gift })
+  it('канистра своей категории — бесплатно; долив, чужая категория, подарок — цена клиенту', () => {
+    expect(servicePrice(motor, oilEnough([can('motor', 4000)]))).toBe(0)
+    expect(servicePrice(motor, oilEnough([can('motor', 500)]))).toBe(20_000)
+    expect(servicePrice(motor, oilEnough([can('gear', 4000)]))).toBe(20_000)
+    expect(servicePrice(motor, oilEnough([can('motor', 4000, 4000, true)]))).toBe(20_000)
+    // Розлив в мл вместе с канистрами; канистра — наименьшая среди строк.
+    expect(servicePrice(motor, oilEnough([can('motor', 1000, 1000), can('motor', 500, 4000)]))).toBe(0)
+    expect(servicePrice(motor, oilEnough([can('motor', 3500, 4000)]))).toBe(20_000)
+    expect(servicePrice(bare, oilEnough([can('motor', 4000)]))).toBe(30_000)
+    expect(servicePrice(own, oilEnough([can('motor', 4000)]))).toBe(40_000)
+    expect(servicePrice(undefined, new Set())).toBe(0)
   })
   it('подпись на кнопке', () => {
-    expect(servicePriceText(motor, true, money)).toBe('бесплатно — масло наше')
-    expect(servicePriceText(motor, false, money)).toBe('200 с')
+    expect(servicePriceText(motor, new Set(['motor']), money)).toBe('бесплатно — масло наше')
+    expect(servicePriceText(motor, new Set(), money)).toBe('200 с')
+  })
+  it('возврат масла ниже канистры удерживает цену оставшейся замены', () => {
+    const lines = [
+      { line_no: 1, kind: 'container', gift: false, product_id: 'p', container_ml: 4000, qty: 1, units: 4000, oil_category_id: 'motor' },
+      { line_no: 2, kind: 'pour', gift: false, product_id: 'p', container_ml: 4000, qty: 1000, units: 1000, oil_category_id: 'motor' },
+      { line_no: 3, kind: 'service', gift: false, product_id: null, container_ml: null, qty: 1, units: 0, oil_category_id: 'motor', withhold_price_tyiyn: 20_000 },
+    ]
+    const map = (m: Record<number, number>) => (n: number) => m[n] ?? 0
+    // Вернули литр — осталась канистра: не удерживается.
+    expect(returnWithholds(lines, map({}), map({ 2: 1000 }), 50_000)).toEqual([])
+    // Вернули канистру — остался 1 л: удерживается 200 с.
+    expect(returnWithholds(lines, map({}), map({ 1: 1 }), 200_000)).toEqual([{ line_no: 3, amount: 20_000 }])
+    // Замену вернули вместе с маслом — нет.
+    expect(returnWithholds(lines, map({}), map({ 1: 1, 3: 1 }), 200_000)).toEqual([])
+    // Не больше суммы возврата.
+    expect(returnWithholds(lines, map({ 1: 1 }), map({ 2: 1000 }), 0)).toEqual([])
+    expect(withholdAmount(4000, 0, 4000, 2, 20_000)).toBe(40_000)
+    expect(withholdAmount(3000, 0, 4000, 1, 20_000)).toBe(0)
   })
 })
 

@@ -120,6 +120,8 @@ export interface Service {
   master_fee_tyiyn: number
   /** «Бесплатно с нашим маслом»: с маслом в чеке услуга стоит 0 (ADR-096). */
   free_with_oil?: boolean
+  /** Категория масла, с которым услуга бесплатна: его в чеке не меньше канистры (ADR-104). */
+  oil_category_id?: string | null
   active: boolean
 }
 
@@ -335,6 +337,12 @@ export interface SaleLine {
   amount_tyiyn: number
   cost_tyiyn?: number
   master_fee_tyiyn: number
+  /** Строка возврата — удержание за замену: номер строки услуги исходного чека (ADR-104). */
+  withheld_for?: number | null
+  /** Категория масла: у масла — его, у услуги «бесплатно с нашим маслом» — её масла. */
+  oil_category_id?: string | null
+  /** Бесплатная по маслу услуга, ещё не удержанная: цена, которую удержит возврат масла. */
+  withhold_price_tyiyn?: number | null
 }
 
 export interface Payment {
@@ -369,6 +377,8 @@ export interface Sale {
   master_fee_tyiyn: number
   comment: string
   reversal_of: string | null
+  /** Возврат без чека (ADR-105). */
+  no_receipt?: boolean
   user_name: string
   created_at: string
   /** Учётный день чека: его печатают чек и документ о долге. */
@@ -390,6 +400,8 @@ export interface SaleListItem {
   debt_tyiyn: number
   total_tyiyn: number
   reversal_of: string | null
+  /** Возврат без чека (ADR-105). */
+  no_receipt?: boolean
   created_at: string
 }
 
