@@ -13,7 +13,8 @@ import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
  * Услуги в кассе: все заведённые работы плитками и новая услуга прямо отсюда (ADR-043).
  * Ставку мастера задаёт владелец, администратор создаёт услугу без неё. «В сервис» открывает
  * этот же выбор как «Вид замены» (`kinds`): крупные кнопки с ценой клиенту — или «бесплатно —
- * масло наше», если в чеке наше масло, — и ставкой мастеру (ADR-096).
+ * масло наше», если в чеке наше масло, — и ставкой мастеру (ADR-096). Видов можно отметить
+ * несколько: окно закрывает «Готово» (`onDone`), список прокручивается внутри окна.
  */
 export function ServicePicker({
   onPick,
@@ -22,6 +23,8 @@ export function ServicePicker({
   onBatterySale,
   ourOil = false,
   kinds = false,
+  selected = [],
+  onDone,
 }: {
   onPick: (s: Service) => void
   onClose: () => void
@@ -31,6 +34,10 @@ export function ServicePicker({
   ourOil?: boolean
   /** Выбор вида замены для чека «В сервис». */
   kinds?: boolean
+  /** Виды замены, уже стоящие в чеке: отмечены сразу. */
+  selected?: string[]
+  /** «Готово» в выборе видов замены: все отмеченные. */
+  onDone?: (picked: Service[]) => void
 }) {
   const owner = useUser().role === 'owner'
   // Без связи — услуги из снимка кассы: работа уже сделана, чек пробивается (SPEC-09).
@@ -46,6 +53,9 @@ export function ServicePicker({
   const [query, setQuery] = useState('')
   const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean } | null>(null)
   const { busy, error, run } = useAction()
+  const multi = kinds && Boolean(onDone)
+  const [picked, setPicked] = useState<string[]>(selected)
+  const toggle = (id: string) => setPicked((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
 
   // Виды замены — сверху: их выбирают в каждом чеке «В сервис».
   const active = (list.data ?? []).filter((s) => s.active).sort((a, b) => Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
@@ -90,7 +100,7 @@ export function ServicePicker({
           </div>
         )}
 
-        {!form && kinds && <div className="text-sm text-slate-600">Без вида замены чек «В сервис» не провести. Можно выбрать несколько.</div>}
+        {!form && kinds && <div className="text-sm text-slate-600">Без вида замены чек «В сервис» не провести. Можно отметить несколько — затем «Готово».</div>}
         {!form && !kinds && (onBatteryIntake || onBatterySale) && (
           <div className="grid grid-cols-2 gap-2">
             {onBatteryIntake && (
@@ -155,17 +165,34 @@ export function ServicePicker({
         ) : shown.length === 0 ? (
           <Empty>{q ? 'Такой услуги нет — создайте её кнопкой «Новая услуга».' : 'Услуг пока нет. Создайте первую — она сразу встанет в чек.'}</Empty>
         ) : (
-          <div className={`grid gap-2 ${kinds ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`} data-testid="service-choices">
-            {shown.map((s) => (
+          // Список прокручивается внутри окна: окно помещается в экран 768 точек по высоте.
+          <div
+            className={`grid max-h-[calc(100dvh-21rem)] gap-2 overflow-y-auto overscroll-contain p-0.5 ${kinds ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}
+            data-testid="service-choices"
+          >
+            {shown.map((s) => {
+              const on = multi && picked.includes(s.id)
+              return (
               <button
                 key={s.id}
                 type="button"
-                className={`flex flex-col justify-between rounded-lg border border-slate-200 bg-white text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100 ${
-                  kinds ? 'min-h-[96px] p-4' : 'min-h-[76px] p-3'
-                }`}
-                onClick={() => onPick(s)}
+                aria-pressed={multi ? on : undefined}
+                className={`flex flex-col justify-between rounded-lg border text-left shadow-sm transition hover:border-sky-400 active:bg-sky-100 ${
+                  on ? 'border-sky-600 bg-sky-50 ring-2 ring-sky-600' : 'border-slate-200 bg-white hover:bg-sky-50'
+                } ${kinds ? 'min-h-[84px] p-3' : 'min-h-[76px] p-3'}`}
+                onClick={() => (multi ? toggle(s.id) : onPick(s))}
               >
-                <span className={`leading-snug font-medium ${kinds ? 'text-lg' : ''}`}>{s.name}</span>
+                <span className={`flex items-start gap-2 leading-snug font-medium ${kinds ? 'text-lg' : ''}`}>
+                  {multi && (
+                    <span
+                      aria-hidden="true"
+                      className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded border-2 text-base ${on ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-400 bg-white'}`}
+                    >
+                      {on ? '✓' : ''}
+                    </span>
+                  )}
+                  {s.name}
+                </span>
                 <span className="mt-1 flex items-baseline justify-between gap-2">
                   <span className={`font-semibold text-sky-700 ${kinds ? 'text-lg' : 'text-base'}`}>{servicePriceText(s, ourOil, formatSom)}</span>
                   {(kinds || s.master_fee_tyiyn > 0) && (
@@ -173,10 +200,22 @@ export function ServicePicker({
                   )}
                 </span>
               </button>
-            ))}
+              )
+            })}
           </div>
         )}
         <ErrorBox error={list.error} />
+        {multi && !form && (
+          <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+            <span className="text-sm text-slate-600">{picked.length ? `Отмечено: ${picked.length}` : 'Ничего не отмечено'}</span>
+            <Button
+              className="min-h-[56px]! px-8 text-lg!"
+              onClick={() => onDone?.((list.data ?? []).filter((s) => picked.includes(s.id)))}
+            >
+              Готово
+            </Button>
+          </div>
+        )}
       </div>
     </Modal>
   )

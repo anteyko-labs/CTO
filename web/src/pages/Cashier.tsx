@@ -19,7 +19,7 @@ import { OilHint } from '../components/OilBook'
 import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
-import { CLIENT_NEED_LABELS, isDiscount, serviceClientMissing, servicePrice } from '../lib/serviceSale'
+import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, serviceClientMissing, servicePrice } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -38,7 +38,7 @@ import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { useFocusAfterRender } from '../lib/focus'
-import { missingWithFocus } from '../lib/forms'
+import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
 import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
@@ -200,6 +200,12 @@ function lineUnits(l: CartLine): number {
   return qty
 }
 
+/** Цена строки вне правки — общим форматом с разрядами и «с»; неразобранный ввод — как есть. */
+function priceShown(text: string): string {
+  const v = parseSom(text)
+  return v === null ? text : formatSom(v)
+}
+
 /** Купюры для быстрого ввода полученной суммы, тыйын. */
 const NOTES = [10_000, 20_000, 50_000, 100_000, 200_000, 500_000]
 
@@ -338,6 +344,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [servicesOpen, setServicesOpen] = useState(false)
   // «В сервис» сразу открывает выбор вида замены (ADR-096).
   const [kindsOpen, setKindsOpen] = useState(false)
+  // Отложенный чек, удаление которого ждёт подтверждения.
+  const [confirmDrop, setConfirmDrop] = useState<string | null>(null)
   const clientFix = useAction()
   const [clientForm, setClientForm] = useState<{ first: string; last: string; phone: string }>({ first: '', last: '', phone: '' })
   const [debtPay, setDebtPay] = useState(false)
@@ -569,6 +577,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     focusPicker()
   }
 
+  /** «Готово» в окне «Вид замены»: отмеченные виды — в чек, снятые отметки — из чека (SPEC-30 §2). */
+  const setKinds = (picked: Service[]) => {
+    setDone(null)
+    setKindsOpen(false)
+    const ids = new Set(picked.map((s) => s.id))
+    const gone = lines.filter((l) => l.kind === 'service' && l.service && !ids.has(l.service.id))
+    const fresh = picked.filter((s) => !lines.some((l) => l.kind === 'service' && l.service?.id === s.id))
+    setLines((ls) => [
+      ...ls.filter((l) => !gone.some((g) => g.key === l.key)),
+      ...fresh.map((s): CartLine => ({ key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, hasEngineOil(ls))) })),
+    ])
+    const recs = gone.map((l) => asRemoved(l, 'remove')).filter((x): x is RemovedLine => x !== null)
+    if (recs.length) setDropped((d) => [...d, ...recs])
+    setSaleType('service')
+  }
+
   const loadAnalogs = (p: Product) => {
     if (p.category_kind !== 'filter' || analogs[p.id]) return
     void get<{ id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>(`/products/${p.id}/analogs`)
@@ -798,32 +822,40 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
   // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
   const discountLines = canDiscount ? [] : lines.filter((l) => isDiscount(parseSom(l.priceText), lineList(l), l.gift))
+  // Короткое название (четвёртое) — для строки «Не хватает: …» в режиме кассы.
   const blockers = missingWithFocus(
-    [lines.length > 0, 'товары', '[data-picker]'],
-    [lines.length === 0 || valid, 'количество и цены в строках'],
-    [Boolean(cashierId), 'кассира', '#cashier-select'],
-    [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select'],
-    [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»'],
-    [saleType !== 'service' || serviceKinds.length > 0, 'вид замены', '[data-service-kind]'],
+    [lines.length > 0, 'товары', '[data-picker]', 'товары'],
+    [lines.length === 0 || valid, 'количество и цены в строках', undefined, 'кол-во и цены'],
+    [Boolean(cashierId), 'кассира', '#cashier-select', 'кассир'],
+    [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select', 'мастер'],
+    [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»', undefined, 'режим «В сервис»'],
+    [saleType !== 'service' || serviceKinds.length > 0, 'вид замены', '[data-service-kind]', 'вид замены'],
     // Без связи данные клиента не дописать: чек уйдёт, владелец увидит, чего не хватало.
-    ...(online ? clientNeeds : []).map((n): [boolean, string, string] =>
-      n === 'mileage' ? [false, 'пробег машины — спросите у клиента', '#mileage'] : [false, CLIENT_NEED_LABELS[n], '[data-client]'],
+    ...(online ? clientNeeds : []).map((n): Check =>
+      n === 'mileage'
+        ? [false, 'пробег машины — спросите у клиента', '#mileage', 'пробег']
+        : [false, CLIENT_NEED_LABELS[n], '[data-client]', CLIENT_NEED_SHORT[n]],
     ),
-    [discountLines.length === 0, 'цена ниже каталожной — скидку ставит владелец'],
-    [invoiceAmount === 0 || party !== null, 'клиента для оплаты «По счёту»', '[data-client]'],
-    [payments !== null, 'сумму оплаты', '[data-pay]'],
-    [payments === null || paid === total, `оплату: разнесено ${formatSom((paid ?? 0) - offMoney)} из ${formatSom(due)}`, '[data-pay]'],
-    [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]'],
-    [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]'],
-    [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента'],
-    [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново'],
-    [!bonus || online, 'баллы списываются только при связи с сервером'],
-    [!batteryPay || (batteryGrams !== null && batteryGrams > 0), 'вес сданного аккумулятора', '#battery-kg'],
-    [!batteryPay || (batteryPerKg !== null && batteryPerKg > 0), 'цена аккумулятора за кг', '#battery-per-kg'],
-    [!batteryPay || online, 'аккумулятор в оплату — только при связи с сервером'],
-    [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес'],
-    [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address'],
-    [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn'],
+    [discountLines.length === 0, 'цена ниже каталожной — скидку ставит владелец', undefined, 'цена ниже прайса'],
+    [invoiceAmount === 0 || party !== null, 'клиента для оплаты «По счёту»', '[data-client]', 'клиент для счёта'],
+    [payments !== null, 'сумму оплаты', '[data-pay]', 'оплата'],
+    [
+      payments === null || paid === total,
+      `оплату: разнесено ${formatSom((paid ?? 0) - offMoney)} из ${formatSom(due)}`,
+      '[data-pay]',
+      `разнести ${formatSom(due - ((paid ?? 0) - offMoney))}`,
+    ],
+    [payMode !== 'cash' || change === null || change >= 0, 'получено меньше итога', '[data-received]', 'получено мало'],
+    [debtAmount === 0 || party !== null, 'клиента для продажи в долг', '[data-client]', 'клиент для долга'],
+    [!bonus || !party || party.id === bonus.party_id, 'баллы другого клиента: уберите скидку или клиента', undefined, 'баллы другого клиента'],
+    [!bonus || bonusAmount <= total, 'баллов больше итога — уберите скидку и спишите заново', undefined, 'баллов больше итога'],
+    [!bonus || online, 'баллы списываются только при связи с сервером', undefined, 'баллы — нет связи'],
+    [!batteryPay || (batteryGrams !== null && batteryGrams > 0), 'вес сданного аккумулятора', '#battery-kg', 'вес аккумулятора'],
+    [!batteryPay || (batteryPerKg !== null && batteryPerKg > 0), 'цена аккумулятора за кг', '#battery-per-kg', 'цена за кг'],
+    [!batteryPay || online, 'аккумулятор в оплату — только при связи с сервером', undefined, 'аккумулятор — нет связи'],
+    [!batteryPay || due >= 0, 'аккумулятор дороже чека — уменьшите вес', '#battery-kg', 'аккумулятор дороже чека'],
+    [delivery === null || Boolean(delivery.trim()), 'адрес доставки', '#delivery-address', 'адрес'],
+    [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn', 'ПИН / ИНН'],
     [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
     [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
   )
@@ -952,6 +984,17 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       focusPicker()
     })
 
+  /** Перейти к недостающему: клиент в режиме кассы — в своём окне. */
+  const goToMissing = (focus: string | undefined) => {
+    if (!focus) return
+    if (touch && focus === '[data-client]') {
+      setClientOpen(true)
+      if (!party) focusAfterRender('[data-client-input]')
+      return
+    }
+    focusField(focus)
+  }
+
   const canSubmit = !busy && blockers.length === 0
   // На вынос с моторным маслом — сначала «Это замена масла?» (SPEC-29 §18): один раз на чек.
   const askOil = !fix && saleType === 'takeaway' && !oilAsked && hasEngineOil(lines)
@@ -1010,40 +1053,74 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   // Ошибка, чего не хватает, «Провести чек» и «Отложить» / «Очистить». В режиме кассы — отдельной
   // карточкой внизу колонки: всегда на экране, что бы ни было выше.
+  const parkClear = (
+    <>
+      <Button variant="secondary" className={`flex-1 ${touch ? 'min-h-[56px]! py-1! text-lg!' : ''}`} onClick={park}>
+        Отложить
+      </Button>
+      {confirmClear ? (
+        <Button
+          variant="ghost"
+          className={`flex-1 text-rose-700 ${touch ? 'min-h-[56px]! border border-rose-300 bg-rose-50 py-1! text-base! leading-tight' : ''}`}
+          onClick={() => {
+            setConfirmClear(false)
+            cancelAll(lines, dropped, 'clear')
+            setParkedId(null)
+            setGiftRule(null)
+            reset()
+          }}
+        >
+          Точно очистить?
+        </Button>
+      ) : (
+        <Button variant="ghost" className={`flex-1 ${touch ? 'min-h-[56px]! border border-slate-300 py-1! text-lg!' : ''}`} onClick={() => setConfirmClear(true)}>
+          Очистить
+        </Button>
+      )}
+    </>
+  )
   const submitBlock = (
     <>
       <ErrorBox error={error} />
-      <Missing items={blockers} />
-      <Button className={touch ? 'min-h-[76px]! w-full shrink-0 flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! whitespace-nowrap shadow-md sm:text-2xl!' : 'min-h-14! py-3 text-lg!'} disabled={!canSubmit} onClick={trySubmit}>
-        {fix ? 'Сохранить исправление' : 'Провести чек'}
-        {touch && due > 0 && <span className="font-semibold tabular-nums">· {formatSom(due)}</span>}
-      </Button>
-      <div className={`hidden text-center text-xs text-slate-400 ${touch ? '' : 'lg:block'}`}>Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
-      {!fix && lines.length > 0 && (
-        <div className={touch ? 'grid shrink-0 grid-cols-2 gap-2' : 'flex gap-2'}>
-          <Button variant="secondary" className={`flex-1 ${touch ? 'min-h-[56px]! text-lg!' : ''}`} onClick={park}>
-            Отложить
+      {touch ? (
+        // Режим кассы: чего не хватает — одной строкой; касание ведёт к первому полю (ui-rules §9).
+        blockers.length > 0 && (
+          <button
+            type="button"
+            role="status"
+            data-testid="short-missing"
+            title={blockers.map((b) => b.label).join(', ')}
+            className="block min-h-[44px]! w-full shrink-0 truncate rounded-md bg-amber-50 px-3 py-1.5 text-left text-base text-amber-900"
+            onClick={() => goToMissing(blockers.find((b) => b.focus)?.focus)}
+          >
+            Не хватает: {blockers.map((b) => b.short ?? b.label).join(', ')}
+          </button>
+        )
+      ) : (
+        <Missing items={blockers} />
+      )}
+      {touch ? (
+        // Режим кассы: «Провести» слева, «Отложить» и «Очистить» столбиком справа — меньше высоты,
+        // больше места колонке оплаты.
+        <div className="flex shrink-0 items-stretch gap-2">
+          <Button
+            className="min-h-[76px]! min-w-0 flex-1 flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
+            disabled={!canSubmit}
+            onClick={trySubmit}
+          >
+            {fix ? 'Сохранить исправление' : 'Провести чек'}
+            {due > 0 && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
           </Button>
-          {confirmClear ? (
-            <Button
-              variant="ghost"
-              className={`flex-1 text-rose-700 ${touch ? 'min-h-[56px]! border border-rose-300 bg-rose-50 text-lg!' : ''}`}
-              onClick={() => {
-                setConfirmClear(false)
-                cancelAll(lines, dropped, 'clear')
-                setParkedId(null)
-                setGiftRule(null)
-                reset()
-              }}
-            >
-              Точно очистить?
-            </Button>
-          ) : (
-            <Button variant="ghost" className={`flex-1 ${touch ? 'min-h-[56px]! border border-slate-300 text-lg!' : ''}`} onClick={() => setConfirmClear(true)}>
-              Очистить
-            </Button>
-          )}
+          {!fix && lines.length > 0 && <div className="grid w-[38%] shrink-0 grid-rows-2 gap-1.5">{parkClear}</div>}
         </div>
+      ) : (
+        <>
+          <Button className="min-h-14! py-3 text-lg!" disabled={!canSubmit} onClick={trySubmit}>
+            {fix ? 'Сохранить исправление' : 'Провести чек'}
+          </Button>
+          <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
+          {!fix && lines.length > 0 && <div className="flex gap-2">{parkClear}</div>}
+        </>
       )}
     </>
   )
@@ -1086,14 +1163,33 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <button type="button" className="font-medium hover:text-sky-700" onClick={() => resume(p)}>
                   {p.label || `Чек на ${p.lines.length} поз.`} · {formatSom(parkedTotal(p))}
                 </button>
-                <button
-                  type="button"
-                  className="text-slate-400 hover:text-rose-600"
-                  aria-label="Удалить отложенный чек"
-                  onClick={() => discardParked(p)}
-                >
-                  ✕
-                </button>
+                {/* Удаление — с подтверждением, как «Очистить»: чек не пропадает от случайного касания. */}
+                {confirmDrop === p.id ? (
+                  <>
+                    <button
+                      type="button"
+                      className={`rounded border border-rose-300 bg-rose-50 px-2 font-medium text-rose-700 ${touch ? 'min-h-[44px]' : 'py-0.5'}`}
+                      onClick={() => {
+                        setConfirmDrop(null)
+                        discardParked(p)
+                      }}
+                    >
+                      Точно удалить?
+                    </button>
+                    <button type="button" className={`px-1 text-slate-500 ${touch ? 'min-h-[44px]' : ''}`} onClick={() => setConfirmDrop(null)}>
+                      Нет
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className={`text-slate-400 hover:text-rose-600 ${touch ? 'min-h-[44px] min-w-[44px]' : ''}`}
+                    aria-label="Удалить отложенный чек"
+                    onClick={() => setConfirmDrop(p.id)}
+                  >
+                    ✕
+                  </button>
+                )}
               </span>
             ))}
           </Card>
@@ -1283,6 +1379,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               {lines.map((l, i) => {
                 const amount = amounts[i]
                 const changed = parseSom(l.priceText) !== lineList(l)
+                // Без права «Скидка» цену можно поднять, но не опустить ниже прайса (ADR-097).
+                const lowNoRight = !canDiscount && isDiscount(parseSom(l.priceText), lineList(l), l.gift)
                 const priceLabel = l.kind === 'pour' ? 'Цена за л' : l.kind === 'weight' ? 'Цена за кг' : 'Цена'
                 const short = l.product ? (unitsInCart.get(l.product.id) ?? 0) > l.product.stock_qty : false
                 return (
@@ -1394,34 +1492,44 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                           {priceLabel}
                         </label>
                         <span className="flex items-center gap-0.5">
-                          {/* Цена видна текстом; карандаш или касание по ней — правка в том же поле. */}
+                          {/* Цена видна текстом; карандаш или касание по ней — правка в том же поле. Вне правки
+                              поверх поля — цена с разрядами и «с» («2 500 с»), как суммы рядом; значение поля —
+                              число, фокус его не меняет. */}
+                          <span className="relative inline-flex">
                           <input
                             id={`price-${l.key}`}
                             aria-label={priceLabel}
-                            className={`${touch ? 'w-24 text-lg' : 'w-20'} ${
+                            className={`${touch ? 'w-28 text-lg' : 'w-24'} ${priceEdit === l.key ? '' : 'text-transparent!'} ${
                               changed
                                 ? 'border-amber-400 bg-amber-50'
                                 : priceEdit === l.key
                                   ? ''
                                   : 'cursor-pointer border-transparent bg-transparent text-right font-medium text-slate-800 shadow-none'
                             }`}
-                            // Без права на скидку цену не правят: ни карандаша, ни клавиатуры (ADR-097).
-                            {...(canDiscount ? num('decimal') : {})}
-                            readOnly={!canDiscount}
+                            // Без права на скидку цену можно только поднять: ниже прайса «Провести» не даст (ADR-097).
+                            {...num('decimal')}
                             value={l.priceText}
                             onFocus={(e) => {
-                              if (!canDiscount) return
                               setPriceEdit(l.key)
                               e.target.select()
                             }}
                             onBlur={() => setPriceEdit((k) => (k === l.key ? null : k))}
                             onChange={(e) => update(l.key, { priceText: e.target.value })}
-                            title={changed ? `Прайс: ${formatSom(lineList(l))}` : canDiscount ? 'Изменить цену' : 'Цену ниже каталожной ставит владелец'}
+                            title={changed ? `Прайс: ${formatSom(lineList(l))}` : canDiscount ? 'Изменить цену' : 'Цену можно поднять; ниже каталожной ставит владелец'}
                           />
+                          {priceEdit !== l.key && (
+                            <span
+                              aria-hidden="true"
+                              className={`pointer-events-none absolute inset-0 flex items-center justify-end truncate px-2 font-medium text-slate-800 ${touch ? 'text-lg' : ''}`}
+                            >
+                              {priceShown(l.priceText)}
+                            </span>
+                          )}
+                          </span>
                           {/* В режиме кассы карандаша нет: касание по цене — уже правка. Без права на скидку — нет нигде. */}
                           <button
                             type="button"
-                            hidden={touch || !canDiscount}
+                            hidden={touch}
                             // Значок мал, а цель нажатия — не меньше 42 точек (ui-rules §5): невидимая рамка вокруг.
                             className="relative rounded p-1 text-slate-400 after:absolute after:-inset-2.5 after:content-[''] hover:bg-slate-100 hover:text-sky-700"
                             aria-label="Изменить цену"
@@ -1431,7 +1539,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                           </button>
                         </span>
                         {/* В режиме кассы подсказок по наведению нет — прайс виден подписью. */}
-                        {touch && changed && <span className="text-amber-700">прайс {formatSom(lineList(l))}</span>}
+                        {touch && changed && !lowNoRight && <span className="text-amber-700">прайс {formatSom(lineList(l))}</span>}
+                        {lowNoRight && (
+                          <span className="text-rose-700" data-testid="price-below-list">
+                            ниже прайса {formatSom(lineList(l))} — скидку ставит владелец
+                          </span>
+                        )}
                       </div>
                     )}
                     <div className={touch ? 'min-w-24 text-right text-xl font-bold' : 'w-24 text-right text-base font-semibold'}>{amount === null ? '—' : <Money value={amount} />}</div>
@@ -1456,15 +1569,21 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Card>
       </div>
 
-      {/* В режиме кассы оплата и «Провести чек» — сверху колонки; клиент, мастер и редкое — под ними,
-          в своей прокрутке: колонка помещается в экран. */}
+      {/* В режиме кассы тип чека, «Итого» и оплата закреплены сверху колонки; мастер, вид замены,
+          клиент и редкое — под ними в своей прокрутке; «Провести чек» — внизу. Колонка помещается в экран. */}
       <div className={`flex flex-col ${touch ? 'gap-3 lg:min-h-0' : 'gap-4'}`}>
         <div
-          // В режиме кассы оплата и клиент — одна карточка со своей прокруткой, кнопка «Провести» — под ней.
-          className={`flex flex-col ${touch ? 'relative gap-2.5 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : 'gap-4'}`}
+          className={`flex flex-col ${touch ? 'relative gap-2 rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-hidden' : 'gap-4'}`}
           data-testid="pay-column"
         >
-        <Card className={`flex flex-col ${touch ? 'order-2 gap-2.5 rounded-none! border-0! border-t! border-slate-200! p-0! pt-2.5! shadow-none!' : 'gap-3'}`}>
+        <Card
+          className={`flex flex-col ${
+            touch
+              ? 'order-2 gap-2.5 rounded-none! border-0! border-t! border-slate-200! p-0! pt-2! shadow-none! lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain'
+              : 'gap-3'
+          }`}
+          data-testid="pay-details"
+        >
           {!touch && (
             <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-base">
               {(['takeaway', 'service'] as const).map((t) => (
@@ -1523,7 +1642,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     Вид замены <span className="text-rose-600">*</span>
                   </span>
                   <button type="button" data-service-kind className={touch ? tbtn : 'min-h-9 rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50'} onClick={() => setKindsOpen(true)}>
-                    {serviceKinds.length > 0 ? '+ ещё вид' : 'Выбрать вид замены'}
+                    {serviceKinds.length > 0 ? 'Изменить вид' : 'Выбрать вид замены'}
                   </button>
                 </div>
                 {serviceKinds.length === 0 ? (
@@ -1575,7 +1694,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           ) : (
             <div data-client>
-              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} />
+              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
             </div>
           )}
           {party && vehicleId && !touch && <OilHint vehicleId={vehicleId} />}
@@ -1727,7 +1846,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
         </Card>
 
-        <Card className={`flex flex-col ${touch ? 'order-1 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'gap-3'}`}>
+        <Card
+          className={`flex flex-col ${touch ? 'order-1 shrink-0 gap-2 rounded-none! border-0! p-0! shadow-none!' : 'gap-3'}`}
+          data-testid="pay-top"
+        >
           {touch ? (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <div className="grid w-full shrink-0 grid-cols-2 gap-1 rounded-xl bg-slate-100 p-0.5 sm:w-[56%]">
@@ -1874,14 +1996,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </div>
           )}
           {payMode === 'cash' && (
-            <div className={touch ? 'grid grid-cols-2 gap-2' : 'flex flex-col gap-2'}>
+            // Режим кассы: «Получено», «Сдача», «Без сдачи» и купюра — одной строкой, чтобы колонке
+            // оплаты хватило места на мастера и клиента.
+            <div className={touch ? 'flex items-stretch gap-1.5' : 'flex flex-col gap-2'}>
               {touch ? (
-                // Подпись внутри поля: строка «Получено / Сдача» в одну высоту с кнопками.
-                <label className="relative flex flex-col">
-                  <span className="pointer-events-none absolute top-1.5 left-3 text-sm text-slate-500">Получено, с</span>
+                <label className="relative flex min-w-0 flex-1 flex-col">
+                  <span className="pointer-events-none absolute top-1 left-2.5 text-sm text-slate-500">Получено, с</span>
                   <input
                     data-received
-                    className="min-h-[64px] w-full pt-5 text-2xl font-semibold"
+                    className="min-h-[56px]! w-full pt-5 pb-0.5 text-2xl font-semibold"
                     {...num('decimal', { quick: due > 0 ? [somInput(due), ...NOTES.filter((n) => n > due).slice(0, 2).map(somInput)] : undefined })}
                     value={received}
                     onChange={(e) => setReceived(e.target.value)}
@@ -1905,15 +2028,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 </Field>
               )}
               <div
-                className={`flex rounded-md px-3 py-2 ${touch ? 'flex-col justify-center' : 'items-baseline justify-between'} ${
+                className={`flex rounded-md ${touch ? 'w-[6.5rem] shrink-0 flex-col justify-center px-2 py-0.5' : 'items-baseline justify-between px-3 py-2'} ${
                   shownChange === null ? 'bg-slate-50 text-slate-500' : shownChange >= 0 ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'
                 }`}
               >
                 <span className="text-sm">Сдача</span>
                 {shownChange === null ? (
-                  <span className="text-2xl font-semibold">—</span>
+                  <span className={touch ? 'text-xl font-semibold' : 'text-2xl font-semibold'}>—</span>
                 ) : shownChange >= 0 ? (
-                  <Money value={shownChange} className="text-2xl font-semibold" />
+                  <Money value={shownChange} className={touch ? 'truncate text-xl font-semibold' : 'text-2xl font-semibold'} />
                 ) : (
                   <span className="text-sm font-medium">
                     не хватает <Money value={-shownChange} />
@@ -1921,21 +2044,21 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 )}
               </div>
               {due > 0 && (
-                <div className={touch ? 'col-span-2 flex gap-2 *:flex-1' : 'flex flex-wrap gap-1.5'}>
+                <div className={touch ? 'flex shrink-0 gap-1.5' : 'flex flex-wrap gap-1.5'}>
                   <button
                     type="button"
-                    className={touch ? tbtn : 'min-h-12 rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50'}
+                    className={touch ? `${tbtn} px-2! text-base!` : 'min-h-12 rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50'}
                     onClick={() => setReceived(somInput(due))}
                   >
                     Без сдачи
                   </button>
                   {NOTES.filter((n) => n > due)
-                    .slice(0, 3)
+                    .slice(0, touch ? 1 : 3)
                     .map((n) => (
                       <button
                         key={n}
                         type="button"
-                        className={touch ? `${tbtn} text-lg! font-semibold!` : 'min-h-12 rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50'}
+                        className={touch ? `${tbtn} px-2! text-base! font-semibold! whitespace-nowrap` : 'min-h-12 rounded-md border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50'}
                         onClick={() => setReceived(somInput(n))}
                       >
                         {formatSom(n)}
@@ -1947,7 +2070,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
           {(payMode === 'invoice' || invoiceAmount > 0) && !party && (
             <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800" data-testid="invoice-needs-client">
-              По счёту платит клиент — выберите его выше: счёт выставляется фирме или человеку.
+              По счёту платит клиент — выберите его: счёт выставляется фирме или человеку.
             </div>
           )}
           {(payMode === 'debt' || debtAmount > 0) && (
@@ -1978,7 +2101,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   )}
                 </>
               ) : (
-                'Выберите клиента выше — без него долг не записать'
+                'Выберите клиента — без него долг не записать'
               )}
             </div>
           )}
@@ -2034,7 +2157,41 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               ))}
             </div>
           )}
-          {payMode === 'mixed' && (
+          {payMode === 'mixed' && touch && (
+            // Режим кассы: все поля смешанной оплаты видны сразу — подпись внутри поля, «+ остаток» в нём же.
+            <div className="flex flex-col gap-1.5" data-testid="mixed-touch">
+              <div className="grid grid-cols-3 gap-1.5">
+                {SPLIT_METHODS.filter(payAllowed).map((m) => (
+                  <div key={m} className="relative flex flex-col">
+                    <span className="pointer-events-none absolute top-1 left-2 truncate text-xs leading-tight text-slate-500">{PAYMENT_LABELS[m]}</span>
+                    <input
+                      {...num('decimal')}
+                      aria-label={PAYMENT_LABELS[m]}
+                      className="min-h-[56px]! w-full pt-4 pb-0.5 text-lg font-semibold"
+                      value={split[m]}
+                      onChange={(e) => setSplit({ ...split, [m]: e.target.value })}
+                    />
+                    {mixedLeft !== null && mixedLeft > 0 && !split[m] && (
+                      <button
+                        type="button"
+                        className="absolute right-1 bottom-1 min-h-[30px]! min-w-0! rounded border border-sky-300 bg-white px-1.5 text-xs text-sky-700"
+                        aria-label={`остаток → ${PAYMENT_LABELS[m]}`}
+                        onClick={() => setSplit({ ...split, [m]: somInput(mixedLeft) })}
+                      >
+                        + остаток
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {mixedLeft !== null && (
+                <div className={`rounded-md px-3 py-1 text-base ${mixedLeft === 0 ? 'bg-emerald-50 text-emerald-800' : 'bg-slate-50 text-slate-700'}`}>
+                  {mixedLeft === 0 ? 'Разнесено полностью' : mixedLeft > 0 ? `Осталось разнести: ${formatSom(mixedLeft)}` : `Лишнее: ${formatSom(-mixedLeft)}`}
+                </div>
+              )}
+            </div>
+          )}
+          {payMode === 'mixed' && !touch && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {SPLIT_METHODS.filter(payAllowed).map((m) => (
@@ -2140,7 +2297,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <Modal title="Клиент и машина" wide onClose={() => setClientOpen(false)}>
           <div className="flex flex-col gap-3">
             <div data-client-modal>
-              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} />
+              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
             </div>
             {party && vehicleId && <OilHint vehicleId={vehicleId} />}
             <Button className="min-h-[64px]! text-xl!" onClick={() => setClientOpen(false)}>
@@ -2165,7 +2322,16 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           }}
         />
       )}
-      {kindsOpen && <ServicePicker kinds ourOil={ourOil} onPick={addService} onClose={() => setKindsOpen(false)} />}
+      {kindsOpen && (
+        <ServicePicker
+          kinds
+          ourOil={ourOil}
+          selected={serviceKinds.flatMap((l) => (l.service ? [l.service.id] : []))}
+          onPick={addService}
+          onDone={setKinds}
+          onClose={() => setKindsOpen(false)}
+        />
+      )}
       {servicesOpen && (
         <ServicePicker
           ourOil={ourOil}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientNamed, isDiscount, oilAmountText, serviceClientMissing, servicePrice, servicePriceText } from './serviceSale'
+import { clientNamed, isDiscount, looksLikePlate, oilAmountText, serviceClientMissing, servicePrice, servicePriceText } from './serviceSale'
 import type { Party } from './types'
 
 const money = (v: number) => `${v / 100} с`
@@ -59,5 +59,17 @@ describe('масло в заменах', () => {
   it('канистры, розлив и всего', () => {
     expect(oilAmountText({ canisters: 2, pour_ml: 1_500, total_ml: 9_500, container_ml: 4_000 })).toBe('2 кан. по 4 л + 1,5 л розливом = 9,5 л')
     expect(oilAmountText({ canisters: 0, pour_ml: 3_000, total_ml: 3_000, container_ml: 4_000 })).toBe('3 л розливом = 3 л')
+  })
+})
+
+describe('looksLikePlate', () => {
+  it('госномер — да; имя, телефон и ПИН — нет', () => {
+    expect(looksLikePlate('01KG123ABC')).toBe(true)
+    expect(looksLikePlate('B 1234 AB')).toBe(true)
+    expect(looksLikePlate('123')).toBe(true)
+    expect(looksLikePlate('Нурлан')).toBe(false)
+    expect(looksLikePlate('0555 123 456')).toBe(false)
+    expect(looksLikePlate('+996555123456')).toBe(false)
+    expect(looksLikePlate('22501199000123')).toBe(false)
   })
 })

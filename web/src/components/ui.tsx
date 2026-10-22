@@ -95,8 +95,12 @@ export function Missing({ items, className = '' }: { items: (string | { label: s
   )
 }
 
-export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-lg border border-slate-200 bg-white p-4 shadow-sm ${className}`}>{children}</div>
+export function Card({ children, className = '', ...rest }: { children: ReactNode; className?: string; 'data-testid'?: string }) {
+  return (
+    <div className={`rounded-lg border border-slate-200 bg-white p-4 shadow-sm ${className}`} {...rest}>
+      {children}
+    </div>
+  )
 }
 
 export function PageHeader({ title, actions, back, subtitle }: { title: string; actions?: ReactNode; back?: ReactNode; subtitle?: ReactNode }) {

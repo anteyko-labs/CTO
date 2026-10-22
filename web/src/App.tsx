@@ -88,7 +88,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/income', label: 'Поступления', icon: 'income' },
       { to: '/accounts', label: 'Счета', icon: 'wallet' },
       { to: '/money', label: 'Внести / Изъять', icon: 'plus', permission: 'cash_moves' },
-      { to: '/bank', label: 'Счёт', icon: 'bank', ownerOnly: true },
+      { to: '/bank', label: 'Безнал (банк)', icon: 'bank', ownerOnly: true },
     ],
   },
   {

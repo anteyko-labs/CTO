@@ -7,6 +7,7 @@ import { useCan } from '../lib/permissions'
 import type { Party, PartyContact, PartyVehicle } from '../lib/types'
 import { Badge, Button, ErrorBox, Field, Missing, Modal } from './ui'
 import { missingWithFocus } from '../lib/forms'
+import { looksLikePlate } from '../lib/serviceSale'
 import { VehicleFormModal } from './VehicleFormModal'
 
 /** Что набрали в поиске: ПИН/ИНН, телефон или имя — в какое поле подставить при создании.
@@ -18,6 +19,9 @@ function guessField(text: string): 'inn' | 'phone' | 'name' {
   if (onlyDigits && digits.length >= 9) return 'phone'
   return 'name'
 }
+
+/** Госномер без пробелов и заглавными — для сравнения. */
+const plateKey = (v: string) => v.replace(/\s/g, '').toUpperCase()
 
 /** Долг клиента словами: кто кому должен. */
 export function balanceText(balance: number): string {
@@ -191,10 +195,13 @@ export function ClientPicker({
   onParty,
   onContact,
   onVehicle,
+  service = false,
 }: {
   party: Party | null
   contactId: string
   vehicleId: string
+  /** Чек «В сервис»: клиент обязателен (ADR-100). */
+  service?: boolean
   onParty: (p: Party | null) => void
   onContact: (id: string) => void
   onVehicle: (id: string) => void
@@ -202,11 +209,18 @@ export function ClientPicker({
   const [q, setQ] = useState('')
   const query = useDebounced(q.trim(), 250)
   // Заводить и править клиентов и машины — право администратора «Клиенты и машины» (ADR-097).
-  const mayEdit = useCan()('clients')
+  const can = useCan()
+  const mayEdit = can('clients')
   // Новый клиент: что набрали в поиске, то и подставим; тип выбирает кассир.
   const [creating, setCreating] = useState<string | null>(null)
-  // Нашли клиента по госномеру — машину ставим сразу, как загрузится карточка.
+  // Нашли клиента по госномеру — эту машину ставим, как загрузится карточка; искали по имени или
+  // телефону — ставим единственную машину клиента (ниже).
   const [platePick, setPlatePick] = useState<string | null>(null)
+  const choose = (p: Party) => {
+    onParty(p)
+    setPlatePick(looksLikePlate(query) ? query : null)
+    setQ('')
+  }
   const kindAct = useAction()
   const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
   const add = useAction()
@@ -244,16 +258,7 @@ export function ClientPicker({
       card.reload()
     })
 
-  useEffect(() => {
-    if (!party || !platePick || !card.data) return
-    const key = (v: string) => v.replace(/\s/g, '').toUpperCase()
-    const v = card.data.vehicles.find((x) => x.active && key(x.plate).includes(key(platePick)))
-    setPlatePick(null)
-    if (v && !vehicleId) onVehicle(v.id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card.data, platePick])
-
-  // У клиента одна машина — ставим её сразу (пробег и книжка появляются без лишнего нажатия).
+  // Машина сама: совпала с набранным госномером — она; иначе единственная машина клиента.
   // Один раз на выбранного клиента: если кассир убрал машину, обратно не подставляем.
   const autoPicked = useRef<string | null>(null)
   useEffect(() => {
@@ -264,7 +269,11 @@ export function ClientPicker({
     if (!card.data || card.data.partyId !== party.id || autoPicked.current === party.id) return
     autoPicked.current = party.id
     const active = card.data.vehicles.filter((v) => v.active)
-    if (active.length === 1 && !vehicleId && !platePick) onVehicle(active[0].id)
+    const byPlate = platePick ? active.find((x) => plateKey(x.plate).includes(plateKey(platePick))) : undefined
+    setPlatePick(null)
+    if (vehicleId) return
+    if (byPlate) onVehicle(byPlate.id)
+    else if (active.length === 1) onVehicle(active[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [party?.id, card.data])
 
@@ -376,7 +385,11 @@ export function ClientPicker({
 
   return (
     <div className="relative flex flex-col gap-1">
-      <Field label="Клиент" hint="Можно не указывать. Для продажи в долг — обязателен">
+      <Field
+        label="Клиент"
+        required={service}
+        hint={service ? 'Для чека «В сервис» обязателен' : can('sale_debt') ? 'Можно не указывать. Для продажи в долг — обязателен' : 'Можно не указывать'}
+      >
         <input
           data-client-input
           placeholder="Госномер, телефон, имя или ИНН"
@@ -386,9 +399,7 @@ export function ClientPicker({
             if (e.key === 'Enter') {
               e.preventDefault()
               if (list[0]) {
-                onParty(list[0])
-                setPlatePick(query)
-                setQ('')
+                choose(list[0])
               } else if (query.length >= 2 && mayEdit) {
                 setCreating(query)
               }
@@ -403,11 +414,7 @@ export function ClientPicker({
               <button
                 type="button"
                 className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
-                onClick={() => {
-                  onParty(p)
-                  setPlatePick(query)
-                  setQ('')
-                }}
+                onClick={() => choose(p)}
               >
                 <span className="min-w-0">
                   <span className="block truncate font-medium">{p.name}</span>

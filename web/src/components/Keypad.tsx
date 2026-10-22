@@ -2,12 +2,13 @@
 // открывает кнопка «⌨ Клавиатура» в полосе режима или маленькая кнопка у поля в фокусе, и она
 // остаётся открытой при переходе между полями, пока её не скроют. У числовых полей с `data-keypad`
 // (количество, литры, «Получено», вес и цена аккумулятора, PIN, суммы в окнах) — цифровая, у
-// текстовых (поиск товара, имя, телефон, госномер, комментарий) — полная: русские буквы, латиница,
-// цифры, пробел, стереть, Enter. Физическая клавиатура не нужна.
+// текстовых (поиск товара, имя, телефон, госномер, комментарий) — полная: русские и кыргызские
+// буквы (ң, ө, ү, ё), латиница, цифры, пробел, стереть, Enter; над ней — куда и что набрано. Физическая клавиатура не нужна.
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { setKeyboardOpen, useKeyboardOpen } from '../lib/cashierMode'
 import {
   KBD_DIGITS,
+  KBD_KYRGYZ,
   KBD_LETTERS,
   applyKey,
   eraseBack,
@@ -194,6 +195,25 @@ export function Keypad() {
       window.removeEventListener('resize', move)
     }
   }, [target])
+
+  // Поле сдвинулось без прокрутки (над ним появилась строка «Отложенные», окно выросло) —
+  // кнопка «⌨» и клавиатура тоже переезжают: следим за положением поля каждый кадр.
+  useEffect(() => {
+    if (!target || (!open && !focused)) return
+    let last = ''
+    let frame = 0
+    const watch = () => {
+      const r = target.getBoundingClientRect()
+      const now = `${r.left},${r.top},${r.width},${r.height}`
+      if (now !== last) {
+        if (last) rerender()
+        last = now
+      }
+      frame = requestAnimationFrame(watch)
+    }
+    frame = requestAnimationFrame(watch)
+    return () => cancelAnimationFrame(frame)
+  }, [target, open, focused])
 
   const place = (t: Field) => {
     const view = { width: window.innerWidth, height: window.innerHeight }
@@ -420,6 +440,20 @@ export function Keypad() {
       onPointerDown={keepFocus}
       onMouseDown={keepFocus}
     >
+      {/* Куда и что набрано — как у цифровой: поле может быть закрыто клавиатурой. Ярлык снаружи,
+          слева над клавиатурой (у верхнего края экрана — под ней): высоту клавиатуры не прибавляет
+          и не закрывает правую колонку кассы. */}
+      <div
+        className={`pointer-events-none absolute left-3 flex max-w-[45%] min-w-0 items-baseline gap-2 rounded-lg bg-slate-800 px-3 py-1 text-white shadow-lg ${
+          pos.top < 48 ? 'top-full mt-1' : 'bottom-full mb-1'
+        }`}
+        data-testid="keyboard-target"
+      >
+        <span className="max-w-[50%] shrink-0 truncate text-sm text-slate-300">{fieldLabel(target) || 'Ввод текста'}</span>
+        <span className="min-w-0 flex-1 truncate text-lg font-semibold" data-testid="keyboard-value">
+          {target.value || <span className="text-slate-400">—</span>}
+        </span>
+      </div>
       <div className="flex justify-center gap-1.5">
         {KBD_DIGITS.map((d) => (
           <button key={d} type="button" className={key} style={unit(1)} onClick={() => type(d)}>
@@ -477,7 +511,16 @@ export function Keypad() {
         >
           {lang === 'ru' ? 'РУС → LAT' : 'LAT → РУС'}
         </button>
-        <button type="button" className={key} style={unit(6)} aria-label="Пробел" onClick={() => type(' ')}>
+        {lang === 'ru' &&
+          KBD_KYRGYZ.map((ch) => {
+            const shownCh = shift ? ch.toUpperCase() : ch
+            return (
+              <button key={ch} type="button" className={key} style={unit(1)} aria-label={shownCh} onClick={() => letter(ch)}>
+                {shownCh}
+              </button>
+            )
+          })}
+        <button type="button" className={key} style={unit(lang === 'ru' ? 3 : 6)} aria-label="Пробел" onClick={() => type(' ')}>
           пробел
         </button>
         <button type="button" className={`${base} border-sky-700 bg-sky-600 text-lg text-white active:bg-sky-700`} style={unit(2)} aria-label="Enter" onClick={enter}>

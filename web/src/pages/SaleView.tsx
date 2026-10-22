@@ -280,7 +280,24 @@ export default function SaleView() {
             {sale.vehicle_plate && ` · ${sale.vehicle_plate}`}
           </div>
         )}
-        {sale.master_fee_tyiyn !== 0 && <div>Мастеру за замену: {formatSom(sale.master_fee_tyiyn)}</div>}
+        {sale.master_fee_tyiyn !== 0 && (
+          <div data-testid="master-fee">
+            Мастеру за замену: {formatSom(sale.master_fee_tyiyn)}
+            {/* Разбивка по видам замены (ADR-096); у старых чеков ставка — за чек, без строк. */}
+            {sale.lines.some((l) => l.master_fee_tyiyn !== 0) && (
+              <ul className="ml-4 list-disc text-slate-600">
+                {sale.lines
+                  .filter((l) => l.master_fee_tyiyn !== 0)
+                  .map((l) => (
+                    <li key={l.line_no}>
+                      {l.name}
+                      {l.qty > 1 && ` × ${l.qty}`} — {formatSom(l.master_fee_tyiyn)}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+        )}
         <div>Провёл: {sale.user_name}</div>
         {sale.delivery_address && <div>Доставка: {sale.delivery_address}</div>}
         {sale.comment && <div>Комментарий: {sale.comment}</div>}

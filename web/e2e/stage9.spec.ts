@@ -116,7 +116,7 @@ test('сводка: любой день и произвольный период
 test('«Счёт»: поступления картой и переводом сходятся с движениями', async ({ page }) => {
   await login(page)
   await sellNoncash(page.request)
-  await page.getByRole('link', { name: 'Счёт', exact: true }).first().click()
+  await page.getByRole('link', { name: 'Безнал (банк)', exact: true }).first().click()
   await expect(page.getByRole('heading', { name: 'Счёт', exact: true })).toBeVisible()
   const bank = await apiGet<{
     card: { total_tyiyn: number }

@@ -38,6 +38,14 @@ export const CLIENT_NEED_LABELS: Record<ClientNeed, string> = {
   mileage: 'пробег',
 }
 
+/** То же коротко — для строки «Не хватает: …» в режиме кассы. */
+export const CLIENT_NEED_SHORT: Record<ClientNeed, string> = {
+  client: 'имя клиента',
+  phone: 'телефон',
+  vehicle: 'машина',
+  mileage: 'пробег',
+}
+
 /** Чего не хватает чеку «в сервис» (ADR-100). Телефон фирмы может быть у того, кто приехал:
  *  касса его не знает — проверит сервер. */
 export function serviceClientMissing(input: {
@@ -68,4 +76,13 @@ export function oilAmountText(o: Pick<ServiceOil, 'canisters' | 'pour_ml' | 'tot
   if (o.pour_ml !== 0) parts.push(`${formatLiters(o.pour_ml)} розливом`)
   const total = formatLiters(o.total_ml)
   return parts.length ? `${parts.join(' + ')} = ${total}` : total
+}
+
+/** Поиск клиента похож на госномер: есть цифры, не телефон и не ПИН/ИНН (те — одни цифры, от 9).
+ *  Только тогда машину клиента ищут по набранному; иначе ставится его единственная машина. */
+export function looksLikePlate(text: string): boolean {
+  const t = text.trim()
+  if (!/\d/.test(t) || t.length > 12) return false
+  const onlyDigits = /^[\d\s+()-]+$/.test(t)
+  return !(onlyDigits && t.replace(/\D/g, '').length >= 9)
 }

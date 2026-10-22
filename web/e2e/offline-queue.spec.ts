@@ -121,6 +121,7 @@ test('без сети: перезагрузка, клиент из снимка,
   await page.getByRole('button', { name: 'В сервис' }).click()
   await page.getByRole('dialog', { name: 'Вид замены' }).getByPlaceholder('Найти услугу').fill(`Вид снимка ${RUN}`)
   await page.getByTestId('service-choices').getByRole('button', { name: new RegExp(`Вид снимка ${RUN}`) }).click()
+  await page.getByRole('dialog', { name: 'Вид замены' }).getByRole('button', { name: 'Готово' }).click()
   await page.locator('#master-select').selectOption({ label: `Мастер снимка ${RUN}` })
   await page.locator('[data-client-input]').fill(plate)
   await page.getByRole('button', { name: new RegExp(`Клиент${RUN}`) }).click()

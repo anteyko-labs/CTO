@@ -114,7 +114,10 @@ test('«В сервис»: вид замены, бесплатно с нашим
   const choice = dialog.getByTestId('service-choices').getByRole('button', { name: new RegExp(kind) })
   await expect(choice).toContainText('бесплатно — масло наше')
   await expect(choice).toContainText(/мастеру 35\sс/)
+  // Отметка, а не выбор сразу: окно закрывает «Готово» (видов можно отметить несколько).
   await choice.click()
+  await expect(choice).toHaveAttribute('aria-pressed', 'true')
+  await dialog.getByRole('button', { name: 'Готово' }).click()
   await expect(dialog).toHaveCount(0)
   const kindLine = page.getByRole('listitem').filter({ hasText: kind })
   await expect(kindLine.getByLabel('Цена', { exact: true })).toHaveValue('0')
@@ -160,7 +163,7 @@ test('«В сервис»: вид замены, бесплатно с нашим
   await expect(row).toContainText(oil)
 })
 
-test('скидка: без права касса не даёт править цену', async ({ page, browser }) => {
+test('скидка: без права цену можно только поднять', async ({ page, browser }) => {
   await login(page)
   const code = `30${RUN}303`
   const product = `Фильтр без скидки ${RUN}`
@@ -182,7 +185,14 @@ test('скидка: без права касса не даёт править ц
   await scan(adminPage, code)
   const line = adminPage.getByRole('listitem').filter({ hasText: product })
   await expect(line).toBeVisible()
-  await expect(line.getByRole('button', { name: 'Изменить цену' })).toHaveCount(0)
-  await expect(line.getByLabel('Цена', { exact: true })).toHaveAttribute('readonly', '')
+  // Поле цены правится: ниже прайса — подсказка и «Провести» не даст, выше — можно (ADR-097).
+  const price = line.getByLabel('Цена', { exact: true })
+  await expect(price).toBeEditable()
+  await price.fill('500')
+  await expect(line.getByTestId('price-below-list')).toBeVisible()
+  await expect(adminPage.getByRole('status').filter({ hasText: 'цена ниже каталожной' })).toBeVisible()
+  await price.fill('700')
+  await expect(line.getByTestId('price-below-list')).toHaveCount(0)
+  await expect(adminPage.getByRole('status').filter({ hasText: 'цена ниже каталожной' })).toHaveCount(0)
   await ctx.close()
 })
