@@ -30,6 +30,9 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # Ключ сервиса разбора вопросов боту текстом (SPEC-21); пусто — выключено.
       ASSISTANT_API_KEY: ${ASSISTANT_API_KEY:-}
+      # Ключ API банка Optima Business (SPEC-31): QR на сумму чека и сверка; пусто — выключено.
+      OPTIMA_API_KEY: ${OPTIMA_API_KEY:-}
+      OPTIMA_API_URL: ${OPTIMA_API_URL:-}
       RUST_LOG: info
 
   proxy:

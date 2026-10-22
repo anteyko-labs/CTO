@@ -21,7 +21,7 @@ updated: 2026-10-05
 ## Сервер
 
 - Один бинарник. Раздаёт API под `/api/v1` и собранный клиент из `web/dist`.
-- Конфигурация только из переменных окружения: `DATABASE_URL`, `BIND_ADDR`, `WEB_DIR`, `COOKIE_SECURE`, `BOOTSTRAP_OWNER_LOGIN`, `BOOTSTRAP_OWNER_PASSWORD`; бот — `TELEGRAM_BOT_TOKEN` (SPEC-18), вопросы боту текстом — `ASSISTANT_API_KEY`, `ASSISTANT_MODEL`, `ASSISTANT_DAILY_LIMIT`, `ASSISTANT_API_URL` (SPEC-21); накладные по фото — тот же ключ и `ASSISTANT_INVOICE_MODEL` (SPEC-30 §9), работают и без бота.
+- Конфигурация только из переменных окружения: `DATABASE_URL`, `BIND_ADDR`, `WEB_DIR`, `COOKIE_SECURE`, `BOOTSTRAP_OWNER_LOGIN`, `BOOTSTRAP_OWNER_PASSWORD`; бот — `TELEGRAM_BOT_TOKEN` (SPEC-18), вопросы боту текстом — `ASSISTANT_API_KEY`, `ASSISTANT_MODEL`, `ASSISTANT_DAILY_LIMIT`, `ASSISTANT_API_URL` (SPEC-21); накладные по фото — тот же ключ и `ASSISTANT_INVOICE_MODEL` (SPEC-30 §9), работают и без бота; банк Optima Business — `OPTIMA_API_KEY`, `OPTIMA_API_URL` (SPEC-31: QR на сумму чека, опрос статуса каждые 2 с и сверка с выпиской в 06:00 — фоновые задачи сервера; без ключа выключено).
 - Миграции применяются при старте.
 - Ошибки — одно перечисление `AppError` (thiserror), преобразуемое в HTTP-ответ `{ "error": { "code": "...", "message": "..." } }`.
 - Lint-ы крейта: `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic` — `deny` (инвариант 18).

@@ -45,6 +45,7 @@ updated: 2026-10-08
 | 30 | Отчёт смены, отменённые товары | `api/shift_report.rs`, `api/cancelled_lines.rs` | `pages/ShiftReport.tsx`, `lib/shiftReport.ts`, `lib/cancelledLines.ts` |
 | 30 | Вид замены, «По счёту», скидка | `api/sales.rs`, `api/reports.rs` (`service-kinds`) | `lib/serviceSale.ts`, `pages/Cashier.tsx` |
 | 30 | Накладные по фото, книжка в боте | `api/receipt_drafts.rs`, `api/assistant.rs`, `api/bot_book.rs` | `components/ReceiptDrafts.tsx`, `lib/receiptDrafts.ts` |
+| 31 | Optima Business: QR на сумму, сверка с банком | `api/optima.rs`, `api/bank_qr.rs`, `api/bank_recon.rs` | `components/BankQrPanel.tsx`, `lib/optima.ts`, `pages/OptimaSettings.tsx`, `pages/BankRecon.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:

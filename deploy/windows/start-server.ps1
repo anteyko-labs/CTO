@@ -11,6 +11,9 @@ $env:BOOTSTRAP_OWNER_PASSWORD = $OwnerPassword
 $env:TELEGRAM_BOT_TOKEN = $TelegramToken
 # Старый config.ps1 без этой строки тоже работает: пустой ключ — вопросы текстом выключены.
 $env:ASSISTANT_API_KEY = if (Test-Path variable:AssistantApiKey) { $AssistantApiKey } else { '' }
+# Optima Business (SPEC-31): без ключа QR банка и сверка выключены.
+$env:OPTIMA_API_KEY = if (Test-Path variable:OptimaApiKey) { $OptimaApiKey } else { '' }
+$env:OPTIMA_API_URL = if (Test-Path variable:OptimaApiUrl) { $OptimaApiUrl } else { '' }
 $env:RUST_LOG = 'info'
 while ($true) {
   # Через cmd: журнал пишется байтами программы (UTF-8), без перекодировки PowerShell.
