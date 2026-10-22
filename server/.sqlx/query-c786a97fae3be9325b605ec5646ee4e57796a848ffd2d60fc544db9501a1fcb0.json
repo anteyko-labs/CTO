@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into audit_log (id, branch_id, action, entity, data)\n           select $1, $2, 'optima.key', 'settings', $3\n           where not exists (select 1 from audit_log\n                             where branch_id = $2 and action = 'optima.key'\n                               and created_at > now() - interval '1 hour')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c786a97fae3be9325b605ec5646ee4e57796a848ffd2d60fc544db9501a1fcb0"
+}

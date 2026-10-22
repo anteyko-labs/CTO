@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select status, amount_tyiyn, paid_tyiyn, sale_id from bank_qr\n                   where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "paid_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "36ba7619c0300bb5095f6131af2da71dc5e3a1b4f84d2e6cb6140fb326a01d5e"
+}

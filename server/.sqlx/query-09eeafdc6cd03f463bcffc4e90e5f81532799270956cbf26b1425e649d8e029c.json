@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.branch_id, d.value as \"last?\"\n           from settings o\n           left join settings d on d.branch_id = o.branch_id and d.key = 'optima_daily'\n           where o.key = 'optima'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "last?",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "09eeafdc6cd03f463bcffc4e90e5f81532799270956cbf26b1425e649d8e029c"
+}

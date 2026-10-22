@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, kind, processed_at, amount_tyiyn, fee_tyiyn, auth_code, rrn, requisite, raw\n           from bank_operations\n           where branch_id = $1 and account_id = $2 and op_day between $3 and $4\n           order by processed_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "processed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "auth_code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "rrn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "requisite",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "raw",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3be46c5dc55a573b6f3109d5b539a617ff9ce28ac3f6ff1f8c2ea555459ac219"
+}

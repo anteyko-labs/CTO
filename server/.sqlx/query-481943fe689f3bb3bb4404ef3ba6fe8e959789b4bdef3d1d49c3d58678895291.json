@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams, account_id) values ($1, $2, $3, $4, $5, $6, $7)",
+  "query": "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams, account_id, bank_qr_id) values ($1, $2, $3, $4, $5, $6, $7, $8)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -11,10 +11,11 @@
         "Int8",
         "Int8",
         "Int8",
+        "Uuid",
         "Uuid"
       ]
     },
     "nullable": []
   },
-  "hash": "99be34f3f4c37192838d2f74fe895b573d6d4af77eb26b926ea4814605c4583f"
+  "hash": "481943fe689f3bb3bb4404ef3ba6fe8e959789b4bdef3d1d49c3d58678895291"
 }

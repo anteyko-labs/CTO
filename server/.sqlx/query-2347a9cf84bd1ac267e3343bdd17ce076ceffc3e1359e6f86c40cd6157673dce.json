@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, amount_tyiyn, status, expires_at, paid_at, sale_id, qr_base64,\n                  greatest(0, extract(epoch from expires_at - now()))::bigint as \"left!\"\n           from bank_qr where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "paid_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "qr_base64",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "left!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "2347a9cf84bd1ac267e3343bdd17ce076ceffc3e1359e6f86c40cd6157673dce"
+}

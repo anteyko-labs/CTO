@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with d as (select generate_series($2::date, $3::date, interval '1 day')::date as day),\n           sl as (select s.business_date as day, sum(l.amount_tyiyn) as revenue,\n                         sum(l.amount_tyiyn - l.cost_tyiyn) as gross\n                  from sale_lines l join sales s on s.id = l.sale_id\n                  where s.branch_id = $1 and s.business_date between $2 and $3\n                  group by 1),\n           rv as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, sum(m.value_delta_tyiyn) as v\n                  from stock_movements m\n                  where m.branch_id = $1 and m.doc_type in ('revaluation', 'revision')\n                    and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n                  group by 1),\n           pa as (select a.business_date as day, sum(a.amount_tyiyn) as v from payroll_accruals a\n                  where a.branch_id = $1 and a.business_date between $2 and $3\n                  group by 1),\n           ex as (select e.expense_date as day, sum(e.amount_tyiyn) as v from expenses e\n                  where e.branch_id = $1 and e.expense_date between $2 and $3\n                  group by 1),\n           sp as (select s.business_date as day, sum(p.fee_tyiyn) as fee,\n                         sum(p.amount_tyiyn) filter (where p.method = 'bonus') as bonus\n                  from sale_payments p join sales s on s.id = p.sale_id\n                  where s.branch_id = $1 and s.business_date between $2 and $3\n                  group by 1),\n           bf as (select (m.created_at at time zone 'Asia/Bishkek')::date as day, -sum(m.amount_tyiyn) as v\n                  from cash_movements m\n                  where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'\n                    and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n                  group by 1),\n           fa as (select a.op_day as day, sum(a.amount_tyiyn) as v from bank_fee_adjustments a\n                  where a.branch_id = $1 and a.op_day between $2 and $3\n                  group by 1),\n           cd as (select s.business_date as day, sum(m.amount_tyiyn) as v\n                  from cash_movements m join shifts s on s.id = m.doc_id\n                  where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'\n                    and s.business_date between $2 and $3\n                  group by 1),\n           dr as (select (x.created_at at time zone 'Asia/Bishkek')::date as day,\n                         sum(x.writeoff_tyiyn) as writeoff, sum(x.diff_tyiyn) as diff\n                  from defect_resolutions x\n                  where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n                  group by 1),\n           sr as (select (x.created_at at time zone 'Asia/Bishkek')::date as day, sum(x.diff_tyiyn) as v\n                  from supplier_returns x\n                  where x.branch_id = $1 and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n                  group by 1)\n           select d.day as \"day!\",\n             coalesce(sl.revenue, 0)::bigint as \"revenue!\",\n             (coalesce(sl.gross, 0) + coalesce(rv.v, 0))::bigint as \"gross!\",\n             coalesce(pa.v, 0)::bigint as \"payroll!\",\n             coalesce(ex.v, 0)::bigint as \"expenses!\",\n             (coalesce(sp.fee, 0) + coalesce(bf.v, 0) + coalesce(fa.v, 0))::bigint as \"fee!\",\n             coalesce(sp.bonus, 0)::bigint as \"bonus!\",\n             coalesce(cd.v, 0)::bigint as \"cash_diff!\",\n             coalesce(dr.writeoff, 0)::bigint as \"defect_writeoff!\",\n             coalesce(dr.diff, 0)::bigint as \"defect_diff!\",\n             coalesce(sr.v, 0)::bigint as \"return_diff!\"\n           from d\n           left join sl on sl.day = d.day\n           left join rv on rv.day = d.day\n           left join pa on pa.day = d.day\n           left join ex on ex.day = d.day\n           left join sp on sp.day = d.day\n           left join bf on bf.day = d.day\n           left join fa on fa.day = d.day\n           left join cd on cd.day = d.day\n           left join dr on dr.day = d.day\n           left join sr on sr.day = d.day\n           order by d.day desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "revenue!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "gross!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "payroll!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "expenses!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "cash_diff!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "defect_writeoff!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "defect_diff!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "return_diff!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "4564b44d040b0b252c27d5ae3d669aebb1ddd31d2afd0829640d5efe81487f38"
+}

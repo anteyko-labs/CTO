@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bank_fee_adjustments (id, branch_id, account_id, op_day, amount_tyiyn,\n                                             bank_fee_tyiyn, our_fee_tyiyn, movement_id, user_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "915222542e273d20b9204a19881afd463088b690cdda1ab931ff3e653af8bc29"
+}

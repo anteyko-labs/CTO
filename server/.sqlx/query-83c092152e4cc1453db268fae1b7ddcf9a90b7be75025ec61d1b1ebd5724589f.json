@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bank_qr set status = 'cancelled' where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "83c092152e4cc1453db268fae1b7ddcf9a90b7be75025ec61d1b1ebd5724589f"
+}

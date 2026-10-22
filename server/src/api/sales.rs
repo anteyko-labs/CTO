@@ -86,6 +86,10 @@ pub struct PaymentReq {
     /// У возврата не учитывается: деньги уходят со счёта исходной оплаты.
     #[serde(default)]
     pub account_id: Option<Uuid>,
+    /// «Карта / QR банка» оплачена по QR на сумму (SPEC-31): сервер проверяет, что QR оплачен,
+    /// сумма та же и он не привязан к другому чеку. У возврата не учитывается.
+    #[serde(default)]
+    pub bank_qr_id: Option<Uuid>,
 }
 
 /// Интервал строки книжки из чека: км (мили экран переводит сам, ADR-084) и дни.
@@ -1036,15 +1040,18 @@ async fn insert_payments(
             None
         };
         let account_id = bank;
+        // Ссылка на QR банка — только у продажи (SPEC-31).
+        let bank_qr_id = if sign > 0 { p.bank_qr_id } else { None };
         sqlx::query!(
-            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams, account_id) values ($1, $2, $3, $4, $5, $6, $7)",
+            "insert into sale_payments (id, sale_id, method, amount_tyiyn, fee_tyiyn, grams, account_id, bank_qr_id) values ($1, $2, $3, $4, $5, $6, $7, $8)",
             new_id(),
             sale_id,
             p.method,
             amount,
             fee,
             grams,
-            account_id
+            account_id,
+            bank_qr_id
         )
         .execute(&mut *conn)
         .await?;
@@ -1352,6 +1359,10 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             None
         };
     }
+    // Оплата по QR банка (SPEC-31): QR оплачен, сумма та же, не у другого чека.
+    let bank_qrs =
+        crate::api::bank_qr::check_for_sale(conn, ctx, &mut req.payments, offline, &mut bypass)
+            .await?;
     // Мастеру — сумма ставок услуг чека, ставка фиксируется в строке (ADR-096). Ставка замены
     // за чек из настроек (ADR-027) новым чекам не начисляется: её получает только чек без сети
     // со старого устройства «в сервис» без вида замены, с товаром (одни услуги её не давали,
@@ -1514,6 +1525,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     .fetch_one(&mut *conn)
     .await?;
     insert_payments(conn, ctx, id, &req.payments, 1, None, business_date).await?;
+    crate::api::bank_qr::link_sale(conn, id, &bank_qrs).await?;
     // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
     crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments).await?;
     if debt_total > 0 {
@@ -2950,6 +2962,7 @@ pub async fn no_receipt_return_tx(
         grams: None,
         price_per_kg_tyiyn: None,
         account_id,
+        bank_qr_id: None,
     }];
     // Исходного чека нет — комиссии банка возвращать нечего.
     insert_payments(

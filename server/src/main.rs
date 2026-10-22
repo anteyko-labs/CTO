@@ -58,6 +58,13 @@ async fn run() -> Result<(), String> {
     });
     // Накладная по фото с экрана работает и без бота.
     state.assistant = assistant.clone();
+    // Optima Business (SPEC-31): QR на сумму чека, опрос статуса и сверка с выпиской — только
+    // с ключом банка.
+    if let Some(key) = config.optima_key.clone() {
+        let optima = avtodom_server::api::optima::Optima::new(key, config.optima_url.clone());
+        state.optima = Some(optima.clone());
+        avtodom_server::api::optima::spawn(pool.clone(), optima);
+    }
     // Телеграм-бот владельца — только если задан ключ (ADR-050).
     if let Some(token) = config.telegram_token.clone() {
         state.telegram_bot = true;

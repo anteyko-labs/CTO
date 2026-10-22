@@ -32,6 +32,7 @@ pub async fn build_state(pool: PgPool, cookie_secure: bool) -> Result<AppState, 
         telegram_bot: false,
         assistant_daily_limit: None,
         assistant: None,
+        optima: None,
     })
 }
 

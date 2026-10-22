@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct (data->>'from')::date as \"from!\", (data->>'to')::date as \"to!\"\n           from audit_log\n           where branch_id = $1 and action = 'bank_statement.load'\n             and (data->>'from')::date <= $3 and (data->>'to')::date >= $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "from!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "to!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "0e6447e94d2f9d85666381be8f4c6c18a98f19eea72b91d84a1fe5519b48e2d4"
+}

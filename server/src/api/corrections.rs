@@ -1327,6 +1327,7 @@ async fn reverse(
                             grams: None,
                             price_per_kg_tyiyn: None,
                             account_id: p.account_id,
+                            bank_qr_id: None,
                         })
                         .collect(),
                     battery_cash: false,

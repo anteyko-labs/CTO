@@ -17,4 +17,7 @@ pub struct AppState {
     /// Внешний сервис по ключу `ASSISTANT_API_KEY`: накладные по фото с экрана «Новый приход»
     /// (SPEC-30 §9); `None` — распознавание не настроено.
     pub assistant: Option<crate::api::assistant::Assistant>,
+    /// API банка Optima Business по ключу `OPTIMA_API_KEY` (SPEC-31); `None` — QR на сумму и
+    /// сверка с выпиской выключены, касса работает как раньше.
+    pub optima: Option<crate::api::optima::Optima>,
 }

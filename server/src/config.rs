@@ -20,6 +20,11 @@ pub struct Config {
     pub assistant_invoice_model: Option<String>,
     /// Сколько вопросов в сутки на филиал.
     pub assistant_daily_limit: i64,
+    /// Ключ API Optima Business (SPEC-31, ADR-106): QR на сумму чека и сверка с выпиской;
+    /// без него всё это выключено.
+    pub optima_key: Option<SecretKey>,
+    /// Адрес API банка; пусто — `https://api.optimabusiness.kg`.
+    pub optima_url: Option<String>,
 }
 
 /// Ключ, который не печатается в журнал даже через `{:?}`.
@@ -76,6 +81,8 @@ impl Config {
             assistant_url: non_empty("ASSISTANT_API_URL"),
             assistant_invoice_model: non_empty("ASSISTANT_INVOICE_MODEL"),
             assistant_daily_limit,
+            optima_key: non_empty("OPTIMA_API_KEY").map(SecretKey),
+            optima_url: non_empty("OPTIMA_API_URL"),
         })
     }
 }

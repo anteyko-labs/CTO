@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bank_operations (id, branch_id, account_id, op_key, kind, processed_at,\n                                            op_day, amount_tyiyn, fee_tyiyn, transfer_tyiyn,\n                                            auth_code, rrn, terminal, requisite, raw, user_id)\n               values ($1, $2, $3, $4, $5, $6, ($6 at time zone 'Asia/Bishkek')::date, $7, $8, $9,\n                       $10, $11, $12, $13, $14::text::jsonb, $15)\n               on conflict (branch_id, op_key) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "57059034bbbb89729b1a81d5d850be22db89ff82856f102019464bb2bdbcec52"
+}

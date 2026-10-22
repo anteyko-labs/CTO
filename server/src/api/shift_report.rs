@@ -257,6 +257,9 @@ pub struct ShiftReport {
     pub payouts_tyiyn: i64,
     pub cancelled: Vec<CancelledRow>,
     pub cancelled_tyiyn: i64,
+    /// Оплачено по QR банка за смену, а чека с этой оплатой нет (SPEC-31).
+    #[serde(default)]
+    pub qr_unclaimed: Vec<crate::api::bank_qr::UnclaimedQr>,
 }
 
 /// Вид движения наличных и сторона: приход (`true`) или расход.
@@ -421,6 +424,8 @@ pub async fn load(
     let payouts = payouts(conn, branch_id, owner, &w).await?;
     let payouts_tyiyn = sum(payouts.iter().map(|p| &p.amount_tyiyn))?;
     let cancelled = cancelled_lines::of_shift(conn, id).await?;
+    let qr_unclaimed =
+        crate::api::bank_qr::unclaimed_between(conn, branch_id, w.start, w.end).await?;
     let cancelled_tyiyn = sum(cancelled.iter().map(|c| &c.amount_tyiyn))?;
     Ok(ShiftReport {
         shift,
@@ -440,6 +445,7 @@ pub async fn load(
         payouts_tyiyn,
         cancelled,
         cancelled_tyiyn,
+        qr_unclaimed,
     })
 }
 
@@ -1281,6 +1287,17 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
         rev.push(format!(
             "  комиссия банка: {}",
             format_som(v.bank_fee_tyiyn)
+        ));
+    }
+    // Оплачено по QR банка, а чека нет (SPEC-31).
+    if !r.qr_unclaimed.is_empty() {
+        rev.push(format!(
+            "  ⚠️ QR оплачен, чек не проведён: {}",
+            r.qr_unclaimed
+                .iter()
+                .map(|q| format_som(q.amount_tyiyn))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if let Some(g) = v.gross_tyiyn {

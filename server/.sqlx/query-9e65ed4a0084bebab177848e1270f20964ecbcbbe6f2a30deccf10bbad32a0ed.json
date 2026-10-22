@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bank_qr set sale_id = $1 where id = any($2) and sale_id is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e65ed4a0084bebab177848e1270f20964ecbcbbe6f2a30deccf10bbad32a0ed"
+}

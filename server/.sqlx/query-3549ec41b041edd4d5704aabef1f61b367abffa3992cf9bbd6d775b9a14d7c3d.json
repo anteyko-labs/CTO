@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with p as (\n             select p.amount_tyiyn, p.fee_tyiyn, s.id as sale_id, s.number,\n                    case when t.client_time between t.created_at - interval '2 days'\n                                                and t.created_at + interval '5 minutes'\n                         then t.client_time else t.created_at end as at,\n                    coalesce(q.transaction_id, oq.transaction_id) as tx,\n                    coalesce(q.operation_id, oq.operation_id) as op\n             from sale_payments p\n             join sales s on s.id = p.sale_id\n             left join doc_corrections fix on fix.kind = 'sale' and fix.new_id = s.id\n             left join sales o on o.id = fix.original_id\n             cross join lateral (select case when o.id is null then s.client_time else o.client_time end as client_time,\n                                        coalesce(o.created_at, s.created_at) as created_at) t\n             left join bank_qr q on q.id = p.bank_qr_id\n             left join bank_qr oq on oq.sale_id = o.id\n             where s.branch_id = $1 and p.method = 'card' and p.account_id = $2\n               and t.created_at >= ($3::date - 3)::timestamp at time zone 'Asia/Bishkek'\n               and not exists (select 1 from doc_corrections c\n                               where c.kind = 'sale' and (c.original_id = s.id or c.reversal_id = s.id)))\n           select amount_tyiyn as \"amount!\", fee_tyiyn as \"fee!\", sale_id as \"sale_id!\",\n                  number as \"number!\", at as \"at!\", tx as \"tx?\", op as \"op?\"\n           from p where (at at time zone 'Asia/Bishkek')::date between $3 and $4\n           order by at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "sale_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "number!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "tx?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "op?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3549ec41b041edd4d5704aabef1f61b367abffa3992cf9bbd6d775b9a14d7c3d"
+}

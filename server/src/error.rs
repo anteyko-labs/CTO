@@ -22,6 +22,9 @@ pub enum AppError {
     Conflict(String),
     #[error("{0}")]
     TooManyRequests(String),
+    /// Банк не ответил или отказал (SPEC-31): касса отмечает оплату вручную (424).
+    #[error("{0}")]
+    Bank(String),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error("{0}")]
@@ -47,6 +50,7 @@ impl AppError {
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
+            Self::Bank(_) => (StatusCode::FAILED_DEPENDENCY, "bank"),
             Self::Db(e) if bad_text(e) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Db(_) | Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }

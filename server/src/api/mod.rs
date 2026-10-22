@@ -3,6 +3,8 @@
 pub mod analogs;
 pub mod assistant;
 pub mod auth;
+pub mod bank_qr;
+pub mod bank_recon;
 pub mod batteries;
 pub mod bot_book;
 pub mod bot_cars;
@@ -29,6 +31,7 @@ pub mod offline;
 pub mod oil;
 pub mod oil_book;
 pub mod old_catalog;
+pub mod optima;
 pub mod paging;
 pub mod parties;
 pub mod payroll;
@@ -53,6 +56,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(analogs::routes())
         .merge(auth::routes())
+        .merge(bank_qr::routes())
+        .merge(bank_recon::routes())
         .merge(batteries::routes())
         .merge(cabinet::routes())
         .merge(cancelled_lines::routes())
@@ -73,6 +78,7 @@ pub fn routes() -> Router<AppState> {
         .merge(oil::routes())
         .merge(oil_book::routes())
         .merge(old_catalog::routes())
+        .merge(optima::routes())
         .merge(parties::routes())
         .merge(payroll::routes())
         .merge(refs::routes())

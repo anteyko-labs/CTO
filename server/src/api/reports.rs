@@ -305,13 +305,16 @@ pub async fn totals_for(
     .fetch_one(&mut *conn)
     .await?;
     let payroll = pay.all;
-    // Комиссия банка: с чеков и с погашений долга картой или переводом (ADR-022).
+    // Комиссия банка: с чеков и с погашений долга картой или переводом (ADR-022) и поправка по
+    // выписке банка в день операции (SPEC-31).
     let fee = sqlx::query_scalar!(
         r#"select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
                              where s.branch_id = $1 and s.business_date between $2 and $3), 0)
                  + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
                              where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
                                and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)
+                 + coalesce((select sum(a.amount_tyiyn) from bank_fee_adjustments a
+                             where a.branch_id = $1 and a.op_day between $2 and $3), 0)
                  )::bigint as "v!""#,
         branch_id,
         from,
@@ -522,6 +525,9 @@ pub(crate) async fn profit_data(
                   where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
                     and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
                   group by 1),
+           fa as (select a.op_day as day, sum(a.amount_tyiyn) as v from bank_fee_adjustments a
+                  where a.branch_id = $1 and a.op_day between $2 and $3
+                  group by 1),
            cd as (select s.business_date as day, sum(m.amount_tyiyn) as v
                   from cash_movements m join shifts s on s.id = m.doc_id
                   where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift'
@@ -541,7 +547,7 @@ pub(crate) async fn profit_data(
              (coalesce(sl.gross, 0) + coalesce(rv.v, 0))::bigint as "gross!",
              coalesce(pa.v, 0)::bigint as "payroll!",
              coalesce(ex.v, 0)::bigint as "expenses!",
-             (coalesce(sp.fee, 0) + coalesce(bf.v, 0))::bigint as "fee!",
+             (coalesce(sp.fee, 0) + coalesce(bf.v, 0) + coalesce(fa.v, 0))::bigint as "fee!",
              coalesce(sp.bonus, 0)::bigint as "bonus!",
              coalesce(cd.v, 0)::bigint as "cash_diff!",
              coalesce(dr.writeoff, 0)::bigint as "defect_writeoff!",
@@ -554,6 +560,7 @@ pub(crate) async fn profit_data(
            left join ex on ex.day = d.day
            left join sp on sp.day = d.day
            left join bf on bf.day = d.day
+           left join fa on fa.day = d.day
            left join cd on cd.day = d.day
            left join dr on dr.day = d.day
            left join sr on sr.day = d.day

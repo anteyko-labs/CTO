@@ -288,6 +288,7 @@ fn line(kind: &str, product: Uuid, qty: i64, price: i64) -> SaleLineReq {
 fn cash(amount: i64) -> Vec<PaymentReq> {
     vec![PaymentReq {
         account_id: None,
+        bank_qr_id: None,
         price_per_kg_tyiyn: None,
         method: "cash".into(),
         amount_tyiyn: amount,
@@ -719,6 +720,7 @@ async fn debt_sale_moves_customer_balance(pool: PgPool) {
 
     let pay = |method: &str, amount: i64| PaymentReq {
         account_id: None,
+        bank_qr_id: None,
         price_per_kg_tyiyn: None,
         method: method.into(),
         amount_tyiyn: amount,
@@ -810,6 +812,7 @@ async fn cash_follows_payments(pool: PgPool) {
         vec![line("piece", w.filter, 1, 100_000)],
         vec![PaymentReq {
             account_id: None,
+            bank_qr_id: None,
             price_per_kg_tyiyn: None,
             method: "card".into(),
             amount_tyiyn: 100_000,
@@ -860,6 +863,7 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
         vec![
             PaymentReq {
                 account_id: None,
+                bank_qr_id: None,
                 price_per_kg_tyiyn: None,
                 method: "cash".into(),
                 amount_tyiyn: 50_000,
@@ -867,6 +871,7 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
             },
             PaymentReq {
                 account_id: None,
+                bank_qr_id: None,
                 price_per_kg_tyiyn: None,
                 method: "debt".into(),
                 amount_tyiyn: 50_000,
@@ -922,6 +927,7 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
             payments: vec![
                 PaymentReq {
                     account_id: None,
+                    bank_qr_id: None,
                     price_per_kg_tyiyn: None,
                     method: "cash".into(),
                     amount_tyiyn: 25_000,
@@ -929,6 +935,7 @@ async fn cashier_percent_waits_for_the_debt(pool: PgPool) {
                 },
                 PaymentReq {
                     account_id: None,
+                    bank_qr_id: None,
                     price_per_kg_tyiyn: None,
                     method: "debt".into(),
                     amount_tyiyn: 25_000,
@@ -1406,6 +1413,7 @@ async fn debt_needs_pin_or_inn(pool: PgPool) {
             vec![line("piece", w.filter, 1, 1_000)],
             vec![PaymentReq {
                 account_id: None,
+                bank_qr_id: None,
                 price_per_kg_tyiyn: None,
                 method: "debt".into(),
                 amount_tyiyn: 1_000,
@@ -2011,6 +2019,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
         list.iter()
             .map(|(m, a)| PaymentReq {
                 account_id: None,
+                bank_qr_id: None,
                 price_per_kg_tyiyn: None,
                 method: (*m).into(),
                 amount_tyiyn: *a,
@@ -2114,6 +2123,7 @@ fn pay(list: &[(&str, i64)]) -> Vec<PaymentReq> {
     list.iter()
         .map(|(m, a)| PaymentReq {
             account_id: None,
+            bank_qr_id: None,
             price_per_kg_tyiyn: None,
             method: (*m).into(),
             amount_tyiyn: *a,
@@ -4353,6 +4363,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         vec![line("piece", w.filter, 1, 50_000)],
         vec![PaymentReq {
             account_id: None,
+            bank_qr_id: None,
             price_per_kg_tyiyn: None,
             method: "debt".into(),
             amount_tyiyn: 50_000,
@@ -4367,6 +4378,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         vec![line("piece", w.filter, 1, 50_000)],
         vec![PaymentReq {
             account_id: None,
+            bank_qr_id: None,
             price_per_kg_tyiyn: None,
             method: "debt".into(),
             amount_tyiyn: 50_000,
@@ -8333,6 +8345,7 @@ async fn battery_price(pool: &PgPool, w: &World, per_kg: i64) {
 fn battery(grams: i64, amount: i64) -> PaymentReq {
     PaymentReq {
         account_id: None,
+        bank_qr_id: None,
         price_per_kg_tyiyn: None,
         method: "battery".into(),
         amount_tyiyn: amount,
@@ -8539,6 +8552,7 @@ async fn battery_payment_returns_by_weight_not_cash(pool: PgPool) {
     let mut back = cash(440_000);
     back.push(PaymentReq {
         account_id: None,
+        bank_qr_id: None,
         price_per_kg_tyiyn: None,
         method: "battery".into(),
         amount_tyiyn: 60_000,
@@ -8573,6 +8587,7 @@ async fn battery_payment_returns_by_weight_not_cash(pool: PgPool) {
     let mut back = cash(940_000);
     back.push(PaymentReq {
         account_id: None,
+        bank_qr_id: None,
         price_per_kg_tyiyn: None,
         method: "battery".into(),
         amount_tyiyn: 60_000,
@@ -10372,6 +10387,7 @@ async fn discount_needs_right(pool: PgPool) {
         .unwrap();
     let pay = |method: &str, amount: i64| PaymentReq {
         account_id: None,
+        bank_qr_id: None,
         price_per_kg_tyiyn: None,
         method: method.into(),
         amount_tyiyn: amount,

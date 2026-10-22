@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 63] = [
+pub(crate) const WATCHED: [&str; 67] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -83,6 +83,10 @@ pub(crate) const WATCHED: [&str; 63] = [
     "employee.pin",
     "correction.post",
     "user.permissions",
+    "bank_qr.unclaimed",
+    "bank_recon.mismatch",
+    "optima.key",
+    "settings.optima",
 ];
 
 #[derive(Serialize)]
@@ -1100,6 +1104,46 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             ),
             format!("{}{}", money(num("amount")), comment(data)),
         ),
+        // Optima Business (SPEC-31).
+        "bank_qr.unclaimed" => (
+            format!("QR оплачен, чек не проведён: {}", money(num("amount"))),
+            "покупатель оплатил по QR банка больше 15 минут назад, а чека с этой оплатой нет — проверьте кассу".into(),
+        ),
+        "bank_recon.mismatch" => crate::api::bank_recon::mismatch_text(data),
+        "optima.key" => (
+            "⚠️ Ключ Optima Business не подходит".into(),
+            format!(
+                "банк отказал по ключу{} — QR на сумму и сверка не работают, проверьте ключ в настройке точки",
+                match text("reason") {
+                    r if r.is_empty() => String::new(),
+                    r => format!(" ({r})"),
+                }
+            ),
+        ),
+        "settings.optima" => (
+            "Настройка Optima Business изменена".into(),
+            {
+                let mut what: Vec<&str> = Vec::new();
+                for k in data
+                    .get("changes")
+                    .and_then(Value::as_object)
+                    .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                {
+                    let w = match k.as_str() {
+                        "legal_party_id" => "ID компании",
+                        "account_number" => "расчётный счёт",
+                        "sale_point_code" | "sale_point_name" => "торговая точка",
+                        "cash_code" | "cash_name" => "касса",
+                        _ => "счёт учёта",
+                    };
+                    if !what.contains(&w) {
+                        what.push(w);
+                    }
+                }
+                format!("изменено: {}", what.join(", "))
+            },
+        ),
         "telegram.employee_link" => (
             format!("Работник {} подключился к боту", text("name")),
             "видит в боте свой заработок, удержания и премии".into(),
@@ -1307,6 +1351,21 @@ mod tests {
         );
         assert_eq!(title, "Счёт «Касса» ушёл в минус: −1 200 с (расход № 15)");
         assert!(text.contains("−5 000 с"), "{text}");
+        let (title, text) = describe("bank_qr.unclaimed", &json!({ "amount": 99_000 }));
+        assert_eq!(title, "QR оплачен, чек не проведён: 990 с");
+        assert!(text.contains("15 минут"), "{text}");
+        let (title, _) = describe(
+            "bank_recon.mismatch",
+            &json!({ "day": "2026-10-21", "ours_count": 12, "ours": 1_840_000, "bank_count": 11, "bank": 1_760_000, "unmatched": 1 }),
+        );
+        assert_eq!(
+            title,
+            "Сверка с банком 21.10: в учёте 12 оплат на 18 400 с, в банке 11 на 17 600 с"
+        );
+        assert_eq!(
+            describe("optima.key", &json!({})).0,
+            "⚠️ Ключ Optima Business не подходит"
+        );
         let (title, text) = describe(
             "user.permissions",
             &json!({ "login": "erbol", "full_name": "Эрбол", "granted": ["discount"], "revoked": ["expenses", "cash_moves"] }),
