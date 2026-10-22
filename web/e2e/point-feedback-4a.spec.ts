@@ -36,7 +36,7 @@ async function goods(request: APIRequestContext, kind: string, name: string, cod
   const p = await apiPost<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: cat.id, name, barcodes: [code], sale_price_tyiyn: price, ...extra })
   const qty = extra.container_ml ? 8000 : 5
   await apiPost(request, '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(request), lines: [{ product_id: p.id, qty, cost_tyiyn: Math.floor(price / 2) * (extra.container_ml ? 2 : 5) }] })
-  return p
+  return { ...p, category_id: cat.id }
 }
 
 async function scan(page: Page, code: string) {
@@ -94,9 +94,10 @@ test('«В сервис»: вид замены, бесплатно с нашим
   await apiPost(page.request, '/employees', { full_name: master, is_master: true })
   const code = `30${RUN}202`
   const oil = `Масло замены ${RUN}`
-  await goods(page.request, 'oil', oil, code, 250_000, { container_ml: 4000 })
+  const oilProduct = await goods(page.request, 'oil', oil, code, 250_000, { container_ml: 4000 })
   const kind = `Замена в моторе ${RUN}`
-  await apiPost(page.request, '/services', { name: kind, price_tyiyn: 30_000, master_fee_tyiyn: 3_500, free_with_oil: true })
+  // Бесплатна с канистрой масла своей категории (ADR-104).
+  await apiPost(page.request, '/services', { name: kind, price_tyiyn: 30_000, master_fee_tyiyn: 3_500, free_with_oil: true, oil_category_id: oilProduct.category_id })
   const client = `Заменов Клиент${RUN}`
   const party = await apiPost<{ id: string }>(page.request, '/parties', { name: client, kind: 'person' })
   const plate = `01KG${RUN.slice(-3)}KND`

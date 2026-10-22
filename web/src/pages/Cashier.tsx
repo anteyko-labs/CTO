@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
 import { CashierModeBar } from '../components/CashierModeBar'
+import { NoReceiptReturn } from '../components/NoReceiptReturn'
 import { ShiftOpenModal } from '../components/ShiftOpen'
 import { CorrectionBanner } from '../components/Correction'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
@@ -359,6 +360,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [servicesOpen, setServicesOpen] = useState(false)
   // «В сервис» сразу открывает выбор вида замены (ADR-096).
   const [kindsOpen, setKindsOpen] = useState(false)
+  const [noReceipt, setNoReceipt] = useState(false)
   // Отложенный чек, удаление которого ждёт подтверждения.
   const [confirmDrop, setConfirmDrop] = useState<string | null>(null)
   const clientFix = useAction()
@@ -1074,6 +1076,237 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     'inline-flex min-h-[56px] items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1 text-center text-base leading-tight font-medium text-slate-800 shadow-sm active:bg-slate-100 disabled:text-slate-400'
   const delivering = delivery !== null
 
+  // Данные замены и клиента. В режиме кассы у чека «В сервис» — в левой колонке под строками чека
+  // (SPEC-30 §17): справа остаются тип, итог, оплата и «Провести».
+  const serviceLeft = touch && saleType === 'service'
+  const canFixClient = Boolean(
+    party && online && ((clientNeeds.includes('client') && party.kind === 'person') || clientNeeds.includes('phone')),
+  )
+  const customerFields = (
+    <>
+      {saleType === 'service' && (
+        <>
+          <Field label="Мастер" required>
+            <select id="master-select" className={serviceLeft ? 'min-h-[56px] text-lg' : ''} value={masterId} onChange={(e) => setMasterId(e.target.value)}>
+              <option value="">— выберите —</option>
+              {masters.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.full_name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {/* Вид замены обязателен: мастеру — сумма ставок видов замены чека (ADR-096). */}
+          {serviceLeft ? (
+            // Слева под чеком — коротко: сами виды и их цены уже в строках чека.
+            <div className="flex min-w-0 flex-col gap-1" data-testid="service-kinds">
+              <span className="flex items-baseline justify-between gap-2 text-sm font-medium text-slate-700">
+                <span className="whitespace-nowrap">
+                  Вид замены <span className="text-rose-600">*</span>
+                </span>
+                {serviceKinds.length > 0 && (
+                  <span className="hidden truncate text-xs font-normal text-slate-500 2xl:inline">
+                    Мастеру начислится {formatSom(serviceKinds.reduce((acc, l) => acc + (l.service?.master_fee_tyiyn ?? 0) * (lineQty(l) ?? 0), 0))}
+                  </span>
+                )}
+              </span>
+              <button
+                type="button"
+                data-service-kind
+                className={`${tbtn} ${serviceKinds.length === 0 ? 'border-rose-300! bg-rose-50! text-rose-800!' : ''}`}
+                onClick={() => setKindsOpen(true)}
+              >
+                {serviceKinds.length > 0 ? 'Изменить вид' : 'Выбрать вид замены'}
+              </button>
+            </div>
+          ) : (
+          <div className="flex flex-col gap-1" data-testid="service-kinds">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium text-slate-700">
+                Вид замены <span className="text-rose-600">*</span>
+              </span>
+              <button type="button" data-service-kind className={touch ? tbtn : 'min-h-9 rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50'} onClick={() => setKindsOpen(true)}>
+                {serviceKinds.length > 0 ? 'Изменить вид' : 'Выбрать вид замены'}
+              </button>
+            </div>
+            {serviceKinds.length === 0 ? (
+              <div className="text-sm text-rose-700">Не выбран — без него чек «В сервис» не провести.</div>
+            ) : (
+              <div className={touch ? 'text-base' : 'text-sm'}>
+                {serviceKinds.map((l) => (
+                  <div key={l.key}>
+                    {l.service?.name}
+                    {(lineQty(l) ?? 1) > 1 && ` × ${lineQty(l)}`} ·{' '}
+                    {lineList(l) === 0 && l.service?.free_with_oil ? 'бесплатно — масло наше' : formatSom(lineAmount(l) ?? 0)}
+                  </div>
+                ))}
+                <div className="text-xs text-slate-500">
+                  Мастеру начислится {formatSom(serviceKinds.reduce((acc, l) => acc + (l.service?.master_fee_tyiyn ?? 0) * (lineQty(l) ?? 0), 0))} — ставки
+                  видов замены.
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+        </>
+      )}
+      {serviceLeft ? (
+        // Слева под чеком: подпись над кнопкой с именем клиента; поиск и машина — в окне.
+        <div className="flex min-w-0 flex-col gap-1" data-testid="client-row">
+          <span className="text-sm font-medium text-slate-700">
+            Клиент <span className="text-rose-600">*</span>
+          </span>
+          <span className="flex gap-2">
+            <button
+              type="button"
+              data-client
+              className={`${tbtn} min-w-0 flex-1 justify-start!`}
+              onClick={() => {
+                setClientOpen(true)
+                if (!party) focusAfterRender('[data-client-input]')
+              }}
+            >
+              <span className="truncate">{party ? party.name : 'Выбрать клиента'}</span>
+            </button>
+            {party && (
+              <button type="button" className={`${tbtn} w-14 shrink-0`} aria-label="Убрать клиента" onClick={() => pickParty(null)}>
+                ✕
+              </button>
+            )}
+          </span>
+        </div>
+      ) : touch ? (
+        // Клиент в режиме кассы — короткой строкой; поиск и машина — в окне, где есть место списку.
+        <div className="flex items-center gap-2" data-testid="client-row">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-slate-500">Клиент</div>
+            <div className="truncate text-lg font-medium">
+              {party ? party.name : <span className="text-slate-400">не выбран</span>}
+              {party && <span className="text-base font-normal text-slate-500"> · {vehicleId ? 'машина выбрана' : 'машина не указана'}</span>}
+            </div>
+          </div>
+          <button
+            type="button"
+            data-client
+            className={tbtn}
+            onClick={() => {
+              setClientOpen(true)
+              if (!party) focusAfterRender('[data-client-input]')
+            }}
+          >
+            {party ? 'Изменить' : 'Выбрать клиента'}
+          </button>
+          {party && (
+            <button type="button" className={tbtn} aria-label="Убрать клиента" onClick={() => pickParty(null)}>
+              ✕
+            </button>
+          )}
+        </div>
+      ) : (
+        <div data-client>
+          <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
+        </div>
+      )}
+      {party && vehicleId && !touch && <OilHint vehicleId={vehicleId} />}
+      {/* Чек «В сервис» — с данными клиента (ADR-100): что не хватает — со звёздочкой; имя и
+          телефон дописываются в карточку прямо здесь. */}
+      {/* Слева под чеком недостающее и так видно строкой «Не хватает» у «Провести» — блок нужен
+          только чтобы дописать имя и телефон в карточку. */}
+      {saleType === 'service' && clientNeeds.length > 0 && (!serviceLeft || canFixClient) && (
+        <div
+          className={`flex flex-col gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900 ${serviceLeft ? 'lg:col-span-3' : ''}`}
+          data-testid="service-client-needs"
+        >
+          <div>
+            Для замены нужны:{' '}
+            {clientNeeds.map((n, i) => (
+              <span key={n}>
+                {i > 0 && ', '}
+                {CLIENT_NEED_LABELS[n]} <span className="font-semibold text-rose-600">*</span>
+              </span>
+            ))}
+            {!online && <div className="text-xs">Нет связи: чек уйдёт без этих данных, владелец увидит, чего не хватало.</div>}
+          </div>
+          {party && online && ((clientNeeds.includes('client') && party.kind === 'person') || clientNeeds.includes('phone')) && (
+            <div className="flex flex-wrap items-end gap-2">
+              {clientNeeds.includes('client') && party.kind === 'person' && (
+                <>
+                  <Field label="Имя" required>
+                    <input id="client-first-name" className="w-32" value={clientForm.first} onChange={(e) => setClientForm({ ...clientForm, first: e.target.value })} />
+                  </Field>
+                  <Field label="Фамилия" required>
+                    <input id="client-last-name" className="w-36" value={clientForm.last} onChange={(e) => setClientForm({ ...clientForm, last: e.target.value })} />
+                  </Field>
+                </>
+              )}
+              {clientNeeds.includes('phone') && (
+                <Field label="Телефон" required>
+                  <input id="client-phone" className="w-40" inputMode="tel" value={clientForm.phone} onChange={(e) => setClientForm({ ...clientForm, phone: e.target.value })} />
+                </Field>
+              )}
+              <Button
+                variant="secondary"
+                disabled={
+                  clientFix.busy ||
+                  (clientNeeds.includes('client') && party.kind === 'person' && (!clientForm.first.trim() || !clientForm.last.trim())) ||
+                  (clientNeeds.includes('phone') && !clientForm.phone.trim())
+                }
+                onClick={() =>
+                  void clientFix.run(async () => {
+                    const names = clientNeeds.includes('client') && party.kind === 'person'
+                    const saved = await patch<Party>(`/parties/${party.id}`, {
+                      ...(names ? { first_name: clientForm.first.trim(), last_name: clientForm.last.trim() } : {}),
+                      ...(clientNeeds.includes('phone') ? { phone: clientForm.phone.trim() } : {}),
+                    })
+                    setParty({ ...party, ...saved })
+                    setClientForm({ first: '', last: '', phone: '' })
+                    toast('Записано в карточку клиента')
+                  })
+                }
+              >
+                Записать в карточку
+              </Button>
+            </div>
+          )}
+          <ErrorBox error={clientFix.error} />
+        </div>
+      )}
+      {saleType === 'service' &&
+        (party && vehicleId ? (
+          <>
+            <Field
+              label={`Пробег сейчас, ${unitLabel(carUnit)}`}
+              required
+              hint={serviceLeft ? undefined : 'Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку'}
+            >
+              {/* Не больше 7 цифр: пробег до 5 000 000, лишняя цифра — опечатка (ADR-093). */}
+              <input id="mileage" className={serviceLeft ? 'min-h-[56px] text-lg' : ''} {...num('int')} maxLength={7} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, '').slice(0, 7))} />
+              {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
+            </Field>
+          </>
+        ) : (
+          <div className={`rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900 ${serviceLeft ? 'lg:col-span-3' : ''}`}>
+            Масляная книжка: {party ? 'выберите машину клиента (или «+ новая машина»)' : 'выберите клиента и машину'} — замена, масло, фильтр и пробег
+            запишутся сами, клиенту распечатается книжка.
+          </div>
+        ))}
+      {saleType === 'service' && party && vehicleId && (
+        <div className={serviceLeft ? 'lg:col-span-2' : ''}>
+          <Field label="Мастер рекомендовал (клиент отказался)" hint={serviceLeft ? undefined : 'Необязательно. Запишется в книжку, в следующий раз касса напомнит'}>
+            <input
+              id="declined"
+              className={serviceLeft ? 'min-h-[56px] text-lg' : ''}
+              maxLength={300}
+              value={declined}
+              onChange={(e) => setDeclined(e.target.value)}
+              placeholder="Например: воздушный фильтр, антифриз"
+            />
+          </Field>
+        </div>
+      )}
+    </>
+  )
+
   // Ошибка, чего не хватает, «Провести чек» и «Отложить» / «Очистить». В режиме кассы — отдельной
   // карточкой внизу колонки: всегда на экране, что бы ни было выше.
   const parkClear = (
@@ -1176,7 +1409,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </div>
         )}
         {!fix && parked.length > 0 && (
-          <Card className="flex flex-wrap items-center gap-2">
+          <Card className={`flex flex-wrap items-center gap-2 ${touch ? 'p-2! lg:shrink-0' : ''}`}>
             <span className="text-sm text-slate-500">Отложенные:</span>
             {parked.map((p) => (
               <span
@@ -1218,7 +1451,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </Card>
         )}
         {!fix && storageAtRisk && (
-          <div className={`rounded-md border border-rose-200 bg-rose-50 px-3 text-sm text-rose-900 ${touch ? 'py-1 lg:line-clamp-1' : 'py-2'}`} role="alert">
+          <div className={`rounded-md border border-rose-200 bg-rose-50 px-3 text-sm text-rose-900 ${touch ? 'py-1 lg:line-clamp-1 lg:shrink-0' : 'py-2'}`} role="alert">
             Браузер может стереть неотправленные чеки — разрешите хранение данных для этого сайта в настройках браузера
             (или установите программу на рабочий стол).
           </div>
@@ -1235,7 +1468,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </Link>
           </div>
         )}
-        <Card className={touch ? 'p-3' : ''}>
+        <Card className={touch ? 'p-3 lg:shrink-0' : ''}>
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
               <ProductPicker
@@ -1252,8 +1485,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </Button>
           </div>
           {touch ? (
-            // В режиме кассы всё на виду и крупно: без скрытого меню «…» и мелких ссылок.
-            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            // В режиме кассы всё на виду и крупно: без скрытого меню «…» и мелких ссылок. У чека
+            // «В сервис» место под чеком занимают данные замены (SPEC-30 §17) — редкие действия кассы
+            // доступны на вынос.
+            serviceLeft ? null : (
+            <div className={`mt-2 grid grid-cols-2 gap-2 ${user.role === 'owner' && !fix ? 'sm:grid-cols-5' : 'sm:grid-cols-4'}`}>
               {can(user, 'debt_payment') && (
                 <button type="button" className={tbtn} onClick={() => setDebtPay(true)}>
                   <Icon name="debts" className="h-5 w-5 shrink-0" />
@@ -1274,7 +1510,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <button type="button" className={tbtn} onClick={sellBatteries}>
                 Аккумуляторы на вес
               </button>
+              {/* Возврат без чека — только владелец (ADR-105). */}
+              {user.role === 'owner' && !fix && (
+                <button type="button" className={tbtn} onClick={() => setNoReceipt(true)}>
+                  Возврат без чека
+                </button>
+              )}
             </div>
+            )
           ) : (
             <div className={`mt-2 flex-wrap items-center gap-x-1 gap-y-1 ${fix ? 'hidden' : 'flex'}`}>
               {can(user, 'debt_payment') && (
@@ -1294,6 +1537,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 items={[
                   ...(can(user, 'battery_intake') ? [{ label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) }] : []),
                   { label: 'Аккумуляторы на вес', onClick: sellBatteries },
+                  ...(user.role === 'owner' ? [{ label: 'Возврат без чека', onClick: () => setNoReceipt(true) }] : []),
                 ]}
               />
               <button
@@ -1311,8 +1555,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
         </Card>
 
-        {touch ? (
-          // Плитки не съедают место чека: не выше четверти экрана, дальше прокручиваются.
+        {serviceLeft ? null : touch ? (
+          // Плитки не съедают место чека: не выше четверти экрана, дальше прокручиваются. У чека
+          // «В сервис» их место — данным замены (SPEC-30 §17); товар добавляется поиском.
           <div className="relative lg:max-h-[24dvh] lg:shrink-0 lg:overflow-y-auto lg:overscroll-contain">
             <CashierFavorites compact onProduct={addProduct} onService={addService} />
           </div>
@@ -1383,7 +1628,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </Card>
         )}
 
-        <Card className={`p-0 ${touch ? 'flex flex-col lg:min-h-0 lg:flex-1' : ''}`}>
+        <Card className={`p-0 ${touch ? `flex flex-col lg:flex-1 ${serviceLeft ? 'lg:min-h-[5.5rem]' : 'lg:min-h-0'}` : ''}`}>
           {removed && (
             <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2" role="status">
               <span className="min-w-0 flex-1 truncate text-base">
@@ -1590,6 +1835,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
           </div>
         </Card>
+        {serviceLeft && (
+          <Card
+            className="relative grid shrink-0 grid-cols-1 content-start gap-x-3 gap-y-2 p-3 lg:max-h-[50dvh] lg:grid-cols-3 lg:overflow-y-auto lg:overscroll-contain"
+            data-testid="service-left"
+          >
+            {customerFields}
+          </Card>
+        )}
       </div>
 
       {/* В режиме кассы тип чека, «Итого» и оплата закреплены сверху колонки; мастер, вид замены,
@@ -1646,163 +1899,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </Field>
             )
           )}
-          {saleType === 'service' && (
-            <>
-              <Field label="Мастер" required>
-                <select id="master-select" value={masterId} onChange={(e) => setMasterId(e.target.value)}>
-                  <option value="">— выберите —</option>
-                  {masters.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.full_name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              {/* Вид замены обязателен: мастеру — сумма ставок видов замены чека (ADR-096). */}
-              <div className="flex flex-col gap-1" data-testid="service-kinds">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Вид замены <span className="text-rose-600">*</span>
-                  </span>
-                  <button type="button" data-service-kind className={touch ? tbtn : 'min-h-9 rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50'} onClick={() => setKindsOpen(true)}>
-                    {serviceKinds.length > 0 ? 'Изменить вид' : 'Выбрать вид замены'}
-                  </button>
-                </div>
-                {serviceKinds.length === 0 ? (
-                  <div className="text-sm text-rose-700">Не выбран — без него чек «В сервис» не провести.</div>
-                ) : (
-                  <div className={touch ? 'text-base' : 'text-sm'}>
-                    {serviceKinds.map((l) => (
-                      <div key={l.key}>
-                        {l.service?.name}
-                        {(lineQty(l) ?? 1) > 1 && ` × ${lineQty(l)}`} ·{' '}
-                        {lineList(l) === 0 && l.service?.free_with_oil ? 'бесплатно — масло наше' : formatSom(lineAmount(l) ?? 0)}
-                      </div>
-                    ))}
-                    <div className="text-xs text-slate-500">
-                      Мастеру начислится {formatSom(serviceKinds.reduce((acc, l) => acc + (l.service?.master_fee_tyiyn ?? 0) * (lineQty(l) ?? 0), 0))} — ставки
-                      видов замены.
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-          {touch ? (
-            // Клиент в режиме кассы — короткой строкой; поиск и машина — в окне, где есть место списку.
-            <div className="flex items-center gap-2" data-testid="client-row">
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-slate-500">Клиент</div>
-                <div className="truncate text-lg font-medium">
-                  {party ? party.name : <span className="text-slate-400">не выбран</span>}
-                  {party && <span className="text-base font-normal text-slate-500"> · {vehicleId ? 'машина выбрана' : 'машина не указана'}</span>}
-                </div>
-              </div>
-              <button
-                type="button"
-                data-client
-                className={tbtn}
-                onClick={() => {
-                  setClientOpen(true)
-                  if (!party) focusAfterRender('[data-client-input]')
-                }}
-              >
-                {party ? 'Изменить' : 'Выбрать клиента'}
-              </button>
-              {party && (
-                <button type="button" className={tbtn} aria-label="Убрать клиента" onClick={() => pickParty(null)}>
-                  ✕
-                </button>
-              )}
-            </div>
-          ) : (
-            <div data-client>
-              <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
-            </div>
-          )}
-          {party && vehicleId && !touch && <OilHint vehicleId={vehicleId} />}
-          {/* Чек «В сервис» — с данными клиента (ADR-100): что не хватает — со звёздочкой; имя и
-              телефон дописываются в карточку прямо здесь. */}
-          {saleType === 'service' && clientNeeds.length > 0 && (
-            <div className="flex flex-col gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900" data-testid="service-client-needs">
-              <div>
-                Для замены нужны:{' '}
-                {clientNeeds.map((n, i) => (
-                  <span key={n}>
-                    {i > 0 && ', '}
-                    {CLIENT_NEED_LABELS[n]} <span className="font-semibold text-rose-600">*</span>
-                  </span>
-                ))}
-                {!online && <div className="text-xs">Нет связи: чек уйдёт без этих данных, владелец увидит, чего не хватало.</div>}
-              </div>
-              {party && online && ((clientNeeds.includes('client') && party.kind === 'person') || clientNeeds.includes('phone')) && (
-                <div className="flex flex-wrap items-end gap-2">
-                  {clientNeeds.includes('client') && party.kind === 'person' && (
-                    <>
-                      <Field label="Имя" required>
-                        <input id="client-first-name" className="w-32" value={clientForm.first} onChange={(e) => setClientForm({ ...clientForm, first: e.target.value })} />
-                      </Field>
-                      <Field label="Фамилия" required>
-                        <input id="client-last-name" className="w-36" value={clientForm.last} onChange={(e) => setClientForm({ ...clientForm, last: e.target.value })} />
-                      </Field>
-                    </>
-                  )}
-                  {clientNeeds.includes('phone') && (
-                    <Field label="Телефон" required>
-                      <input id="client-phone" className="w-40" inputMode="tel" value={clientForm.phone} onChange={(e) => setClientForm({ ...clientForm, phone: e.target.value })} />
-                    </Field>
-                  )}
-                  <Button
-                    variant="secondary"
-                    disabled={
-                      clientFix.busy ||
-                      (clientNeeds.includes('client') && party.kind === 'person' && (!clientForm.first.trim() || !clientForm.last.trim())) ||
-                      (clientNeeds.includes('phone') && !clientForm.phone.trim())
-                    }
-                    onClick={() =>
-                      void clientFix.run(async () => {
-                        const names = clientNeeds.includes('client') && party.kind === 'person'
-                        const saved = await patch<Party>(`/parties/${party.id}`, {
-                          ...(names ? { first_name: clientForm.first.trim(), last_name: clientForm.last.trim() } : {}),
-                          ...(clientNeeds.includes('phone') ? { phone: clientForm.phone.trim() } : {}),
-                        })
-                        setParty({ ...party, ...saved })
-                        setClientForm({ first: '', last: '', phone: '' })
-                        toast('Записано в карточку клиента')
-                      })
-                    }
-                  >
-                    Записать в карточку
-                  </Button>
-                </div>
-              )}
-              <ErrorBox error={clientFix.error} />
-            </div>
-          )}
-          {saleType === 'service' &&
-            (party && vehicleId ? (
-              <>
-                <Field
-                  label={`Пробег сейчас, ${unitLabel(carUnit)}`}
-                  required
-                  hint="Спросите у клиента или посмотрите на приборной панели — запишется в масляную книжку"
-                >
-                  {/* Не больше 7 цифр: пробег до 5 000 000, лишняя цифра — опечатка (ADR-093). */}
-                  <input id="mileage" {...num('int')} maxLength={7} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, '').slice(0, 7))} />
-                  {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
-                </Field>
-              </>
-            ) : (
-              <div className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900">
-                Масляная книжка: {party ? 'выберите машину клиента (или «+ новая машина»)' : 'выберите клиента и машину'} — замена, масло, фильтр и пробег
-                запишутся сами, клиенту распечатается книжка.
-              </div>
-            ))}
-          {saleType === 'service' && party && vehicleId && (
-            <Field label="Мастер рекомендовал (клиент отказался)" hint="Необязательно. Запишется в книжку, в следующий раз касса напомнит">
-              <input id="declined" maxLength={300} value={declined} onChange={(e) => setDeclined(e.target.value)} placeholder="Например: воздушный фильтр, антифриз" />
-            </Field>
-          )}
+          {!serviceLeft && customerFields}
           {touch ? (
             // Редкое — кнопками: доставка, комментарий, аккумулятор и баллы в оплату.
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 2xl:grid-cols-4">
@@ -2345,6 +2442,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           }}
         />
       )}
+      {noReceipt && <NoReceiptReturn touch={touch} onClose={() => setNoReceipt(false)} />}
       {kindsOpen && (
         <ServicePicker
           kinds

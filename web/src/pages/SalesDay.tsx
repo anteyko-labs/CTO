@@ -1,6 +1,7 @@
 // Чеки за день: итоги по способам оплаты, средний чек, возвраты (SPEC-04).
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { NoReceiptReturn } from '../components/NoReceiptReturn'
 import { Pager, usePager } from '../components/Pager'
 import { CorrectionBadges } from '../components/Correction'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
@@ -8,6 +9,7 @@ import { correctionMarks, loadCorrections, type CorrectionMark } from '../lib/co
 import { get, qs } from '../lib/api'
 import { formatSom, formatTime, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
+import { useUser } from '../lib/auth'
 import { divRound } from '../lib/money'
 import type { SaleListItem, SalesDay as Day } from '../lib/types'
 
@@ -36,7 +38,7 @@ function Client({ name, phone, fallback }: { name: string | null; phone?: string
 function Marks({ s, fix }: { s: SaleListItem; fix?: CorrectionMark }) {
   return (
     <>
-      {s.kind === 'return' && <Badge tone="rose">возврат</Badge>}
+      {s.kind === 'return' && <Badge tone="rose">{s.no_receipt ? 'возврат без чека' : 'возврат'}</Badge>}
       {s.debt_tyiyn !== 0 && <Badge tone="amber">в долг {formatSom(Math.abs(s.debt_tyiyn))}</Badge>}
       <CorrectionBadges mark={fix} />
     </>
@@ -46,7 +48,10 @@ function Marks({ s, fix }: { s: SaleListItem; fix?: CorrectionMark }) {
 export default function SalesDay() {
   const [date, setDate] = useState(todayBishkek)
   const navigate = useNavigate()
-  const { data, error, loading } = useLoad(() => get<Day>(`/sales${qs({ date })}`), [date])
+  // Возврат без чека — только владелец (ADR-105).
+  const owner = useUser().role === 'owner'
+  const [noReceipt, setNoReceipt] = useState(false)
+  const { data, error, loading, reload } = useLoad(() => get<Day>(`/sales${qs({ date })}`), [date])
   // Исправленные чеки и исправления — одним запросом на экран.
   const fixes = useLoad(() => loadCorrections('sale').then(correctionMarks), [date])
   const sold = data?.sales.filter((s) => s.kind === 'sale').reduce((acc, s) => acc + s.total_tyiyn, 0) ?? 0
@@ -90,6 +95,11 @@ export default function SalesDay() {
             {date !== todayBishkek() && (
               <Button variant="ghost" onClick={() => setDate(todayBishkek())}>
                 Сегодня
+              </Button>
+            )}
+            {owner && (
+              <Button variant="danger-outline" className="ml-2" onClick={() => setNoReceipt(true)}>
+                Возврат без чека
               </Button>
             )}
           </div>
@@ -156,7 +166,7 @@ export default function SalesDay() {
                     <td className="px-2 py-2 font-medium">{s.number}</td>
                     <td className="px-2 py-2 tabular-nums">{formatTime(s.created_at)}</td>
                     <td className="px-2 py-2">
-                      {s.kind === 'return' ? <Badge tone="rose">возврат</Badge> : s.sale_type === 'service' ? 'В сервис' : 'На вынос'}
+                      {s.kind === 'return' ? <Badge tone="rose">{s.no_receipt ? 'возврат без чека' : 'возврат'}</Badge> : s.sale_type === 'service' ? 'В сервис' : 'На вынос'}
                       <div>
                         <CorrectionBadges mark={fixes.data?.get(s.id)} />
                       </div>
@@ -182,6 +192,14 @@ export default function SalesDay() {
           </>
         )}
       </Card>
+      {noReceipt && (
+        <NoReceiptReturn
+          onClose={() => {
+            setNoReceipt(false)
+            reload()
+          }}
+        />
+      )}
     </div>
   )
 }

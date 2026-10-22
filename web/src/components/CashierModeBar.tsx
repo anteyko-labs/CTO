@@ -29,12 +29,14 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
 
   return (
     <div
-      className="keep-dark no-print mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-slate-900 px-3 py-1 text-white md:px-4"
+      // На широком экране — одной строкой: длинное имя кассира сокращается, а не переносит кнопки
+      // на вторую строку (место по высоте — чеку, SPEC-30 §17).
+      className="keep-dark no-print mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-slate-900 px-3 py-1 text-white md:px-4 lg:flex-nowrap"
       data-testid="cashier-mode-bar"
     >
       <span className="text-lg font-bold">Касса</span>
       {shift ? (
-        <span className="text-base" data-testid="mode-shift">
+        <span className="min-w-0 truncate text-base" data-testid="mode-shift">
           Смена № {shift.number} · кассир <b>{shift.cashier_name}</b>
         </span>
       ) : shift === null ? (
@@ -45,12 +47,12 @@ export function CashierModeBar({ shift, onOpenShift }: { shift: Shift | null | u
           </button>
         </span>
       ) : null}
-      <span className={`flex items-center gap-2 text-base ${online ? 'text-emerald-300' : 'text-rose-300'}`} data-testid="mode-online">
+      <span className={`flex shrink-0 items-center gap-2 text-base whitespace-nowrap ${online ? 'text-emerald-300' : 'text-rose-300'}`} data-testid="mode-online">
         <span className={`h-3 w-3 rounded-full ${online ? 'bg-emerald-400' : 'bg-rose-500'}`} aria-hidden="true" />
         {online ? 'В сети' : 'Нет сети — чеки уйдут позже'}
         {waiting > 0 && <span className="text-amber-300"> · не отправлено: {waiting}</span>}
       </span>
-      <span className="ml-auto flex flex-wrap gap-2">
+      <span className="ml-auto flex shrink-0 flex-wrap gap-2 lg:flex-nowrap">
         <button
           type="button"
           aria-pressed={keyboard}
