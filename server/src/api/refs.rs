@@ -721,6 +721,8 @@ async fn create_supplier(
     let id = new_id();
     let (phone, comment) = (req.phone.trim().to_string(), req.comment.trim().to_string());
     let mut tx = state.pool.begin().await?;
+    // Нового поставщика заводят при приходе: право «Приход товара» (ADR-097).
+    crate::auth::require_permission(&mut tx, &ctx.user, "receipts").await?;
     sqlx::query!(
         "insert into suppliers (id, name, phone, comment) values ($1, $2, $3, $4)",
         id,

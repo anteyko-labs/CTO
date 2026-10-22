@@ -65,7 +65,25 @@ export interface ReceiptFix {
   state: ReceiptFixState
 }
 
+/** Без прав «Приход» и «Оприходование» — только «Нет права», без формы (ADR-097). */
 export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
+  const can = useCan()
+  if (!fix && !can('receipts') && !can('stock_in')) {
+    return (
+      <div>
+        <PageHeader title="Новый приход" />
+        <Card>
+          <div className="text-sm text-slate-700" data-testid="no-right">
+            Нет права: приход товара и оприходование. Его выдаёт владелец в «Пользователях».
+          </div>
+        </Card>
+      </div>
+    )
+  }
+  return <ReceiptForm fix={fix} />
+}
+
+function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const [opId] = useState(newOpId)
@@ -484,6 +502,15 @@ export default function ReceiptNew({ fix }: { fix?: ReceiptFix }) {
           </Card>
         ) : (
         <Card>
+          {/* Ключа распознавания нет — владелец видит, как включить; администратор — ничего. */}
+          {!fix && !draft && drafts.data && !drafts.data.enabled && owner && (
+            <div className="mb-3 flex flex-wrap items-center gap-3 border-b border-slate-100 pb-3 text-sm text-slate-500" data-testid="photo-needs-key">
+              <Button variant="secondary" disabled>
+                Заполнить по фото
+              </Button>
+              <span>нужен ключ распознавания (Настройки → Телеграм и баллы / config.ps1)</span>
+            </div>
+          )}
           {!fix && (draft || drafts.data?.enabled) && (
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
               {draft ? (

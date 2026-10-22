@@ -110,7 +110,8 @@ export default function Products() {
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const category = categories.data?.find((c) => c.id === categoryId)
   const filterDefs = category?.attributes.filter((a) => a.filterable) ?? []
-  // Полярность аккумуляторов — и без выбранной категории, как было в «Остатках» (SPEC-27).
+  // Полярность аккумуляторов — и без выбранной категории, как было в «Остатках» (SPEC-27), если в
+  // списке есть аккумуляторы; в категории — только у аккумуляторов (её собственный признак).
   const polarityDef = categoryId
     ? undefined
     : categories.data?.flatMap((c) => c.attributes).find((a) => a.key === 'polarity' && a.filterable && a.type === 'select')
@@ -329,7 +330,8 @@ export default function Products() {
               )}
             </Field>
           ))}
-          {polarityDef && (
+          {/* Без категории — только если в списке есть аккумуляторы (или отбор уже выбран). */}
+          {polarityDef && ((list.data?.items ?? []).some((it) => it.category_kind === 'battery') || Boolean(attrFilters.polarity)) && (
             <Field label="Полярность">
               <select value={attrFilters.polarity ?? ''} onChange={(e) => setAttrFilters((f) => ({ ...f, polarity: e.target.value }))}>
                 <option value="">Все</option>

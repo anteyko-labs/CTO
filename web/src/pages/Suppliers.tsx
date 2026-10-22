@@ -9,6 +9,7 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, P
 import { get, post } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
 import type { Supplier } from '../lib/types'
 
 export default function Suppliers() {
@@ -18,6 +19,8 @@ export default function Suppliers() {
   const [editing, setEditing] = useState<Supplier | null>(null)
   const [adding, setAdding] = useState(false)
   const { busy, error, setError, run } = useAction()
+  // Заводит поставщика тот, кто проводит приход (право «Приход товара», ADR-097).
+  const mayAdd = useCan()('receipts')
 
   const create = (e: FormEvent) => {
     e.preventDefault()
@@ -44,10 +47,12 @@ export default function Suppliers() {
         title="Поставщики"
         back={<StockBackLink />}
         actions={
-          <Button onClick={openAdd}>
-            <Icon name="plus" className="h-4 w-4" />
-            Добавить
-          </Button>
+          mayAdd && (
+            <Button onClick={openAdd}>
+              <Icon name="plus" className="h-4 w-4" />
+              Добавить
+            </Button>
+          )
         }
       />
 
@@ -56,7 +61,7 @@ export default function Suppliers() {
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
-          <Empty icon="truck" action={<Button onClick={openAdd}>Добавить поставщика</Button>}>
+          <Empty icon="truck" action={mayAdd && <Button onClick={openAdd}>Добавить поставщика</Button>}>
             Поставщиков пока нет. Их выбирают в приходной накладной.
           </Empty>
         ) : (

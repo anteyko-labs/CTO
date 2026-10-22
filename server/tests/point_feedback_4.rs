@@ -477,3 +477,157 @@ async fn cashier_debtors_are_only_those_who_owe(pool: PgPool) {
     .await;
     assert_eq!(both.as_array().unwrap().len(), 2);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn supplier_creation_needs_receipts_and_owner_accounts_hidden(pool: PgPool) {
+    // Нового поставщика заводят с правом «Приход товара» — и `POST /suppliers`, и `POST /parties`
+    // с ролью «поставщик»; счета «только владелец» администратору не видны ни в списке, ни в
+    // снимке кассы (SPEC-30, проверка вживую).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let supplier = |name: &str| json!({ "name": name, "phone": "", "comment": "" });
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(supplier("Смазка")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    sqlx::query("delete from user_permissions where permission = 'receipts'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, e) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&admin),
+        Some(supplier("Фильтры")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&admin),
+        Some(json!({ "role": "supplier", "kind": "company", "name": "Шины" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Покупателя — по-прежнему с правом «Клиенты и машины».
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/v1/parties",
+        Some(&admin),
+        Some(json!({ "role": "customer", "kind": "company", "name": "Такси" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (s, acc) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/accounts",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "name": "Личная карта", "kind": "bank",
+                     "allow_negative": false, "owner_only": true }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{acc}");
+    let hidden = acc["id"].clone();
+    let (_, list) = call(&app, "GET", "/api/v1/cash/accounts", Some(&admin), None).await;
+    assert!(list.as_array().unwrap().iter().all(|a| a["id"] != hidden));
+    let (_, list) = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None).await;
+    assert!(list.as_array().unwrap().iter().any(|a| a["id"] == hidden));
+    let (s, snap) = call(&app, "GET", "/api/v1/offline/snapshot", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        snap["bank_accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["id"] != hidden)
+    );
+    let (s, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/cash/accounts/{}", hidden.as_str().unwrap()),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_ne!(s, StatusCode::OK);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn stock_sort_keeps_units_apart(pool: PgPool) {
+    // Сортировка «Остаток»: литры и штуки не смешиваются — сначала штуки, потом литры,
+    // внутри — по количеству в выбранном направлении.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let other = category(&app, &owner, "Разное Юнит", "other").await;
+    let oils = category(&app, &owner, "Масла Юнит", "oil").await;
+    let few = product(
+        &app,
+        &owner,
+        json!({ "category_id": other["id"], "name": "Юнит штука 2", "sale_price_tyiyn": 1_000 }),
+    )
+    .await;
+    let many = product(
+        &app,
+        &owner,
+        json!({ "category_id": other["id"], "name": "Юнит штука 9", "sale_price_tyiyn": 1_000 }),
+    )
+    .await;
+    let oil = product(
+        &app,
+        &owner,
+        json!({ "category_id": oils["id"], "name": "Юнит масло", "sale_price_tyiyn": 100_000, "container_ml": 4_000 }),
+    )
+    .await;
+    let (_, accs) = call(&app, "GET", "/api/v1/cash/accounts", Some(&owner), None).await;
+    let safe = accs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Сейф владельца")
+        .unwrap()["id"]
+        .clone();
+    let (s, r) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "paid_from": safe, "lines": [
+            { "product_id": few["id"], "qty": 2, "cost_tyiyn": 1_000 },
+            { "product_id": many["id"], "qty": 9, "cost_tyiyn": 4_500 },
+            { "product_id": oil["id"], "qty": 8_000, "cost_tyiyn": 100_000 },
+        ] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    for (dir, want) in [
+        ("asc", ["Юнит штука 2", "Юнит штука 9", "Юнит масло"]),
+        ("desc", ["Юнит штука 9", "Юнит штука 2", "Юнит масло"]),
+    ] {
+        let (s, list) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/products/list?q=Юнит&sort=stock&dir={dir}"),
+            Some(&owner),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{list}");
+        assert_eq!(names(&list["items"]), want, "{dir}");
+    }
+}

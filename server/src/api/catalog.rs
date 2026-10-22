@@ -882,7 +882,14 @@ pub async fn product_list(
             _ => by_name(a, b),
         };
         let o = if desc { o.reverse() } else { o };
-        o.then_with(|| by_name(a, b))
+        // Остаток в литрах, штуках и килограммах не сравнивают: сначала единица (штуки, литры,
+        // килограммы — при любом направлении), внутри — количество.
+        let unit = if sort == "stock" {
+            unit_rank(&a.product.unit).cmp(&unit_rank(&b.product.unit))
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        unit.then(o).then_with(|| by_name(a, b))
     });
     // Страница отбора (SPEC-28 §2): итоги — по всему отбору, строки — только страницы.
     items.drain(..offset.min(items.len()));
@@ -1889,6 +1896,16 @@ async fn merge_product(
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+/// Порядок единиц остатка при сортировке «Остаток»: штуки, литры (мл), килограммы (г).
+fn unit_rank(unit: &str) -> u8 {
+    match unit {
+        "piece" => 0,
+        "ml" => 1,
+        "g" => 2,
+        _ => 3,
+    }
 }
 
 #[cfg(test)]

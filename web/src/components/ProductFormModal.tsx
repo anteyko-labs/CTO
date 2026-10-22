@@ -291,6 +291,8 @@ export function ProductFormModal({
           Данные взяты из старой программы: {preset.name}. Проверьте категорию, цену и характеристики.
         </div>
       )}
+      {/* Без права «Товары и штрихкоды» карточка только для чтения (ADR-097). */}
+      <fieldset disabled={!mayEdit} className="m-0 min-w-0 border-0 p-0">
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2">
           <Field
@@ -441,7 +443,8 @@ export function ProductFormModal({
             />
           </Field>
         )}
-        {category?.attributes.map((a) => (
+        {/* Кросс-номера фильтра — отдельным полем выше; прежний признак «cross» категории не дублируем. */}
+        {category?.attributes.filter((a) => !(isFilter && a.key === 'cross')).map((a) => (
           <Field key={a.key} label={a.label}>
             {a.type === 'select' ? (
               <select value={form.attrs[a.key] ?? ''} onChange={(e) => set('attrs', { ...form.attrs, [a.key]: e.target.value })}>
@@ -474,6 +477,7 @@ export function ProductFormModal({
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
       </div>
+      </fieldset>
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />
         <Missing items={missing} className="text-right" />

@@ -260,6 +260,10 @@ async fn create_party(
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     require_party_right(&mut tx, &ctx.user, &role).await?;
+    // Нового поставщика заводят при приходе — право «Приход товара», как `POST /suppliers`.
+    if role == "supplier" {
+        crate::auth::require_permission(&mut tx, &ctx.user, "receipts").await?;
+    }
     sqlx::query!(
         r#"insert into parties (id, branch_id, role, kind, name, phone, inn, comment,
                                 credit_limit_tyiyn, due_days, first_name, last_name)
@@ -360,8 +364,8 @@ async fn get_party(
     Ok(Json(load_party(&mut conn, user.branch_id, id).await?))
 }
 
-/// Клиента заводит и правит владелец или администратор с правом `clients` (ADR-097); поставщик
-/// в список прав не входит и правится, как раньше.
+/// Клиента заводит и правит владелец или администратор с правом `clients` (ADR-097); поставщика
+/// заводят с правом `receipts` (проверка в `create_party`), правится он, как раньше.
 async fn require_party_right(
     conn: &mut PgConnection,
     user: &crate::auth::CurrentUser,
