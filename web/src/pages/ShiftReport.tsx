@@ -6,7 +6,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get } from '../lib/api'
-import { formatDateTime, formatKg, formatLiters, formatSom, formatTime, plural } from '../lib/format'
+import { formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import {
   CANCEL_REASONS,
@@ -274,7 +274,13 @@ function Overview({ data }: { data: Report }) {
                   сменой № {data.compare.number}
                 </Link>{' '}
                 <b className="tabular-nums text-slate-900">{formatSom(data.compare.net_tyiyn)}</b>
+                {data.compare.same_time && <> за то же время от открытия</>}
               </div>
+              {data.compare.same_time && (
+                <div className="text-xs text-slate-500" data-testid="compare-same-time">
+                  Смена ещё идёт — прошлую смену берём за столько же часов от её открытия.
+                </div>
+              )}
               <div className={`text-2xl font-semibold tabular-nums ${data.compare.diff_tyiyn < 0 ? 'text-rose-700' : data.compare.diff_tyiyn > 0 ? 'text-emerald-700' : ''}`}>
                 {data.compare.diff_tyiyn > 0 ? '▲ +' : data.compare.diff_tyiyn < 0 ? '▼ ' : ''}
                 {formatSom(data.compare.diff_tyiyn)}
@@ -312,7 +318,7 @@ function HourBars({ hours }: { hours: HourRow[] }) {
             {shown.returns_tyiyn > 0 && <> · возвраты {formatSom(shown.returns_tyiyn)}</>}
           </>
         ) : (
-          <span className="text-slate-400">Наведите или нажмите на столбик</span>
+          <span className="text-slate-400">Над столбиком — продажи за час; нажмите — подробнее</span>
         )}
       </div>
       <div className="flex h-44 items-end gap-1 border-b border-slate-200" onMouseLeave={() => setHover(null)}>
@@ -326,10 +332,18 @@ function HourBars({ hours }: { hours: HourRow[] }) {
             onFocus={() => setHover(i)}
             onClick={() => setHover(i)}
           >
-            <span
-              className={`block w-full max-w-10 rounded-t transition ${hover === i ? 'bg-sky-700' : 'bg-sky-500 group-hover:bg-sky-600'}`}
-              style={{ height: `${heights[i]}%` }}
-            />
+            {/* Сумма над столбиком видна сразу, без нажатия: коротко, «2,5 т». */}
+            <span className="flex h-full w-full max-w-10 flex-col items-center justify-end">
+              {h.sales_tyiyn > 0 && (
+                <span className="mb-0.5 text-[10px] leading-none whitespace-nowrap text-slate-600 tabular-nums" data-testid="hour-label">
+                  {formatSomShort(h.sales_tyiyn)}
+                </span>
+              )}
+              <span
+                className={`block w-full rounded-t transition ${hover === i ? 'bg-sky-700' : 'bg-sky-500 group-hover:bg-sky-600'}`}
+                style={{ height: `calc((100% - 14px) * ${heights[i]} / 100)` }}
+              />
+            </span>
           </button>
         ))}
       </div>
@@ -537,7 +551,8 @@ function totalsLabel(key: string, label: string): string {
 }
 
 function MoneyTab({ data }: { data: Report }) {
-  const [newFirst, setNewFirst] = useState(false)
+  // Сначала поздние, как в остальных списках; кнопка показывает текущий порядок и меняет его.
+  const [newFirst, setNewFirst] = useState(true)
   const rows = newFirst ? [...data.money].reverse() : data.money
   const pager = usePager(rows, 'shift_report.money', String(newFirst))
   return (
@@ -547,8 +562,8 @@ function MoneyTab({ data }: { data: Report }) {
         <CardTitle
           actions={
             data.money.length > 1 && (
-              <Button variant="secondary" className="min-h-9 px-3 py-1" onClick={() => setNewFirst(!newFirst)}>
-                {newFirst ? 'Сначала ранние' : 'Сначала поздние'}
+              <Button variant="secondary" className="min-h-9 px-3 py-1" title="Поменять порядок" onClick={() => setNewFirst(!newFirst)}>
+                {newFirst ? 'Сначала поздние ⇅' : 'Сначала ранние ⇅'}
               </Button>
             )
           }

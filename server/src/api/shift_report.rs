@@ -105,6 +105,9 @@ pub struct Compare {
     pub diff_tyiyn: i64,
     /// Разница в сотых долях процента от прошлой выручки; прошлая — ноль: пусто.
     pub change_bp: Option<i64>,
+    /// Смена ещё идёт: прошлая взята за то же время от открытия, а не целиком.
+    #[serde(default)]
+    pub same_time: bool,
 }
 
 /// Час смены (начало часа): продажи и возвраты.
@@ -716,7 +719,16 @@ async fn compare(
         return Ok(None);
     };
     // Прошлая смена кончилась не позже открытия этой: чеки после — уже этой смены.
-    let end = close_time(conn, prev.id).await?.unwrap_or(s.opened_at);
+    let mut end = close_time(conn, prev.id).await?.unwrap_or(s.opened_at);
+    // Эта смена ещё идёт — прошлую берём за столько же времени от её открытия: полдня против
+    // целой смены не сравнивают.
+    let same_time = s.closed_at.is_none();
+    if same_time {
+        let elapsed = Utc::now().signed_duration_since(s.opened_at);
+        if let Some(cut) = prev.opened_at.checked_add_signed(elapsed) {
+            end = end.min(cut);
+        }
+    }
     let prev_net = sqlx::query_scalar!(
         r#"select coalesce(sum(total_tyiyn), 0)::bigint as "v!" from sales
            where branch_id = $1 and created_at >= $2 and created_at <= $3"#,
@@ -740,6 +752,7 @@ async fn compare(
         net_tyiyn: prev_net,
         diff_tyiyn: diff,
         change_bp,
+        same_time,
     }))
 }
 
@@ -1275,8 +1288,13 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
     }
     if let Some(cmp) = &r.compare {
         rev.push(format!(
-            "  к смене № {}: {}{}",
+            "  к смене № {}{}: {}{}",
             cmp.number,
+            if cmp.same_time {
+                " за то же время"
+            } else {
+                ""
+            },
             format_som_signed(cmp.diff_tyiyn),
             cmp.change_bp
                 .map(|bp| format!(" ({})", percent_bp(bp)))

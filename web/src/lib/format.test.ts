@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLiters, formatOilStock, formatPercentBp, formatSom, formatSomExact, litersInput, parseLiters, parsePercentBp, parseSom, plural, shiftDate, somInput } from './format'
+import { formatLiters, formatOilStock, formatPercentBp, formatSom, formatSomExact, formatSomShort, litersInput, parseLiters, parsePercentBp, parseSom, plural, shiftDate, somInput } from './format'
 
 const nb = (s: string) => s.replace(/\u00a0/g, ' ')
 
@@ -91,5 +91,17 @@ describe('слово при числе', () => {
       '111 позиций',
       '1003 позиции',
     ])
+  })
+})
+
+describe('formatSomShort', () => {
+  const nb = (s: string) => s.replace(/\u00a0/g, ' ')
+  it('тысячи и миллионы коротко', () => {
+    expect(nb(formatSomShort(250_000))).toBe('2,5 т')
+    expect(nb(formatSomShort(300_000))).toBe('3 т')
+    expect(nb(formatSomShort(12_345_600))).toBe('123 т')
+    expect(nb(formatSomShort(250_000_000))).toBe('2,5 млн')
+    expect(nb(formatSomShort(45_000))).toBe('450')
+    expect(nb(formatSomShort(0))).toBe('0')
   })
 })

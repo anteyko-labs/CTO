@@ -653,8 +653,22 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
     assert!(n["cancelled"].as_array().unwrap().is_empty());
     assert!(n["money"].as_array().unwrap().is_empty());
     assert!(n["payouts"].as_array().unwrap().is_empty());
+    // Смена идёт — прошлая берётся за то же время от открытия, не целиком.
     let cmp = &n["compare"];
     assert_eq!(cmp["number"], shift["number"]);
+    assert_eq!(cmp["same_time"], true);
+    assert!(cmp["net_tyiyn"].as_i64().unwrap() <= 250_000);
+    // Закрыли — сравнение со всей прошлой сменой.
+    ok(
+        &app,
+        &admin,
+        &format!("/api/v1/shifts/{nid}/close"),
+        json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": 96_000, "comment": "" }),
+    )
+    .await;
+    let n = get(&app, &owner, &format!("/api/v1/shifts/{nid}/report")).await;
+    let cmp = &n["compare"];
+    assert_eq!(cmp["same_time"], false);
     assert_eq!(cmp["net_tyiyn"], 250_000);
     assert_eq!(cmp["diff_tyiyn"], 50_000 - 250_000);
     assert_eq!(cmp["change_bp"], -8_000);

@@ -52,6 +52,8 @@ export interface Compare {
   net_tyiyn: number
   diff_tyiyn: number
   change_bp: number | null
+  /** Смена ещё идёт: прошлая взята за то же время от открытия. */
+  same_time?: boolean
 }
 
 export interface HourRow {

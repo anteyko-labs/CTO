@@ -13,6 +13,21 @@ export function formatSom(tyiyn: number, withUnit = true): string {
   return withUnit ? `${text}\u00a0с` : text
 }
 
+/** Коротко для подписей графиков, целыми: 250000 → «2,5 т», 12345600 → «123 т»,
+ *  250000000 → «2,5 млн», 45000 → «450». Дробная часть — один знак, округление вниз. */
+export function formatSomShort(tyiyn: number): string {
+  const sign = tyiyn < 0 ? '−' : ''
+  const som = Math.trunc(Math.abs(tyiyn) / 100)
+  const scaled = (n: number, unit: number, name: string) => {
+    const tenths = Math.trunc((n * 10) / unit)
+    const whole = Math.trunc(tenths / 10)
+    return `${sign}${group(String(whole))}${whole < 100 && tenths % 10 ? ',' + String(tenths % 10) : ''}\u00a0${name}`
+  }
+  if (som >= 1_000_000) return scaled(som, 1_000_000, 'млн')
+  if (som >= 1_000) return scaled(som, 1_000, 'т')
+  return `${sign}${som}`
+}
+
 /** В документах (чек, расписка, акт): всегда с тыйынами — 3285000 → «32 850,00 с». */
 export function formatSomExact(tyiyn: number, withUnit = true): string {
   const sign = tyiyn < 0 ? '−' : ''
