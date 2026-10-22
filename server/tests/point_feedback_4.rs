@@ -631,3 +631,79 @@ async fn stock_sort_keeps_units_apart(pool: PgPool) {
         assert_eq!(names(&list["items"]), want, "{dir}");
     }
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn service_oil_kind_by_name_and_no_receipt_return_owner_only(pool: PgPool) {
+    // Категория масла у услуги (ADR-104): без выбора — по названию; выбрать — только владельцу.
+    // Возврат без чека (ADR-105): администратору — 403.
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let motor = category(&app, &owner, "Моторные масла", "oil").await;
+    let gear = category(&app, &owner, "Трансмиссионные масла", "oil").await;
+    let create = |name: &str| json!({ "name": name, "price_tyiyn": 20000, "master_fee_tyiyn": 3000, "free_with_oil": true });
+    let (s, m) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&owner),
+        Some(create("Замена в моторе")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert_eq!(m["oil_category_id"], motor["id"]);
+    let (_, g) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&owner),
+        Some(create("Замена масла АКПП")),
+    )
+    .await;
+    assert_eq!(g["oil_category_id"], gear["id"]);
+    let uri = format!("/api/v1/services/{}", m["id"].as_str().unwrap());
+    let (s, _) = call(
+        &app,
+        "PATCH",
+        &uri,
+        Some(&admin),
+        Some(json!({ "oil_category_id": gear["id"] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, m2) = call(
+        &app,
+        "PATCH",
+        &uri,
+        Some(&owner),
+        Some(json!({ "oil_category_id": gear["id"] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{m2}");
+    assert_eq!(m2["oil_category_id"], gear["id"]);
+    // Не масло — не категория масла.
+    let other = category(&app, &owner, "Автохимия", "other").await;
+    let (s, _) = call(
+        &app,
+        "PATCH",
+        &uri,
+        Some(&owner),
+        Some(json!({ "oil_category_id": other["id"] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = json!({
+        "op_id": Uuid::now_v7(), "method": "card", "comment": "без чека",
+        "lines": [{ "kind": "piece", "product_id": Uuid::now_v7(), "qty": 1, "amount_tyiyn": 100 }],
+    });
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/v1/sales/return-without-receipt",
+        Some(&admin),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

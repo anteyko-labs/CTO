@@ -194,7 +194,9 @@ pub async fn sales(
                             (s.created_at + chrono::Duration::hours(6)).format("%H:%M"),
                             format_som(s.total_tyiyn)
                         )];
-                        if s.kind == "return" {
+                        if s.no_receipt {
+                            parts.push("возврат без чека".into());
+                        } else if s.kind == "return" {
                             parts.push("возврат".into());
                         }
                         parts.push(format!("кассир {}", s.cashier_name));

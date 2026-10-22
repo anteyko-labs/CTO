@@ -8,7 +8,8 @@ use avtodom_server::api::receipts::{
 };
 use avtodom_server::api::revisions::{PostReq, post_revision_tx};
 use avtodom_server::api::sales::{
-    PaymentReq, ReturnLineReq, ReturnReq, SaleLineReq, SaleReq, post_sale_tx, return_sale_tx,
+    NoReceiptLineReq, NoReceiptReq, PaymentReq, ReturnLineReq, ReturnReq, SaleLineReq, SaleReq,
+    no_receipt_return_tx, post_sale_tx, return_sale_tx,
 };
 use avtodom_server::auth::{Ctx, CurrentUser, Role};
 use avtodom_server::error::AppError;
@@ -98,6 +99,13 @@ async fn seed(pool: &PgPool) -> World {
     );
     sqlx::query("insert into categories (id, name, kind) values ($1, 'Фильтры', 'filter'), ($2, 'Масла', 'oil')")
         .bind(cat_f)
+        .bind(cat_o)
+        .execute(pool)
+        .await
+        .unwrap();
+    // Замена бесплатна с нашим маслом этой категории (ADR-104).
+    sqlx::query("update services set oil_category_id = $2 where id = $1")
+        .bind(service)
         .bind(cat_o)
         .execute(pool)
         .await
@@ -10047,9 +10055,10 @@ async fn service_kinds_price_by_our_oil_and_report(pool: PgPool) {
     receive(&pool, &w.admin, w.oil, 12_000, 360_000).await;
     receive(&pool, &w.admin, w.filter, 5, 5_000).await;
     let gearbox = Uuid::now_v7();
-    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil) values ($1, $2, 'Замена масла в коробке', 15000, 4000, true)")
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id) values ($1, $2, 'Замена масла в коробке', 15000, 4000, true, (select category_id from products where id = $3))")
         .bind(gearbox)
         .bind(w.owner.user.branch_id)
+        .bind(w.oil)
         .execute(&pool)
         .await
         .unwrap();
@@ -10378,4 +10387,428 @@ async fn discount_needs_right(pool: PgPool) {
     // С правом администратор ставит скидку сам.
     grant(&pool, &w, "discount").await;
     sell(&pool, &w.admin, cheap()).await.unwrap();
+}
+
+// ---------- SPEC-30 §15–16: замена по виду масла, удержание, возврат без чека ----------
+
+/// Вторая категория масла — трансмиссионное в канистре 1 л (цена 600 с, закупка 300 с) — и
+/// вид замены в коробке с этой категорией (цена клиенту 150 с).
+async fn gear_oil(pool: &PgPool, w: &World) -> (Uuid, Uuid) {
+    let (cat, oil, svc) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    let branch = w.owner.user.branch_id;
+    sqlx::query(
+        "insert into categories (id, name, kind) values ($1, 'Трансмиссионные масла', 'oil')",
+    )
+    .bind(cat)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into products (id, category_id, name, unit, container_ml) values ($1, $2, 'ATF 1л', 'ml', 1000)")
+        .bind(oil)
+        .bind(cat)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into branch_products (branch_id, product_id, sale_price_tyiyn) values ($1, $2, 60000)")
+        .bind(branch)
+        .bind(oil)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id) values ($1, $2, 'Замена в коробке', 15000, 4000, true, $3)")
+        .bind(svc)
+        .bind(branch)
+        .bind(cat)
+        .execute(pool)
+        .await
+        .unwrap();
+    receive(pool, &w.owner, oil, 5000, 150_000).await;
+    (oil, svc)
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn free_service_needs_canister_of_same_oil_kind(pool: PgPool) {
+    // Бесплатно — только с нашим маслом категории услуги не меньше канистры (ADR-104).
+    let w = seed(&pool).await;
+    receive(&pool, &w.owner, w.oil, 12_000, 360_000).await;
+    let (atf, gearbox) = gear_oil(&pool, &w).await;
+    let client = service_client(&pool, &w).await;
+    let sale = |lines: Vec<SaleLineReq>, total: i64| {
+        in_service(&w, client, takeaway(&w, lines, cash(total)))
+    };
+    // 0,5 л моторного на долив — замена в моторе по цене клиенту.
+    let topup = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("pour", w.oil, 500, 50_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            45_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(topup.lines[1].list_price_tyiyn, 20_000);
+    // Канистра моторного: замена в моторе бесплатна, в коробке — нет (масло другого вида).
+    let motor = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                kind_line(w.service, 1, 0),
+                kind_line(gearbox, 1, 15_000),
+            ],
+            215_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(motor.lines[1].list_price_tyiyn, 0);
+    assert_eq!(motor.lines[2].list_price_tyiyn, 15_000);
+    // Канистра трансмиссионного 1 л — замена в коробке бесплатна.
+    let gear = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![line("container", atf, 1, 60_000), kind_line(gearbox, 1, 0)],
+            60_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(gear.lines[1].list_price_tyiyn, 0);
+    // Розлив считается в мл: 4 л розливом — как канистра.
+    let poured = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("pour", w.oil, 4000, 50_000),
+                kind_line(w.service, 1, 0),
+            ],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(poured.lines[1].list_price_tyiyn, 0);
+    // Флажок без категории масла не действует.
+    let bare = Uuid::now_v7();
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, free_with_oil) values ($1, $2, 'Замена без вида', 30000, true)")
+        .bind(bare)
+        .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let no_cat = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                kind_line(bare, 1, 30_000),
+            ],
+            230_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(no_cat.lines[1].list_price_tyiyn, 30_000);
+}
+
+async fn return_lines(
+    pool: &PgPool,
+    ctx: &Ctx,
+    sale: Uuid,
+    lines: &[(i32, i64)],
+    payments: Vec<PaymentReq>,
+) -> Result<avtodom_server::api::sales::SaleOut, AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = return_sale_tx(
+        &mut tx,
+        ctx,
+        sale,
+        ReturnReq {
+            op_id: Uuid::now_v7(),
+            battery_cash: false,
+            comment: String::new(),
+            lines: lines
+                .iter()
+                .map(|(line_no, qty)| ReturnLineReq {
+                    line_no: *line_no,
+                    qty: *qty,
+                })
+                .collect(),
+            payments,
+            business_date: None,
+        },
+    )
+    .await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r
+}
+
+fn withheld(r: &avtodom_server::api::sales::SaleOut) -> i64 {
+    r.lines
+        .iter()
+        .filter(|l| l.withheld_for.is_some())
+        .map(|l| l.amount_tyiyn)
+        .sum()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn oil_return_withholds_free_service_once(pool: PgPool) {
+    // Возврат масла ниже канистры при оставшейся бесплатной замене — из возврата удерживается
+    // цена замены, один раз; удержанное — выручка услуги и «Замены» (ADR-104).
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w.owner, w.oil, 40_000, 1_200_000).await;
+    let client = service_client(&pool, &w).await;
+    let sale = |lines: Vec<SaleLineReq>, total: i64| {
+        in_service(&w, client, takeaway(&w, lines, cash(total)))
+    };
+    let s1 = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                kind_line(w.service, 1, 0),
+            ],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(s1.lines[1].withhold_price_tyiyn, Some(20_000));
+    // Вернуть всю сумму канистры нельзя: 200 с удерживается за замену.
+    match return_lines(&pool, &w.owner, s1.id, &[(1, 1)], cash(200_000)).await {
+        Err(AppError::Validation(m)) => assert!(m.contains("180000"), "{m}"),
+        other => panic!("ждали 422, получили {:?}", other.map(|r| r.number)),
+    }
+    let r1 = return_lines(&pool, &w.owner, s1.id, &[(1, 1)], cash(180_000))
+        .await
+        .unwrap();
+    assert_eq!(r1.total_tyiyn, -180_000);
+    assert_eq!(withheld(&r1), 20_000);
+    let held = r1.lines.iter().find(|l| l.withheld_for == Some(2)).unwrap();
+    assert!(held.name.starts_with("Удержано за замену"), "{}", held.name);
+    assert_eq!((held.qty, held.master_fee_tyiyn), (0, 0));
+    // Удержано — второй раз не удерживается.
+    let mut conn = pool.acquire().await.unwrap();
+    let again = avtodom_server::api::sales::load_sale(&mut conn, &w.owner.user, s1.id)
+        .await
+        .unwrap();
+    assert_eq!(again.lines[1].withhold_price_tyiyn, None);
+    drop(conn);
+
+    // Канистра + 1 л розливом: вернули литр — осталась канистра, не удерживается; потом канистру —
+    // удерживается.
+    let s2 = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                line("pour", w.oil, 1000, 50_000),
+                kind_line(w.service, 1, 0),
+            ],
+            250_000,
+        ),
+    )
+    .await
+    .unwrap();
+    let r2 = return_lines(&pool, &w.owner, s2.id, &[(2, 1000)], cash(50_000))
+        .await
+        .unwrap();
+    assert_eq!(withheld(&r2), 0);
+    let r3 = return_lines(&pool, &w.owner, s2.id, &[(1, 1)], cash(180_000))
+        .await
+        .unwrap();
+    assert_eq!(withheld(&r3), 20_000);
+
+    // Канистра + 3 л: вернули канистру — удержание; вернули остальное масло — второй раз нет.
+    let s3 = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                line("pour", w.oil, 3000, 50_000),
+                kind_line(w.service, 1, 0),
+            ],
+            350_000,
+        ),
+    )
+    .await
+    .unwrap();
+    let r4 = return_lines(&pool, &w.owner, s3.id, &[(1, 1)], cash(180_000))
+        .await
+        .unwrap();
+    assert_eq!(withheld(&r4), 20_000);
+    let r5 = return_lines(&pool, &w.owner, s3.id, &[(2, 3000)], cash(150_000))
+        .await
+        .unwrap();
+    assert_eq!((withheld(&r5), r5.total_tyiyn), (0, -150_000));
+
+    // Масло вернули вместе с заменой — удерживать нечего.
+    let s4 = sell(
+        &pool,
+        &w.owner,
+        sale(
+            vec![
+                line("container", w.oil, 1, 200_000),
+                kind_line(w.service, 1, 0),
+            ],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    let r6 = return_lines(&pool, &w.owner, s4.id, &[(1, 1), (2, 1)], cash(200_000))
+        .await
+        .unwrap();
+    assert_eq!(withheld(&r6), 0);
+
+    // Удержанное — выручка услуги: в прибыли и в «Замены» (3 удержания по 200 с).
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    let t =
+        avtodom_server::api::reports::totals_for(&mut conn, w.owner.user.branch_id, today, today)
+            .await
+            .unwrap();
+    assert_eq!(t.services_tyiyn, 60_000);
+    let r = avtodom_server::api::reports::service_kinds_data(&mut conn, &w.owner.user, None, None)
+        .await
+        .unwrap();
+    let motor = r.kinds.iter().find(|k| k.name == "Замена масла").unwrap();
+    assert_eq!((motor.count, motor.clients_tyiyn), (3, 60_000));
+    drop(conn);
+    assert_stock_consistent(&pool, &w).await;
+}
+
+fn no_receipt(w: &World, method: &str, qty: i64, amount: i64) -> NoReceiptReq {
+    NoReceiptReq {
+        op_id: Uuid::now_v7(),
+        lines: vec![NoReceiptLineReq {
+            kind: "container".into(),
+            product_id: w.oil,
+            qty,
+            amount_tyiyn: amount,
+        }],
+        method: method.into(),
+        account_id: None,
+        party_id: None,
+        cashier_id: Some(w.cashier),
+        comment: "Вернули целую канистру".into(),
+    }
+}
+
+async fn post_no_receipt(
+    pool: &PgPool,
+    ctx: &Ctx,
+    req: NoReceiptReq,
+) -> Result<avtodom_server::api::sales::SaleOut, AppError> {
+    let mut tx = pool.begin().await.unwrap();
+    let r = no_receipt_return_tx(&mut tx, ctx, req).await;
+    if r.is_ok() {
+        tx.commit().await.unwrap();
+    }
+    r
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn no_receipt_return_owner_only_stock_and_money(pool: PgPool) {
+    // Возврат без чека (ADR-105): только владелец; товар на склад по средней, выручка и
+    // себестоимость меньше, деньги со счёта; наличные — только при открытой смене; `op_id`.
+    let w = seed(&pool).await;
+    receive(&pool, &w.owner, w.oil, 12_000, 360_000).await;
+    assert!(matches!(
+        post_no_receipt(&pool, &w.admin, no_receipt(&w, "card", 1, 200_000)).await,
+        Err(AppError::Forbidden)
+    ));
+    assert!(matches!(
+        post_no_receipt(&pool, &w.owner, no_receipt(&w, "cash", 1, 200_000)).await,
+        Err(AppError::Conflict(_))
+    ));
+    let mut bad = no_receipt(&w, "card", 1, 200_000);
+    bad.comment = "  ".into();
+    assert!(matches!(
+        post_no_receipt(&pool, &w.owner, bad).await,
+        Err(AppError::Validation(_))
+    ));
+    let req = no_receipt(&w, "card", 1, 200_000);
+    let op = req.op_id;
+    let r = post_no_receipt(&pool, &w.owner, req).await.unwrap();
+    assert_eq!(
+        (r.kind.as_str(), r.no_receipt, r.reversal_of),
+        ("return", true, None)
+    );
+    assert_eq!(r.total_tyiyn, -200_000);
+    assert_eq!(r.lines[0].cost_tyiyn, Some(-120_000));
+    assert!(r.payments[0].account_id.is_some());
+    // Средняя 30 с за литр… 300 тыйынов за 10 мл: 4 л вернулись за 1 200 с.
+    assert_eq!(pool_of(&pool, w.oil).await.0, 16_000);
+    assert_eq!(pool_of(&pool, w.oil).await.1, 480_000);
+    // Повтор с тем же `op_id` — тот же документ, склад не меняется.
+    let mut again = no_receipt(&w, "card", 1, 200_000);
+    again.op_id = op;
+    assert_eq!(
+        post_no_receipt(&pool, &w.owner, again).await.unwrap().id,
+        r.id
+    );
+    assert_eq!(pool_of(&pool, w.oil).await.0, 16_000);
+    // Деньги ушли со счёта карты.
+    let bank: i64 = sqlx::query_scalar(
+        "select coalesce(sum(amount_tyiyn), 0)::bigint from cash_movements where doc_id = $1",
+    )
+    .bind(r.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bank, -200_000);
+    // Наличными — при открытой смене; кассир документа — кассир смены.
+    open_till(&pool, &w).await;
+    let c = post_no_receipt(&pool, &w.owner, no_receipt(&w, "cash", 1, 190_000))
+        .await
+        .unwrap();
+    assert_eq!(c.cashier_id, w.cashier);
+    // Выручка и себестоимость меньше; 2 % и ставки не трогаются.
+    let mut conn = pool.acquire().await.unwrap();
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    let t =
+        avtodom_server::api::reports::totals_for(&mut conn, w.owner.user.branch_id, today, today)
+            .await
+            .unwrap();
+    assert_eq!((t.goods_tyiyn, t.cost_tyiyn), (-390_000, -240_000));
+    let accruals: i64 =
+        sqlx::query_scalar("select count(*) from payroll_accruals where doc_id = any($1)")
+            .bind(vec![r.id, c.id])
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    assert_eq!(accruals, 0);
+    // Журнал — владельцу.
+    let audit: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'sale.return_no_receipt'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(audit, 2);
+    drop(conn);
+    assert_stock_consistent(&pool, &w).await;
 }

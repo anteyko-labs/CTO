@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.line_no, l.kind, l.product_id, l.service_id,\n                  -- Полярность аккумулятора — в названии строки: «(Л)» прямая, «(П)» обратная (SPEC-27).\n                  coalesce(l.name,\n                           p.name || case p.attrs ->> 'polarity' when 'прямая' then ' (Л)'\n                                                                when 'обратная' then ' (П)' else '' end,\n                           sv.name) as \"name!\",\n                  p.container_ml as \"container_ml?\",\n                  l.qty, l.units, l.unit_price_tyiyn, l.list_price_tyiyn, l.amount_tyiyn, l.cost_tyiyn,\n                  l.master_fee_tyiyn, l.gift, l.withheld_for,\n                  case when l.kind = 'service' then (case when sv.free_with_oil then sv.oil_category_id end)\n                       when pc.kind = 'oil' then p.category_id end as \"oil_category_id?\",\n                  case when l.kind = 'service' and l.withheld_for is null and l.amount_tyiyn = 0\n                            and l.list_price_tyiyn = 0 and sv.free_with_oil\n                            and sv.oil_category_id is not null and sv.price_tyiyn > 0\n                            and not exists (select 1 from sale_lines w join sales r on r.id = w.sale_id\n                                            where r.reversal_of = l.sale_id and w.withheld_for = l.line_no)\n                       then sv.price_tyiyn end as \"withhold_price_tyiyn?\"\n           from sale_lines l\n           left join products p on p.id = l.product_id\n           left join categories pc on pc.id = p.category_id\n           left join services sv on sv.id = l.service_id\n           where l.sale_id = $1 order by l.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "service_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "container_ml?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "units",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "unit_price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "list_price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "gift",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 14,
+        "name": "withheld_for",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "oil_category_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 16,
+        "name": "withhold_price_tyiyn?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      null,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "a8cde887df8d39eb7c4d6f821a0d504c07dd46f0cc290c7db4a3b5ee172dda17"
+}

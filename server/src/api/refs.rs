@@ -412,7 +412,56 @@ struct ServiceOut {
     price_tyiyn: i64,
     master_fee_tyiyn: i64,
     free_with_oil: bool,
+    /// Категория масла, с которым услуга бесплатна (ADR-104); без неё флажок не действует.
+    oil_category_id: Option<Uuid>,
     active: bool,
+}
+
+/// Категория масла по названию услуги (ADR-104), как в миграции 0059: «АКПП», «короб»,
+/// «трансмис» — трансмиссионная, иначе моторная (без такого названия — единственная
+/// нетрансмиссионная категория масла).
+pub(crate) async fn guess_oil_category(
+    conn: &mut sqlx::PgConnection,
+    name: &str,
+) -> AppResult<Option<Uuid>> {
+    let low = name.to_lowercase();
+    let gear = ["акпп", "короб", "трансмис"]
+        .iter()
+        .any(|w| low.contains(w));
+    let cats =
+        sqlx::query!("select id, name from categories where kind = 'oil' order by created_at, id")
+            .fetch_all(&mut *conn)
+            .await?;
+    let is_gear = |n: &str| n.to_lowercase().contains("трансмис");
+    if gear {
+        return Ok(cats.iter().find(|c| is_gear(&c.name)).map(|c| c.id));
+    }
+    if let Some(c) = cats
+        .iter()
+        .find(|c| c.name.to_lowercase().contains("мотор"))
+    {
+        return Ok(Some(c.id));
+    }
+    let other: Vec<_> = cats.iter().filter(|c| !is_gear(&c.name)).collect();
+    Ok(match other.as_slice() {
+        [one] => Some(one.id),
+        _ => None,
+    })
+}
+
+/// Категория масла услуги — категория вида «масло».
+async fn check_oil_category(conn: &mut sqlx::PgConnection, id: Uuid) -> AppResult<()> {
+    let ok = sqlx::query_scalar!(
+        r#"select exists (select 1 from categories where id = $1 and kind = 'oil') as "e!""#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid("категория масла не найдена"))
+    }
 }
 
 async fn list_services(
@@ -421,7 +470,7 @@ async fn list_services(
 ) -> AppResult<Json<Vec<ServiceOut>>> {
     let rows = sqlx::query_as!(
         ServiceOut,
-        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active from services where branch_id = $1 order by name",
+        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services where branch_id = $1 order by name",
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -436,6 +485,9 @@ struct ServiceReq {
     master_fee_tyiyn: Option<i64>,
     #[serde(default)]
     free_with_oil: bool,
+    /// Категория масла (ADR-104); без неё у «бесплатно с нашим маслом» — по названию услуги.
+    #[serde(default)]
+    oil_category_id: Option<Uuid>,
 }
 
 async fn create_service(
@@ -452,19 +504,28 @@ async fn create_service(
     ops::check_amount(req.price_tyiyn)?;
     ops::check_amount(fee)?;
     // Ставку мастера и «бесплатно с нашим маслом» задаёт владелец: это цена и оплата труда.
-    if (fee != 0 || req.free_with_oil) && !ctx.user.is_owner() {
+    if (fee != 0 || req.free_with_oil || req.oil_category_id.is_some()) && !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
     let id = new_id();
     let mut tx = state.pool.begin().await?;
+    let oil_category_id = match req.oil_category_id {
+        Some(c) => {
+            check_oil_category(&mut tx, c).await?;
+            Some(c)
+        }
+        None if req.free_with_oil => guess_oil_category(&mut tx, &name).await?,
+        None => None,
+    };
     sqlx::query!(
-        "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil) values ($1, $2, $3, $4, $5, $6)",
+        "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id) values ($1, $2, $3, $4, $5, $6, $7)",
         id,
         ctx.user.branch_id,
         name,
         req.price_tyiyn,
         fee,
-        req.free_with_oil
+        req.free_with_oil,
+        oil_category_id
     )
     .execute(&mut *tx)
     .await?;
@@ -474,7 +535,7 @@ async fn create_service(
         "service.create",
         "service",
         Some(id),
-        json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil }),
+        json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil, "oil_category_id": oil_category_id }),
     )
     .await?;
     tx.commit().await?;
@@ -484,6 +545,7 @@ async fn create_service(
         price_tyiyn: req.price_tyiyn,
         master_fee_tyiyn: fee,
         free_with_oil: req.free_with_oil,
+        oil_category_id,
         active: true,
     }))
 }
@@ -600,6 +662,8 @@ struct ServicePatch {
     price_tyiyn: Option<i64>,
     master_fee_tyiyn: Option<i64>,
     free_with_oil: Option<bool>,
+    /// Категория масла (ADR-104); не прислана — прежняя.
+    oil_category_id: Option<Uuid>,
     active: Option<bool>,
 }
 
@@ -629,10 +693,11 @@ async fn update_service(
     if !ctx.user.is_owner()
         && (req.master_fee_tyiyn.is_some()
             || req.price_tyiyn.is_some()
-            || req.free_with_oil.is_some())
+            || req.free_with_oil.is_some()
+            || req.oil_category_id.is_some())
     {
         let cur = sqlx::query!(
-            "select price_tyiyn, master_fee_tyiyn, free_with_oil from services where id = $1 and branch_id = $2",
+            "select price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and branch_id = $2",
             id,
             ctx.user.branch_id
         )
@@ -644,35 +709,54 @@ async fn update_service(
             .is_some_and(|f| f != cur.master_fee_tyiyn)
             || req.price_tyiyn.is_some_and(|p| p != cur.price_tyiyn)
             || req.free_with_oil.is_some_and(|f| f != cur.free_with_oil)
+            || req
+                .oil_category_id
+                .is_some_and(|c| Some(c) != cur.oil_category_id)
         {
             return Err(AppError::Forbidden);
         }
     }
-    let out = sqlx::query_as!(
+    if let Some(c) = req.oil_category_id {
+        check_oil_category(&mut tx, c).await?;
+    }
+    let mut out = sqlx::query_as!(
         ServiceOut,
         r#"update services set name = coalesce($3, name), price_tyiyn = coalesce($4, price_tyiyn),
              master_fee_tyiyn = coalesce($5, master_fee_tyiyn), active = coalesce($6, active),
-             free_with_oil = coalesce($7, free_with_oil)
+             free_with_oil = coalesce($7, free_with_oil),
+             oil_category_id = coalesce($8, oil_category_id)
            where id = $1 and branch_id = $2
-           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active"#,
+           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active"#,
         id,
         ctx.user.branch_id,
         name,
         req.price_tyiyn,
         req.master_fee_tyiyn,
         req.active,
-        req.free_with_oil
+        req.free_with_oil,
+        req.oil_category_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Флажок поставили без категории — категория по названию услуги (ADR-104).
+    if out.free_with_oil && out.oil_category_id.is_none() {
+        out.oil_category_id = guess_oil_category(&mut tx, &out.name).await?;
+        sqlx::query!(
+            "update services set oil_category_id = $2 where id = $1",
+            id,
+            out.oil_category_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     ops::audit(
         &mut tx,
         &ctx,
         "service.update",
         "service",
         Some(id),
-        json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "free_with_oil": out.free_with_oil, "active": out.active }),
+        json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "free_with_oil": out.free_with_oil, "oil_category_id": out.oil_category_id, "active": out.active }),
     )
     .await?;
     tx.commit().await?;

@@ -42,6 +42,24 @@ pub fn unknown_units(q: i64, p: &Pool) -> i64 {
     (q - p.qty.max(0)).max(0)
 }
 
+/// Стоимость `q` единиц, вернувшихся на склад без чека (ADR-105): по текущей средней остатка;
+/// остатка нет — по последней закупочной; закупок не было — ноль.
+pub fn return_value(q: i64, p: &Pool) -> Option<i64> {
+    if q <= 0 {
+        return Some(0);
+    }
+    if p.qty > 0 && p.value >= 0 {
+        return div_round(i128::from(q) * i128::from(p.value), i128::from(p.qty));
+    }
+    if p.last_qty > 0 {
+        return div_round(
+            i128::from(q) * i128::from(p.last_cost),
+            i128::from(p.last_qty),
+        );
+    }
+    Some(0)
+}
+
 /// Средняя цена за `per` единиц для показа (например, за канистру).
 pub fn average(p: &Pool, per: i64) -> Option<i64> {
     if p.qty <= 0 {
@@ -61,6 +79,20 @@ mod tests {
             last_qty: 0,
             last_cost: 0,
         }
+    }
+
+    #[test]
+    fn return_value_by_average_then_last_cost() {
+        assert_eq!(return_value(2, &pool(4, 1000)), Some(500));
+        let p = Pool {
+            qty: 0,
+            value: 0,
+            last_qty: 10,
+            last_cost: 3000,
+        };
+        assert_eq!(return_value(2, &p), Some(600));
+        assert_eq!(return_value(2, &pool(0, 0)), Some(0));
+        assert_eq!(return_value(0, &pool(4, 1000)), Some(0));
     }
 
     #[test]

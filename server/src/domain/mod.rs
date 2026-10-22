@@ -5,6 +5,7 @@ pub mod costing;
 pub mod debt;
 pub mod mileage;
 pub mod money;
+pub mod oil_service;
 pub mod phone;
 pub mod plate;
 pub mod qty;

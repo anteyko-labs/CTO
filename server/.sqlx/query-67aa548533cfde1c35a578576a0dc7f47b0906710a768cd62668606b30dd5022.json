@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active from services\n           where branch_id = $1 and active order by name",
+  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services where branch_id = $1 order by name",
   "describe": {
     "columns": [
       {
@@ -30,6 +30,11 @@
       },
       {
         "ordinal": 5,
+        "name": "oil_category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
         "name": "active",
         "type_info": "Bool"
       }
@@ -45,8 +50,9 @@
       false,
       false,
       false,
+      true,
       false
     ]
   },
-  "hash": "17b682e2172bfab842359cdc9a3d09bfcb9ab1f9b33c079a2c8806ab949420de"
+  "hash": "67aa548533cfde1c35a578576a0dc7f47b0906710a768cd62668606b30dd5022"
 }

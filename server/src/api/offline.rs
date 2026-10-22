@@ -77,6 +77,8 @@ struct SnapService {
     master_fee_tyiyn: i64,
     /// «Бесплатно с нашим маслом» (ADR-096): касса без сети считает цену услуги так же.
     free_with_oil: bool,
+    /// Категория масла, с которым услуга бесплатна (ADR-104).
+    oil_category_id: Option<Uuid>,
     active: bool,
 }
 
@@ -222,7 +224,7 @@ async fn snapshot(
     .await?;
     let services = sqlx::query_as!(
         SnapService,
-        r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, active from services
+        r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services
            where branch_id = $1 and active order by name"#,
         user.branch_id
     )

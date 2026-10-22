@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name as \"n!\" from sale_lines where sale_id = $1 and line_no = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ac93c46367452f651bba1fa566f0cedb28855a6fea5d11da0df719ee8586a2d8"
+}

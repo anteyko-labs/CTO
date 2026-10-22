@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,\n                  s.master_id, m.full_name as \"master_name?\", s.total_tyiyn, s.master_fee_tyiyn,\n                  s.comment, s.delivery_address, s.reversal_of,\n                  s.party_id as \"party_id?\", pt.name as \"party_name?\", pt.balance_tyiyn as \"party_balance_tyiyn?\",\n                  pc.full_name as \"contact_name?\", pv.plate as \"vehicle_plate?\",\n                  u.full_name as user_name, s.created_at, s.business_date\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           left join party_contacts pc on pc.id = s.contact_id\n           left join party_vehicles pv on pv.id = s.vehicle_id\n           join users u on u.id = s.user_id\n           where s.id = $1 and s.branch_id = $2",
+  "query": "select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,\n                  s.master_id, m.full_name as \"master_name?\", s.total_tyiyn, s.master_fee_tyiyn,\n                  s.comment, s.delivery_address, s.reversal_of, s.no_receipt,\n                  s.party_id as \"party_id?\", pt.name as \"party_name?\", pt.balance_tyiyn as \"party_balance_tyiyn?\",\n                  pc.full_name as \"contact_name?\", pv.plate as \"vehicle_plate?\",\n                  u.full_name as user_name, s.created_at, s.business_date\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           left join party_contacts pc on pc.id = s.contact_id\n           left join party_vehicles pv on pv.id = s.vehicle_id\n           join users u on u.id = s.user_id\n           where s.id = $1 and s.branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -70,41 +70,46 @@
       },
       {
         "ordinal": 13,
+        "name": "no_receipt",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 14,
         "name": "party_id?",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "party_name?",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "party_balance_tyiyn?",
         "type_info": "Int8"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "contact_name?",
         "type_info": "Text"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "vehicle_plate?",
         "type_info": "Text"
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "user_name",
         "type_info": "Text"
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "business_date",
         "type_info": "Date"
       }
@@ -129,6 +134,7 @@
       false,
       false,
       true,
+      false,
       true,
       false,
       false,
@@ -139,5 +145,5 @@
       false
     ]
   },
-  "hash": "29dbcbbb112cc6a3bde070d4442c7b71cb01819d452f4840f9bf5ef5f04b9c54"
+  "hash": "e74ff76141e3f508729faa577bb48a3afe0e26fee26c4988d53beae0f8258d2e"
 }

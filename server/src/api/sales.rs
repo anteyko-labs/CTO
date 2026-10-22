@@ -17,6 +17,7 @@ use crate::api::receipts::lock_products;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::costing::cost_of;
 use crate::domain::money::{div_round, mul};
+use crate::domain::oil_service::{OilLine, canister_ml, enough_oil, withhold};
 use crate::error::{AppError, AppResult, invalid, overflow};
 use crate::ops::{self, Movement, new_id};
 use crate::state::AppState;
@@ -26,6 +27,10 @@ pub fn routes() -> Router<AppState> {
         .route("/sales", routing::get(list_sales).post(post_sale))
         .route("/sales/{id}", routing::get(get_sale))
         .route("/sales/{id}/return", routing::post(return_sale))
+        .route(
+            "/sales/return-without-receipt",
+            routing::post(no_receipt_return),
+        )
 }
 
 /// Ставка мастера за замену по умолчанию — 30 сом (ADR-027).
@@ -165,6 +170,17 @@ pub struct SaleLineOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_tyiyn: Option<i64>,
     pub master_fee_tyiyn: i64,
+    /// Строка возврата — удержание за замену: номер строки услуги исходного чека (ADR-104).
+    #[serde(default)]
+    pub withheld_for: Option<i32>,
+    /// Категория масла: у масла — его категория, у услуги «бесплатно с нашим маслом» — категория
+    /// её масла. По ней окно возврата считает удержание так же, как сервер.
+    #[serde(default)]
+    pub oil_category_id: Option<Uuid>,
+    /// Услуга чека была бесплатной по маслу и ещё не удержана: цена, которую удержит возврат
+    /// масла ниже канистры (ADR-104).
+    #[serde(default)]
+    pub withhold_price_tyiyn: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -213,6 +229,9 @@ pub struct SaleOut {
     #[serde(default)]
     pub delivery_address: String,
     pub reversal_of: Option<Uuid>,
+    /// Возврат без чека (ADR-105).
+    #[serde(default)]
+    pub no_receipt: bool,
     pub user_name: String,
     pub created_at: DateTime<Utc>,
     /// Учётный день чека: его печатают чек и документ о долге, от него считается срок оплаты
@@ -232,7 +251,7 @@ pub async fn load_sale(
     let h = sqlx::query!(
         r#"select s.id, s.number, s.kind, s.sale_type, s.cashier_id, c.full_name as cashier_name,
                   s.master_id, m.full_name as "master_name?", s.total_tyiyn, s.master_fee_tyiyn,
-                  s.comment, s.delivery_address, s.reversal_of,
+                  s.comment, s.delivery_address, s.reversal_of, s.no_receipt,
                   s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
                   pc.full_name as "contact_name?", pv.plate as "vehicle_plate?",
                   u.full_name as user_name, s.created_at, s.business_date
@@ -260,9 +279,18 @@ pub async fn load_sale(
                            sv.name) as "name!",
                   p.container_ml as "container_ml?",
                   l.qty, l.units, l.unit_price_tyiyn, l.list_price_tyiyn, l.amount_tyiyn, l.cost_tyiyn,
-                  l.master_fee_tyiyn, l.gift
+                  l.master_fee_tyiyn, l.gift, l.withheld_for,
+                  case when l.kind = 'service' then (case when sv.free_with_oil then sv.oil_category_id end)
+                       when pc.kind = 'oil' then p.category_id end as "oil_category_id?",
+                  case when l.kind = 'service' and l.withheld_for is null and l.amount_tyiyn = 0
+                            and l.list_price_tyiyn = 0 and sv.free_with_oil
+                            and sv.oil_category_id is not null and sv.price_tyiyn > 0
+                            and not exists (select 1 from sale_lines w join sales r on r.id = w.sale_id
+                                            where r.reversal_of = l.sale_id and w.withheld_for = l.line_no)
+                       then sv.price_tyiyn end as "withhold_price_tyiyn?"
            from sale_lines l
            left join products p on p.id = l.product_id
+           left join categories pc on pc.id = p.category_id
            left join services sv on sv.id = l.service_id
            where l.sale_id = $1 order by l.line_no"#,
         id
@@ -285,6 +313,9 @@ pub async fn load_sale(
         amount_tyiyn: r.amount_tyiyn,
         cost_tyiyn: owner.then_some(r.cost_tyiyn),
         master_fee_tyiyn: r.master_fee_tyiyn,
+        withheld_for: r.withheld_for,
+        oil_category_id: r.oil_category_id,
+        withhold_price_tyiyn: r.withhold_price_tyiyn,
     })
     .collect();
     let payments = sqlx::query_as!(
@@ -322,6 +353,7 @@ pub async fn load_sale(
         comment: h.comment,
         delivery_address: h.delivery_address,
         reversal_of: h.reversal_of,
+        no_receipt: h.no_receipt,
         user_name: h.user_name,
         created_at: h.created_at,
         business_date: Some(h.business_date),
@@ -344,8 +376,10 @@ struct Prepared {
     amount: i64,
     master_fee: i64,
     seen_list: Option<i64>,
-    /// Услуга «бесплатно с нашим маслом» (ADR-096): с маслом в чеке её цена по каталогу — 0.
+    /// Услуга «бесплатно с нашим маслом» (ADR-096): с нашим маслом её категории (ADR-104) не
+    /// меньше канистры цена по каталогу — 0.
     free_with_oil: bool,
+    oil_category: Option<Uuid>,
 }
 
 async fn prepare_line(
@@ -366,7 +400,7 @@ async fn prepare_line(
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
         // Чек без сети принимаем и с услугой, которую успели отключить: работа уже сделана.
         let s = sqlx::query!(
-            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil from services where id = $1 and branch_id = $2 and (active or $3)",
+            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and branch_id = $2 and (active or $3)",
             sid,
             branch_id,
             offline
@@ -391,6 +425,7 @@ async fn prepare_line(
             master_fee: mul(l.qty, s.master_fee_tyiyn).ok_or_else(overflow)?,
             seen_list: seen_list(l, offline),
             free_with_oil: s.free_with_oil,
+            oil_category: s.oil_category_id,
         });
     }
     // Карточку могли влить в другую, пока чек лежал на устройстве: продаём основную.
@@ -453,6 +488,7 @@ async fn prepare_line(
         master_fee: 0,
         seen_list: seen_list(l, offline),
         free_with_oil: false,
+        oil_category: None,
     })
 }
 
@@ -467,26 +503,68 @@ fn seen_list(l: &SaleLineReq, offline: bool) -> Option<i64> {
     }
 }
 
-/// Цена по каталогу услуги «бесплатно с нашим маслом» — 0, если в чеке есть наше масло: товар
-/// категории вида «масло», не подарок (ADR-096). Иначе — цена клиенту из справочника.
+/// Масла среди товаров: товар → (категория вида «масло», объём канистры).
+async fn oil_products(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> AppResult<HashMap<Uuid, (Uuid, Option<i64>)>> {
+    let rows = sqlx::query!(
+        r#"select p.id, p.category_id, p.container_ml from products p
+           join categories c on c.id = p.category_id
+           where p.id = any($1) and c.kind = 'oil'"#,
+        ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.id, (r.category_id, r.container_ml)))
+        .collect())
+}
+
+/// Строки масла чека по категориям: товар категории вида «масло», не подарок (ADR-104).
+/// `lines` — (товар, мл, подарок).
+async fn oil_by_category(
+    conn: &mut PgConnection,
+    lines: &[(Uuid, i64, bool)],
+) -> AppResult<HashMap<Uuid, Vec<OilLine>>> {
+    let ids: Vec<Uuid> = lines.iter().filter(|l| !l.2).map(|l| l.0).collect();
+    let info = oil_products(conn, &ids).await?;
+    let mut out: HashMap<Uuid, Vec<OilLine>> = HashMap::new();
+    for (pid, units, gift) in lines {
+        if *gift {
+            continue;
+        }
+        if let Some((cat, container_ml)) = info.get(pid) {
+            out.entry(*cat).or_default().push(OilLine {
+                units_ml: *units,
+                container_ml: *container_ml,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Цена по каталогу услуги «бесплатно с нашим маслом» — 0, если в чеке нашего масла её
+/// категории (не подарок) не меньше канистры (ADR-096, ADR-104). Иначе — цена клиенту из
+/// справочника. Без категории масла флажок не действует.
 async fn with_our_oil(conn: &mut PgConnection, prepared: &mut [Prepared]) -> AppResult<()> {
-    if !prepared.iter().any(|p| p.free_with_oil) {
+    if !prepared
+        .iter()
+        .any(|p| p.free_with_oil && p.oil_category.is_some())
+    {
         return Ok(());
     }
-    let goods: Vec<Uuid> = prepared
+    let goods: Vec<(Uuid, i64, bool)> = prepared
         .iter()
-        .filter(|p| !p.gift)
-        .filter_map(|p| p.product_id)
+        .filter_map(|p| p.product_id.map(|id| (id, p.units, p.gift)))
         .collect();
-    let oil = sqlx::query_scalar!(
-        r#"select exists (select 1 from products p join categories c on c.id = p.category_id
-                          where p.id = any($1) and c.kind = 'oil') as "e!""#,
-        &goods
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    if oil {
-        for p in prepared.iter_mut().filter(|p| p.free_with_oil) {
+    let oil = oil_by_category(conn, &goods).await?;
+    for p in prepared.iter_mut().filter(|p| p.free_with_oil) {
+        if p.oil_category
+            .and_then(|c| oil.get(&c))
+            .is_some_and(|lines| enough_oil(lines))
+        {
             p.list_price = 0;
         }
     }
@@ -1895,6 +1973,103 @@ fn share(orig: i64, already: i64, qty: i64, orig_qty: i64, returned_qty: i64) ->
     div_round(i128::from(orig) * i128::from(qty), i128::from(orig_qty)).ok_or_else(overflow)
 }
 
+/// Номер строки удержания в возврате: строка услуги исходного чека плюс это число.
+const WITHHELD_LINE_BASE: i32 = 1000;
+
+/// Удержание за бесплатную замену в возврате (ADR-104): строка услуги исходного чека, сколько
+/// услуг остаётся, цена услуги и сумма удержания.
+struct Withhold {
+    line_no: i32,
+    service_id: Uuid,
+    price: i64,
+    amount: i64,
+}
+
+/// Что удержать из возврата `now` (строка исходного чека → количество): услуга «бесплатно с нашим
+/// маслом» была бесплатной, этот возврат опускает масло её категории ниже канистры, а сама услуга
+/// остаётся. Удерживается один раз на строку услуги — повторный возврат второй раз не удерживает.
+async fn plan_withhold(
+    conn: &mut PgConnection,
+    sale_id: Uuid,
+    now: &HashMap<i32, (i64, i64)>,
+) -> AppResult<Vec<Withhold>> {
+    let free = sqlx::query!(
+        r#"select l.line_no, l.service_id as "service_id!", l.qty, sv.price_tyiyn,
+                  sv.oil_category_id as "oil_category_id!"
+           from sale_lines l join services sv on sv.id = l.service_id
+           where l.sale_id = $1 and l.kind = 'service' and l.amount_tyiyn = 0
+             and l.list_price_tyiyn = 0 and sv.free_with_oil and sv.oil_category_id is not null
+             and sv.price_tyiyn > 0
+             and not exists (select 1 from sale_lines w join sales r on r.id = w.sale_id
+                             where r.reversal_of = $1 and w.withheld_for = l.line_no)"#,
+        sale_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if free.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Строки чека и сколько по ним уже вернули прежними возвратами.
+    let lines = sqlx::query!(
+        r#"select l.line_no, l.product_id, l.gift, l.qty, l.units,
+                  coalesce((select sum(x.qty) from sale_lines x join sales r on r.id = x.sale_id
+                            where r.reversal_of = $1 and x.line_no = l.line_no
+                              and x.withheld_for is null), 0)::bigint as "qty_back!",
+                  coalesce((select sum(x.units) from sale_lines x join sales r on r.id = x.sale_id
+                            where r.reversal_of = $1 and x.line_no = l.line_no
+                              and x.withheld_for is null), 0)::bigint as "units_back!"
+           from sale_lines l where l.sale_id = $1"#,
+        sale_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let ids: Vec<Uuid> = lines.iter().filter_map(|l| l.product_id).collect();
+    let info = oil_products(conn, &ids).await?;
+    let mut out = Vec::new();
+    for f in free {
+        // Строки нашего масла категории услуги (не подарок).
+        let cat_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| !l.gift)
+            .filter_map(|l| {
+                let (cat, container) = info.get(&l.product_id?)?;
+                (*cat == f.oil_category_id).then_some((l, *container))
+            })
+            .collect();
+        let orig_oil: Vec<OilLine> = cat_lines
+            .iter()
+            .map(|(l, c)| OilLine {
+                units_ml: l.units,
+                container_ml: *c,
+            })
+            .collect();
+        let Some(can) = canister_ml(&orig_oil) else {
+            continue;
+        };
+        let before = cat_lines.iter().fold(0i64, |acc, (l, _)| {
+            acc.saturating_add(l.units - l.units_back)
+        });
+        let back_now = cat_lines.iter().fold(0i64, |acc, (l, _)| {
+            acc.saturating_add(now.get(&l.line_no).map_or(0, |x| x.1))
+        });
+        if back_now <= 0 {
+            continue;
+        }
+        let svc = lines.iter().find(|l| l.line_no == f.line_no);
+        let left = svc.map_or(0, |l| l.qty - l.qty_back) - now.get(&f.line_no).map_or(0, |x| x.0);
+        let amount = withhold(before, before - back_now, can, left, f.price_tyiyn);
+        if amount > 0 {
+            out.push(Withhold {
+                line_no: f.line_no,
+                service_id: f.service_id,
+                price: f.price_tyiyn,
+                amount,
+            });
+        }
+    }
+    Ok(out)
+}
+
 pub async fn return_sale_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -2015,6 +2190,7 @@ pub async fn return_sale_tx(
                 master_fee: fee,
                 seen_list: None,
                 free_with_oil: false,
+                oil_category: None,
             },
             line_no: rl.line_no,
             amount,
@@ -2025,7 +2201,23 @@ pub async fn return_sale_tx(
             unknown_units,
         });
     }
-    check_payments(&req.payments, total)?;
+    // Возврат масла сделал бесплатную замену платной — её цена удерживается из возврата
+    // (ADR-104), но не больше суммы возврата.
+    let now: HashMap<i32, (i64, i64)> = planned
+        .iter()
+        .map(|x| (x.line_no, (x.p.qty, x.p.units)))
+        .collect();
+    let mut withholds = plan_withhold(conn, id, &now).await?;
+    let mut room = total;
+    for w in withholds.iter_mut() {
+        w.amount = w.amount.min(room);
+        room -= w.amount;
+    }
+    withholds.retain(|w| w.amount > 0);
+    let withheld = total - room;
+    // Сколько отдаётся клиенту: сумма возвращённых строк за вычетом удержания.
+    let refund = room;
+    check_payments(&req.payments, refund)?;
     // Часть чека, оплаченная аккумулятором (SPEC-27), возвращается аккумулятором: вес уходит со
     // склада той же стоимостью, денег за него не выдают. Сколько веса — доля от веса чека по
     // сумме; последняя часть забирает точный остаток.
@@ -2064,12 +2256,12 @@ pub async fn return_sale_tx(
         )
         .fetch_one(&mut *conn)
         .await?;
-        if total.saturating_sub(battery_req) > other_left.max(0) {
+        if refund.saturating_sub(battery_req) > other_left.max(0) {
             if !req.battery_cash {
                 return Err(invalid(format!(
                     "часть чека оплачена аккумулятором: {} верните аккумулятором (вес уйдёт со склада). Деньгами за аккумулятор — только по решению владельца",
                     crate::domain::money::format_som(
-                        total.saturating_sub(other_left.max(0)).min(bat_left)
+                        refund.saturating_sub(other_left.max(0)).min(bat_left)
                     )
                 )));
             }
@@ -2269,7 +2461,7 @@ pub async fn return_sale_tx(
         orig.sale_type,
         orig.cashier_id,
         orig.master_id,
-        -total,
+        -refund,
         fee_back,
         req.comment.trim(),
         orig.party_id,
@@ -2335,6 +2527,27 @@ pub async fn return_sale_tx(
             x.p.qty,
             x.cost_unknown,
         )
+        .await?;
+    }
+    // Удержание за замену — строкой услуги с плюсом: выручка услуги, как оплата замены (ADR-104).
+    // Номер строки — за пределами строк чека (их не больше 300), количество 0: замену не вернули.
+    for w in &withholds {
+        sqlx::query!(
+            r#"insert into sale_lines (id, sale_id, line_no, kind, service_id, qty, units,
+                                       unit_price_tyiyn, list_price_tyiyn, amount_tyiyn, cost_tyiyn,
+                                       master_fee_tyiyn, withheld_for, name)
+               select $1, $2, $3, 'service', $4, 0, 0, $5, $5, $6, 0, 0, $7,
+                      'Удержано за замену: ' || sv.name
+               from services sv where sv.id = $4"#,
+            new_id(),
+            rid,
+            WITHHELD_LINE_BASE + w.line_no,
+            w.service_id,
+            w.price,
+            w.amount,
+            w.line_no
+        )
+        .execute(&mut *conn)
         .await?;
     }
     // Комиссия банка возвращается из записанной в исходном чеке, а не по ставке (ADR-070), и по
@@ -2453,7 +2666,7 @@ pub async fn return_sale_tx(
             "sale.return_battery_cash",
             "sale",
             Some(rid),
-            json!({ "number": number, "original": id, "battery_left": bat_left, "refund": total }),
+            json!({ "number": number, "original": id, "battery_left": bat_left, "refund": refund }),
         )
         .await?;
     }
@@ -2476,7 +2689,7 @@ pub async fn return_sale_tx(
         KIND,
         "sale",
         Some(rid),
-        json!({ "original": id, "number": number, "total": -total }),
+        json!({ "original": id, "number": number, "total": -refund, "withheld": withheld }),
     )
     .await?;
     let out = load_sale(conn, &ctx.user, rid).await?;
@@ -2492,6 +2705,284 @@ async fn return_sale(
 ) -> AppResult<Json<SaleOut>> {
     let mut tx = state.pool.begin().await?;
     let out = return_sale_tx(&mut tx, &ctx, id, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Строка возврата без чека (ADR-105): товар, количество в единицах строки (как в чеке:
+/// штуки, канистры, мл розлива, граммы) и сумма строки, которую отдают клиенту.
+#[derive(Deserialize)]
+pub struct NoReceiptLineReq {
+    pub kind: String,
+    pub product_id: Uuid,
+    pub qty: i64,
+    pub amount_tyiyn: i64,
+}
+
+/// Возврат без чека (SPEC-30 §16): только владелец.
+#[derive(Deserialize)]
+pub struct NoReceiptReq {
+    pub op_id: Uuid,
+    pub lines: Vec<NoReceiptLineReq>,
+    /// Как вернуть деньги: `cash` — из «Кассы» при открытой смене, `card`, `transfer`,
+    /// `invoice` — со счёта.
+    pub method: String,
+    #[serde(default)]
+    pub account_id: Option<Uuid>,
+    #[serde(default)]
+    pub party_id: Option<Uuid>,
+    /// Кассир документа, если смена не открыта; при открытой — кассир смены.
+    #[serde(default)]
+    pub cashier_id: Option<Uuid>,
+    /// Причина — обязательна.
+    #[serde(default)]
+    pub comment: String,
+}
+
+pub async fn no_receipt_return_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: NoReceiptReq,
+) -> AppResult<SaleOut> {
+    const KIND: &str = "sale.return_no_receipt";
+    // Возврат мимо продаж — только владелец (ADR-105).
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
+    }
+    let branch_id = ctx.user.branch_id;
+    let reason = req.comment.trim();
+    if reason.is_empty() {
+        return Err(invalid("укажите причину возврата"));
+    }
+    if reason.chars().count() > 300 {
+        return Err(invalid("причина — не длиннее 300 знаков"));
+    }
+    if req.lines.is_empty() {
+        return Err(invalid("добавьте товар"));
+    }
+    if req.lines.len() > 100 {
+        return Err(invalid("в возврате — не больше 100 строк"));
+    }
+    if !matches!(
+        req.method.as_str(),
+        "cash" | "card" | "transfer" | "invoice"
+    ) {
+        return Err(invalid(
+            "как вернуть: наличными, на карту, по QR или со счёта",
+        ));
+    }
+    if let Some(pid) = req.party_id {
+        sqlx::query_scalar!(
+            "select id from parties where id = $1 and branch_id = $2",
+            pid,
+            branch_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| invalid("клиент не найден"))?;
+    }
+    let register = cash::default_account(conn, branch_id).await?;
+    let shift = cash::shift_open_at(conn, branch_id, register, None).await?;
+    // Наличные из «Кассы» — только при открытой смене (ADR-065).
+    if req.method == "cash" && shift.is_none() {
+        return Err(AppError::Conflict(
+            "возврат наличными — только при открытой смене: откройте смену или верните на карту"
+                .into(),
+        ));
+    }
+    let cashier_id = match (&shift, req.cashier_id) {
+        (Some(s), _) => s.cashier_employee_id,
+        (None, Some(c)) => {
+            let mut ignored = Vec::new();
+            check_employee(conn, branch_id, c, false, false, &mut ignored).await?;
+            c
+        }
+        (None, None) => return Err(invalid("выберите кассира")),
+    };
+    let mut prepared = Vec::with_capacity(req.lines.len());
+    let mut total: i64 = 0;
+    for l in &req.lines {
+        if l.qty <= 0 || l.qty > 1_000_000_000 {
+            return Err(invalid("количество больше нуля"));
+        }
+        if l.amount_tyiyn < 0 {
+            return Err(invalid("сумма строки не отрицательна"));
+        }
+        ops::check_amount(l.amount_tyiyn)?;
+        let pid = ops::live_product(conn, l.product_id).await?;
+        let p = sqlx::query!(
+            r#"select p.unit, p.container_ml, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!"
+               from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
+               where p.id = $1"#,
+            pid,
+            branch_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| invalid("товар не найден"))?;
+        let (units, list_price) = match (l.kind.as_str(), p.unit.as_str(), p.container_ml) {
+            ("piece", "piece", _) => (l.qty, p.sale_price),
+            ("container", "ml", Some(c)) => (mul(l.qty, c).ok_or_else(overflow)?, p.sale_price),
+            ("pour", "ml", Some(c)) => (
+                l.qty,
+                crate::domain::money::canister_pour_price(p.sale_price, c).unwrap_or(0),
+            ),
+            ("weight", "g", _) => (l.qty, p.sale_price),
+            _ => return Err(invalid("вид строки не подходит товару")),
+        };
+        // Цена за единицу строки — для печати: у розлива и веса — за литр и килограмм.
+        let per = if matches!(l.kind.as_str(), "pour" | "weight") {
+            1000
+        } else {
+            1
+        };
+        let unit_price = div_round(
+            i128::from(l.amount_tyiyn) * i128::from(per),
+            i128::from(l.qty),
+        )
+        .ok_or_else(overflow)?;
+        total = total.checked_add(l.amount_tyiyn).ok_or_else(overflow)?;
+        prepared.push(Prepared {
+            gift: false,
+            kind: l.kind.clone(),
+            product_id: Some(pid),
+            service_id: None,
+            qty: l.qty,
+            units,
+            unit_price,
+            list_price,
+            amount: l.amount_tyiyn,
+            master_fee: 0,
+            seen_list: None,
+            free_with_oil: false,
+            oil_category: None,
+        });
+    }
+    if total <= 0 {
+        return Err(invalid("сумма возврата больше нуля"));
+    }
+    ops::check_amount(total)?;
+    let account_id = if req.method == "cash" {
+        None
+    } else {
+        let mut ignored = Vec::new();
+        Some(
+            cash::sale_bank_account(
+                conn,
+                &ctx.user,
+                &req.method,
+                req.account_id,
+                false,
+                &mut ignored,
+            )
+            .await?,
+        )
+    };
+    let ids: Vec<Uuid> = prepared.iter().filter_map(|p| p.product_id).collect();
+    lock_products(conn, branch_id, ids.iter().copied()).await?;
+    ops::ensure_not_merged(conn, &ids).await?;
+    let number = ops::next_counter(conn, branch_id, "sale").await?;
+    let rid = new_id();
+    sqlx::query!(
+        r#"insert into sales (id, branch_id, number, kind, sale_type, cashier_id, total_tyiyn,
+                              comment, party_id, no_receipt, user_id, device_id, business_date)
+           values ($1, $2, $3, 'return', 'takeaway', $4, $5, $6, $7, true, $8, $9,
+                   (now() at time zone 'Asia/Bishkek')::date)"#,
+        rid,
+        branch_id,
+        number,
+        cashier_id,
+        -total,
+        reason,
+        req.party_id,
+        ctx.user.id,
+        ctx.device_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    let mut names = Vec::new();
+    for (i, p) in prepared.iter().enumerate() {
+        let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
+        let mut value = 0;
+        if let Some(pid) = p.product_id {
+            // Товар возвращается по текущей средней себестоимости (ADR-105).
+            let pool = ops::lock_pool(conn, branch_id, pid).await?;
+            value = crate::domain::costing::return_value(p.units, &pool).ok_or_else(overflow)?;
+            ops::apply_movement(
+                conn,
+                Movement {
+                    branch_id,
+                    product_id: pid,
+                    qty_delta: p.units,
+                    value_delta: value,
+                    doc_type: "sale_return",
+                    doc_id: rid,
+                },
+            )
+            .await?;
+        }
+        insert_line(
+            conn, rid, line_no, p, -p.amount, -value, 0, p.units, p.qty, false,
+        )
+        .await?;
+        names.push(
+            sqlx::query_scalar!(
+                r#"select name as "n!" from sale_lines where sale_id = $1 and line_no = $2"#,
+                rid,
+                line_no
+            )
+            .fetch_one(&mut *conn)
+            .await?,
+        );
+    }
+    let business_date = sqlx::query_scalar!(
+        r#"select business_date as "d!" from sales where id = $1"#,
+        rid
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let payments = [PaymentReq {
+        method: req.method.clone(),
+        amount_tyiyn: total,
+        grams: None,
+        price_per_kg_tyiyn: None,
+        account_id,
+    }];
+    // Исходного чека нет — комиссии банка возвращать нечего.
+    insert_payments(
+        conn,
+        ctx,
+        rid,
+        &payments,
+        -1,
+        Some(HashMap::new()),
+        business_date,
+    )
+    .await?;
+    ops::audit(
+        conn,
+        ctx,
+        KIND,
+        "sale",
+        Some(rid),
+        json!({ "number": number, "total": -total, "method": req.method, "reason": reason, "names": names }),
+    )
+    .await?;
+    let out = load_sale(conn, &ctx.user, rid).await?;
+    ops::finish_op(conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
+}
+
+async fn no_receipt_return(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<NoReceiptReq>,
+) -> AppResult<Json<SaleOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = no_receipt_return_tx(&mut tx, &ctx, req).await?;
     tx.commit().await?;
     Ok(Json(out))
 }
@@ -2524,6 +3015,8 @@ pub(crate) struct SaleListItem {
     pub(crate) debt_tyiyn: i64,
     pub(crate) total_tyiyn: i64,
     pub(crate) reversal_of: Option<Uuid>,
+    /// Возврат без чека (ADR-105).
+    pub(crate) no_receipt: bool,
     pub(crate) created_at: DateTime<Utc>,
 }
 
@@ -2579,7 +3072,7 @@ pub(crate) async fn sales_day(
                   pt.name as "party_name?", nullif(pt.phone, '') as "party_phone?",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
                             where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt_tyiyn!",
-                  s.total_tyiyn, s.reversal_of, s.created_at
+                  s.total_tyiyn, s.reversal_of, s.no_receipt, s.created_at
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id

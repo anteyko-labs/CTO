@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.line_no, l.product_id, l.gift, l.qty, l.units,\n                  coalesce((select sum(x.qty) from sale_lines x join sales r on r.id = x.sale_id\n                            where r.reversal_of = $1 and x.line_no = l.line_no\n                              and x.withheld_for is null), 0)::bigint as \"qty_back!\",\n                  coalesce((select sum(x.units) from sale_lines x join sales r on r.id = x.sale_id\n                            where r.reversal_of = $1 and x.line_no = l.line_no\n                              and x.withheld_for is null), 0)::bigint as \"units_back!\"\n           from sale_lines l where l.sale_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "gift",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "units",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "qty_back!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "units_back!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "29c9ed09dd030b9783f50d569923528f39b00c975f7b1279852d4c967a3749ea"
+}

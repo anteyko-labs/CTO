@@ -19,8 +19,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 62] = [
+pub(crate) const WATCHED: [&str; 63] = [
     "party.limit_request",
+    "sale.return_no_receipt",
     "gift.rule",
     "product.prices",
     "sale.price_override",
@@ -342,6 +343,23 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 "чек № {}, {}",
                 num("number").unwrap_or(0),
                 money(num("total"))
+            ),
+        ),
+        "sale.return_no_receipt" => (
+            "Возврат без чека".into(),
+            format!(
+                "№ {}, {}: {} — {}",
+                num("number").unwrap_or(0),
+                money(num("total")),
+                data.get("names")
+                    .and_then(Value::as_array)
+                    .map(|n| n
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_default(),
+                text("reason")
             ),
         ),
         "receipt.reverse" => (

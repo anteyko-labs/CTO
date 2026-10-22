@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update services set oil_category_id = $2 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4af16517c49bfd1341f444189ae856245e89c2d703932c7f66d405da8d791b45"
+}

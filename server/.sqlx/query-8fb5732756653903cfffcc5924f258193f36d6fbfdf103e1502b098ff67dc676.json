@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as \"master_name?\",\n                  pt.name as \"party_name?\", nullif(pt.phone, '') as \"party_phone?\",\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as \"debt_tyiyn!\",\n                  s.total_tyiyn, s.reversal_of, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           where s.branch_id = $1\n             and s.business_date = $2\n           order by s.created_at desc",
+  "query": "select s.id, s.number, s.kind, s.sale_type, c.full_name as cashier_name, m.full_name as \"master_name?\",\n                  pt.name as \"party_name?\", nullif(pt.phone, '') as \"party_phone?\",\n                  coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                            where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as \"debt_tyiyn!\",\n                  s.total_tyiyn, s.reversal_of, s.no_receipt, s.created_at\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties pt on pt.id = s.party_id\n           where s.branch_id = $1\n             and s.business_date = $2\n           order by s.created_at desc",
   "describe": {
     "columns": [
       {
@@ -60,6 +60,11 @@
       },
       {
         "ordinal": 11,
+        "name": "no_receipt",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -82,8 +87,9 @@
       null,
       false,
       true,
+      false,
       false
     ]
   },
-  "hash": "a8754361db09895fa54c0752a982f49733369ef789b35158da159ac4a5d9aca9"
+  "hash": "8fb5732756653903cfffcc5924f258193f36d6fbfdf103e1502b098ff67dc676"
 }
