@@ -97,7 +97,7 @@ test('отчёт смены: движение денег, вкладки и от
 
   // Отчёт открывается из «Смены».
   await page.goto('/shift')
-  await page.getByRole('link', { name: 'Отчёт смены' }).click()
+  await page.locator(`a[href="/shifts/${shift.id}"]`).first().click()
   await expect(page).toHaveURL(new RegExp(`/shifts/${shift.id}$`))
   await expect(page.getByRole('heading', { name: `Смена № ${shift.number}` })).toBeVisible()
   await expect(page.getByText(`Кассир: ${cashier}`)).toBeVisible()

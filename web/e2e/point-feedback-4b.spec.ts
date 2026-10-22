@@ -190,7 +190,9 @@ test('права: без «Прихода» и «Оприходования» �
   await login(page)
   // Без ключа распознавания владелец видит, как включить «Заполнить по фото».
   await page.goto('/receipts/new')
-  await expect(page.getByTestId('photo-needs-key')).toContainText('нужен ключ распознавания')
+  // В CI сервер запущен с подставным ключом — тогда кнопка активна и подсказки нет.
+  const drafts = (await (await page.request.get('/api/v1/receipt-drafts')).json()) as { enabled: boolean }
+  if (!drafts.enabled) await expect(page.getByTestId('photo-needs-key')).toContainText('нужен ключ распознавания')
 
   const { ctx, page: a } = await adminWith(page, browser, ['clients'])
   await a.goto('/receipts/new')
