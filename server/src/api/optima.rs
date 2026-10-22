@@ -243,7 +243,8 @@ struct GenerateBody<'a> {
     note: &'a str,
     qr_generate_type: &'a str,
     transaction_count: i64,
-    until_date_time: String,
+    /// Для `WEB_PARTNER_BY_SALE_POINT` банк требует null (тест 22.10.2026): срок держим у себя.
+    until_date_time: Option<String>,
     qr_type: &'a str,
     qr_size: i64,
 }
@@ -550,12 +551,9 @@ impl Optima {
             note: q.note,
             qr_generate_type: "WEB_PARTNER_BY_SALE_POINT",
             transaction_count: 1,
-            // Время банка — время точки, без зоны.
-            until_date_time: q
-                .until
-                .with_timezone(&bishkek())
-                .format("%Y-%m-%dT%H:%M:%S")
-                .to_string(),
+            // Банк: «The 'untilDateTime' must be null for this qrGenerateType». Срок QR — наш
+            // (`q.until`): после него опрос останавливается и QR считается неоплаченным.
+            until_date_time: None,
             qr_type: "png",
             qr_size: 400,
         };

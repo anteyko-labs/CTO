@@ -99,8 +99,18 @@ async fn points(
 }
 
 async fn generate(State(b): State<Bank>, headers: HeaderMap, body: String) -> (StatusCode, String) {
+    // Как настоящий банк (тест 22.10.2026): у WEB_PARTNER_BY_SALE_POINT срок должен быть null.
+    let until_null = serde_json::from_str::<Value>(&body)
+        .ok()
+        .is_some_and(|v| v.get("untilDateTime").is_some_and(Value::is_null));
     if !key_ok(&b, "generate".into(), &headers, body) {
         return denied();
+    }
+    if !until_null {
+        return (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "[The 'untilDateTime' must be null for this qrGenerateType]", "code": 1004 }).to_string(),
+        );
     }
     let n = {
         let mut g = b.generated.lock().unwrap();
