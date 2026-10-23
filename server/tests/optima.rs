@@ -429,7 +429,8 @@ async fn with_bank(pool: PgPool) -> (World, Bank) {
 fn paid(tx: &str, sum: &str, op: &str) -> String {
     format!(
         r#"{{"note":"Оплата, чек кассы Avtodom","sum":{sum},"status":"PROCESSED","transactionProcessedDateTime":"{}","transactionId":"{tx}","operationId":"{op}","payerClientType":""}}"#,
-        Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ")
+        // Как настоящий банк (тест 23.10.2026): время Бишкека, но с «Z».
+        (Utc::now() + chrono::Duration::hours(6)).format("%Y-%m-%dT%H:%M:%S%.6fZ")
     )
 }
 
@@ -616,6 +617,14 @@ async fn qr_for_sale_amount_paid_and_used_once(pool: PgPool) {
     );
     let (code, v) = w.card_sale(20_000, Some(&id2)).await;
     assert_eq!(code, StatusCode::CONFLICT, "{v}");
+    // Поздняя оплата (тест банка 23.10.2026: оплатили через минуту после срока): сервер ещё
+    // 30 минут опрашивает неоплаченный QR и ловит её; чек с ним проходит.
+    bank.set_status("tx-2", 200, &paid("tx-2", "200.00", "op-2"));
+    w.poll().await;
+    let late = get(&w.app, &format!("/api/v1/bank-qr/{id2}"), &w.admin).await;
+    assert_eq!(late["status"], "paid", "{late}");
+    let (code, v) = w.card_sale(20_000, Some(&id2)).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
 
     // Банк отклонил — «ошибка»; «Отменить» — больше не ждём и не спрашиваем банк.
     let (_, qr3) = w.new_qr(Uuid::now_v7(), 30_000).await;

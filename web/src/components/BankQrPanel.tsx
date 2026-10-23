@@ -15,12 +15,15 @@ export function useBankQr() {
   const [busy, setBusy] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const waiting = qr?.status === 'waiting'
+  // Неоплаченный в срок QR сервер ещё 30 минут проверяет: поздняя оплата (тест банка 23.10.2026)
+  // появится на кассе сама, пока окно QR открыто.
+  const watching = waiting || qr?.status === 'unpaid'
   const id = qr?.id
 
   const take = useCallback((r: BankQr) => setQr((q) => (q && q.id !== r.id ? q : { ...r, qr_base64: r.qr_base64 ?? q?.qr_base64, received: Date.now() })), [])
 
   useEffect(() => {
-    if (!waiting || !id) return
+    if (!watching || !id) return
     const tick = setInterval(() => setNow(Date.now()), 1000)
     const poll = setInterval(() => {
       void get<BankQr>(`/bank-qr/${id}`)
@@ -31,7 +34,7 @@ export function useBankQr() {
       clearInterval(tick)
       clearInterval(poll)
     }
-  }, [waiting, id, take])
+  }, [watching, id, take])
 
   const create = async (amount: number) => {
     setBusy(true)
@@ -129,6 +132,8 @@ export function BankQrPanel({
             ) : (
               'Срок QR вышел — ждём ответ банка…'
             )
+          ) : qr.status === 'unpaid' ? (
+            'Если покупатель всё же оплатил — касса заметит это сама в ближайшие 30 минут. Иначе создайте новый QR или отметьте оплату вручную.'
           ) : qr.status !== 'cancelled' ? (
             'Создайте новый QR или отметьте оплату картой вручную.'
           ) : null}

@@ -101,9 +101,15 @@ pub fn bishkek() -> FixedOffset {
     FixedOffset::east_opt(6 * 3600).unwrap_or_else(|| chrono::Offset::fix(&Utc))
 }
 
-/// Время банка: с зоной («…Z», «+06:00») — как есть, без зоны — время Бишкека.
+/// Время банка — время Бишкека. Банк дописывает «Z», но время местное: тест 23.10.2026,
+/// оплата в 15:52 по Бишкеку пришла как «2026-10-23T15:52:38.806027Z». Явный сдвиг
+/// («+06:00») берётся как есть.
 pub fn parse_bank_time(s: &str) -> Option<DateTime<Utc>> {
     let s = s.trim();
+    let s = s
+        .strip_suffix('Z')
+        .or_else(|| s.strip_suffix('z'))
+        .unwrap_or(s);
     if let Ok(t) = DateTime::parse_from_rfc3339(s) {
         return Some(t.with_timezone(&Utc));
     }
@@ -1003,8 +1009,11 @@ mod tests {
         assert_eq!(t.as_deref(), Some("2025-08-08T18:43:07+00:00"));
         let t = parse_bank_time("2026-02-27T09:48:57.42530573").map(|t| t.to_rfc3339());
         assert_eq!(t.as_deref(), Some("2026-02-27T03:48:57.425305730+00:00"));
-        let t = parse_bank_time("2025-09-26T14:18:26.000000Z").map(|t| t.to_rfc3339());
-        assert_eq!(t.as_deref(), Some("2025-09-26T14:18:26+00:00"));
+        // «Z» у банка — тоже местное время (настоящий ответ теста 23.10.2026).
+        let t = parse_bank_time("2026-10-23T15:52:38.806027Z").map(|t| t.to_rfc3339());
+        assert_eq!(t.as_deref(), Some("2026-10-23T09:52:38.806027+00:00"));
+        let t = parse_bank_time("2026-10-23T15:52:38+06:00").map(|t| t.to_rfc3339());
+        assert_eq!(t.as_deref(), Some("2026-10-23T09:52:38+00:00"));
     }
 
     #[test]

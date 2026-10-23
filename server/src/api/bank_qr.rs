@@ -24,6 +24,8 @@ pub const QR_MINUTES: i64 = 10;
 pub const UNCLAIMED_MINUTES: i64 = 15;
 /// После срока ещё немного спрашиваем банк: оплата могла пройти в последнюю секунду.
 const GRACE_SECONDS: i64 = 60;
+/// Сколько минут после срока ещё ловить позднюю оплату QR.
+const LATE_MINUTES: i64 = 30;
 /// Подпись платежа в банке.
 pub const NOTE: &str = "Оплата, чек кассы Avtodom";
 
@@ -260,17 +262,29 @@ async fn audit_as(
 /// `NOT_EXIST` после срока — не оплачен, `ERROR` — банк отклонил. Банк молчит дольше срока
 /// с запасом — не оплачен: кассир отметит оплату вручную.
 pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
+    // Неоплаченный в срок QR ещё LATE_MINUTES опрашивается: покупатель может оплатить
+    // позже (тест банка 23.10.2026 — оплата через минуту после срока). Неопрошенная оплата
+    // через 12 с становится у банка ошибкой, а деньги — без чека.
     let waiting = sqlx::query!(
-        r#"select id, branch_id, transaction_id, amount_tyiyn, user_id, device_id, expires_at
-           from bank_qr where status = 'waiting' order by created_at limit 50"#
+        r#"select id, branch_id, transaction_id, amount_tyiyn, user_id, device_id, expires_at,
+                  status as "status!"
+           from bank_qr
+           where status = 'waiting'
+              or (status = 'unpaid' and sale_id is null
+                  and expires_at > now() - make_interval(mins => $1))
+           order by created_at limit 50"#,
+        LATE_MINUTES as i32
     )
     .fetch_all(pool)
     .await?;
     for q in waiting {
         let now = Utc::now();
         let late = now > q.expires_at + Duration::seconds(GRACE_SECONDS);
+        let late_check = q.status == "unpaid";
         let next = match bank.qr_status(&q.transaction_id).await {
             Ok(s) if s.status == "PROCESSED" => Some(("paid", Some(s))),
+            // После срока ждём только оплату: остальное уже записано как «не оплачен».
+            _ if late_check => None,
             Ok(s) if s.status == "ERROR" => Some(("error", None)),
             Ok(_) | Err(BankError::NotFound) if now >= q.expires_at => Some(("unpaid", None)),
             Ok(_) | Err(BankError::NotFound) => None,
@@ -287,7 +301,7 @@ pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
         let changed = sqlx::query!(
             r#"update bank_qr set status = $2, paid_tyiyn = $3, operation_id = $4,
                       paid_at = case when $2 = 'paid' then coalesce($5, now()) end
-               where id = $1 and status = 'waiting'"#,
+               where id = $1 and (status = 'waiting' or ($2 = 'paid' and status = 'unpaid'))"#,
             q.id,
             status,
             paid_sum,
@@ -306,7 +320,7 @@ pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
                 "bank_qr.paid",
                 q.id,
                 json!({ "amount": q.amount_tyiyn, "paid": paid_sum,
-                        "transaction_id": q.transaction_id }),
+                        "transaction_id": q.transaction_id, "late": late_check }),
             )
             .await?;
         }
