@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.name from suppliers s join parties p on p.id = s.id\n               where p.branch_id = $1 and s.active and regexp_replace(p.inn, '\\D', '', 'g') = $2\n               limit 2",
+  "query": "select s.id, s.name from suppliers s join parties p on p.id = s.id\n               where s.active and regexp_replace(p.inn, '\\D', '', 'g') = $1\n               limit 2",
   "describe": {
     "columns": [
       {
@@ -16,7 +16,6 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Text"
       ]
     },
@@ -25,5 +24,5 @@
       false
     ]
   },
-  "hash": "bd2c2924f80218000a7a0393c4ce2c80592e18fb64e39ba77296046ef2620bfa"
+  "hash": "d9717604c7f904555d6eb6c5cb3549127110dd8e1fe3a7d6bec218ddc2e6189c"
 }

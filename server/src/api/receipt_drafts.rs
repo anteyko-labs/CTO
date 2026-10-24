@@ -605,11 +605,7 @@ async fn match_product(
 }
 
 /// Поставщик учёта по ИНН, иначе по названию (без кавычек и формы собственности).
-async fn match_supplier(
-    conn: &mut PgConnection,
-    branch_id: Uuid,
-    inv: &Invoice,
-) -> AppResult<Option<SupplierHit>> {
+async fn match_supplier(conn: &mut PgConnection, inv: &Invoice) -> AppResult<Option<SupplierHit>> {
     let inn: String = inv
         .supplier_inn
         .chars()
@@ -617,10 +613,10 @@ async fn match_supplier(
         .collect();
     if inn.len() >= 6 {
         let found = sqlx::query!(
+            // Поставщики общие для филиалов (SPEC-33).
             r#"select s.id, s.name from suppliers s join parties p on p.id = s.id
-               where p.branch_id = $1 and s.active and regexp_replace(p.inn, '\D', '', 'g') = $2
+               where s.active and regexp_replace(p.inn, '\D', '', 'g') = $1
                limit 2"#,
-            branch_id,
             inn
         )
         .fetch_all(&mut *conn)
@@ -639,12 +635,11 @@ async fn match_supplier(
     }
     let found = sqlx::query!(
         r#"select s.id, s.name from suppliers s join parties p on p.id = s.id
-           where p.branch_id = $1 and s.active
-             and (lower(s.name) = lower($2) or lower(s.name) = lower($3)
-                  or similarity(s.name, $3) >= 0.4)
-           order by (lower(s.name) in (lower($2), lower($3))) desc, similarity(s.name, $3) desc, s.name
+           where s.active
+             and (lower(s.name) = lower($1) or lower(s.name) = lower($2)
+                  or similarity(s.name, $2) >= 0.4)
+           order by (lower(s.name) in (lower($1), lower($2))) desc, similarity(s.name, $2) desc, s.name
            limit 1"#,
-        branch_id,
         inv.supplier_name,
         core
     )
@@ -677,7 +672,7 @@ async fn draft_out(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> App
     let mut supplier = None;
     let mut lines = Vec::new();
     if let Some(inv) = &invoice {
-        supplier = match_supplier(conn, user.branch_id, inv).await?;
+        supplier = match_supplier(conn, inv).await?;
         let mut found = Vec::with_capacity(inv.lines.len());
         for l in &inv.lines {
             found.push(match_product(conn, l).await?);

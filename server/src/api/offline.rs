@@ -311,7 +311,8 @@ async fn snapshot_clients(
            from parties p
            left join lateral (select max(s.created_at) as last_at from sales s
                               where s.party_id = p.id and s.branch_id = $1) s on true
-           where p.branch_id = $1 and p.role = 'customer' and p.active
+           -- Клиенты общие для филиалов (SPEC-33): любой клиент с долгом, машиной или покупкой.
+           where p.role = 'customer' and p.active
              and (p.balance_tyiyn <> 0 or s.last_at > now() - interval '180 days'
                   or exists (select 1 from party_vehicles v where v.party_id = p.id and v.active))
            order by (p.balance_tyiyn <> 0) desc, s.last_at desc nulls last, p.name, p.id

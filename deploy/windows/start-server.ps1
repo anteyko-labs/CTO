@@ -19,6 +19,8 @@ $env:WHATSAPP_TOKEN = if (Test-Path variable:WhatsAppToken) { $WhatsAppToken } e
 $env:WHATSAPP_PHONE_ID = if (Test-Path variable:WhatsAppPhoneId) { $WhatsAppPhoneId } else { '' }
 $env:WHATSAPP_API_URL = if (Test-Path variable:WhatsAppApiUrl) { $WhatsAppApiUrl } else { '' }
 $env:PUBLIC_URL = if (Test-Path variable:PublicUrl) { $PublicUrl } else { '' }
+# Несколько филиалов через Cloudflare Tunnel (SPEC-33): адрес клиента — из заголовка Cloudflare.
+$env:TRUST_CF_HEADER = if ((Test-Path variable:TrustCfHeader) -and $TrustCfHeader) { '1' } else { '' }
 $env:RUST_LOG = 'info'
 while ($true) {
   # Через cmd: журнал пишется байтами программы (UTF-8), без перекодировки PowerShell.

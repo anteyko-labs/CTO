@@ -2,7 +2,7 @@
 type: doc
 status: ready
 tier: 3
-updated: 2026-10-08
+updated: 2026-10-24
 ---
 
 # Путеводитель разработчика
@@ -47,13 +47,14 @@ updated: 2026-10-08
 | 30 | Накладные по фото, книжка в боте | `api/receipt_drafts.rs`, `api/assistant.rs`, `api/bot_book.rs` | `components/ReceiptDrafts.tsx`, `lib/receiptDrafts.ts` |
 | 31 | Optima Business: QR на сумму, сверка с банком | `api/optima.rs`, `api/bank_qr.rs`, `api/bank_recon.rs` | `components/BankQrPanel.tsx`, `lib/optima.ts`, `pages/OptimaSettings.tsx`, `pages/BankRecon.tsx` |
 | 32 | Сообщения клиентам: Телеграм и WhatsApp, ссылка на бот с кодом | `api/client_messages.rs`, `api/telegram.rs` (`link_by_code`) | `pages/ClientMessages.tsx`, `lib/clientMessages.ts`, `pages/ClientCard.tsx` |
+| 33 | Несколько филиалов: филиал запроса, общие справочники, «Все филиалы», расчёты между филиалами | `auth.rs` (`request_branch`), `api/branches.rs` (`merge_reports`, `report`), `api/parties.rs` (`repayment_parts`), `api/catalog.rs` (`put_sale_price`) | `lib/branch.ts`, `lib/branchReport.ts`, `components/BranchSwitch.tsx`, `components/BranchScope.tsx`, `pages/Branches.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:
 
 - `server/migrations/NNNN_*.sql` — схема базы, по одному файлу на шаг. Применяются при старте сервера.
 - `server/.sqlx/` — сохранённые описания SQL-запросов, по ним сервер собирается без базы (CI, Docker).
-- `server/tests/flow.rs` — сценарии учёта на реальной базе. `server/tests/client_messages.rs` — сообщения клиентам с подставными Телеграмом и WhatsApp. `server/tests/http.rs` — API, права, вход.
+- `server/tests/flow.rs` — сценарии учёта на реальной базе. `server/tests/branches.rs` — несколько филиалов: обход всех маршрутов API (администратор филиала Б не видит и не меняет филиал А), «Все филиалы», цены, долги, миграция. `server/tests/client_messages.rs` — сообщения клиентам с подставными Телеграмом и WhatsApp. `server/tests/http.rs` — API, права, вход.
 - `web/e2e/` — сквозные тесты в браузере. `web/src/lib/*.test.ts` — модульные тесты клиента.
 - `deploy/`, `Dockerfile` — развёртывание. `.githooks/` — проверки перед коммитом. `.github/workflows/ci.yml` — проверки на GitHub.
 
@@ -133,6 +134,7 @@ pub async fn post_x_tx(conn: &mut PgConnection, ctx: &Ctx, req: XReq) -> AppResu
 - **Браузер для e2e.** Если Chromium не скачивается, можно взять установленный Edge: `E2E_CHANNEL=msedge npm run e2e`.
 - **Блокировка входа.** После 5 неверных паролей логин закрыт на 15 минут (ADR-016). Это касается и тестов, которые подбирают пароль.
 - **Офлайн-касса.** Чек всегда сначала кладётся в очередь на устройстве (`lib/offline.ts`) и только потом уходит на сервер. Касса не должна обходить очередь.
+- **Филиал запроса.** `user.branch_id` — филиал запроса, а не «свой филиал пользователя»: у владельца он из заголовка `X-Branch-Id`. Новый запрос к документам филиала — с `branch_id = $n`; к общим справочникам (клиенты, машины, книжка, баллы, услуги, подарки) — без него. Новый маршрут проверяет тест `server/tests/branches.rs` (обход всех маршрутов). Отчёт для «Все филиалы» — через `branches::report`.
 - **Часовой пояс.** В базе время хранится в UTC, «день» считается по Asia/Bishkek: в SQL — `at time zone 'Asia/Bishkek'`, в клиенте — `todayBishkek()`.
 
 ## 7. Словарь
@@ -148,5 +150,5 @@ pub async fn post_x_tx(conn: &mut PgConnection, ctx: &Ctx, req: XReq) -> AppResu
 | Перелив | Перенос масла между товарами. Делает только владелец (этап 4) |
 | Смена | Рабочий день кассы от открытия до закрытия с пересчётом наличных (SPEC-05) |
 | Контрагент | Клиент или поставщик со своим балансом долга (SPEC-10) |
-| Филиал | Точка. Все данные учёта привязаны к `branch_id`, пока филиал один |
+| Филиал | Точка на общем сервере (SPEC-33). Склад, деньги, смены, сотрудники и документы — у филиала (`branch_id`); каталог, клиенты, книжка, баллы, услуги и поставщики — общие |
 | `op_id` | Идентификатор операции от клиента. Повтор с тем же `op_id` не создаёт дубль |
