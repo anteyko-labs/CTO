@@ -14,6 +14,11 @@ $env:ASSISTANT_API_KEY = if (Test-Path variable:AssistantApiKey) { $AssistantApi
 # Optima Business (SPEC-31): без ключа QR банка и сверка выключены.
 $env:OPTIMA_API_KEY = if (Test-Path variable:OptimaApiKey) { $OptimaApiKey } else { '' }
 $env:OPTIMA_API_URL = if (Test-Path variable:OptimaApiUrl) { $OptimaApiUrl } else { '' }
+# Сообщения клиентам (SPEC-32): без ключа и номера WhatsApp выключен; без адреса — ссылка на бот.
+$env:WHATSAPP_TOKEN = if (Test-Path variable:WhatsAppToken) { $WhatsAppToken } else { '' }
+$env:WHATSAPP_PHONE_ID = if (Test-Path variable:WhatsAppPhoneId) { $WhatsAppPhoneId } else { '' }
+$env:WHATSAPP_API_URL = if (Test-Path variable:WhatsAppApiUrl) { $WhatsAppApiUrl } else { '' }
+$env:PUBLIC_URL = if (Test-Path variable:PublicUrl) { $PublicUrl } else { '' }
 $env:RUST_LOG = 'info'
 while ($true) {
   # Через cmd: журнал пишется байтами программы (UTF-8), без перекодировки PowerShell.

@@ -33,6 +33,12 @@ services:
       # Ключ API банка Optima Business (SPEC-31): QR на сумму чека и сверка; пусто — выключено.
       OPTIMA_API_KEY: ${OPTIMA_API_KEY:-}
       OPTIMA_API_URL: ${OPTIMA_API_URL:-}
+      # WhatsApp Business Platform (SPEC-32): ключ и ID номера из кабинета Meta; пусто — выключен.
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_ID: ${WHATSAPP_PHONE_ID:-}
+      WHATSAPP_API_URL: ${WHATSAPP_API_URL:-}
+      # Внешний адрес программы для ссылки на кабинет юрлица; пусто — ссылка на бот.
+      PUBLIC_URL: ${PUBLIC_URL:-}
       RUST_LOG: info
 
   proxy:
