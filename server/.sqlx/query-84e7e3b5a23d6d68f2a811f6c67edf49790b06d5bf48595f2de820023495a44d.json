@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update telegram_links set all_branches = true where chat_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "84e7e3b5a23d6d68f2a811f6c67edf49790b06d5bf48595f2de820023495a44d"
+}

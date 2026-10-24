@@ -791,9 +791,9 @@ fn payments_word(n: i64) -> String {
 /// Владелец филиала — от его имени сервер проводит ежедневную сверку.
 async fn owner_ctx(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Option<Ctx>> {
     let row = sqlx::query!(
+        // Владелец — всех филиалов (SPEC-33): первый действующий, записи — в этом филиале.
         r#"select id, login, full_name from users
-           where branch_id = $1 and role = 'owner' and active order by created_at limit 1"#,
-        branch_id
+           where role = 'owner' and active order by created_at limit 1"#
     )
     .fetch_optional(&mut *conn)
     .await?;

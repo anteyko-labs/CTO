@@ -323,16 +323,125 @@ pub(crate) fn command(text: &str) -> String {
         .to_lowercase()
 }
 
-/// Владелец, к которому привязан чат (только активный владелец).
+/// Владелец, к которому привязан чат (только активный владелец), и филиал, выбранный в чате
+/// (SPEC-33 §3): отчёты, черновики и вопросы — по нему.
 async fn chat_owner(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<(Uuid, Uuid)>> {
     Ok(sqlx::query!(
-        r#"select u.id, u.branch_id from telegram_links t join users u on u.id = t.user_id
+        r#"select u.id, t.branch_id from telegram_links t join users u on u.id = t.user_id
            where t.chat_id = $1 and u.active and u.role = 'owner'"#,
         chat_id
     )
     .fetch_optional(&mut *conn)
     .await?
     .map(|r| (r.id, r.branch_id)))
+}
+
+/// Филиалы отчёта в чате владельца (SPEC-33 §3): выбранный или все («/филиал все»), и
+/// филиалов больше одного — тогда у отчёта заголовок с названием филиала.
+async fn report_targets(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    branch_id: Uuid,
+) -> AppResult<(Vec<(Uuid, String)>, bool)> {
+    let all = sqlx::query_scalar!(
+        "select all_branches from telegram_links where chat_id = $1",
+        chat_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
+    let list = crate::api::branches::all(conn).await?;
+    let several = list.len() > 1;
+    let targets = list
+        .into_iter()
+        .filter(|b| {
+            if all {
+                !b.archived || b.id == branch_id
+            } else {
+                b.id == branch_id
+            }
+        })
+        .map(|b| (b.id, b.name))
+        .collect();
+    Ok((targets, several))
+}
+
+/// Отчёт с названием филиала, когда филиалов несколько.
+fn branch_head(several: bool, name: &str, text: String) -> String {
+    if several {
+        format!("🏬 {name}\n{text}")
+    } else {
+        text
+    }
+}
+
+/// «/филиал» — выбор филиала отчётов в чате владельца (SPEC-33 §3): номер или название из
+/// списка, «все» — отчёты по всем филиалам сразу (черновики и вопросы — по последнему
+/// выбранному филиалу).
+async fn choose_branch(conn: &mut PgConnection, chat_id: i64, arg: &str) -> AppResult<String> {
+    let list = crate::api::branches::all(conn).await?;
+    let arg = arg.trim();
+    let lower = arg.to_lowercase();
+    let current = sqlx::query!(
+        "select branch_id, all_branches from telegram_links where chat_id = $1",
+        chat_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(current) = current else {
+        return Ok(String::new());
+    };
+    if lower == "все" || lower == "all" {
+        sqlx::query!(
+            "update telegram_links set all_branches = true where chat_id = $1",
+            chat_id
+        )
+        .execute(&mut *conn)
+        .await?;
+        return Ok(
+            "Отчёты — по всем филиалам. Черновики и вопросы — по филиалу «".to_string()
+                + &list
+                    .iter()
+                    .find(|b| b.id == current.branch_id)
+                    .map(|b| b.name.clone())
+                    .unwrap_or_default()
+                + "».",
+        );
+    }
+    let picked = if arg.is_empty() {
+        None
+    } else {
+        arg.parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| list.get(i))
+            .or_else(|| list.iter().find(|b| b.name.to_lowercase() == lower))
+    };
+    if let Some(b) = picked {
+        sqlx::query!(
+            "update telegram_links set branch_id = $2, all_branches = false where chat_id = $1",
+            chat_id,
+            b.id
+        )
+        .execute(&mut *conn)
+        .await?;
+        return Ok(format!("🏬 Филиал: {}", b.name));
+    }
+    let now = if current.all_branches {
+        "все филиалы".to_string()
+    } else {
+        list.iter()
+            .find(|b| b.id == current.branch_id)
+            .map(|b| b.name.clone())
+            .unwrap_or_default()
+    };
+    let mut lines = vec![format!("🏬 Сейчас: {now}"), String::new()];
+    for (i, b) in list.iter().enumerate() {
+        let closed = if b.archived { " (закрыт)" } else { "" };
+        lines.push(format!("/филиал {} — {}{closed}", i + 1, b.name));
+    }
+    lines.push("/филиал все — отчёты по всем филиалам".into());
+    Ok(lines.join("\n"))
 }
 
 /// Режим вопросов в чате владельца (SPEC-21, ADR-067).
@@ -1625,11 +1734,14 @@ async fn handle_text(
     let Some((user_id, branch_id)) = owner else {
         return Ok(None);
     };
-    let help = if assistant.is_some() {
+    let mut help = if assistant.is_some() {
         format!("{HELP}{ASK_HELP}")
     } else {
         HELP.to_string()
     };
+    if crate::api::branches::several(conn).await? {
+        help.push_str("\n/филиал — выбрать филиал отчётов или все филиалы");
+    }
     // Кнопки клиента из чата владельца — не вопрос и не команда.
     if CUSTOMER_BUTTONS.contains(&text) {
         return Ok(Some((help, None)));
@@ -1674,13 +1786,32 @@ async fn handle_text(
             .await
             .map(|a| Some((a.text, a.draft)));
     }
+    // Выбор филиала отчётов (SPEC-33 §3).
+    if command(text) == "филиал" || command(text) == "branch" {
+        let rest = text.split_once(char::is_whitespace).map_or("", |x| x.1);
+        let r = choose_branch(conn, chat_id, rest).await?;
+        return Ok(Some((r, None)));
+    }
     // Команды работают и в режиме, и без него; режим они не закрывают, а продлевают.
-    let reply = match command(text).as_str() {
-        "сегодня" | "today" => Some(today(conn, branch_id).await?),
-        "смена" | "shift" => Some(shift(conn, branch_id).await?),
-        "долги" | "debts" => Some(debts(conn, branch_id).await?),
-        "замены" | "services" => Some(services_month(conn, user_id, branch_id).await?),
-        _ => None,
+    let cmd = command(text);
+    let reply = if matches!(
+        cmd.as_str(),
+        "сегодня" | "today" | "смена" | "shift" | "долги" | "debts" | "замены" | "services"
+    ) {
+        let (targets, several) = report_targets(conn, chat_id, branch_id).await?;
+        let mut parts = Vec::with_capacity(targets.len());
+        for (b, name) in &targets {
+            let one = match cmd.as_str() {
+                "сегодня" | "today" => today(conn, *b).await?,
+                "смена" | "shift" => shift(conn, *b).await?,
+                "долги" | "debts" => debts(conn, *b).await?,
+                _ => services_month(conn, user_id, *b).await?,
+            };
+            parts.push(branch_head(several, name, one));
+        }
+        Some(parts.join("\n\n"))
+    } else {
+        None
     };
     if let Some(r) = reply {
         if mode == AskMode::On {
@@ -2020,12 +2151,18 @@ pub(crate) async fn debt_lists(
         branch_id,
         ListQuery {
             only_debtors: true,
+            branch_debtors: true,
             ..Default::default()
         },
     )
     .await?;
+    // Долги филиала (SPEC-33): у клиента — его долг в этом филиале.
     let (mut to_us, mut from_us): (Vec<PartyOut>, Vec<PartyOut>) = rows
         .into_iter()
+        .map(|mut p| {
+            p.balance_tyiyn = p.branch_balance_tyiyn;
+            p
+        })
         .filter(|p| p.balance_tyiyn != 0)
         .partition(|p| p.balance_tyiyn > 0);
     to_us.sort_by_key(|p| std::cmp::Reverse(p.balance_tyiyn));
@@ -2177,9 +2314,11 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.created_at, a.entity_id, a.branch_id,
                   w.full_name as "who?", t.chat_id,
-                  e.full_name as "employee?"
+                  e.full_name as "employee?", b.name as branch_name
            from audit_log a
-           join telegram_links t on t.branch_id = a.branch_id
+           join branches b on b.id = a.branch_id
+           -- Владелец получает ленту всех филиалов (SPEC-33 §3).
+           join telegram_links t on true
            join users o on o.id = t.user_id and o.active and o.role = 'owner'
            left join users w on w.id = a.user_id
            left join employees e on e.id = a.entity_id
@@ -2201,6 +2340,7 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     .await?;
     let mut texts: HashMap<Uuid, String> = HashMap::new();
     let mut out = Vec::with_capacity(rows.len());
+    let several = crate::api::branches::several(conn).await?;
     for r in rows {
         let text = match texts.get(&r.id) {
             Some(t) => t.clone(),
@@ -2232,6 +2372,8 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
                         day_report(conn, r.branch_id, day, false).await?
                     );
                 }
+                // Несколько филиалов — у события название филиала.
+                let text = branch_head(several, &r.branch_name, text);
                 texts.insert(r.id, text.clone());
                 text
             }
@@ -2268,7 +2410,7 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
     let low = sqlx::query_scalar!(
         r#"select coalesce(min(a.created_at), now()) as "low!"
            from audit_log a
-           join telegram_links t on t.branch_id = a.branch_id
+           join telegram_links t on true
            join users o on o.id = t.user_id and o.active and o.role = 'owner'
            where a.created_at > greatest($1::timestamptz - interval '15 minutes', $2::timestamptz,
                                          now() - interval '1 day')

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select branch_id, all_branches from telegram_links where chat_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "all_branches",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bd63db2cff20f6bef890ee672f38e0490a3b443a5d79dd10ce31478c062c72cf"
+}

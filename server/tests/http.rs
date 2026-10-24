@@ -9737,6 +9737,12 @@ async fn old_single_line_stock_ins_survive_migration(pool: PgPool) {
     for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version < 49) {
         sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
     }
+    // Филиал — как в прежней базе (до SPEC-33 у филиала только название).
+    sqlx::query("insert into branches (id, name) values ($1, 'Основной')")
+        .bind(Uuid::now_v7())
+        .execute(&pool)
+        .await
+        .unwrap();
     let app = setup(pool.clone()).await;
     // Карточка — как её заводила прежняя версия: запросы программы идут уже к новой схеме
     // (филиал запроса, SPEC-33), поэтому вход — после миграций.

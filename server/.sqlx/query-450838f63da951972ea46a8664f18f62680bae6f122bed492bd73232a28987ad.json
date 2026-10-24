@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.id, u.branch_id from telegram_links t join users u on u.id = t.user_id\n           where t.chat_id = $1 and u.active and u.role = 'owner'",
+  "query": "select u.id, t.branch_id from telegram_links t join users u on u.id = t.user_id\n           where t.chat_id = $1 and u.active and u.role = 'owner'",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "8f04be1e42ddd4819550681bf9ccf69f61bf9951988c709b0c5223e2b1788a46"
+  "hash": "450838f63da951972ea46a8664f18f62680bae6f122bed492bd73232a28987ad"
 }

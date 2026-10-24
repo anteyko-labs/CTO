@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, login, full_name from users\n           where branch_id = $1 and role = 'owner' and active order by created_at limit 1",
+  "query": "select id, login, full_name from users\n           where role = 'owner' and active order by created_at limit 1",
   "describe": {
     "columns": [
       {
@@ -20,9 +20,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Uuid"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -30,5 +28,5 @@
       false
     ]
   },
-  "hash": "79d42eb9c5038173e63d231cda04756dc702b3ebcac42cccfdc129797dd6cb52"
+  "hash": "6d1c771c2b776bdb947d9f739cb2b265c46d17c9f084eb3af01a197341579ebd"
 }

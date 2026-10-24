@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.branch_id, b.name as branch_name, s.creditor_branch_id, c.name as creditor_name,\n                  sum(s.amount_tyiyn)::bigint as \"amount_tyiyn!\"\n           from branch_settlements s\n           join branches b on b.id = s.branch_id\n           join branches c on c.id = s.creditor_branch_id\n           group by s.branch_id, b.name, s.creditor_branch_id, c.name\n           having sum(s.amount_tyiyn) <> 0\n           order by b.name, c.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "creditor_branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "creditor_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "acbbf9ebff1c9007f8f26976a355de944cfcc3bb162dfa7aca963f4b79f79959"
+}

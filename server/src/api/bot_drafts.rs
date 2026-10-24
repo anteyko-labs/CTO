@@ -259,7 +259,8 @@ async fn linked_owner(
     chat_id: i64,
 ) -> AppResult<Option<(CurrentUser, Option<i64>)>> {
     Ok(sqlx::query!(
-        r#"select u.id, u.branch_id, u.login, u.full_name, t.tg_user_id
+        // Филиал — выбранный в чате (SPEC-33 §3), а не свой филиал владельца.
+        r#"select u.id, t.branch_id, u.login, u.full_name, t.tg_user_id
            from telegram_links t join users u on u.id = t.user_id
            where t.chat_id = $1 and u.active and u.role = 'owner'"#,
         chat_id

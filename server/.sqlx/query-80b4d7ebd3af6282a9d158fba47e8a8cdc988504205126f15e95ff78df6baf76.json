@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.created_at, s.business_date, b.name as branch_name, c.name as creditor_name,\n                  s.party_id, p.name as party_name, s.amount_tyiyn,\n                  s.reversal_of is not null as \"reversal!\", u.full_name as user_name\n           from branch_settlements s\n           join branches b on b.id = s.branch_id\n           join branches c on c.id = s.creditor_branch_id\n           join parties p on p.id = s.party_id\n           join users u on u.id = s.user_id\n           order by s.created_at desc limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "branch_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "creditor_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "party_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "reversal!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "user_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "80b4d7ebd3af6282a9d158fba47e8a8cdc988504205126f15e95ff78df6baf76"
+}

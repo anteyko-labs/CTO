@@ -3887,6 +3887,15 @@ async fn bot_question_debts_match_buttons(pool: PgPool) {
             .await
             .unwrap();
     }
+    // Балансы мимо записей долга: части по филиалам (SPEC-33) — в филиал карточки.
+    sqlx::query(
+        "insert into party_balances (party_id, branch_id, balance_tyiyn)
+         select id, branch_id, balance_tyiyn from parties where balance_tyiyn <> 0
+         on conflict do nothing",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let chat = 880_002i64;
     link_owner(&pool, &w, chat).await;
     let (url, fake) = fake_service().await;

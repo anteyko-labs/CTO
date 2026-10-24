@@ -17,6 +17,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/branches", routing::get(list).post(create))
         .route("/branches/{id}", routing::patch(update))
+        .route("/branches/settlements", routing::get(settlements))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,6 +310,69 @@ async fn update(
     Ok(Json(out))
 }
 
+#[derive(Serialize)]
+struct SettlementPair {
+    /// Филиал, принявший деньги за чужой долг: он должен.
+    branch_id: Uuid,
+    branch_name: String,
+    /// Филиал, чей долг закрыт: ему должны.
+    creditor_branch_id: Uuid,
+    creditor_name: String,
+    amount_tyiyn: i64,
+}
+
+#[derive(Serialize)]
+struct SettlementEntry {
+    id: Uuid,
+    created_at: chrono::DateTime<chrono::Utc>,
+    business_date: chrono::NaiveDate,
+    branch_name: String,
+    creditor_name: String,
+    party_id: Uuid,
+    party_name: String,
+    amount_tyiyn: i64,
+    reversal: bool,
+    user_name: String,
+}
+
+/// «Расчёты между филиалами» (SPEC-33 §2): кто кому должен за погашенные в чужом филиале долги
+/// клиентов — итог по парам и последние записи. Только владельцу: это деньги филиалов.
+async fn settlements(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<serde_json::Value>> {
+    user.require_owner()?;
+    let mut conn = state.pool.acquire().await?;
+    let items = sqlx::query_as!(
+        SettlementPair,
+        r#"select s.branch_id, b.name as branch_name, s.creditor_branch_id, c.name as creditor_name,
+                  sum(s.amount_tyiyn)::bigint as "amount_tyiyn!"
+           from branch_settlements s
+           join branches b on b.id = s.branch_id
+           join branches c on c.id = s.creditor_branch_id
+           group by s.branch_id, b.name, s.creditor_branch_id, c.name
+           having sum(s.amount_tyiyn) <> 0
+           order by b.name, c.name"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let entries = sqlx::query_as!(
+        SettlementEntry,
+        r#"select s.id, s.created_at, s.business_date, b.name as branch_name, c.name as creditor_name,
+                  s.party_id, p.name as party_name, s.amount_tyiyn,
+                  s.reversal_of is not null as "reversal!", u.full_name as user_name
+           from branch_settlements s
+           join branches b on b.id = s.branch_id
+           join branches c on c.id = s.creditor_branch_id
+           join parties p on p.id = s.party_id
+           join users u on u.id = s.user_id
+           order by s.created_at desc limit 200"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(Json(json!({ "items": items, "entries": entries })))
+}
+
 /// Отчёт «Все филиалы» (SPEC-33 §3): сумма по филиалам и разбивка `branches` —
 /// `[{branch_id, name, archived, report}]`. Суммируются деньги, количества и счётчики; цены,
 /// доли, ставки, номера и даты берутся из первого филиала; доли (`margin_bp`, средний чек)
@@ -388,9 +452,9 @@ fn row_key(v: &serde_json::Value) -> Option<String> {
         "category_id",
         "method",
         "key",
+        "name",
         "kind",
         "slot",
-        "name",
     ];
     let obj = v.as_object()?;
     // Ячейка тепловой карты — день недели и час вместе.

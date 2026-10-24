@@ -30,7 +30,7 @@ pub async fn ensure_owner(pool: &PgPool, owner: Option<(String, String)>) -> App
         None => {
             let id = new_id();
             sqlx::query!(
-                "insert into branches (id, name) values ($1, 'Основной')",
+                "insert into branches (id, name, is_main) values ($1, 'Основной', true)",
                 id
             )
             .execute(&mut *tx)

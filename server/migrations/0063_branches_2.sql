@@ -91,3 +91,7 @@ begin
     end if;
     return new;
 end $$;
+
+-- 3. Бот владельца (SPEC-33 §3): `telegram_links.branch_id` — филиал, выбранный в чате (отчёты,
+-- черновики, вопросы); «Все филиалы» — только для отчётов.
+alter table telegram_links add column all_branches boolean not null default false;
