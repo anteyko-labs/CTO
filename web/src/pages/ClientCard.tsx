@@ -9,7 +9,7 @@ import { stockText } from '../components/ProductPicker'
 import { VehicleFormModal } from '../components/VehicleFormModal'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
-import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
+import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
@@ -28,7 +28,7 @@ interface CabinetState {
 }
 
 /** Адрес кабинета с кнопкой «Копировать»: без доступа к буферу — выделяет текст для ручного копирования. */
-function CopyAddress({ url }: { url: string }) {
+function CopyAddress({ url, label = 'Адрес кабинета' }: { url: string; label?: string }) {
   const [copied, setCopied] = useState(false)
   const field = useRef<HTMLInputElement>(null)
   const copy = async () => {
@@ -52,7 +52,7 @@ function CopyAddress({ url }: { url: string }) {
       <input
         ref={field}
         readOnly
-        aria-label="Адрес кабинета"
+        aria-label={label}
         className="w-full max-w-xs bg-slate-50 font-mono text-xs sm:w-72"
         value={url}
         onFocus={(e) => e.target.select()}
@@ -109,6 +109,49 @@ function CabinetBox({ partyId }: { partyId: string }) {
       </Button>
     </Card>
   )
+}
+
+/** Ссылка на бот со скрытым кодом клиента (SPEC-32): «Старт» по ней сразу подключает чат.
+ *  Видит только владелец; «Новая ссылка» — прежняя перестаёт работать. */
+function BotLinkBox({ partyId }: { partyId: string }) {
+  const st = useLoad(() => get<{ url: string | null }>(`/parties/${partyId}/bot-link`), [partyId])
+  const act = useAction()
+  if (!st.data) return null
+  return (
+    <Card className="flex flex-wrap items-center justify-between gap-3 text-sm" data-testid="bot-link">
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="font-medium">Ссылка на бот для клиента</div>
+        {st.data.url ? (
+          <CopyAddress url={st.data.url} label="Ссылка на бот" />
+        ) : (
+          <div className="text-slate-600">Бот ещё не запускался — имя бота неизвестно.</div>
+        )}
+        <div className="text-slate-600">Нажал «Старт» по ссылке — бот подключён к этой карточке без номера телефона.</div>
+        <ErrorBox error={act.error ?? st.error} />
+      </div>
+      <Button
+        variant="secondary"
+        disabled={act.busy}
+        onClick={() =>
+          void act.run(async () => {
+            if (!window.confirm('Сделать новую ссылку? Прежняя перестанет работать; уже подключённый чат останется.')) return
+            st.setData(await post<{ url: string | null }>(`/parties/${partyId}/bot-link/reset`, {}))
+            toast('Новая ссылка готова')
+          })
+        }
+      >
+        Новая ссылка
+      </Button>
+    </Card>
+  )
+}
+
+interface ContactForm {
+  id: string | null
+  full_name: string
+  phone: string
+  position: string
+  is_head: boolean
 }
 
 interface HistoryRow {
@@ -287,11 +330,12 @@ export default function ClientCard() {
   // «Исправить» оплату долга или правку баланса — той же формой, что их записывает (SPEC-29 §24).
   const [fixing, setFixing] = useState<{ kind: 'repayment' | 'adjust'; ledgerId: string } | null>(null)
   const revAct = useAction()
-  const [adding, setAdding] = useState<'contact' | 'vehicle' | null>(null)
+  const [adding, setAdding] = useState<'vehicle' | null>(null)
+  // Человек фирмы: новый или правка — имя, телефон, должность, руководитель (SPEC-32).
+  const [contact, setContact] = useState<ContactForm | null>(null)
   const [limits, setLimits] = useState<{ limit: string; days: string } | null>(null)
   // Имя и фамилия человека (ADR-083): у прежних записей их нет — дописывают здесь.
   const [naming, setNaming] = useState<{ first: string; last: string } | null>(null)
-  const [value, setValue] = useState('')
   const [reconciling, setReconciling] = useState(false)
   const row = useAction()
   const card = useLoad(() => get<PartyCard>(`/parties/${id}/card`), [id])
@@ -306,14 +350,29 @@ export default function ClientCard() {
   if (!card.data) return <ErrorBox error={card.error ?? 'Клиент не найден'} />
   const { party, contacts, vehicles, timeline } = card.data
 
-  const addRow = () =>
+  const saveContact = () =>
     void row.run(async () => {
-      const v = value.trim()
-      if (!v) throw new Error('Заполните поле')
-      await post(`/parties/${party.id}/contacts`, { full_name: v })
-      setAdding(null)
-      setValue('')
+      if (!contact) return
+      const body = {
+        full_name: contact.full_name.trim(),
+        phone: contact.phone.trim(),
+        position: contact.position.trim(),
+        is_head: contact.is_head,
+      }
+      if (!body.full_name) throw new Error('Заполните ФИО')
+      if (contact.id) {
+        const was = contacts.find((c) => c.id === contact.id)
+        await patch(`/parties/${party.id}/contacts/${contact.id}`, { ...body, inn: was?.inn ?? '' })
+      } else await post(`/parties/${party.id}/contacts`, body)
+      setContact(null)
       card.reload()
+    })
+
+  const togglePurchaseMessages = () =>
+    void row.run(async () => {
+      await patch<Party>(`/parties/${party.id}`, { no_purchase_messages: !party.no_purchase_messages })
+      card.reload()
+      toast(party.no_purchase_messages ? 'Сообщения о закупах включены' : 'Сообщения о закупах отключены')
     })
 
   const saveName = () =>
@@ -498,7 +557,11 @@ export default function ClientCard() {
           <CardTitle
             actions={
               mayEdit && (
-                <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={() => setAdding('contact')}>
+                <Button
+                  variant="secondary"
+                  className="min-h-[34px] px-3 py-1 text-xs"
+                  onClick={() => setContact({ id: null, full_name: '', phone: '', position: '', is_head: false })}
+                >
                   + работник
                 </Button>
               )
@@ -511,17 +574,50 @@ export default function ClientCard() {
           ) : (
             <ul className="flex flex-col gap-1 text-sm">
               {contacts.map((c) => (
-                <li key={c.id} className="flex justify-between gap-2 border-b border-slate-100 py-1 last:border-0">
-                  <span className={c.active ? '' : 'text-slate-400'}>{c.full_name}</span>
-                  <span className="text-slate-500">{[c.position, c.phone, c.inn].filter(Boolean).join(' · ') || '—'}</span>
+                <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 py-1 last:border-0">
+                  <span className={c.active ? '' : 'text-slate-400'}>
+                    {c.full_name} {c.is_head && <Badge tone="sky">руководитель</Badge>}
+                  </span>
+                  <span className="flex items-center gap-2 text-slate-500">
+                    {[c.position, c.phone, c.inn].filter(Boolean).join(' · ') || '—'}
+                    {mayEdit && (
+                      <button
+                        type="button"
+                        className="text-xs text-sky-700 underline"
+                        onClick={() => setContact({ id: c.id, full_name: c.full_name, phone: c.phone, position: c.position, is_head: !!c.is_head })}
+                      >
+                        изменить
+                      </button>
+                    )}
+                  </span>
                 </li>
               ))}
             </ul>
+          )}
+          {party.role === 'customer' && (
+            <div className="mt-3 border-t border-slate-100 pt-2 text-sm">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  id="party-no-purchase-messages"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={!!party.no_purchase_messages}
+                  disabled={!mayEdit || row.busy}
+                  onChange={togglePurchaseMessages}
+                />
+                Не присылать сообщения о закупах
+              </label>
+              <div className="text-xs text-slate-500">
+                После каждого чека фирме и руководителю уходит сообщение: сумма, водитель, машина и общий долг (Телеграм или WhatsApp).
+              </div>
+            </div>
           )}
         </Card>
       )}
 
       {owner && party.kind === 'company' && party.role === 'customer' && <CabinetBox partyId={party.id} />}
+
+      {owner && party.role === 'customer' && <BotLinkBox partyId={party.id} />}
 
       {party.role === 'customer' && <BonusBox partyId={party.id} />}
 
@@ -714,19 +810,30 @@ export default function ClientCard() {
           </div>
         </Modal>
       )}
-      {adding === 'contact' && (
-        <Modal title="Новый работник" onClose={() => setAdding(null)}>
+      {contact && (
+        <Modal title={contact.id ? 'Работник фирмы' : 'Новый работник'} onClose={() => setContact(null)}>
           <div className="flex flex-col gap-3">
             <Field label="ФИО" required>
-              <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
+              <input id="contact-name" autoFocus value={contact.full_name} onChange={(e) => setContact({ ...contact, full_name: e.target.value })} />
             </Field>
+            <Field label="Телефон">
+              <input id="contact-phone" inputMode="tel" value={contact.phone} onChange={(e) => setContact({ ...contact, phone: e.target.value })} />
+            </Field>
+            <Field label="Должность">
+              <input id="contact-position" value={contact.position} onChange={(e) => setContact({ ...contact, position: e.target.value })} />
+            </Field>
+            <Checkbox
+              label="Руководитель — ему сообщения о закупах, его имя в обращении"
+              checked={contact.is_head}
+              onChange={(v) => setContact({ ...contact, is_head: v })}
+            />
             <ErrorBox error={row.error} />
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setAdding(null)}>
+              <Button variant="secondary" onClick={() => setContact(null)}>
                 Отмена
               </Button>
-              <Button disabled={row.busy || !value.trim()} onClick={addRow}>
-                Добавить
+              <Button disabled={row.busy || !contact.full_name.trim()} onClick={saveContact}>
+                {contact.id ? 'Сохранить' : 'Добавить'}
               </Button>
             </div>
           </div>

@@ -51,10 +51,11 @@ export interface AttributeDef {
 }
 
 /** Строка масляной книжки (SPEC-27): масло, фильтры по видам, прочие работы; `none` — не в книжку. */
-export type BookSlot = 'oil' | 'oil_filter' | 'air_filter' | 'cabin_filter' | 'fuel_filter' | 'other'
+export type BookSlot = 'oil' | 'gear_oil' | 'oil_filter' | 'air_filter' | 'cabin_filter' | 'fuel_filter' | 'other'
 
 export const BOOK_SLOT_LABELS: Record<BookSlot, string> = {
   oil: 'Масло двигателя',
+  gear_oil: 'Масло в коробке',
   oil_filter: 'Фильтр масляный',
   air_filter: 'Фильтр воздушный',
   cabin_filter: 'Фильтр салонный',
@@ -461,6 +462,8 @@ export interface Party {
   balance_tyiyn: number
   /** Долг старше срока оплаты, ещё не погашенный. */
   overdue_tyiyn: number
+  /** Фирма не хочет сообщений о закупах (SPEC-32). */
+  no_purchase_messages?: boolean
 }
 
 export interface PartyContact {
@@ -470,6 +473,8 @@ export interface PartyContact {
   position: string
   inn: string
   active: boolean
+  /** Руководитель фирмы: ему — сообщение о закупе (SPEC-32). */
+  is_head?: boolean
 }
 
 export interface PartyVehicle {

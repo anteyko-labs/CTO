@@ -9,6 +9,7 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },
   { to: '/settings/telegram', title: 'Телеграм и баллы', text: 'Бот владельца, процент баллов клиентам', icon: 'bell', ownerOnly: true },
+  { to: '/settings/client-messages', title: 'Сообщения клиентам', text: 'Напоминания о замене и сообщения юрлицам о закупе: Телеграм и WhatsApp, журнал', icon: 'bell', ownerOnly: true },
   { to: '/settings/optima', title: 'Optima Business', text: 'QR на сумму чека и сверка с выпиской банка: компания, счёт, точка и касса', icon: 'bank', ownerOnly: true },
   { to: '/accounts', title: 'Комиссия банка', text: 'Ставка у каждого банковского счёта и история ставок — в «Обзоре счетов»', icon: 'profit', ownerOnly: true },
   { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },

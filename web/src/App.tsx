@@ -53,6 +53,7 @@ import StockInCorrect from './pages/StockInCorrect'
 import StockInView from './pages/StockInView'
 import SupplierReturnsPage from './pages/SupplierReturns'
 import TelegramSettings from './pages/TelegramSettings'
+import ClientMessages from './pages/ClientMessages'
 import ExpenseArticles from './pages/ExpenseArticles'
 import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
@@ -358,6 +359,7 @@ function Shell() {
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
           {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
+          {owner && <Route path="/settings/client-messages" element={<ClientMessages />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}
           <Route path="/suppliers" element={<Suppliers />} />
           <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />

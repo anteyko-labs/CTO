@@ -78,6 +78,7 @@ const emptyManual = (): ManualForm => ({
   date: todayBishkek(),
   mileage: '',
   oil: '',
+  gear_oil: '',
   oil_filter: '',
   air_filter: '',
   cabin_filter: '',
