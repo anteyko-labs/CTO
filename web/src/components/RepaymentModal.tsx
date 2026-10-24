@@ -232,7 +232,13 @@ export function RepaymentModal({
               )}
               {fixId && !filled && correction.draft.loading && <Loading />}
               {supplier && !invoice && !fixId && <div className="text-xs text-slate-500">Оплата закрывает самые старые неоплаченные накладные.</div>}
-              {!supplier && !fixId && <div className="text-xs text-slate-500">Оплата гасит самые старые долги первыми.</div>}
+              {!supplier && !fixId && (
+                <div className="text-xs text-slate-500">
+                  {details.data?.kind === 'customer' && details.data.d.items.some((i) => i.other_branch)
+                    ? 'Оплата гасит сначала долг этого филиала, затем самые старые в других; деньги — в кассу этого филиала.'
+                    : 'Оплата гасит самые старые долги первыми.'}
+                </div>
+              )}
               <Field label="Сумма, с" required>
                 <input
                   id="repay-sum"
@@ -372,7 +378,10 @@ function CustomerOpen({ items }: { items: OpenDebt[] }) {
               {formatDate(d.business_date)}
               {d.overdue && <span className="ml-1 text-xs font-medium text-rose-700">просрочен</span>}
             </td>
-            <td className="px-2 py-2">{d.sale_number !== null ? `Чек № ${d.sale_number}` : d.comment || (d.kind === 'adjust' ? 'Правка долга' : 'Долг')}</td>
+            <td className="px-2 py-2">
+              {d.sale_number !== null ? `Чек № ${d.sale_number}` : d.comment || (d.kind === 'adjust' ? 'Правка долга' : 'Долг')}
+              {d.branch_name && <div className="text-xs text-slate-500">{d.branch_name}</div>}
+            </td>
             <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(d.amount_tyiyn)}</td>
             <td className="whitespace-nowrap px-2 py-2 text-right font-semibold tabular-nums">{formatSom(d.left_tyiyn)}</td>
           </tr>

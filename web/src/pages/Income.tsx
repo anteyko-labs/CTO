@@ -13,17 +13,25 @@ import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useLoad, useRangeParam } from '../lib/hooks'
 import { METHOD_LABELS, MOVEMENT_LABELS } from '../lib/income'
 import type { IncomeReport } from '../lib/types'
+import { BranchBreakdown, BranchScope } from '../components/BranchScope'
+import { branchParam, useAllBranches, type AllBranches } from '../lib/branchReport'
 
 const qtyText = (unit: 'piece' | 'ml' | 'g', containerMl: number | null, qty: number) =>
   stockText({ unit, container_ml: containerMl, stock_qty: qty })
 
 export default function Income() {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
+  // «Все филиалы» (SPEC-33 §3).
+  const [all, setAll] = useAllBranches(owner && Boolean(user.several_branches))
   const [range, today, setRange] = useRangeParam()
   const [openAccount, setOpenAccount] = useState<string | null>(null)
   const [openReceipt, setOpenReceipt] = useState<string | null>(null)
   const [allProducts, setAllProducts] = useState(false)
-  const r = useLoad(() => get<IncomeReport>(`/reports/income${qs({ from: range.from, to: range.to })}`), [range.from, range.to])
+  const r = useLoad(
+    () => get<AllBranches<IncomeReport>>(`/reports/income${qs({ from: range.from, to: range.to, ...branchParam(all) })}`),
+    [range.from, range.to, all],
+  )
   const data = r.data
   const subtitle = range.from === range.to ? `за ${formatDate(range.from)}` : `с ${formatDate(range.from)} по ${formatDate(range.to)}`
   const methods = (data?.methods ?? []).filter((m) => m.sales_tyiyn !== 0 || m.returns_tyiyn !== 0)
@@ -35,11 +43,20 @@ export default function Income() {
     <div>
       <PageHeader title="Куда сколько поступило" subtitle={subtitle} />
       <PeriodPicker value={range} today={today} onChange={setRange} />
+      <BranchScope user={user} all={all} onChange={setAll} />
       <ErrorBox error={r.error} />
       {r.loading && !data ? (
         <Loading />
       ) : data ? (
         <div className="flex flex-col gap-4">
+          <BranchBreakdown
+            parts={data.branches}
+            columns={[
+              { label: 'Продажи', value: (x) => x.sales_tyiyn },
+              { label: 'Возвраты', value: (x) => x.returns_tyiyn },
+              { label: 'Выручка', value: (x) => x.revenue_tyiyn },
+            ]}
+          />
           <Card>
             <CardTitle>Оплаты чеков по способам</CardTitle>
             {methods.length === 0 ? (

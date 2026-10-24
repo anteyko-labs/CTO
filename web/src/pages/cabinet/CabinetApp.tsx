@@ -18,6 +18,8 @@ interface Me {
   overdue_tyiyn: number
   due_days: number | null
   credit_limit_tyiyn: number | null
+  /** Долг по филиалам (SPEC-33): только ненулевые. */
+  branch_balances?: { branch_id: string; name: string; balance_tyiyn: number }[]
   seller: Partial<Seller>
 }
 
@@ -42,6 +44,8 @@ interface ClientSale {
   debt_tyiyn: number
   /** Оплачено «По счёту» — перечислением фирмы (ADR-095). */
   invoice_tyiyn?: number
+  /** Филиал покупки (SPEC-33). */
+  branch_name?: string
   lines: SaleLine[]
 }
 
@@ -178,6 +182,7 @@ function Purchases() {
             <div className="text-sm text-slate-600">
               {s.contact_name ? `Брал: ${s.contact_name}` : 'Работник не указан'}
               {s.vehicle_plate && ` · машина ${s.vehicle_plate}`}
+              {s.branch_name && ` · ${s.branch_name}`}
               {s.debt_tyiyn !== 0 && (
                 <span className="ml-2">
                   <Badge tone="amber">в долг {formatSom(Math.abs(s.debt_tyiyn))}</Badge>
@@ -342,6 +347,15 @@ export default function CabinetApp() {
           <div>
             <div className="text-xs text-slate-500">{m.balance_tyiyn >= 0 ? 'Ваш долг' : 'Ваш аванс'}</div>
             <div className={`text-2xl font-bold ${m.balance_tyiyn > 0 ? 'text-amber-700' : ''}`}>{formatSom(Math.abs(m.balance_tyiyn))}</div>
+            {(m.branch_balances?.length ?? 0) > 1 && (
+              <div className="text-xs text-slate-600">
+                {m.branch_balances?.map((b) => (
+                  <div key={b.branch_id}>
+                    {b.name}: {formatSom(b.balance_tyiyn)}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           {m.overdue_tyiyn > 0 && (
             <div>

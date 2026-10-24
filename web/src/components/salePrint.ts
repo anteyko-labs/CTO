@@ -3,6 +3,7 @@ import { formatDateTime, formatKg, formatLiters, formatSomExact } from '../lib/f
 import { paymentLabel } from '../lib/battery'
 import { printInFrame } from '../lib/printFrame'
 import type { Sale, SaleLine } from '../lib/types'
+import { branchLabel } from '../lib/branch'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -54,6 +55,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     .center { text-align: center; margin-top: 3mm; }
   </style></head><body>
     <h1>Avtodom</h1>
+    ${branchLabel() ? `<div class="center" style="margin:0 0 2mm">${esc(branchLabel() ?? '')}</div>` : ''}
     <div>${title} № ${sale.number}</div>
     <div>${esc(saleWhen(sale))}</div>
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}

@@ -10,6 +10,9 @@ import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useLoad, useRangeParam } from '../lib/hooks'
 import { MOVEMENT_LABELS } from '../lib/income'
 import type { BankReport, CashAccount } from '../lib/types'
+import { BranchBreakdown, BranchScope } from '../components/BranchScope'
+import { useUser } from '../lib/auth'
+import { branchParam, useAllBranches, type AllBranches } from '../lib/branchReport'
 
 function Tile({ label, value, hint, tone = '' }: { label: string; value: number; hint?: string; tone?: string }) {
   return (
@@ -22,14 +25,20 @@ function Tile({ label, value, hint, tone = '' }: { label: string; value: number;
 }
 
 export default function Bank() {
+  const user = useUser()
+  // «Все филиалы» (SPEC-33 §3): счёт по умолчанию каждого филиала, сумма и разбивка.
+  const [all, setAll] = useAllBranches(Boolean(user.several_branches))
   const [range, today, setRange] = useRangeParam()
   // Любой безналичный счёт, и архивный; без выбора — счёт по умолчанию для карты (ADR-076, ADR-077).
   const [params] = useSearchParams()
   const [account, setAccount] = useState(() => params.get('account') ?? '')
   const banks = useLoad(() => get<CashAccount[]>('/cash/accounts?archived=true').then((all) => all.filter((a) => a.kind === 'bank')), [])
   const b = useLoad(
-    () => get<BankReport>(`/cash/bank${qs({ from: range.from, to: range.to, account_id: account || undefined })}`),
-    [range.from, range.to, account],
+    () =>
+      get<AllBranches<BankReport>>(
+        `/cash/bank${qs({ from: range.from, to: range.to, account_id: all ? undefined : account || undefined, ...branchParam(all) })}`,
+      ),
+    [range.from, range.to, account, all],
   )
   const data = b.data
   // Движения за период приходят вместе с итогами; страницы — здесь, смена периода — первая страница.
@@ -48,7 +57,8 @@ export default function Bank() {
           </Link>
         }
       />
-      {(banks.data ?? []).length > 1 && (
+      <BranchScope user={user} all={all} onChange={setAll} />
+      {!all && (banks.data ?? []).length > 1 && (
         <div className="mb-3 flex flex-wrap gap-2" data-testid="bank-pick">
           {(banks.data ?? []).map((a) => {
             const on = (account || data?.account_id) === a.id
@@ -73,6 +83,15 @@ export default function Bank() {
         <Loading />
       ) : data ? (
         <div className="flex flex-col gap-4">
+          <BranchBreakdown
+            parts={data.branches}
+            columns={[
+              { label: 'Карта', value: (x) => x.card.total_tyiyn },
+              { label: 'Перевод', value: (x) => x.transfer.total_tyiyn },
+              { label: 'Комиссия', value: (x) => x.fee_tyiyn },
+              { label: 'На конец', value: (x) => x.closing_tyiyn },
+            ]}
+          />
           <Card className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <Tile label="Остаток сейчас" value={data.balance_tyiyn} />
             <Tile

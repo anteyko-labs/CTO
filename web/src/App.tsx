@@ -10,6 +10,8 @@ import { useTouchMode } from './lib/cashierMode'
 import { stockToProducts } from './lib/stockLink'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
+import { BranchSwitch } from './components/BranchSwitch'
+import { setBranchLabel } from './lib/branch'
 import { UpdateBanner } from './components/UpdateBanner'
 import { startUpdates } from './lib/updates'
 import { Button, Loading, Modal, Toaster } from './components/ui'
@@ -58,6 +60,7 @@ import ExpenseArticles from './pages/ExpenseArticles'
 import SupplierCard from './pages/SupplierCard'
 import Suppliers from './pages/Suppliers'
 import Users from './pages/Users'
+import Branches from './pages/Branches'
 
 interface NavItem {
   to: string
@@ -195,6 +198,8 @@ function Shell() {
   const [open, setOpen] = useState(false)
   const [theme, setTheme] = useTheme()
   const unseen = useUnseen(user?.role === 'owner')
+  // Название филиала в печатных чеках — когда филиалов несколько (SPEC-33).
+  useEffect(() => setBranchLabel(user?.several_branches ? (user.branch_name ?? null) : null), [user])
   // Снимок каталога и очередь чеков живут, пока открыто приложение (SPEC-09).
   useEffect(() => (user ? startOfflineLoop({ id: user.id, full_name: user.full_name, role: user.role }) : undefined), [user])
   // Выход с неотправленными чеками или без связи — сначала предупреждение (SPEC-09): очередь
@@ -268,7 +273,12 @@ function Shell() {
     <div className="min-h-screen md:flex">
       {!touch && (
       <aside className="keep-dark no-print hidden bg-slate-900 p-4 md:block md:w-56 md:shrink-0">
-        <div className="mb-6 hidden px-3 text-lg font-bold text-white md:block">Avtodom</div>
+        <div className="mb-6 hidden px-3 md:block">
+          <div className="text-lg font-bold text-white">Avtodom</div>
+          <div className="mt-1">
+            <BranchSwitch user={user} />
+          </div>
+        </div>
         {nav}
         <div className="mt-6 border-t border-slate-700 px-3 pt-4 text-sm text-slate-300">
           <div className="font-medium text-white">{user.full_name}</div>
@@ -288,7 +298,7 @@ function Shell() {
       {!touch && (
         <div className="keep-dark no-print flex items-center justify-between bg-slate-900 px-4 py-3 text-white md:hidden">
           <span className="font-bold">Avtodom</span>
-          <span className="text-xs text-slate-300">{user.full_name}</span>
+          {user.several_branches ? <BranchSwitch user={user} /> : <span className="text-xs text-slate-300">{user.full_name}</span>}
         </div>
       )}
       {/* Режим кассы на широком экране — ровно во весь экран без прокрутки страницы (ui-rules §9). */}
@@ -366,6 +376,7 @@ function Shell() {
           <Route path="/settings" element={<SettingsHub />} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />
           {owner && <Route path="/users" element={<Users />} />}
+          {owner && <Route path="/settings/branches" element={<Branches />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </div>
@@ -407,6 +418,9 @@ function Shell() {
               <div className="text-sm">
                 <div className="font-semibold">{user.full_name}</div>
                 {user.full_name !== roleLabel && <div className="text-xs text-slate-500">{roleLabel}</div>}
+                <div className="mt-1">
+                  <BranchSwitch user={user} tone="light" />
+                </div>
               </div>
               <button type="button" aria-label="Закрыть" className="rounded-md p-2 text-slate-500 hover:bg-slate-100" onClick={() => setOpen(false)}>
                 <Icon name="close" />

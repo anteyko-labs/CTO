@@ -979,6 +979,17 @@ async fn list_products(
         parts.push((b, crate::api::branches::to_json(&list)?));
     }
     let mut out = crate::api::branches::merge_reports(parts);
+    // Товаров — сколько строк после сложения: каталог у филиалов один (SPEC-33 §2).
+    let rows = out
+        .get("items")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if let Some(t) = out.get_mut("totals").and_then(Value::as_object_mut) {
+        t.insert("count".into(), json!(rows));
+        if let Some(c) = t.get_mut("counts").and_then(Value::as_object_mut) {
+            c.insert("all".into(), json!(rows));
+        }
+    }
     // В разбивке по филиалам — только итоги: строки уже сложены выше.
     if let Some(list) = out.get_mut("branches").and_then(Value::as_array_mut) {
         for b in list {

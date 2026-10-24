@@ -9,7 +9,7 @@ import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { canisterPourPrice } from '../lib/money'
 import type { CardPreset } from '../lib/oldCatalog'
 import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
-import { Badge, Button, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
+import { Badge, Button, Checkbox, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
 interface Form {
   category_id: string
@@ -72,6 +72,9 @@ export function ProductFormModal({
   const mayEdit = can(user, 'products')
   const editing = Boolean(product)
   const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId, preset))
+  // Цена филиала (SPEC-33 §2): своя — только здесь; без неё — общая для всех филиалов.
+  const branchPrices = owner && editing && Boolean(user.several_branches)
+  const [ownPrice, setOwnPrice] = useState(Boolean(product?.own_price))
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
   /** Новый товар: заводские коды, отсканированные один за другим (SPEC-29 §2). */
@@ -178,8 +181,18 @@ export function ProductFormModal({
           article: form.article,
           attrs: form.attrs,
         })
-        const prices: Record<string, number> = {}
-        if (v.sale !== product.sale_price_tyiyn) prices.sale_price_tyiyn = v.sale
+        const prices: Record<string, number | boolean> = {}
+        const wasOwn = Boolean(product.own_price)
+        if (branchPrices && wasOwn && !ownPrice) {
+          // «Вернуть общую»: цена филиала снова общая, поле цены не трогаем.
+          prices.own_price = false
+        } else {
+          if (v.sale !== product.sale_price_tyiyn) prices.sale_price_tyiyn = v.sale
+          if (branchPrices && ownPrice && !wasOwn) {
+            prices.own_price = true
+            prices.sale_price_tyiyn = v.sale
+          }
+        }
         if (v.min !== product.min_stock) prices.min_stock = v.min
         saved = Object.keys(prices).length
           ? await patch<Product>(`/products/${product.id}/prices`, prices)
@@ -464,8 +477,29 @@ export function ProductFormModal({
             )}
           </Field>
         ))}
-        <Field label={isOil ? 'Цена канистры, с' : product?.unit === 'g' ? 'Цена продажи за кг, с' : 'Цена продажи, с'} required>
-          <input id="product-price" inputMode="decimal" value={form.sale_price} onChange={(e) => set('sale_price', e.target.value)} />
+        <Field
+          label={isOil ? 'Цена канистры, с' : product?.unit === 'g' ? 'Цена продажи за кг, с' : 'Цена продажи, с'}
+          required
+          hint={
+            branchPrices ? (
+              <span className="flex flex-col gap-1" data-testid="branch-price">
+                <Checkbox label={`Своя цена в филиале «${user.branch_name ?? ''}»`} checked={ownPrice} onChange={setOwnPrice} />
+                <span>
+                  {ownPrice
+                    ? `общая цена ${formatSom(product?.shared_sale_price_tyiyn ?? 0)} этот филиал не меняет; снять флажок — вернуть общую`
+                    : 'общая для всех филиалов без своей цены'}
+                </span>
+              </span>
+            ) : undefined
+          }
+        >
+          <input
+            id="product-price"
+            inputMode="decimal"
+            value={form.sale_price}
+            disabled={branchPrices && Boolean(product?.own_price) && !ownPrice}
+            onChange={(e) => set('sale_price', e.target.value)}
+          />
         </Field>
         {isOil && (
           // Одна цена масла — цена канистры; розлив за литр считается от неё (ADR-074).

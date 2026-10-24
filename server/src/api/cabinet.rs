@@ -376,7 +376,8 @@ async fn sales(
                             where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
                             where p.sale_id = s.id and p.method = 'invoice'), 0)::bigint as "invoice!",
-                  b.name as branch_name
+                  -- Название филиала — когда филиалов несколько (SPEC-33).
+                  case when (select count(*) from branches) > 1 then b.name else '' end as "branch_name!"
            from sales s
            join branches b on b.id = s.branch_id
            left join party_contacts c on c.id = s.contact_id

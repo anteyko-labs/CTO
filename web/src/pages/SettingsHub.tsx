@@ -1,5 +1,5 @@
 // Настройки одним экраном: этикетки, документы, Телеграм и баллы, Optima Business, комиссия банка, статьи расходов,
-// пользователи, категории и поставщики.
+// филиалы, пользователи, категории и поставщики.
 import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
 import { PageHeader } from '../components/ui'
@@ -13,6 +13,7 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/optima', title: 'Optima Business', text: 'QR на сумму чека и сверка с выпиской банка: компания, счёт, точка и касса', icon: 'bank', ownerOnly: true },
   { to: '/accounts', title: 'Комиссия банка', text: 'Ставка у каждого банковского счёта и история ставок — в «Обзоре счетов»', icon: 'profit', ownerOnly: true },
   { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },
+  { to: '/settings/branches', title: 'Филиалы', text: 'Филиалы на общем сервере, новый филиал, закрытие; расчёты между филиалами', icon: 'stock', ownerOnly: true },
   { to: '/users', title: 'Пользователи', text: 'Кто входит в систему: владелец и администраторы', icon: 'employees', ownerOnly: true },
   { to: '/categories', title: 'Категории товаров', text: 'Масла, фильтры, аккумуляторы и их характеристики', icon: 'stock' },
   { to: '/suppliers', title: 'Поставщики', text: 'У кого покупаем, долги поставщикам', icon: 'truck' },

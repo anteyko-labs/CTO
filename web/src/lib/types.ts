@@ -21,14 +21,30 @@ export type Permission =
   | 'products'
   | 'clients'
 
+/** Филиал (SPEC-33). */
+export interface Branch {
+  id: string
+  name: string
+  address: string
+  phone: string
+  archived: boolean
+  is_main: boolean
+}
+
 export interface User {
   id: string
+  /** Филиал запроса: у владельца — выбранный, у администратора — свой. */
   branch_id: string
   login: string
   full_name: string
   role: Role
   /** Права администратора (ADR-082, ADR-097); у старого ответа сервера — нет. */
   permissions?: Permission[]
+  /** Свой филиал пользователя и что он видит (SPEC-33); у старого ответа сервера — нет. */
+  home_branch_id?: string
+  branch_name?: string
+  branches?: Branch[]
+  several_branches?: boolean
 }
 
 export interface UserRow {
@@ -87,6 +103,10 @@ export interface Product {
   archived: boolean
   barcodes: string[]
   sale_price_tyiyn: number
+  /** Общая цена всех филиалов (SPEC-33): `sale_price_tyiyn` — цена этого филиала. */
+  shared_sale_price_tyiyn?: number
+  /** У филиала своя цена: общая её не меняет. */
+  own_price?: boolean
   /** Розлив за литр у масла — от цены канистры, сервер считает сам (ADR-074). */
   pour_price_per_l_tyiyn: number | null
   min_stock: number
@@ -464,6 +484,17 @@ export interface Party {
   overdue_tyiyn: number
   /** Фирма не хочет сообщений о закупах (SPEC-32). */
   no_purchase_messages?: boolean
+  /** Баланс в филиале запроса (SPEC-33): у клиента `balance_tyiyn` — общий по всем филиалам. */
+  branch_balance_tyiyn?: number
+  /** Долг клиента по филиалам — только ненулевые. */
+  branch_balances?: BranchBalance[]
+}
+
+/** Долг клиента в одном филиале (SPEC-33 §2). */
+export interface BranchBalance {
+  branch_id: string
+  name: string
+  balance_tyiyn: number
 }
 
 export interface PartyContact {
@@ -506,6 +537,8 @@ export interface PartyTimelineItem {
   number: number | null
   doc_id: string | null
   comment: string
+  /** Запись другого филиала (SPEC-33): его название; документ открывается только в нём. */
+  branch_name?: string
 }
 
 export interface PartyCard {
@@ -1011,6 +1044,9 @@ export interface OpenDebt {
   amount_tyiyn: number
   left_tyiyn: number
   overdue: boolean
+  /** Филиал долга, когда долг клиента есть в нескольких филиалах (SPEC-33). */
+  branch_name?: string
+  other_branch?: boolean
 }
 
 export interface OpenDebts {

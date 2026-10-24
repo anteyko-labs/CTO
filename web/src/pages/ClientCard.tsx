@@ -459,6 +459,16 @@ export default function ClientCard() {
             {formatSom(Math.abs(party.balance_tyiyn))}
           </div>
           <div className="text-xs text-slate-500">{balanceText(party.balance_tyiyn)}</div>
+          {/* Клиент общий (SPEC-33): долг по филиалам, гасить можно в любом. */}
+          {party.role === 'customer' && (party.branch_balances?.length ?? 0) > 1 && (
+            <div className="mt-1 text-xs text-slate-600" data-testid="client-branch-debts">
+              {party.branch_balances?.map((b) => (
+                <div key={b.branch_id}>
+                  {b.name}: {formatSom(b.balance_tyiyn)}
+                </div>
+              ))}
+            </div>
+          )}
           {party.overdue_tyiyn > 0 && (
             <div className="mt-1">
               <Badge tone="rose">просрочено {formatSom(party.overdue_tyiyn)}</Badge>
@@ -663,6 +673,7 @@ export default function ClientCard() {
                     </span>
                   )}
                   {t.number !== null && <span className="ml-2 whitespace-nowrap text-slate-500">№ {t.number}</span>}
+                  {t.branch_name && <span className="ml-2 whitespace-nowrap text-xs text-slate-500">{t.branch_name}</span>}
                   {t.ledger_id && (
                     <span className="ml-1 inline-flex flex-wrap gap-1">
                       <CorrectionBadges mark={marks.get(t.ledger_id)} />
@@ -674,7 +685,7 @@ export default function ClientCard() {
                 </td>
                 <td className="px-2 py-2 text-slate-600">{t.comment || '—'}</td>
                 <td className="px-2 py-2 text-right">
-                  {(t.kind === 'sale' || t.kind === 'sale_return') && t.doc_id && (
+                  {(t.kind === 'sale' || t.kind === 'sale_return') && t.doc_id && !t.branch_name && (
                     <Link className="text-sky-700 underline" to={`/sales/${t.doc_id}`}>
                       Чек
                     </Link>

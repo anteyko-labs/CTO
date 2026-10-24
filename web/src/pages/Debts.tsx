@@ -11,6 +11,10 @@ import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { sortDebts, type DebtSortKey } from '../lib/income'
 import type { DebtRow, Party } from '../lib/types'
+import { BranchScope } from '../components/BranchScope'
+import { useUser } from '../lib/auth'
+import { branchParam, useAllBranches } from '../lib/branchReport'
+import { qs } from '../lib/api'
 
 /** Долги обновляются сами, пока экран открыт (ADR-028). */
 const REFRESH_MS = 10_000
@@ -33,6 +37,7 @@ function Side({
   title,
   pageKey,
   rows,
+  totals,
   owedToUs,
   empty,
   actionLabel,
@@ -43,6 +48,8 @@ function Side({
   /** Ключ размера страницы этого списка. */
   pageKey: string
   rows: DebtRow[]
+  /** Общий долг клиента, когда в списке — долг филиала (SPEC-33): id → общий долг. */
+  totals?: Map<string, DebtRow>
   /** Нам должны — янтарный; мы должны — нейтральный; просрочка — красный. */
   owedToUs: boolean
   empty: string
@@ -119,6 +126,7 @@ function Side({
                     </td>
                     <td className="px-2 py-2 text-right" data-label="Долг">
                       <Money value={Math.abs(p.balance_tyiyn)} className={`font-semibold ${owedToUs ? 'text-amber-700' : ''}`} />
+                      <BranchDebt row={totals?.get(p.id)} here={p.balance_tyiyn} />
                     </td>
                     <td className="px-2 py-2 text-right" data-label="Просрочка">
                       {p.overdue_tyiyn > 0 ? (
@@ -164,13 +172,32 @@ function Side({
   )
 }
 
+/** Под долгом филиала — общий долг клиента и долги в других филиалах (SPEC-33 §2). */
+function BranchDebt({ row, here }: { row?: DebtRow; here: number }) {
+  const parts = row?.branch_balances ?? []
+  if (!row || parts.length < 2) return null
+  return (
+    <div className="text-xs text-slate-500" data-testid="debt-branches">
+      {row.balance_tyiyn !== here && <div>всего {formatSom(row.balance_tyiyn)}</div>}
+      {parts.map((b) => (
+        <div key={b.branch_id}>
+          {b.name}: {formatSom(b.balance_tyiyn)}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** Кто кому должен: клиенты нам, мы поставщикам (SPEC-10). */
 export default function Debts() {
   const navigate = useNavigate()
   // Принять оплату долга клиента и оплатить поставщику — права администратора (ADR-097).
   const can = useCan()
+  const user = useUser()
+  // «Все филиалы» (SPEC-33 §3): общий долг с разбивкой; иначе — долги этого филиала.
+  const [all, setAll] = useAllBranches(user.role === 'owner' && Boolean(user.several_branches))
   const [paying, setPaying] = useState<Party | null>(null)
-  const list = useLoad(() => get<DebtRow[]>('/debts/list'), [])
+  const list = useLoad(() => get<DebtRow[]>(`/debts/list${qs(branchParam(all))}`), [all])
   const { reload } = list
 
   useEffect(() => {
@@ -178,14 +205,22 @@ export default function Debts() {
     return () => clearInterval(t)
   }, [reload])
 
-  const rows = useMemo(() => list.data ?? [], [list.data])
+  // В филиале строка — долг этого филиала; общий долг клиента — подписью (SPEC-33).
+  const totals = useMemo(() => new Map((list.data ?? []).map((p) => [p.id, p])), [list.data])
+  const rows = useMemo(
+    () => (list.data ?? []).map((p) => (all || p.branch_balance_tyiyn === undefined ? p : { ...p, balance_tyiyn: p.branch_balance_tyiyn })),
+    [list.data, all],
+  )
   const toUs = useMemo(() => rows.filter((p) => p.balance_tyiyn > 0), [rows])
   const fromUs = useMemo(() => rows.filter((p) => p.balance_tyiyn < 0), [rows])
   const open = (p: Party) => navigate(p.role === 'supplier' ? `/suppliers/${p.id}` : `/clients/${p.id}`)
+  // Оплата — по карточке как есть: у клиента общий долг, гасить можно и чужие филиалы.
+  const pay = (p: Party) => setPaying(totals.get(p.id) ?? p)
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Долги" />
+      <BranchScope user={user} all={all} onChange={setAll} />
       <ErrorBox error={list.error} />
       {list.loading && !list.data ? (
         <Loading />
@@ -195,21 +230,23 @@ export default function Debts() {
             title="Должны нам"
             pageKey="debts.to_us"
             rows={toUs}
+            totals={totals}
             owedToUs
             empty="Никто не должен. Долг появляется, когда в кассе выбирают оплату «В долг»."
             actionLabel="Погасить"
             onOpen={open}
-            onPay={can('debt_payment') ? setPaying : undefined}
+            onPay={can('debt_payment') && !all ? pay : undefined}
           />
           <Side
             title="Должны мы"
             pageKey="debts.from_us"
             rows={fromUs}
+            totals={totals}
             owedToUs={false}
             empty="Мы никому не должны. Долг появляется, когда приход проводят с расчётом «В долг»."
             actionLabel="Оплатить"
             onOpen={open}
-            onPay={can('receipts') ? setPaying : undefined}
+            onPay={can('receipts') && !all ? pay : undefined}
           />
         </>
       )}

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { ApiError, get, noServerAnswer, post, setUnauthorizedHandler } from './api'
+import { rememberBranch, selectedBranch } from './branch'
 import type { User } from './types'
 
 interface AuthState {
@@ -32,6 +33,25 @@ function remembered(): User | null {
   }
 }
 
+/**
+ * Текущий пользователь с филиалом (SPEC-33). Выбранного на устройстве филиала больше нет (или
+ * он чужой: вошёл администратор) — выбор забывается, ответ берётся по своему филиалу.
+ */
+async function loadMe(): Promise<User> {
+  let u: User
+  try {
+    u = await get<User>('/auth/me')
+  } catch (e) {
+    if (selectedBranch() && e instanceof ApiError && e.status === 422) {
+      rememberBranch(null)
+      return get<User>('/auth/me')
+    }
+    throw e
+  }
+  if (u.role !== 'owner' && selectedBranch()) rememberBranch(null)
+  return u
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
@@ -41,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       remember(null)
       setUser(null)
     })
-    get<User>('/auth/me')
+    loadMe()
       .then((u) => {
         remember(u)
         setUser(u)
@@ -56,7 +76,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = useCallback(async (login: string, password: string) => {
-    const u = await post<User>('/auth/login', { login, password })
+    await post<User>('/auth/login', { login, password })
+    // Ответ входа — в своём филиале; выбор филиала на устройстве проверяет `/auth/me`.
+    const u = await loadMe()
     remember(u)
     setUser(u)
   }, [])

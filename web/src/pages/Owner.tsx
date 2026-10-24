@@ -7,6 +7,9 @@ import { formatDate, formatPoints, formatSom, hourBishkek, pointsClients, shiftD
 import { productsLink } from '../lib/stockLink'
 import { useLoad, usePolling } from '../lib/hooks'
 import { Heatmap } from '../components/Heatmap'
+import { BranchBreakdown, BranchScope } from '../components/BranchScope'
+import { useUser } from '../lib/auth'
+import { branchParam, rowsOf, useAllBranches, type AllBranches } from '../lib/branchReport'
 import { ProfitChart, type Point, type Series } from '../components/ProfitChart'
 import type { Dashboard, HeatCell, ProfitReport, StaffPay } from '../lib/types'
 import { VS_PREV_DAY, VS_PREV_PERIOD, earnedList, minusSom, payReason, signedSom, vsYesterday, weekAgo } from '../lib/dashboard'
@@ -145,10 +148,17 @@ export function OwnerDashboard() {
   const single = from === to
   const isToday = single && to === today
   const quick = quickOf(range, today)
-  const d = useLoad(() => get<Dashboard>(`/owner/dashboard${qs({ from, to })}`), [from, to])
-  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to })}`), [from, to])
+  // «Все филиалы» (SPEC-33 §3): сумма по филиалам и разбивка.
+  const user = useUser()
+  const [all, setAll] = useAllBranches(Boolean(user.several_branches))
+  const scope = branchParam(all)
+  const d = useLoad(() => get<AllBranches<Dashboard>>(`/owner/dashboard${qs({ from, to, ...scope })}`), [from, to, all])
+  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to, ...scope })}`), [from, to, all])
   // Один день — карта за последние 4 недели (по одному дню она пуста), период — за период.
-  const heat = useLoad(() => get<HeatCell[]>(`/reports/heatmap${single ? '?days=28' : qs({ from, to })}`), [from, to, single])
+  const heat = useLoad(
+    () => get<HeatCell[] | { items: HeatCell[] }>(`/reports/heatmap${qs(single ? { days: 28, ...scope } : { from, to, ...scope })}`).then(rowsOf),
+    [from, to, single, all],
+  )
   // Сводка живая, пока в период входит сегодня: чеки с кассы появляются без перезагрузки.
   const live = to === today
   const { reload: reloadDash } = d
@@ -252,7 +262,17 @@ export function OwnerDashboard() {
   return (
     <div>
       <PageHeader title={`Сводка ${word}`} actions={picker} />
+      <BranchScope user={user} all={all} onChange={setAll} />
       <div className="flex flex-col gap-4">
+        <BranchBreakdown
+          parts={data.branches}
+          columns={[
+            { label: 'Продано', value: (x) => x.totals.goods_tyiyn + x.totals.services_tyiyn },
+            { label: 'Валовая', value: (x) => x.totals.gross_tyiyn },
+            { label: 'Чистая', value: (x) => x.totals.net_tyiyn },
+            { label: 'Деньги', value: (x) => x.money_total_tyiyn },
+          ]}
+        />
         {(custom || (!single && quick === null)) && (
           <Card className="flex flex-wrap items-end gap-3">
             <Field label="С">
@@ -556,7 +576,9 @@ export default function Profit() {
   const today = todayBishkek()
   const [from, setFrom] = useState(today)
   const [to, setTo] = useState(today)
-  const r = useLoad(() => get<ProfitReport>(`/reports/profit${qs({ from, to })}`), [from, to])
+  const user = useUser()
+  const [all, setAll] = useAllBranches(Boolean(user.several_branches))
+  const r = useLoad(() => get<AllBranches<ProfitReport>>(`/reports/profit${qs({ from, to, ...branchParam(all) })}`), [from, to, all])
   const quick = (days: number) => {
     setFrom(shiftDate(today, -days))
     setTo(today)
@@ -610,12 +632,25 @@ export default function Profit() {
           })}
         </div>
       </Card>
+      <div className="no-print">
+        <BranchScope user={user} all={all} onChange={setAll} />
+      </div>
 
       <ErrorBox error={r.error} />
       {r.loading && !r.data ? (
         <Loading />
       ) : t ? (
         <div className="flex flex-col gap-4">
+          {all && <div className="text-sm font-medium">Все филиалы</div>}
+          <BranchBreakdown
+            parts={r.data?.branches}
+            columns={[
+              { label: 'Выручка', value: (x) => x.totals.goods_tyiyn + x.totals.services_tyiyn },
+              { label: 'Валовая', value: (x) => x.totals.gross_tyiyn },
+              { label: 'Расходы', value: (x) => x.totals.expenses_tyiyn },
+              { label: 'Чистая', value: (x) => x.totals.net_tyiyn },
+            ]}
+          />
           <Card className="break-inside-avoid">
             <CardTitle>Как получилась прибыль</CardTitle>
             <div className="text-sm">

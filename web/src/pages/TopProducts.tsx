@@ -14,10 +14,12 @@ import { useUser } from '../lib/auth'
 import { oilAmountText } from '../lib/serviceSale'
 import { qtyText } from '../lib/units'
 import type { Category, ServiceKinds, TopProducts as TopProductsOut } from '../lib/types'
+import { BranchScope } from '../components/BranchScope'
+import { branchParam, useAllBranches } from '../lib/branchReport'
 
 /** Вкладка «Замены»: виды замены за период и масла в их чеках. */
-function ServiceKindsTab({ from, to }: { from: string; to: string }) {
-  const r = useLoad(() => get<ServiceKinds>(`/reports/service-kinds${qs({ from, to })}`), [from, to])
+function ServiceKindsTab({ from, to, all }: { from: string; to: string; all: boolean }) {
+  const r = useLoad(() => get<ServiceKinds>(`/reports/service-kinds${qs({ from, to, ...branchParam(all) })}`), [from, to, all])
   const kinds = r.data?.kinds ?? []
   return (
     <>
@@ -69,7 +71,10 @@ export default function TopProducts() {
   const [to, setTo] = useState(todayBishkek)
   const [from, setFrom] = useState(() => shiftDate(todayBishkek(), -29))
   const [categoryId, setCategoryId] = useState('')
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
+  // «Все филиалы» (SPEC-33 §3): товары общие — строки одного товара складываются по филиалам.
+  const [all, setAll] = useAllBranches(owner && Boolean(user.several_branches))
   const [tab, setTab] = useState<'often' | 'profit' | 'services'>('often')
   const [sort, setSort] = useState<'amount' | 'checks'>('checks')
   const byProfit = owner && tab === 'profit'
@@ -79,10 +84,14 @@ export default function TopProducts() {
     () =>
       services
         ? Promise.resolve(null)
-        : get<TopProductsOut>(`/reports/top-products${qs({ from, to, category_id: categoryId, sort: byProfit ? 'profit' : sort, limit: 100 })}`),
-    [from, to, categoryId, sort, byProfit, services],
+        : get<TopProductsOut>(
+            `/reports/top-products${qs({ from, to, category_id: categoryId, sort: byProfit ? 'profit' : sort, limit: 100, ...branchParam(all) })}`,
+          ),
+    [from, to, categoryId, sort, byProfit, services, all],
   )
-  const items = top.data?.items ?? []
+  // У «Все филиалы» строки сложены по филиалам — порядок заново, тем же ключом, что у сервера.
+  const rank = (r: TopProductsOut['items'][number]) => (byProfit ? (r.profit_tyiyn ?? 0) : sort === 'checks' ? r.checks : r.amount_tyiyn)
+  const items = all ? [...(top.data?.items ?? [])].sort((a, b) => rank(b) - rank(a)) : (top.data?.items ?? [])
   const total = items.reduce((acc, r) => acc + r.amount_tyiyn, 0)
   const profit = items.reduce((acc, r) => acc + (r.profit_tyiyn ?? 0), 0)
   const showProfit = owner && items.some((r) => r.profit_tyiyn !== undefined)
@@ -90,6 +99,7 @@ export default function TopProducts() {
   return (
     <div>
       <PageHeader title="Продаваемые товары" />
+      <BranchScope user={user} all={all} onChange={setAll} />
       <Card>
         <div role="tablist" aria-label="Рейтинг товаров" className="mb-3 flex flex-wrap gap-2">
           <button
@@ -152,7 +162,7 @@ export default function TopProducts() {
             </Field>
           )}
         </div>
-        {services && <ServiceKindsTab from={from} to={to} />}
+        {services && <ServiceKindsTab from={from} to={to} all={all} />}
         <ErrorBox error={top.error ?? categories.error} />
         {services ? null : top.loading && !top.data ? (
           <Loading />

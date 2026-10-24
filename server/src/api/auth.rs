@@ -301,6 +301,8 @@ struct MeOut {
     home_branch_id: Uuid,
     branch_name: String,
     branches: Vec<crate::api::branches::BranchOut>,
+    /// Филиалов больше одного: экраны показывают название филиала.
+    several_branches: bool,
 }
 
 async fn me_out(conn: &mut sqlx::PgConnection, user: CurrentUser) -> AppResult<MeOut> {
@@ -309,6 +311,7 @@ async fn me_out(conn: &mut sqlx::PgConnection, user: CurrentUser) -> AppResult<M
         .fetch_one(&mut *conn)
         .await?;
     let branches = crate::api::branches::visible(&mut *conn, &user).await?;
+    let several_branches = crate::api::branches::several(&mut *conn).await?;
     let branch_name = branches
         .iter()
         .find(|b| b.id == user.branch_id)
@@ -320,6 +323,7 @@ async fn me_out(conn: &mut sqlx::PgConnection, user: CurrentUser) -> AppResult<M
         home_branch_id,
         branch_name,
         branches,
+        several_branches,
     })
 }
 

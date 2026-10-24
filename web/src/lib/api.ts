@@ -1,4 +1,5 @@
-// Обращение к серверу: устройство, сессия, единый формат ошибок.
+// Обращение к серверу: устройство, сессия, филиал (SPEC-33), единый формат ошибок.
+import { branchHeaders } from './branch'
 
 const DEVICE_KEY = 'avtodom.device_id'
 
@@ -90,11 +91,12 @@ export function noServerAnswer(e: unknown): boolean {
 /** Сколько ждём ответа: дольше — считаем, что связи нет (касса уходит в офлайн). */
 const TIMEOUT_MS = 20_000
 
-export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
-  return (await request<T>(method, path, body)).data
+/** `branch` — филиал запроса вместо выбранного (запись очереди без сети, SPEC-33). */
+export async function api<T>(method: string, path: string, body?: unknown, branch?: string | null): Promise<T> {
+  return (await request<T>(method, path, body, branch)).data
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<{ data: T; headers: Headers }> {
+async function request<T>(method: string, path: string, body?: unknown, branch?: string | null): Promise<{ data: T; headers: Headers }> {
   let res: Response
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), TIMEOUT_MS)
@@ -105,6 +107,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       signal: abort.signal,
       headers: {
         'X-Device-Id': deviceId,
+        ...branchHeaders(branch),
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -184,7 +187,7 @@ export async function upload<T>(path: string, data: Blob, contentType: string, t
       method: 'POST',
       credentials: 'same-origin',
       signal: abort.signal,
-      headers: { 'X-Device-Id': deviceId, 'Content-Type': contentType },
+      headers: { 'X-Device-Id': deviceId, ...branchHeaders(), 'Content-Type': contentType },
       body: data,
     })
   } catch {

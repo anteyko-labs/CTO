@@ -7,6 +7,8 @@ import { useLoad } from '../lib/hooks'
 import { PayrollEntries } from './PayrollEntries'
 import { SalaryForm } from './PayrollForms'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Modal, Money, Table } from './ui'
+import { BranchScope } from './BranchScope'
+import { branchParam, useAllBranches } from '../lib/branchReport'
 
 interface MonthRow {
   employee_id: string
@@ -47,9 +49,12 @@ function shiftMonth(iso: string, delta: number): string {
 const cell = (v: number) => <Money value={v} tone="negative" zero="—" />
 
 export function PayrollMonth() {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  // «Все филиалы» (SPEC-33 §3) — только просмотр: оклад и подробности — в своём филиале.
+  const [all, setAll] = useAllBranches(user.role === 'owner' && Boolean(user.several_branches))
+  const owner = user.role === 'owner' && !all
   const [month, setMonth] = useState(shiftMonth(todayBishkek(), 0))
-  const data = useLoad(() => get<MonthOut>(`/payroll/month${qs({ month })}`), [month])
+  const data = useLoad(() => get<MonthOut>(`/payroll/month${qs({ month, ...branchParam(all) })}`), [month, all])
   const [salary, setSalary] = useState<MonthRow | null>(null)
   const [entries, setEntries] = useState<MonthRow | null>(null)
   const [y, m] = month.split('-').map(Number)
@@ -59,6 +64,9 @@ export function PayrollMonth() {
 
   return (
     <div className="flex flex-col gap-4">
+      <div>
+        <BranchScope user={user} all={all} onChange={setAll} />
+      </div>
       <Card className="flex flex-wrap items-center gap-3">
         <Button variant="secondary" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="Прошлый месяц">
           ←

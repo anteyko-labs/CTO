@@ -21,6 +21,8 @@ import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
 import { qtyText } from '../lib/units'
 import type { Category, Product, ProductList, ProductRow, StockChip, StockMismatch } from '../lib/types'
+import { BranchBreakdown, BranchScope } from '../components/BranchScope'
+import { useAllBranches, type AllBranches } from '../lib/branchReport'
 
 interface Selected {
   product: Product
@@ -66,7 +68,10 @@ const perText = (p: Product): string =>
   p.unit === 'ml' && p.container_ml ? `за ${formatLiters(p.container_ml)}` : p.unit === 'g' ? 'за кг' : ''
 
 export default function Products() {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
+  // «Все филиалы» (SPEC-33 §3): остаток и суммы — сложенные по филиалам, страницы режет экран.
+  const [all, setAll] = useAllBranches(owner && Boolean(user.several_branches))
   // Заводить товары — право администратора «Товары и штрихкоды» (ADR-097).
   const mayAdd = useCan()('products')
   // Отбор по складу и вкладка — в адресе: ссылки сводки и старый адрес «Остатков» ведут сюда.
@@ -133,10 +138,13 @@ export default function Products() {
   // Страницу режет сервер, итоги — по всему отбору; смена отбора или сортировки — снова первая страница.
   const pager = usePageState('products', params)
   const list = useLoad(
-    () => get<ProductList>(`/products/list${params}${params ? '&' : '?'}limit=${pager.size}&offset=${pager.page * pager.size}`),
-    [params, pager.page, pager.size],
+    () =>
+      all
+        ? get<AllBranches<ProductList>>(`/products/list${params}${params ? '&' : '?'}branch=all`)
+        : get<AllBranches<ProductList>>(`/products/list${params}${params ? '&' : '?'}limit=${pager.size}&offset=${pager.page * pager.size}`),
+    [params, pager.page, pager.size, all],
   )
-  const items = list.data?.items
+  const items = all ? list.data?.items.slice(pager.page * pager.size, (pager.page + 1) * pager.size) : list.data?.items
   const totals = list.data?.totals
   const counts = totals?.counts
 
@@ -281,6 +289,16 @@ export default function Products() {
       <div className="mb-3 flex flex-col gap-2 empty:hidden">
         <ErrorBox error={verify.error ?? review.error} />
       </div>
+      {tab === 'products' && <BranchScope user={user} all={all} onChange={setAll} />}
+      {tab === 'products' && all && (
+        <BranchBreakdown
+          parts={list.data?.branches}
+          columns={[
+            ...(owner ? [{ label: 'По закупке', value: (x: ProductList) => x.totals.purchase_tyiyn ?? 0 }] : []),
+            { label: 'По продаже', value: (x: ProductList) => x.totals.sale_tyiyn },
+          ]}
+        />
+      )}
       {tab === 'defects' ? (
         <DefectsTab />
       ) : (

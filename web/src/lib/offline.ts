@@ -4,6 +4,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import { ApiError, api, deviceId, noServerAnswer, serverReachable, setServerReachable } from './api'
+import { branchHeaders, selectedBranch } from './branch'
 import { searchRank } from './pickerResults'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 
@@ -59,6 +60,9 @@ export interface OutboxItem {
   /** Не чек, а другая запись кассы — куда её отправить (отменённые строки, SPEC-30 §8). На экранах
    *  очереди такие записи не видны и чеками не считаются; принятая сервером — удаляется. */
   path?: string
+  /** Филиал, где пробили чек (SPEC-33): уходит туда, даже если владелец переключил филиал.
+   *  `null` — свой филиал пользователя. */
+  branch_id?: string | null
 }
 
 /** Запись очереди — чек (а не, например, отменённые строки). */
@@ -102,7 +106,7 @@ export async function refreshSnapshot(): Promise<Snapshot | null> {
   const current = await readSnapshot()
   try {
     const res = await fetch('/api/v1/offline/snapshot', {
-      headers: current?.version ? { 'if-none-match': `"${current.version}"` } : {},
+      headers: { ...branchHeaders(), ...(current?.version ? { 'if-none-match': `"${current.version}"` } : {}) },
       credentials: 'same-origin',
     })
     setServerReachable(![502, 503, 504, 530].includes(res.status))
@@ -385,6 +389,7 @@ export async function enqueueSale(
     user_id: who?.user?.id,
     user_name: who?.user?.full_name,
     receipt: who?.receipt?.(temp_no),
+    branch_id: selectedBranch(),
   }
   await (await db()).put(OUTBOX, item)
   await emit()
@@ -421,6 +426,7 @@ export async function enqueueOp(op_id: string, path: string, body: unknown, user
       user_id: user?.id,
       user_name: user?.full_name,
       path,
+      branch_id: selectedBranch(),
     }
     await (await db()).put(OUTBOX, item)
   } catch {
@@ -533,9 +539,9 @@ export function queuedBody(item: OutboxItem): Record<string, unknown> {
 }
 
 /** Проведён ли уже чек с этим op_id — например, от имени другого пользователя кассы. */
-async function postedNumber(op_id: string): Promise<number | null> {
+async function postedNumber(op_id: string, branch?: string | null): Promise<number | null> {
   try {
-    return (await api<{ number: number }>('GET', `/sales/by-op/${op_id}`)).number
+    return (await api<{ number: number }>('GET', `/sales/by-op/${op_id}`, undefined, branch)).number
   } catch {
     return null
   }
@@ -544,12 +550,12 @@ async function postedNumber(op_id: string): Promise<number | null> {
 /** Сообщить владельцу об отказе: да — принято (или уже было принято), нет — повторить позже. */
 async function reportRejection(item: OutboxItem, error: string): Promise<'reported' | 'posted' | 'later' | 'no_server'> {
   try {
-    await api('POST', '/sales/offline-rejected', { op_id: item.op_id, error, body: item.body })
+    await api('POST', '/sales/offline-rejected', { op_id: item.op_id, error, body: item.body }, item.branch_id)
     return 'reported'
   } catch (e) {
     // «op_id уже использован»: отказ уже сообщили (другой пользователь кассы) или чек проведён —
     // очередь не встаёт на этом чеке (ADR-093).
-    if (e instanceof ApiError && e.status === 409) return (await postedNumber(item.op_id)) !== null ? 'posted' : 'reported'
+    if (e instanceof ApiError && e.status === 409) return (await postedNumber(item.op_id, item.branch_id)) !== null ? 'posted' : 'reported'
     if (e instanceof ApiError && noServerAnswer(e)) return 'no_server'
     return 'later'
   }
@@ -581,7 +587,7 @@ export async function syncOutbox(force = false): Promise<void> {
         // Не чек: принят — удаляется; отказ по существу или «op_id уже был» — тоже (это след, а
         // не продажа, и повтор его не исправит); нет связи — ждёт, как чеки.
         try {
-          await api('POST', item.path, item.body)
+          await api('POST', item.path, item.body, item.branch_id)
           await (await db()).delete(OUTBOX, item.op_id)
         } catch (e) {
           if (!keepInQueue(e)) {
@@ -595,13 +601,13 @@ export async function syncOutbox(force = false): Promise<void> {
       }
       await put({ ...item, status: 'sending' })
       try {
-        const sale = await api<{ number: number }>('POST', '/sales', queuedBody(item))
+        const sale = await api<{ number: number }>('POST', '/sales', queuedBody(item), item.branch_id)
         await put({ ...item, status: 'done', server_number: sale.number, last_error: '', next_try_at: undefined })
       } catch (e) {
         // «op_id уже использован»: чек мог уйти раньше от другого пользователя этой кассы —
         // тогда он проведён, а не отклонён.
         if (e instanceof ApiError && e.status === 409) {
-          const number = await postedNumber(item.op_id)
+          const number = await postedNumber(item.op_id, item.branch_id)
           if (number !== null) {
             await put({ ...item, status: 'done', server_number: number, last_error: '', next_try_at: undefined })
             continue
@@ -617,7 +623,7 @@ export async function syncOutbox(force = false): Promise<void> {
           // Сервер отказал по существу: чек не исчезает, о нём узнаёт владелец.
           const report = await reportRejection(item, message)
           if (report === 'posted') {
-            const number = await postedNumber(item.op_id)
+            const number = await postedNumber(item.op_id, item.branch_id)
             await put({ ...item, status: 'done', server_number: number ?? undefined, last_error: '', next_try_at: undefined })
             continue
           }
