@@ -3515,8 +3515,9 @@ async fn disabled_owner_loses_telegram_chat(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn loyalty_lookup_is_per_branch_and_unambiguous(pool: PgPool) {
-    // Поиск клиента для баллов — только в своём филиале и ровно одна карточка (ADR-063).
+async fn loyalty_lookup_is_shared_and_unambiguous(pool: PgPool) {
+    // Поиск клиента для баллов — по всем филиалам (клиенты общие, SPEC-33) и ровно одна карточка
+    // (ADR-063).
     let app = setup(pool.clone()).await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let branch: Uuid = sqlx::query_scalar("select id from branches")
@@ -3549,13 +3550,8 @@ async fn loyalty_lookup_is_per_branch_and_unambiguous(pool: PgPool) {
         }
     };
     let uri = "/api/v1/loyalty/lookup?phone=%2B996555123456";
-    // Клиент другого филиала не находится.
-    client(other, "Чужой", 1).await;
-    assert_eq!(
-        call(&app, "GET", uri, Some(&admin), None).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    client(branch, "Эрлан", 2).await;
+    // Клиент, заведённый в другом филиале, находится: клиенты общие.
+    client(other, "Эрлан", 1).await;
     let (status, _, found) = call(&app, "GET", uri, Some(&admin), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(found["name"], "Эрлан");
@@ -9742,9 +9738,20 @@ async fn old_single_line_stock_ins_survive_migration(pool: PgPool) {
         sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
     }
     let app = setup(pool.clone()).await;
-    let owner = login(&app, "owner", "owner-pass-1").await;
-    let admin = login(&app, "admin", "admin-pass-1").await;
-    let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
+    // Карточка — как её заводила прежняя версия: запросы программы идут уже к новой схеме
+    // (филиал запроса, SPEC-33), поэтому вход — после миграций.
+    let item = Uuid::now_v7();
+    sqlx::raw_sql(&format!(
+        "insert into categories (id, name, kind) values (gen_random_uuid(), 'Кат Фильтр', 'filter');
+         insert into products (id, category_id, name, unit)
+           select '{item}', id, 'Фильтр', 'piece' from categories where name = 'Кат Фильтр';
+         insert into branch_products (branch_id, product_id, sale_price_tyiyn)
+           select id, '{item}', 50000 from branches;"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let item = item.to_string();
     let (old, rev_old) = (Uuid::now_v7(), Uuid::now_v7());
     // Как проводила прежняя версия: документ, движение, остаток и последняя закупочная; второе —
     // сторнированное, со своим сторно.
@@ -9769,6 +9776,8 @@ async fn old_single_line_stock_ins_survive_migration(pool: PgPool) {
     for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version >= 49) {
         sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
     }
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
     let (s, _, doc) = call(
         &app,
         "GET",

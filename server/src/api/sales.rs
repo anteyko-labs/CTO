@@ -404,9 +404,8 @@ async fn prepare_line(
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
         // Чек без сети принимаем и с услугой, которую успели отключить: работа уже сделана.
         let s = sqlx::query!(
-            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and branch_id = $2 and (active or $3)",
+            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and (active or $2)",
             sid,
-            branch_id,
             offline
         )
         .fetch_optional(&mut *conn)
@@ -1295,9 +1294,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         let rules = sqlx::query!(
             r#"select r.trigger_product_id, r.min_units, i.gift_product_id, i.gift_qty, r.active
                from gift_rules r join gift_rule_items i on i.rule_id = r.id
-               where r.branch_id = $1 and (r.active or $4)
-                 and r.trigger_product_id = any($2) and i.gift_product_id = any($3)"#,
-            branch_id,
+               where (r.active or $3)
+                 and r.trigger_product_id = any($1) and i.gift_product_id = any($2)"#,
             &in_cart,
             &gifts,
             offline
@@ -2787,14 +2785,10 @@ pub async fn no_receipt_return_tx(
         ));
     }
     if let Some(pid) = req.party_id {
-        sqlx::query_scalar!(
-            "select id from parties where id = $1 and branch_id = $2",
-            pid,
-            branch_id
-        )
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or_else(|| invalid("клиент не найден"))?;
+        sqlx::query_scalar!("select id from parties where id = $1", pid)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| invalid("клиент не найден"))?;
     }
     let register = cash::default_account(conn, branch_id).await?;
     let shift = cash::shift_open_at(conn, branch_id, register, None).await?;

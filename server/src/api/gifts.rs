@@ -44,16 +44,15 @@ struct ListQuery {
 
 async fn list(
     State(state): State<AppState>,
-    user: CurrentUser,
+    _user: CurrentUser,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Vec<GiftRuleOut>>> {
     let rules = sqlx::query!(
         r#"select r.id, r.trigger_product_id, p.name as "trigger_name!", p.unit as "trigger_unit!",
                   r.min_units, r.active
            from gift_rules r join products p on p.id = r.trigger_product_id
-           where r.branch_id = $1 and ($2::uuid is null or r.trigger_product_id = $2)
+           where ($1::uuid is null or r.trigger_product_id = $1)
            order by p.name"#,
-        user.branch_id,
         q.product_id
     )
     .fetch_all(&state.pool)
@@ -139,7 +138,7 @@ async fn create(
     sqlx::query!(
         r#"insert into gift_rules (id, branch_id, trigger_product_id, user_id, min_units)
            values ($1, $2, $3, $4, $5)
-           on conflict (branch_id, trigger_product_id)
+           on conflict (trigger_product_id)
            do update set active = true, min_units = excluded.min_units returning id"#,
         id,
         ctx.user.branch_id,
@@ -150,8 +149,7 @@ async fn create(
     .fetch_one(&mut *tx)
     .await?;
     let rule_id = sqlx::query_scalar!(
-        "select id from gift_rules where branch_id = $1 and trigger_product_id = $2",
-        ctx.user.branch_id,
+        "select id from gift_rules where trigger_product_id = $1",
         req.trigger_product_id
     )
     .fetch_one(&mut *tx)
@@ -217,9 +215,8 @@ async fn update(
     }
     let mut tx = state.pool.begin().await?;
     let found = sqlx::query!(
-        "update gift_rules set active = coalesce($3, active) where id = $1 and branch_id = $2 returning trigger_product_id, active",
+        "update gift_rules set active = coalesce($2, active) where id = $1 returning trigger_product_id, active",
         id,
-        ctx.user.branch_id,
         req.active
     )
     .fetch_optional(&mut *tx)

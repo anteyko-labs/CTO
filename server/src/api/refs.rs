@@ -466,12 +466,11 @@ async fn check_oil_category(conn: &mut sqlx::PgConnection, id: Uuid) -> AppResul
 
 async fn list_services(
     State(state): State<AppState>,
-    user: CurrentUser,
+    _user: CurrentUser,
 ) -> AppResult<Json<Vec<ServiceOut>>> {
     let rows = sqlx::query_as!(
         ServiceOut,
-        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services where branch_id = $1 order by name",
-        user.branch_id
+        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services order by name"
     )
     .fetch_all(&state.pool)
     .await?;
@@ -616,12 +615,9 @@ pub async fn import_services_tx(
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    let existing = sqlx::query_scalar!(
-        r#"select lower(btrim(name)) as "name!" from services where branch_id = $1"#,
-        ctx.user.branch_id
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    let existing = sqlx::query_scalar!(r#"select lower(btrim(name)) as "name!" from services"#)
+        .fetch_all(&mut *conn)
+        .await?;
     let mut seen: std::collections::HashSet<String> = existing.into_iter().collect();
     let mut created = 0i64;
     let mut skipped = Vec::new();
@@ -697,9 +693,8 @@ async fn update_service(
             || req.oil_category_id.is_some())
     {
         let cur = sqlx::query!(
-            "select price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and branch_id = $2",
-            id,
-            ctx.user.branch_id
+            "select price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1",
+            id
         )
         .fetch_optional(&mut *tx)
         .await?
@@ -721,14 +716,13 @@ async fn update_service(
     }
     let mut out = sqlx::query_as!(
         ServiceOut,
-        r#"update services set name = coalesce($3, name), price_tyiyn = coalesce($4, price_tyiyn),
-             master_fee_tyiyn = coalesce($5, master_fee_tyiyn), active = coalesce($6, active),
-             free_with_oil = coalesce($7, free_with_oil),
-             oil_category_id = coalesce($8, oil_category_id)
-           where id = $1 and branch_id = $2
+        r#"update services set name = coalesce($2, name), price_tyiyn = coalesce($3, price_tyiyn),
+             master_fee_tyiyn = coalesce($4, master_fee_tyiyn), active = coalesce($5, active),
+             free_with_oil = coalesce($6, free_with_oil),
+             oil_category_id = coalesce($7, oil_category_id)
+           where id = $1
            returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active"#,
         id,
-        ctx.user.branch_id,
         name,
         req.price_tyiyn,
         req.master_fee_tyiyn,

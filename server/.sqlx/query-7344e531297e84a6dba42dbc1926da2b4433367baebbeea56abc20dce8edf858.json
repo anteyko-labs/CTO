@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role, name from parties where id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7344e531297e84a6dba42dbc1926da2b4433367baebbeea56abc20dce8edf858"
+}

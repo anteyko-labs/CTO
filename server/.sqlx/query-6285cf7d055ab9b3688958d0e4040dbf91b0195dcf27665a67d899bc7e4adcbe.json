@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "free_with_oil",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "oil_category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "6285cf7d055ab9b3688958d0e4040dbf91b0195dcf27665a67d899bc7e4adcbe"
+}

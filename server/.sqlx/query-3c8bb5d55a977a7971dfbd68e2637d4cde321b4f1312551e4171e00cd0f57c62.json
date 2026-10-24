@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3c8bb5d55a977a7971dfbd68e2637d4cde321b4f1312551e4171e00cd0f57c62"
+}

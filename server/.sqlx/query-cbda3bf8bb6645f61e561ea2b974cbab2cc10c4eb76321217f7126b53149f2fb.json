@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select branch_id, balance_tyiyn from party_balances where party_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "cbda3bf8bb6645f61e561ea2b974cbab2cc10c4eb76321217f7126b53149f2fb"
+}

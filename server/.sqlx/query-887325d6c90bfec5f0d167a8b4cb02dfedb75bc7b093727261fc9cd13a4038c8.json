@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.mileage_km, o.comment, o.declined, v.mileage_unit as car_unit\n           from oil_changes o join party_vehicles v on v.id = o.vehicle_id\n           where o.id = $1 for update of o",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mileage_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "declined",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "car_unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "887325d6c90bfec5f0d167a8b4cb02dfedb75bc7b093727261fc9cd13a4038c8"
+}

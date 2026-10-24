@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties set bot_code = replace(gen_random_uuid()::text, '-', '')\n           where id = $1 and role = 'customer'\n           returning name, bot_code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "bot_code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "25f54eb5575f83f4e78e5397d20e12a6e95ae1df929bfcbdf509cdcb30605e3d"
+}

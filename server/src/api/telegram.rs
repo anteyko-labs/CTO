@@ -1482,7 +1482,7 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
     .await?;
     let mut out = Vec::new();
     for l in links {
-        for b in crate::api::oil_book::books(conn, l.branch_id, Some(l.party_id), None).await? {
+        for b in crate::api::oil_book::books(conn, Some(l.party_id), None).await? {
             // Каждая строка книжки — своё напоминание; подошедшие в один день — одним сообщением.
             let mut groups: Vec<(NaiveDate, i32, Vec<&crate::api::oil_book::SlotNext>)> =
                 Vec::new();
@@ -2079,7 +2079,7 @@ async fn debts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
         ));
     }
     // Клиенты: сколько баллов у них вместе — обязательство точки (SPEC-30 §12).
-    let p = crate::api::loyalty::branch_total(conn, branch_id).await?;
+    let p = crate::api::loyalty::branch_total(conn).await?;
     out.push_str(&format!("\n\n{}", points_line(p)));
     Ok(out)
 }

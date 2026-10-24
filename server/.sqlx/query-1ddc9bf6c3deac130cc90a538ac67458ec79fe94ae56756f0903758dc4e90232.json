@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update gift_rules set active = coalesce($2, active) where id = $1 returning trigger_product_id, active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trigger_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1ddc9bf6c3deac130cc90a538ac67458ec79fe94ae56756f0903758dc4e90232"
+}

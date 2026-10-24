@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select branch_id, account_id, amount_tyiyn, kind from cash_movements\n               where doc_type = 'repayment' and doc_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ae4028f07fd5ef0e10b50b60a4b81e16a6ffdebd9f0efd1f2ffef2f080961aaa"
+}

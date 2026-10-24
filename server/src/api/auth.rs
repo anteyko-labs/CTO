@@ -269,10 +269,9 @@ async fn login(
     tx.commit().await?;
     let cookie = session_cookie(&state, &token, SESSION_DAYS * 86_400);
     let mut conn = state.pool.acquire().await?;
-    let permissions = auth::permissions(&mut conn, user.id).await?;
     Ok((
         AppendHeaders([(SET_COOKIE, cookie)]),
-        Json(MeOut { user, permissions }),
+        Json(me_out(&mut conn, user).await?),
     ))
 }
 
@@ -291,18 +290,42 @@ async fn logout(State(state): State<AppState>, parts: Parts) -> AppResult<impl I
     ))
 }
 
-/// Текущий пользователь и его права сверх роли (ADR-082).
+/// Текущий пользователь, его права сверх роли (ADR-082) и филиалы (SPEC-33): `branch_id` — филиал
+/// запроса, `home_branch_id` — свой филиал пользователя, `branches` — что он видит (владелец —
+/// все, администратор — свой).
 #[derive(Serialize)]
 struct MeOut {
     #[serde(flatten)]
     user: CurrentUser,
     permissions: Vec<String>,
+    home_branch_id: Uuid,
+    branch_name: String,
+    branches: Vec<crate::api::branches::BranchOut>,
+}
+
+async fn me_out(conn: &mut sqlx::PgConnection, user: CurrentUser) -> AppResult<MeOut> {
+    let permissions = auth::permissions(&mut *conn, user.id).await?;
+    let home_branch_id = sqlx::query_scalar!("select branch_id from users where id = $1", user.id)
+        .fetch_one(&mut *conn)
+        .await?;
+    let branches = crate::api::branches::visible(&mut *conn, &user).await?;
+    let branch_name = branches
+        .iter()
+        .find(|b| b.id == user.branch_id)
+        .map(|b| b.name.clone())
+        .unwrap_or_default();
+    Ok(MeOut {
+        user,
+        permissions,
+        home_branch_id,
+        branch_name,
+        branches,
+    })
 }
 
 async fn me(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<MeOut>> {
     let mut conn = state.pool.acquire().await?;
-    let permissions = auth::permissions(&mut conn, user.id).await?;
-    Ok(Json(MeOut { user, permissions }))
+    Ok(Json(me_out(&mut conn, user).await?))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -325,7 +348,8 @@ async fn list_users(
         r#"select u.id, u.login, u.full_name, u.role, u.active,
                   array(select p.permission from user_permissions p
                         where p.user_id = u.id order by p.permission) as "permissions!"
-           from users u where u.branch_id = $1 order by u.full_name"#,
+           from users u where u.branch_id = $1 or u.role = 'owner'
+           order by u.role = 'owner' desc, u.full_name"#,
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -432,15 +456,14 @@ async fn update_user(
         return Err(invalid("имя обязательно"));
     }
     let mut tx = state.pool.begin().await?;
-    // Блокируем владельцев филиала, чтобы проверка «последнего владельца» была надёжной.
-    let owners = sqlx::query_scalar!(
-        "select id from users where branch_id = $1 and role = 'owner' and active for update",
-        ctx.user.branch_id
-    )
-    .fetch_all(&mut *tx)
-    .await?;
+    // Блокируем владельцев, чтобы проверка «последнего владельца» была надёжной. Владелец —
+    // всех филиалов (SPEC-33): его правят из любого филиала, администратора — из его филиала.
+    let owners =
+        sqlx::query_scalar!("select id from users where role = 'owner' and active for update")
+            .fetch_all(&mut *tx)
+            .await?;
     let before_role = sqlx::query_scalar!(
-        "select role from users where id = $1 and branch_id = $2 for update",
+        "select role from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
         id,
         ctx.user.branch_id
     )
@@ -453,8 +476,8 @@ async fn update_user(
              role = coalesce($4, role),
              active = coalesce($5, active),
              password_hash = coalesce($6, password_hash)
-           where id = $1 and branch_id = $2
-           returning id, login, full_name, role, active"#,
+           where id = $1 and (branch_id = $2 or role = 'owner')
+           returning id, login, full_name, role, active, branch_id"#,
         id,
         ctx.user.branch_id,
         full_name,
@@ -468,7 +491,7 @@ async fn update_user(
     // Владелец стал администратором — как новому администратору, права по умолчанию (SPEC-30 §5).
     if before_role == "owner" && row.role == "admin" {
         let before = auth::permissions(&mut tx, id).await?;
-        auth::grant_default_permissions(&mut tx, id, ctx.user.branch_id, ctx.user.id).await?;
+        auth::grant_default_permissions(&mut tx, id, row.branch_id, ctx.user.id).await?;
         let after = auth::permissions(&mut tx, id).await?;
         audit_permissions(
             &mut tx,

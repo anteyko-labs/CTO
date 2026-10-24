@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.kind, p.role, p.inn, a.must_change as \"must_change?\", a.last_login_at\n           from parties p left join party_accounts a on a.party_id = p.id\n           where p.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "must_change?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_login_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f4db619b2e728a57877c85b2218d16111be26ff7a472469c7919ff5ae1d9c5e0"
+}

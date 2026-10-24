@@ -1,0 +1,127 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, role, kind, name, first_name, last_name, phone, inn, comment,\n                  credit_limit_tyiyn as \"credit_limit_tyiyn?\", due_days as \"due_days?\",\n                  active, b.bal as \"balance_tyiyn!\", no_purchase_messages,\n                  case when b.bal > 0 and parties.due_days is not null then\n                    greatest(0, b.bal - coalesce((\n                      select sum(l.amount_tyiyn) from party_ledger l\n                      where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0\n                        and (parties.role = 'customer' or $10 or l.branch_id = $1)\n                        and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))\n                  else 0 end::bigint as \"overdue_tyiyn!\",\n                  b.here as \"branch_balance_tyiyn!\",\n                  (select coalesce(jsonb_agg(jsonb_build_object('branch_id', pb.branch_id, 'name', br.name,\n                                                                'balance_tyiyn', pb.balance_tyiyn)\n                                             order by br.is_main desc, br.created_at), '[]'::jsonb)\n                   from party_balances pb join branches br on br.id = pb.branch_id\n                   where pb.party_id = parties.id and pb.balance_tyiyn <> 0\n                     and (parties.role = 'customer' or $10)) as \"branch_balances!\"\n           from parties\n           cross join lateral (\n             select coalesce((select pb.balance_tyiyn from party_balances pb\n                              where pb.party_id = parties.id and pb.branch_id = $1), 0) as here) h\n           cross join lateral (\n             select case when parties.role = 'customer' or $10 then parties.balance_tyiyn else h.here end as bal,\n                    h.here) b\n           where ($2::text is null or role = $2)\n             and ($3::text is null or kind = $3)\n             and ($4::text is null\n                  or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'\n                  -- Телефон в любой записи: «0555 12 34 56» находит «+996555123456» (ADR-090).\n                  or ($7::text is not null and regexp_replace(phone, '[^0-9]', '', 'g') like '%' || $7 || '%')\n                  -- «Имя Фамилия» тоже находит «Фамилия Имя» (ADR-083).\n                  or (first_name <> '' and (first_name || ' ' || last_name) ilike '%' || $4 || '%')\n                  -- Госномер машины: на замене кассир видит машину, а не паспорт (SPEC-16).\n                  or exists (select 1 from party_vehicles v\n                             where v.party_id = parties.id and v.active\n                               and upper(replace(v.plate, ' ', '')) like '%' || upper(replace($4, ' ', '')) || '%'))\n             and (not $5 or (case when $9 then b.here else b.bal end) <> 0)\n             and (not $8 or b.bal > 0)\n           order by (b.bal <> 0) desc, name\n           limit $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "credit_limit_tyiyn?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "due_days?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "balance_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "no_purchase_messages",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 14,
+        "name": "overdue_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "branch_balance_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "branch_balances!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Int8",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      null,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f513f47d578e5eafc73f55c8bb0d22bea0e580ca9e1b5c0d721a044a7117148b"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branch_settlements (id, branch_id, creditor_branch_id, party_id,\n                                                   amount_tyiyn, business_date, ledger_id, user_id)\n                   values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c0023a36643a2c55f62a24ebd3b82d5893d0c552a470eed126a977a837916b6"
+}

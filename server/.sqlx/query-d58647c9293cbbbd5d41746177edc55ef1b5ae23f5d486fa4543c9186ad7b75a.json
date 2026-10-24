@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select lower(btrim(name)) as \"name!\" from services",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d58647c9293cbbbd5d41746177edc55ef1b5ae23f5d486fa4543c9186ad7b75a"
+}

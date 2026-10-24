@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct r.number from revisions r join revision_lines l on l.revision_id = r.id\n           where r.status = 'draft' and l.product_id = any($1)\n           order by r.number",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "21201d50f6ebd2188f27ca1ddbd2deb37a8a2304a8e9377904b8fe56fc7f7170"
+}

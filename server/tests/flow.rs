@@ -1863,10 +1863,9 @@ async fn oil_book_records_service_change(pool: PgPool) {
     .await
     .unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    let books =
-        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(party), None)
-            .await
-            .unwrap();
+    let books = avtodom_server::api::oil_book::books(&mut conn, Some(party), None)
+        .await
+        .unwrap();
     let b = &books[0];
     assert_eq!(b.records.len(), 1);
     assert!(
@@ -1906,10 +1905,9 @@ async fn oil_book_records_service_change(pool: PgPool) {
     .unwrap();
     tx.commit().await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    let books =
-        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(party), None)
-            .await
-            .unwrap();
+    let books = avtodom_server::api::oil_book::books(&mut conn, Some(party), None)
+        .await
+        .unwrap();
     assert!(books[0].records.is_empty());
 }
 
@@ -1954,10 +1952,9 @@ async fn own_oil_service_writes_oil_book_and_staff_pay(pool: PgPool) {
     req.declined = "  воздушный фильтр ".into();
     let sale = sell(&pool, &w.owner, req).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    let books =
-        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(party), None)
-            .await
-            .unwrap();
+    let books = avtodom_server::api::oil_book::books(&mut conn, Some(party), None)
+        .await
+        .unwrap();
     let r = &books[0].records[0];
     assert_eq!(r.sale_id, Some(sale.id));
     assert_eq!(r.oil_text, "Замена масла");
@@ -3018,10 +3015,9 @@ async fn bot_customer_adds_finds_and_removes_cars(pool: PgPool) {
     let (mine, ..) = car_of(&pool, me, "01KG123ABC").await.unwrap();
     assert_ne!(mine, foreign);
     let mut c2 = pool.acquire().await.unwrap();
-    let book =
-        avtodom_server::api::oil_book::books(&mut c2, w.owner.user.branch_id, Some(me), Some(mine))
-            .await
-            .unwrap();
+    let book = avtodom_server::api::oil_book::books(&mut c2, Some(me), Some(mine))
+        .await
+        .unwrap();
     assert!(book[0].records.is_empty());
     let alerts: Vec<(serde_json::Value,)> =
         sqlx::query_as("select data from audit_log where action = 'vehicle.plate_conflict'")
@@ -3140,10 +3136,9 @@ async fn bot_notes_limits_and_foreign_chat(pool: PgPool) {
         .await
         .unwrap();
     let mut c2 = pool.acquire().await.unwrap();
-    let books =
-        avtodom_server::api::oil_book::books(&mut c2, w.owner.user.branch_id, Some(me), None)
-            .await
-            .unwrap();
+    let books = avtodom_server::api::oil_book::books(&mut c2, Some(me), None)
+        .await
+        .unwrap();
     assert_eq!(books[0].client_notes.len(), 1);
     assert_eq!(books[0].client_notes[0].text, "стук справа при повороте");
 
@@ -3201,10 +3196,9 @@ async fn bot_notes_limits_and_foreign_chat(pool: PgPool) {
         "{}",
         r.text
     );
-    let mut books =
-        avtodom_server::api::oil_book::books(&mut c2, w.owner.user.branch_id, Some(me), None)
-            .await
-            .unwrap();
+    let mut books = avtodom_server::api::oil_book::books(&mut c2, Some(me), None)
+        .await
+        .unwrap();
     assert!(books[0].client_notes[0].deleted);
     avtodom_server::api::oil_book::hide_deleted_notes(&mut books);
     assert!(books[0].client_notes.is_empty());
@@ -3314,10 +3308,9 @@ async fn bot_car_card_shows_check_total_minus_returns(pool: PgPool) {
         .await
         .unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    let books =
-        avtodom_server::api::oil_book::books(&mut conn, w.owner.user.branch_id, Some(me), None)
-            .await
-            .unwrap();
+    let books = avtodom_server::api::oil_book::books(&mut conn, Some(me), None)
+        .await
+        .unwrap();
     assert_eq!(books[0].records[0].sale_total_tyiyn, Some(200_000));
     assert_eq!(books[0].records[1].sale_total_tyiyn, None);
     let card = press(&mut conn, chat, &format!("car:{car}")).await.text;
@@ -4968,6 +4961,15 @@ async fn bot_debts_match_the_program(pool: PgPool) {
             .await
             .unwrap();
     }
+    // Балансы заведены мимо записей долга: части по филиалам (SPEC-33) — так же, в филиал карточки.
+    sqlx::query(
+        "insert into party_balances (party_id, branch_id, balance_tyiyn)
+         select id, branch_id, balance_tyiyn from parties where balance_tyiyn <> 0
+         on conflict do nothing",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let chat = 930_001i64;
     link_user_chat(&pool, w.owner.user.id, branch, chat, 1).await;
     let mut conn = pool.acquire().await.unwrap();
@@ -8752,7 +8754,7 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
     req.mileage_km = Some(85_000);
     sell(&pool, &w.owner, req).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    let book = avtodom_server::api::oil_book::books(&mut conn, branch, None, Some(car))
+    let book = avtodom_server::api::oil_book::books(&mut conn, None, Some(car))
         .await
         .unwrap()
         .pop()
@@ -8785,7 +8787,7 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    let book = avtodom_server::api::oil_book::books(&mut conn, branch, None, Some(car))
+    let book = avtodom_server::api::oil_book::books(&mut conn, None, Some(car))
         .await
         .unwrap()
         .pop()
@@ -8909,7 +8911,7 @@ async fn oil_book_migration_keeps_old_records(pool: PgPool) {
         ("Тетрадное масло", "Фильтр W712")
     );
     let mut conn = pool.acquire().await.unwrap();
-    let book = avtodom_server::api::oil_book::books(&mut conn, branch, None, Some(car))
+    let book = avtodom_server::api::oil_book::books(&mut conn, None, Some(car))
         .await
         .unwrap()
         .pop()

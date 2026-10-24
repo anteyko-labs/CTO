@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into settings (branch_id, key, value)\n           select $1, key, value from settings where branch_id = $2 and key = any($3)\n           on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93fdaf93d19c418e31d41c1d131be801ca7501c900429ac344bc3824e38aa5cf"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update gift_rules set trigger_product_id = $2\n           where trigger_product_id = $1\n             and not exists (select 1 from gift_rules x where x.trigger_product_id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "48c78411bc0ad29a83715eb6a6e873d628bba766bf27a21148438256509a3c91"
+}

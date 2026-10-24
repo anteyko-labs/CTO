@@ -1394,7 +1394,7 @@ pub async fn party(
             Ok(lines.join("\n"))
         }
         _ => {
-            let books = crate::api::oil_book::books(conn, user.branch_id, Some(p.id), None).await?;
+            let books = crate::api::oil_book::books(conn, Some(p.id), None).await?;
             if books.is_empty() {
                 return Ok(format!("У {} машин в масляной книжке нет.", p.name));
             }

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bot_code from parties where id = $1 and role = 'customer'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bot_code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b51020d4245d745f7d1a71fe531cefff304ef727130830891f5808caff167716"
+}

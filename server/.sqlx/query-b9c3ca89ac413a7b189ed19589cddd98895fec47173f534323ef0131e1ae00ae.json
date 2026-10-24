@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select business_date, amount_tyiyn from party_ledger\n               where party_id = $1 and branch_id = $2 and kind in ('debt', 'adjust') and amount_tyiyn > 0\n               order by business_date desc, created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "b9c3ca89ac413a7b189ed19589cddd98895fec47173f534323ef0131e1ae00ae"
+}

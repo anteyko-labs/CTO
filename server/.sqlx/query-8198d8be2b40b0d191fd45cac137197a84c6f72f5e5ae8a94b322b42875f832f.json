@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.full_name, c.phone, c.position,\n                  count(s.id) filter (where s.kind = 'sale') as \"visits!\",\n                  max(s.created_at) as \"last_at?\",\n                  coalesce(sum(s.total_tyiyn), 0)::bigint as \"total_tyiyn!\",\n                  coalesce(sum((select coalesce(sum(p.amount_tyiyn), 0) from sale_payments p\n                                where p.sale_id = s.id and p.method = 'debt')), 0)::bigint as \"debt_tyiyn!\"\n           from party_contacts c\n           left join sales s on s.contact_id = c.id\n           where c.party_id = $1\n           group by c.id, c.full_name, c.phone, c.position\n           order by max(s.created_at) desc nulls last, c.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "position",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "visits!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_at?",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "total_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "debt_tyiyn!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "8198d8be2b40b0d191fd45cac137197a84c6f72f5e5ae8a94b322b42875f832f"
+}

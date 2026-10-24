@@ -53,7 +53,7 @@ pub async fn balance(conn: &mut PgConnection, party_id: Uuid) -> AppResult<i64> 
     .await?)
 }
 
-/// Баллы у всех клиентов филиала (SPEC-30 §12): сколько клиентов с баллами и сколько баллов
+/// Баллы у всех клиентов (SPEC-30 §12; клиенты и баллы общие для филиалов — SPEC-33): сколько клиентов с баллами и сколько баллов
 /// у них вместе. 1 балл = 1 сом, баллы хранятся в тыйынах, как деньги.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PointsTotal {
@@ -61,13 +61,12 @@ pub struct PointsTotal {
     pub points_tyiyn: i64,
 }
 
-pub async fn branch_total(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<PointsTotal> {
+pub async fn branch_total(conn: &mut PgConnection) -> AppResult<PointsTotal> {
     let r = sqlx::query!(
         r#"select count(*) filter (where b > 0) as "clients!",
                   coalesce(sum(b) filter (where b > 0), 0)::bigint as "points!"
            from (select party_id, sum(amount_tyiyn) as b from loyalty_ledger
-                 where branch_id = $1 group by party_id) x"#,
-        branch_id
+                 group by party_id) x"#
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -300,21 +299,21 @@ struct LookupOut {
 
 async fn lookup(
     State(state): State<AppState>,
-    user: CurrentUser,
+    _user: CurrentUser,
     Query(q): Query<LookupQuery>,
 ) -> AppResult<Json<LookupOut>> {
     let key = crate::api::telegram::phone_key(&q.phone)
         .ok_or_else(|| invalid("номер — не меньше 9 цифр"))?;
     let mut conn = state.pool.acquire().await?;
-    // Только клиенты своего филиала и ровно одна карточка: по общему номеру не угадываем (ADR-063).
+    // Клиенты общие для филиалов (SPEC-33), но ровно одна карточка: по общему номеру не
+    // угадываем (ADR-063).
     let found = sqlx::query!(
         r#"select p.id, p.name, p.phone from parties p
-           where p.branch_id = $2 and p.role = 'customer' and p.active
+           where p.role = 'customer' and p.active
              and phone_norm(p.phone) = $1
              and exists (select 1 from telegram_customers t where t.party_id = p.id)
            order by p.created_at desc limit 2"#,
-        key,
-        user.branch_id
+        key
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -377,14 +376,13 @@ pub async fn history(conn: &mut PgConnection, party_id: Uuid, limit: i64) -> App
 
 async fn party_history(
     State(state): State<AppState>,
-    user: CurrentUser,
+    _user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<HistoryOut>> {
     let mut conn = state.pool.acquire().await?;
     let found = sqlx::query_scalar!(
-        r#"select exists (select 1 from parties where id = $1 and branch_id = $2) as "e!""#,
-        id,
-        user.branch_id
+        r#"select exists (select 1 from parties where id = $1) as "e!""#,
+        id
     )
     .fetch_one(&mut *conn)
     .await?;

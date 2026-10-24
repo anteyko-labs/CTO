@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, l.branch_id, l.amount_tyiyn from party_ledger l\n               where l.doc_type = 'repayment' and l.doc_id = $1 and l.kind = 'repayment'\n                 and l.reversal_of is null\n                 and not exists (select 1 from party_ledger r where r.reversal_of = l.id)\n               order by l.created_at, l.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "67b8d7ca7922abde1868bdc0203be4398592a999c1ba82dacce3dee2d109564a"
+}

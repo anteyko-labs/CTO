@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.business_date, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.comment,\n                  s.number as \"sale_number?\", r.number as \"receipt_number?\",\n                  r.supplier_doc as \"supplier_doc?\",\n                  (select a.kind from cash_movements m join cash_accounts a on a.id = m.account_id\n                    where m.doc_type = 'repayment' and m.doc_id = l.doc_id\n                      and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as \"paid_via?\",\n                  b.name as branch_name\n           from party_ledger l\n           join branches b on b.id = l.branch_id\n           left join sales s on s.id = l.doc_id and l.doc_type in ('sale', 'sale_return')\n           left join receipts r on r.id = l.doc_id and l.doc_type in ('receipt', 'receipt_reversal')\n           where l.party_id = $1 and l.business_date between $2 and $3\n             and ($4::uuid is null or l.branch_id = $4)\n           order by l.business_date, l.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "receipt_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "supplier_doc?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "paid_via?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "branch_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "616737a33d1aa1ec31a56b54a78fe176cbc27c89fdb8461b65f99eaed9dd5def"
+}

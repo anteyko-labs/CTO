@@ -12,6 +12,7 @@ pub mod bot_debt;
 pub mod bot_drafts;
 pub mod bot_reports;
 pub mod bot_staff;
+pub mod branches;
 pub mod cabinet;
 pub mod cancelled_lines;
 pub mod cars;
@@ -60,6 +61,7 @@ pub fn routes() -> Router<AppState> {
         .merge(bank_qr::routes())
         .merge(bank_recon::routes())
         .merge(batteries::routes())
+        .merge(branches::routes())
         .merge(cabinet::routes())
         .merge(cancelled_lines::routes())
         .merge(cash::routes())

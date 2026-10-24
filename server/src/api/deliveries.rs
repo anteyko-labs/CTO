@@ -391,7 +391,7 @@ pub(crate) async fn deliveries_data(
         .iter()
         .fold(0i64, |s, r| s.saturating_add(r.amount_tyiyn));
     let balance_tyiyn = sqlx::query_scalar!(
-        "select balance_tyiyn from parties where id = $1 and branch_id = $2",
+        "select balance_tyiyn from party_balances where party_id = $1 and branch_id = $2",
         supplier_id,
         branch_id
     )

@@ -295,6 +295,8 @@ struct MeOut {
     overdue_tyiyn: i64,
     due_days: Option<i32>,
     credit_limit_tyiyn: Option<i64>,
+    /// Долг по филиалам `[{branch_id, name, balance_tyiyn}]` (SPEC-33): только ненулевые.
+    branch_balances: Value,
     /// Реквизиты точки — для шапки акта сверки при печати.
     seller: Value,
 }
@@ -319,6 +321,7 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
         overdue_tyiyn: p.overdue_tyiyn,
         due_days: p.due_days,
         credit_limit_tyiyn: p.credit_limit_tyiyn,
+        branch_balances: p.branch_balances,
         seller,
     }))
 }
@@ -352,6 +355,8 @@ struct SaleOut {
     debt_tyiyn: i64,
     /// Оплачено «По счёту» — перечислением фирмы (ADR-095).
     invoice_tyiyn: i64,
+    /// Филиал покупки (SPEC-33): кабинет показывает покупки во всех филиалах.
+    branch_name: String,
     lines: Vec<LineOut>,
 }
 
@@ -370,16 +375,17 @@ async fn sales(
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
                             where p.sale_id = s.id and p.method = 'debt'), 0)::bigint as "debt!",
                   coalesce((select sum(p.amount_tyiyn) from sale_payments p
-                            where p.sale_id = s.id and p.method = 'invoice'), 0)::bigint as "invoice!"
+                            where p.sale_id = s.id and p.method = 'invoice'), 0)::bigint as "invoice!",
+                  b.name as branch_name
            from sales s
+           join branches b on b.id = s.branch_id
            left join party_contacts c on c.id = s.contact_id
            left join party_vehicles v on v.id = s.vehicle_id
-           where s.party_id = $1 and s.branch_id = $2
-             and s.business_date >= coalesce($3, (now() at time zone 'Asia/Bishkek')::date - 90)
-             and s.business_date <= coalesce($4, (now() at time zone 'Asia/Bishkek')::date)
+           where s.party_id = $1
+             and s.business_date >= coalesce($2, (now() at time zone 'Asia/Bishkek')::date - 90)
+             and s.business_date <= coalesce($3, (now() at time zone 'Asia/Bishkek')::date)
            order by s.created_at desc limit 500"#,
         client.party_id,
-        client.branch_id,
         q.from,
         q.to
     )
@@ -422,6 +428,7 @@ async fn sales(
             total_tyiyn: h.total_tyiyn,
             debt_tyiyn: h.debt,
             invoice_tyiyn: h.invoice,
+            branch_name: h.branch_name,
         })
         .collect();
     Ok(Json(out))
@@ -454,12 +461,11 @@ async fn contacts(
                   coalesce(sum((select coalesce(sum(p.amount_tyiyn), 0) from sale_payments p
                                 where p.sale_id = s.id and p.method = 'debt')), 0)::bigint as "debt_tyiyn!"
            from party_contacts c
-           left join sales s on s.contact_id = c.id and s.branch_id = $2
+           left join sales s on s.contact_id = c.id
            where c.party_id = $1
            group by c.id, c.full_name, c.phone, c.position
            order by max(s.created_at) desc nulls last, c.full_name"#,
-        client.party_id,
-        client.branch_id
+        client.party_id
     )
     .fetch_all(&state.pool)
     .await?;
@@ -482,9 +488,7 @@ async fn reconciliation(
 async fn oil_book(State(state): State<AppState>, client: Client) -> AppResult<Json<Value>> {
     client.ready()?;
     let mut conn = state.pool.acquire().await?;
-    let mut books =
-        crate::api::oil_book::books(&mut conn, client.branch_id, Some(client.party_id), None)
-            .await?;
+    let mut books = crate::api::oil_book::books(&mut conn, Some(client.party_id), None).await?;
     crate::api::oil_book::hide_deleted_notes(&mut books);
     Ok(Json(json!(books)))
 }
@@ -503,15 +507,14 @@ struct CabinetState {
 
 async fn cabinet_state(
     State(state): State<AppState>,
-    Owner(user): Owner,
+    Owner(_user): Owner,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<CabinetState>> {
     let r = sqlx::query!(
         r#"select p.kind, p.role, p.inn, a.must_change as "must_change?", a.last_login_at
            from parties p left join party_accounts a on a.party_id = p.id
-           where p.id = $1 and p.branch_id = $2"#,
-        id,
-        user.branch_id
+           where p.id = $1"#,
+        id
     )
     .fetch_optional(&state.pool)
     .await?
@@ -535,14 +538,10 @@ async fn cabinet_reset(
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    let kind = sqlx::query!(
-        "select kind, role, inn from parties where id = $1 and branch_id = $2",
-        id,
-        ctx.user.branch_id
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let kind = sqlx::query!("select kind, role, inn from parties where id = $1", id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
     if kind.kind != "company" || kind.role != "customer" || kind.inn.trim().is_empty() {
         return Err(invalid("кабинет есть только у юрлица-клиента с ИНН"));
     }

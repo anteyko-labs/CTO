@@ -69,6 +69,14 @@ pub struct PartyOut {
     /// Фирма не хочет сообщений о закупах (SPEC-32 §4).
     #[serde(default)]
     pub no_purchase_messages: bool,
+    /// Баланс в филиале запроса (SPEC-33 §2). У клиента `balance_tyiyn` — общий долг по всем
+    /// филиалам (гасить можно в любом), у поставщика — долг этого филиала.
+    #[serde(default)]
+    pub branch_balance_tyiyn: i64,
+    /// Долг клиента по филиалам `[{branch_id, name, balance_tyiyn}]` — только ненулевые; у
+    /// поставщика пусто: деньги филиала другим филиалам не показываются.
+    #[serde(default)]
+    pub branch_balances: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -106,6 +114,13 @@ pub(crate) struct ListQuery {
     /// авансы клиентов не вытесняют должников из первых 500 строк.
     #[serde(default)]
     pub(crate) owes: bool,
+    /// Только с долгом в филиале запроса (экран «Долги» филиала, SPEC-33 §3).
+    #[serde(skip)]
+    pub(crate) branch_debtors: bool,
+    /// «Все филиалы» владельца: у поставщика — общий долг и разбивка по филиалам (SPEC-33 §3).
+    /// Не из запроса: включает только сервер после проверки владельца.
+    #[serde(skip)]
+    pub(crate) all_branches: bool,
 }
 
 async fn list_parties(
@@ -135,8 +150,8 @@ async fn parties_summary(
         .iter()
         .filter(|p| p.balance_tyiyn < 0)
         .fold(0i64, |a, p| a.saturating_sub(p.balance_tyiyn));
-    // Баллы — у всех клиентов филиала, без отбора (SPEC-30 §12).
-    let points = crate::api::loyalty::branch_total(&mut conn, user.branch_id).await?;
+    // Баллы — у всех клиентов, без отбора (SPEC-30 §12); клиенты общие (SPEC-33).
+    let points = crate::api::loyalty::branch_total(&mut conn).await?;
     Ok(Json(json!({
         "count": rows.len(),
         "owe_tyiyn": owe,
@@ -165,16 +180,29 @@ pub(crate) async fn search_parties(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
                   credit_limit_tyiyn as "credit_limit_tyiyn?", due_days as "due_days?",
-                  active, balance_tyiyn, no_purchase_messages,
-                  case when parties.balance_tyiyn > 0 and parties.due_days is not null then
-                    greatest(0, parties.balance_tyiyn - coalesce((
+                  active, b.bal as "balance_tyiyn!", no_purchase_messages,
+                  case when b.bal > 0 and parties.due_days is not null then
+                    greatest(0, b.bal - coalesce((
                       select sum(l.amount_tyiyn) from party_ledger l
                       where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+                        and (parties.role = 'customer' or $10 or l.branch_id = $1)
                         and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))
-                  else 0 end::bigint as "overdue_tyiyn!"
+                  else 0 end::bigint as "overdue_tyiyn!",
+                  b.here as "branch_balance_tyiyn!",
+                  (select coalesce(jsonb_agg(jsonb_build_object('branch_id', pb.branch_id, 'name', br.name,
+                                                                'balance_tyiyn', pb.balance_tyiyn)
+                                             order by br.is_main desc, br.created_at), '[]'::jsonb)
+                   from party_balances pb join branches br on br.id = pb.branch_id
+                   where pb.party_id = parties.id and pb.balance_tyiyn <> 0
+                     and (parties.role = 'customer' or $10)) as "branch_balances!"
            from parties
-           where branch_id = $1
-             and ($2::text is null or role = $2)
+           cross join lateral (
+             select coalesce((select pb.balance_tyiyn from party_balances pb
+                              where pb.party_id = parties.id and pb.branch_id = $1), 0) as here) h
+           cross join lateral (
+             select case when parties.role = 'customer' or $10 then parties.balance_tyiyn else h.here end as bal,
+                    h.here) b
+           where ($2::text is null or role = $2)
              and ($3::text is null or kind = $3)
              and ($4::text is null
                   or name ilike '%' || $4 || '%' or phone ilike '%' || $4 || '%' or inn ilike $4 || '%'
@@ -186,9 +214,9 @@ pub(crate) async fn search_parties(
                   or exists (select 1 from party_vehicles v
                              where v.party_id = parties.id and v.active
                                and upper(replace(v.plate, ' ', '')) like '%' || upper(replace($4, ' ', '')) || '%'))
-             and (not $5 or balance_tyiyn <> 0)
-             and (not $8 or balance_tyiyn > 0)
-           order by (balance_tyiyn <> 0) desc, name
+             and (not $5 or (case when $9 then b.here else b.bal end) <> 0)
+             and (not $8 or b.bal > 0)
+           order by (b.bal <> 0) desc, name
            limit $6"#,
         branch_id,
         f.role,
@@ -197,7 +225,9 @@ pub(crate) async fn search_parties(
         f.only_debtors,
         crate::api::paging::MAX_ROWS,
         phone_digits,
-        f.owes
+        f.owes,
+        f.branch_debtors,
+        f.all_branches
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -344,14 +374,29 @@ pub(crate) async fn load_party(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
                   credit_limit_tyiyn as "credit_limit_tyiyn?", due_days as "due_days?",
-                  active, balance_tyiyn, no_purchase_messages,
-                  case when parties.balance_tyiyn > 0 and parties.due_days is not null then
-                    greatest(0, parties.balance_tyiyn - coalesce((
+                  active, b.bal as "balance_tyiyn!", no_purchase_messages,
+                  case when b.bal > 0 and parties.due_days is not null then
+                    greatest(0, b.bal - coalesce((
                       select sum(l.amount_tyiyn) from party_ledger l
                       where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+                        and (parties.role = 'customer' or l.branch_id = $2)
                         and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))
-                  else 0 end::bigint as "overdue_tyiyn!"
-           from parties where id = $1 and branch_id = $2"#,
+                  else 0 end::bigint as "overdue_tyiyn!",
+                  b.here as "branch_balance_tyiyn!",
+                  (select coalesce(jsonb_agg(jsonb_build_object('branch_id', pb.branch_id, 'name', br.name,
+                                                                'balance_tyiyn', pb.balance_tyiyn)
+                                             order by br.is_main desc, br.created_at), '[]'::jsonb)
+                   from party_balances pb join branches br on br.id = pb.branch_id
+                   where pb.party_id = parties.id and pb.balance_tyiyn <> 0
+                     and parties.role = 'customer') as "branch_balances!"
+           from parties
+           cross join lateral (
+             select coalesce((select pb.balance_tyiyn from party_balances pb
+                              where pb.party_id = parties.id and pb.branch_id = $2), 0) as here) h
+           cross join lateral (
+             select case when parties.role = 'customer' then parties.balance_tyiyn else h.here end as bal,
+                    h.here) b
+           where id = $1"#,
         id,
         branch_id
     )
@@ -384,20 +429,15 @@ async fn require_party_right(
 }
 
 /// Поля карточки контрагента, которые правятся запросом, — для журнала «было/стало».
-async fn party_fields(
-    conn: &mut PgConnection,
-    branch_id: Uuid,
-    id: Uuid,
-) -> AppResult<serde_json::Value> {
+async fn party_fields(conn: &mut PgConnection, id: Uuid) -> AppResult<serde_json::Value> {
     sqlx::query_scalar!(
         r#"select jsonb_build_object('name', name, 'first_name', first_name, 'last_name', last_name,
                                      'phone', phone, 'inn', inn, 'comment', comment,
                                      'kind', kind, 'credit_limit_tyiyn', credit_limit_tyiyn,
                                      'due_days', due_days, 'active', active,
                                      'no_purchase_messages', no_purchase_messages) as "v!"
-           from parties where id = $1 and branch_id = $2 for update"#,
-        id,
-        branch_id
+           from parties where id = $1 for update"#,
+        id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -445,16 +485,12 @@ async fn update_party(
         return Err(invalid("вид клиента: физлицо или юрлицо"));
     }
     let mut tx = state.pool.begin().await?;
-    let role = sqlx::query_scalar!(
-        "select role from parties where id = $1 and branch_id = $2",
-        id,
-        ctx.user.branch_id
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let role = sqlx::query_scalar!("select role from parties where id = $1", id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
     require_party_right(&mut tx, &ctx.user, &role).await?;
-    let before = party_fields(&mut tx, ctx.user.branch_id, id).await?;
+    let before = party_fields(&mut tx, id).await?;
     let kind_now = req
         .kind
         .clone()
@@ -475,21 +511,20 @@ async fn update_party(
     let name = person.as_ref().map(|p| p.2.clone()).or(req.name);
     let found = sqlx::query!(
         r#"update parties
-           set name = coalesce(nullif(trim($3), ''), name),
-               phone = coalesce($4, phone),
-               inn = coalesce($5, inn),
-               comment = coalesce($6, comment),
-               kind = coalesce($7, kind),
-               credit_limit_tyiyn = coalesce($8, credit_limit_tyiyn),
-               due_days = coalesce($9, due_days),
-               active = coalesce($10, active),
-               first_name = case when $13 then '' else coalesce($11, first_name) end,
-               last_name = case when $13 then '' else coalesce($12, last_name) end,
-               no_purchase_messages = coalesce($14, no_purchase_messages)
-           where id = $1 and branch_id = $2
+           set name = coalesce(nullif(trim($2), ''), name),
+               phone = coalesce($3, phone),
+               inn = coalesce($4, inn),
+               comment = coalesce($5, comment),
+               kind = coalesce($6, kind),
+               credit_limit_tyiyn = coalesce($7, credit_limit_tyiyn),
+               due_days = coalesce($8, due_days),
+               active = coalesce($9, active),
+               first_name = case when $12 then '' else coalesce($10, first_name) end,
+               last_name = case when $12 then '' else coalesce($11, last_name) end,
+               no_purchase_messages = coalesce($13, no_purchase_messages)
+           where id = $1
            returning id"#,
         id,
-        ctx.user.branch_id,
         name,
         req.phone,
         req.inn,
@@ -508,7 +543,7 @@ async fn update_party(
     if found.is_none() {
         return Err(AppError::NotFound);
     }
-    let after = party_fields(&mut tx, ctx.user.branch_id, id).await?;
+    let after = party_fields(&mut tx, id).await?;
     let changes = ops::changes(&before, &after);
     ops::audit(
         &mut tx,
@@ -622,11 +657,10 @@ async fn update_contact(
     let before = sqlx::query!(
         r#"select c.full_name, c.phone, c.position, c.inn, c.active, c.is_head from party_contacts c
            join parties p on p.id = c.party_id
-           where c.id = $1 and c.party_id = $2 and p.branch_id = $3
+           where c.id = $1 and c.party_id = $2
            for update of c"#,
         contact_id,
-        id,
-        ctx.user.branch_id
+        id
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -637,9 +671,8 @@ async fn update_contact(
            set full_name = coalesce(nullif(trim($3), ''), full_name),
                phone = $4, position = $5, inn = $6,
                active = coalesce($7, active),
-               is_head = coalesce($9, is_head)
+               is_head = coalesce($8, is_head)
            where id = $1 and party_id = $2
-             and party_id in (select p.id from parties p where p.branch_id = $8)
            returning id, full_name, phone, position, inn, active, is_head"#,
         contact_id,
         id,
@@ -648,7 +681,6 @@ async fn update_contact(
         req.position.trim(),
         req.inn.trim(),
         req.active,
-        ctx.user.branch_id,
         req.is_head
     )
     .fetch_optional(&mut *tx)
@@ -718,23 +750,18 @@ async fn create_vehicle(
         crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
     let unit = req.mileage_unit.clone().unwrap_or_else(|| "km".into());
     // Блокировка клиента: два одновременных добавления одного номера не заведут две машины.
-    let party_name = sqlx::query_scalar!(
-        "select name from parties where id = $1 and branch_id = $2 for update",
-        id,
-        branch_id
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let party_name = sqlx::query_scalar!("select name from parties where id = $1 for update", id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
     // Этот номер у клиента уже есть — возвращаем его машину с историей, а не заводим дубль.
     // Убранную (клиентом в боте или точкой) — возвращаем в список (ADR-062).
     let own = sqlx::query_as!(
         VehicleOut,
         r#"select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
-           where party_id = $1 and branch_id = $2 and plate_norm = $3
+           where party_id = $1 and plate_norm = $2
            order by active desc, created_at limit 1"#,
         id,
-        branch_id,
         norm
     )
     .fetch_optional(&mut *tx)
@@ -768,9 +795,8 @@ async fn create_vehicle(
     // владелец — так же, как при добавлении в боте (ADR-061).
     let others = sqlx::query_scalar!(
         r#"select distinct p.name from party_vehicles v join parties p on p.id = v.party_id
-           where v.branch_id = $1 and v.plate_norm = $2 and v.party_id <> $3
+           where v.plate_norm = $1 and v.party_id <> $2
            order by p.name"#,
-        branch_id,
         norm,
         id
     )
@@ -825,11 +851,10 @@ pub(crate) async fn restore_vehicle_tx(
 ) -> AppResult<()> {
     let plate = sqlx::query_scalar!(
         r#"update party_vehicles set active = true
-           where id = $1 and party_id = $2 and branch_id = $3 and not active
+           where id = $1 and party_id = $2
            returning plate"#,
         vehicle_id,
-        party_id,
-        ctx.user.branch_id
+        party_id
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -859,10 +884,9 @@ async fn restore_vehicle(
     let row = sqlx::query_as!(
         VehicleOut,
         r#"select id, plate, brand, model, comment, active, mileage_unit from party_vehicles
-           where id = $1 and party_id = $2 and branch_id = $3"#,
+           where id = $1 and party_id = $2"#,
         vehicle_id,
-        id,
-        ctx.user.branch_id
+        id
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -888,12 +912,9 @@ async fn update_vehicle(
         crate::api::cars::remember(&mut tx, &ctx.user, &req.brand, &req.model).await?;
     let before = sqlx::query!(
         r#"select v.plate, v.brand, v.model, v.comment, v.active, v.mileage_unit from party_vehicles v
-           where v.id = $1 and v.party_id = $2 and v.branch_id = $3
-           for update"#,
+           where v.id = $1 and v.party_id = $2"#,
         vehicle_id,
-        id,
-        ctx.user.branch_id
-    )
+        id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
@@ -901,12 +922,11 @@ async fn update_vehicle(
         VehicleOut,
         r#"update party_vehicles
            set plate = coalesce(nullif(upper(trim($3)), ''), plate),
-               plate_norm = coalesce($9, plate_norm),
+               plate_norm = coalesce($8, plate_norm),
                brand = $4, model = $5, comment = $6,
                active = coalesce($7, active),
-               mileage_unit = coalesce($10, mileage_unit)
+               mileage_unit = coalesce($9, mileage_unit)
            where id = $1 and party_id = $2
-             and party_id in (select p.id from parties p where p.branch_id = $8)
            returning id, plate, brand, model, comment, active, mileage_unit"#,
         vehicle_id,
         id,
@@ -915,7 +935,6 @@ async fn update_vehicle(
         model,
         req.comment.trim(),
         req.active,
-        ctx.user.branch_id,
         plate_norm,
         req.mileage_unit
     )
@@ -983,9 +1002,8 @@ pub async fn add_ledger_to(
     } = e;
     ops::check_amount(amount)?;
     let party = sqlx::query!(
-        "select balance_tyiyn, role from parties where id = $1 and branch_id = $2 for update",
-        party_id,
-        ctx.user.branch_id
+        "select balance_tyiyn, role from parties where id = $1 for update",
+        party_id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -1046,12 +1064,10 @@ pub async fn check_sale_party(
     offline: bool,
     on_debt: bool,
 ) -> AppResult<Vec<String>> {
-    let branch_id = ctx.user.branch_id;
     let mut bypass = Vec::new();
     let p = sqlx::query!(
-        "select role, active, name from parties where id = $1 and branch_id = $2",
-        party_id,
-        branch_id
+        "select role, active, name from parties where id = $1",
+        party_id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -1182,18 +1198,22 @@ pub(crate) async fn reconciliation_data(
     to: Option<NaiveDate>,
 ) -> AppResult<ReconOut> {
     let p = sqlx::query!(
-        "select name, kind, role, inn, phone from parties where id = $1 and branch_id = $2",
-        id,
-        branch_id
+        "select name, kind, role, inn, phone from parties where id = $1",
+        id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Клиент общий: его акт — по всем филиалам, с названием филиала у строки. Поставщик общий,
+    // а долг ему — у каждого филиала свой: акт — только филиала запроса (SPEC-33 §2).
+    let only: Option<Uuid> = (p.role == "supplier").then_some(branch_id);
+    let several = crate::api::branches::several(&mut *conn).await? && only.is_none();
     let bounds = sqlx::query!(
         r#"select coalesce(min(business_date), (now() at time zone 'Asia/Bishkek')::date) as "first!",
                   (now() at time zone 'Asia/Bishkek')::date as "today!"
-           from party_ledger where party_id = $1"#,
-        id
+           from party_ledger where party_id = $1 and ($2::uuid is null or branch_id = $2)"#,
+        id,
+        only
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -1204,9 +1224,10 @@ pub(crate) async fn reconciliation_data(
     }
     let opening = sqlx::query_scalar!(
         r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from party_ledger
-           where party_id = $1 and business_date < $2"#,
+           where party_id = $1 and business_date < $2 and ($3::uuid is null or branch_id = $3)"#,
         id,
-        from
+        from,
+        only
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -1216,15 +1237,19 @@ pub(crate) async fn reconciliation_data(
                   r.supplier_doc as "supplier_doc?",
                   (select a.kind from cash_movements m join cash_accounts a on a.id = m.account_id
                     where m.doc_type = 'repayment' and m.doc_id = l.doc_id
-                      and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as "paid_via?"
+                      and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as "paid_via?",
+                  b.name as branch_name
            from party_ledger l
+           join branches b on b.id = l.branch_id
            left join sales s on s.id = l.doc_id and l.doc_type in ('sale', 'sale_return')
            left join receipts r on r.id = l.doc_id and l.doc_type in ('receipt', 'receipt_reversal')
            where l.party_id = $1 and l.business_date between $2 and $3
+             and ($4::uuid is null or l.branch_id = $4)
            order by l.business_date, l.created_at"#,
         id,
         from,
-        to
+        to,
+        only
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -1258,6 +1283,11 @@ pub(crate) async fn reconciliation_data(
             },
             (_, "adjust") => "Корректировка долга".to_string(),
             _ => "Операция".to_string(),
+        };
+        let document = if several {
+            format!("{document} — {}", r.branch_name)
+        } else {
+            document
         };
         let (d, c) = if r.amount_tyiyn >= 0 {
             (r.amount_tyiyn, 0)
@@ -1427,11 +1457,11 @@ pub async fn post_repayment_tx(
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    // Клиент гасит свой долг, мы — свой перед поставщиком: знак разный.
+    // Клиент гасит свой долг, мы — свой перед поставщиком: знак разный. Блокировка клиента:
+    // части погашения по филиалам считаются от его балансов (SPEC-33 §2).
     let party = sqlx::query!(
-        "select role, name from parties where id = $1 and branch_id = $2",
-        req.party_id,
-        branch_id
+        "select role, name from parties where id = $1 for update",
+        req.party_id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -1479,11 +1509,6 @@ pub async fn post_repayment_tx(
         }
     };
     let rid = new_id();
-    let signed = if supplier {
-        req.amount_tyiyn
-    } else {
-        -req.amount_tyiyn
-    };
     let money = if supplier {
         -req.amount_tyiyn
     } else {
@@ -1537,30 +1562,76 @@ pub async fn post_repayment_tx(
             .await?;
         }
     }
-    let (balance, ledger_id) = add_ledger_to(
-        &mut *conn,
-        ctx,
-        LedgerEntry {
-            party_id: req.party_id,
-            kind: "repayment",
-            amount: signed,
-            doc_type: "repayment",
-            doc_id: Some(rid),
-            comment: req.comment.trim(),
-        },
-        target,
-    )
-    .await?;
-    if !supplier {
-        crate::api::payroll::accrue_on_repayment(
+    // Долг поставщику — у филиала, оплата закрывает только его. Клиент гасит сначала долг этого
+    // филиала, затем самые старые в других; переплата — аванс в этом филиале (SPEC-33 §2).
+    let parts = if supplier {
+        vec![(branch_id, req.amount_tyiyn)]
+    } else {
+        repayment_parts(&mut *conn, req.party_id, branch_id, req.amount_tyiyn).await?
+    };
+    let here_name = crate::api::branches::name(&mut *conn, branch_id).await?;
+    let mut balance = 0;
+    let mut first_ledger = None;
+    let mut split = Vec::with_capacity(parts.len());
+    for (part_branch, part) in parts {
+        let other = part_branch != branch_id;
+        let part_ctx = ctx.in_branch(part_branch);
+        let part_comment = if other {
+            let mut c = format!("принято в филиале «{here_name}»");
+            if !req.comment.trim().is_empty() {
+                c = format!("{c}: {}", req.comment.trim());
+            }
+            c
+        } else {
+            req.comment.trim().to_string()
+        };
+        let (b, ledger_id) = add_ledger_to(
             &mut *conn,
-            ctx,
-            req.party_id,
-            req.amount_tyiyn,
-            ledger_id,
+            &part_ctx,
+            LedgerEntry {
+                party_id: req.party_id,
+                kind: "repayment",
+                amount: if supplier { part } else { -part },
+                doc_type: "repayment",
+                doc_id: Some(rid),
+                comment: &part_comment,
+            },
+            target,
         )
         .await?;
+        balance = b;
+        first_ledger.get_or_insert(ledger_id);
+        if !supplier {
+            crate::api::payroll::accrue_on_repayment(
+                &mut *conn,
+                &part_ctx,
+                req.party_id,
+                part,
+                ledger_id,
+            )
+            .await?;
+        }
+        if other {
+            // Деньги в кассе этого филиала, долг закрыт у другого: этот филиал должен ему.
+            sqlx::query!(
+                r#"insert into branch_settlements (id, branch_id, creditor_branch_id, party_id,
+                                                   amount_tyiyn, business_date, ledger_id, user_id)
+                   values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date, $6, $7)"#,
+                new_id(),
+                branch_id,
+                part_branch,
+                req.party_id,
+                part,
+                ledger_id,
+                ctx.user.id
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+        split.push(json!({ "branch_id": part_branch, "amount_tyiyn": part }));
     }
+    let ledger_id =
+        first_ledger.ok_or_else(|| AppError::Internal("погашение без записи".into()))?;
     ops::audit(
         &mut *conn,
         ctx,
@@ -1573,6 +1644,7 @@ pub async fn post_repayment_tx(
             "balance_tyiyn": balance,
             "repayment_id": rid,
             "receipt_id": req.receipt_id,
+            "branches": split,
         }),
     )
     .await?;
@@ -1583,6 +1655,81 @@ pub async fn post_repayment_tx(
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+/// Части погашения клиента по филиалам (SPEC-33 §2): сначала долг филиала, где приняли деньги,
+/// затем долги других филиалов — сначала тот, где самый старый непогашенный долг; остаток
+/// (переплата) — аванс в этом филиале. Клиент заблокирован вызывающим. Первая часть — этого
+/// филиала, если она есть.
+pub(crate) async fn repayment_parts(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    branch_id: Uuid,
+    amount: i64,
+) -> AppResult<Vec<(Uuid, i64)>> {
+    let balances = sqlx::query!(
+        r#"select branch_id, balance_tyiyn from party_balances
+           where party_id = $1 and balance_tyiyn > 0"#,
+        party_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let here = balances
+        .iter()
+        .find(|b| b.branch_id == branch_id)
+        .map_or(0, |b| b.balance_tyiyn);
+    let mut others = Vec::new();
+    for b in balances.iter().filter(|b| b.branch_id != branch_id) {
+        let entries: Vec<(NaiveDate, i64)> = sqlx::query!(
+            r#"select business_date, amount_tyiyn from party_ledger
+               where party_id = $1 and branch_id = $2 and kind in ('debt', 'adjust') and amount_tyiyn > 0
+               order by business_date desc, created_at desc"#,
+            party_id,
+            b.branch_id
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|r| (r.business_date, r.amount_tyiyn))
+        .collect();
+        let oldest = crate::domain::debt::oldest_unpaid(b.balance_tyiyn, &entries);
+        others.push((
+            oldest.unwrap_or(NaiveDate::MAX),
+            b.branch_id,
+            b.balance_tyiyn,
+        ));
+    }
+    others.sort();
+    Ok(split_repayment(amount, branch_id, here, &others))
+}
+
+/// Делит сумму погашения: `here` — долг этого филиала, `others` — долги других филиалов по
+/// порядку погашения. Переплата — в этот филиал.
+fn split_repayment(
+    amount: i64,
+    branch_id: Uuid,
+    here: i64,
+    others: &[(NaiveDate, Uuid, i64)],
+) -> Vec<(Uuid, i64)> {
+    let mut rest = amount;
+    let first = rest.min(here.max(0));
+    rest -= first;
+    let mut out: Vec<(Uuid, i64)> = Vec::new();
+    for &(_, b, bal) in others {
+        if rest <= 0 {
+            break;
+        }
+        let take = rest.min(bal);
+        if take > 0 {
+            out.push((b, take));
+            rest -= take;
+        }
+    }
+    let mine = first.saturating_add(rest);
+    if mine > 0 {
+        out.insert(0, (branch_id, mine));
+    }
+    out
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -1682,6 +1829,9 @@ pub(crate) struct TimelineItem {
     pub(crate) number: Option<i64>,
     pub(crate) doc_id: Option<Uuid>,
     pub(crate) comment: String,
+    /// Запись другого филиала (SPEC-33): его название; документ открывается только в нём.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) branch_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1725,6 +1875,9 @@ pub(crate) async fn party_card_data(
 ) -> AppResult<PartyCard> {
     let q = CardQuery { from, to };
     let party = load_party(&mut *conn, user.branch_id, id).await?;
+    // Клиент общий — его покупки и долг по всем филиалам, с названием чужого филиала; поставщик —
+    // только этого филиала: его накладные и оплаты — деньги филиала (SPEC-33 §2).
+    let only: Option<Uuid> = (party.role == "supplier").then_some(user.branch_id);
     let contacts = sqlx::query_as!(
         ContactOut,
         "select id, full_name, phone, position, inn, active, is_head from party_contacts
@@ -1744,17 +1897,18 @@ pub(crate) async fn party_card_data(
 
     let sales = sqlx::query!(
         r#"select s.id, s.number, s.kind, s.total_tyiyn, s.created_at, s.comment,
-                  c.full_name as "contact?", v.plate as "plate?"
+                  c.full_name as "contact?", v.plate as "plate?", s.branch_id, b.name as branch_name
            from sales s
+           join branches b on b.id = s.branch_id
            left join party_contacts c on c.id = s.contact_id
            left join party_vehicles v on v.id = s.vehicle_id
-           where s.party_id = $1 and s.branch_id = $2
+           where s.party_id = $1 and ($2::uuid is null or s.branch_id = $2)
              and ($3::date is null or s.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')
              and ($4::date is null or s.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')
            order by s.created_at desc
            limit 200"#,
         id,
-        user.branch_id,
+        only,
         q.from,
         q.to
     )
@@ -1762,13 +1916,15 @@ pub(crate) async fn party_card_data(
     .await?;
     let ledger = sqlx::query!(
         r#"select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of, l.doc_type,
-                  exists (select 1 from party_ledger r where r.reversal_of = l.id) as "reversed!"
-           from party_ledger l where l.party_id = $1 and l.branch_id = $2
+                  exists (select 1 from party_ledger r where r.reversal_of = l.id) as "reversed!",
+                  l.branch_id, b.name as branch_name
+           from party_ledger l join branches b on b.id = l.branch_id
+           where l.party_id = $1 and ($2::uuid is null or l.branch_id = $2)
              and ($3::date is null or l.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')
              and ($4::date is null or l.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')
            order by l.created_at desc limit 200"#,
         id,
-        user.branch_id,
+        only,
         q.from,
         q.to
     )
@@ -1839,6 +1995,7 @@ pub(crate) async fn party_card_data(
             amount_tyiyn: s.total_tyiyn,
             number: Some(s.number),
             doc_id: Some(s.id),
+            branch_name: (s.branch_id != user.branch_id).then(|| s.branch_name.clone()),
             comment: {
                 let what = goods.get(&s.id).map(|g| g.join(", ")).unwrap_or_default();
                 [what, who, s.comment.clone()]
@@ -1853,7 +2010,11 @@ pub(crate) async fn party_card_data(
         timeline.push(TimelineItem {
             at: l.created_at,
             ledger_id: Some(l.id),
-            reversible: l.kind != "debt" && l.reversal_of.is_none() && !l.reversed,
+            // Сторно — в филиале записи (SPEC-33): чужую запись владелец снимает, выбрав её филиал.
+            reversible: l.kind != "debt"
+                && l.reversal_of.is_none()
+                && !l.reversed
+                && l.branch_id == user.branch_id,
             kind: l.kind.clone(),
             title: match l.doc_type.as_str() {
                 // Возмещение за брак: поставщик должен нам (SPEC-25).
@@ -1865,6 +2026,7 @@ pub(crate) async fn party_card_data(
             number: None,
             doc_id: l.doc_id,
             comment: l.comment.clone(),
+            branch_name: (l.branch_id != user.branch_id).then(|| l.branch_name.clone()),
         });
     }
     timeline.sort_by_key(|t| std::cmp::Reverse(t.at));
@@ -1967,26 +2129,44 @@ pub async fn reverse_ledger_tx(
     if reversed {
         return Err(AppError::Conflict("запись уже сторнирована".into()));
     }
+    // Погашение клиента могло лечь на несколько филиалов (SPEC-33 §2): сторно снимает все его
+    // части сразу — каждую в её филиале, с расчётом между филиалами.
+    let parts = if l.kind == "repayment" && l.doc_type == "repayment" {
+        sqlx::query!(
+            r#"select l.id, l.branch_id, l.amount_tyiyn from party_ledger l
+               where l.doc_type = 'repayment' and l.doc_id = $1 and l.kind = 'repayment'
+                 and l.reversal_of is null
+                 and not exists (select 1 from party_ledger r where r.reversal_of = l.id)
+               order by l.created_at, l.id"#,
+            l.doc_id
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|r| (r.id, r.branch_id, r.amount_tyiyn))
+        .collect::<Vec<_>>()
+    } else {
+        vec![(id, branch_id, l.amount_tyiyn)]
+    };
     // Деньги погашения уходят из той же кассы; для кассы смены нужна открытая смена.
     if l.kind == "repayment" && l.doc_type == "repayment" {
         let moves = sqlx::query!(
             // Комиссия возвращается вместе с деньгами, как при возврате по чеку (ADR-070,
             // ADR-088): иначе «Исправить» погашение взяло бы её второй раз.
-            r#"select account_id, amount_tyiyn, kind from cash_movements
-               where branch_id = $1 and doc_type = 'repayment' and doc_id = $2"#,
-            branch_id,
+            r#"select branch_id, account_id, amount_tyiyn, kind from cash_movements
+               where doc_type = 'repayment' and doc_id = $1"#,
             l.doc_id
         )
         .fetch_all(&mut *tx)
         .await?;
         for m in moves {
-            crate::api::cash::require_open_shift(&mut *tx, branch_id, m.account_id).await?;
+            crate::api::cash::require_open_shift(&mut *tx, m.branch_id, m.account_id).await?;
             // Возвращённая комиссия — той же статьёй «комиссия банка» по тому же погашению:
             // отчёты считают её по этим движениям (SPEC-08).
             let fee = m.kind == "bank_fee";
             crate::api::cash::add_movement(
                 &mut *tx,
-                ctx,
+                &ctx.in_branch(m.branch_id),
                 crate::api::cash::CashEntry {
                     account_id: m.account_id,
                     kind: if fee { "bank_fee" } else { "reversal" },
@@ -2000,9 +2180,16 @@ pub async fn reverse_ledger_tx(
         }
         // Процент кассира, начисленный за это погашение, тоже откатывается — с тех чеков, по
         // которым он начислен (ADR-035, ADR-088).
-        if l.role == "customer" && !crate::api::payroll::reverse_takes(&mut *tx, ctx, id).await? {
-            crate::api::payroll::reverse_repayment(&mut *tx, ctx, l.party_id, -l.amount_tyiyn)
-                .await?;
+        if l.role == "customer" {
+            for &(part_id, part_branch, amount) in &parts {
+                let part_ctx = ctx.in_branch(part_branch);
+                if !crate::api::payroll::reverse_takes(&mut *tx, &part_ctx, part_id).await? {
+                    crate::api::payroll::reverse_repayment(
+                        &mut *tx, &part_ctx, l.party_id, -amount,
+                    )
+                    .await?;
+                }
+            }
         }
     }
     // Прощение долга отменили: процент кассира по этим чекам снова ждёт оплаты (ADR-088).
@@ -2015,34 +2202,60 @@ pub async fn reverse_ledger_tx(
     )
     .fetch_one(&mut *tx)
     .await?;
-    let next = balance
-        .checked_sub(l.amount_tyiyn)
+    let total = parts
+        .iter()
+        .try_fold(0i64, |a, p| a.checked_add(p.2))
         .ok_or_else(|| invalid("слишком большая сумма долга"))?;
-    let rid = new_id();
-    sqlx::query!(
-        r#"insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,
-                                     doc_type, doc_id, comment, reversal_of, user_id, device_id)
-           values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date,
-                   'reversal', $6, $7, $6, $8, $9)"#,
-        rid,
-        branch_id,
-        l.party_id,
-        l.kind,
-        -l.amount_tyiyn,
-        id,
-        req.comment.trim(),
-        ctx.user.id,
-        ctx.device_id
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        if crate::error::is_unique_violation(&e) {
-            AppError::Conflict("запись уже сторнирована".into())
-        } else {
-            AppError::from(e)
+    let next = balance
+        .checked_sub(total)
+        .ok_or_else(|| invalid("слишком большая сумма долга"))?;
+    let mut rid = id;
+    for &(part_id, part_branch, amount) in &parts {
+        let reversal_id = new_id();
+        if part_id == id {
+            rid = reversal_id;
         }
-    })?;
+        sqlx::query!(
+            r#"insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,
+                                         doc_type, doc_id, comment, reversal_of, user_id, device_id)
+               values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date,
+                       'reversal', $6, $7, $6, $8, $9)"#,
+            reversal_id,
+            part_branch,
+            l.party_id,
+            l.kind,
+            -amount,
+            part_id,
+            req.comment.trim(),
+            ctx.user.id,
+            ctx.device_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            if crate::error::is_unique_violation(&e) {
+                AppError::Conflict("запись уже сторнирована".into())
+            } else {
+                AppError::from(e)
+            }
+        })?;
+        // Расчёт между филиалами по этой части снимается встречной записью.
+        sqlx::query!(
+            r#"insert into branch_settlements (id, branch_id, creditor_branch_id, party_id, amount_tyiyn,
+                                               business_date, ledger_id, reversal_of, user_id)
+               select $1, s.branch_id, s.creditor_branch_id, s.party_id, -s.amount_tyiyn,
+                      (now() at time zone 'Asia/Bishkek')::date, $2, s.id, $3
+               from branch_settlements s
+               where s.ledger_id = $4 and s.reversal_of is null
+                 and not exists (select 1 from branch_settlements x where x.reversal_of = s.id)"#,
+            new_id(),
+            reversal_id,
+            ctx.user.id,
+            part_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query!(
         "update parties set balance_tyiyn = $2 where id = $1",
         l.party_id,
@@ -2059,7 +2272,8 @@ pub async fn reverse_ledger_tx(
         KIND,
         "party",
         Some(l.party_id),
-        json!({ "ledger": id, "kind": l.kind, "amount_tyiyn": -l.amount_tyiyn, "comment": req.comment.trim() }),
+        json!({ "ledger": id, "kind": l.kind, "amount_tyiyn": -total, "comment": req.comment.trim(),
+                "parts": parts.len() }),
     )
     .await?;
     let out = LedgerResult {
@@ -2194,22 +2408,30 @@ pub struct DebtRow {
 async fn debts_list(
     State(state): State<AppState>,
     user: CurrentUser,
+    Query(scope): Query<crate::api::branches::BranchQuery>,
 ) -> AppResult<Json<Vec<DebtRow>>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(debts_list_data(&mut conn, user.branch_id).await?))
+    let all = scope.all()?;
+    crate::api::branches::report_scope(&mut conn, &user, all).await?;
+    Ok(Json(debts_list_in(&mut conn, user.branch_id, all).await?))
 }
 
-/// Все должники и кому должны мы — тот же поиск, что `GET /parties?only_debtors=true`, с
+/// Должники и кому должны мы — тот же поиск, что `GET /parties?only_debtors=true`, с
 /// просрочкой в днях и датой последней оплаты (экран «Долги»).
-pub(crate) async fn debts_list_data(
+/// Долги филиала (у кого долг в этом филиале; у клиента виден и общий) или «Все филиалы»
+/// (общий долг с разбивкой по филиалам) — SPEC-33 §3.
+pub(crate) async fn debts_list_in(
     conn: &mut PgConnection,
     branch_id: Uuid,
+    all_branches: bool,
 ) -> AppResult<Vec<DebtRow>> {
     let parties = search_parties(
         &mut *conn,
         branch_id,
         ListQuery {
             only_debtors: true,
+            branch_debtors: !all_branches,
+            all_branches,
             ..ListQuery::default()
         },
     )
@@ -2260,6 +2482,12 @@ pub struct OpenDebt {
     pub left_tyiyn: i64,
     /// Срок этой записи прошёл (есть срок оплаты у клиента).
     pub overdue: bool,
+    /// Филиал долга, когда долг клиента есть в нескольких филиалах (SPEC-33 §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    /// Долг другого филиала: чек открывается только в нём.
+    #[serde(default)]
+    pub other_branch: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -2291,10 +2519,14 @@ async fn open_debts(
                               where l.doc_type = 'sale' and x.doc_type = 'sale_return'
                                 and r.reversal_of = l.doc_id and x.party_id = l.party_id), 0)
                   - coalesce((select sum(-x.amount_tyiyn) from party_ledger x where x.reversal_of = l.id), 0))::bigint as "amount_tyiyn!",
-                    l.comment, s.id as "sale_id?", s.number as "sale_number?"
+                    l.comment, s.id as "sale_id?", s.number as "sale_number?",
+                    l.branch_id, b.name as branch_name
              from party_ledger l
+             join parties p on p.id = l.party_id
+             join branches b on b.id = l.branch_id
              left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
-             where l.party_id = $1 and l.branch_id = $2 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+             where l.party_id = $1 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0
+               and (p.role = 'customer' or l.branch_id = $2)
            ) d where d."amount_tyiyn!" > 0
            order by d.business_date desc, d.created_at desc"#,
         id,
@@ -2302,8 +2534,30 @@ async fn open_debts(
     )
     .fetch_all(&mut *conn)
     .await?;
-    let amounts: Vec<i64> = rows.iter().map(|r| r.amount_tyiyn).collect();
-    let left = crate::domain::debt::unpaid_parts(party.balance_tyiyn, &amounts);
+    // Неоплаченное — по филиалам (SPEC-33 §2): баланс каждого филиала гасит его старые долги.
+    let balances: std::collections::HashMap<Uuid, i64> = sqlx::query!(
+        "select branch_id, balance_tyiyn from party_balances where party_id = $1",
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| (r.branch_id, r.balance_tyiyn))
+    .collect();
+    let mut rest = balances.clone();
+    let left: Vec<i64> = rows
+        .iter()
+        .map(|r| {
+            let bal = rest.entry(r.branch_id).or_insert(0);
+            let part = crate::domain::debt::unpaid_parts(*bal, &[r.amount_tyiyn])
+                .first()
+                .copied()
+                .unwrap_or(0);
+            *bal -= part;
+            part
+        })
+        .collect();
+    let several = balances.len() > 1;
     let dues = debt_dues(
         &mut conn,
         &[(party.id, party.balance_tyiyn, party.due_days)],
@@ -2327,6 +2581,8 @@ async fn open_debts(
             comment: r.comment,
             amount_tyiyn: r.amount_tyiyn,
             left_tyiyn: left,
+            branch_name: several.then(|| r.branch_name.clone()),
+            other_branch: r.branch_id != user.branch_id,
             overdue: party.due_days.is_some_and(|d| {
                 crate::domain::debt::overdue_days(
                     crate::domain::debt::due_date(r.business_date, d),

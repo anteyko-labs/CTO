@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.kind, l.amount_tyiyn, l.created_at, l.reversal_of is not null as \"reversal!\",\n                  s.number as \"sale_number?\", b.name as branch_name\n           from party_ledger l\n           join branches b on b.id = l.branch_id\n           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id\n           where l.party_id = $1 and l.amount_tyiyn <> 0\n           order by l.created_at desc limit $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "reversal!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "branch_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "c7982b6b50f3052e9149b51eb290b7760634e31dd8cf3aab25ab1803eccb0ca8"
+}

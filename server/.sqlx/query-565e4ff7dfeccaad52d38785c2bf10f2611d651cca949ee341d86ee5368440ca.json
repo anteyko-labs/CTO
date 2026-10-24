@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role, active, name from parties where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "565e4ff7dfeccaad52d38785c2bf10f2611d651cca949ee341d86ee5368440ca"
+}

@@ -1347,6 +1347,7 @@ async fn goods(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                     sale_price_tyiyn: None,
                     pour_price_per_l_tyiyn: None,
                     min_stock: Some(qty),
+                    own_price: None,
                 },
             },
             kind: "min_stock",
@@ -1396,6 +1397,7 @@ async fn goods(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                     sale_price_tyiyn: Some(price),
                     pour_price_per_l_tyiyn: None,
                     min_stock: None,
+                    own_price: None,
                 },
             },
             kind: "sale_price",
@@ -1736,13 +1738,9 @@ async fn stale_refs(
         }
     }
     if let Some(id) = party {
-        let p = sqlx::query!(
-            "select name, active from parties where id = $1 and branch_id = $2",
-            id,
-            branch_id
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
+        let p = sqlx::query!("select name, active from parties where id = $1", id)
+            .fetch_optional(&mut *conn)
+            .await?;
         match p {
             Some(p) if p.active => {}
             Some(p) => return Ok(Some(format!("«{}» отключён", one_line(&p.name)))),
@@ -1820,6 +1818,7 @@ mod tests {
                 sale_price_tyiyn: Some(55_000),
                 pour_price_per_l_tyiyn: None,
                 min_stock: None,
+                own_price: None,
             },
         };
         let v = serde_json::to_value(&op).unwrap_or_default();

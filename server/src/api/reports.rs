@@ -4,9 +4,11 @@ use axum::extract::{Query, State};
 use axum::{Json, Router, routing};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::branches::{self, BranchQuery};
 use crate::auth::CurrentUser;
 use crate::domain::money::div_round;
 use crate::error::{AppError, AppResult, invalid};
@@ -475,9 +477,16 @@ async fn profit(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<Period>,
-) -> AppResult<Json<ProfitOut>> {
+    Query(scope): Query<BranchQuery>,
+) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(profit_data(&mut conn, &user, q.from, q.to).await?))
+    let (from, to) = (q.from, q.to);
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&profit_data(c, &u, from, to).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Отчёт о прибыли за период — экран и бот владельца (SPEC-24) берут его отсюда.
@@ -797,14 +806,21 @@ async fn heatmap(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<HeatQuery>,
-) -> AppResult<Json<Vec<HeatCell>>> {
+    Query(scope): Query<BranchQuery>,
+) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
     let range = if q.from.is_some() || q.to.is_some() {
         Some(resolve_period(&mut conn, q.from, q.to).await?)
     } else {
         None
     };
-    Ok(Json(heatmap_data(&mut conn, &user, q.days, range).await?))
+    let days = q.days;
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&heatmap_data(c, &u, days, range).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Продажи по дню недели и часу — экран и бот владельца (SPEC-24).
@@ -854,9 +870,16 @@ async fn dashboard(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<Period>,
-) -> AppResult<Json<Dashboard>> {
+    Query(scope): Query<BranchQuery>,
+) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(dashboard_data(&mut conn, &user, q.from, q.to).await?))
+    let (from, to) = (q.from, q.to);
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&dashboard_data(c, &u, from, to).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Сводка владельца за день или период (без дат — сегодня) — экран и бот владельца (SPEC-24,
@@ -930,7 +953,7 @@ pub(crate) async fn dashboard_data(
         r#"select
              coalesce(sum(balance_tyiyn) filter (where balance_tyiyn > 0), 0)::bigint as "owe_us!",
              coalesce(sum(-balance_tyiyn) filter (where balance_tyiyn < 0), 0)::bigint as "we_owe!"
-           from parties where branch_id = $1"#,
+           from party_balances where branch_id = $1"#,
         branch_id
     )
     .fetch_one(&mut *conn)
@@ -948,7 +971,7 @@ pub(crate) async fn dashboard_data(
     .fetch_one(&mut *conn)
     .await?;
     let (_, stale) = crate::api::receipts::stale_list(&mut *conn, branch_id).await?;
-    let points = crate::api::loyalty::branch_total(&mut *conn, branch_id).await?;
+    let points = crate::api::loyalty::branch_total(&mut *conn).await?;
     let revenue = totals.goods_tyiyn.saturating_add(totals.services_tyiyn);
     let (compare, previous) = if from == to {
         // Сегодня — «к этому часу»; прошедший день — целиком.
@@ -1025,7 +1048,7 @@ pub(crate) async fn dashboard_data(
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct GiftsQuery {
     pub(crate) from: NaiveDate,
     pub(crate) to: NaiveDate,
@@ -1047,9 +1070,16 @@ async fn gifts(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<GiftsQuery>,
-) -> AppResult<Json<Vec<GiftRow>>> {
+    Query(scope): Query<BranchQuery>,
+) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(gifts_data(&mut conn, &user, q).await?))
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            let q = q.clone();
+            Box::pin(async move { branches::to_json(&gifts_data(c, &u, q).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Подарки за период — экран и бот владельца (SPEC-24).
@@ -1087,7 +1117,7 @@ pub(crate) async fn gifts_data(
 
 // ---------- Самые продаваемые товары (SPEC-27 §4) ----------
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct TopQuery {
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
@@ -1131,9 +1161,16 @@ async fn top_products(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<TopQuery>,
-) -> AppResult<Json<TopProducts>> {
+    Query(scope): Query<BranchQuery>,
+) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(top_products_data(&mut conn, &user, q).await?))
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            let q = q.clone();
+            Box::pin(async move { branches::to_json(&top_products_data(c, &u, q).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Самые продаваемые товары за период — экран, карточка клиента и бот владельца.
@@ -1251,10 +1288,15 @@ async fn service_kinds(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<ServiceKindsQuery>,
-) -> AppResult<Json<ServiceKinds>> {
+    Query(scope): Query<BranchQuery>,
+) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
+    let (from, to) = (q.from, q.to);
     Ok(Json(
-        service_kinds_data(&mut conn, &user, q.from, q.to).await?,
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&service_kinds_data(c, &u, from, to).await?) })
+        })
+        .await?,
     ))
 }
 

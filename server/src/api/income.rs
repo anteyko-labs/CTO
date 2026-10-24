@@ -460,10 +460,18 @@ async fn bank(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<BankQuery>,
-) -> AppResult<Json<BankOut>> {
+    Query(scope): Query<crate::api::branches::BranchQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    use crate::api::branches;
     let mut conn = state.pool.acquire().await?;
+    // Счёт — у филиала свой: в «Все филиалы» — счёт по умолчанию каждого филиала.
+    let account = if scope.all()? { None } else { q.account_id };
+    let (from, to) = (q.from, q.to);
     Ok(Json(
-        bank_data(&mut conn, &user, q.from, q.to, q.account_id).await?,
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&bank_data(c, &u, from, to, account).await?) })
+        })
+        .await?,
     ))
 }
 
@@ -914,9 +922,17 @@ async fn income(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<Period>,
-) -> AppResult<Json<IncomeOut>> {
+    Query(scope): Query<crate::api::branches::BranchQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    use crate::api::branches;
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(income_data(&mut conn, &user, q.from, q.to).await?))
+    let (from, to) = (q.from, q.to);
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&income_data(c, &u, from, to).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Отчёт «Куда сколько поступило» — экран и бот владельца (SPEC-27 §6). Администратору — без

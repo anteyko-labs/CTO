@@ -83,11 +83,10 @@ struct Car {
 async fn own_car(conn: &mut PgConnection, c: &Customer, id: Uuid) -> AppResult<Option<Car>> {
     Ok(sqlx::query!(
         r#"select id, plate from party_vehicles
-           where id = $1 and party_id = $2 and branch_id = $3 and active
+           where id = $1 and party_id = $2 and active
            for update"#,
         id,
-        c.party_id,
-        c.branch_id
+        c.party_id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -99,9 +98,8 @@ async fn own_car(conn: &mut PgConnection, c: &Customer, id: Uuid) -> AppResult<O
 
 async fn active_cars(conn: &mut PgConnection, c: &Customer) -> AppResult<i64> {
     Ok(sqlx::query_scalar!(
-        r#"select count(*) as "n!" from party_vehicles where party_id = $1 and branch_id = $2 and active"#,
-        c.party_id,
-        c.branch_id
+        r#"select count(*) as "n!" from party_vehicles where party_id = $1 and active"#,
+        c.party_id
     )
     .fetch_one(&mut *conn)
     .await?)
@@ -302,9 +300,8 @@ async fn cars(
 ) -> AppResult<Reply> {
     let list = sqlx::query!(
         r#"select id, plate, brand, model from party_vehicles
-           where party_id = $1 and branch_id = $2 and active order by plate"#,
-        c.party_id,
-        c.branch_id
+           where party_id = $1 and active order by plate"#,
+        c.party_id
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -372,10 +369,7 @@ async fn card(
         return Ok(Reply::new(NOT_FOUND, Keys::Customer));
     }
     // Выборка по карточке клиента: чужую машину книжка не вернёт.
-    let Some(b) = books(conn, c.branch_id, Some(c.party_id), Some(id))
-        .await?
-        .pop()
-    else {
+    let Some(b) = books(conn, Some(c.party_id), Some(id)).await?.pop() else {
         return Ok(Reply::new(NOT_FOUND, Keys::Customer));
     };
     let name = car_name(&b.plate, &b.brand, &b.model);
@@ -493,11 +487,10 @@ async fn own_by_plate(
 ) -> AppResult<Option<(Uuid, String, bool)>> {
     Ok(sqlx::query!(
         r#"select id, plate, active from party_vehicles
-           where party_id = $1 and branch_id = $2 and plate_norm = $3
+           where party_id = $1 and plate_norm = $2
            order by active desc, created_at desc limit 1
            for update"#,
         c.party_id,
-        c.branch_id,
         norm
     )
     .fetch_optional(&mut *conn)
@@ -546,9 +539,8 @@ const FOUND: &str = "Нашли вашу машину, история замен
 /// Машин клиента всего, вместе с убранными.
 async fn cars_ever(conn: &mut PgConnection, c: &Customer) -> AppResult<i64> {
     Ok(sqlx::query_scalar!(
-        r#"select count(*) as "n!" from party_vehicles where party_id = $1 and branch_id = $2"#,
-        c.party_id,
-        c.branch_id
+        r#"select count(*) as "n!" from party_vehicles where party_id = $1"#,
+        c.party_id
     )
     .fetch_one(&mut *conn)
     .await?)
@@ -566,10 +558,9 @@ async fn find_entered(
     };
     let found = sqlx::query_scalar!(
         r#"select id from party_vehicles
-           where party_id = $1 and branch_id = $2 and plate_norm = $3 and active
+           where party_id = $1 and plate_norm = $2 and active
            order by created_at desc limit 1"#,
         c.party_id,
-        c.branch_id,
         norm
     )
     .fetch_optional(&mut *conn)
@@ -699,9 +690,8 @@ async fn brand_entered(
     // Номер есть у другого клиента точки: новая машина без истории, разбирается владелец.
     let others = sqlx::query_scalar!(
         r#"select distinct p.name from party_vehicles v join parties p on p.id = v.party_id
-           where v.branch_id = $1 and v.plate_norm = $2 and v.party_id <> $3
+           where v.plate_norm = $1 and v.party_id <> $2
            order by p.name"#,
-        c.branch_id,
         norm,
         c.party_id
     )
@@ -882,12 +872,11 @@ async fn delete_note(
     let note = sqlx::query!(
         r#"select n.vehicle_id, v.plate from vehicle_notes n
            join party_vehicles v on v.id = n.vehicle_id
-           where n.id = $1 and n.party_id = $2 and v.party_id = $2 and n.branch_id = $3
+           where n.id = $1 and n.party_id = $2 and v.party_id = $2
              and v.active and n.deleted_at is null
            for update of n"#,
         note_id,
-        c.party_id,
-        c.branch_id
+        c.party_id
     )
     .fetch_optional(&mut *tx)
     .await?;

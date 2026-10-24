@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products set needs_review = false where product_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0438ba9015540c63f5991ee967b756989c641b3f6f590f78d072415c59be079a"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select jsonb_build_object('name', name, 'first_name', first_name, 'last_name', last_name,\n                                     'phone', phone, 'inn', inn, 'comment', comment,\n                                     'kind', kind, 'credit_limit_tyiyn', credit_limit_tyiyn,\n                                     'due_days', due_days, 'active', active,\n                                     'no_purchase_messages', no_purchase_messages) as \"v!\"\n           from parties where id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "caa90c1f20f6a061a6757b84b83106269e992991b41e40733a8d79259302fc2b"
+}

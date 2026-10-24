@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update party_vehicles set active = true\n           where id = $1 and party_id = $2\n           returning plate",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "plate",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c86e1ac3a9f03b61ef191d310d2c18e69d070d9885cdf75f53827473a1ef6509"
+}

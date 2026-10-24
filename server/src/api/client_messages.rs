@@ -996,6 +996,9 @@ pub async fn plan_oil(conn: &mut PgConnection, ch: &Channels) -> AppResult<usize
         .fetch_all(&mut *conn)
         .await?;
     let mut made = 0;
+    // Машины и книжки общие (SPEC-33): книжки читаются один раз, а настройки напоминаний — того
+    // филиала, где машину записали; у машины один такой филиал, поэтому повторов нет.
+    let all_books = crate::api::oil_book::books(conn, None, None).await?;
     for branch_id in branches {
         let settings = load_settings(conn, branch_id).await?;
         let owners = sqlx::query!(
@@ -1009,8 +1012,7 @@ pub async fn plan_oil(conn: &mut PgConnection, ch: &Channels) -> AppResult<usize
         if owners.is_empty() {
             continue;
         }
-        let books = crate::api::oil_book::books(conn, branch_id, None, None).await?;
-        for b in books {
+        for b in &all_books {
             let Some(o) = owners.iter().find(|o| o.vehicle_id == b.vehicle_id) else {
                 continue;
             };
@@ -1020,7 +1022,7 @@ pub async fn plan_oil(conn: &mut PgConnection, ch: &Channels) -> AppResult<usize
                 phone: o.phone.clone(),
                 bot_code: o.bot_code.clone(),
             };
-            if oil_for_vehicle(conn, ch, &settings, branch_id, &owner, &b, today).await? {
+            if oil_for_vehicle(conn, ch, &settings, branch_id, &owner, b, today).await? {
                 made += 1;
             }
         }
@@ -1606,9 +1608,8 @@ async fn test_send(
     let mut conn = state.pool.acquire().await?;
     let p = sqlx::query!(
         r#"select id, kind, name, first_name, phone, bot_code from parties
-           where id = $1 and branch_id = $2 and role = 'customer'"#,
-        req.party_id,
-        branch_id
+           where id = $1 and role = 'customer'"#,
+        req.party_id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -1617,7 +1618,7 @@ async fn test_send(
     let today = today(&mut conn).await?;
     let (route, telegram_text, params, vehicle_id) = match kind {
         Kind::Oil => {
-            let books = crate::api::oil_book::books(&mut conn, branch_id, Some(p.id), None).await?;
+            let books = crate::api::oil_book::books(&mut conn, Some(p.id), None).await?;
             let found = books.iter().find_map(|b| {
                 let dues = slot_dues(b, today, settings.km_per_day);
                 let primary = dues
@@ -1793,14 +1794,13 @@ struct BotLinkOut {
 
 async fn bot_link(
     State(state): State<AppState>,
-    Owner(user): Owner,
+    Owner(_user): Owner,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<BotLinkOut>> {
     let mut conn = state.pool.acquire().await?;
     let code = sqlx::query_scalar!(
-        "select bot_code from parties where id = $1 and branch_id = $2 and role = 'customer'",
-        id,
-        user.branch_id
+        "select bot_code from parties where id = $1 and role = 'customer'",
+        id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -1820,10 +1820,9 @@ async fn reset_bot_link(
     let mut tx = state.pool.begin().await?;
     let row = sqlx::query!(
         r#"update parties set bot_code = replace(gen_random_uuid()::text, '-', '')
-           where id = $1 and branch_id = $2 and role = 'customer'
+           where id = $1 and role = 'customer'
            returning name, bot_code"#,
-        id,
-        ctx.user.branch_id
+        id
     )
     .fetch_optional(&mut *tx)
     .await?

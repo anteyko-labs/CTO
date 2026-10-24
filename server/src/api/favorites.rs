@@ -79,9 +79,8 @@ async fn get_favorites(
             "service" => {
                 if let Some(s) = sqlx::query_as!(
                     FavService,
-                    "select id, name, price_tyiyn, master_fee_tyiyn, active from services where id = $1 and branch_id = $2 and active",
-                    r.id,
-                    user.branch_id
+                    "select id, name, price_tyiyn, master_fee_tyiyn, active from services where id = $1 and active",
+                    r.id
                 )
                 .fetch_optional(&mut *conn)
                 .await?

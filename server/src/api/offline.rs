@@ -225,8 +225,7 @@ async fn snapshot(
     let services = sqlx::query_as!(
         SnapService,
         r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services
-           where branch_id = $1 and active order by name"#,
-        user.branch_id
+           where active order by name"#
     )
     .fetch_all(&mut *conn)
     .await?;

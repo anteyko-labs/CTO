@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into branch_settlements (id, branch_id, creditor_branch_id, party_id, amount_tyiyn,\n                                               business_date, ledger_id, reversal_of, user_id)\n               select $1, s.branch_id, s.creditor_branch_id, s.party_id, -s.amount_tyiyn,\n                      (now() at time zone 'Asia/Bishkek')::date, $2, s.id, $3\n               from branch_settlements s\n               where s.ledger_id = $4 and s.reversal_of is null\n                 and not exists (select 1 from branch_settlements x where x.reversal_of = s.id)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2e85988afdb75cb2a57a5b23d0c1a86239e81275d6265a97299e845e69be1e47"
+}

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.trigger_product_id, p.name as \"trigger_name!\", p.unit as \"trigger_unit!\",\n                  r.min_units, r.active\n           from gift_rules r join products p on p.id = r.trigger_product_id\n           where ($1::uuid is null or r.trigger_product_id = $1)\n           order by p.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "trigger_product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "trigger_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "trigger_unit!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "min_units",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b913b944f0958b167e8738c9db55f3c2945eaa635e4f6255a54ae167705ce83b"
+}

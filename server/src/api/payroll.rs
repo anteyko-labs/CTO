@@ -1720,9 +1720,17 @@ async fn month(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<MonthQuery>,
-) -> AppResult<Json<MonthOut>> {
+    Query(scope): Query<crate::api::branches::BranchQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    use crate::api::branches;
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(month_data(&mut conn, user.branch_id, q.month).await?))
+    let month = q.month;
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move { branches::to_json(&month_data(c, u.branch_id, month).await?) })
+        })
+        .await?,
+    ))
 }
 
 /// Расчёт за месяц, где `month` — любой день месяца: для экрана и для вопросов боту (SPEC-21).

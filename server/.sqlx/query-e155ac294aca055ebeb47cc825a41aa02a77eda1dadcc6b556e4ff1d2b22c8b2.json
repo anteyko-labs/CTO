@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update oil_changes set mileage_km = coalesce($2, mileage_km),\n             mileage_value = coalesce($5, mileage_value),\n             mileage_unit = coalesce($6, mileage_unit),\n             comment = coalesce($3, comment), declined = coalesce($4, declined), updated_at = now()\n           where id = $1 returning vehicle_id, mileage_km, comment, declined",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vehicle_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "mileage_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "declined",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text",
+        "Text",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e155ac294aca055ebeb47cc825a41aa02a77eda1dadcc6b556e4ff1d2b22c8b2"
+}

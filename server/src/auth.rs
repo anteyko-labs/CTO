@@ -49,6 +49,13 @@ pub struct CurrentUser {
 }
 
 impl CurrentUser {
+    /// Тот же пользователь в другом филиале — для отчёта «Все филиалы» владельца (SPEC-33 §3).
+    pub fn in_branch(&self, branch_id: Uuid) -> Self {
+        let mut u = self.clone();
+        u.branch_id = branch_id;
+        u
+    }
+
     pub fn is_owner(&self) -> bool {
         self.role == Role::Owner
     }
@@ -226,6 +233,16 @@ pub struct Ctx {
 pub const TELEGRAM_DEVICE: Uuid = Uuid::from_u128(0x7e1e_6a3d_0000_4000_8000_0000_0000_0b07);
 
 impl Ctx {
+    /// Тот же пользователь и устройство, а запись — в другом филиале (SPEC-33 §2): часть
+    /// погашения, закрывающая долг другого филиала, ложится на филиал долга.
+    pub fn in_branch(&self, branch_id: Uuid) -> Self {
+        Self {
+            user: self.user.in_branch(branch_id),
+            device_id: self.device_id,
+            bot_chat: self.bot_chat,
+        }
+    }
+
     /// Владелец, проводящий операцию кнопкой в чате бота.
     pub fn bot(user: CurrentUser, chat_id: i64) -> Self {
         Self {
@@ -359,14 +376,58 @@ impl FromRequestParts<AppState> for CurrentUser {
         .fetch_optional(&state.pool)
         .await?
         .ok_or(AppError::Unauthorized)?;
+        let role = Role::parse(&row.role)?;
+        let branch_id = request_branch(parts, state, role, row.branch_id).await?;
         Ok(Self {
             id: row.id,
-            branch_id: row.branch_id,
+            branch_id,
             login: row.login,
             full_name: row.full_name,
-            role: Role::parse(&row.role)?,
+            role,
         })
     }
+}
+
+/// Заголовок выбранного филиала (SPEC-33 §1): владелец шлёт его с каждым запросом, выбор помнит
+/// устройство. У администратора заголовок не читается — он всегда в своём филиале.
+pub const BRANCH_HEADER: &str = "x-branch-id";
+
+/// Филиал запроса (SPEC-33, ADR-108). Администратор — только свой филиал (`users.branch_id`),
+/// что бы ни прислал. Владелец — филиал из заголовка `X-Branch-Id`, без заголовка — свой;
+/// неизвестный филиал — 400, чтобы действие не ушло в другой филиал молча. В закрытом филиале
+/// изменения запрещены (история остаётся); открыть его снова можно в «Настройки → Филиалы».
+async fn request_branch(
+    parts: &Parts,
+    state: &AppState,
+    role: Role,
+    home: Uuid,
+) -> AppResult<Uuid> {
+    let picked = match parts.headers.get(BRANCH_HEADER) {
+        Some(v) if role == Role::Owner => Some(
+            v.to_str()
+                .ok()
+                .and_then(|v| Uuid::parse_str(v.trim()).ok())
+                .ok_or_else(|| invalid("филиал не найден — выберите филиал"))?,
+        ),
+        _ => None,
+    };
+    let branch_id = picked.unwrap_or(home);
+    let archived = sqlx::query_scalar!("select archived from branches where id = $1", branch_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| invalid("филиал не найден — выберите филиал"))?;
+    let read = matches!(
+        parts.method,
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    let path = parts.uri.path();
+    let exempt = path.starts_with("/branches") || path.starts_with("/auth/");
+    if archived && !read && !exempt {
+        return Err(AppError::Conflict(
+            "филиал закрыт: изменения в нём недоступны".into(),
+        ));
+    }
+    Ok(branch_id)
 }
 
 impl FromRequestParts<AppState> for Ctx {

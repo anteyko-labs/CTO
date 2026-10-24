@@ -172,14 +172,10 @@ async fn invoices(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<SupplierInvoices>> {
     let mut conn = state.pool.acquire().await?;
-    let role = sqlx::query_scalar!(
-        "select role from parties where id = $1 and branch_id = $2",
-        id,
-        user.branch_id
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let role = sqlx::query_scalar!("select role from parties where id = $1", id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(AppError::NotFound)?;
     if role != "supplier" {
         return Err(invalid("накладные есть только у поставщика"));
     }

@@ -151,13 +151,9 @@ pub async fn record(
         let (product_id, service_id, known) = if l.kind == "service" {
             let name = match l.service_id {
                 Some(id) => {
-                    sqlx::query_scalar!(
-                        "select name from services where id = $1 and branch_id = $2",
-                        id,
-                        ctx.user.branch_id
-                    )
-                    .fetch_optional(&mut *conn)
-                    .await?
+                    sqlx::query_scalar!("select name from services where id = $1", id)
+                        .fetch_optional(&mut *conn)
+                        .await?
                 }
                 None => None,
             };

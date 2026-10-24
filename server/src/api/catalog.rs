@@ -403,6 +403,12 @@ pub struct ProductOut {
     pub archived: bool,
     pub barcodes: Vec<String>,
     pub sale_price_tyiyn: i64,
+    /// Общая цена всех филиалов (SPEC-33 §2); `sale_price_tyiyn` — цена этого филиала.
+    #[serde(default)]
+    pub shared_sale_price_tyiyn: i64,
+    /// У филиала своя цена — общая её не меняет («Вернуть общую»).
+    #[serde(default)]
+    pub own_price: bool,
     pub pour_price_per_l_tyiyn: Option<i64>,
     pub min_stock: i64,
     pub stock_qty: i64,
@@ -474,7 +480,9 @@ async fn query_products_raw(
     let rows = sqlx::query!(
         r#"select p.id, p.category_id, c.kind as category_kind, p.name, p.brand, p.article, p.unit,
                   p.container_ml, p.attrs, p.archived,
-                  coalesce(bp.sale_price_tyiyn, 0) as "sale_price_tyiyn!",
+                  coalesce(bp.sale_price_tyiyn, p.sale_price_tyiyn) as "sale_price_tyiyn!",
+                  p.sale_price_tyiyn as shared_sale_price_tyiyn,
+                  coalesce(bp.own_price, false) as "own_price!",
                   coalesce(bp.min_stock, 0) as "min_stock!",
                   coalesce(bp.stock_qty, 0) as "stock_qty!",
                   coalesce(bp.stock_value_tyiyn, 0) as "stock_value_tyiyn!",
@@ -558,6 +566,8 @@ async fn query_products_raw(
                 archived: r.archived,
                 barcodes: r.barcodes,
                 sale_price_tyiyn: r.sale_price_tyiyn,
+                shared_sale_price_tyiyn: r.shared_sale_price_tyiyn,
+                own_price: r.own_price,
                 pour_price_per_l_tyiyn: pour,
                 min_stock: r.min_stock,
                 stock_qty: r.stock_qty,
@@ -917,7 +927,7 @@ async fn list_products(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(params): Query<HashMap<String, String>>,
-) -> AppResult<Json<ProductList>> {
+) -> AppResult<Json<Value>> {
     let category_id = params
         .get("category_id")
         .filter(|s| !s.is_empty())
@@ -944,9 +954,40 @@ async fn list_products(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(
-        product_list(&mut conn, &user, f, sort, desc, offset).await?,
-    ))
+    let scope = crate::api::branches::BranchQuery {
+        branch: params.get("branch").cloned(),
+    };
+    if !scope.all()? {
+        return Ok(Json(crate::api::branches::to_json(
+            &product_list(&mut conn, &user, f, sort, desc, offset).await?,
+        )?));
+    }
+    // «Все филиалы» (SPEC-33 §3): остатки и суммы по каждому филиалу целиком (до 2000 строк),
+    // строки одного товара складываются; страниц нет.
+    let mut parts = Vec::new();
+    for b in crate::api::branches::report_scope(&mut conn, &user, true).await? {
+        let one = ProductFilter {
+            q: f.q.clone(),
+            category_id: f.category_id,
+            attrs: f.attrs.clone(),
+            include_archived: f.include_archived,
+            limit: 2000,
+            stock: f.stock,
+            ..Default::default()
+        };
+        let list = product_list(&mut conn, &user.in_branch(b.id), one, sort, desc, 0).await?;
+        parts.push((b, crate::api::branches::to_json(&list)?));
+    }
+    let mut out = crate::api::branches::merge_reports(parts);
+    // В разбивке по филиалам — только итоги: строки уже сложены выше.
+    if let Some(list) = out.get_mut("branches").and_then(Value::as_array_mut) {
+        for b in list {
+            if let Some(r) = b.get_mut("report").and_then(Value::as_object_mut) {
+                r.remove("items");
+            }
+        }
+    }
+    Ok(Json(out))
 }
 
 async fn get_product(
@@ -1179,9 +1220,12 @@ pub async fn create_product_tx(
     }
     let attrs = clean_attrs(req.attrs, &defs)?;
     let id = new_id();
+    // Цена новой карточки — общая для всех филиалов (SPEC-33 §2): строка остатка заводится
+    // каждому филиалу, минимальный остаток — только этому.
     sqlx::query!(
-        r#"insert into products (id, category_id, name, brand, article, unit, container_ml, attrs)
-           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+        r#"insert into products (id, category_id, name, brand, article, unit, container_ml, attrs,
+                                 sale_price_tyiyn)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
         id,
         req.category_id,
         name,
@@ -1189,13 +1233,14 @@ pub async fn create_product_tx(
         req.article.trim(),
         unit,
         container_ml,
-        attrs
+        attrs,
+        req.sale_price_tyiyn
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
         r#"insert into branch_products (branch_id, product_id, sale_price_tyiyn, min_stock)
-           values ($1, $2, $3, $4)"#,
+           select b.id, $2, $3, case when b.id = $1 then $4::bigint else 0::bigint end from branches b"#,
         ctx.user.branch_id,
         id,
         req.sale_price_tyiyn,
@@ -1413,6 +1458,104 @@ pub struct PricesReq {
     pub sale_price_tyiyn: Option<i64>,
     pub pour_price_per_l_tyiyn: Option<i64>,
     pub min_stock: Option<i64>,
+    /// Цена филиала (SPEC-33 §2): `true` — своя цена этого филиала, `false` — «Вернуть общую».
+    /// Без поля цена меняется там, где она задана: своя — у филиала, иначе общая.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_price: Option<bool>,
+}
+
+/// Чья цена поменялась (SPEC-33 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PriceScope {
+    /// Общая цена — во всех филиалах без своей цены.
+    Shared,
+    /// Своя цена этого филиала.
+    Branch,
+}
+
+impl PriceScope {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Branch => "branch",
+        }
+    }
+}
+
+/// Ставит цену продажи товара (SPEC-33 §2): `own = Some(true)` — своя цена филиала,
+/// `Some(false)` — филиал возвращается к общей (и общая становится `sale`, если она прислана),
+/// `None` — там, где цена задана сейчас: своя у филиала — у него, иначе общая. Общая цена
+/// переписывает действующую цену во всех филиалах без своей. Возвращает, чья цена изменилась.
+pub(crate) async fn put_sale_price(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    product_id: Uuid,
+    sale: Option<i64>,
+    own: Option<bool>,
+) -> AppResult<PriceScope> {
+    sqlx::query!(
+        "insert into branch_products (branch_id, product_id) values ($1, $2) on conflict do nothing",
+        branch_id,
+        product_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    let cur = sqlx::query!(
+        r#"select bp.own_price, bp.sale_price_tyiyn, p.sale_price_tyiyn as shared
+           from branch_products bp join products p on p.id = bp.product_id
+           where bp.branch_id = $1 and bp.product_id = $2 for update of p"#,
+        branch_id,
+        product_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let scope = match own {
+        Some(true) => PriceScope::Branch,
+        Some(false) => PriceScope::Shared,
+        None if cur.own_price => PriceScope::Branch,
+        None => PriceScope::Shared,
+    };
+    match scope {
+        PriceScope::Branch => {
+            sqlx::query!(
+                r#"update branch_products set own_price = true,
+                                              sale_price_tyiyn = coalesce($3, sale_price_tyiyn)
+                   where branch_id = $1 and product_id = $2"#,
+                branch_id,
+                product_id,
+                sale
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+        PriceScope::Shared => {
+            let shared = sale.unwrap_or(cur.shared);
+            sqlx::query!(
+                "update products set sale_price_tyiyn = $2 where id = $1",
+                product_id,
+                shared
+            )
+            .execute(&mut *conn)
+            .await?;
+            if own == Some(false) {
+                sqlx::query!(
+                    "update branch_products set own_price = false where branch_id = $1 and product_id = $2",
+                    branch_id,
+                    product_id
+                )
+                .execute(&mut *conn)
+                .await?;
+            }
+            sqlx::query!(
+                "update branch_products set sale_price_tyiyn = $2 where product_id = $1 and not own_price",
+                product_id,
+                shared
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    Ok(scope)
 }
 
 async fn update_prices(
@@ -1466,24 +1609,46 @@ pub async fn update_prices_tx(
     if let Some(v) = req.sale_price_tyiyn {
         ops::check_amount(v)?;
     }
+    if req.own_price.is_some() && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     ops::lock_pool(&mut *conn, ctx.user.branch_id, id).await?;
     let old = sqlx::query!(
-        "select sale_price_tyiyn, min_stock from branch_products where branch_id = $1 and product_id = $2",
+        "select sale_price_tyiyn, min_stock, own_price from branch_products where branch_id = $1 and product_id = $2",
         ctx.user.branch_id,
         id
     )
     .fetch_one(&mut *conn)
     .await?;
     sqlx::query!(
-        r#"update branch_products set sale_price_tyiyn = coalesce($3, sale_price_tyiyn),
-             min_stock = coalesce($4, min_stock)
+        r#"update branch_products set min_stock = coalesce($3, min_stock)
            where branch_id = $1 and product_id = $2"#,
         ctx.user.branch_id,
         id,
-        req.sale_price_tyiyn,
         req.min_stock
     )
     .execute(&mut *conn)
+    .await?;
+    let scope = if req.sale_price_tyiyn.is_some() || req.own_price.is_some() {
+        Some(
+            put_sale_price(
+                &mut *conn,
+                ctx.user.branch_id,
+                id,
+                req.sale_price_tyiyn,
+                req.own_price,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let new = sqlx::query!(
+        "select sale_price_tyiyn, own_price from branch_products where branch_id = $1 and product_id = $2",
+        ctx.user.branch_id,
+        id
+    )
+    .fetch_one(&mut *conn)
     .await?;
     let name = sqlx::query_scalar!("select name from products where id = $1", id)
         .fetch_one(&mut *conn)
@@ -1492,9 +1657,8 @@ pub async fn update_prices_tx(
     let pour = |sale: i64| pour_price_per_l(&product.unit, product.container_ml, sale);
     // Цена не менялась (правили только минимальный остаток) — запись в журнале без уведомления
     // «Изменена цена» (SPEC-13, проверка 20.10.2026).
-    let price_changed = req
-        .sale_price_tyiyn
-        .is_some_and(|v| v != old.sale_price_tyiyn);
+    let price_changed =
+        new.sale_price_tyiyn != old.sale_price_tyiyn || new.own_price != old.own_price;
     ops::audit(
         &mut *conn,
         ctx,
@@ -1504,9 +1668,13 @@ pub async fn update_prices_tx(
         json!({
             "name": name,
             "old_sale_price_tyiyn": old.sale_price_tyiyn,
-            "sale_price_tyiyn": req.sale_price_tyiyn.unwrap_or(old.sale_price_tyiyn),
-            "old": { "sale": old.sale_price_tyiyn, "pour": pour(old.sale_price_tyiyn), "min_stock": old.min_stock },
-            "new": { "sale": req.sale_price_tyiyn, "pour": req.sale_price_tyiyn.and_then(pour), "min_stock": req.min_stock },
+            "sale_price_tyiyn": new.sale_price_tyiyn,
+            "old": { "sale": old.sale_price_tyiyn, "pour": pour(old.sale_price_tyiyn), "min_stock": old.min_stock,
+                     "own_price": old.own_price },
+            "new": { "sale": req.sale_price_tyiyn.map(|_| new.sale_price_tyiyn), "pour": req.sale_price_tyiyn.and_then(|_| pour(new.sale_price_tyiyn)),
+                     "min_stock": req.min_stock, "own_price": new.own_price },
+            // Общая цена — во всех филиалах без своей, своя — только здесь (SPEC-33 §2).
+            "price_scope": scope.map(PriceScope::as_str),
         }),
     )
     .await?;
@@ -1547,14 +1715,8 @@ pub(crate) async fn set_price_from_receipt(
     if p.sale_price_tyiyn == sale {
         return Ok(false);
     }
-    sqlx::query!(
-        "update branch_products set sale_price_tyiyn = $3 where branch_id = $1 and product_id = $2",
-        ctx.user.branch_id,
-        id,
-        sale
-    )
-    .execute(&mut *conn)
-    .await?;
+    // Своя цена филиала — меняется только она, иначе общая во всех филиалах (SPEC-33 §2).
+    let scope = put_sale_price(&mut *conn, ctx.user.branch_id, id, Some(sale), None).await?;
     let pour = |v: i64| pour_price_per_l(&p.unit, p.container_ml, v);
     let mut data = json!({
         "name": p.name,
@@ -1563,6 +1725,7 @@ pub(crate) async fn set_price_from_receipt(
         "old": { "sale": p.sale_price_tyiyn, "pour": pour(p.sale_price_tyiyn) },
         "new": { "sale": sale, "pour": pour(sale) },
         "markup_permille": markup_permille,
+        "price_scope": scope.as_str(),
     });
     let (id_key, number_key, doc_id, number) = match doc {
         PriceDoc::Receipt(d, n) => ("receipt_id", "receipt_number", d, n),
@@ -1714,7 +1877,10 @@ async fn merge_product(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
-    let branch_id = ctx.user.branch_id;
+    // Каталог общий (SPEC-33): остатки дубля переезжают в каждом филиале.
+    let branches = sqlx::query_scalar!("select id from branches order by id")
+        .fetch_all(&mut *tx)
+        .await?;
     // Обе карточки блокируются в порядке id до проверки архива: встречные объединения
     // не ждут друг друга вечно, а товар, который уже ушёл в архив, не примет остаток.
     let mut both = [id, req.into_product_id];
@@ -1729,9 +1895,8 @@ async fn merge_product(
     // товаром, пришедшим после пересчёта, и записала бы излишек из ничего.
     let in_revision = sqlx::query_scalar!(
         r#"select distinct r.number from revisions r join revision_lines l on l.revision_id = r.id
-           where r.branch_id = $1 and r.status = 'draft' and l.product_id = any($2)
+           where r.status = 'draft' and l.product_id = any($1)
            order by r.number"#,
-        branch_id,
         &both[..]
     )
     .fetch_all(&mut *tx)
@@ -1768,35 +1933,40 @@ async fn merge_product(
     }
 
     // Остаток и его стоимость переезжают движениями: история склада остаётся сходящейся.
-    ops::lock_pool(&mut tx, branch_id, both[0]).await?;
-    ops::lock_pool(&mut tx, branch_id, both[1]).await?;
-    let pool = ops::lock_pool(&mut tx, branch_id, id).await?;
-    let (qty, value) = (pool.qty, pool.value);
-    if qty != 0 || value != 0 {
-        ops::apply_movement(
-            &mut tx,
-            Movement {
-                branch_id,
-                product_id: id,
-                qty_delta: -qty,
-                value_delta: -value,
-                doc_type: "merge",
-                doc_id: req.into_product_id,
-            },
-        )
-        .await?;
-        ops::apply_movement(
-            &mut tx,
-            Movement {
-                branch_id,
-                product_id: req.into_product_id,
-                qty_delta: qty,
-                value_delta: value,
-                doc_type: "merge",
-                doc_id: id,
-            },
-        )
-        .await?;
+    let (mut qty, mut value) = (0i64, 0i64);
+    for &branch_id in &branches {
+        ops::lock_pool(&mut tx, branch_id, both[0]).await?;
+        ops::lock_pool(&mut tx, branch_id, both[1]).await?;
+        let pool = ops::lock_pool(&mut tx, branch_id, id).await?;
+        let (bq, bv) = (pool.qty, pool.value);
+        qty = qty.saturating_add(bq);
+        value = value.saturating_add(bv);
+        if bq != 0 || bv != 0 {
+            ops::apply_movement(
+                &mut tx,
+                Movement {
+                    branch_id,
+                    product_id: id,
+                    qty_delta: -bq,
+                    value_delta: -bv,
+                    doc_type: "merge",
+                    doc_id: req.into_product_id,
+                },
+            )
+            .await?;
+            ops::apply_movement(
+                &mut tx,
+                Movement {
+                    branch_id,
+                    product_id: req.into_product_id,
+                    qty_delta: bq,
+                    value_delta: bv,
+                    doc_type: "merge",
+                    doc_id: id,
+                },
+            )
+            .await?;
+        }
     }
     let barcodes = sqlx::query_scalar!(
         "update product_barcodes set product_id = $2 where product_id = $1 returning code",
@@ -1834,7 +2004,7 @@ async fn merge_product(
     sqlx::query!(
         r#"update gift_rules set trigger_product_id = $2
            where trigger_product_id = $1
-             and not exists (select 1 from gift_rules x where x.branch_id = gift_rules.branch_id and x.trigger_product_id = $2)"#,
+             and not exists (select 1 from gift_rules x where x.trigger_product_id = $2)"#,
         id,
         req.into_product_id
     )
@@ -1867,17 +2037,15 @@ async fn merge_product(
         r#"update branch_products m
            set last_cost_qty = d.last_cost_qty, last_cost_tyiyn = d.last_cost_tyiyn
            from branch_products d
-           where m.branch_id = $1 and m.product_id = $2 and d.branch_id = $1 and d.product_id = $3
+           where m.product_id = $1 and d.branch_id = m.branch_id and d.product_id = $2
              and m.last_cost_qty = 0 and d.last_cost_qty > 0"#,
-        branch_id,
         req.into_product_id,
         id
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
-        "update branch_products set needs_review = false where branch_id = $1 and product_id = $2",
-        branch_id,
+        "update branch_products set needs_review = false where product_id = $1",
         id
     )
     .execute(&mut *tx)

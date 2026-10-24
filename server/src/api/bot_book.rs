@@ -145,14 +145,11 @@ pub fn full_book(b: &VehicleBook, x: &HashMap<Uuid, Extras>, head: String) -> St
 /// Книжка клиента — ответ бота по умолчанию: баллы и книжки машин. До трёх машин — каждая
 /// целиком; больше — последняя замена каждой (до 20 машин), вся история — в карточке машины.
 pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
-    let branch_id = sqlx::query_scalar!("select branch_id from parties where id = $1", party_id)
-        .fetch_one(&mut *conn)
-        .await?;
     let bonus = format!(
         "⭐ Баллов: {} — подробнее кнопкой «⭐ Баллы»",
         crate::api::telegram::points(crate::api::loyalty::balance(conn, party_id).await?)
     );
-    let list = books(conn, branch_id, Some(party_id), None).await?;
+    let list = books(conn, Some(party_id), None).await?;
     if list.is_empty() {
         return Ok(format!(
             "{bonus}\n\nМашин у вас пока не записано — назовите госномер кассиру при замене."

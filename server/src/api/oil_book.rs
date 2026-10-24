@@ -309,29 +309,27 @@ async fn insert_lines(
 /// Книжки машин: одной машины или всех машин клиента. Полностью возвращённые чеки скрыты.
 pub async fn books(
     conn: &mut PgConnection,
-    branch_id: Uuid,
     party_id: Option<Uuid>,
     vehicle_id: Option<Uuid>,
 ) -> AppResult<Vec<VehicleBook>> {
-    books_with_removed(conn, branch_id, party_id, vehicle_id, false).await
+    books_with_removed(conn, party_id, vehicle_id, false).await
 }
 
 /// То же, а с `removed` — и машины, которые клиент убрал: точка видит их историю и может
 /// вернуть машину (ADR-062). Убранные идут после действующих.
 pub async fn books_with_removed(
     conn: &mut PgConnection,
-    branch_id: Uuid,
     party_id: Option<Uuid>,
     vehicle_id: Option<Uuid>,
     removed: bool,
 ) -> AppResult<Vec<VehicleBook>> {
+    // Машины и книжка общие для филиалов (SPEC-33): без отбора по филиалу.
     let vehicles = sqlx::query!(
         r#"select id, plate, brand, model, comment, active, mileage_unit
            from party_vehicles
-           where branch_id = $1 and ($2::uuid is null or party_id = $2) and ($3::uuid is null or id = $3)
-             and (active or $3::uuid is not null or $4)
+           where ($1::uuid is null or party_id = $1) and ($2::uuid is null or id = $2)
+             and (active or $2::uuid is not null or $3)
            order by active desc, plate"#,
-        branch_id,
         party_id,
         vehicle_id,
         removed
@@ -604,7 +602,7 @@ async fn vehicle_book(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<VehicleBook>> {
     let mut conn = state.pool.acquire().await?;
-    let mut list = books(&mut conn, user.branch_id, None, Some(id)).await?;
+    let mut list = books(&mut conn, None, Some(id)).await?;
     if !user.is_owner() {
         hide_deleted_notes(&mut list);
     }
@@ -625,7 +623,7 @@ async fn party_book(
     Query(q): Query<PartyBookQuery>,
 ) -> AppResult<Json<Vec<VehicleBook>>> {
     let mut conn = state.pool.acquire().await?;
-    let mut list = books_with_removed(&mut conn, user.branch_id, Some(id), None, q.removed).await?;
+    let mut list = books_with_removed(&mut conn, Some(id), None, q.removed).await?;
     if !user.is_owner() {
         hide_deleted_notes(&mut list);
     }
@@ -671,7 +669,7 @@ async fn settings(
     // Книжка машины клиента — право администратора `clients` (ADR-097).
     crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     set_interval_tx(&mut tx, &ctx, id, &req.slot, interval, "card").await?;
-    let out = books(&mut tx, ctx.user.branch_id, None, Some(id))
+    let out = books(&mut tx, None, Some(id))
         .await?
         .pop()
         .ok_or(AppError::NotFound)?;
@@ -697,9 +695,8 @@ pub async fn set_interval_tx(
         check_interval(km, days)?;
     }
     let plate = sqlx::query_scalar!(
-        "select plate from party_vehicles where id = $1 and branch_id = $2 for update",
-        id,
-        ctx.user.branch_id
+        "select plate from party_vehicles where id = $1 for update",
+        id
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -897,9 +894,8 @@ async fn manual(
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     let v = sqlx::query!(
-        "select party_id, plate, active, mileage_unit from party_vehicles where id = $1 and branch_id = $2",
-        id,
-        ctx.user.branch_id
+        "select party_id, plate, active, mileage_unit from party_vehicles where id = $1",
+        id
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -954,7 +950,7 @@ async fn manual(
         }),
     )
     .await?;
-    let out = books(&mut tx, ctx.user.branch_id, None, Some(id))
+    let out = books(&mut tx, None, Some(id))
         .await?
         .pop()
         .ok_or(AppError::NotFound)?;
@@ -988,9 +984,8 @@ async fn edit(
     let before = sqlx::query!(
         r#"select o.mileage_km, o.comment, o.declined, v.mileage_unit as car_unit
            from oil_changes o join party_vehicles v on v.id = o.vehicle_id
-           where o.id = $1 and o.branch_id = $2 for update of o"#,
-        id,
-        ctx.user.branch_id
+           where o.id = $1 for update of o"#,
+        id
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -1002,13 +997,12 @@ async fn edit(
         &before.car_unit,
     )?;
     let r = sqlx::query!(
-        r#"update oil_changes set mileage_km = coalesce($3, mileage_km),
-             mileage_value = coalesce($6, mileage_value),
-             mileage_unit = coalesce($7, mileage_unit),
-             comment = coalesce($4, comment), declined = coalesce($5, declined), updated_at = now()
-           where id = $1 and branch_id = $2 returning vehicle_id, mileage_km, comment, declined"#,
+        r#"update oil_changes set mileage_km = coalesce($2, mileage_km),
+             mileage_value = coalesce($5, mileage_value),
+             mileage_unit = coalesce($6, mileage_unit),
+             comment = coalesce($3, comment), declined = coalesce($4, declined), updated_at = now()
+           where id = $1 returning vehicle_id, mileage_km, comment, declined"#,
         id,
-        ctx.user.branch_id,
         mileage.as_ref().map(|m| m.km),
         req.comment.as_deref().map(str::trim),
         req.declined.as_deref().map(str::trim),
@@ -1035,7 +1029,7 @@ async fn edit(
         }),
     )
     .await?;
-    let out = books(&mut tx, ctx.user.branch_id, None, Some(r.vehicle_id))
+    let out = books(&mut tx, None, Some(r.vehicle_id))
         .await?
         .pop()
         .ok_or(AppError::NotFound)?;

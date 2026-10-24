@@ -47,15 +47,17 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
         .fetch_one(&mut *conn)
         .await?;
     let party = crate::api::parties::load_party(&mut *conn, branch_id, party_id).await?;
+    // Клиент общий: долг и записи — по всем филиалам, у записи — филиал (SPEC-33 §2).
+    let several = crate::api::branches::several(&mut *conn).await?;
     let entries = sqlx::query!(
         r#"select l.kind, l.amount_tyiyn, l.created_at, l.reversal_of is not null as "reversal!",
-                  s.number as "sale_number?"
+                  s.number as "sale_number?", b.name as branch_name
            from party_ledger l
+           join branches b on b.id = l.branch_id
            left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
-           where l.party_id = $1 and l.branch_id = $2 and l.amount_tyiyn <> 0
-           order by l.created_at desc limit $3"#,
+           where l.party_id = $1 and l.amount_tyiyn <> 0
+           order by l.created_at desc limit $2"#,
         party_id,
-        branch_id,
         LAST_ENTRIES
     )
     .fetch_all(&mut *conn)
@@ -63,6 +65,17 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
     let mut lines = Vec::new();
     if party.balance_tyiyn > 0 {
         lines.push(format!("💳 Ваш долг: {}", format_som(party.balance_tyiyn)));
+        // Долг в нескольких филиалах — по филиалам; гасить можно в любом.
+        if let Some(list) = party.branch_balances.as_array().filter(|l| l.len() > 1) {
+            for b in list {
+                let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let v = b
+                    .get("balance_tyiyn")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
+                lines.push(format!("  • {name}: {}", format_som(v)));
+            }
+        }
         let dues = crate::api::parties::debt_dues(
             &mut *conn,
             &[(party.id, party.balance_tyiyn, party.due_days)],
@@ -109,6 +122,11 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
                 .sale_number
                 .map(|n| format!(" (чек № {n})"))
                 .unwrap_or_default();
+            let check = if several {
+                format!("{check}, {}", e.branch_name)
+            } else {
+                check
+            };
             lines.push(format!(
                 "{} — {} {}{check}",
                 local_day(e.created_at),

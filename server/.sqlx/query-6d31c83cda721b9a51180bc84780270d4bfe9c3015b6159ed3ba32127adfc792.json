@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select sale_price_tyiyn, min_stock, own_price from branch_products where branch_id = $1 and product_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sale_price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "min_stock",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "own_price",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6d31c83cda721b9a51180bc84780270d4bfe9c3015b6159ed3ba32127adfc792"
+}
