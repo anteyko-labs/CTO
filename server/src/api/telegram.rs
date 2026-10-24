@@ -847,6 +847,10 @@ async fn message(
             CustomerLink::Dropped => dropped.push(RESHARE),
         }
     }
+    // Ссылка на бот с кодом клиента (SPEC-32 §2): «Старт» сразу привязывает чат к клиенту.
+    if !owner && let Some(code) = start_code(text) {
+        return link_by_code(conn, chat_id, code, employee.is_some()).await;
+    }
     // Код привязки владельца из такого чата всё равно проверяем.
     if !dropped.is_empty() && !text.trim().starts_with("/start") {
         return Ok(Reply::new(
@@ -1135,6 +1139,74 @@ async fn link_contact(
     }
 }
 
+/// Код клиента из «/start <код>» ссылки на бот: 32 шестнадцатеричных знака (SPEC-32 §2). Шесть
+/// цифр — код владельца, это не он.
+pub fn start_code(text: &str) -> Option<&str> {
+    let mut words = text.split_whitespace();
+    if words.next()? != "/start" {
+        return None;
+    }
+    let code = words.next()?;
+    (code.len() == 32 && code.bytes().all(|b| b.is_ascii_hexdigit())).then_some(code)
+}
+
+const OLD_LINK: &str = "Ссылка устарела. Нажмите «📱 Поделиться номером» внизу — нужен тот номер, что записан у нас на кассе.";
+
+/// Привязка чата клиента по коду из ссылки — без телефона. Номер из карточки запоминается как
+/// номер подключения: сменят номер в карточке — чат отвяжется, как при подключении номером.
+async fn link_by_code(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    code: &str,
+    employee: bool,
+) -> AppResult<Reply> {
+    let found = sqlx::query!(
+        r#"select id, name, phone, branch_id from parties
+           where bot_code = $1 and role = 'customer' and active"#,
+        code
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(p) = found else {
+        return Ok(Reply::new(
+            OLD_LINK,
+            if employee {
+                Keys::Employee
+            } else {
+                Keys::Contact
+            },
+        ));
+    };
+    let mut tx = conn.begin().await?;
+    sqlx::query!(
+        r#"insert into telegram_customers (chat_id, party_id, phone) values ($1, $2, $3)
+           on conflict (chat_id) do update set party_id = excluded.party_id, phone = excluded.phone, linked_at = now()"#,
+        chat_id,
+        p.id,
+        p.phone
+    )
+    .execute(&mut *tx)
+    .await?;
+    bot_journal(
+        &mut tx,
+        p.branch_id,
+        "telegram.customer_link",
+        "party",
+        Some(p.id),
+        json!({ "chat": chat_id, "via": "link" }),
+    )
+    .await?;
+    tx.commit().await?;
+    let book = customer_book(conn, p.id).await?;
+    Ok(Reply::new(
+        format!(
+            "{}, вы подключены ✅\n\n• Напомним о замене масла.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
+            p.name
+        ),
+        section_keys(true, employee),
+    ))
+}
+
 /// Что дала сверка номера с карточками клиентов.
 enum CustomerMatch {
     NotFound,
@@ -1374,6 +1446,7 @@ pub struct Reminder {
 fn slot_genitive(slot: &str) -> &'static str {
     match slot {
         "oil" => "масла",
+        "gear_oil" => "масла в коробке",
         "oil_filter" => "масляного фильтра",
         "air_filter" => "воздушного фильтра",
         "cabin_filter" => "салонного фильтра",
@@ -1413,7 +1486,13 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
             // Каждая строка книжки — своё напоминание; подошедшие в один день — одним сообщением.
             let mut groups: Vec<(NaiveDate, i32, Vec<&crate::api::oil_book::SlotNext>)> =
                 Vec::new();
+            // Строки с целевым пробегом у машины с пробегом в книжке напоминаются по среднему
+            // пробегу (SPEC-32 §3) — модулем сообщений клиентам; здесь — по дням, как раньше.
+            let by_mileage = crate::api::client_messages::has_mileage(&b);
             for n in &b.slots {
+                if by_mileage && n.next_km.is_some() {
+                    continue;
+                }
                 let Some(due) = n.next_date else { continue };
                 let left = (due - today).num_days();
                 let days_before = match left {
@@ -3473,12 +3552,16 @@ async fn remember_username(pool: PgPool, api: Api) {
     }
 }
 
-/// Запуск бота: если ключ задан — два фоновых цикла. Без интернета они ждут и пробуют снова.
-/// `assistant` — вопросы владельца текстом (SPEC-21); `None` — бот ровно по SPEC-18.
-pub fn spawn(pool: PgPool, token: String, assistant: Option<Assistant>) {
+/// Подключение к Телеграму по ключу бота; адрес API — `TELEGRAM_API_BASE` (для проверок).
+pub fn api_from_env(token: &str) -> Api {
     let base =
         std::env::var("TELEGRAM_API_BASE").unwrap_or_else(|_| "https://api.telegram.org".into());
-    let api = Api::new(&base, &token);
+    Api::new(&base, token)
+}
+
+/// Запуск бота: если ключ задан — два фоновых цикла. Без интернета они ждут и пробуют снова.
+/// `assistant` — вопросы владельца текстом (SPEC-21); `None` — бот ровно по SPEC-18.
+pub fn spawn(pool: PgPool, api: Api, assistant: Option<Assistant>) {
     tokio::spawn(remember_username(pool.clone(), api.clone()));
     tokio::spawn(commands_loop(pool.clone(), api.clone(), assistant));
     tokio::spawn(notify_loop(pool, api));

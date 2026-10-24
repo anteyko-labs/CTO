@@ -105,10 +105,17 @@ fn default_book_slot(kind: &str) -> &'static str {
 /// Строка книжки новой категории фильтров по её названию: «Воздушные фильтры» — воздушный,
 /// а не масляный (проверка 20.10.2026). Без подсказки в названии — `None` (по виду категории).
 fn book_slot_by_name(kind: &str, name: &str) -> Option<&'static str> {
+    let n = name.to_lowercase();
+    // Трансмиссионное масло — своя строка «Масло в коробке» (SPEC-32).
+    if kind == "oil" {
+        return ["трансмис", "короб", "акпп"]
+            .iter()
+            .any(|w| n.contains(w))
+            .then_some("gear_oil");
+    }
     if kind != "filter" {
         return None;
     }
-    let n = name.to_lowercase();
     [
         ("воздуш", "air_filter"),
         ("салон", "cabin_filter"),
@@ -1932,6 +1939,12 @@ mod book_slot_tests {
         );
         assert_eq!(book_slot_by_name("filter", "Фильтры"), None);
         assert_eq!(book_slot_by_name("oil", "Масло воздушное"), None);
+        assert_eq!(
+            book_slot_by_name("oil", "Трансмиссионные масла"),
+            Some("gear_oil")
+        );
+        assert_eq!(book_slot_by_name("oil", "Масло АКПП"), Some("gear_oil"));
+        assert_eq!(book_slot_by_name("oil", "Моторные масла"), None);
         assert_eq!(default_book_slot("filter"), "oil_filter");
     }
 }

@@ -70,8 +70,23 @@ async fn run() -> Result<(), String> {
         state.telegram_bot = true;
         // Вопросы владельца текстом — только если задан и ключ сервиса разбора (SPEC-21).
         state.assistant_daily_limit = assistant.as_ref().map(|a| a.daily_limit());
-        avtodom_server::api::telegram::spawn(pool, token, assistant);
+        let api = avtodom_server::api::telegram::api_from_env(&token);
+        state.telegram_api = Some(api.clone());
+        avtodom_server::api::telegram::spawn(pool.clone(), api, assistant);
     }
+    // Сообщения клиентам (SPEC-32): Телеграм и WhatsApp Business Platform.
+    if let (Some(token), Some(phone_id)) = (
+        config.whatsapp_token.clone(),
+        config.whatsapp_phone_id.clone(),
+    ) {
+        state.whatsapp = Some(avtodom_server::api::client_messages::WhatsApp::new(
+            token,
+            phone_id,
+            config.whatsapp_url.clone(),
+        ));
+    }
+    state.public_url = config.public_url.clone();
+    avtodom_server::api::client_messages::spawn(pool, &state);
     let web_dir = PathBuf::from(&config.web_dir);
     let web = web_dir
         .join("index.html")

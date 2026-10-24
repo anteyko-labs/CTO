@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update client_messages set status = 'sent', sent_at = now(), external_id = $2,\n                          error = '', attempts = attempts + 1\n                   where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "339d408e6828ffe992aa43b3a81a82e1f48ad15e7280ba4d365049a68e926b20"
+}

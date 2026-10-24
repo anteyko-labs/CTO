@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.kind, s.total_tyiyn, (s.created_at at time zone 'Asia/Bishkek')::date as \"day!\",\n                          c.full_name as \"driver?\", v.brand as \"brand?\", v.model as \"model?\", v.plate as \"plate?\"\n                   from sales s\n                   left join party_contacts c on c.id = s.contact_id\n                   left join party_vehicles v on v.id = s.vehicle_id\n                   where s.party_id = $1 order by s.created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 4,
+        "name": "driver?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "brand?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "model?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "plate?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c08b3cf076146838ce85af150edb2301394b9c355a174e28f2b00ba882e50429"
+}

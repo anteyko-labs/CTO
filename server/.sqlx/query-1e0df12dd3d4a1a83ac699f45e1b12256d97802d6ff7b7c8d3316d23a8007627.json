@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, channel, recipient, text, template, language, params, attempts, status\n               from client_messages where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "channel",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "recipient",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "template",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "language",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "params",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1e0df12dd3d4a1a83ac699f45e1b12256d97802d6ff7b7c8d3316d23a8007627"
+}

@@ -1,37 +1,41 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select c.full_name, c.phone, c.position, c.inn, c.active from party_contacts c\n           join parties p on p.id = c.party_id\n           where c.id = $1 and c.party_id = $2 and p.branch_id = $3\n           for update of c",
+  "query": "select id, kind, name, first_name, phone, bot_code from parties\n           where id = $1 and branch_id = $2 and role = 'customer'",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "full_name",
-        "type_info": "Text"
+        "name": "id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 1,
-        "name": "phone",
+        "name": "kind",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "position",
+        "name": "name",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "inn",
+        "name": "first_name",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "active",
-        "type_info": "Bool"
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "bot_code",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid",
         "Uuid"
       ]
@@ -41,8 +45,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "f27075a9a18ff5baae82c497f5b900b26284295d0a2dd42a709e96fbd16afd32"
+  "hash": "6d59e06b58f058edec80759bdb4741ab388e96fe5f797950142fc984848fadaf"
 }

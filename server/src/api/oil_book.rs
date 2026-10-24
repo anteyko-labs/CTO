@@ -25,8 +25,9 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Строки книжки (SPEC-27): у каждой замены — масло, фильтры по видам и прочие работы.
-pub const SLOTS: [&str; 6] = [
+pub const SLOTS: [&str; 7] = [
     "oil",
+    "gear_oil",
     "oil_filter",
     "air_filter",
     "cabin_filter",
@@ -42,6 +43,7 @@ pub fn is_slot(slot: &str) -> bool {
 pub fn slot_label(slot: &str) -> &'static str {
     match slot {
         "oil" => "Масло двигателя",
+        "gear_oil" => "Масло в коробке",
         "oil_filter" => "Фильтр масляный",
         "air_filter" => "Фильтр воздушный",
         "cabin_filter" => "Фильтр салонный",
@@ -56,6 +58,8 @@ pub fn slot_label(slot: &str) -> &'static str {
 pub fn slot_default(slot: &str) -> Option<(i32, i32)> {
     match slot {
         "oil" | "oil_filter" => Some((8000, 31)),
+        // Масло в коробке (SPEC-32): 40 000 км или два года; владелец правит у категории.
+        "gear_oil" => Some((40_000, 730)),
         "air_filter" | "cabin_filter" => Some((15_000, 365)),
         "fuel_filter" => Some((30_000, 730)),
         _ => None,

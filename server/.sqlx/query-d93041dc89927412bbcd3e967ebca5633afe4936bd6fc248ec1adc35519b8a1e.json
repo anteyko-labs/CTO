@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update client_messages\n                   set status = $2, error = $3, attempts = attempts + 1,\n                       next_try_at = now() + $4::bigint * interval '1 second'\n                   where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d93041dc89927412bbcd3e967ebca5633afe4936bd6fc248ec1adc35519b8a1e"
+}

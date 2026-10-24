@@ -25,6 +25,14 @@ pub struct Config {
     pub optima_key: Option<SecretKey>,
     /// Адрес API банка; пусто — `https://api.optimabusiness.kg`.
     pub optima_url: Option<String>,
+    /// WhatsApp Business Platform (SPEC-32, ADR-107): постоянный ключ и ID номера отправителя;
+    /// без обоих WhatsApp выключен.
+    pub whatsapp_token: Option<SecretKey>,
+    pub whatsapp_phone_id: Option<String>,
+    /// Адрес Graph API; пусто — `api::client_messages::DEFAULT_WHATSAPP_URL`.
+    pub whatsapp_url: Option<String>,
+    /// Внешний адрес программы (`https://…`) — ссылка на кабинет юрлица в сообщениях.
+    pub public_url: Option<String>,
 }
 
 /// Ключ, который не печатается в журнал даже через `{:?}`.
@@ -83,6 +91,10 @@ impl Config {
             assistant_daily_limit,
             optima_key: non_empty("OPTIMA_API_KEY").map(SecretKey),
             optima_url: non_empty("OPTIMA_API_URL"),
+            whatsapp_token: non_empty("WHATSAPP_TOKEN").map(SecretKey),
+            whatsapp_phone_id: non_empty("WHATSAPP_PHONE_ID"),
+            whatsapp_url: non_empty("WHATSAPP_API_URL"),
+            public_url: non_empty("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
         })
     }
 }

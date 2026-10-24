@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct t.chat_id as \"chat_id!\" from telegram_customers t\n           join parties p on p.id = t.party_id\n           where p.active and p.role = 'customer'\n             and (t.party_id = $1 or ($2::text is not null and phone_norm(p.phone) = $2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "38f3231d1a254dd2ffd299c1c0a2270d1870ead374462552225784709275d414"
+}

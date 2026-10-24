@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, channel, recipient, text, template, language, params, attempts\n           from client_messages where status = 'pending' and next_try_at <= now()\n           order by created_at limit $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "channel",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "recipient",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "template",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "language",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "params",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "attempts",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f8bf46a453dc14d3fddc6a4bc3f214238b80ca2efcb954b13d5965008febfbe9"
+}

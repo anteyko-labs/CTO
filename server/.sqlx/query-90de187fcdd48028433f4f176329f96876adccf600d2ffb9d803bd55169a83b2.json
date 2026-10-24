@@ -1,0 +1,106 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.id, m.created_at, m.sent_at, m.kind, m.test, m.channel, m.recipient,\n                  m.party_id, p.name as \"party_name?\", s.number as \"sale_number?\", m.text,\n                  m.template, m.params, m.status, m.error\n           from client_messages m\n           left join parties p on p.id = m.party_id\n           left join sales s on s.id = m.sale_id\n           where m.id = any($1) order by m.created_at, m.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "sent_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "test",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "channel",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "recipient",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "party_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "party_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "sale_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "template",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "params",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "error",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "90de187fcdd48028433f4f176329f96876adccf600d2ffb9d803bd55169a83b2"
+}

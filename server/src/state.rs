@@ -20,4 +20,10 @@ pub struct AppState {
     /// API банка Optima Business по ключу `OPTIMA_API_KEY` (SPEC-31); `None` — QR на сумму и
     /// сверка с выпиской выключены, касса работает как раньше.
     pub optima: Option<crate::api::optima::Optima>,
+    /// Отправка в Телеграм для сообщений клиентам (SPEC-32): есть, когда задан ключ бота.
+    pub telegram_api: Option<crate::api::telegram::Api>,
+    /// WhatsApp Business Platform (SPEC-32): `WHATSAPP_TOKEN` и `WHATSAPP_PHONE_ID`; `None` — выключен.
+    pub whatsapp: Option<crate::api::client_messages::WhatsApp>,
+    /// Внешний адрес программы `PUBLIC_URL` — для ссылки на кабинет юрлица в сообщениях.
+    pub public_url: Option<String>,
 }

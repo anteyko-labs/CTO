@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select key from client_message_keys where key = any($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "10b9fe4be87268459155e76adf695dca8dc599f4cbb91bd7cbc14e2d8fb19800"
+}

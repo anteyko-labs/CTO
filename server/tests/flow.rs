@@ -2607,6 +2607,15 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     // Одна машина — книжка целиком (SPEC-30 §10).
     assert!(book.contains("Замены:") && !book.contains("Выручка"));
 
+    // Без пробега в книжке — напоминание по дням, как раньше; с пробегом — по среднему пробегу
+    // (SPEC-32 §3, tests/client_messages.rs).
+    sqlx::query(
+        "update oil_changes set mileage_km = null, mileage_value = null where vehicle_id = $1",
+    )
+    .bind(vehicle)
+    .execute(&pool)
+    .await
+    .unwrap();
     // Через 31 день — не сегодня; ставим интервал 7 дней: напоминание «за неделю».
     assert!(due_reminders(&mut conn).await.unwrap().is_empty());
     sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) select id, branch_id, 'oil', 8000, 7 from party_vehicles where id = $1 on conflict (vehicle_id, slot) do update set interval_days = excluded.interval_days")
@@ -5220,6 +5229,15 @@ async fn bot_reminders_catch_up_inside_the_window(pool: PgPool) {
     let me = bot_customer(&pool, &w, "Эрлан", "person", chat).await;
     let car = staff_car(&pool, &w, me, "01KG123ABC", true).await;
     service_change(&pool, &w, me, car).await;
+    // Без пробега в книжке — напоминание по дням, как раньше; с пробегом — по среднему пробегу
+    // (SPEC-32 §3, tests/client_messages.rs).
+    sqlx::query(
+        "update oil_changes set mileage_km = null, mileage_value = null where vehicle_id = $1",
+    )
+    .bind(car)
+    .execute(&pool)
+    .await
+    .unwrap();
     let mut conn = pool.acquire().await.unwrap();
     let interval = |days: i32| {
         let pool = pool.clone();
@@ -8776,6 +8794,15 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
     assert!(air_next.own_interval);
     assert_eq!(air_next.next_km, Some(95_000));
     assert_eq!(book.next_km, Some(93_000));
+    // Без пробега в книжке — напоминание по дням, как раньше; с пробегом — по среднему пробегу
+    // (SPEC-32 §3, tests/client_messages.rs).
+    sqlx::query(
+        "update oil_changes set mileage_km = null, mileage_value = null where vehicle_id = $1",
+    )
+    .bind(car)
+    .execute(&pool)
+    .await
+    .unwrap();
     let due = due_reminders(&mut conn).await.unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].slots, vec!["air_filter".to_string()]);
@@ -8805,6 +8832,14 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
         due[0].text
     );
 
+    // Пробег записи — обратно: карточка показывает следующую замену и в км.
+    sqlx::query(
+        "update oil_changes set mileage_km = 85000, mileage_value = 85000 where vehicle_id = $1",
+    )
+    .bind(car)
+    .execute(&pool)
+    .await
+    .unwrap();
     // Бот: карточка машины — строки книжки и следующая замена по каждой.
     let card = press(&mut conn, chat, &format!("car:{car}")).await.text;
     assert!(

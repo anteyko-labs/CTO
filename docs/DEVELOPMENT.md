@@ -46,13 +46,14 @@ updated: 2026-10-08
 | 30 | Вид замены, «По счёту», скидка | `api/sales.rs`, `api/reports.rs` (`service-kinds`) | `lib/serviceSale.ts`, `pages/Cashier.tsx` |
 | 30 | Накладные по фото, книжка в боте | `api/receipt_drafts.rs`, `api/assistant.rs`, `api/bot_book.rs` | `components/ReceiptDrafts.tsx`, `lib/receiptDrafts.ts` |
 | 31 | Optima Business: QR на сумму, сверка с банком | `api/optima.rs`, `api/bank_qr.rs`, `api/bank_recon.rs` | `components/BankQrPanel.tsx`, `lib/optima.ts`, `pages/OptimaSettings.tsx`, `pages/BankRecon.tsx` |
+| 32 | Сообщения клиентам: Телеграм и WhatsApp, ссылка на бот с кодом | `api/client_messages.rs`, `api/telegram.rs` (`link_by_code`) | `pages/ClientMessages.tsx`, `lib/clientMessages.ts`, `pages/ClientCard.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:
 
 - `server/migrations/NNNN_*.sql` — схема базы, по одному файлу на шаг. Применяются при старте сервера.
 - `server/.sqlx/` — сохранённые описания SQL-запросов, по ним сервер собирается без базы (CI, Docker).
-- `server/tests/flow.rs` — сценарии учёта на реальной базе. `server/tests/http.rs` — API, права, вход.
+- `server/tests/flow.rs` — сценарии учёта на реальной базе. `server/tests/client_messages.rs` — сообщения клиентам с подставными Телеграмом и WhatsApp. `server/tests/http.rs` — API, права, вход.
 - `web/e2e/` — сквозные тесты в браузере. `web/src/lib/*.test.ts` — модульные тесты клиента.
 - `deploy/`, `Dockerfile` — развёртывание. `.githooks/` — проверки перед коммитом. `.github/workflows/ci.yml` — проверки на GitHub.
 

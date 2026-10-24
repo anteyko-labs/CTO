@@ -66,6 +66,9 @@ pub struct PartyOut {
     /// поэтому просрочка — то, что не покрыто долгами за последние `due_days` дней.
     #[serde(default)]
     pub overdue_tyiyn: i64,
+    /// Фирма не хочет сообщений о закупах (SPEC-32 §4).
+    #[serde(default)]
+    pub no_purchase_messages: bool,
 }
 
 #[derive(Serialize)]
@@ -76,6 +79,8 @@ pub(crate) struct ContactOut {
     pub(crate) position: String,
     pub(crate) inn: String,
     pub(crate) active: bool,
+    /// Руководитель фирмы: ему — сообщение о закупе (SPEC-32 §4).
+    pub(crate) is_head: bool,
 }
 
 #[derive(Serialize)]
@@ -160,7 +165,7 @@ pub(crate) async fn search_parties(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
                   credit_limit_tyiyn as "credit_limit_tyiyn?", due_days as "due_days?",
-                  active, balance_tyiyn,
+                  active, balance_tyiyn, no_purchase_messages,
                   case when parties.balance_tyiyn > 0 and parties.due_days is not null then
                     greatest(0, parties.balance_tyiyn - coalesce((
                       select sum(l.amount_tyiyn) from party_ledger l
@@ -339,7 +344,7 @@ pub(crate) async fn load_party(
         PartyOut,
         r#"select id, role, kind, name, first_name, last_name, phone, inn, comment,
                   credit_limit_tyiyn as "credit_limit_tyiyn?", due_days as "due_days?",
-                  active, balance_tyiyn,
+                  active, balance_tyiyn, no_purchase_messages,
                   case when parties.balance_tyiyn > 0 and parties.due_days is not null then
                     greatest(0, parties.balance_tyiyn - coalesce((
                       select sum(l.amount_tyiyn) from party_ledger l
@@ -388,7 +393,8 @@ async fn party_fields(
         r#"select jsonb_build_object('name', name, 'first_name', first_name, 'last_name', last_name,
                                      'phone', phone, 'inn', inn, 'comment', comment,
                                      'kind', kind, 'credit_limit_tyiyn', credit_limit_tyiyn,
-                                     'due_days', due_days, 'active', active) as "v!"
+                                     'due_days', due_days, 'active', active,
+                                     'no_purchase_messages', no_purchase_messages) as "v!"
            from parties where id = $1 and branch_id = $2 for update"#,
         id,
         branch_id
@@ -411,6 +417,8 @@ struct PartyPatch {
     credit_limit_tyiyn: Option<i64>,
     due_days: Option<i32>,
     active: Option<bool>,
+    /// «Не присылать сообщения о закупах» у фирмы (SPEC-32 §4).
+    no_purchase_messages: Option<bool>,
 }
 
 async fn update_party(
@@ -476,7 +484,8 @@ async fn update_party(
                due_days = coalesce($9, due_days),
                active = coalesce($10, active),
                first_name = case when $13 then '' else coalesce($11, first_name) end,
-               last_name = case when $13 then '' else coalesce($12, last_name) end
+               last_name = case when $13 then '' else coalesce($12, last_name) end,
+               no_purchase_messages = coalesce($14, no_purchase_messages)
            where id = $1 and branch_id = $2
            returning id"#,
         id,
@@ -491,7 +500,8 @@ async fn update_party(
         req.active,
         person.as_ref().map(|p| p.0.clone()),
         person.as_ref().map(|p| p.1.clone()),
-        clear_person
+        clear_person,
+        req.no_purchase_messages
     )
     .fetch_optional(&mut *tx)
     .await?;
@@ -548,6 +558,7 @@ struct ContactReq {
     #[serde(default)]
     inn: String,
     active: Option<bool>,
+    is_head: Option<bool>,
 }
 
 async fn create_contact(
@@ -566,15 +577,16 @@ async fn create_contact(
     load_party(&mut tx, ctx.user.branch_id, id).await?;
     let cid = new_id();
     sqlx::query!(
-        r#"insert into party_contacts (id, branch_id, party_id, full_name, phone, position, inn)
-           values ($1, $2, $3, $4, $5, $6, $7)"#,
+        r#"insert into party_contacts (id, branch_id, party_id, full_name, phone, position, inn, is_head)
+           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
         cid,
         ctx.user.branch_id,
         id,
         name,
         req.phone.trim(),
         req.position.trim(),
-        req.inn.trim()
+        req.inn.trim(),
+        req.is_head.unwrap_or(false)
     )
     .execute(&mut *tx)
     .await?;
@@ -595,6 +607,7 @@ async fn create_contact(
         position: req.position.trim().into(),
         inn: req.inn.trim().into(),
         active: true,
+        is_head: req.is_head.unwrap_or(false),
     }))
 }
 
@@ -607,7 +620,7 @@ async fn update_contact(
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
     let before = sqlx::query!(
-        r#"select c.full_name, c.phone, c.position, c.inn, c.active from party_contacts c
+        r#"select c.full_name, c.phone, c.position, c.inn, c.active, c.is_head from party_contacts c
            join parties p on p.id = c.party_id
            where c.id = $1 and c.party_id = $2 and p.branch_id = $3
            for update of c"#,
@@ -623,10 +636,11 @@ async fn update_contact(
         r#"update party_contacts
            set full_name = coalesce(nullif(trim($3), ''), full_name),
                phone = $4, position = $5, inn = $6,
-               active = coalesce($7, active)
+               active = coalesce($7, active),
+               is_head = coalesce($9, is_head)
            where id = $1 and party_id = $2
              and party_id in (select p.id from parties p where p.branch_id = $8)
-           returning id, full_name, phone, position, inn, active"#,
+           returning id, full_name, phone, position, inn, active, is_head"#,
         contact_id,
         id,
         req.full_name,
@@ -634,7 +648,8 @@ async fn update_contact(
         req.position.trim(),
         req.inn.trim(),
         req.active,
-        ctx.user.branch_id
+        ctx.user.branch_id,
+        req.is_head
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -649,9 +664,9 @@ async fn update_contact(
             "contact_id": contact_id,
             "changes": ops::changes(
                 &json!({ "full_name": before.full_name, "phone": before.phone, "position": before.position,
-                         "inn": before.inn, "active": before.active }),
+                         "inn": before.inn, "active": before.active, "is_head": before.is_head }),
                 &json!({ "full_name": row.full_name, "phone": row.phone, "position": row.position,
-                         "inn": row.inn, "active": row.active }),
+                         "inn": row.inn, "active": row.active, "is_head": row.is_head }),
             ),
         }),
     )
@@ -1712,8 +1727,8 @@ pub(crate) async fn party_card_data(
     let party = load_party(&mut *conn, user.branch_id, id).await?;
     let contacts = sqlx::query_as!(
         ContactOut,
-        "select id, full_name, phone, position, inn, active from party_contacts
-         where party_id = $1 order by active desc, full_name",
+        "select id, full_name, phone, position, inn, active, is_head from party_contacts
+         where party_id = $1 order by active desc, is_head desc, full_name",
         id
     )
     .fetch_all(&mut *conn)

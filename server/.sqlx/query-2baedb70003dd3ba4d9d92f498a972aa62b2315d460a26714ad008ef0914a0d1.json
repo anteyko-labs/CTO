@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, role, kind, name, first_name, last_name, phone, inn, comment,\n                  credit_limit_tyiyn as \"credit_limit_tyiyn?\", due_days as \"due_days?\",\n                  active, balance_tyiyn,\n                  case when parties.balance_tyiyn > 0 and parties.due_days is not null then\n                    greatest(0, parties.balance_tyiyn - coalesce((\n                      select sum(l.amount_tyiyn) from party_ledger l\n                      where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0\n                        and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))\n                  else 0 end::bigint as \"overdue_tyiyn!\"\n           from parties where id = $1 and branch_id = $2",
+  "query": "select id, role, kind, name, first_name, last_name, phone, inn, comment,\n                  credit_limit_tyiyn as \"credit_limit_tyiyn?\", due_days as \"due_days?\",\n                  active, balance_tyiyn, no_purchase_messages,\n                  case when parties.balance_tyiyn > 0 and parties.due_days is not null then\n                    greatest(0, parties.balance_tyiyn - coalesce((\n                      select sum(l.amount_tyiyn) from party_ledger l\n                      where l.party_id = parties.id and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0\n                        and l.business_date > (now() at time zone 'Asia/Bishkek')::date - parties.due_days), 0))\n                  else 0 end::bigint as \"overdue_tyiyn!\"\n           from parties where id = $1 and branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -70,6 +70,11 @@
       },
       {
         "ordinal": 13,
+        "name": "no_purchase_messages",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 14,
         "name": "overdue_tyiyn!",
         "type_info": "Int8"
       }
@@ -94,8 +99,9 @@
       true,
       false,
       false,
+      false,
       null
     ]
   },
-  "hash": "6db725f8162693178d6e4b677852b9f8fb77dbca43f188fb60b681b294e9998e"
+  "hash": "2baedb70003dd3ba4d9d92f498a972aa62b2315d460a26714ad008ef0914a0d1"
 }

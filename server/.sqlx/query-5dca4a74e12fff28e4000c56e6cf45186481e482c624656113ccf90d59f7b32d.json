@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update client_messages set status = 'error', error = $2, attempts = attempts + 1 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5dca4a74e12fff28e4000c56e6cf45186481e482c624656113ccf90d59f7b32d"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, phone from party_contacts\n           where party_id = $1 and active and is_head order by created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "phone",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "226ec22f5b7d6e5dccec09a456ad11474618c1a21d28e16b4dae3a99780b9707"
+}

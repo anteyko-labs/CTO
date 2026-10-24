@@ -17,6 +17,7 @@ pub mod cancelled_lines;
 pub mod cars;
 pub mod cash;
 pub mod catalog;
+pub mod client_messages;
 pub mod corrections;
 pub mod defects;
 pub mod deliveries;
@@ -64,6 +65,7 @@ pub fn routes() -> Router<AppState> {
         .merge(cash::routes())
         .merge(cars::routes())
         .merge(catalog::routes())
+        .merge(client_messages::routes())
         .merge(corrections::routes())
         .merge(defects::routes())
         .merge(deliveries::routes())

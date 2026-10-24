@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.id as vehicle_id, p.id, p.name, p.first_name, p.phone, p.bot_code\n               from party_vehicles v join parties p on p.id = v.party_id\n               where v.branch_id = $1 and v.active and p.active and p.role = 'customer'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vehicle_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "bot_code",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "38cbaa2d30bf918e12ba351c39574190951bacaaf751ec01dadbc7d401988dc5"
+}
