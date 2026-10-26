@@ -612,6 +612,41 @@ test('строка «литр»: коды литра Умага не стано�
   await expect(page.getByTestId('cart')).toContainText(name)
 })
 
+test('«Сканер товаров»: строка «литр» без заводского кода — карточка без кода литра, код выдаёт программа', async ({ page }) => {
+  await login(page)
+  const liter = await freeCode(page.request, 7)
+  const name = `AZMOL ТЕСТ ${RUN} 10W40 200L`
+  await putUmag(page.request, [{ name, barcode: liter, unit: 'литр', price_tyiyn: 55_000, cost_tyiyn: 40_000 }])
+  const catName = `Масла сканер ${RUN}`
+  await apiPost(page.request, '/categories', { name: catName, kind: 'oil' })
+
+  await page.goto('/revision?tab=scan')
+  const scan = page.locator('[data-intake-scan]')
+  await scan.fill(liter)
+  await scan.press('Enter')
+  await expect(page.locator('#intake-name')).toHaveValue(name)
+  // Код литра карточке не достаётся: на кассе он добавил бы бочку.
+  await expect(page.locator('#intake-barcode')).toHaveValue('')
+  await expect(page.getByTestId('intake-measure-codes')).toContainText(`Коды ${liter} в Умаге продавали литр`)
+  await page.locator('#intake-category').selectOption({ label: catName })
+  await expect(page.locator('#intake-liters')).toHaveValue('200')
+  await page.getByRole('button', { name: 'Завести товар' }).click()
+  await expect(page.getByText(`Заведён: ${name}`)).toBeVisible()
+
+  const found = await apiGet<Product[]>(page.request, `/products?q=${encodeURIComponent(name)}`)
+  const p = found.find((x) => x.name === name)
+  expect(p, name).toBeTruthy()
+  expect(p!.barcodes).toHaveLength(1)
+  expect(p!.barcodes).not.toContain(liter)
+  expect((await umagRow(page.request, liter)).product_id).toBe(p!.id)
+  expect((await page.request.get(`/api/v1/products/by-barcode/${liter}`)).status()).toBe(404)
+  // Повторный скан кода литра — заведённый товар, а не новая карточка.
+  await scan.fill(liter)
+  await scan.press('Enter')
+  await expect(page.getByText('Уже заведён', { exact: true })).toBeVisible()
+  await expect(page.locator('#intake-name')).toHaveCount(0)
+})
+
 test('закупка Умага: администратору без права прихода не видна', async ({ page, browser }) => {
   await login(page)
   const code = `84${RUN}18`

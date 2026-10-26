@@ -14,7 +14,8 @@ import { canisterPourPrice } from '../lib/money'
 import { presetFromHit } from '../lib/oldCatalog'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { mapUmagRows } from '../lib/umag'
-import { linkUmag, umagStep } from '../lib/umagLink'
+import { isMeasureUnit } from '../lib/umagCodes'
+import { hitMeasureCodes, linkUmag, umagStep, umagUnitWord } from '../lib/umagLink'
 import { readXlsx } from '../lib/xlsx'
 
 type Hit = OldCatalogHit
@@ -249,9 +250,13 @@ export default function ProductIntake() {
   const ml = isOil && form ? parseLiters(form.liters) : null
   const shownPrice = form ? parseSom(form.price) : null
   const pourShown = ml && shownPrice !== null ? canisterPourPrice(shownPrice, ml) : null
+  // Строка Умага, которую продавали мерой (литр, кг, метр): её коды (276…, PLU) товару не переходят,
+  // карточке нужен заводской код, а без него код выдаёт программа (SPEC-35 §1, ADR-113).
+  const measureRow = form?.from && isMeasureUnit(form.from.unit) ? form.from : null
+  const measureCodes = measureRow ? hitMeasureCodes(measureRow) : []
   const formBlockers = form
     ? missingWithFocus(
-        [Boolean(form.barcode.trim()), 'штрихкод', '#intake-barcode'],
+        [Boolean(form.barcode.trim()) || measureRow !== null, 'штрихкод', '#intake-barcode'],
         [Boolean(form.name.trim()), 'название', '#intake-name'],
         [Boolean(form.categoryId), 'категорию', '#intake-category'],
         [!isOil || (ml !== null && ml > 0), 'объём тары, л', '#intake-liters'],
@@ -271,7 +276,8 @@ export default function ProductIntake() {
         name: form.name.trim(),
         article: form.from?.article ?? '',
         container_ml: isOil ? ml : null,
-        barcodes: [form.barcode.trim()],
+        // Без кода (строка меры без заводского кода) — код выдаст программа.
+        barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
         initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
         // Из старой базы Умаг: товар свяжется со строкой, её коды станут его кодами (SPEC-35).
@@ -283,18 +289,20 @@ export default function ProductIntake() {
       reset()
     })
 
-  /** Похожий товар уже есть — не плодим дубль, а добавляем ему этот штрихкод. */
+  /** Похожий товар уже есть — не плодим дубль, а добавляем ему этот штрихкод (у строки меры без
+   *  заводского кода — только связываем строку Умага). */
   const attachTo = (p: Product) =>
     void act.run(async () => {
       if (!form) return
-      await post(`/products/${p.id}/barcodes`, { code: form.barcode.trim() })
+      const code = form.barcode.trim()
+      if (code) await post(`/products/${p.id}/barcodes`, { code })
       // Данные из строки Умага — связываем её с этим товаром: остальные её коды тоже станут его (SPEC-35).
       if (form.from && !form.from.product_id) await linkUmag(form.from.id, p.id, newOpId())
       // Карточка уже была — её могли посчитать под другим кодом: прибавляем и показываем итог.
       const total = revision ? await saveCount(p.id, p.unit, form.count) : null
       if (total !== null) toast(`В ревизии теперь ${qtyText(p.unit, total)}`)
-      setRecent((r) => [{ name: `${p.name} (+ код)`, at: new Date().toISOString(), count: form.count, isNew: false }, ...r].slice(0, 15))
-      toast(`Код привязан к «${p.name}»`)
+      setRecent((r) => [{ name: `${p.name} (+ ${code ? 'код' : 'Умаг'})`, at: new Date().toISOString(), count: form.count, isNew: false }, ...r].slice(0, 15))
+      toast(code ? `Код привязан к «${p.name}»` : `Строка Умага связана с «${p.name}»`)
       reset()
     })
 
@@ -484,8 +492,13 @@ export default function ProductIntake() {
                           {p.name} <span className="text-xs">· {p.barcodes.length ? p.barcodes.join(', ') : 'без кода'}</span>
                         </span>
                         {mayCreate && (
-                          <Button variant="secondary" className="min-h-0 px-2 py-1 text-xs" disabled={act.busy || !form.barcode.trim()} onClick={() => attachTo(p)}>
-                            Это он — привязать код
+                          <Button
+                            variant="secondary"
+                            className="min-h-0 px-2 py-1 text-xs"
+                            disabled={act.busy || (!form.barcode.trim() && measureRow === null)}
+                            onClick={() => attachTo(p)}
+                          >
+                            {form.barcode.trim() ? 'Это он — привязать код' : 'Это он — связать'}
                           </Button>
                         )}
                       </li>
@@ -494,7 +507,18 @@ export default function ProductIntake() {
                 </Notice>
               )}
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Штрихкод" required>
+                <Field
+                  label="Штрихкод"
+                  required={measureRow === null}
+                  hint={
+                    measureRow && measureCodes.length > 0 ? (
+                      <span data-testid="intake-measure-codes">
+                        Коды {measureCodes.join(', ')} в Умаге продавали {umagUnitWord(measureRow.unit)} — у товара их не будет: на кассе они
+                        добавили бы всю тару. Отсканируйте заводской код; нет его — код выдаст программа.
+                      </span>
+                    ) : undefined
+                  }
+                >
                   <input id="intake-barcode" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} />
                 </Field>
                 <Field label="Категория" required>
