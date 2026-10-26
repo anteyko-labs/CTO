@@ -6,7 +6,7 @@ import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNot
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { nextText, overdueSlots, recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, nextText, overdueSlots, recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
@@ -77,13 +77,7 @@ type ManualForm = { date: string; mileage: string } & Record<BookSlot, string>
 const emptyManual = (): ManualForm => ({
   date: todayBishkek(),
   mileage: '',
-  oil: '',
-  gear_oil: '',
-  oil_filter: '',
-  air_filter: '',
-  cabin_filter: '',
-  fuel_filter: '',
-  other: '',
+  ...(Object.fromEntries(SLOT_ORDER.map((s) => [s, ''])) as Record<BookSlot, string>),
 })
 
 /** Интервал строки в единице машины: «каждые 8 000 км или 31 дн.», «каждые 3 000 миль …»;
@@ -208,6 +202,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                   {recordLines(r).map((l, i) => (
                     <span key={i} className="mr-3 inline-block">
                       <span className="text-slate-500">{slotLabel(l.slot)}:</span> {l.text}
+                      {lineNextText(l) && <span className="text-sky-800"> — {lineNextText(l)}</span>}
                     </span>
                   ))}
                 </span>

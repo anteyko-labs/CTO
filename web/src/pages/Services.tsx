@@ -10,7 +10,7 @@ import { useUser } from '../lib/auth'
 import { formatSom, parseSom, plural, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Category, Service } from '../lib/types'
+import { BOOK_SLOT_LABELS, type BookSlot, type Category, type Service } from '../lib/types'
 import { mapUmagRows, preselected, serviceCandidates, type ServiceCandidate } from '../lib/umag'
 import { readXlsx } from '../lib/xlsx'
 
@@ -28,6 +28,56 @@ function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_
   if (p === null) throw new Error('Неверная цена')
   if (f === null) throw new Error('Неверное начисление мастеру')
   return { price_tyiyn: p, master_fee_tyiyn: f }
+}
+
+const SLOTS = Object.keys(BOOK_SLOT_LABELS) as BookSlot[]
+const BOOK_HINT =
+  'Что меняет услуга: по этой строке касса спросит «Следующая замена» (пробег сейчас + интервал) и запишет её в книжку. «Прочие работы» — без напоминания'
+
+/** Строка книжки и интервал услуги (SPEC-34): поля формы. */
+interface BookForm {
+  slot: BookSlot | ''
+  km: string
+  days: string
+}
+
+function bookPayload(b: BookForm, keepEmpty: boolean): Record<string, unknown> {
+  const km = b.km.trim() ? Number(b.km) : null
+  const days = b.days.trim() ? Number(b.days) : null
+  if ((km === null) !== (days === null)) throw new Error('Интервал: укажите и км, и дни — или оставьте оба пустыми')
+  return {
+    ...(b.slot ? { book_slot: b.slot } : {}),
+    ...(km !== null && days !== null ? { book_interval_km: km, book_interval_days: days } : keepEmpty ? { book_interval_reset: true } : {}),
+  }
+}
+
+/** Строка книжки услуги и её интервал (меняет владелец). */
+function BookFields({ value, onChange, byName, idPrefix }: { value: BookForm; onChange: (b: BookForm) => void; byName?: boolean; idPrefix: string }) {
+  const slot = value.slot || null
+  return (
+    <div className="flex flex-col gap-2">
+      <Field label="Строка книжки" hint={BOOK_HINT}>
+        <select id={`${idPrefix}-slot`} value={value.slot} onChange={(e) => onChange({ ...value, slot: e.target.value as BookSlot | '' })}>
+          {byName && <option value="">по названию услуги</option>}
+          {SLOTS.map((s) => (
+            <option key={s} value={s}>
+              {BOOK_SLOT_LABELS[s]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {slot !== 'other' && (
+        <div className="flex flex-wrap gap-3">
+          <Field label="Интервал, км" hint="Пусто — по строке книжки">
+            <input id={`${idPrefix}-km`} className="w-32" inputMode="numeric" value={value.km} onChange={(e) => onChange({ ...value, km: e.target.value.replace(/\D/g, '') })} />
+          </Field>
+          <Field label="или дней">
+            <input id={`${idPrefix}-days`} className="w-24" inputMode="numeric" value={value.days} onChange={(e) => onChange({ ...value, days: e.target.value.replace(/\D/g, '') })} />
+          </Field>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** Категории масла: у флажка «Бесплатно с нашим маслом» выбирается, с каким маслом (ADR-104). */
@@ -82,6 +132,11 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
     oilCat: service.oil_category_id ?? '',
     active: service.active,
   })
+  const [book, setBook] = useState<BookForm>({
+    slot: service.book_slot ?? 'other',
+    km: service.book_interval_km != null ? String(service.book_interval_km) : '',
+    days: service.book_interval_days != null ? String(service.book_interval_days) : '',
+  })
   const { busy, error, run } = useAction()
 
   const save = () =>
@@ -91,6 +146,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
         ...amounts(form.price, form.fee),
         free_with_oil: form.free,
         ...(owner && form.oilCat ? { oil_category_id: form.oilCat } : {}),
+        ...(owner ? bookPayload(book, true) : {}),
         active: form.active,
       })
       onSaved()
@@ -120,6 +176,11 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
           />
         ) : (
           <div className="text-sm text-slate-600">{form.free ? 'Бесплатно с нашим маслом' : 'Платная и с нашим маслом'} — меняет владелец</div>
+        )}
+        {owner ? (
+          <BookFields idPrefix="service-edit-book" value={book} onChange={setBook} />
+        ) : (
+          <div className="text-sm text-slate-600">Строка книжки: {BOOK_SLOT_LABELS[service.book_slot ?? 'other']} — меняет владелец</div>
         )}
         <Checkbox label="Активна" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
@@ -235,6 +296,7 @@ export default function Services() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
   const [form, setForm] = useState({ name: '', price: '', fee: '', free: false, oilCat: '' })
+  const [book, setBook] = useState<BookForm>({ slot: '', km: '', days: '' })
   const categories = useOilCategories()
   const catName = (id: string | null | undefined) => categories.data?.find((c) => c.id === id)?.name
   const [adding, setAdding] = useState(false)
@@ -260,8 +322,10 @@ export default function Services() {
         ...amounts(form.price, form.fee),
         free_with_oil: owner && form.free,
         ...(owner && form.free && form.oilCat ? { oil_category_id: form.oilCat } : {}),
+        ...(owner ? bookPayload(book, false) : {}),
       })
       setForm({ name: '', price: '', fee: '', free: false, oilCat: '' })
+      setBook({ slot: '', km: '', days: '' })
       setAdding(false)
       list.reload()
     })
@@ -341,7 +405,7 @@ export default function Services() {
         ) : rows.length === 0 ? (
           <Empty>Ничего не найдено</Empty>
         ) : (
-          <Table head={['Название', 'Цена клиенту', 'С нашим маслом', 'Мастеру', 'Статус', '']}>
+          <Table head={['Название', 'Цена клиенту', 'С нашим маслом', 'Мастеру', 'Книжка', 'Статус', '']}>
             {rows.map((s) => (
               <tr
                 key={s.id}
@@ -366,6 +430,16 @@ export default function Services() {
                 </td>
                 <td className="px-2 py-2 md:text-right">
                   <Money value={s.master_fee_tyiyn} zero="—" />
+                </td>
+                <td className="px-2 py-2 text-sm">
+                  {!s.book_slot || s.book_slot === 'other' ? (
+                    <span className="text-slate-500">без напоминания</span>
+                  ) : (
+                    <span>
+                      {BOOK_SLOT_LABELS[s.book_slot]}
+                      {s.interval_km != null && <span className="block text-xs text-slate-500">через {s.interval_km.toLocaleString('ru-RU')} км</span>}
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 py-2">{s.active ? <Badge tone="green">активна</Badge> : <Badge>отключена</Badge>}</td>
                 <td className="overflow-visible! px-2 py-1 text-right" onClick={(ev) => ev.stopPropagation()}>
@@ -411,6 +485,7 @@ export default function Services() {
                 onChange={(free, oilCat) => setForm({ ...form, free, oilCat })}
               />
             )}
+            {owner && <BookFields idPrefix="service-book" value={book} onChange={setBook} byName />}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Missing items={notFilled} className="mr-auto" />

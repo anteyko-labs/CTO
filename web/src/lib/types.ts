@@ -67,7 +67,16 @@ export interface AttributeDef {
 }
 
 /** Строка масляной книжки (SPEC-27): масло, фильтры по видам, прочие работы; `none` — не в книжку. */
-export type BookSlot = 'oil' | 'gear_oil' | 'oil_filter' | 'air_filter' | 'cabin_filter' | 'fuel_filter' | 'other'
+export type BookSlot =
+  | 'oil'
+  | 'gear_oil'
+  | 'oil_filter'
+  | 'air_filter'
+  | 'cabin_filter'
+  | 'fuel_filter'
+  | 'antifreeze'
+  | 'brake_fluid'
+  | 'other'
 
 export const BOOK_SLOT_LABELS: Record<BookSlot, string> = {
   oil: 'Масло двигателя',
@@ -76,6 +85,8 @@ export const BOOK_SLOT_LABELS: Record<BookSlot, string> = {
   air_filter: 'Фильтр воздушный',
   cabin_filter: 'Фильтр салонный',
   fuel_filter: 'Фильтр топливный',
+  antifreeze: 'Антифриз',
+  brake_fluid: 'Тормозная жидкость',
   other: 'Прочие работы',
 }
 
@@ -144,6 +155,14 @@ export interface Service {
   /** Категория масла, с которым услуга бесплатна: его в чеке не меньше канистры (ADR-104). */
   oil_category_id?: string | null
   active: boolean
+  /** Строка книжки (SPEC-34): что услуга меняет; «прочее» — без напоминания. */
+  book_slot?: BookSlot
+  /** Интервал, заданный владельцем; пусто — по строке книжки. */
+  book_interval_km?: number | null
+  book_interval_days?: number | null
+  /** Интервал для кассы: заданный или по умолчанию строки книжки. */
+  interval_km?: number | null
+  interval_days?: number | null
 }
 
 export interface Supplier {
@@ -407,6 +426,18 @@ export interface Sale {
   lines: SaleLine[]
   payments: Payment[]
   returns: { id: string; number: number; total_tyiyn: number }[]
+  /** Масляная книжка чека «В сервис» для печати (SPEC-34 §4). */
+  book?: SaleBook | null
+}
+
+/** Масляная книжка в печатном чеке: машина, пробег сейчас и следующие замены (SPEC-34 §4). */
+export interface SaleBook {
+  brand: string
+  model: string
+  plate: string
+  mileage: number | null
+  mileage_unit: 'km' | 'mi'
+  lines: { label: string; next_mileage: number; unit: 'km' | 'mi'; next_date: string | null }[]
 }
 
 export interface SaleListItem {

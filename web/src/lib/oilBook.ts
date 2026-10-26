@@ -8,6 +8,14 @@ import { BOOK_SLOT_LABELS, type BookSlot } from './types'
 export interface BookLine {
   slot: BookSlot
   text: string
+  /** Услуга чека по строке (SPEC-34). */
+  service?: string | null
+  /** Следующую замену задал кассир: пробег в единице машины и дата; пустая — не напоминать. */
+  target_set?: boolean
+  next_mileage?: number | null
+  next_unit?: MileageUnit | null
+  next_km?: number | null
+  next_date?: string | null
 }
 
 /** Следующая замена по строке книжки. */
@@ -83,6 +91,14 @@ export function recordLines(r: OilRecord): BookLine[] {
   if (r.oil_text) out.push({ slot: 'oil', text: r.oil_text })
   if (r.filter_text) out.push({ slot: 'oil_filter', text: r.filter_text })
   return out
+}
+
+/** «следующая замена на 225 000 км или до 05.01.2027» — цель кассира у строки; без цели — ''. */
+export function lineNextText(l: BookLine): string {
+  const at = l.next_mileage != null ? `на ${mileageText(l.next_mileage, l.next_unit ?? 'km')}` : null
+  const by = l.next_date ? `до ${formatDate(l.next_date)}` : null
+  const when = [at, by].filter(Boolean).join(' или ')
+  return when ? `следующая замена ${when}` : ''
 }
 
 /** Что сделали одной строкой: «Масло 5W-30 · Фильтр W712». */
