@@ -310,9 +310,12 @@ export default function ProductIntake() {
   const onUpload = (file: File) =>
     void upload.run(async () => {
       const rows = mapUmagRows(await readXlsx(file))
-      const r = await put<{ rows: number }>('/old-catalog', rows)
+      // Новая выгрузка сохраняет связи строк с товарами и переносит товарам новые коды (SPEC-35 §1).
+      const r = await put<{ rows: number; linked?: number; copied?: number }>('/old-catalog', rows)
       stats.reload()
-      toast(`Загружено позиций: ${r.rows.toLocaleString('ru-RU')}`)
+      const kept = r.linked ? `; связи с товарами сохранены: ${r.linked.toLocaleString('ru-RU')}` : ''
+      const copied = r.copied ? `, новых кодов у товаров: ${r.copied.toLocaleString('ru-RU')}` : ''
+      toast(`Загружено позиций: ${r.rows.toLocaleString('ru-RU')}${kept}${copied}`)
     })
 
   return (

@@ -1235,7 +1235,6 @@ export interface ProductUmag {
   price_tyiyn: number
   /** Закупка в Умаге — только владельцу (ADR-008). */
   cost_tyiyn?: number | null
-  conflicts?: UmagConflict[]
 }
 
 // ---------- Замены по видам (SPEC-30 §2) ----------

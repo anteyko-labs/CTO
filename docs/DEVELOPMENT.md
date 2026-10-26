@@ -49,14 +49,14 @@ updated: 2026-10-26
 | 32 | Сообщения клиентам: Телеграм и WhatsApp, ссылка на бот с кодом | `api/client_messages.rs`, `api/telegram.rs` (`link_by_code`) | `pages/ClientMessages.tsx`, `lib/clientMessages.ts`, `pages/ClientCard.tsx` |
 | 33 | Несколько филиалов: филиал запроса, общие справочники, «Все филиалы», расчёты между филиалами | `auth.rs` (`request_branch`), `api/branches.rs` (`merge_reports`, `report`), `api/parties.rs` (`repayment_parts`), `api/catalog.rs` (`put_sale_price`) | `lib/branch.ts`, `lib/branchReport.ts`, `components/BranchSwitch.tsx`, `components/BranchScope.tsx`, `pages/Branches.tsx` |
 | 34 | Следующая замена по услугам чека, книжка в печатном чеке | `api/oil_book.rs` (`resolve_target`, `record_from_sale`, `sale_book`, `service_slot_by_name`), `api/refs.rs` (строка книжки услуги) | `lib/nextChange.ts`, `pages/Cashier.tsx` (`next-change`), `components/salePrint.ts` (`bookHtml`), `pages/Services.tsx` |
-| 35 | Коды старой базы Умаг — коды товара: связь строки Умага с товаром, окно Умага в «Товарах» и «Приходе» (на кассе Умага нет), экран «Связать с Умагом» | `api/old_catalog.rs`, `api/catalog.rs` (`by-barcode`, `old_catalog_id`) | `lib/umagLink.ts`, `components/Umag.tsx`, `components/UmagCard.tsx`, `pages/UmagLink.tsx`, `components/ProductPicker.tsx` (`umag`), `lib/offline.ts` (`findByBarcode`) |
+| 35 | Коды старой базы Умаг — коды товара: связь строки Умага с товаром, окно Умага в «Товарах» и «Приходе» (на кассе Умага нет), экран «Связать с Умагом» | `api/old_catalog.rs` (`link_row`, `copy_codes`, `link_product_rows`, `auto_link`, `pairs`, `restore_links`), `api/catalog.rs` (`product_by_barcode`, `create_product_tx` с `old_catalog_id`), миграция 0065 (`umag_codes`, `code_products`) | `lib/umagLink.ts`, `components/Umag.tsx`, `components/UmagCard.tsx`, `pages/UmagLink.tsx`, `components/ProductPicker.tsx` (`umag`), `lib/offline.ts` (`findByBarcode`) |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:
 
 - `server/migrations/NNNN_*.sql` — схема базы, по одному файлу на шаг. Применяются при старте сервера.
 - `server/.sqlx/` — сохранённые описания SQL-запросов, по ним сервер собирается без базы (CI, Docker).
-- `server/tests/flow.rs` — сценарии учёта на реальной базе. `server/tests/branches.rs` — несколько филиалов: обход всех маршрутов API (администратор филиала Б не видит и не меняет филиал А), «Все филиалы», цены, долги, миграция. `server/tests/client_messages.rs` — сообщения клиентам с подставными Телеграмом и WhatsApp. `server/tests/http.rs` — API, права, вход.
+- `server/tests/flow.rs` — сценарии учёта на реальной базе. `server/tests/branches.rs` — несколько филиалов: обход всех маршрутов API (администратор филиала Б не видит и не меняет филиал А), «Все филиалы», цены, долги, миграция. `server/tests/client_messages.rs` — сообщения клиентам с подставными Телеграмом и WhatsApp. `server/tests/http.rs` — API, права, вход. `server/tests/umag.rs` — коды старой базы Умаг: связь, перенос кодов и конфликты, автосвязывание, похожие пары, новая выгрузка, филиалы.
 - `web/e2e/` — сквозные тесты в браузере. `web/src/lib/*.test.ts` — модульные тесты клиента.
 - `deploy/`, `Dockerfile` — развёртывание. `.githooks/` — проверки перед коммитом. `.github/workflows/ci.yml` — проверки на GitHub.
 

@@ -13,6 +13,15 @@ const RUN = Date.now().toString().slice(-8)
 const PICKER = /Сканируйте штрихкод/
 const NO_RIGHT = 'Товар есть в базе Умаг, но не заведён: попросите владельца или администратора завести его'
 const money = (text: string) => new RegExp(text.replace(/ /g, '\\s'))
+// Снимки экрана для проверки раскладки: только если задан каталог.
+const SHOTS = process.env.E2E_SHOTS_DIR
+
+/** Снимок при моноблоке кассы 1366×768 (размер окна меняется только для снимка). */
+async function shot1366(page: Page, name: string) {
+  if (!SHOTS) return
+  await page.setViewportSize({ width: 1366, height: 768 })
+  await page.screenshot({ path: `${SHOTS}/${name}.png` })
+}
 
 interface Hit {
   id: string
@@ -134,6 +143,7 @@ test('приход: несвязанный код Умага — окно, «З�
   await expect(modal).toContainText(`Поставщик Умаг ${RUN}`)
   await expect(modal).toContainText(catName)
   await expect(modal.getByTestId('umag-create')).toHaveText('Завести и добавить')
+  await shot1366(page, 'prihod-1366-umag-modal')
   await modal.getByTestId('umag-create').click()
 
   // Полная карточка из Умага; после сохранения — строка прихода с закупкой из Умага.
@@ -142,6 +152,7 @@ test('приход: несвязанный код Умага — окно, «З�
   await expect(card.getByTestId('umag-codes')).toContainText(extra2)
   await expect(card.locator('#product-name')).toHaveValue(name)
   await expect(card.locator('#product-price')).toHaveValue('500')
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/prihod-1366-umag-card.png` })
   await card.getByRole('button', { name: 'Сохранить' }).click()
   await expect(card).toBeHidden()
   await expect(page.getByText(`1. ${name}`)).toBeVisible()
@@ -161,6 +172,7 @@ test('приход: несвязанный код Умага — окно, «З�
   await picker.press('Enter')
   await expect(page.locator('#line-1-count')).toHaveValue('3')
   await expect(page.getByTestId('umag-modal')).toHaveCount(0)
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/prihod-1366-umag-line.png` })
 })
 
 test('приход: «Это уже есть — выбрать товар» связывает строку Умага со своим товаром', async ({ page }) => {
@@ -203,6 +215,7 @@ test('«Товары»: поиск по коду и тексту показыв�
   await expect(block.getByRole('button', { name: 'Завести' })).toBeVisible()
   await search.fill(extra)
   await expect(block).toContainText(name)
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/tovary-umag-block.png`, fullPage: true })
 
   // Скан (Enter) — окно строки Умага; «Завести» — карточка из Умага.
   await search.press('Enter')
@@ -226,6 +239,7 @@ test('«Товары»: поиск по коду и тексту показыв�
   await expect(umagCard).toContainText(name)
   await expect(umagCard).toContainText(extra)
   await expect(umagCard).toContainText(money('700 с'))
+  if (SHOTS) await umagCard.screenshot({ path: `${SHOTS}/tovary-umag-card.png` })
   page.once('dialog', (d) => void d.accept())
   await umagCard.getByRole('button', { name: 'Отвязать' }).click()
   await expect(umagCard).toContainText('Не связан')
@@ -312,10 +326,12 @@ test.describe('режим кассы 1366×768', () => {
     await picker.fill(umagCode)
     await picker.press('Enter')
     await expect(page.getByTestId('cart')).toContainText(linked)
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1366-umag-linked.png` })
     await picker.fill(freeCode)
     await picker.press('Enter')
     await expect(page.getByRole('dialog', { name: `Код ${freeCode} не найден` })).toBeVisible()
     await expect(page.getByTestId('umag-modal')).toHaveCount(0)
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1366-umag-not-found.png` })
     await page.getByRole('dialog', { name: `Код ${freeCode} не найден` }).getByRole('button', { name: 'Отмена' }).tap()
     await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
     await expect(page.getByTestId('cashier-mode-bar')).toHaveCount(0)
@@ -364,6 +380,8 @@ test('«Связать с Умагом»: сводка, автосвязыван
   await pairs.fill(RUN)
   const rejectRow = screen.getByTestId('umag-pair-row').filter({ hasText: rejectName }).filter({ hasText: e.name })
   await expect(rejectRow).toBeVisible()
+  await shot1366(page, 'umag-link-screen-1366')
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/umag-link-screen-full.png`, fullPage: true })
   await rejectRow.getByTestId('umag-pair-reject').click()
   await expect(rejectRow).toHaveCount(0)
   const pairRow = screen.getByTestId('umag-pair-row').filter({ hasText: pairName }).filter({ hasText: d.name })
@@ -391,13 +409,28 @@ test('«Связать с Умагом»: сводка, автосвязыван
   expect((await apiGet<Product>(page.request, `/products/by-barcode/73${RUN}11`)).id).toBe(codeOwner.id)
   expect((await apiGet<Product>(page.request, `/products/by-barcode/${c.barcode}`)).id).toBe(target.id)
   await expect(screen.getByTestId('umag-conflicts')).toContainText('1')
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/umag-link-rows-full.png`, fullPage: true })
 
-  // Повтор той же операции — тот же ответ.
+  // Карточка товара: блок «Умаг» — связанная строка; её код, оставшийся у другого товара, — отдельно.
+  await page.goto('/products')
+  await page.getByLabel('Поиск', { exact: true }).fill(`Свечи комплект ${RUN}`)
+  await page.getByRole('row', { name: new RegExp(`Свечи комплект ${RUN}`) }).click()
+  const umagCard = page.getByTestId('umag-card')
+  await expect(umagCard).toContainText(c.name)
+  await expect(umagCard.getByTestId('umag-card-missing')).toContainText(`73${RUN}11`)
+  await expect(umagCard.getByTestId('umag-card-missing')).not.toContainText(c.barcode)
+  await page.goto('/products/umag')
+
+  // Повтор той же операции — тот же ответ (не «строка не связана»).
   const hitC = await umagRow(page.request, c.barcode)
   const op = crypto.randomUUID()
-  await apiPost(page.request, `/old-catalog/${hitC.id}/unlink`, { op_id: op })
+  const first = await apiPost(page.request, `/old-catalog/${hitC.id}/unlink`, { op_id: op })
   const again = await page.request.post(`/api/v1/old-catalog/${hitC.id}/unlink`, { data: { op_id: op }, headers: DEVICE })
   expect(again.ok(), await again.text()).toBeTruthy()
+  expect(await again.json()).toEqual(first)
+  // Новая отвязка уже отвязанной строки — отказ.
+  const twice = await page.request.post(`/api/v1/old-catalog/${hitC.id}/unlink`, { data: { op_id: crypto.randomUUID() }, headers: DEVICE })
+  expect(twice.status()).toBe(409)
 
   // «Отвязать» на экране: коды остаются у товара.
   await screen.getByLabel('Найти строку Умага').fill(d.barcode)

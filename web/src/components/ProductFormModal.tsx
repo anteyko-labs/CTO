@@ -525,7 +525,7 @@ export function ProductFormModal({
       </div>
       </fieldset>
       {/* Связанная строка старой базы Умаг (SPEC-35 §3): после связывания у товара новые коды. */}
-      {product && <UmagCard productId={product.id} mayEdit={mayEdit} onProduct={(p) => setCodes(p.barcodes)} />}
+      {product && <UmagCard productId={product.id} codes={codes} mayEdit={mayEdit} onProduct={(p) => setCodes(p.barcodes)} />}
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />
         <Missing items={missing} className="text-right" />

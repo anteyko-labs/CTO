@@ -6,10 +6,21 @@ import { get } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { OldCatalogHit, Product } from '../lib/types'
-import { conflictText, hitCodes, linkSummary, linkUmag, opIds, searchUmag, unlinkUmag } from '../lib/umagLink'
+import { hitCodes, linkSummary, linkUmag, opIds, sameCode, searchUmag, unlinkUmag } from '../lib/umagLink'
 import { Button, Empty, ErrorBox, Field, Loading, toast } from './ui'
 
-export function UmagCard({ productId, mayEdit, onProduct }: { productId: string; mayEdit: boolean; onProduct: (p: Product) => void }) {
+export function UmagCard({
+  productId,
+  codes,
+  mayEdit,
+  onProduct,
+}: {
+  productId: string
+  /** Коды товара сейчас (список в карточке); без них — из ответа сервера. */
+  codes?: readonly string[]
+  mayEdit: boolean
+  onProduct: (p: Product) => void
+}) {
   const [tick, setTick] = useState(0)
   const load = useLoad(() => get<Product>(`/products/${productId}`), [productId, tick])
   const [choosing, setChoosing] = useState(false)
@@ -17,6 +28,10 @@ export function UmagCard({ productId, mayEdit, onProduct }: { productId: string;
   const [ops] = useState(opIds)
   const umag = load.data?.umag ?? null
   if (!load.data) return null
+  // Коды строки, которых у товара нет: заняты другим товаром или убраны из карточки (SPEC-35 §1).
+  // Товара без кода не бывает: пустой список — ещё не известен, берём ответ сервера.
+  const own = codes && codes.length > 0 ? codes : load.data.barcodes
+  const missing = (umag?.codes ?? []).filter((c) => !own.some((b) => sameCode(b, c)))
 
   const choose = (h: OldCatalogHit) =>
     void act.run(async () => {
@@ -72,8 +87,10 @@ export function UmagCard({ productId, mayEdit, onProduct }: { productId: string;
             Цена в Умаге {umag.price_tyiyn ? formatSom(umag.price_tyiyn) : '—'}
             {umag.cost_tyiyn != null && umag.cost_tyiyn > 0 && ` · закупка ${formatSom(umag.cost_tyiyn)}`}
           </div>
-          {umag.conflicts && umag.conflicts.length > 0 && (
-            <div className="text-amber-800">Не перенесены (уже у других товаров): {conflictText(umag.conflicts)}</div>
+          {missing.length > 0 && (
+            <div className="text-amber-800" data-testid="umag-card-missing">
+              Не у этого товара: {missing.join(', ')} — код у другого товара (конфликт) или убран из карточки
+            </div>
           )}
         </div>
       ) : (
