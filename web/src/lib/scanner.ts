@@ -185,8 +185,8 @@ export function useScanToPicker(touch = false): void {
     const onKey = (e: KeyboardEvent) => {
       if (MODIFIER_KEYS.has(e.key)) return
       const active = document.activeElement
-      // Придержанное — только для поля, в котором набирали.
-      if (held && (held.field !== active || !e.isTrusted)) release()
+      // Придержанное — только для поля, в котором набирали; сочетание клавиш (Ctrl+Enter) — не скан.
+      if (held && (held.field !== active || !e.isTrusted || e.ctrlKey || e.metaKey || e.altKey)) release()
       const dialog = topDialog()
       const route = routeKey({
         key: e.key,
