@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select set_config('pg_trgm.similarity_threshold', $1, true)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "set_config",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "36cc8c79fbbc4049202b1b7af688ca3ac30e91ee727df7e48063d8198ffd365d"
+}

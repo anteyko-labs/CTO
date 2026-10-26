@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.id from old_catalog o\n           where o.branch_id = $1\n             and (($2 <> '' and (o.article = $2 or umag_has_code(o.codes, $2)))\n                  or ($3 <> '' and (o.name ilike '%' || $3 || '%' or similarity(o.name, $3) >= 0.25\n                                    or o.article ilike $3 || '%' or umag_has_code(o.codes, $3))))\n           order by (($2 <> '' and (o.article = $2 or umag_has_code(o.codes, $2)))\n                     or ($3 <> '' and umag_has_code(o.codes, $3))) desc,\n                    (o.product_id is null\n                     and not exists (select 1 from unnest(o.keys) c\n                                     cross join lateral code_products(c) x where not x.internal)) desc,\n                    similarity(o.name, $3) desc, o.name, o.id\n           limit 20",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5399ed105fa50b1ce3d02b61bf0dafa3d0104353cb04ece09728980b534336ba"
+}

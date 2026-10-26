@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into old_catalog (id, branch_id, name, barcode, article, extra_code, cost_tyiyn,\n                                    price_tyiyn, unit, supplier, category)\n           select t.id, $1, t.name, t.barcode, t.article, t.extra_code, t.cost, t.price, t.unit,\n                  t.supplier, t.category\n           from unnest($2::uuid[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int8[],\n                       $8::int8[], $9::text[], $10::text[], $11::text[])\n                as t(id, name, barcode, article, extra_code, cost, price, unit, supplier, category)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b9bcf1633e65075830ff165109e58a34ade041eb86aee12fb4ea0a4f8790f0f5"
+}

@@ -442,7 +442,7 @@ pub struct ProductFilter {
     pub stock: StockChip,
 }
 
-fn escape_like(s: &str) -> String {
+pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
@@ -500,6 +500,8 @@ async fn query_products_raw(
                   or p.name ilike '%' || $2 || '%' or p.brand ilike '%' || $2 || '%'
                   or p.article ilike '%' || $2 || '%'
                   or exists (select 1 from product_barcodes b where b.product_id = p.id and b.code like $2 || '%')
+                  -- числовой код и без нулей впереди, потерянных Excel (SPEC-35 §1)
+                  or p.id in (select x.product_id from code_products($10) x)
                   -- по кросс-номеру в любом написании (SPEC-17)
                   or (norm_code($2) <> '' and exists (select 1 from product_cross_numbers x
                       where x.product_id = p.id and x.code_norm like norm_code($2) || '%')))
@@ -512,7 +514,7 @@ async fn query_products_raw(
            -- Найденное по тексту (SPEC-30 §13): точный штрихкод или артикул, потом название
            -- с начала, потом остальное; внутри — по названию.
            order by case when $10::text is null then 0
-                         when exists (select 1 from product_barcodes b where b.product_id = p.id and b.code = $10)
+                         when p.id in (select x.product_id from code_products($10) x)
                               or (p.article <> '' and lower(p.article) = lower($10)) then 0
                          when p.name ilike $2 || '%' then 1
                          else 2 end,
@@ -1001,15 +1003,27 @@ async fn list_products(
     Ok(Json(out))
 }
 
+/// Карточка товара: товар и связанная строка старой базы Умаг этого филиала (SPEC-35 §3).
+#[derive(Serialize)]
+struct ProductCard {
+    #[serde(flatten)]
+    product: ProductOut,
+    umag: Option<crate::api::old_catalog::ProductUmag>,
+}
+
 async fn get_product(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(id): Path<Uuid>,
-) -> AppResult<Json<ProductOut>> {
+) -> AppResult<Json<ProductCard>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(product_by_id(&mut conn, &user, id).await?))
+    let product = product_by_id(&mut conn, &user, id).await?;
+    let umag = crate::api::old_catalog::product_umag(&mut conn, &user, id).await?;
+    Ok(Json(ProductCard { product, umag }))
 }
 
+/// Товар по коду: точный код, а числовой — и без нулей впереди, потерянных Excel в выгрузке
+/// Умага (SPEC-35 §1). Ничего не записывает.
 async fn product_by_barcode(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -1017,7 +1031,10 @@ async fn product_by_barcode(
 ) -> AppResult<Json<ProductOut>> {
     let mut conn = state.pool.acquire().await?;
     let id = sqlx::query_scalar!(
-        "select product_id from product_barcodes where code = $1",
+        r#"select x.product_id as "product_id!" from code_products($1) x
+           join products p on p.id = x.product_id
+           order by (x.code = $1) desc, p.archived, x.code
+           limit 1"#,
         code.trim()
     )
     .fetch_optional(&mut *conn)
@@ -1137,6 +1154,10 @@ pub struct CreateProductReq {
     /// по ней ревизия оценит найденный на полке остаток (SPEC-20).
     #[serde(default)]
     pub initial_cost_tyiyn: Option<i64>,
+    /// Строка старой базы Умаг, из которой заведена карточка: товар связывается с ней и
+    /// получает все её коды в той же операции (SPEC-35 §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_catalog_id: Option<Uuid>,
 }
 
 pub(crate) async fn insert_barcode(
@@ -1198,6 +1219,13 @@ pub async fn create_product_tx(
     if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
+    // Связать с Умагом — право «Товары и штрихкоды» (SPEC-35 §2): ревизия заводит карточки и
+    // без него, но строку Умага не связывает.
+    if req.old_catalog_id.is_some() {
+        crate::auth::require_permission(&mut *tx, &ctx.user, "products").await?;
+    }
+    // Замок списка Умага — до записи кодов: связывание и перенос кодов не перебивают друг друга.
+    crate::api::old_catalog::lock_branch(&mut *tx, ctx.user.branch_id).await?;
     let (kind, defs) = category_info(&mut *tx, req.category_id).await?;
     let name = req.name.trim().to_string();
     if name.is_empty() {
@@ -1289,30 +1317,11 @@ pub async fn create_product_tx(
         // Товара без штрихкода не бывает: заводского кода нет — выдаём свой.
         let code = next_internal_code(&mut *tx).await?;
         insert_barcode(&mut *tx, id, &code, true).await?;
-    } else {
-        // Позиция списка старой программы с этим кодом: её остальные коды (основной и «доп.
-        // код» — заводской EAN канистры) тоже становятся кодами товара, если не заняты, — иначе
-        // касса не найдёт товар по коду с упаковки (проверка 20.10.2026).
-        let extra = sqlx::query_scalar!(
-            r#"select distinct c as "c!" from old_catalog o,
-                 unnest(array[o.barcode] || regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+')) c
-               where o.branch_id = $1 and c <> ''
-                 and exists (select 1 from product_barcodes b
-                             where b.product_id = $2
-                               and (b.code = o.barcode
-                                    or b.code = any(regexp_split_to_array(o.extra_code, '\s*[;,]\s*|\s+'))))
-                 and not exists (select 1 from product_barcodes x where x.code = c)"#,
-            ctx.user.branch_id,
-            id
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-        for code in extra {
-            if barcode::is_acceptable(&code) {
-                insert_barcode(&mut *tx, id, &code, false).await?;
-            }
-        }
     }
+    // Строка Умага, из которой заведена карточка, и строки с её кодом: связь и все их коды
+    // (основной, артикул, «доп. коды» — заводской EAN канистры) — иначе касса не найдёт товар
+    // по коду с упаковки (проверка 20.10.2026, SPEC-35 §1).
+    crate::api::old_catalog::link_product_rows(&mut *tx, ctx, id, req.old_catalog_id).await?;
     ops::audit(
         &mut *tx,
         ctx,
@@ -1799,6 +1808,8 @@ async fn add_barcode(
         }
         None => (next_internal_code(&mut tx).await?, true),
     };
+    // Замок списка Умага — до записи кода (SPEC-35 §1).
+    crate::api::old_catalog::lock_branch(&mut tx, ctx.user.branch_id).await?;
     insert_barcode(&mut tx, id, &code, internal).await?;
     ops::audit(
         &mut tx,
@@ -1809,6 +1820,9 @@ async fn add_barcode(
         json!({ "code": code }),
     )
     .await?;
+    // «Это он — привязать код» (SPEC-20): строка Умага с этим кодом — тот же товар, её
+    // остальные коды тоже переходят ему.
+    crate::api::old_catalog::link_product_rows(&mut tx, &ctx, id, None).await?;
     tx.commit().await?;
     Ok(Json(BarcodeOut { code, internal }))
 }
@@ -1985,6 +1999,14 @@ async fn merge_product(
         req.into_product_id
     )
     .fetch_all(&mut *tx)
+    .await?;
+    // Строки Умага дубля (во всех филиалах) связаны теперь с основной карточкой (SPEC-35).
+    sqlx::query!(
+        "update old_catalog set product_id = $2 where product_id = $1",
+        id,
+        req.into_product_id
+    )
+    .execute(&mut *tx)
     .await?;
     // Кросс-номера дубля тоже переходят основной карточке: поиск по ним должен найти её (SPEC-17).
     let cross = sqlx::query_scalar!(

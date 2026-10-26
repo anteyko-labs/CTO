@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select code_conflicts from old_catalog where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code_conflicts",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "99c042130c348d986730961821af615bddff7e85d1ab05367de154e636935787"
+}
