@@ -22,10 +22,12 @@ const ABOUT =
   'У услуги «Бесплатно с нашим маслом» цена — 0, если в чеке нашего масла её категории не меньше канистры; иначе — цена клиенту. ' +
   'Если клиент вернёт масло и его останется меньше канистры, цена замены удержится из возврата.'
 
-function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn: number } {
+/** Пустое поле «Мастеру» — ставка по умолчанию (30 сом за каждую услугу, ADR-112): сервер ставит её сам. */
+function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn?: number } {
   const p = parseSom(price)
-  const f = parseSom(fee || '0')
   if (p === null) throw new Error('Неверная цена')
+  if (!fee.trim()) return { price_tyiyn: p }
+  const f = parseSom(fee)
   if (f === null) throw new Error('Неверное начисление мастеру')
   return { price_tyiyn: p, master_fee_tyiyn: f }
 }
@@ -296,6 +298,9 @@ export default function Services() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
   const [form, setForm] = useState({ name: '', price: '', fee: '', free: false, oilCat: '' })
+  // Ставка мастеру по умолчанию — за каждую услугу (ADR-112): подсказка в пустом поле.
+  const salesSettings = useLoad(() => get<{ oil_change_master_fee_tyiyn: number }>('/settings/sales'), [])
+  const defaultFee = salesSettings.data?.oil_change_master_fee_tyiyn
   const [book, setBook] = useState<BookForm>({ slot: '', km: '', days: '' })
   const categories = useOilCategories()
   const catName = (id: string | null | undefined) => categories.data?.find((c) => c.id === id)?.name
@@ -473,7 +478,15 @@ export default function Services() {
                   Мастеру, с
                   <DirHint text={FEE_HINT} />
                 </span>
-                <input id="service-fee" className="w-40" inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
+                <input
+                  id="service-fee"
+                  className="w-40"
+                  inputMode="decimal"
+                  disabled={!owner}
+                  placeholder={defaultFee !== undefined ? `по умолчанию ${formatSom(defaultFee)}` : 'по умолчанию'}
+                  value={form.fee}
+                  onChange={(e) => setForm({ ...form, fee: e.target.value })}
+                />
               </label>
             </div>
             {owner && (
