@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update old_catalog set product_id = $2 where product_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2ab9baa24244977ca656bca3f92c690a0bd13f38fdc8262a36115050026a4b15"
+}

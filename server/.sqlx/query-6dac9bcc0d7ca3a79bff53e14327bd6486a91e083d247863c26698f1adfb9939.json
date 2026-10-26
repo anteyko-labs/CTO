@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update old_catalog o set product_id = t.product_id\n           from unnest($1::uuid[], $2::uuid[]) as t(id, product_id) where o.id = t.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6dac9bcc0d7ca3a79bff53e14327bd6486a91e083d247863c26698f1adfb9939"
+}

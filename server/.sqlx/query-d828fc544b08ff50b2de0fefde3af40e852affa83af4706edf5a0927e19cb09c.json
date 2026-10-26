@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into old_catalog_link_rejects (branch_id, umag_barcode, product_id)\n           values ($1, $2, $3) on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d828fc544b08ff50b2de0fefde3af40e852affa83af4706edf5a0927e19cb09c"
+}

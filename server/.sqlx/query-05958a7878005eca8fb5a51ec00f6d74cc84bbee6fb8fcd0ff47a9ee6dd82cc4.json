@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "analyze old_catalog",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "05958a7878005eca8fb5a51ec00f6d74cc84bbee6fb8fcd0ff47a9ee6dd82cc4"
+}

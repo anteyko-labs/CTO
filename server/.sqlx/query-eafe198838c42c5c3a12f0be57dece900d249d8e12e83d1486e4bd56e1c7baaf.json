@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from old_catalog_link_rejects\n           where branch_id = $1 and umag_barcode = $2 and product_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eafe198838c42c5c3a12f0be57dece900d249d8e12e83d1486e4bd56e1c7baaf"
+}

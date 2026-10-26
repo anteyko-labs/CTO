@@ -41,6 +41,21 @@ updated: 2026-10-26
 
 - Связать, отвязать, автосвязывание, «не то» — записи журнала `old_catalog.link`, `old_catalog.unlink`, `old_catalog.auto_link`, `old_catalog.reject`; с `op_id`, повтор — тот же ответ. Право — «Товары и штрихкоды» (владелец — всегда). Филиалы (SPEC-33): список Умага у филиала свой, товары и их коды общие.
 
+## 5. API
+
+- Миграция `0065`: у строки Умага — `product_id` (связанный товар), `code_conflicts` (`[{code, product_id, product_name}]`), `codes` (коды строки по правилу §1, считает база) и `keys` (штрихкод и «доп. коды» — по ним строку узнают: автосвязывание, «уже заведена», новая выгрузка; артикул бывает общим у разных товаров и строку не узнаёт, хотя кодом товара становится); отказы «Не то» — `old_catalog_link_rejects` (филиал, штрихкод строки, товар); у кода товара — `source` (`own` / `umag`).
+- `GET /products/by-barcode/{code}` — точный код, а числовой — и без нулей впереди (с обеих сторон); ничего не записывает. Поиск товаров (`GET /products`, `/products/list`) находит числовой код так же.
+- `GET /old-catalog/search?barcode=&q=` — у подсказки дополнительно `product_id`, `product_name` (связанный товар), `codes`, `conflicts`; `linked_product_id` — связанный товар, а без связи — товар с её штрихкодом или «доп. кодом» (`keys`, не выданным программой). Не заведённые строки — выше заведённых.
+- `POST /old-catalog/{id}/link {op_id, product_id}` → `{product, copied, conflicts}`; строка связана с другим товаром — 409, товар в архиве — 422.
+- `POST /old-catalog/{id}/unlink {op_id}` → `{ok}`; коды остаются у товара, пара запоминается как «не то» — автосвязывание её не вернёт; не связана — 409.
+- `POST /old-catalog/auto-link {op_id}` → `{linked, by_code, by_name}`.
+- `GET /old-catalog/pairs?q=&page=&size=` (страница с нуля; или `limit`/`offset`; число пар — в `X-Total-Count`) → `[{product: {id, name, brand, article, sale_price_tyiyn}, umag, similarity}]`: у товара до трёх строк, сверху самые похожие.
+- `POST /old-catalog/{id}/reject {op_id, product_id}` → `{ok}`.
+- `GET /old-catalog` → `{rows, imported_at, linked, unlinked, conflicts}`; `PUT /old-catalog` → `{rows, linked, copied}`: связи сохранены, товару переносятся только новые коды строки.
+- `POST /products` (и `POST /revisions/{id}/new-product`) с `old_catalog_id` — товар связан со строкой и получил её коды в той же операции; нужно право «Товары и штрихкоды». Новый товар и привязанный код (`POST /products/{id}/barcodes`) связывают и строки Умага, чей штрихкод или «доп. код» (не выданный программой) теперь только у этого товара.
+- `GET /products/{id}` → дополнительно `umag: {id, name, barcode, codes, price_tyiyn, cost_tyiyn} | null` — строка своего филиала; `cost_tyiyn` — только владельцу.
+- Объединение карточек переносит связи дубля на основную карточку.
+
 ## Проверка
 
 - [ ] После связывания код Умага (штрихкод, доп. код, с потерянными нулями) находит товар: скан на кассе, поиск, «Товары», приход, ревизия, касса без сети.

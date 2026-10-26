@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update old_catalog o set code_conflicts = coalesce((\n               select jsonb_agg(jsonb_build_object('code', c.code, 'product_id', x.product_id,\n                                                   'product_name', p.name) order by c.n)\n               from unnest(o.codes) with ordinality as c(code, n)\n               cross join lateral (select y.product_id from code_products(c.code) y\n                                   where y.product_id <> o.product_id\n                                   order by (y.code = c.code) desc, y.code limit 1) x\n               join products p on p.id = x.product_id\n               where not exists (select 1 from product_barcodes s\n                                 where s.code = c.code and s.product_id = o.product_id)), '[]'::jsonb)\n           where o.id = any($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4d0c7f3c373d8fb907cd4c356fb78caa183427698410b0db6b73d86360b68094"
+}

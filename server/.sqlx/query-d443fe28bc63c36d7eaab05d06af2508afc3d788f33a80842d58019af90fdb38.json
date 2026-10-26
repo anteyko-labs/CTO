@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select x.product_id as \"product_id!\" from code_products($1) x\n           join products p on p.id = x.product_id\n           order by (x.code = $1) desc, p.archived, x.code\n           limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d443fe28bc63c36d7eaab05d06af2508afc3d788f33a80842d58019af90fdb38"
+}

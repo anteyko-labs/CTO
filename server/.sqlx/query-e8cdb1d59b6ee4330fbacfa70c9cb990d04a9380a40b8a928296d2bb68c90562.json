@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, barcode, umag_key(barcode, name) as \"key!\", product_id\n           from old_catalog where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "barcode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "product_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "e8cdb1d59b6ee4330fbacfa70c9cb990d04a9380a40b8a928296d2bb68c90562"
+}

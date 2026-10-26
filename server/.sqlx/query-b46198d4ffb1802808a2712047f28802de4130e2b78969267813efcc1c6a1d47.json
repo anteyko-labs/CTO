@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with free as (\n               select p.id, p.name, p.brand, p.article,\n                      case when btrim(p.brand) <> '' and strpos(lower(p.name), lower(btrim(p.brand))) = 0\n                           then btrim(p.brand) || ' ' || p.name else p.name end as full_name\n               from products p\n               where not p.archived\n                 and not exists (select 1 from old_catalog l where l.branch_id = $1 and l.product_id = p.id)\n                 and not exists (select 1 from product_barcodes b\n                                 where b.product_id = p.id and not b.internal\n                                   and exists (select 1 from old_catalog l\n                                               where l.branch_id = $1 and l.keys @> array[b.code]))\n           )\n           select f.id as \"product_id!\", f.name as \"product_name!\", f.brand as \"brand!\",\n                  f.article as \"article!\", f.full_name as \"full_name!\",\n                  coalesce(bp.sale_price_tyiyn, p.sale_price_tyiyn) as \"sale_price_tyiyn!\",\n                  o.id as \"umag_id!\", o.name as \"umag_name!\", o.sim as \"sim!\"\n           from free f\n           join products p on p.id = f.id\n           left join branch_products bp on bp.product_id = f.id and bp.branch_id = $1\n           -- Похожие строки каждого товара — по индексу названий: «offset 0» не даёт\n           -- планировщику сравнить все пары подряд (тысячи товаров × тысячи строк — минута).\n           cross join lateral (\n               select o.id, o.name, o.barcode, o.keys, o.codes,\n                      round(similarity(o.name, f.full_name) * 1000)::int as sim\n               from old_catalog o\n               where o.name % f.full_name and o.branch_id = $1 and o.product_id is null\n                 and similarity(o.name, f.full_name) >= $4::text::real\n               offset 0\n           ) o\n           where not exists (select 1 from product_barcodes b where b.code = any(o.keys) and not b.internal)\n             and not exists (select 1 from old_catalog_link_rejects r\n                             where r.branch_id = $1 and r.umag_barcode = umag_key(o.barcode, o.name)\n                               and r.product_id = f.id)\n             and ($2 = '' or f.name ilike '%' || $3 || '%' or f.brand ilike '%' || $3 || '%'\n                  or f.article ilike '%' || $3 || '%' or o.name ilike '%' || $3 || '%'\n                  or umag_has_code(o.codes, $2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "brand!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "article!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "full_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "sale_price_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "umag_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "umag_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "sim!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "b46198d4ffb1802808a2712047f28802de4130e2b78969267813efcc1c6a1d47"
+}
