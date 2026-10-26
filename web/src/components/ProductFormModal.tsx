@@ -8,8 +8,10 @@ import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { canisterPourPrice } from '../lib/money'
 import type { CardPreset } from '../lib/oldCatalog'
-import { KIND_LABELS, type Category, type CategoryKind, type Product } from '../lib/types'
+import { KIND_LABELS, type Category, type CategoryKind, type OldCatalogHit, type Product } from '../lib/types'
+import { hitCodes } from '../lib/umagLink'
 import { Badge, Button, Checkbox, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
+import { UmagCard } from './UmagCard'
 
 interface Form {
   category_id: string
@@ -52,6 +54,7 @@ export function ProductFormModal({
   presetName,
   presetCategoryId,
   preset,
+  umagRow,
   onClose,
   onSaved,
 }: {
@@ -63,6 +66,9 @@ export function ProductFormModal({
   presetCategoryId?: string
   /** Данные из списка старой программы (SPEC-20, SPEC-29 §1): карточка заполнена, человек проверяет. */
   preset?: CardPreset
+  /** Строка старой базы Умаг, из которой заводят товар (SPEC-35): сервер в той же операции свяжет
+   *  её с товаром и перенесёт её коды. */
+  umagRow?: OldCatalogHit
   onClose: () => void
   onSaved: (p: Product) => void
 }) {
@@ -172,6 +178,7 @@ export function ProductFormModal({
           barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
           sale_price_tyiyn: v.sale,
           min_stock: v.min,
+          ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
         })
       } else {
         await patch<Product>(`/products/${product.id}`, {
@@ -301,7 +308,12 @@ export function ProductFormModal({
     <Modal title={editing ? 'Товар' : 'Новый товар'} onClose={onClose} wide>
       {preset && !editing && (
         <div className="mb-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
-          Данные взяты из старой программы: {preset.name}. Проверьте категорию, цену и характеристики.
+          Данные взяты из старой программы{umagRow ? ' (база Умаг)' : ''}: {preset.name}. Проверьте категорию, цену и характеристики.
+          {umagRow && hitCodes(umagRow).length > 0 && (
+            <div className="mt-1" data-testid="umag-codes">
+              Коды Умага перейдут к товару (кроме занятых другими товарами): {hitCodes(umagRow).join(', ')}
+            </div>
+          )}
         </div>
       )}
       {/* Без права «Товары и штрихкоды» карточка только для чтения (ADR-097). */}
@@ -512,6 +524,8 @@ export function ProductFormModal({
         </Field>
       </div>
       </fieldset>
+      {/* Связанная строка старой базы Умаг (SPEC-35 §3): после связывания у товара новые коды. */}
+      {product && <UmagCard productId={product.id} mayEdit={mayEdit} onProduct={(p) => setCodes(p.barcodes)} />}
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />
         <Missing items={missing} className="text-right" />

@@ -129,6 +129,8 @@ export interface Product {
   last_purchase_price_tyiyn: number | null
   avg_cost_tyiyn?: number
   stock_value_tyiyn?: number
+  /** Связанная строка Умага — только в ответе `GET /products/{id}` (SPEC-35 §3). */
+  umag?: ProductUmag | null
 }
 
 export interface Employee {
@@ -1163,7 +1165,14 @@ export interface SupplierReturn {
   }[]
 }
 
-/** Позиция списка старой программы (SPEC-20). */
+/** Код строки Умага, который уже у другого товара: не перенесён, строка помечена (SPEC-35 §1). */
+export interface UmagConflict {
+  code: string
+  product_id: string
+  product_name: string
+}
+
+/** Позиция списка старой программы (SPEC-20) — строка старой базы Умаг (SPEC-35). */
 export interface OldCatalogHit {
   id: string
   name: string
@@ -1178,6 +1187,55 @@ export interface OldCatalogHit {
   exact: boolean
   /** Товар учёта с этим штрихкодом уже заведён. */
   linked_product_id: string | null
+  /** Связанный товар учёта (SPEC-35 §1); у прежнего ответа сервера — нет. */
+  product_id?: string | null
+  product_name?: string | null
+  /** Все коды строки: штрихкод, артикул-код, доп. коды. */
+  codes?: string[]
+  /** Коды, занятые другим товаром: при связывании не перенесены. */
+  conflicts?: UmagConflict[]
+}
+
+/** Строка Умага связана с товаром: товар, перенесённые коды и не перенесённые (SPEC-35). */
+export interface UmagLinkResult {
+  product: Product
+  copied: string[]
+  conflicts: UmagConflict[]
+}
+
+/** Сводка списка Умага филиала (SPEC-20, SPEC-35 §3). */
+export interface UmagStats {
+  rows: number
+  imported_at: string | null
+  linked?: number
+  unlinked?: number
+  conflicts?: number
+}
+
+/** Итог «Связать автоматически»: всего, по коду, по названию. */
+export interface UmagAutoLink {
+  linked: number
+  by_code: number
+  by_name: number
+}
+
+/** Похожая пара «товар без связи ↔ строка Умага без связи»; сходство названий 0…1 — для показа. */
+export interface UmagPair {
+  product: Pick<Product, 'id' | 'name' | 'brand' | 'article' | 'sale_price_tyiyn'>
+  umag: OldCatalogHit
+  similarity: number
+}
+
+/** Строка Умага, связанная с товаром, — в карточке товара (SPEC-35 §3). */
+export interface ProductUmag {
+  id: string
+  name: string
+  barcode: string
+  codes: string[]
+  price_tyiyn: number
+  /** Закупка в Умаге — только владельцу (ADR-008). */
+  cost_tyiyn?: number | null
+  conflicts?: UmagConflict[]
 }
 
 // ---------- Замены по видам (SPEC-30 §2) ----------

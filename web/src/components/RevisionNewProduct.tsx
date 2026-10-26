@@ -1,13 +1,16 @@
 // В ревизию — товар, которого нет в программе (SPEC-29 §10): карточка заводится сразу с найденным
 // количеством одной операцией; подсказки из старой программы заполняют карточку.
 import { useEffect, useMemo, useState } from 'react'
-import { get, newOpId, post, qs } from '../lib/api'
+import { get, newOpId, post } from '../lib/api'
+import { useUser } from '../lib/auth'
 import { canisterPourPrice } from '../lib/money'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { presetFromHit } from '../lib/oldCatalog'
+import { can } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
+import { searchUmag, umagStep } from '../lib/umagLink'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
 
@@ -22,6 +25,8 @@ interface Form {
   cost: string
   count: string
   from: string | null
+  /** Строка Умага, из которой заполнена карточка: товар с ней свяжется (SPEC-35). */
+  umagId: string | null
 }
 
 const empty = (barcode = '', name = ''): Form => ({
@@ -35,6 +40,7 @@ const empty = (barcode = '', name = ''): Form => ({
   cost: '',
   count: '',
   from: null,
+  umagId: null,
 })
 
 /** Количество на полке: штуки целым, масло литрами. */
@@ -69,21 +75,28 @@ export function RevisionNewProduct({
   )
   const [opId] = useState(newOpId)
   const act = useAction()
+  // Связать новую карточку со строкой Умага — право «Товары и штрихкоды» (SPEC-35 §4).
+  const mayLink = can(useUser(), 'products')
   const category = cats.find((c) => c.id === form?.categoryId)
   const oil = category?.kind === 'oil'
   const ml = oil && form ? parseLiters(form.liters) : null
   const price = form?.price.trim() ? parseSom(form.price) : 0
   const pour = ml && price ? canisterPourPrice(price, ml) : null
 
-  // Скан незнакомого кода — сразу ищем его в списке старой программы.
+  // Скан незнакомого кода — сразу ищем его в старой базе Умаг: связанная строка — её товар
+  // считают в строке ревизии, несвязанная — заполняет карточку (SPEC-35 §2).
   const ready = cats.length > 0
   useEffect(() => {
     if (!presetBarcode || !ready) return
     let alive = true
-    void get<OldCatalogHit[]>(`/old-catalog/search${qs({ barcode: presetBarcode })}`)
-      .then((hits) => {
-        const exact = hits.find((h) => h.exact)
-        if (alive && exact) fromOld(exact, presetBarcode)
+    void searchUmag({ barcode: presetBarcode })
+      .then(async (hits) => {
+        const step = umagStep(hits)
+        if (!alive) return
+        if (step.kind === 'linked') {
+          const p = await get<Product>(`/products/${step.productId}`)
+          if (alive) onExisting(p)
+        } else if (step.kind === 'umag') fromOld(step.hit, presetBarcode)
       })
       .catch(() => undefined)
     return () => {
@@ -94,7 +107,18 @@ export function RevisionNewProduct({
 
   function fromOld(h: OldCatalogHit, code: string) {
     const p = presetFromHit(h, cats, categoryId ?? '', code)
-    setForm({ ...empty(), barcode: p.barcode, name: p.name, article: p.article, categoryId: categoryId ?? p.categoryId, liters: p.liters, price: p.price, cost: p.cost, from: h.name })
+    setForm({
+      ...empty(),
+      barcode: p.barcode,
+      name: p.name,
+      article: p.article,
+      categoryId: categoryId ?? p.categoryId,
+      liters: p.liters,
+      price: p.price,
+      cost: p.cost,
+      from: h.name,
+      umagId: h.id,
+    })
     setTimeout(() => document.getElementById('revnew-count')?.focus(), 50)
   }
 
@@ -126,6 +150,7 @@ export function RevisionNewProduct({
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
         initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+        ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
       })
       toast(`Заведён и посчитан: ${r.product.name}`)
       onDone()

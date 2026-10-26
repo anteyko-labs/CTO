@@ -14,6 +14,7 @@ import { canisterPourPrice } from '../lib/money'
 import { presetFromHit } from '../lib/oldCatalog'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { mapUmagRows } from '../lib/umag'
+import { linkUmag, umagStep } from '../lib/umagLink'
 import { readXlsx } from '../lib/xlsx'
 
 type Hit = OldCatalogHit
@@ -115,7 +116,16 @@ export default function ProductIntake() {
       .catch(() => setSimilar([]))
   }
 
-  /** Скан: у нас есть — показываем; нет — позиция старого списка; нет и там — новая карточка. */
+  /** Товар уже заведён: показываем; в пересчёте спросим, прибавить ли к посчитанному. */
+  const showFound = async (p: Product) => {
+    // Товар мог лежать на другой полке и уже быть посчитан — покажем и спросим, прибавить ли.
+    setAlready(revision ? await countedBefore(p.id) : null)
+    setFound({ ...p })
+    setForm(null)
+    setTimeout(() => document.getElementById('intake-count')?.focus(), 50)
+  }
+
+  /** Скан: у нас есть — показываем; нет — строка старой базы Умаг (связанная — её товар); нет и там — новая карточка. */
   const lookup = (code: string) =>
     void act.run(async () => {
       setFound(null)
@@ -123,18 +133,20 @@ export default function ProductIntake() {
       setSimilar([])
       try {
         const p = await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
-        // Товар мог лежать на другой полке и уже быть посчитан — покажем и спросим, прибавить ли.
-        setAlready(revision ? await countedBefore(p.id) : null)
-        setFound({ ...p })
         setHits([])
-        setTimeout(() => document.getElementById('intake-count')?.focus(), 50)
+        await showFound(p)
         return
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 404)) throw e
       }
       const list = await get<Hit[]>(`/old-catalog/search${qs({ barcode: code })}`)
       setHits(list)
-      const exact = list.find((h) => h.exact)
+      const step = umagStep(list)
+      if (step.kind === 'linked') {
+        await showFound(await get<Product>(`/products/${step.productId}`))
+        return
+      }
+      const exact = step.kind === 'umag' ? step.hit : undefined
       if (exact) {
         setForm(fromHit(exact, code))
         loadSimilar(exact.name)
@@ -262,6 +274,8 @@ export default function ProductIntake() {
         barcodes: [form.barcode.trim()],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
         initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+        // Из старой базы Умаг: товар свяжется со строкой, её коды станут его кодами (SPEC-35).
+        ...(form.from && !form.from.product_id ? { old_catalog_id: form.from.id } : {}),
       })
       if (revision) await saveCount(p.id, p.unit, form.count)
       setRecent((r) => [{ name: p.name, at: new Date().toISOString(), count: form.count, isNew: true }, ...r].slice(0, 15))
@@ -274,6 +288,8 @@ export default function ProductIntake() {
     void act.run(async () => {
       if (!form) return
       await post(`/products/${p.id}/barcodes`, { code: form.barcode.trim() })
+      // Данные из строки Умага — связываем её с этим товаром: остальные её коды тоже станут его (SPEC-35).
+      if (form.from && !form.from.product_id) await linkUmag(form.from.id, p.id, newOpId())
       // Карточка уже была — её могли посчитать под другим кодом: прибавляем и показываем итог.
       const total = revision ? await saveCount(p.id, p.unit, form.count) : null
       if (total !== null) toast(`В ревизии теперь ${qtyText(p.unit, total)}`)
@@ -379,6 +395,12 @@ export default function ProductIntake() {
                       type="button"
                       className={`flex w-full items-start gap-3 px-4 py-2.5 text-left hover:bg-sky-50 ${form?.from?.id === h.id ? 'bg-sky-50' : ''}`}
                       onClick={() => {
+                        // Связанная строка — это уже заведённый товар (SPEC-35): показываем его, дубля не заводим.
+                        if (h.product_id) {
+                          const id = h.product_id
+                          void act.run(async () => showFound(await get<Product>(`/products/${id}`)))
+                          return
+                        }
                         const code = form?.barcode || (found ? '' : text.trim())
                         setFound(null)
                         setForm(fromHit(h, code))
@@ -392,7 +414,9 @@ export default function ProductIntake() {
                         </span>
                         <span className="mt-1 flex flex-wrap gap-1">
                           {h.exact && <Badge tone="green">этот штрихкод</Badge>}
-                          {h.linked_product_id && <Badge tone="slate">уже заведён</Badge>}
+                          {(h.product_id || h.linked_product_id) && (
+                            <Badge tone="slate">{h.product_name ? `заведён: ${h.product_name}` : 'уже заведён'}</Badge>
+                          )}
                         </span>
                       </span>
                       <span className="shrink-0 text-right text-sm">

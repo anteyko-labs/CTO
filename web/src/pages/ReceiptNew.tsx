@@ -30,12 +30,11 @@ import { missingWithFocus } from '../lib/forms'
 import { useFocusAfterRender } from '../lib/focus'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
-import { presetFromHit, type CardPreset } from '../lib/oldCatalog'
 import { nextField, type LineField } from '../lib/receiptKeys'
 import { defaultPaySource, notEnough, paidNow, partProblem, paySources, type PayMode } from '../lib/receiptPay'
 import { convertCount, stockInFirstCount, stockInLineCalc, stockInNextCount } from '../lib/stockIn'
 import { useCan } from '../lib/permissions'
-import type { CashAccount, Category, LastReceipt, OldCatalogHit, Product, Receipt, StockIn, Supplier } from '../lib/types'
+import type { CashAccount, LastReceipt, Product, Receipt, StockIn, Supplier } from '../lib/types'
 
 /** Вид документа на экране: приход от поставщика или оприходование без поставщика. */
 export type ReceiptKind = 'receipt' | 'stock_in'
@@ -104,8 +103,6 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const onDebt = payMode !== 'paid'
   const [photos, setPhotos] = useState<PendingPhoto[]>([])
   const photoAction = useAction()
-  const categories = useLoad(() => get<Category[]>('/categories'), [])
-  const [oldPreset, setOldPreset] = useState<CardPreset | null>(null)
   // Оплачена сразу — деньги уходят из выбранной кассы (ADR-062); администратору — только «Касса».
   const owner = useUser().role === 'owner'
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
@@ -340,9 +337,6 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       const ready = await preparePhotos(files)
       setPhotos((p) => [...p, ...ready])
     })
-
-  /** Позиция старой программы: карточка с её данными, проверить и сохранить (SPEC-29 §1–2). */
-  const fromOld = (h: OldCatalogHit, code: string) => setOldPreset(presetFromHit(h, categories.data ?? [], '', code))
 
   const submit = () => {
     if (lines.length === 0) {
@@ -673,8 +667,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
           {target !== null && (
             <div className="mb-2" data-testid="draft-target">
               <Notice tone="sky">
-                Выберите товар для строки накладной «{unmatched.find((l) => l.no === target)?.name}» — найдите его в поиске, в том числе в списке
-                старой программы.{' '}
+                Выберите товар для строки накладной «{unmatched.find((l) => l.no === target)?.name}» — найдите его в поиске, в том числе в старой
+                базе Умаг.{' '}
                 <button type="button" className="underline" onClick={() => setTarget(null)}>
                   Отмена
                 </button>
@@ -684,11 +678,16 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
           <div className="mb-3">
             <ProductPicker
               inputId="receipt-picker"
-              onPick={(p, how) => addProduct(p, how)}
+              // Умаг виден в приходе от поставщика (SPEC-35 §2): строка, заведённая из Умага, берёт закупку
+              // оттуда. В оприходовании — только заведённые товары, как на кассе.
+              onPick={(p, how, umagDone) => addProduct(p, how, umagDone?.cost)}
               onUnknownCode={can('products') ? setUnknownCode : undefined}
               onCreate={can('products') ? setNewProductName : undefined}
-              onPickOld={can('products') ? fromOld : undefined}
-              placeholder="Сканируйте штрихкод или пишите название — подскажем и из старой программы"
+              umag={!stockIn}
+              umagAddLabel="Завести и добавить"
+              placeholder={
+                stockIn ? 'Сканируйте штрихкод или пишите название' : 'Сканируйте штрихкод или пишите название — подскажем и из старой базы Умаг'
+              }
             />
           </div>
           {lines.length === 0 ? (
@@ -977,17 +976,6 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
           onSaved={(p) => {
             setNewProductName(null)
             addProduct(p)
-          }}
-        />
-      )}
-      {oldPreset && (
-        <ProductFormModal
-          preset={oldPreset}
-          onClose={() => setOldPreset(null)}
-          onSaved={(p) => {
-            const cost = oldPreset.cost
-            setOldPreset(null)
-            addProduct(p, 'search', cost)
           }}
         />
       )}

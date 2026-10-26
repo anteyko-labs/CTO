@@ -4,6 +4,8 @@
 // Бывший экран «Остатки» (SPEC-03) — здесь же (SPEC-30 §11): отборы «ниже минимума», «нет»,
 // залежалые и «проверить», цена закупки и «Проверено», «В брак» и вкладка «Брак» (SPEC-25),
 // сверка остатков с движениями — владельцу.
+// Старая база Умаг здесь видна (SPEC-35 §2): при поиске под списком — её строки, ещё не заведённые;
+// скан кода (Enter) — товар, окно строки Умага или «Код не найден»; «Связать с Умагом» — /products/umag.
 import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { DefectMarkModal, DefectsTab } from '../components/Defects'
@@ -11,6 +13,8 @@ import { printLabels } from '../components/labels'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { stockText } from '../components/ProductPicker'
+import { UmagHitModal, UmagSearchBlock } from '../components/Umag'
+import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post, put, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
@@ -20,7 +24,8 @@ import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
 import { qtyText } from '../lib/units'
-import type { Category, Product, ProductList, ProductRow, StockChip, StockMismatch } from '../lib/types'
+import type { Category, OldCatalogHit, Product, ProductList, ProductRow, StockChip, StockMismatch } from '../lib/types'
+import { resolveCode } from '../lib/umagLink'
 import { BranchBreakdown, BranchScope } from '../components/BranchScope'
 import { useAllBranches, type AllBranches } from '../lib/branchReport'
 
@@ -95,6 +100,14 @@ export default function Products() {
   const [attrFilters, setAttrFilters] = useState<Record<string, string>>({})
   const [archived, setArchived] = useState(false)
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
+  /** Новый товар с отсканированным кодом («Код не найден» → «Новый товар»). */
+  const [newCode, setNewCode] = useState<string | undefined>(undefined)
+  /** Строка Умага: скан незаведённого кода или «Завести» / «Это уже есть» под списком (SPEC-35 §2). */
+  const [umagHit, setUmagHit] = useState<{ hit: OldCatalogHit; code: string; start: 'info' | 'create' | 'pick' } | null>(null)
+  const [unknownCode, setUnknownCode] = useState<string | null>(null)
+  /** Блок Умага перечитывается после заведения и связывания. */
+  const [umagVersion, setUmagVersion] = useState(0)
+  const scan = useAction()
   /** «+ Оприходовать» у товара (SPEC-29 §8). */
   // «+ Оприходовать» — экран «Новый приход» в виде оприходования с этим товаром (ADR-086).
   const navigate = useNavigate()
@@ -203,8 +216,28 @@ export default function Products() {
 
   const onSaved = (p: Product) => {
     setEditing(null)
+    setNewCode(undefined)
     setSelected((s) => (s[p.id] ? { ...s, [p.id]: { ...s[p.id], product: p } } : s))
     list.reload()
+    setUmagVersion((v) => v + 1)
+  }
+
+  /**
+   * Enter в поиске — скан или набранный код: товар — его карточка; код из Умага — связанная строка
+   * даёт товар, несвязанная — окно Умага; нигде нет — «Код не найден» (SPEC-35 §2).
+   */
+  const onSearchEnter = () => {
+    const code = q.trim()
+    if (!/^\S{3,}$/.test(code)) return
+    void scan.run(async () => {
+      const out = await resolveCode(code)
+      if (out.kind === 'product') setEditing(out.product)
+      else if (out.kind === 'umag') setUmagHit({ hit: out.hit, code, start: 'info' })
+      else if (/^\d{4,}$/.test(code)) {
+        if (mayAdd) setUnknownCode(code)
+        else throw new Error(`Код ${code} не найден ни у товаров, ни в базе Умаг`)
+      }
+    })
   }
 
   const runVerify = () => {
@@ -260,6 +293,11 @@ export default function Products() {
               </Button>
             )}
             {mayAdd && (
+              <Button variant="secondary" onClick={() => navigate('/products/umag')} title="Связать товары со строками старой базы Умаг: их коды станут кодами товаров">
+                Связать с Умагом
+              </Button>
+            )}
+            {mayAdd && (
               <Button onClick={() => setEditing('new')} aria-label="Добавить товар" title="Добавить товар: полная карточка">
                 + Товар
               </Button>
@@ -287,7 +325,7 @@ export default function Products() {
         ))}
       </div>
       <div className="mb-3 flex flex-col gap-2 empty:hidden">
-        <ErrorBox error={verify.error ?? review.error} />
+        <ErrorBox error={verify.error ?? review.error ?? scan.error} />
       </div>
       {tab === 'products' && <BranchScope user={user} all={all} onChange={setAll} />}
       {tab === 'products' && all && (
@@ -306,7 +344,20 @@ export default function Products() {
       <Card className="mb-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Поиск">
-            <input placeholder="Название, бренд, артикул, штрихкод" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input
+              placeholder="Название, бренд, артикул, штрихкод"
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value)
+                scan.setError(null)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  onSearchEnter()
+                }
+              }}
+            />
           </Field>
           <Field label="Категория">
             <select
@@ -563,6 +614,7 @@ export default function Products() {
           </>
         )}
       </Card>
+      {query && <UmagSearchBlock query={query} version={umagVersion} onOpen={(hit, start) => setUmagHit({ hit, code: '', start })} />}
         </>
       )}
 
@@ -580,13 +632,45 @@ export default function Products() {
       {editing && (
         <ProductFormModal
           product={editing === 'new' ? undefined : editing}
+          presetBarcode={editing === 'new' ? newCode : undefined}
           // Новый товар при выбранной категории — сразу в ней (проверка 20.10.2026).
           presetCategoryId={editing === 'new' ? categoryId || undefined : undefined}
           onClose={() => {
             setEditing(null)
+            setNewCode(undefined)
             list.reload()
+            setUmagVersion((v) => v + 1)
           }}
           onSaved={onSaved}
+        />
+      )}
+      {umagHit && (
+        <UmagHitModal
+          hit={umagHit.hit}
+          code={umagHit.code}
+          start={umagHit.start}
+          onClose={() => setUmagHit(null)}
+          onDone={() => {
+            setUmagHit(null)
+            list.reload()
+            setUmagVersion((v) => v + 1)
+          }}
+        />
+      )}
+      {unknownCode !== null && (
+        <UnknownCodeModal
+          code={unknownCode}
+          onClose={() => setUnknownCode(null)}
+          onLinked={(p) => {
+            setUnknownCode(null)
+            toast(`Код привязан к «${p.name}»`)
+            list.reload()
+          }}
+          onCreateNew={() => {
+            setNewCode(unknownCode)
+            setUnknownCode(null)
+            setEditing('new')
+          }}
         />
       )}
       {marking && (
