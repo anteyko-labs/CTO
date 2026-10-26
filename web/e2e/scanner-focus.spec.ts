@@ -257,6 +257,44 @@ for (const mode of [
       })
     })
 
+    test('окно закрыли («Без подарка», «Готово» в «Вид замены»), затем скан: скан не теряется', async ({ page }) => {
+      await open(page)
+      const g = await goods(page.request)
+      await api(page.request, 'POST', '/gift-rules', { trigger_product_id: g.oil2.id, min_units: 4000, items: [{ gift_product_id: g.oilFilter.id, gift_qty: 1 }] })
+      const service = `Замена масла в моторе скан ${RUN}${++seq}`
+      await api(page.request, 'POST', '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+      await scan(page, g.oil2.code)
+      const gift = page.getByRole('dialog', { name: 'Выберите подарок' })
+      await expect(gift).toBeVisible()
+      await hit(gift.getByRole('button', { name: 'Без подарка' }))
+      await expect(gift).toHaveCount(0)
+      await scan(page, g.air.code)
+      await expect(row(page, g.air.name)).toBeVisible()
+
+      await hit(page.getByRole('button', { name: 'В сервис' }))
+      const kinds = page.getByRole('dialog', { name: 'Вид замены' })
+      await kinds.getByPlaceholder('Найти услугу').fill(service)
+      await hit(kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }))
+      await hit(kinds.getByRole('button', { name: 'Готово' }))
+      await expect(kinds).toHaveCount(0)
+      await scan(page, g.oil.code)
+      await expect(row(page, g.oil.name)).toBeVisible()
+      await expect(qty(page, g.air.name)).toHaveValue('1')
+    })
+
+    test('способ оплаты, затем скан: способ не меняется, отсканированное встаёт', async ({ page }) => {
+      await open(page)
+      const g = await goods(page.request)
+      await scan(page, g.air.code)
+      const card = page.locator('[data-pay]').getByRole('button', { name: 'Карта / QR банка', exact: true })
+      await hit(card)
+      await expect(card).toHaveAttribute('aria-pressed', 'true')
+      await scan(page, g.oil.code)
+      await expect(row(page, g.oil.name)).toBeVisible()
+      await expect(card).toHaveAttribute('aria-pressed', 'true')
+      await expect(qty(page, g.air.name)).toHaveValue('1')
+    })
+
     if (mode.touch) {
       test('экранная клавиатура открыта: плитка, затем скан', async ({ page }) => {
         await open(page)
