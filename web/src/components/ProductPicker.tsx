@@ -84,7 +84,9 @@ export function ProductPicker({
           setActive(0)
         }
       })
-    if (withOld && !/^\d{6,}$/.test(query)) {
+    // Список Умага ищется и по набранному коду — штрихкоду, «доп. коду», артикулу, целиком и по
+    // началу (замечание заказчика 26.10.2026: «в приходе по коду чтобы тоже искал»).
+    if (withOld) {
       get<OldCatalogHit[]>(`/old-catalog/search${qs({ q: query })}`)
         .then((h) => alive && setOld(h.filter((x) => !x.linked_product_id).slice(0, 8)))
         .catch(() => alive && setOld([]))
