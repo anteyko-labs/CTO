@@ -5,14 +5,23 @@ import { ApiError, get, qs } from '../lib/api'
 import { productTitle } from '../lib/battery'
 import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
-import { resolveEnter, resultsMatch } from '../lib/pickerResults'
+import { isShortCode, resolveEnter, resultsMatch, searchRank } from '../lib/pickerResults'
+import { useKeyboardTop } from '../lib/cashierMode'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
+import { SCAN_EVENT } from '../lib/scanner'
 import type { OldCatalogHit, Product } from '../lib/types'
 
 /** Как выбрали товар: сканом (код целиком) или из списка найденных. */
 export type PickHow = 'scan' | 'search'
 
 type Entry = { kind: 'own'; p: Product } | { kind: 'old'; h: OldCatalogHit }
+
+/** Строка точно совпала по коду или артикулу — Enter берёт её и среди нескольких найденных. */
+function exactEntry(e: Entry, query: string): boolean {
+  const q = query.trim()
+  if (e.kind === 'own') return searchRank(e.p, q) === 0
+  return e.h.exact || e.h.barcode === q || (e.h.article !== '' && e.h.article.toLowerCase() === q.toLowerCase())
+}
 
 /**
  * Поле для сканера и поиска. Enter со строкой из цифр — точный поиск по штрихкоду,
@@ -47,6 +56,8 @@ export function ProductPicker({
   const [old, setOld] = useState<OldCatalogHit[]>([])
   const [active, setActive] = useState(0)
   const [message, setMessage] = useState<string | null>(null)
+  // Enter при этом тексте нашёл несколько строк: товар не взят, кассир выбирает строку сам.
+  const [ask, setAsk] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const query = useDebounced(text.trim(), 200)
   const withOld = Boolean(onPickOld)
@@ -108,11 +119,22 @@ export function ProductPicker({
     setText('')
     setActive(0)
     setMessage(null)
+    setAsk(null)
   }
 
-  const pick = (p: Product, how: PickHow) => {
+  // Режим кассы: список найденного кончается над экранной клавиатурой, а не уходит под неё.
+  const keyboardTop = useKeyboardTop()
+  const fitList = (ul: HTMLUListElement | null) => {
+    if (!ul) return
+    const top = ul.getBoundingClientRect().top
+    ul.style.maxHeight = keyboardTop !== null && keyboardTop > top ? `${Math.max(96, Math.floor(keyboardTop - top - 8))}px` : ''
+  }
+
+  /** `typed` — по какому тексту нашли: пока ждали ответа, сканер мог начать следующий код —
+   *  его не стираем, иначе следующий скан терялся или уходил обрывком. */
+  const pick = (p: Product, how: PickHow, typed?: string) => {
     onPick(p, how)
-    clear()
+    if (typed === undefined || textNow.current.trim() === typed) clear()
     input.current?.focus()
   }
 
@@ -121,9 +143,9 @@ export function ProductPicker({
     onPickOld?.(h, code)
   }
 
-  const choose = (e: Entry | undefined) => {
+  const choose = (e: Entry | undefined, typed?: string) => {
     if (!e) return
-    if (e.kind === 'own') pick(e.p, 'search')
+    if (e.kind === 'own') pick(e.p, 'search', typed)
     else pickOld(e.h, '')
   }
 
@@ -146,31 +168,50 @@ export function ProductPicker({
     return [...own.map((p) => ({ kind: 'own' as const, p })), ...hits.map((h) => ({ kind: 'old' as const, h }))]
   }
 
-  const submit = async () => {
-    const code = text.trim()
+  /** Enter в поле; `scanned` — код скана, пойманный в другом поле экрана (lib/scanner.ts). */
+  const submit = async (scanned?: string) => {
+    const typed = scanned ?? text
+    const code = typed.trim()
     if (!code || entering.current) return
-    // Enter берёт товар только из найденного по всему набранному тексту (SPEC-30 §13).
+    // Enter берёт товар только из найденного по всему набранному тексту и только однозначный
+    // (SPEC-30 §13): несколько найденных — строку выбирает кассир.
     entering.current = true
     const out = await resolveEnter(
-      { text, foundFor: fresh ? resultsFor : '', found: entries, active, navigated: navigated.current === code },
+      scanned === undefined
+        ? { text, foundFor: fresh ? resultsFor : '', found: entries, active, navigated: navigated.current === code }
+        : { text: typed, foundFor: '', found: [], active: 0, navigated: false },
       searchFull,
       () => textNow.current,
+      exactEntry,
     ).finally(() => {
       entering.current = false
     })
     if (out.kind === 'stale') return
     if (out.kind === 'pick') {
-      choose(out.item)
+      choose(out.item, code)
       return
     }
+    if (out.kind === 'ambiguous') {
+      setAsk(code)
+      setActive(0)
+      return
+    }
+    // Короткий код из цифр (доп. код Умага) ищем только как код; не нашли — список остаётся,
+    // строку выбирают сами. Код сканера ищем, а поле уже свободно: следующий скан не допишется к нему.
+    const short = isShortCode(code)
+    const listed = (out.fresh ?? entries).length > 0
+    if (!short && textNow.current.trim() === code) {
+      textNow.current = ''
+      clear()
+    }
     try {
-      pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`), 'scan')
+      pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`), 'scan', code)
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
         const snap = await readSnapshot()
         const found = snap ? findByBarcode(snap, code) : undefined
         if (found) {
-          pick(found, 'scan')
+          pick(found, 'scan', code)
           return
         }
         setMessage(`Без сети: код ${code} в снимке каталога не найден`)
@@ -186,7 +227,11 @@ export function ProductPicker({
             return
           }
         }
-        setText('')
+        if (short) {
+          setMessage(`Код ${code} не найден${listed ? ' — выберите строку в списке' : ''}`)
+          return
+        }
+        if (textNow.current.trim() === code) setText('')
         if (onUnknownCode) onUnknownCode(code)
         else setMessage(`Код ${code} не найден`)
       } else {
@@ -194,6 +239,28 @@ export function ProductPicker({
       }
     }
   }
+
+  // Код сканера, пойманный в другом поле (количество, «Получено»): ищем его, как набранный здесь.
+  const onScan = useRef<(code: string) => void>(() => undefined)
+  useLayoutEffect(() => {
+    onScan.current = (code: string) => {
+      setText(code)
+      setMessage(null)
+      navigated.current = null
+      textNow.current = code
+      void submit(code)
+    }
+  })
+  useEffect(() => {
+    const el = input.current
+    if (!el) return
+    const listener = (e: Event) => {
+      const code = e instanceof CustomEvent && typeof e.detail === 'string' ? e.detail.trim() : ''
+      if (code) onScan.current(code)
+    }
+    el.addEventListener(SCAN_EVENT, listener)
+    return () => el.removeEventListener(SCAN_EVENT, listener)
+  }, [])
 
   return (
     <div className="relative">
@@ -208,6 +275,7 @@ export function ProductPicker({
         onChange={(e) => {
           setText(e.target.value)
           setMessage(null)
+          setAsk(null)
           navigated.current = null
         }}
         onKeyDown={(e) => {
@@ -230,8 +298,13 @@ export function ProductPicker({
       />
       {message && <div className="mt-1 text-sm text-rose-600">{message}</div>}
       {query.length >= 2 && text.trim().length >= 2 && (entries.length > 0 || Boolean(onCreate)) && (
-        <ul className="absolute z-30 mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+        <ul ref={fitList} className="absolute z-30 mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
           {fresh && results.length === 0 && <li className="px-3 py-2 text-sm text-slate-500">Ничего не нашли по «{resultsFor}»</li>}
+          {fresh && ask === text.trim() && entries.length > 1 && (
+            <li className="sticky top-0 z-10 bg-amber-50 px-3 py-1 text-sm font-medium text-amber-900" role="status" data-testid="picker-choose">
+              Найдено {entries.length} — выберите нужную строку
+            </li>
+          )}
           {shownResults.map((p, i) => (
             <li key={p.id}>
               <button

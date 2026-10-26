@@ -132,6 +132,28 @@ export function slotsWithNext(b: VehicleBook): SlotNext[] {
   return (b.slots ?? []).filter((n) => slotNextText(n) !== '')
 }
 
+/** Строки книжки, которые меняли в чеке `saleId` (по его записи); записи нет — ни одной. */
+function saleSlots(b: VehicleBook, saleId: string): Set<string> {
+  const r = b.records.find((x) => x.sale_id === saleId)
+  return new Set(r ? recordLines(r).map((l) => l.slot) : [])
+}
+
+/**
+ * Следующая замена по строкам этого чека — итог чека и книжка, напечатанная после него (ADR-111).
+ * Строка, заменённая в прошлый раз (воздушный фильтр из прошлого чека), сюда не входит: иначе
+ * «Следующая · Фильтр воздушный» после каждого чека машины читалась как фильтр в этом чеке.
+ */
+export function slotsOfSale(b: VehicleBook, saleId: string): SlotNext[] {
+  const own = saleSlots(b, saleId)
+  return slotsWithNext(b).filter((n) => own.has(n.slot))
+}
+
+/** Остальные строки книжки со сроком — по прошлым заменам (в печати — с датой замены). */
+export function slotsBeforeSale(b: VehicleBook, saleId: string): SlotNext[] {
+  const own = saleSlots(b, saleId)
+  return slotsWithNext(b).filter((n) => !own.has(n.slot))
+}
+
 /** Самый ранний срок по строкам: просрочена ли замена хоть по одной. */
 export function overdueSlots(b: VehicleBook, today: string): SlotNext[] {
   return (b.slots ?? []).filter((n) => n.next_date !== null && n.next_date < today)

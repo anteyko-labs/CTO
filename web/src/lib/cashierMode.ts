@@ -68,6 +68,29 @@ export function useKeyboardOpen(): boolean {
   return useSyncExternalStore(subscribeKeyboard, () => keyboard, () => false)
 }
 
+// Верх полной экранной клавиатуры, точки: список найденного товара кончается над ней, иначе его
+// строки уходили под клавиатуру (проверка 26.10.2026). null — клавиатуры букв на экране нет.
+let keyboardTop: number | null = null
+const keyboardTopListeners = new Set<() => void>()
+
+export function setKeyboardTop(value: number | null): void {
+  if (keyboardTop === value) return
+  keyboardTop = value
+  keyboardTopListeners.forEach((fn) => fn())
+}
+
+/** Верх клавиатуры букв на экране или null. */
+export function useKeyboardTop(): number | null {
+  return useSyncExternalStore(
+    (fn) => {
+      keyboardTopListeners.add(fn)
+      return () => keyboardTopListeners.delete(fn)
+    },
+    () => keyboardTop,
+    () => null,
+  )
+}
+
 /** Во весь экран; браузер может отказать (нет жеста пользователя, запрет) — тогда просто окно. */
 export function enterFullscreen(): void {
   try {

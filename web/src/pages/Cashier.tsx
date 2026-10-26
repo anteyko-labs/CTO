@@ -19,7 +19,7 @@ import { BankQrPanel, useBankQr } from '../components/BankQrPanel'
 import { qrForCard, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
-import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
+import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
 import { extraChoices, nextPayload, nextRows, nextTooLow, receiptBook, type OwnIntervals } from '../lib/nextChange'
@@ -42,6 +42,7 @@ import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { useFocusAfterRender } from '../lib/focus'
+import { useScanToPicker } from '../lib/scanner'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
@@ -1091,7 +1092,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
           .then((book) => {
             setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
-            if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name })
+            if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
           })
           .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
       }
@@ -1146,6 +1147,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+  // Сканер после касания кнопки или поля количества — в поиск товара, а не в кнопку (ui-rules §4).
+  useScanToPicker(touch)
 
   const startShift = () =>
     void get<CashAccount[]>('/cash/accounts')
@@ -1164,7 +1167,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setNextEdits({})
     setNextExtra([])
   }
+  // Второе касание крестика сразу после удаления — двойное касание или дребезг: на место удалённой
+  // встала следующая строка, и она удалилась бы тоже.
+  const removedAt = useRef(0)
   const removeLine = (l: CartLine) => {
+    if (Date.now() - removedAt.current < 350) return
+    removedAt.current = Date.now()
     const index = lines.findIndex((x) => x.key === l.key)
     setLines((ls) => ls.filter((x) => x.key !== l.key))
     const rec = asRemoved(l, 'remove')
@@ -1784,7 +1792,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   Печать чека
                 </Button>
                 {done.book && (
-                  <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name })}>
+                  <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id })}>
                     Печать книжки
                   </Button>
                 )}
@@ -1811,17 +1819,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 {done.book.records[0].declined?.trim() && (
                   <div className="text-amber-800">Рекомендовано: {done.book.records[0].declined}</div>
                 )}
-                {slotsWithNext(done.book).length > 0 ? (
-                  slotsWithNext(done.book).map((n) => (
-                    <div key={n.slot} className="text-slate-700">
-                      Следующая · {n.label}: <b>{slotNextText(n)}</b>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-slate-700">
-                    Следующая замена: <b>{nextText(done.book)}</b>
+                {/* Следующая — по строкам этого чека, не по прошлым заменам машины (ADR-111). */}
+                {slotsOfSale(done.book, done.sale.id).map((n) => (
+                  <div key={n.slot} className="text-slate-700">
+                    Следующая · {n.label}: <b>{slotNextText(n)}</b>
                   </div>
-                )}
+                ))}
               </div>
             )}
           </Card>
@@ -1829,15 +1832,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
         {/* У чека «В сервис» под строками — данные замены; списку оставлено не меньше трёх строк и подписи
             «ещё N» (строка — 56 точек и поля), данные замены при нехватке места прокручиваются сами. */}
-        <Card className={`p-0 ${touch ? `flex flex-col lg:flex-1 ${serviceLeft ? 'p-0! lg:min-h-[224px]' : 'lg:min-h-0'}` : ''}`}>
+        <Card className={`p-0 ${touch ? `relative flex flex-col lg:flex-1 ${serviceLeft ? 'p-0! lg:min-h-[224px]' : 'lg:min-h-0'}` : ''}`}>
           {removed && (
-            <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2" role="status">
-              <span className="min-w-0 flex-1 truncate text-base">
-                Удалено: {removed.line.product ? productTitle(removed.line.product) : removed.line.service?.name}
-              </span>
-              <button type="button" className={tbtn} onClick={undoRemove}>
+            // Поверх списка слева внизу, над названиями строк: строки не сдвигаются, крестик, «−» и «+»
+            // открыты — второе касание крестика не попадает во «Вернуть» (26.10.2026: удалённый фильтр
+            // возвращался вторым касанием).
+            <div
+              className="absolute bottom-1 left-1 z-10 flex w-[10.5rem] max-w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 py-1 pr-2 pl-1 shadow-lg"
+              role="status"
+            >
+              <button type="button" className={`${tbtn} shrink-0`} onClick={undoRemove}>
                 Вернуть
               </button>
+              <span className="flex min-w-0 flex-col text-sm leading-tight">
+                <span className="text-slate-500">Удалено:</span>
+                <span className="truncate">{removed.line.product ? productTitle(removed.line.product) : removed.line.service?.name}</span>
+              </span>
             </div>
           )}
           <div

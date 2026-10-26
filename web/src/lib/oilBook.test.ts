@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { categorySlotText, overdueSlots, recordLines, recordText, slotNextText, slotsWithNext, type OilRecord, type VehicleBook } from './oilBook'
+import { categorySlotText, overdueSlots, recordLines, recordText, slotNextText, slotsBeforeSale, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
+import { oilBookHtml } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
   id: '1',
@@ -60,5 +61,62 @@ describe('строка книжки категории', () => {
     expect(categorySlotText({ book_slot: 'oil_filter', attributes: [] })).toEqual({ main: 'Фильтр масляный', note: null })
     expect(categorySlotText({ book_slot: 'oil', attributes: [] })).toEqual({ main: 'Масло двигателя', note: null })
     expect(categorySlotText({ book_slot: 'none', attributes: filters })).toEqual({ main: '—', note: null })
+  })
+})
+
+describe('следующая замена после чека — по строкам этого чека (ADR-111)', () => {
+  // 09KG999ZXZ: в чеке № 1 (17.10) меняли масло и воздушный фильтр, в чеке № 8 — масло и антифриз.
+  // Итог чека № 8 и книжка после него писали «Следующая · Фильтр воздушный» — «в чеке постоянно
+  // добавляет воздушный фильтр» (26.10.2026).
+  const slot = (s: SlotNext['slot'], label: string, last: string, nextKm: number, nextDate: string | null): SlotNext => ({
+    slot: s,
+    label,
+    interval_km: null,
+    interval_days: null,
+    own_interval: false,
+    last_date: last,
+    last_km: null,
+    last_text: null,
+    next_km: nextKm,
+    next_date: nextDate,
+  })
+  const book: VehicleBook = {
+    vehicle_id: 'v',
+    plate: '09KG999ZXZ',
+    brand: 'Toyota',
+    model: 'Camry',
+    interval_km: 8000,
+    interval_days: 31,
+    next_km: 228_000,
+    next_date: '2026-11-26',
+    records: [
+      rec({ id: 'r8', change_date: '2026-10-26', mileage_km: 220_000, sale_id: 's8', sale_number: 8, lines: [{ slot: 'oil', text: 'Масло 5W-30' }, { slot: 'antifreeze', text: 'Замена антифриза' }] }),
+      rec({ id: 'r1', change_date: '2026-10-17', mileage_km: 216_000, sale_id: 's1', sale_number: 1, lines: [{ slot: 'oil', text: 'Масло 5W-30' }, { slot: 'air_filter', text: 'Фильтр A1' }] }),
+    ],
+    slots: [
+      slot('oil', 'Масло двигателя', '2026-10-26', 228_000, '2026-11-26'),
+      slot('air_filter', 'Фильтр воздушный', '2026-10-17', 231_000, '2027-10-17'),
+      slot('antifreeze', 'Антифриз', '2026-10-26', 280_000, null),
+    ],
+  }
+  const plain = (html: string) => html.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+
+  it('строки этого чека и строки прошлых замен — порознь', () => {
+    expect(slotsOfSale(book, 's8').map((n) => n.slot)).toEqual(['oil', 'antifreeze'])
+    expect(slotsBeforeSale(book, 's8').map((n) => n.slot)).toEqual(['air_filter'])
+    // Записи чека в книжке нет — строк чека тоже нет.
+    expect(slotsOfSale(book, 'другой')).toEqual([])
+  })
+
+  it('книжка после чека: «Следующая замена» без воздушного фильтра, он — по прошлым заменам с датой', async () => {
+    const text = plain(await oilBookHtml(book, { link: null, saleId: 's8' }))
+    const next = text.split('Следующая замена — что наступит раньше')[1]?.split('По прошлым заменам')[0] ?? ''
+    expect(next).toContain('Масло двигателя')
+    expect(next).toContain('Антифриз')
+    expect(next).not.toContain('Фильтр воздушный')
+    expect(text).toMatch(/По прошлым заменам.*Фильтр воздушный \(замена 17\.10\.2026\) на 231 000 км или до 17\.10\.2027/)
+    // Печать из карточки клиента — вся книжка, как прежде.
+    const full = plain(await oilBookHtml(book, { link: null }))
+    expect(full.split('Следующая замена — что наступит раньше')[1]).toContain('Фильтр воздушный')
   })
 })
