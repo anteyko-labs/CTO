@@ -2,7 +2,7 @@
 type: doc
 status: ready
 tier: 3
-updated: 2026-10-24
+updated: 2026-10-26
 ---
 
 # Путеводитель разработчика
@@ -48,6 +48,7 @@ updated: 2026-10-24
 | 31 | Optima Business: QR на сумму, сверка с банком | `api/optima.rs`, `api/bank_qr.rs`, `api/bank_recon.rs` | `components/BankQrPanel.tsx`, `lib/optima.ts`, `pages/OptimaSettings.tsx`, `pages/BankRecon.tsx` |
 | 32 | Сообщения клиентам: Телеграм и WhatsApp, ссылка на бот с кодом | `api/client_messages.rs`, `api/telegram.rs` (`link_by_code`) | `pages/ClientMessages.tsx`, `lib/clientMessages.ts`, `pages/ClientCard.tsx` |
 | 33 | Несколько филиалов: филиал запроса, общие справочники, «Все филиалы», расчёты между филиалами | `auth.rs` (`request_branch`), `api/branches.rs` (`merge_reports`, `report`), `api/parties.rs` (`repayment_parts`), `api/catalog.rs` (`put_sale_price`) | `lib/branch.ts`, `lib/branchReport.ts`, `components/BranchSwitch.tsx`, `components/BranchScope.tsx`, `pages/Branches.tsx` |
+| 34 | Следующая замена по услугам чека, книжка в печатном чеке | `api/oil_book.rs` (`resolve_target`, `record_from_sale`, `sale_book`, `service_slot_by_name`), `api/refs.rs` (строка книжки услуги) | `lib/nextChange.ts`, `pages/Cashier.tsx` (`next-change`), `components/salePrint.ts` (`bookHtml`), `pages/Services.tsx` |
 | — | Аккумуляторы на вес (ADR-048) | `api/batteries.rs` | `components/BatteryIntake.tsx`, `ServicePicker.tsx` |
 
 Остальное:
