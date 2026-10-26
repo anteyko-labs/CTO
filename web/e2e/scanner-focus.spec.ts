@@ -4,7 +4,6 @@
 // «в чеке постоянно добавляет воздушный фильтр» — Enter сканера снова нажимал плитку или «+»
 // у строки фильтра. Сканер здесь — как настоящий: знаки и Enter, без щелчка в поле поиска.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
-import { pickCashier } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -114,6 +113,14 @@ for (const mode of [
   test.describe(`сканер после касания кнопки — ${mode.title}`, () => {
     test.use({ viewport: { width: 1366, height: 768 }, hasTouch: mode.touch })
     const hit = (l: Locator) => (mode.touch ? l.tap() : l.click())
+
+    /** Кассир чека: при открытой смене — кассир смены (в режиме кассы он в полосе сверху). */
+    async function pickCashier(page: Page, name: string) {
+      const select = page.locator('#cashier-select')
+      const onShift = page.getByTestId(mode.touch ? 'mode-shift' : 'shift-cashier')
+      await expect(select.or(onShift)).toBeVisible()
+      if (await select.isVisible()) await select.selectOption({ label: name })
+    }
 
     async function open(page: Page) {
       await page.addInitScript(PRINT_STUB)

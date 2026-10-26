@@ -5,7 +5,7 @@
 // текстовых (поиск товара, имя, телефон, госномер, комментарий) — полная: русские и кыргызские
 // буквы (ң, ө, ү, ё), латиница, цифры, пробел, стереть, Enter; над ней — куда и что набрано. Физическая клавиатура не нужна.
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { setKeyboardOpen, useKeyboardOpen } from '../lib/cashierMode'
+import { setKeyboardOpen, setKeyboardTop, useKeyboardOpen } from '../lib/cashierMode'
 import {
   KBD_DIGITS,
   KBD_KYRGYZ,
@@ -197,16 +197,18 @@ export function Keypad() {
   }, [target])
 
   // Поле сдвинулось без прокрутки (над ним появилась строка «Отложенные», окно выросло) —
-  // кнопка «⌨» и клавиатура тоже переезжают: следим за положением поля каждый кадр.
+  // кнопка «⌨» и клавиатура тоже переезжают: следим за положением поля каждый кадр. И за его
+  // текстом: поле очистила программа (товар выбран — поиск пуст) — ярлык набранного тоже пуст.
   useEffect(() => {
     if (!target || (!open && !focused)) return
     let last = ''
     let frame = 0
     const watch = () => {
       const r = target.getBoundingClientRect()
-      const now = `${r.left},${r.top},${r.width},${r.height}`
+      const now = `${r.left},${r.top},${r.width},${r.height},${target.value}`
+      // Первый кадр — тоже: значение поля могли сменить в той же отрисовке, что и фокус.
       if (now !== last) {
-        if (last) rerender()
+        rerender()
         last = now
       }
       frame = requestAnimationFrame(watch)
@@ -265,6 +267,20 @@ export function Keypad() {
     }, 300)
     return () => clearInterval(t)
   }, [target])
+
+  // Верх клавиатуры букв с ярлыком набранного над ней — списку найденного товара (ProductPicker):
+  // он кончается выше, строки не прячутся под клавиатурой.
+  useLayoutEffect(() => {
+    const el = padRef.current
+    if (!shown || kind !== 'letters' || !el) {
+      setKeyboardTop(null)
+      return
+    }
+    const label = el.querySelector('[data-testid="keyboard-target"]')
+    const top = Math.min(el.getBoundingClientRect().top, label?.getBoundingClientRect().top ?? Infinity)
+    setKeyboardTop(Math.round(top))
+  })
+  useEffect(() => () => setKeyboardTop(null), [])
 
   const hide = () => {
     setKeyboardOpen(false)
