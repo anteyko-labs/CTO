@@ -1,0 +1,98 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update services set name = coalesce($2, name), price_tyiyn = coalesce($3, price_tyiyn),\n             master_fee_tyiyn = coalesce($4, master_fee_tyiyn), active = coalesce($5, active),\n             free_with_oil = coalesce($6, free_with_oil),\n             oil_category_id = coalesce($7, oil_category_id),\n             book_slot = coalesce($8, book_slot),\n             book_interval_km = case when $11 then null else coalesce($9, book_interval_km) end,\n             book_interval_days = case when $11 then null else coalesce($10, book_interval_days) end\n           where id = $1\n           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "free_with_oil",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "oil_category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "book_slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "book_interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "book_interval_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "interval_days",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Bool",
+        "Uuid",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "be6589a19a9cbb04b96e88ce5be6e8400cfdfda43ab87afdfce6136b45417b77"
+}

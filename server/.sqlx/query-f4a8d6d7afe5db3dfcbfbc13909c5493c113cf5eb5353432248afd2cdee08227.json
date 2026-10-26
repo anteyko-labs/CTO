@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days from services order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "price_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "free_with_oil",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "oil_category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "book_slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "book_interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "book_interval_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "interval_days",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "f4a8d6d7afe5db3dfcbfbc13909c5493c113cf5eb5353432248afd2cdee08227"
+}

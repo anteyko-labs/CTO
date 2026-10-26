@@ -85,7 +85,7 @@ async fn seed(pool: &PgPool) -> World {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, free_with_oil) values ($1, $2, 'Замена масла', 20000, true)")
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, free_with_oil, book_slot) values ($1, $2, 'Замена масла', 20000, true, 'oil')")
         .bind(service)
         .bind(branch)
         .execute(pool)
@@ -315,6 +315,7 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
         mileage: None,
         mileage_unit: None,
         book_intervals: Vec::new(),
+        next_changes: Vec::new(),
         delivery_address: String::new(),
         declined: String::new(),
         removed_lines: serde_json::Value::Null,
@@ -10873,4 +10874,256 @@ async fn no_receipt_return_owner_only_stock_and_money(pool: PgPool) {
     assert_eq!(audit, 2);
     drop(conn);
     assert_stock_consistent(&pool, &w).await;
+}
+
+/// Услуга со строкой книжки (SPEC-34).
+async fn book_service(pool: &PgPool, w: &World, name: &str, slot: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot) values ($1, $2, $3, 50000, 3000, $4)")
+        .bind(id)
+        .bind(w.owner.user.branch_id)
+        .bind(name)
+        .bind(slot)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+fn next_change(
+    service: Option<Uuid>,
+    slot: Option<&str>,
+    next: Option<i64>,
+) -> avtodom_server::api::oil_book::NextChangeReq {
+    avtodom_server::api::oil_book::NextChangeReq {
+        service_id: service,
+        slot: slot.map(String::from),
+        next_mileage: next,
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
+    // SPEC-34: кассир задаёт следующую замену по каждой услуге чека — она в книжке целью строки,
+    // в печатном чеке и в сроке напоминания; пустая — не напоминать; меньше пробега — нельзя.
+    use avtodom_server::api::client_messages::{OilText, car_text, pick, slot_dues};
+    let w = seed(&pool).await;
+    let antifreeze = book_service(&pool, &w, "Замена антифриза", "antifreeze").await;
+    let wash = book_service(&pool, &w, "Мойка двигателя", "other").await;
+    let brake = book_service(&pool, &w, "Замена тормозной жидкости", "brake_fluid").await;
+    let client = service_client(&pool, &w).await;
+    let (party, vehicle) = client;
+    let make = |next: Vec<avtodom_server::api::oil_book::NextChangeReq>| {
+        let mut req = in_service(
+            &w,
+            client,
+            takeaway(
+                &w,
+                vec![
+                    kind_line(w.service, 1, 20_000),
+                    kind_line(antifreeze, 1, 50_000),
+                    kind_line(wash, 1, 50_000),
+                ],
+                cash(120_000),
+            ),
+        );
+        req.mileage_km = None;
+        req.mileage = Some(200_000);
+        req.next_changes = next;
+        req
+    };
+    // Меньше пробега сейчас — чек не проводится.
+    let err = sell(
+        &pool,
+        &w.owner,
+        make(vec![next_change(Some(w.service), None, Some(199_000))]),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        matches!(err, AppError::Validation(ref m) if m.contains("не меньше пробега")),
+        "{err:?}"
+    );
+    // Масло — 225 000, антифриз — 250 000, мойка («прочее») — не в книжку, тормозная жидкость
+    // (её в чеке нет) — строкой «+ ещё», но пустой: не напоминать.
+    let sale = sell(
+        &pool,
+        &w.owner,
+        make(vec![
+            next_change(Some(w.service), None, Some(225_000)),
+            next_change(Some(antifreeze), None, Some(250_000)),
+            next_change(Some(wash), None, Some(260_000)),
+            next_change(Some(brake), None, None),
+        ]),
+    )
+    .await
+    .unwrap();
+    let day: chrono::NaiveDate =
+        sqlx::query_scalar("select business_date from sales where id = $1")
+            .bind(sale.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    // Печатный чек: машина, пробег и по строке на каждую следующую замену.
+    let book = sale.book.clone().unwrap();
+    assert_eq!(
+        (book.plate.as_str(), book.mileage),
+        ("01KG900XYZ", Some(200_000))
+    );
+    let printed: Vec<(String, i32)> = book
+        .lines
+        .iter()
+        .map(|l| (l.label.clone(), l.next_mileage))
+        .collect();
+    assert_eq!(
+        printed,
+        vec![
+            ("Замена масла".to_string(), 225_000),
+            ("Замена антифриза".to_string(), 250_000)
+        ]
+    );
+    assert_eq!(
+        book.lines[0].next_date,
+        day.checked_add_days(chrono::Days::new(31))
+    );
+    assert_eq!(
+        book.lines[1].next_date,
+        day.checked_add_days(chrono::Days::new(730))
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    let b = avtodom_server::api::oil_book::books(&mut conn, Some(party), None)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let slot = |s: &str| b.slots.iter().find(|n| n.slot == s).cloned();
+    assert_eq!(slot("oil").unwrap().next_km, Some(225_000));
+    assert_eq!(slot("antifreeze").unwrap().next_mileage, Some(250_000));
+    let brake_next = slot("brake_fluid").unwrap();
+    assert_eq!((brake_next.next_km, brake_next.next_date), (None, None));
+    assert!(slot("other").is_none());
+    assert_eq!(b.next_km, Some(225_000));
+    // Бот клиента: строка замены с целью.
+    let lines = avtodom_server::api::oil_book::record_lines(&b.records[0], "");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("Антифриз: Замена антифриза — следующая замена на 250 000 км")),
+        "{lines:?}"
+    );
+    // Напоминание берёт цель кассира: при 50 км в день до 225 000 — 500 дней.
+    let dues = slot_dues(&b, day, 50);
+    let oil_due = dues.iter().find(|d| d.slot == "oil").unwrap();
+    assert_eq!(oil_due.target, 225_000);
+    assert_eq!(
+        oil_due.due,
+        day.checked_add_days(chrono::Days::new(31)).unwrap()
+    );
+    drop(conn);
+
+    // Сроки рядом — масло и антифриз одним сообщением.
+    let client2 = {
+        let v = Uuid::now_v7();
+        sqlx::query("insert into party_vehicles (id, branch_id, party_id, plate, plate_norm) values ($1, $2, $3, '01KG901XYZ', '01KG901XYZ')")
+            .bind(v)
+            .bind(w.owner.user.branch_id)
+            .bind(party)
+            .execute(&pool)
+            .await
+            .unwrap();
+        (party, v)
+    };
+    let mut req = in_service(
+        &w,
+        client2,
+        takeaway(
+            &w,
+            vec![
+                kind_line(w.service, 1, 20_000),
+                kind_line(antifreeze, 1, 50_000),
+            ],
+            cash(70_000),
+        ),
+    );
+    req.mileage_km = None;
+    req.mileage = Some(100_000);
+    req.next_changes = vec![
+        next_change(Some(w.service), None, Some(100_500)),
+        next_change(Some(antifreeze), None, Some(101_000)),
+    ];
+    sell(&pool, &w.owner, req).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let b2 = avtodom_server::api::oil_book::books(&mut conn, None, Some(client2.1))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let dues = slot_dues(&b2, day, 50);
+    let p = pick(
+        &dues,
+        day.checked_add_days(chrono::Days::new(10)).unwrap(),
+        |_| false,
+    )
+    .unwrap();
+    assert_eq!(p.primary.slot, "oil");
+    assert_eq!(
+        p.extras.iter().map(|e| e.slot.as_str()).collect::<Vec<_>>(),
+        vec!["antifreeze"]
+    );
+    let t = OilText {
+        name: "Бакыт".into(),
+        car: car_text(&b2.brand, &b2.model, &b2.plate),
+        pick: p,
+    };
+    assert!(
+        t.telegram()
+            .ends_with("на пробеге 100 500 км. А антифриз — на 101 000 км."),
+        "{}",
+        t.telegram()
+    );
+    drop(conn);
+
+    // Мили: машина в милях — цель в милях, в км для напоминаний.
+    sqlx::query("update party_vehicles set mileage_unit = 'mi' where id = $1")
+        .bind(vehicle)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut req = make(vec![next_change(None, Some("oil"), Some(205_000))]);
+    req.mileage = Some(201_000);
+    req.mileage_unit = Some("mi".into());
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    let book = sale.book.unwrap();
+    assert_eq!(
+        (book.lines[0].next_mileage, book.lines[0].unit.as_str()),
+        (205_000, "mi")
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    let b = avtodom_server::api::oil_book::books(&mut conn, None, Some(vehicle))
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let oil = b.slots.iter().find(|n| n.slot == "oil").unwrap();
+    assert_eq!(oil.next_mileage, Some(205_000));
+    assert_eq!(
+        oil.next_km,
+        avtodom_server::domain::mileage::mi_to_km(205_000)
+    );
+    drop(conn);
+
+    // Без сети: опечатка в следующей замене не отменяет чек — строка по интервалу, владелец видит.
+    let mut req = make(vec![next_change(Some(w.service), None, Some(10))]);
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now());
+    req.mileage_unit = Some("mi".into());
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    assert!(sale.book.unwrap().lines.is_empty());
+    let bypass: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'sale.offline_bypass' and entity_id = $1 and data::text like '%следующая замена%'")
+        .bind(sale.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(bypass, 1);
 }

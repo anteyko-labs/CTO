@@ -135,6 +135,10 @@ pub struct SaleReq {
     /// (SPEC-29 §23). Сохраняется интервалом машины в транзакции чека.
     #[serde(default)]
     pub book_intervals: Vec<BookIntervalReq>,
+    /// «Следующая замена» по услугам чека (SPEC-34): пробег в единице пробега чека; пусто — не
+    /// напоминать. Пишется в книжку целью строки.
+    #[serde(default)]
+    pub next_changes: Vec<crate::api::oil_book::NextChangeReq>,
     /// Адрес доставки; пусто — забрали сами.
     #[serde(default)]
     pub delivery_address: String,
@@ -245,6 +249,10 @@ pub struct SaleOut {
     pub lines: Vec<SaleLineOut>,
     pub payments: Vec<PaymentOut>,
     pub returns: Vec<SaleRef>,
+    /// Масляная книжка чека «В сервис» для печати (SPEC-34 §4): машина, пробег и следующие
+    /// замены.
+    #[serde(default)]
+    pub book: Option<crate::api::oil_book::SaleBook>,
 }
 
 pub async fn load_sale(
@@ -364,6 +372,7 @@ pub async fn load_sale(
         lines,
         payments,
         returns,
+        book: crate::api::oil_book::sale_book(conn, id).await?,
     })
 }
 
@@ -1692,6 +1701,35 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             }
             Err(e) => return Err(e),
         };
+        // Следующие замены, заданные кассиром (SPEC-34): единица — как у пробега чека.
+        if req.next_changes.len() > 20 {
+            return Err(invalid("следующих замен в чеке — не больше 20"));
+        }
+        let target_unit = mileage
+            .as_ref()
+            .map_or(car_unit.clone(), |m| m.unit.clone());
+        let mut targets = Vec::with_capacity(req.next_changes.len());
+        for n in &req.next_changes {
+            match crate::api::oil_book::resolve_target(conn, n, mileage.as_ref(), &target_unit)
+                .await
+            {
+                Ok(Some(t)) => targets.push(t),
+                Ok(None) => {}
+                // Без сети — как пробег: чек проводится, срок строки — по интервалу.
+                Err(AppError::Validation(why)) if offline => {
+                    ops::audit(
+                        conn,
+                        ctx,
+                        "sale.offline_bypass",
+                        "sale",
+                        Some(id),
+                        json!({ "number": number, "reasons": [format!("следующая замена не записана: {why}")] }),
+                    )
+                    .await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         crate::api::oil_book::record_from_sale(
             conn,
             ctx,
@@ -1701,6 +1739,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             business_date,
             mileage,
             &req.declined,
+            &targets,
         )
         .await?;
         // «Через сколько менять» из чека — интервал строки у этой машины (SPEC-29 §23).

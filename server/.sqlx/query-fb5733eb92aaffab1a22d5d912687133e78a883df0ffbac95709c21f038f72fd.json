@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services\n           where active order by name",
+  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active,\n                  book_slot, book_interval_km, book_interval_days from services\n           where active order by name",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,21 @@
         "ordinal": 6,
         "name": "active",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "book_slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "book_interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "book_interval_days",
+        "type_info": "Int4"
       }
     ],
     "parameters": {
@@ -49,8 +64,11 @@
       false,
       false,
       true,
-      false
+      false,
+      false,
+      true,
+      true
     ]
   },
-  "hash": "e078dfeb1b9b5dd3f81dc9b66fa13dc57b0143376f79548c1ea055a11de2c51c"
+  "hash": "fb5733eb92aaffab1a22d5d912687133e78a883df0ffbac95709c21f038f72fd"
 }

@@ -1560,6 +1560,8 @@ fn slot_genitive(slot: &str) -> &'static str {
         "air_filter" => "воздушного фильтра",
         "cabin_filter" => "салонного фильтра",
         "fuel_filter" => "топливного фильтра",
+        "antifreeze" => "антифриза",
+        "brake_fluid" => "тормозной жидкости",
         _ => "прочих работ",
     }
 }

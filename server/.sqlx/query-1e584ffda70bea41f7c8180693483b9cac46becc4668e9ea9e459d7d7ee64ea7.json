@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select i.oil_change_id, i.slot, i.text, i.category_id, i.service_id, s.name as \"service?\",\n                  i.target_set, i.next_value, i.next_unit, i.next_km, i.next_date\n           from oil_change_items i left join services s on s.id = i.service_id\n           where i.oil_change_id = any($1) order by i.oil_change_id, i.position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "oil_change_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "service_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "service?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "target_set",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "next_value",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "next_unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "next_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "next_date",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "1e584ffda70bea41f7c8180693483b9cac46becc4668e9ea9e459d7d7ee64ea7"
+}

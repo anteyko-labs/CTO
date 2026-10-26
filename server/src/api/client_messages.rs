@@ -503,6 +503,8 @@ pub fn slot_noun(slot: &str) -> &'static str {
         "air_filter" => "воздушный фильтр",
         "cabin_filter" => "салонный фильтр",
         "fuel_filter" => "топливный фильтр",
+        "antifreeze" => "антифриз",
+        "brake_fluid" => "тормозную жидкость",
         _ => "прочие работы",
     }
 }

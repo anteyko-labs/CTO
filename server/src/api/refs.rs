@@ -415,6 +415,54 @@ struct ServiceOut {
     /// Категория масла, с которым услуга бесплатна (ADR-104); без неё флажок не действует.
     oil_category_id: Option<Uuid>,
     active: bool,
+    /// Строка книжки услуги (SPEC-34): что она меняет; «прочее» — без напоминания.
+    book_slot: String,
+    /// Интервал, заданный владельцем; пусто — по строке книжки.
+    book_interval_km: Option<i32>,
+    book_interval_days: Option<i32>,
+    /// Интервал для кассы: заданный или по строке книжки (у «прочего» — пусто).
+    interval_km: Option<i32>,
+    interval_days: Option<i32>,
+}
+
+impl ServiceOut {
+    /// Интервал для кассы — заданный владельцем или по умолчанию строки книжки.
+    fn with_default_interval(mut self) -> Self {
+        let (km, days) = service_interval(
+            &self.book_slot,
+            self.book_interval_km,
+            self.book_interval_days,
+        );
+        self.interval_km = km;
+        self.interval_days = days;
+        self
+    }
+}
+
+/// Интервал услуги для кассы (SPEC-34 §2): свой, иначе по строке книжки.
+pub(crate) fn service_interval(
+    slot: &str,
+    km: Option<i32>,
+    days: Option<i32>,
+) -> (Option<i32>, Option<i32>) {
+    match km.zip(days) {
+        Some((k, d)) => (Some(k), Some(d)),
+        None => crate::api::oil_book::slot_default(slot)
+            .map_or((None, None), |(k, d)| (Some(k), Some(d))),
+    }
+}
+
+/// Строка книжки и интервал услуги из запроса: строка известна, интервал — оба числа или ни
+/// одного.
+fn check_service_book(slot: Option<&str>, km: Option<i32>, days: Option<i32>) -> AppResult<()> {
+    if slot.is_some_and(|s| !crate::api::oil_book::is_slot(s)) {
+        return Err(invalid("неизвестная строка книжки"));
+    }
+    match (km, days) {
+        (Some(k), Some(d)) => crate::api::oil_book::check_interval(k, d),
+        (None, None) => Ok(()),
+        _ => Err(invalid("интервал: укажите и км, и дни")),
+    }
 }
 
 /// Категория масла по названию услуги (ADR-104), как в миграции 0059: «АКПП», «короб»,
@@ -470,11 +518,15 @@ async fn list_services(
 ) -> AppResult<Json<Vec<ServiceOut>>> {
     let rows = sqlx::query_as!(
         ServiceOut,
-        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services order by name"
+        "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days from services order by name"
     )
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(rows))
+    Ok(Json(
+        rows.into_iter()
+            .map(ServiceOut::with_default_interval)
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -487,6 +539,13 @@ struct ServiceReq {
     /// Категория масла (ADR-104); без неё у «бесплатно с нашим маслом» — по названию услуги.
     #[serde(default)]
     oil_category_id: Option<Uuid>,
+    /// Строка книжки (SPEC-34); не прислана — по названию услуги.
+    #[serde(default)]
+    book_slot: Option<String>,
+    #[serde(default)]
+    book_interval_km: Option<i32>,
+    #[serde(default)]
+    book_interval_days: Option<i32>,
 }
 
 async fn create_service(
@@ -503,9 +562,25 @@ async fn create_service(
     ops::check_amount(req.price_tyiyn)?;
     ops::check_amount(fee)?;
     // Ставку мастера и «бесплатно с нашим маслом» задаёт владелец: это цена и оплата труда.
-    if (fee != 0 || req.free_with_oil || req.oil_category_id.is_some()) && !ctx.user.is_owner() {
+    if (fee != 0
+        || req.free_with_oil
+        || req.oil_category_id.is_some()
+        || req.book_slot.is_some()
+        || req.book_interval_km.is_some()
+        || req.book_interval_days.is_some())
+        && !ctx.user.is_owner()
+    {
         return Err(AppError::Forbidden);
     }
+    check_service_book(
+        req.book_slot.as_deref(),
+        req.book_interval_km,
+        req.book_interval_days,
+    )?;
+    let book_slot = req
+        .book_slot
+        .clone()
+        .unwrap_or_else(|| crate::api::oil_book::service_slot_by_name(&name).to_string());
     let id = new_id();
     let mut tx = state.pool.begin().await?;
     let oil_category_id = match req.oil_category_id {
@@ -517,14 +592,19 @@ async fn create_service(
         None => None,
     };
     sqlx::query!(
-        "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id) values ($1, $2, $3, $4, $5, $6, $7)",
+        r#"insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id,
+                                 book_slot, book_interval_km, book_interval_days)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
         id,
         ctx.user.branch_id,
         name,
         req.price_tyiyn,
         fee,
         req.free_with_oil,
-        oil_category_id
+        oil_category_id,
+        book_slot,
+        req.book_interval_km,
+        req.book_interval_days
     )
     .execute(&mut *tx)
     .await?;
@@ -534,19 +614,28 @@ async fn create_service(
         "service.create",
         "service",
         Some(id),
-        json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil, "oil_category_id": oil_category_id }),
+        json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil, "oil_category_id": oil_category_id,
+                "book_slot": book_slot, "book_km": req.book_interval_km, "book_days": req.book_interval_days }),
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(ServiceOut {
-        id,
-        name,
-        price_tyiyn: req.price_tyiyn,
-        master_fee_tyiyn: fee,
-        free_with_oil: req.free_with_oil,
-        oil_category_id,
-        active: true,
-    }))
+    Ok(Json(
+        ServiceOut {
+            id,
+            name,
+            price_tyiyn: req.price_tyiyn,
+            master_fee_tyiyn: fee,
+            free_with_oil: req.free_with_oil,
+            oil_category_id,
+            active: true,
+            book_slot,
+            book_interval_km: req.book_interval_km,
+            book_interval_days: req.book_interval_days,
+            interval_km: None,
+            interval_days: None,
+        }
+        .with_default_interval(),
+    ))
 }
 
 /// Строка загрузки услуг из выгрузки старой программы: название и цена.
@@ -628,11 +717,12 @@ pub async fn import_services_tx(
         }
         let id = new_id();
         sqlx::query!(
-            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn) values ($1, $2, $3, $4, 0)",
+            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot) values ($1, $2, $3, $4, 0, $5)",
             id,
             ctx.user.branch_id,
             name,
-            price
+            price,
+            crate::api::oil_book::service_slot_by_name(&name)
         )
         .execute(&mut *conn)
         .await?;
@@ -661,6 +751,13 @@ struct ServicePatch {
     /// Категория масла (ADR-104); не прислана — прежняя.
     oil_category_id: Option<Uuid>,
     active: Option<bool>,
+    /// Строка книжки и интервал (SPEC-34): меняет владелец. `book_interval_reset` — интервал
+    /// снова по строке книжки.
+    book_slot: Option<String>,
+    book_interval_km: Option<i32>,
+    book_interval_days: Option<i32>,
+    #[serde(default)]
+    book_interval_reset: bool,
 }
 
 async fn update_service(
@@ -683,7 +780,33 @@ async fn update_service(
     {
         ops::check_amount(v)?;
     }
+    check_service_book(
+        req.book_slot.as_deref(),
+        req.book_interval_km,
+        req.book_interval_days,
+    )?;
     let mut tx = state.pool.begin().await?;
+    // Строку книжки и интервал услуги меняет владелец (SPEC-34 §1).
+    if !ctx.user.is_owner() {
+        let cur = sqlx::query!(
+            "select book_slot, book_interval_km, book_interval_days from services where id = $1",
+            id
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+        if req.book_slot.as_ref().is_some_and(|s| *s != cur.book_slot)
+            || req.book_interval_reset
+            || req
+                .book_interval_km
+                .is_some_and(|k| Some(k) != cur.book_interval_km)
+            || req
+                .book_interval_days
+                .is_some_and(|d| Some(d) != cur.book_interval_days)
+        {
+            return Err(AppError::Forbidden);
+        }
+    }
     // Цену и ставку мастера меняет только владелец (решение заказчика, ADR-047); форма
     // администратора присылает их без изменений.
     if !ctx.user.is_owner()
@@ -719,16 +842,23 @@ async fn update_service(
         r#"update services set name = coalesce($2, name), price_tyiyn = coalesce($3, price_tyiyn),
              master_fee_tyiyn = coalesce($4, master_fee_tyiyn), active = coalesce($5, active),
              free_with_oil = coalesce($6, free_with_oil),
-             oil_category_id = coalesce($7, oil_category_id)
+             oil_category_id = coalesce($7, oil_category_id),
+             book_slot = coalesce($8, book_slot),
+             book_interval_km = case when $11 then null else coalesce($9, book_interval_km) end,
+             book_interval_days = case when $11 then null else coalesce($10, book_interval_days) end
            where id = $1
-           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active"#,
+           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days"#,
         id,
         name,
         req.price_tyiyn,
         req.master_fee_tyiyn,
         req.active,
         req.free_with_oil,
-        req.oil_category_id
+        req.oil_category_id,
+        req.book_slot,
+        req.book_interval_km,
+        req.book_interval_days,
+        req.book_interval_reset
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -750,11 +880,12 @@ async fn update_service(
         "service.update",
         "service",
         Some(id),
-        json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "free_with_oil": out.free_with_oil, "oil_category_id": out.oil_category_id, "active": out.active }),
+        json!({ "price": out.price_tyiyn, "fee": out.master_fee_tyiyn, "free_with_oil": out.free_with_oil, "oil_category_id": out.oil_category_id, "active": out.active,
+                "book_slot": out.book_slot, "book_km": out.book_interval_km, "book_days": out.book_interval_days }),
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(out))
+    Ok(Json(out.with_default_interval()))
 }
 
 // ---------- Поставщики ----------

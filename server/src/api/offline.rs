@@ -80,6 +80,10 @@ struct SnapService {
     /// Категория масла, с которым услуга бесплатна (ADR-104).
     oil_category_id: Option<Uuid>,
     active: bool,
+    /// Строка книжки и интервал для «Следующей замены» без сети (SPEC-34).
+    book_slot: String,
+    interval_km: Option<i32>,
+    interval_days: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -222,13 +226,34 @@ async fn snapshot(
     )
     .fetch_all(&mut *conn)
     .await?;
-    let services = sqlx::query_as!(
-        SnapService,
-        r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active from services
+    let services = sqlx::query!(
+        r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active,
+                  book_slot, book_interval_km, book_interval_days from services
            where active order by name"#
     )
     .fetch_all(&mut *conn)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|r| {
+        let (interval_km, interval_days) = crate::api::refs::service_interval(
+            &r.book_slot,
+            r.book_interval_km,
+            r.book_interval_days,
+        );
+        SnapService {
+            id: r.id,
+            name: r.name,
+            price_tyiyn: r.price_tyiyn,
+            master_fee_tyiyn: r.master_fee_tyiyn,
+            free_with_oil: r.free_with_oil,
+            oil_category_id: r.oil_category_id,
+            active: r.active,
+            book_slot: r.book_slot,
+            interval_km,
+            interval_days,
+        }
+    })
+    .collect::<Vec<_>>();
     let categories = sqlx::query_as!(
         SnapCategory,
         "select id, name, kind from categories order by name"

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select book_interval_days from categories where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "book_interval_days",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ced5dc78647978a5ee293cfb405424f3721150d46d4581eefe92a83b67c8b763"
+}
