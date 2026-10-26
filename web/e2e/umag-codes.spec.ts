@@ -419,6 +419,7 @@ test('«Связать с Умагом»: сводка, автосвязыван
   await expect(umagCard).toContainText(c.name)
   await expect(umagCard.getByTestId('umag-card-missing')).toContainText(`73${RUN}11`)
   await expect(umagCard.getByTestId('umag-card-missing')).not.toContainText(c.barcode)
+  if (SHOTS) await umagCard.screenshot({ path: `${SHOTS}/tovary-umag-card-conflict.png` })
   await page.goto('/products/umag')
 
   // Повтор той же операции — тот же ответ (не «строка не связана»).
