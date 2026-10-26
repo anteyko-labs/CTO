@@ -137,10 +137,12 @@ test.describe('режим кассы 1366×768', () => {
     await oilField.fill('200000')
     await expect(block.getByText(/не меньше пробега сейчас/)).toBeVisible()
     await expect(page.getByRole('button', { name: /Провести чек/ })).toBeDisabled()
+    await expect(page.getByText(/Не хватает:.*следующая замена/)).toBeVisible()
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/next-change-1366-low.png` })
     await oilField.fill('225000')
     await expect(block.getByText(/не меньше пробега сейчас/)).toHaveCount(0)
-    await expect(page.getByRole('button', { name: /Провести чек/ })).toBeEnabled()
+    // Прочее для проведения может не хватать (оплата, кассир), но не следующей замены.
+    await expect(page.getByText(/Не хватает:.*следующая замена/)).toHaveCount(0)
 
     // «+ ещё строку» — услуга, которой нет в чеке; убирается крестиком.
     await block.getByRole('button', { name: '+ ещё строку' }).tap()
