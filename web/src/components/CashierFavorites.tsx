@@ -1,14 +1,19 @@
 // Ходовые товары и услуги плитками над чеком: одно касание — строка в чеке. Набор задаёт владелец.
-import { useState } from 'react'
+import { useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { get, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
+import { focusScanField } from '../lib/scanner'
 import type { FavoriteTile, Product, Service } from '../lib/types'
 import { Icon } from './icons'
 import { ProductPicker, stockText } from './ProductPicker'
 import { Button, ErrorBox, Modal, Money, toast } from './ui'
 
 const MAX_TILES = 24
+
+// Плитка не забирает фокус у поля сканера: иначе Enter следующего скана нажимал её ещё раз и в чек
+// вставал товар плитки вместо отсканированного (26.10.2026, ui-rules §4).
+const keepFocus = (e: ReactPointerEvent | ReactMouseEvent) => e.preventDefault()
 
 interface EditItem {
   kind: 'product' | 'service'
@@ -61,7 +66,14 @@ export function CashierFavorites({
               key={`${t.kind}-${p?.id ?? s?.id}`}
               type="button"
               className={`flex flex-col justify-between rounded-lg border border-slate-200 bg-white text-left shadow-sm transition hover:border-sky-400 hover:bg-sky-50 active:bg-sky-100 ${compact ? 'min-h-[80px] px-2.5 py-2' : 'min-h-24 p-3'}`}
-              onClick={() => (p ? onProduct(p) : s && onService(s))}
+              onPointerDown={keepFocus}
+              onMouseDown={keepFocus}
+              onClick={() => {
+                if (p) onProduct(p)
+                else if (s) onService(s)
+                // Следующий скан — в поиск товара, где бы ни был фокус до касания.
+                focusScanField()
+              }}
             >
               <span className={`line-clamp-2 font-medium ${compact ? 'text-[15px] leading-tight' : 'text-base leading-snug'}`}>{p?.name ?? s?.name}</span>
               <span className="mt-1 flex items-baseline justify-between gap-2">

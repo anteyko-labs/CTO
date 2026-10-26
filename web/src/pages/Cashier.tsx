@@ -42,6 +42,7 @@ import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { useFocusAfterRender } from '../lib/focus'
+import { useScanToPicker } from '../lib/scanner'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
@@ -1146,6 +1147,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+  // Сканер после касания кнопки или поля количества — в поиск товара, а не в кнопку (ui-rules §4).
+  useScanToPicker()
 
   const startShift = () =>
     void get<CashAccount[]>('/cash/accounts')

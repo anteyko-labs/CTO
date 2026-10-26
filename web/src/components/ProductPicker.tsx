@@ -7,6 +7,7 @@ import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
 import { resolveEnter, resultsMatch } from '../lib/pickerResults'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
+import { SCAN_EVENT } from '../lib/scanner'
 import type { OldCatalogHit, Product } from '../lib/types'
 
 /** Как выбрали товар: сканом (код целиком) или из списка найденных. */
@@ -108,9 +109,11 @@ export function ProductPicker({
     setMessage(null)
   }
 
-  const pick = (p: Product, how: PickHow) => {
+  /** `typed` — по какому тексту нашли: пока ждали ответа, сканер мог начать следующий код —
+   *  его не стираем, иначе следующий скан терялся или уходил обрывком. */
+  const pick = (p: Product, how: PickHow, typed?: string) => {
     onPick(p, how)
-    clear()
+    if (typed === undefined || textNow.current.trim() === typed) clear()
     input.current?.focus()
   }
 
@@ -119,9 +122,9 @@ export function ProductPicker({
     onPickOld?.(h, code)
   }
 
-  const choose = (e: Entry | undefined) => {
+  const choose = (e: Entry | undefined, typed?: string) => {
     if (!e) return
-    if (e.kind === 'own') pick(e.p, 'search')
+    if (e.kind === 'own') pick(e.p, 'search', typed)
     else pickOld(e.h, '')
   }
 
@@ -144,13 +147,17 @@ export function ProductPicker({
     return [...own.map((p) => ({ kind: 'own' as const, p })), ...hits.map((h) => ({ kind: 'old' as const, h }))]
   }
 
-  const submit = async () => {
-    const code = text.trim()
+  /** Enter в поле; `scanned` — код скана, пойманный в другом поле экрана (lib/scanner.ts). */
+  const submit = async (scanned?: string) => {
+    const typed = scanned ?? text
+    const code = typed.trim()
     if (!code || entering.current) return
     // Enter берёт товар только из найденного по всему набранному тексту (SPEC-30 §13).
     entering.current = true
     const out = await resolveEnter(
-      { text, foundFor: fresh ? resultsFor : '', found: entries, active, navigated: navigated.current === code },
+      scanned === undefined
+        ? { text, foundFor: fresh ? resultsFor : '', found: entries, active, navigated: navigated.current === code }
+        : { text: typed, foundFor: '', found: [], active: 0, navigated: false },
       searchFull,
       () => textNow.current,
     ).finally(() => {
@@ -158,17 +165,22 @@ export function ProductPicker({
     })
     if (out.kind === 'stale') return
     if (out.kind === 'pick') {
-      choose(out.item)
+      choose(out.item, code)
       return
     }
+    // Код ищем, а поле уже свободно: следующий скан не допишется к этому коду.
+    if (textNow.current.trim() === code) {
+      textNow.current = ''
+      clear()
+    }
     try {
-      pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`), 'scan')
+      pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`), 'scan', code)
     } catch (e) {
       if (e instanceof ApiError && e.status === 0) {
         const snap = await readSnapshot()
         const found = snap ? findByBarcode(snap, code) : undefined
         if (found) {
-          pick(found, 'scan')
+          pick(found, 'scan', code)
           return
         }
         setMessage(`Без сети: код ${code} в снимке каталога не найден`)
@@ -184,7 +196,7 @@ export function ProductPicker({
             return
           }
         }
-        setText('')
+        if (textNow.current.trim() === code) setText('')
         if (onUnknownCode) onUnknownCode(code)
         else setMessage(`Код ${code} не найден`)
       } else {
@@ -192,6 +204,28 @@ export function ProductPicker({
       }
     }
   }
+
+  // Код сканера, пойманный в другом поле (количество, «Получено»): ищем его, как набранный здесь.
+  const onScan = useRef<(code: string) => void>(() => undefined)
+  useLayoutEffect(() => {
+    onScan.current = (code: string) => {
+      setText(code)
+      setMessage(null)
+      navigated.current = null
+      textNow.current = code
+      void submit(code)
+    }
+  })
+  useEffect(() => {
+    const el = input.current
+    if (!el) return
+    const listener = (e: Event) => {
+      const code = e instanceof CustomEvent && typeof e.detail === 'string' ? e.detail.trim() : ''
+      if (code) onScan.current(code)
+    }
+    el.addEventListener(SCAN_EVENT, listener)
+    return () => el.removeEventListener(SCAN_EVENT, listener)
+  }, [])
 
   return (
     <div className="relative">
