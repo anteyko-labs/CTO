@@ -1148,7 +1148,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     return () => window.removeEventListener('keydown', onKey)
   })
   // Сканер после касания кнопки или поля количества — в поиск товара, а не в кнопку (ui-rules §4).
-  useScanToPicker()
+  useScanToPicker(touch)
 
   const startShift = () =>
     void get<CashAccount[]>('/cash/accounts')

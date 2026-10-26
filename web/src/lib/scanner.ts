@@ -14,9 +14,10 @@ export const SCAN_MIN_LENGTH = 6
 /** Событие поля поиска товара: «найди этот код» — код скана, пойманный в другом поле. */
 export const SCAN_EVENT = 'avtodom:scan'
 
-/** Где фокус: поиск товара; числовое поле (количество, цена, «Получено», пробег); другое поле
- *  ввода (текст, список, дата); не поле — кнопка, ссылка, флажок или сама страница. */
-export type FocusKind = 'picker' | 'number' | 'text' | 'control'
+/** Где фокус: поиск товара; строка ввода (количество, цена, «Получено», пробег, комментарий,
+ *  поиск клиента); другое поле (список, многострочное, дата); не поле — кнопка, ссылка, флажок или
+ *  сама страница. */
+export type FocusKind = 'picker' | 'input' | 'text' | 'control'
 
 /** Открыто ли окно и где фокус: в окне или за ним. */
 export type DialogPlace = 'none' | 'inside' | 'outside'
@@ -46,7 +47,7 @@ export type KeyRoute =
   | 'blur'
   /** Погасить: Enter или пробел не должен нажать кнопку за открытым окном. */
   | 'block'
-  /** Числовое поле: знак может быть началом скана — придержать (`holdStep`). */
+  /** Строка ввода: знак может быть началом скана — придержать (`holdStep`). */
   | 'hold'
 
 /** Печатный знак, а не пробел (пробел нажимает кнопку, как Enter) и не служебная клавиша. */
@@ -55,19 +56,21 @@ export const isTyped = (key: string): boolean => key.length === 1 && key !== ' '
 /**
  * Куда идёт нажатие. Знак, набранный на кнопке, — всегда начало скана: у кнопки набора нет, а
  * Enter после него нажал бы её ещё раз. Одиночный Enter или пробел на кнопке — клавиатура, его не
- * трогаем. Окно открыто, а фокус за ним — Enter и пробел гасятся. В числовом поле знак
- * придерживается: скан ли это, ясно только по скорости и Enter в конце.
+ * трогаем. Окно открыто, а фокус за ним — Enter и пробел гасятся. В строке ввода экрана (и за
+ * открытым окном: окно подарка встаёт, пока фокус в количестве) знак придерживается: скан ли это,
+ * ясно только по скорости и Enter в конце.
  */
 export function routeKey(f: KeyFacts): KeyRoute {
   if (!f.trusted || f.modified || f.composing || f.focus === 'picker') return 'pass'
+  const typed = isTyped(f.key)
+  if (f.focus === 'input' && f.dialog !== 'inside' && typed && !f.repeat) return 'hold'
   if (f.dialog === 'outside') return f.key === 'Enter' || f.key === ' ' ? 'block' : 'pass'
-  if (!isTyped(f.key)) return 'pass'
+  if (!typed) return 'pass'
   if (f.focus === 'control') return f.picker ? 'picker' : 'blur'
-  if (f.focus === 'number' && f.dialog === 'none' && !f.repeat) return 'hold'
   return 'pass'
 }
 
-/** Придержанные знаки числового поля и время последнего (мс, время события). */
+/** Придержанные знаки строки ввода и время последнего (мс, время события). */
 export interface Held {
   chars: string
   last: number
@@ -82,7 +85,7 @@ export type HoldStep =
   | { kind: 'pass'; release: string }
 
 /**
- * Следующее нажатие при придержанных знаках числового поля: быстрые знаки копятся; Enter сразу за
+ * Следующее нажатие при придержанных знаках строки ввода: быстрые знаки копятся; Enter сразу за
  * ними и не меньше 6 знаков — скан; иначе придержанное отдаётся полю.
  */
 export function holdStep(held: Held | null, key: string, now: number, holdable: boolean): HoldStep {
@@ -101,6 +104,8 @@ type Field = HTMLInputElement | HTMLTextAreaElement
 
 /** Типы input, в которых не набирают текст. */
 const NOT_TEXT = new Set(['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'color', 'file', 'image'])
+/** Строки ввода, куда знак вписывается на место курсора (у даты, числа и пароля — свой ввод). */
+const LINE_TYPES = new Set(['', 'text', 'search', 'tel', 'email', 'url'])
 /** Клавиши-модификаторы сами по себе: сканер жмёт Shift перед заглавной буквой кода. */
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph'])
 
@@ -110,7 +115,7 @@ function focusKind(el: Element | null): FocusKind {
   if (el.isContentEditable || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return 'text'
   if (el instanceof HTMLInputElement) {
     if (NOT_TEXT.has(el.type) || el.readOnly) return 'control'
-    return el.dataset.keypad !== undefined ? 'number' : 'text'
+    return LINE_TYPES.has(el.type) ? 'input' : 'text'
   }
   return 'control'
 }
@@ -163,9 +168,10 @@ function insertText(el: Field, text: string): void {
 /**
  * Сканер на экране: пока экран открыт, знак, набранный на кнопке или на пустом месте, переводит
  * фокус в поиск товара; Enter за открытым окном не нажимает кнопку под ним; код, отсканированный
- * в числовое поле, уходит в поиск, а поле остаётся как было.
+ * в поле ввода (количество, «Получено», комментарий), уходит в поиск, а поле остаётся как было.
+ * `touch` — режим кассы: клавиатуры нет, набор в списке выбора (мастер) — только от сканера.
  */
-export function useScanToPicker(): void {
+export function useScanToPicker(touch = false): void {
   useEffect(() => {
     let held: (Held & { field: Field }) | null = null
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -188,7 +194,7 @@ export function useScanToPicker(): void {
         modified: e.ctrlKey || e.metaKey || e.altKey,
         composing: e.isComposing,
         repeat: e.repeat,
-        focus: focusKind(active),
+        focus: touch && active instanceof HTMLSelectElement ? 'control' : focusKind(active),
         dialog: dialog === null ? 'none' : dialog.contains(active) ? 'inside' : 'outside',
         picker: scopePicker(dialog) !== null,
       })
@@ -205,16 +211,16 @@ export function useScanToPicker(): void {
           picker?.dispatchEvent(new CustomEvent(SCAN_EVENT, { detail: step.code }))
           return
         }
-        if (step.kind === 'pass') {
-          release(step.release)
+        if (step.kind === 'hold') {
+          if (step.release) release(step.release)
+          e.preventDefault()
+          clearTimeout(timer)
+          held = { ...step.held, field }
+          timer = setTimeout(() => release(), SCAN_GAP_MS + 10)
           return
         }
-        if (step.release) release(step.release)
-        e.preventDefault()
-        clearTimeout(timer)
-        held = { ...step.held, field }
-        timer = setTimeout(() => release(), SCAN_GAP_MS + 10)
-        return
+        // Не скан: придержанное — в поле, клавиша — как обычно (за окном Enter гасится ниже).
+        release(step.release)
       }
       if (route === 'picker') scopePicker(dialog)?.focus()
       else if (route === 'blur' && active instanceof HTMLElement) active.blur()
@@ -225,5 +231,5 @@ export function useScanToPicker(): void {
       window.removeEventListener('keydown', onKey, true)
       release()
     }
-  }, [])
+  }, [touch])
 }

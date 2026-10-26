@@ -257,6 +257,23 @@ for (const mode of [
       })
     })
 
+    test('окно подарка встало, пока фокус в количестве, затем скан: количество не меняется, товар встаёт', async ({ page }) => {
+      await open(page)
+      const g = await goods(page.request)
+      await api(page.request, 'POST', '/gift-rules', { trigger_product_id: g.oil2.id, min_units: 8000, items: [{ gift_product_id: g.oilFilter.id, gift_qty: 1 }] })
+      await scan(page, g.oil2.code)
+      await expect(qty(page, g.oil2.name)).toHaveValue('1')
+      // Две канистры — порог набран, окно подарка встаёт само; фокус остаётся в количестве.
+      await qty(page, g.oil2.name).fill('2')
+      const dialog = page.getByRole('dialog', { name: 'Выберите подарок' })
+      await expect(dialog).toBeVisible()
+      await expect(qty(page, g.oil2.name)).toBeFocused()
+      await scan(page, g.air.code)
+      await expect(row(page, g.air.name)).toBeVisible()
+      await expect(qty(page, g.oil2.name)).toHaveValue('2')
+      await expect(dialog).toBeVisible()
+    })
+
     test('окно закрыли («Без подарка», «Готово» в «Вид замены»), затем скан: скан не теряется', async ({ page }) => {
       await open(page)
       const g = await goods(page.request)
@@ -282,6 +299,21 @@ for (const mode of [
       await expect(qty(page, g.air.name)).toHaveValue('1')
     })
 
+    test('комментарий в фокусе, затем скан: код не уходит в комментарий, набор руками — уходит', async ({ page }) => {
+      await open(page)
+      const g = await goods(page.request)
+      await scan(page, g.air.code)
+      await hit(page.getByRole('button', { name: mode.touch ? 'Комментарий' : '+ комментарий', exact: true }))
+      const comment = page.getByRole('textbox', { name: 'Комментарий' })
+      await expect(comment).toBeFocused()
+      await scan(page, g.oil.code)
+      await expect(row(page, g.oil.name)).toBeVisible()
+      await expect(comment).toHaveValue('')
+      await comment.focus()
+      await page.keyboard.type('Клиент ждёт', { delay: 90 })
+      await expect(comment).toHaveValue('Клиент ждёт')
+    })
+
     test('способ оплаты, затем скан: способ не меняется, отсканированное встаёт', async ({ page }) => {
       await open(page)
       const g = await goods(page.request)
@@ -296,6 +328,28 @@ for (const mode of [
     })
 
     if (mode.touch) {
+      test('выбрали мастера в списке, затем скан: товар встаёт', async ({ page }) => {
+        await open(page)
+        const g = await goods(page.request)
+        const service = `Замена масла в моторе мастер ${RUN}${++seq}`
+        await api(page.request, 'POST', '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+        const master = `Мастер скан ${RUN}${++seq}`
+        await api(page.request, 'POST', '/employees', { full_name: master, is_master: true })
+        await page.reload()
+        await page.getByRole('button', { name: 'В сервис' }).tap()
+        const kinds = page.getByRole('dialog', { name: 'Вид замены' })
+        await kinds.getByPlaceholder('Найти услугу').fill(service)
+        await kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }).tap()
+        await kinds.getByRole('button', { name: 'Готово' }).tap()
+        const select = page.locator('#master-select')
+        await select.focus()
+        await select.selectOption({ label: master })
+        await expect(select).toBeFocused()
+        await scan(page, g.oil.code)
+        await expect(row(page, g.oil.name)).toBeVisible()
+        await expect(select).toHaveValue(/.+/)
+      })
+
       test('экранная клавиатура открыта: плитка, затем скан', async ({ page }) => {
         await open(page)
         const g = await goods(page.request)

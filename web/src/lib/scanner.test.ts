@@ -36,19 +36,21 @@ describe('куда идёт клавиша на кассе', () => {
     expect(routeKey(facts({ composing: true }))).toBe('pass')
   })
 
-  it('числовое поле (количество, «Получено») — знак придерживается до ясности, скан ли это', () => {
-    expect(routeKey(facts({ focus: 'number' }))).toBe('hold')
-    expect(routeKey(facts({ focus: 'number', key: 'Enter' }))).toBe('pass')
-    // Зажатая клавиша — человек; числовое поле в окне (PIN, сумма) — окно само.
-    expect(routeKey(facts({ focus: 'number', repeat: true }))).toBe('pass')
-    expect(routeKey(facts({ focus: 'number', dialog: 'inside' }))).toBe('pass')
+  it('строка ввода (количество, «Получено», комментарий) — знак придерживается до ясности, скан ли это', () => {
+    expect(routeKey(facts({ focus: 'input' }))).toBe('hold')
+    expect(routeKey(facts({ focus: 'input', key: 'Enter' }))).toBe('pass')
+    // Зажатая клавиша — человек; поле в окне (PIN, сумма, поиск клиента) — окно само.
+    expect(routeKey(facts({ focus: 'input', repeat: true }))).toBe('pass')
+    expect(routeKey(facts({ focus: 'input', dialog: 'inside' }))).toBe('pass')
   })
 
   it('окно открыто, фокус за ним: Enter и пробел гасятся — кнопка под окном не нажимается', () => {
     expect(routeKey(facts({ dialog: 'outside', key: 'Enter' }))).toBe('block')
     expect(routeKey(facts({ dialog: 'outside', key: ' ' }))).toBe('block')
     expect(routeKey(facts({ dialog: 'outside', key: '4' }))).toBe('pass')
-    expect(routeKey(facts({ dialog: 'outside', focus: 'number', key: '4' }))).toBe('pass')
+    // Строка ввода за окном (количество, а окно подарка встало само): код не впишется в неё.
+    expect(routeKey(facts({ dialog: 'outside', focus: 'input', key: '4' }))).toBe('hold')
+    expect(routeKey(facts({ dialog: 'outside', focus: 'input', key: 'Enter' }))).toBe('block')
   })
 
   it('кнопка в окне: есть поиск товара в окне — туда, нет — фокус снимается, Enter её не нажмёт', () => {
@@ -58,7 +60,7 @@ describe('куда идёт клавиша на кассе', () => {
   })
 })
 
-describe('скан в числовое поле', () => {
+describe('скан в строку ввода', () => {
   /** Знаки кода через `gap` мс с момента `t0`: шаги по очереди. */
   function type(code: string, gap: number, t0 = 1000): { held: Held | null; steps: ReturnType<typeof holdStep>[]; t: number } {
     let held: Held | null = null
