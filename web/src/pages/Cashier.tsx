@@ -1,6 +1,6 @@
 // Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
 import { CashierModeBar } from '../components/CashierModeBar'
@@ -398,6 +398,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [nextEdits, setNextEdits] = useState<Partial<Record<BookSlot, string>>>(draft?.nextEdits ?? {})
   const [nextExtra, setNextExtra] = useState<Service[]>(draft?.nextExtra ?? [])
   const [nextExtraOpen, setNextExtraOpen] = useState(false)
+  // «Мастер рекомендовал» у чека «В сервис» в режиме кассы — кнопкой с окном: поле редкое, место — строкам чека.
+  const [declinedOpen, setDeclinedOpen] = useState(false)
   // «Это замена масла?» (SPEC-29 §18): для этого чека уже спросили — больше не спрашиваем.
   const [oilAsked, setOilAsked] = useState(false)
   const [oilQuestion, setOilQuestion] = useState(false)
@@ -416,11 +418,43 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Список чека прокручивается сам по себе: новая строка (она внизу) всегда на виду.
   const cartRef = useRef<HTMLDivElement>(null)
   const lineCount = useRef(lines.length)
+  // Список стоит в самом низу — так и остаётся, когда его высота меняется (появилась подпись «ещё N»).
+  const cartAtBottom = useRef(true)
   useEffect(() => {
     const el = cartRef.current
-    if (el && lines.length > lineCount.current) el.scrollTop = el.scrollHeight
+    if (el && lines.length > lineCount.current) {
+      el.scrollTop = el.scrollHeight
+      cartAtBottom.current = true
+    }
     lineCount.current = lines.length
   }, [lines.length])
+  // Сколько строк чека не видно целиком выше и ниже прокрутки: подпись «ещё N ↑ / ↓» у списка в
+  // режиме кассы, чтобы спрятанная строка не казалась пропавшей.
+  const [cartMore, setCartMore] = useState({ up: 0, down: 0 })
+  const measureCart = useCallback(() => {
+    const el = cartRef.current
+    if (!el) return
+    if (cartAtBottom.current) el.scrollTop = el.scrollHeight
+    const box = el.getBoundingClientRect()
+    let up = 0
+    let down = 0
+    for (const li of el.querySelectorAll(':scope > ul > li')) {
+      const r = li.getBoundingClientRect()
+      if (r.top < box.top - 1) up++
+      else if (r.bottom > box.bottom + 1) down++
+    }
+    setCartMore((m) => (m.up === up && m.down === down ? m : { up, down }))
+  }, [])
+  useEffect(() => {
+    const el = cartRef.current
+    if (!touch || !el) return
+    measureCart()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measureCart)
+    ro.observe(el)
+    if (el.firstElementChild) ro.observe(el.firstElementChild)
+    return () => ro.disconnect()
+  }, [touch, lines.length, measureCart])
   // Аналоги фильтров по кросс-номерам: подсказка в строке, особенно когда товара нет (SPEC-17).
   const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
   const { busy, error, setError, run } = useAction()
@@ -1154,62 +1188,103 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const canFixClient = Boolean(
     party && online && ((clientNeeds.includes('client') && party.kind === 'person') || clientNeeds.includes('phone')),
   )
-  // «Следующая замена» (SPEC-34 §2): под пробегом, по строке на услугу чека со строкой книжки;
-  // в режиме кассы — во всю ширину левой карточки, поля крупные, цифры — экранной клавиатурой.
-  const nextBlock = (
-    <div className={`flex min-w-0 flex-col gap-1 ${serviceLeft ? 'lg:col-span-3' : ''}`} data-testid="next-change">
-      <span className="text-sm font-medium text-slate-700">
-        Следующая замена, {unitLabel(carUnit)}
-        {!serviceLeft && <span className="font-normal text-slate-500"> — пустое поле: не напоминать</span>}
-      </span>
-      <div className={`grid gap-2 ${serviceLeft ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3' : 'grid-cols-1'}`}>
+  // «Следующая замена» (SPEC-34 §2): под пробегом, по строке на услугу чека со строкой книжки.
+  const nextInput = (r: (typeof nextList)[number]) => (
+    <input
+      id={`next-${r.slot}`}
+      aria-label={`Следующая замена: ${r.label}`}
+      className={`${serviceLeft ? 'min-h-[56px] w-[6.25rem] text-lg' : 'w-32'} ${nextLow?.slot === r.slot ? 'border-rose-400!' : ''}`}
+      {...num('int')}
+      maxLength={7}
+      placeholder="не напоминать"
+      value={r.value}
+      onChange={(e) => setNextEdits({ ...nextEdits, [r.slot]: e.target.value.replace(/\D/g, '').slice(0, 7) })}
+    />
+  )
+  const nextRemove = (r: (typeof nextList)[number]) =>
+    r.extra && (
+      <button
+        type="button"
+        aria-label={`Убрать строку ${r.label}`}
+        className={serviceLeft ? `${tbtn} w-14 shrink-0` : 'min-h-9 rounded-md border border-slate-300 px-2 text-sm hover:bg-slate-50'}
+        onClick={() => {
+          setNextExtra(nextExtra.filter((x) => x.id !== r.service_id))
+          const rest = { ...nextEdits }
+          delete rest[r.slot]
+          setNextEdits(rest)
+        }}
+      >
+        ✕
+      </button>
+    )
+  const nextLowText = nextLow && (
+    <span className="text-xs text-rose-700">
+      «{serviceLeft ? slotLabel(nextLow.slot) : nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
+    </span>
+  )
+  const nextBlock = serviceLeft ? (
+    // В режиме кассы — одним рядом во всю ширину левой карточки: подпись группы слева, у каждого
+    // поля — строка книжки над ним («Масло двигателя»), «+ ещё» и «Мастер рекомендовал» — кнопками
+    // в том же ряду. Так данные замены занимают два ряда и строкам чека остаётся место (ui-rules §9).
+    <div className="flex min-w-0 flex-col gap-1 lg:col-span-full" data-testid="next-change">
+      <div className="flex flex-wrap items-end gap-2">
+        <span className="flex min-h-[56px] w-[6.5rem] shrink-0 items-center text-sm leading-tight font-medium text-slate-700">
+          Следующая замена, {unitLabel(carUnit)}
+        </span>
         {nextList.map((r) => (
-          <div key={r.slot} className="flex min-w-0 items-center gap-2">
-            <label htmlFor={`next-${r.slot}`} className={`min-w-0 flex-1 leading-tight ${serviceLeft ? 'line-clamp-2 text-sm' : 'text-sm'}`} title={r.label}>
-              {/* В режиме кассы — коротко, строкой книжки («Масло двигателя»): места на три поля в ряд. */}
-              {serviceLeft ? slotLabel(r.slot) : r.label}
-              {!serviceLeft && <span className="text-slate-500"> — следующая на пробеге</span>}
+          <div key={r.slot} className="flex min-w-0 shrink-0 flex-col gap-1">
+            <label htmlFor={`next-${r.slot}`} className="w-[6.25rem] truncate text-sm text-slate-700" title={r.label}>
+              {slotLabel(r.slot)}
             </label>
-            <input
-              id={`next-${r.slot}`}
-              aria-label={`Следующая замена: ${r.label}`}
-              className={`${serviceLeft ? 'min-h-[56px] w-28 text-lg' : 'w-32'} ${nextLow?.slot === r.slot ? 'border-rose-400!' : ''}`}
-              {...num('int')}
-              maxLength={7}
-              placeholder="не напоминать"
-              value={r.value}
-              onChange={(e) => setNextEdits({ ...nextEdits, [r.slot]: e.target.value.replace(/\D/g, '').slice(0, 7) })}
-            />
-            {r.extra && (
-              <button
-                type="button"
-                aria-label={`Убрать строку ${r.label}`}
-                className={serviceLeft ? `${tbtn} w-14 shrink-0` : 'min-h-9 rounded-md border border-slate-300 px-2 text-sm hover:bg-slate-50'}
-                onClick={() => {
-                  setNextExtra(nextExtra.filter((x) => x.id !== r.service_id))
-                  const rest = { ...nextEdits }
-                  delete rest[r.slot]
-                  setNextEdits(rest)
-                }}
-              >
-                ✕
-              </button>
-            )}
+            <span className="flex gap-1">
+              {nextInput(r)}
+              {nextRemove(r)}
+            </span>
           </div>
         ))}
+        <button type="button" aria-label="+ ещё строку" className={`${tbtn} shrink-0`} onClick={() => setNextExtraOpen(true)}>
+          + ещё
+        </button>
         <button
           type="button"
-          className={serviceLeft ? tbtn : 'min-h-9 self-start rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50'}
-          onClick={() => setNextExtraOpen(true)}
+          data-declined
+          className={`${tbtn} min-w-[8rem] flex-1 flex-col gap-0! ${declined.trim() ? 'border-amber-300! bg-amber-50! text-amber-900!' : ''}`}
+          onClick={() => setDeclinedOpen(true)}
         >
+          {declined.trim() ? (
+            <>
+              <span className="max-w-full truncate text-xs font-normal">Рекомендовал:</span>
+              <span className="max-w-full truncate">{declined.trim()}</span>
+            </>
+          ) : (
+            'Мастер рекомендовал'
+          )}
+        </button>
+      </div>
+      {nextLowText}
+    </div>
+  ) : (
+    <div className="flex min-w-0 flex-col gap-1" data-testid="next-change">
+      <span className="text-sm font-medium text-slate-700">
+        Следующая замена, {unitLabel(carUnit)}
+        <span className="font-normal text-slate-500"> — пустое поле: не напоминать</span>
+      </span>
+      <div className="grid grid-cols-1 gap-2">
+        {nextList.map((r) => (
+          <div key={r.slot} className="flex min-w-0 items-center gap-2">
+            <label htmlFor={`next-${r.slot}`} className="min-w-0 flex-1 text-sm leading-tight" title={r.label}>
+              {r.label}
+              <span className="text-slate-500"> — следующая на пробеге</span>
+            </label>
+            {nextInput(r)}
+            {nextRemove(r)}
+          </div>
+        ))}
+        <button type="button" className="min-h-9 self-start rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50" onClick={() => setNextExtraOpen(true)}>
           + ещё строку
         </button>
       </div>
-      {nextLow && (
-        <span className="text-xs text-rose-700">
-          «{serviceLeft ? slotLabel(nextLow.slot) : nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
-        </span>
-      )}
+      {nextLowText}
     </div>
   )
   const customerFields = (
@@ -1344,7 +1419,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           только чтобы дописать имя и телефон в карточку. */}
       {saleType === 'service' && clientNeeds.length > 0 && (!serviceLeft || canFixClient) && (
         <div
-          className={`flex flex-col gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900 ${serviceLeft ? 'lg:col-span-3' : ''}`}
+          className={`flex flex-col gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900 ${serviceLeft ? 'lg:order-last lg:col-span-full' : ''}`}
           data-testid="service-client-needs"
         >
           <div>
@@ -1416,24 +1491,16 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             {!serviceLeft && nextBlock}
           </>
         ) : (
-          <div className={`rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900 ${serviceLeft ? 'lg:col-span-3' : ''}`}>
+          <div className={`rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900 ${serviceLeft ? 'lg:col-span-full' : ''}`}>
             Масляная книжка: {party ? 'выберите машину клиента (или «+ новая машина»)' : 'выберите клиента и машину'} — замена, масло, фильтр и пробег
             запишутся сами, клиенту распечатается книжка.
           </div>
         ))}
-      {saleType === 'service' && party && vehicleId && (
-        <div className={serviceLeft ? 'lg:col-span-2' : ''}>
-          <Field label="Мастер рекомендовал (клиент отказался)" hint={serviceLeft ? undefined : 'Необязательно. Запишется в книжку, в следующий раз касса напомнит'}>
-            <input
-              id="declined"
-              className={serviceLeft ? 'min-h-[56px] text-lg' : ''}
-              maxLength={300}
-              value={declined}
-              onChange={(e) => setDeclined(e.target.value)}
-              placeholder="Например: воздушный фильтр, антифриз"
-            />
-          </Field>
-        </div>
+      {/* В режиме кассы слева — кнопкой в ряду «Следующей замены», поле — в окне. */}
+      {saleType === 'service' && party && vehicleId && !serviceLeft && (
+        <Field label="Мастер рекомендовал (клиент отказался)" hint="Необязательно. Запишется в книжку, в следующий раз касса напомнит">
+          <input id="declined" maxLength={300} value={declined} onChange={(e) => setDeclined(e.target.value)} placeholder="Например: воздушный фильтр, антифриз" />
+        </Field>
       )}
       {serviceLeft && nextOn && nextBlock}
     </>
@@ -1528,7 +1595,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           <CashierModeBar shift={shift.loading && !shiftKnown ? undefined : shift.data} onOpenShift={startShift} />
         </div>
       )}
-      <div className={`flex min-w-0 flex-col ${touch ? 'gap-3 lg:min-h-0' : 'gap-4'}`}>
+      <div className={`flex min-w-0 flex-col ${touch ? `${serviceLeft ? 'gap-2' : 'gap-3'} lg:min-h-0` : 'gap-4'}`}>
         {fix && (
           <div className="flex flex-col gap-2">
             <CorrectionBanner label="чек" number={fix.number} comment={fixComment} onComment={setFixComment} />
@@ -1541,12 +1608,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </div>
         )}
         {!fix && parked.length > 0 && (
-          <Card className={`flex flex-wrap items-center gap-2 ${touch ? 'p-2! lg:shrink-0' : ''}`}>
+          <Card className={`flex flex-wrap items-center gap-2 ${touch ? 'p-1.5! lg:shrink-0' : ''}`}>
             <span className="text-sm text-slate-500">Отложенные:</span>
             {parked.map((p) => (
               <span
                 key={p.id}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-sm"
+                className={`inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 text-sm ${touch ? '' : 'py-1'}`}
               >
                 <button type="button" className="font-medium hover:text-sky-700" onClick={() => resume(p)}>
                   {p.label || `Чек на ${p.lines.length} поз.`} · {formatSom(parkedTotal(p))}
@@ -1583,7 +1650,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </Card>
         )}
         {!fix && storageAtRisk && (
-          <div className={`rounded-md border border-rose-200 bg-rose-50 px-3 text-sm text-rose-900 ${touch ? 'py-1 lg:line-clamp-1 lg:shrink-0' : 'py-2'}`} role="alert">
+          <div className={`rounded-md border border-rose-200 bg-rose-50 px-3 text-sm text-rose-900 ${touch ? 'py-0.5 leading-snug lg:line-clamp-1 lg:shrink-0' : 'py-2'}`} role="alert">
             Браузер может стереть неотправленные чеки — разрешите хранение данных для этого сайта в настройках браузера
             (или установите программу на рабочий стол).
           </div>
@@ -1600,7 +1667,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </Link>
           </div>
         )}
-        <Card className={touch ? 'p-3 lg:shrink-0' : ''}>
+        <Card className={touch ? `${serviceLeft ? 'p-2!' : 'p-3'} lg:shrink-0` : ''}>
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
               <ProductPicker
@@ -1760,7 +1827,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </Card>
         )}
 
-        <Card className={`p-0 ${touch ? `flex flex-col lg:flex-1 ${serviceLeft ? 'lg:min-h-[5.5rem]' : 'lg:min-h-0'}` : ''}`}>
+        {/* У чека «В сервис» под строками — данные замены; списку оставлено не меньше трёх строк и подписи
+            «ещё N» (строка — 56 точек и поля), данные замены при нехватке места прокручиваются сами. */}
+        <Card className={`p-0 ${touch ? `flex flex-col lg:flex-1 ${serviceLeft ? 'p-0! lg:min-h-[224px]' : 'lg:min-h-0'}` : ''}`}>
           {removed && (
             <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2" role="status">
               <span className="min-w-0 flex-1 truncate text-base">
@@ -1771,7 +1840,20 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </button>
             </div>
           )}
-          <div ref={cartRef} className={touch ? 'relative lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : ''} data-testid="cart">
+          <div
+            ref={cartRef}
+            className={touch ? 'relative lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : ''}
+            data-testid="cart"
+            onScroll={
+              touch
+                ? (e) => {
+                    const el = e.currentTarget
+                    cartAtBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 2
+                    measureCart()
+                  }
+                : undefined
+            }
+          >
           {lines.length === 0 ? (
             <div className={`p-8 text-center text-slate-500 ${touch ? 'text-lg' : 'text-sm'}`}>Чек пуст. Сканируйте товар или найдите его по названию.</div>
           ) : (
@@ -1789,12 +1871,16 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     // В режиме кассы на широком экране строка — в один ряд: название, количество, цена, сумма, удалить.
                     className={
                       touch
-                        ? 'flex flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2 lg:grid lg:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]'
+                        ? `flex flex-wrap items-center gap-x-2 lg:grid lg:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] ${serviceLeft ? 'gap-y-1 px-3 py-0.5' : 'gap-y-2 px-3 py-2'}`
                         : 'flex flex-wrap items-center gap-2 p-3'
                     }
                   >
                     <div className={touch ? 'min-w-40 flex-1 lg:min-w-0' : 'min-w-48 flex-1'}>
-                      <div className={touch ? 'line-clamp-2 text-lg leading-snug font-medium' : 'text-base font-medium'}>
+                      {/* У чека «В сервис» строка чека — в одну строку высотой с кнопки: название обрезается. */}
+                      <div
+                        className={touch ? (serviceLeft ? 'truncate text-lg leading-tight font-medium' : 'line-clamp-2 text-lg leading-snug font-medium') : 'text-base font-medium'}
+                        title={serviceLeft ? (l.product ? productTitle(l.product) : l.service?.name) : undefined}
+                      >
                         {l.product ? productTitle(l.product) : l.service?.name}
                         {l.gift && (
                           <span className="ml-2">
@@ -1966,10 +2052,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </ul>
           )}
           </div>
+          {touch && lines.length > 0 && (cartMore.up > 0 || cartMore.down > 0) && (
+            // Часть строк за прокруткой — видно сразу, сколько и где (ui-rules §9).
+            <div className="hidden shrink-0 justify-center gap-4 border-t border-slate-200 bg-sky-50 px-3 py-0.5 text-sm leading-tight font-semibold text-sky-800 lg:flex" data-testid="cart-more">
+              {cartMore.up > 0 && <span>ещё {cartMore.up} ↑</span>}
+              {cartMore.down > 0 && <span>ещё {cartMore.down} ↓</span>}
+            </div>
+          )}
         </Card>
         {serviceLeft && (
+          // Два ряда: мастер, вид замены, клиент, пробег; ниже — следующая замена и «Мастер рекомендовал».
           <Card
-            className="relative grid shrink-0 grid-cols-1 content-start gap-x-3 gap-y-2 p-3 lg:max-h-[50dvh] lg:grid-cols-3 lg:overflow-y-auto lg:overscroll-contain"
+            className="relative grid grid-cols-1 content-start gap-2 p-2! lg:min-h-0 lg:grid-cols-[minmax(0,0.9fr)_auto_minmax(0,1.3fr)_10rem] lg:overflow-y-auto lg:overscroll-contain"
             data-testid="service-left"
           >
             {customerFields}
@@ -2633,6 +2727,32 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         />
       )}
       {noReceipt && <NoReceiptReturn touch={touch} onClose={() => setNoReceipt(false)} />}
+      {declinedOpen && (
+        <Modal title="Мастер рекомендовал (клиент отказался)" onClose={() => setDeclinedOpen(false)}>
+          <div className="flex flex-col gap-3">
+            <Field label="Что рекомендовал" hint="Необязательно. Запишется в книжку, в следующий раз касса напомнит">
+              <input
+                id="declined"
+                className="min-h-[56px] text-lg"
+                maxLength={300}
+                value={declined}
+                onChange={(e) => setDeclined(e.target.value)}
+                placeholder="Например: воздушный фильтр, антифриз"
+              />
+            </Field>
+            <div className="flex justify-end gap-2">
+              {declined.trim() && (
+                <button type="button" className={tbtn} onClick={() => setDeclined('')}>
+                  Стереть
+                </button>
+              )}
+              <Button className="min-h-[56px]! px-6 text-lg!" onClick={() => setDeclinedOpen(false)}>
+                Готово
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {nextExtraOpen && (
         // «+ ещё строку» (SPEC-34 §2): услуга, которой нет в чеке, — клиент сменил в другом месте.
         <Modal title="Следующая замена: ещё строка" onClose={() => setNextExtraOpen(false)}>

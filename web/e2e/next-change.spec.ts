@@ -108,7 +108,7 @@ test.describe('режим кассы 1366×768', () => {
     await left.getByRole('button', { name: 'Выбрать клиента' }).tap()
     const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
     await dlg.locator('[data-client-input]').fill(s.last)
-    await dlg.getByRole('button', { name: new RegExp(s.last) }).first().tap()
+    await dlg.getByRole('button', { name: new RegExp(`^${s.last}`) }).first().tap()
     await dlg.getByRole('button', { name: 'Готово' }).tap()
     await left.locator('#master-select').selectOption({ label: s.master })
     await left.locator('#mileage').fill('217000')
@@ -150,6 +150,109 @@ test.describe('режим кассы 1366×768', () => {
     await expect(extra).toBeVisible()
     await expect(extra.getByRole('button', { name: new RegExp(s.oil) })).toHaveCount(0)
     await page.keyboard.press('Escape')
+
+    await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
+    await page.getByRole('button', { name: 'Точно очистить?' }).tap()
+    await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
+  })
+
+  test('чек «В сервис» с тремя услугами: все строки чека видны целиком, при четырёх — «ещё 1»', async ({ page }) => {
+    // Обе служебные плашки сверху: браузер отказал в надёжном хранении и есть отложенный чек.
+    await page.addInitScript(() => {
+      const s = navigator.storage as StorageManager | undefined
+      if (s) {
+        s.persisted = async () => false
+        s.persist = async () => false
+      }
+    })
+    await login(page)
+    const s = await setup(page.request, 'f')
+    const brake = `Замена тормозной жидкости f ${RUN}`
+    const gear = `Замена масла в коробке f ${RUN}`
+    await api(page.request, 'POST', '/services', { name: brake, price_tyiyn: 40_000, master_fee_tyiyn: 3_000 })
+    await api(page.request, 'POST', '/services', { name: gear, price_tyiyn: 60_000, master_fee_tyiyn: 3_000 })
+    await page.goto('/')
+    await page.evaluate(() => localStorage.setItem('avtodom.cashier_mode', '1'))
+    await page.reload()
+    await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
+    await page.getByRole('button', { name: 'В сервис' }).tap()
+    await addKinds(page, [s.oil], true)
+    await page.getByRole('button', { name: 'Отложить', exact: true }).tap()
+    await expect(page.getByText('Отложенные:')).toBeVisible()
+    await expect(page.getByText(/Браузер может стереть/)).toBeVisible()
+
+    await page.getByRole('button', { name: 'В сервис' }).tap()
+    await addKinds(page, [s.oil, s.anti, brake], true)
+    const left = page.getByTestId('service-left')
+    await left.getByRole('button', { name: 'Выбрать клиента' }).tap()
+    const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
+    await dlg.locator('[data-client-input]').fill(s.last)
+    await dlg.getByRole('button', { name: new RegExp(`^${s.last}`) }).first().tap()
+    await dlg.getByRole('button', { name: 'Готово' }).tap()
+    await left.locator('#master-select').selectOption({ label: s.master })
+    await left.locator('#mileage').fill('217000')
+    await expect(left.getByTestId('next-change').getByLabel(`Следующая замена: ${s.anti}`)).toHaveValue('277000')
+
+    const cart = page.getByTestId('cart')
+    const rows = cart.locator('li')
+    await expect(rows).toHaveCount(3)
+    /** Строки, видимые в области списка целиком. */
+    const fullyVisible = async () => {
+      const box = (await cart.boundingBox())!
+      let n = 0
+      for (const r of await rows.all()) {
+        const b = (await r.boundingBox())!
+        if (b.y >= box.y - 0.5 && b.y + b.height <= box.y + box.height + 0.5) n++
+      }
+      return n
+    }
+    expect(await fullyVisible()).toBe(3)
+    await expect(page.getByTestId('cart-more')).toHaveCount(0)
+    // Строка чека — в одну строку под палец: −, +, удалить не меньше 56.
+    for (const r of await rows.all()) {
+      for (const b of [r.getByRole('button', { name: 'Меньше' }), r.getByRole('button', { name: 'Больше' }), r.getByRole('button', { name: 'Удалить строку' })]) {
+        const bb = (await b.boundingBox())!
+        expect(Math.min(bb.width, bb.height)).toBeGreaterThanOrEqual(56)
+      }
+    }
+    // Подписи полей замены видны, страница не прокручивается, «Провести» на экране.
+    for (const label of [/^Мастер/, /^Вид замены/, /^Клиент/, /^Пробег сейчас/, /^Следующая замена/, 'Масло двигателя', 'Антифриз', /^Тормозная/]) {
+      await expect(left.getByText(label).first()).toBeInViewport({ ratio: 1 })
+    }
+    await expect(left.getByRole('button', { name: 'Мастер рекомендовал' })).toBeInViewport({ ratio: 1 })
+    await expect(left).toBeInViewport({ ratio: 1 })
+    const noScroll = () =>
+      page.evaluate(() => {
+        const el = document.scrollingElement ?? document.documentElement
+        return el.scrollHeight <= window.innerHeight + 1 && el.scrollWidth <= window.innerWidth + 1
+      })
+    expect(await noScroll()).toBe(true)
+    await expect(page.getByRole('button', { name: /Провести чек/ })).toBeInViewport()
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/service-3-lines-1366.png` })
+
+    // «Мастер рекомендовал» — кнопкой, поле в окне; записанное видно на кнопке.
+    await left.getByRole('button', { name: 'Мастер рекомендовал' }).tap()
+    const rec = page.getByRole('dialog', { name: 'Мастер рекомендовал (клиент отказался)' })
+    await rec.locator('#declined').fill('воздушный фильтр')
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/service-declined-1366.png` })
+    await rec.getByRole('button', { name: 'Готово' }).tap()
+    await expect(rec).toHaveCount(0)
+    await expect(left.locator('[data-declined]')).toContainText('воздушный фильтр')
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/service-declined-filled-1366.png` })
+
+    // Четвёртая услуга: три строки видны целиком, у списка — «ещё 1».
+    await left.getByRole('button', { name: 'Изменить вид' }).tap()
+    await addKinds(page, [gear], true)
+    await expect(rows).toHaveCount(4)
+    const more = page.getByTestId('cart-more')
+    await expect(more).toHaveText(/ещё 1 ↑/)
+    await expect(more).toBeInViewport({ ratio: 1 })
+    expect(await fullyVisible()).toBeGreaterThanOrEqual(3)
+    expect(await noScroll()).toBe(true)
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/service-4-lines-1366.png` })
+    await cart.evaluate((el) => el.scrollTo({ top: 0 }))
+    await expect(more).toHaveText(/ещё 1 ↓/)
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/service-4-lines-1366-top.png` })
 
     await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
     await page.getByRole('button', { name: 'Точно очистить?' }).tap()

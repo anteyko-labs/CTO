@@ -165,7 +165,7 @@ test.describe('режим кассы 1366×768', () => {
     const cart = (await page.getByTestId('cart').boundingBox())!
     expect((await left.boundingBox())!.y).toBeGreaterThanOrEqual(cart.y + cart.height - 1)
 
-    // Клиент с машиной — появляются пробег и «Мастер рекомендовал».
+    // Клиент с машиной — появляются пробег и кнопка «Мастер рекомендовал».
     await left.getByRole('button', { name: 'Выбрать клиента' }).tap()
     const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
     await dlg.locator('[data-client-input]').fill(`Клиент${RUN}`)
@@ -173,12 +173,12 @@ test.describe('режим кассы 1366×768', () => {
     await dlg.getByRole('button', { name: 'Готово' }).tap()
     await expect(left.locator('#mileage')).toBeVisible()
     await expect(left.getByText(/Пробег сейчас/)).toBeInViewport()
-    await expect(left.getByText('Мастер рекомендовал (клиент отказался)')).toBeInViewport()
+    await expect(left.getByRole('button', { name: 'Мастер рекомендовал' })).toBeInViewport()
     await left.locator('#master-select').selectOption({ label: `Мастер слева ${RUN}` })
 
     // Цели касания — не ниже 56 точек.
     await expect(left.locator('[data-client]')).toContainText(`Клиент${RUN}`)
-    for (const l of [left.locator('#master-select'), left.locator('#mileage'), left.locator('#declined'), left.getByRole('button', { name: 'Изменить вид' }), left.locator('[data-client]')]) {
+    for (const l of [left.locator('#master-select'), left.locator('#mileage'), left.locator('[data-declined]'), left.getByRole('button', { name: 'Изменить вид' }), left.locator('[data-client]')]) {
       expect((await l.boundingBox())!.height, await l.evaluate((e) => e.id || e.textContent)).toBeGreaterThanOrEqual(56)
     }
     expect(await noPageScroll(page)).toBe(true)
