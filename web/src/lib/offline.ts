@@ -7,6 +7,7 @@ import { ApiError, api, deviceId, noServerAnswer, serverReachable, setServerReac
 import { branchHeaders, selectedBranch } from './branch'
 import { searchRank } from './pickerResults'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
+import { sameCode } from './umagLink'
 
 export interface SnapshotProduct extends Product {
   barcodes: string[]
@@ -194,7 +195,7 @@ export function knownShift(): Shift | null | undefined {
 export function searchSnapshot(snap: Snapshot, query: string, limit = 15): SnapshotProduct[] {
   const q = query.trim().toLowerCase()
   if (q.length < 2) return []
-  const exact = snap.products.filter((p) => p.barcodes.some((c) => c === q))
+  const exact = snap.products.filter((p) => p.barcodes.some((c) => c === q || sameCode(c, q)))
   if (exact.length > 0) return exact
   // Порядок — как на сервере (SPEC-30 §13): точный артикул, название с начала, остальное.
   return snap.products
@@ -211,8 +212,11 @@ export function searchSnapshot(snap: Snapshot, query: string, limit = 15): Snaps
     .map((x) => x.p)
 }
 
+/** Товар по коду: сначала точное совпадение, потом числовой код без потерянных нулей впереди — как
+ *  на сервере; коды Умага связанного товара — его коды (SPEC-35 §1). */
 export function findByBarcode(snap: Snapshot, code: string): SnapshotProduct | undefined {
-  return snap.products.find((p) => p.barcodes.includes(code.trim()))
+  const c = code.trim()
+  return snap.products.find((p) => p.barcodes.includes(c)) ?? snap.products.find((p) => p.barcodes.some((b) => sameCode(b, c)))
 }
 
 /** Снимок старше двух часов: цены и остатки могли измениться (SPEC-09). */

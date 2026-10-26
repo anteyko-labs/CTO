@@ -37,6 +37,7 @@ import Notifications from './pages/Notifications'
 import Profit, { OwnerDashboard } from './pages/Owner'
 import Payroll from './pages/Payroll'
 import Products from './pages/Products'
+import UmagLink from './pages/UmagLink'
 import TopProducts from './pages/TopProducts'
 import ReceiptCorrect from './pages/ReceiptCorrect'
 import ReceiptNew from './pages/ReceiptNew'
@@ -338,6 +339,8 @@ function Shell() {
           {owner && <Route path="/receipts/:id/correct" element={<ByParam><ReceiptCorrect /></ByParam>} />}
           <Route path="/stock" element={<StockRedirect />} />
           <Route path="/products" element={<Products />} />
+          {/* Связь товаров со старой базой Умаг (SPEC-35 §3): владелец и право «Товары и штрихкоды». */}
+          {can(user, 'products') && <Route path="/products/umag" element={<UmagLink />} />}
           <Route path="/top-products" element={<TopProducts />} />
           <Route path="/intake" element={<Navigate to="/revision?tab=scan" replace />} />
           <Route path="/shift" element={<Shift />} />

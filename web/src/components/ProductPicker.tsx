@@ -1,5 +1,6 @@
 // Поле сканера и поиска товара для кассы и прихода (SPEC-02, SPEC-04); без сети ищет по снимку каталога (SPEC-09).
-// В приходе и ревизии подсказывает и позиции старой программы (SPEC-20, SPEC-29 §1).
+// Где виден Умаг (приход, ревизия — `umag`), подсказывает и строки старой базы Умаг (SPEC-20,
+// SPEC-29 §1, SPEC-35 §2); на кассе и в остальных выборах товара Умага нет.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ApiError, get, qs } from '../lib/api'
 import { productTitle } from '../lib/battery'
@@ -8,6 +9,8 @@ import { useDebounced } from '../lib/hooks'
 import { resolveEnter, resultsMatch } from '../lib/pickerResults'
 import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
 import type { OldCatalogHit, Product } from '../lib/types'
+import { searchUmag, umagStep, unlinkedHit } from '../lib/umagLink'
+import { UmagHitModal, UmagPickerBlock, type UmagDone } from './Umag'
 
 /** Как выбрали товар: сканом (код целиком) или из списка найденных. */
 export type PickHow = 'scan' | 'search'
@@ -18,22 +21,31 @@ type Entry = { kind: 'own'; p: Product } | { kind: 'old'; h: OldCatalogHit }
  * Поле для сканера и поиска. Enter со строкой из цифр — точный поиск по штрихкоду,
  * иначе — выбор из списка найденных. Набранный или вставленный код ищется и без Enter:
  * сервер ищет его среди кодов товара наравне с названием и артикулом.
- * Незнакомый код передаётся в `onUnknownCode`; с `onPickOld` сначала ищется в списке старой программы.
+ * Незнакомый код передаётся в `onUnknownCode`; где виден Умаг — сначала ищется в старой базе Умаг.
  */
 export function ProductPicker({
   onPick,
   onUnknownCode,
   onCreate,
+  umag = false,
+  umagAddLabel,
   onPickOld,
   autoFocus = true,
   placeholder = 'Сканируйте штрихкод, введите название или бренд',
   inputId,
 }: {
-  onPick: (p: Product, how: PickHow) => void
+  /** `umagDone` — товар заведён из строки Умага или связан с ней в окне Умага (закупка оттуда). */
+  onPick: (p: Product, how: PickHow, umagDone?: UmagDone) => void
   onUnknownCode?: (code: string) => void
   /** «Новый товар» прямо из списка: передаётся набранный текст. */
   onCreate?: (text: string) => void
-  /** Позиция старой программы (SPEC-20): по ней заводят карточку. Без него — подсказок оттуда нет. */
+  /** Умаг виден (SPEC-35 §2): блок «Из старой базы Умаг» в списке и окно строки по коду, которого нет
+   *  у товаров. Только «Приход» и ревизия; на кассе и в остальных выборах товара — нет. */
+  umag?: boolean
+  /** Подпись «Завести» в окне Умага: в приходе — «Завести и добавить». */
+  umagAddLabel?: string
+  /** Своя обработка несвязанной строки Умага (ревизия заполняет свою карточку) вместо окна Умага;
+   *  включает Умаг. */
   onPickOld?: (hit: OldCatalogHit, code: string) => void
   autoFocus?: boolean
   placeholder?: string
@@ -47,9 +59,11 @@ export function ProductPicker({
   const [old, setOld] = useState<OldCatalogHit[]>([])
   const [active, setActive] = useState(0)
   const [message, setMessage] = useState<string | null>(null)
+  /** Окно строки Умага: из списка (`list`) — сразу карточка, по коду — сведения и кнопки. */
+  const [umagHit, setUmagHit] = useState<{ hit: OldCatalogHit; code: string; list: boolean } | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const query = useDebounced(text.trim(), 200)
-  const withOld = Boolean(onPickOld)
+  const withOld = umag || Boolean(onPickOld)
   // Что в поле сейчас — для Enter, который ждёт ответа сервера (SPEC-30 §13).
   const textNow = useRef(text)
   useLayoutEffect(() => {
@@ -86,7 +100,7 @@ export function ProductPicker({
       })
     if (withOld && !/^\d{6,}$/.test(query)) {
       get<OldCatalogHit[]>(`/old-catalog/search${qs({ q: query })}`)
-        .then((h) => alive && setOld(h.filter((x) => !x.linked_product_id).slice(0, 8)))
+        .then((h) => alive && setOld(h.filter(unlinkedHit).slice(0, 8)))
         .catch(() => alive && setOld([]))
     } else {
       setOld([])
@@ -108,15 +122,33 @@ export function ProductPicker({
     setMessage(null)
   }
 
-  const pick = (p: Product, how: PickHow) => {
-    onPick(p, how)
+  const pick = (p: Product, how: PickHow, umagDone?: UmagDone) => {
+    onPick(p, how, umagDone)
     clear()
     input.current?.focus()
   }
 
   const pickOld = (h: OldCatalogHit, code: string) => {
     clear()
-    onPickOld?.(h, code)
+    if (onPickOld) onPickOld(h, code)
+    else setUmagHit({ hit: h, code, list: code === '' })
+  }
+
+  /** Кода нет у товаров — есть ли он в Умаге (SPEC-35 §2): связанная строка — её товар,
+   *  несвязанная — окно Умага. Нет в Умаге — false. */
+  const fromUmag = async (code: string): Promise<boolean> => {
+    const step = umagStep(await searchUmag({ barcode: code }).catch(() => []))
+    if (step.kind === 'none') return false
+    if (step.kind === 'umag') {
+      pickOld(step.hit, code)
+      return true
+    }
+    try {
+      pick(await get<Product>(`/products/${step.productId}`), 'scan')
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'Ошибка')
+    }
+    return true
   }
 
   const choose = (e: Entry | undefined) => {
@@ -133,7 +165,7 @@ export function ProductPicker({
     })
     const hits =
       withOld && own.length === 0
-        ? (await get<OldCatalogHit[]>(`/old-catalog/search${qs({ q })}`).catch(() => [])).filter((x) => !x.linked_product_id).slice(0, 8)
+        ? (await get<OldCatalogHit[]>(`/old-catalog/search${qs({ q })}`).catch(() => [])).filter(unlinkedHit).slice(0, 8)
         : []
     if (textNow.current.trim() === q) {
       setResults(own)
@@ -171,19 +203,16 @@ export function ProductPicker({
           pick(found, 'scan')
           return
         }
-        setMessage(`Без сети: код ${code} в снимке каталога не найден`)
+        setMessage(
+          withOld
+            ? `Без сети: код ${code} среди товаров не найден. Если он есть в базе Умаг, завести товар можно, когда будет связь`
+            : `Без сети: код ${code} в снимке каталога не найден`,
+        )
         return
       }
       if (e instanceof ApiError && e.status === 404) {
-        // Нет у нас — может, есть в списке старой программы: карточка заполнится оттуда.
-        if (onPickOld) {
-          const hits = await get<OldCatalogHit[]>(`/old-catalog/search${qs({ barcode: code })}`).catch(() => [])
-          const exact = hits.find((h) => h.exact)
-          if (exact) {
-            pickOld(exact, code)
-            return
-          }
-        }
+        // Нет у нас — может, есть в старой базе Умаг: связанная строка даст товар, несвязанная — окно.
+        if (withOld && (await fromUmag(code))) return
         setText('')
         if (onUnknownCode) onUnknownCode(code)
         else setMessage(`Код ${code} не найден`)
@@ -251,30 +280,8 @@ export function ProductPicker({
             </li>
           ))}
           {shownOld.length > 0 && (
-            <li className="border-t border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium uppercase text-slate-500">
-              Из старой программы — завести карточку
-            </li>
+            <UmagPickerBlock hits={shownOld} offset={shownResults.length} active={active} onHover={setActive} onChoose={(h) => pickOld(h, '')} />
           )}
-          {shownOld.map((h, j) => {
-            const i = shownResults.length + j
-            return (
-              <li key={h.id}>
-                <button
-                  type="button"
-                  data-old-hit
-                  className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm ${i === active ? 'bg-sky-50' : 'hover:bg-slate-50'}`}
-                  onMouseEnter={() => setActive(i)}
-                  onClick={() => pickOld(h, '')}
-                >
-                  <span>
-                    <span className="font-medium">{h.name}</span>
-                    <span className="ml-2 text-xs text-slate-500">{[h.barcode && `код ${h.barcode}`, h.article].filter(Boolean).join(' · ')}</span>
-                  </span>
-                  <span className="shrink-0 text-right text-xs text-slate-500">{h.price_tyiyn ? formatSom(h.price_tyiyn) : ''}</span>
-                </button>
-              </li>
-            )
-          })}
           {onCreate && (
             <li className="border-t border-slate-200">
               <button
@@ -291,6 +298,22 @@ export function ProductPicker({
             </li>
           )}
         </ul>
+      )}
+      {umagHit && (
+        <UmagHitModal
+          hit={umagHit.hit}
+          code={umagHit.code}
+          start={umagHit.list ? 'create' : 'info'}
+          addLabel={umagAddLabel}
+          onClose={() => {
+            setUmagHit(null)
+            input.current?.focus()
+          }}
+          onDone={(p, done) => {
+            setUmagHit(null)
+            pick(p, 'search', done)
+          }}
+        />
       )}
     </div>
   )

@@ -42,9 +42,11 @@ test('приход: подсказка из старой программы, в�
   const supplier = await apiPost<{ id: string; name: string }>(page.request, '/suppliers', { name: `Поставщик свечей ${RUN}` })
   const code = `47${RUN}101`
   await product(page.request, cat.id, `Колпачок ${RUN}`, code, 15_000)
-  // Список старой программы: позиции «Свеча NGK» у нас ещё нет.
+  // Список старой программы: позиции «Свеча NGK» у нас ещё нет. Артикул — свой у каждого прогона:
+  // артикул-код Умага переходит к заведённому товару (SPEC-35), и строка с тем же артикулом в
+  // следующем прогоне считалась бы уже заведённой.
   const res = await page.request.put('/api/v1/old-catalog', {
-    data: [{ name: `Свеча NGK ${RUN}`, barcode: `48${RUN}202`, article: 'BKR6E', cost_tyiyn: 20_000, price_tyiyn: 30_000, unit: 'шт', category: catName }],
+    data: [{ name: `Свеча NGK ${RUN}`, barcode: `48${RUN}202`, article: `BKR6E-${RUN}`, cost_tyiyn: 20_000, price_tyiyn: 30_000, unit: 'шт', category: catName }],
     headers: DEVICE,
   })
   expect(res.ok()).toBeTruthy()
