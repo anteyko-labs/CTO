@@ -4,6 +4,7 @@ import { paymentLabel } from '../lib/battery'
 import { printInFrame } from '../lib/printFrame'
 import type { Sale, SaleLine } from '../lib/types'
 import { branchLabel } from '../lib/branch'
+import { mileageText } from '../lib/mileage'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -53,6 +54,9 @@ export function saleHtml(sale: Sale, change: number | null): string {
     .muted { color: #444; }
     .total td { font-weight: bold; font-size: 12pt; border-top: 1px dashed #000; padding-top: 1mm; }
     .center { text-align: center; margin-top: 3mm; }
+    .book { border-top: 1px dashed #000; margin-top: 2mm; padding-top: 1mm; }
+    .book b { display: block; }
+    .book .nx { margin-top: 1mm; }
   </style></head><body>
     <h1>Avtodom</h1>
     ${branchLabel() ? `<div class="center" style="margin:0 0 2mm">${esc(branchLabel() ?? '')}</div>` : ''}
@@ -62,8 +66,31 @@ export function saleHtml(sale: Sale, change: number | null): string {
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
     ${sale.kind === 'return' && sale.comment ? `<div>Причина: ${esc(sale.comment)}</div>` : ''}
     <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
+    ${bookHtml(sale)}
     <div class="center">Спасибо за покупку!</div>
   </body></html>`
+}
+
+/** Масляная книжка чека «В сервис» (SPEC-34 §4): машина, пробег сейчас и следующие замены;
+ *  строки без напоминания не печатаются. */
+export function bookHtml(sale: Pick<Sale, 'sale_type' | 'kind' | 'book'>): string {
+  const b = sale.book
+  if (!b || sale.kind === 'return' || sale.sale_type !== 'service') return ''
+  const car = [b.brand, b.model].map((x) => x.trim()).filter(Boolean).join(' ')
+  const day = (iso: string) => {
+    const [y, m, d] = iso.split('-')
+    return `${d}.${m}.${y}`
+  }
+  const lines = b.lines
+    .map(
+      (l) =>
+        `<div class="nx">${esc(l.label)} — следующая замена на пробеге ${esc(mileageText(l.next_mileage, l.unit))}${l.next_date ? ` или до ${day(l.next_date)}` : ''}</div>`,
+    )
+    .join('')
+  return `<div class="book"><b>Масляная книжка</b>
+    <div>Машина: ${esc([car, b.plate.trim()].filter(Boolean).join(', '))}</div>
+    ${b.mileage !== null ? `<div>Пробег сейчас: ${esc(mileageText(b.mileage, b.mileage_unit))}</div>` : ''}
+    ${lines}</div>`
 }
 
 /** Дата чека: день и время записи; если учётный день другой (чек без сети после полуночи,
