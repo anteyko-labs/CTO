@@ -22,6 +22,7 @@ import { OilHint } from '../components/OilBook'
 import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
+import { extraChoices, nextPayload, nextRows, nextTooLow, receiptBook, type OwnIntervals } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
@@ -44,7 +45,7 @@ import { useFocusAfterRender } from '../lib/focus'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
-import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
+import { PAYMENT_LABELS, type CashAccount, type Employee, type GiftRule, type Party, type PaymentMethod, type BookSlot, type Product, type Sale, type SaleLineKind, type Service, type Shift } from '../lib/types'
 
 interface CartLine {
   key: string
@@ -142,6 +143,9 @@ interface Parked {
   declined?: string
   /** Строки, удалённые крестиком до того, как чек отложили (SPEC-30 §8). */
   dropped?: RemovedLine[]
+  /** «Следующая замена» (SPEC-34): правки кассира и строки «+ ещё». */
+  nextEdits?: Partial<Record<BookSlot, string>>
+  nextExtra?: Service[]
 }
 
 function loadParked(): Parked[] {
@@ -176,6 +180,8 @@ interface Draft {
   delivery?: string | null
   declined?: string
   dropped?: RemovedLine[]
+  nextEdits?: Partial<Record<BookSlot, string>>
+  nextExtra?: Service[]
 }
 
 function loadDraft(): Draft | null {
@@ -387,6 +393,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
   // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
   const [declined, setDeclined] = useState(draft?.declined ?? '')
+  // «Следующая замена» по услугам чека (SPEC-34): правки кассира по строке книжки ('' — не
+  // напоминать) и строки, добавленные «+ ещё строку».
+  const [nextEdits, setNextEdits] = useState<Partial<Record<BookSlot, string>>>(draft?.nextEdits ?? {})
+  const [nextExtra, setNextExtra] = useState<Service[]>(draft?.nextExtra ?? [])
+  const [nextExtraOpen, setNextExtraOpen] = useState(false)
   // «Это замена масла?» (SPEC-29 §18): для этого чека уже спросили — больше не спрашиваем.
   const [oilAsked, setOilAsked] = useState(false)
   const [oilQuestion, setOilQuestion] = useState(false)
@@ -419,8 +430,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const masters = employees.data?.filter((e) => e.is_master && (e.active || e.id === fix?.state.masterId)) ?? []
 
   useEffect(() => {
-    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped })
-  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped])
+    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped, nextEdits, nextExtra })
+  }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped, nextEdits, nextExtra])
 
   // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
   const [storageAtRisk, setStorageAtRisk] = useState(false)
@@ -737,6 +748,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setMileage('')
     setDelivery(null)
     setDeclined('')
+    setNextEdits({})
+    setNextExtra([])
     setOilAsked(false)
     setOilQuestion(false)
     setCommentOpen(false)
@@ -751,14 +764,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const book = useLoad(() => (vehicleId ? get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`) : Promise.resolve(null)), [vehicleId])
   // Пробег — в единице машины (км или мили, ADR-084); прошлый — переведён в неё же.
   // Без связи книжки нет — единица машины из снимка кассы (ADR-093).
-  const snapUnit = useLoad(
-    () =>
-      vehicleId
-        ? readSnapshot().then((snap) => snap?.clients?.flatMap((c) => c.vehicles).find((v) => v.id === vehicleId)?.mileage_unit ?? null)
-        : Promise.resolve(null),
+  const snapCar = useLoad(
+    () => (vehicleId ? readSnapshot().then((snap) => snap?.clients?.flatMap((c) => c.vehicles).find((v) => v.id === vehicleId) ?? null) : Promise.resolve(null)),
     [vehicleId],
   )
-  const carUnit: MileageUnit = book.data?.mileage_unit ?? snapUnit.data ?? 'km'
+  const carUnit: MileageUnit = book.data?.mileage_unit ?? snapCar.data?.mileage_unit ?? 'km'
   const lastKmRaw = book.data?.records.find((r) => r.mileage_km !== null)?.mileage_km ?? null
   const lastKm = lastKmRaw === null ? null : fromKm(lastKmRaw, carUnit)
   const mileageWarning = (() => {
@@ -768,6 +778,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     if (m > lastKm + 50_000) return `В прошлый раз было ${mileageText(lastKm, carUnit)} — точно ${mileageText(m, carUnit)}?`
     return null
   })()
+
+  // «Следующая замена» (SPEC-34): по строке на каждую услугу чека со строкой книжки.
+  const ownIntervals: OwnIntervals = Object.fromEntries(
+    (book.data?.slots ?? []).filter((n) => n.own_interval).map((n) => [n.slot, { km: n.interval_km, days: n.interval_days }]),
+  )
+  const nextOn = saleType === 'service' && Boolean(party && vehicleId)
+  const nextList = nextOn
+    ? nextRows({ services: lines.filter((l) => l.kind === 'service').map((l) => l.service), extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals })
+    : []
+  const nextLow = nextTooLow(nextList, mileage)
+  const allServices = useLoad(
+    () =>
+      nextExtraOpen
+        ? get<Service[]>('/services').catch(async () => (await readSnapshot())?.services ?? [])
+        : Promise.resolve(null),
+    [nextExtraOpen],
+  )
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
@@ -794,6 +821,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       delivery,
       declined,
       dropped,
+      nextEdits,
+      nextExtra,
     }
     return [...list.filter((p) => p.id !== id), item]
   }
@@ -825,6 +854,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setMileage(p.mileage ?? '')
     setDelivery(p.delivery ?? null)
     setDeclined(p.declined ?? '')
+    setNextEdits(p.nextEdits ?? {})
+    setNextExtra(p.nextExtra ?? [])
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -886,6 +917,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         ? [false, 'пробег машины — спросите у клиента', '#mileage', 'пробег']
         : [false, CLIENT_NEED_LABELS[n], '[data-client]', CLIENT_NEED_SHORT[n]],
     ),
+    [
+      !nextLow,
+      `следующая замена «${nextLow?.label ?? ''}» — не меньше пробега сейчас`,
+      nextLow ? `#next-${nextLow.slot}` : undefined,
+      'следующая замена',
+    ],
     [discountLines.length === 0, 'цена ниже каталожной — скидку ставит владелец', undefined, 'цена ниже прайса'],
     [invoiceAmount === 0 || party !== null, 'клиента для оплаты «По счёту»', '[data-client]', 'клиент для счёта'],
     [payments !== null, 'сумму оплаты', '[data-pay]', 'оплата'],
@@ -924,6 +961,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         mileage_unit: party && vehicleId && saleType === 'service' && mileage ? carUnit : null,
         delivery_address: delivery?.trim() ?? '',
         declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
+        // Следующая замена по услугам — в единице пробега чека (SPEC-34).
+        next_changes: nextOn ? nextPayload(nextList) : [],
         comment,
         lines: lines.map((l) => ({
           kind: l.kind,
@@ -977,6 +1016,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             list_price_tyiyn: lineList(l),
           })),
           payments,
+          // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4).
+          book:
+            nextOn && (book.data ?? snapCar.data)
+              ? receiptBook(book.data ?? snapCar.data ?? { brand: '', model: '', plate: '' }, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }))
+              : null,
         }) as unknown as Sale
       // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
       const queued = await enqueueSale(opId, body, { user, receipt })
@@ -1083,6 +1127,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const pickVehicle = (v: string) => {
     setVehicleId(v)
     setMileage('')
+    setNextEdits({})
+    setNextExtra([])
   }
   const removeLine = (l: CartLine) => {
     const index = lines.findIndex((x) => x.key === l.key)
@@ -1107,6 +1153,64 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const serviceLeft = touch && saleType === 'service'
   const canFixClient = Boolean(
     party && online && ((clientNeeds.includes('client') && party.kind === 'person') || clientNeeds.includes('phone')),
+  )
+  // «Следующая замена» (SPEC-34 §2): под пробегом, по строке на услугу чека со строкой книжки;
+  // в режиме кассы — во всю ширину левой карточки, поля крупные, цифры — экранной клавиатурой.
+  const nextBlock = (
+    <div className={`flex min-w-0 flex-col gap-1 ${serviceLeft ? 'lg:col-span-3' : ''}`} data-testid="next-change">
+      <span className="text-sm font-medium text-slate-700">
+        Следующая замена, {unitLabel(carUnit)}
+        {!serviceLeft && <span className="font-normal text-slate-500"> — пустое поле: не напоминать</span>}
+      </span>
+      <div className={`grid gap-2 ${serviceLeft ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3' : 'grid-cols-1'}`}>
+        {nextList.map((r) => (
+          <div key={r.slot} className="flex min-w-0 items-center gap-2">
+            <label htmlFor={`next-${r.slot}`} className={`min-w-0 flex-1 leading-tight ${serviceLeft ? 'line-clamp-2 text-sm' : 'text-sm'}`} title={r.label}>
+              {/* В режиме кассы — коротко, строкой книжки («Масло двигателя»): места на три поля в ряд. */}
+              {serviceLeft ? slotLabel(r.slot) : r.label}
+              {!serviceLeft && <span className="text-slate-500"> — следующая на пробеге</span>}
+            </label>
+            <input
+              id={`next-${r.slot}`}
+              aria-label={`Следующая замена: ${r.label}`}
+              className={`${serviceLeft ? 'min-h-[56px] w-28 text-lg' : 'w-32'} ${nextLow?.slot === r.slot ? 'border-rose-400!' : ''}`}
+              {...num('int')}
+              maxLength={7}
+              placeholder="не напоминать"
+              value={r.value}
+              onChange={(e) => setNextEdits({ ...nextEdits, [r.slot]: e.target.value.replace(/\D/g, '').slice(0, 7) })}
+            />
+            {r.extra && (
+              <button
+                type="button"
+                aria-label={`Убрать строку ${r.label}`}
+                className={serviceLeft ? `${tbtn} w-14 shrink-0` : 'min-h-9 rounded-md border border-slate-300 px-2 text-sm hover:bg-slate-50'}
+                onClick={() => {
+                  setNextExtra(nextExtra.filter((x) => x.id !== r.service_id))
+                  const rest = { ...nextEdits }
+                  delete rest[r.slot]
+                  setNextEdits(rest)
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+        <button
+          type="button"
+          className={serviceLeft ? tbtn : 'min-h-9 self-start rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50'}
+          onClick={() => setNextExtraOpen(true)}
+        >
+          + ещё строку
+        </button>
+      </div>
+      {nextLow && (
+        <span className="text-xs text-rose-700">
+          «{serviceLeft ? slotLabel(nextLow.slot) : nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
+        </span>
+      )}
+    </div>
   )
   const customerFields = (
     <>
@@ -1309,6 +1413,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <input id="mileage" className={serviceLeft ? 'min-h-[56px] text-lg' : ''} {...num('int')} maxLength={7} value={mileage} onChange={(e) => setMileage(e.target.value.replace(/\D/g, '').slice(0, 7))} />
               {mileageWarning && <span className="mt-1 block text-xs text-amber-700">{mileageWarning}</span>}
             </Field>
+            {!serviceLeft && nextBlock}
           </>
         ) : (
           <div className={`rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-900 ${serviceLeft ? 'lg:col-span-3' : ''}`}>
@@ -1330,6 +1435,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </Field>
         </div>
       )}
+      {serviceLeft && nextOn && nextBlock}
     </>
   )
 
@@ -2527,6 +2633,34 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         />
       )}
       {noReceipt && <NoReceiptReturn touch={touch} onClose={() => setNoReceipt(false)} />}
+      {nextExtraOpen && (
+        // «+ ещё строку» (SPEC-34 §2): услуга, которой нет в чеке, — клиент сменил в другом месте.
+        <Modal title="Следующая замена: ещё строка" onClose={() => setNextExtraOpen(false)}>
+          <div className="flex flex-col gap-2" data-testid="next-extra-choices">
+            {allServices.loading && !allServices.data ? (
+              <div className="text-sm text-slate-500">Загружаю услуги…</div>
+            ) : extraChoices(allServices.data ?? [], nextList).length === 0 ? (
+              <div className="text-sm text-slate-500">Все строки книжки уже в списке. Строку книжки услуги задаёт владелец в «Услугах».</div>
+            ) : (
+              extraChoices(allServices.data ?? [], nextList).map((sv) => (
+                <button
+                  key={sv.id}
+                  type="button"
+                  className={touch ? `${tbtn} justify-start!` : 'min-h-9 rounded-md border border-slate-300 px-3 text-left text-sm hover:bg-slate-50'}
+                  onClick={() => {
+                    setNextExtra([...nextExtra, sv])
+                    setNextExtraOpen(false)
+                  }}
+                >
+                  {sv.name}
+                  <span className="text-sm font-normal text-slate-500">· {slotLabel(sv.book_slot ?? 'other')}</span>
+                </button>
+              ))
+            )}
+            <ErrorBox error={allServices.error} />
+          </div>
+        </Modal>
+      )}
       {kindsOpen && (
         <ServicePicker
           kinds
