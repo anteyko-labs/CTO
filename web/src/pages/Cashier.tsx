@@ -1167,7 +1167,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setNextEdits({})
     setNextExtra([])
   }
+  // Второе касание крестика сразу после удаления — двойное касание или дребезг: на место удалённой
+  // встала следующая строка, и она удалилась бы тоже.
+  const removedAt = useRef(0)
   const removeLine = (l: CartLine) => {
+    if (Date.now() - removedAt.current < 350) return
+    removedAt.current = Date.now()
     const index = lines.findIndex((x) => x.key === l.key)
     setLines((ls) => ls.filter((x) => x.key !== l.key))
     const rec = asRemoved(l, 'remove')
@@ -1832,15 +1837,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
         {/* У чека «В сервис» под строками — данные замены; списку оставлено не меньше трёх строк и подписи
             «ещё N» (строка — 56 точек и поля), данные замены при нехватке места прокручиваются сами. */}
-        <Card className={`p-0 ${touch ? `flex flex-col lg:flex-1 ${serviceLeft ? 'p-0! lg:min-h-[224px]' : 'lg:min-h-0'}` : ''}`}>
+        <Card className={`p-0 ${touch ? `relative flex flex-col lg:flex-1 ${serviceLeft ? 'p-0! lg:min-h-[224px]' : 'lg:min-h-0'}` : ''}`}>
           {removed && (
-            <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2" role="status">
-              <span className="min-w-0 flex-1 truncate text-base">
-                Удалено: {removed.line.product ? productTitle(removed.line.product) : removed.line.service?.name}
-              </span>
-              <button type="button" className={tbtn} onClick={undoRemove}>
+            // Поверх списка слева внизу, над названиями строк: строки не сдвигаются, крестик, «−» и «+»
+            // открыты — второе касание крестика не попадает во «Вернуть» (26.10.2026: удалённый фильтр
+            // возвращался вторым касанием).
+            <div
+              className="absolute bottom-1 left-1 z-10 flex w-[10.5rem] max-w-[calc(100%-0.5rem)] items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 py-1 pr-2 pl-1 shadow-lg"
+              role="status"
+            >
+              <button type="button" className={`${tbtn} shrink-0`} onClick={undoRemove}>
                 Вернуть
               </button>
+              <span className="flex min-w-0 flex-col text-sm leading-tight">
+                <span className="text-slate-500">Удалено:</span>
+                <span className="truncate">{removed.line.product ? productTitle(removed.line.product) : removed.line.service?.name}</span>
+              </span>
             </div>
           )}
           <div
