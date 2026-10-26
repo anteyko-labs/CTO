@@ -6,12 +6,17 @@ import {
   codesShort,
   conflictText,
   hitCodes,
+  hitMeasureCodes,
+  hitProductCodes,
+  isMeasureUnit,
   linkSummary,
   opIds,
   resolveCode,
   sameCode,
   similarityText,
   umagCodes,
+  umagPer,
+  umagUnitWord,
   umagStep,
   unlinkedHit,
   type CodeLookup,
@@ -41,21 +46,46 @@ const product = (id: string, barcodes: string[] = []): SnapshotProduct =>
 
 describe('коды строки Умага — как на сервере (SPEC-35 §1)', () => {
   it('штрихкод, артикул-код и каждый доп. код через «;», «,» и пробел', () => {
-    expect(umagCodes({ barcode: '4600000000017', article: 'W712', extra_code: '111; 222,333  444' })).toEqual([
+    expect(umagCodes({ barcode: '4600000000017', article: 'W712', extra_code: '1111; 2222,08227-99974  692303BOSN770' })).toEqual([
       '4600000000017',
       'W712',
-      '111',
-      '222',
-      '333',
-      '444',
+      '1111',
+      '2222',
+      '08227-99974',
+      '692303BOSN770',
     ])
   })
 
-  it('артикул — код, только если в нём цифры, латиница или дефис и знаков не меньше четырёх', () => {
+  it('артикул — код, только если в нём латиница, цифры или дефис, от четырёх знаков и есть цифра', () => {
     expect(umagCodes({ barcode: '1', article: 'OC-90', extra_code: '' })).toEqual(['1', 'OC-90'])
     expect(umagCodes({ barcode: '1', article: 'OC9', extra_code: '' })).toEqual(['1'])
     expect(umagCodes({ barcode: '1', article: 'W 712/75', extra_code: '' })).toEqual(['1'])
     expect(umagCodes({ barcode: '1', article: 'Фильтр', extra_code: '' })).toEqual(['1'])
+    expect(umagCodes({ barcode: '1', article: 'CITY', extra_code: '' })).toEqual(['1'])
+  })
+
+  it('из доп. кода — только куски, похожие на код: слова, знаки, вязкость, объём и обрывки — не коды', () => {
+    // Рабочая выгрузка 26.10.2026.
+    expect(umagCodes({ barcode: '2760111', article: '', extra_code: 'SHELLHELIX CITY 5W30 1L' })).toEqual(['2760111'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: '0888602905  -;0888602905' })).toEqual(['4', '0888602905'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: '0888602305  U' })).toEqual(['4', '0888602305'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: '1156;0888681015  Z' })).toEqual(['4', '1156', '0888681015'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: '483;4607095382491' })).toEqual(['4', '4607095382491'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: '4673726890117;46' })).toEqual(['4', '4673726890117'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: '10W-40 JLE0119101 13479184-00' })).toEqual(['4', 'JLE0119101', '13479184-00'])
+    expect(umagCodes({ barcode: '4', article: '', extra_code: 'П20220820412' })).toEqual(['4'])
+  })
+
+  it('строка «литр»: коды Умага короче восьми цифр (276…, PLU) товару не переходят', () => {
+    const liter = hit({ unit: 'литр', codes: ['2760391', '1392', '4008177071423', '08227-99974'] })
+    expect(hitProductCodes(liter)).toEqual(['4008177071423', '08227-99974'])
+    expect(hitMeasureCodes(liter)).toEqual(['2760391', '1392'])
+    expect(hitProductCodes(hit({ unit: 'шт', codes: ['2760391', '1392'] }))).toEqual(['2760391', '1392'])
+    expect(isMeasureUnit('литр')).toBe(true)
+    expect(isMeasureUnit('Кг')).toBe(true)
+    expect(isMeasureUnit('метр')).toBe(true)
+    expect(isMeasureUnit('шт')).toBe(false)
+    expect(isMeasureUnit('')).toBe(false)
   })
 
   it('пустые и повторы выкидываются, порядок — как в строке', () => {
@@ -131,6 +161,7 @@ describe('скан кода, которого нет у товаров (SPEC-35 
     byBarcode: vi.fn(async () => {
       throw notFound()
     }),
+    searchOwn: vi.fn(async () => []),
     searchUmag: vi.fn(async () => []),
     productById: vi.fn(async (id: string) => ({ id }) as Product),
     ...over,
@@ -154,6 +185,19 @@ describe('скан кода, которого нет у товаров (SPEC-35 
     expect(await resolveCode('999', lookup({}))).toEqual({ kind: 'unknown' })
   })
 
+  it('артикул своего товара — сам товар, а не окно Умага «среди товаров его нет»', async () => {
+    const own = { id: 'ngk', article: 'BKR6E' } as Product
+    const api = lookup({
+      searchOwn: vi.fn(async () => [own, { id: 'other', article: 'BKR6EIX' } as Product]),
+      searchUmag: vi.fn(async () => [hit({ article: 'BKR6E' })]),
+    })
+    expect(await resolveCode('bkr6e', api)).toEqual({ kind: 'product', product: own, via: 'article' })
+    expect(api.searchUmag).not.toHaveBeenCalled()
+    // Тот же артикул у двух своих товаров — они в списке, окна нет.
+    const two = lookup({ searchOwn: vi.fn(async () => [own, { id: 'ngk2', article: 'BKR6E' } as Product]) })
+    expect(await resolveCode('BKR6E', two)).toMatchObject({ kind: 'own', products: [{ id: 'ngk' }, { id: 'ngk2' }] })
+  })
+
   it('нет связи — ошибка наружу (касса без сети ищет в снимке), Умаг не спрашиваем', async () => {
     const api = lookup({
       byBarcode: vi.fn(async () => {
@@ -172,6 +216,15 @@ describe('итоги связывания', () => {
       'новых кодов нет; не перенесены — код 3 — у «Масло Х»',
     )
     expect(conflictText([])).toBe('')
+  })
+
+  it('цена строки меры в Умаге — за литр, кг, метр; у штучной — без приписки', () => {
+    expect(umagPer('литр')).toBe(' за л')
+    expect(umagPer('кг')).toBe(' за кг')
+    expect(umagPer('метр')).toBe(' за м')
+    expect(umagPer('шт')).toBe('')
+    expect(umagUnitWord('Литр')).toBe('литр')
+    expect(umagUnitWord('кг')).toBe('килограмм')
   })
 
   it('сходство названий — процентом', () => {

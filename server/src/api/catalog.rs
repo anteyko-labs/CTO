@@ -1003,12 +1003,14 @@ async fn list_products(
     Ok(Json(out))
 }
 
-/// Карточка товара: товар и связанная строка старой базы Умаг этого филиала (SPEC-35 §3).
+/// Карточка товара: товар и связанные строки старой базы Умаг этого филиала (SPEC-35 §3):
+/// первая — `umag`, остальные — `umag_more`.
 #[derive(Serialize)]
 struct ProductCard {
     #[serde(flatten)]
     product: ProductOut,
     umag: Option<crate::api::old_catalog::ProductUmag>,
+    umag_more: Vec<crate::api::old_catalog::ProductUmag>,
 }
 
 async fn get_product(
@@ -1018,8 +1020,15 @@ async fn get_product(
 ) -> AppResult<Json<ProductCard>> {
     let mut conn = state.pool.acquire().await?;
     let product = product_by_id(&mut conn, &user, id).await?;
-    let umag = crate::api::old_catalog::product_umag(&mut conn, &user, id).await?;
-    Ok(Json(ProductCard { product, umag }))
+    let mut rows = crate::api::old_catalog::product_umag(&mut conn, &user, id)
+        .await?
+        .into_iter();
+    let umag = rows.next();
+    Ok(Json(ProductCard {
+        product,
+        umag,
+        umag_more: rows.collect(),
+    }))
 }
 
 /// Товар по коду: точный код, а числовой — и без нулей впереди, потерянных Excel в выгрузке
@@ -1219,8 +1228,10 @@ pub async fn create_product_tx(
     if let Some(done) = ops::begin_op(&mut *tx, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    // Связать с Умагом — право «Товары и штрихкоды» (SPEC-35 §2): ревизия заводит карточки и
-    // без него, но строку Умага не связывает.
+    // Выбрать строку Умага (`old_catalog_id`) — право «Товары и штрихкоды» (SPEC-35 §4). Ревизия
+    // заводит карточки и без него; строку, чей код теперь только у нового товара, карточка
+    // связывает и без права — это тот же код, а не выбор строки (ADR-113, исправление 20.10.2026:
+    // EAN канистры из «доп. кода» находит товар на кассе).
     if req.old_catalog_id.is_some() {
         crate::auth::require_permission(&mut *tx, &ctx.user, "products").await?;
     }
@@ -1320,7 +1331,7 @@ pub async fn create_product_tx(
     }
     // Строка Умага, из которой заведена карточка, и строки с её кодом: связь и все их коды
     // (основной, артикул, «доп. коды» — заводской EAN канистры) — иначе касса не найдёт товар
-    // по коду с упаковки (проверка 20.10.2026, SPEC-35 §1).
+    // по коду с упаковки (проверка 20.10.2026, SPEC-35 §1). Строки по коду — при любом праве.
     crate::api::old_catalog::link_product_rows(&mut *tx, ctx, id, req.old_catalog_id).await?;
     ops::audit(
         &mut *tx,
@@ -1834,6 +1845,9 @@ async fn remove_barcode(
 ) -> AppResult<Json<Value>> {
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
+    // Замок списка Умага — первым, до блокировки товара (SPEC-35 §1): связывание держит его и
+    // пишет коды товара — в другом порядке два запроса ждали бы друг друга.
+    crate::api::old_catalog::lock_branch(&mut tx, ctx.user.branch_id).await?;
     // Блокировка товара: два одновременных удаления не оставят его совсем без кода (ADR-026).
     sqlx::query_scalar!("select id from products where id = $1 for update", id)
         .fetch_optional(&mut *tx)
@@ -1864,13 +1878,19 @@ async fn remove_barcode(
     if removed == 0 {
         return Err(AppError::NotFound);
     }
+    // Код был занят этим товаром у строки Умага другого товара — теперь он её товара.
+    let moved: Vec<Value> = crate::api::old_catalog::codes_freed(&mut tx, id)
+        .await?
+        .into_iter()
+        .map(|(c, p)| json!({ "code": c, "product_id": p }))
+        .collect();
     ops::audit(
         &mut tx,
         &ctx,
         "product.barcode_remove",
         "product",
         Some(id),
-        json!({ "code": code }),
+        json!({ "code": code, "moved": moved }),
     )
     .await?;
     tx.commit().await?;
@@ -2000,7 +2020,8 @@ async fn merge_product(
     )
     .fetch_all(&mut *tx)
     .await?;
-    // Строки Умага дубля (во всех филиалах) связаны теперь с основной карточкой (SPEC-35).
+    // Строки Умага дубля (во всех филиалах) связаны теперь с основной карточкой (SPEC-35), их
+    // отметки конфликтов — заново: коды дубля теперь у основной.
     sqlx::query!(
         "update old_catalog set product_id = $2 where product_id = $1",
         id,
@@ -2008,6 +2029,7 @@ async fn merge_product(
     )
     .execute(&mut *tx)
     .await?;
+    crate::api::old_catalog::refresh_conflicts_of(&mut tx, &[id, req.into_product_id]).await?;
     // Кросс-номера дубля тоже переходят основной карточке: поиск по ним должен найти её (SPEC-17).
     let cross = sqlx::query_scalar!(
         r#"insert into product_cross_numbers (product_id, code, code_norm)

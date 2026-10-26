@@ -131,6 +131,8 @@ export interface Product {
   stock_value_tyiyn?: number
   /** Связанная строка Умага — только в ответе `GET /products/{id}` (SPEC-35 §3). */
   umag?: ProductUmag | null
+  /** Остальные связанные строки Умага филиала (их бывает несколько). */
+  umag_more?: ProductUmag[]
 }
 
 export interface Employee {
@@ -1178,7 +1180,8 @@ export interface OldCatalogHit {
   name: string
   barcode: string
   article: string
-  cost_tyiyn: number
+  /** Закупка в Умаге — владельцу и правам «Приход», «Ревизия», «Товары и штрихкоды»; остальным — null (ADR-113). */
+  cost_tyiyn: number | null
   price_tyiyn: number
   unit: string
   supplier: string
@@ -1232,6 +1235,9 @@ export interface ProductUmag {
   name: string
   barcode: string
   codes: string[]
+  /** Коды меры (строка «литр», «кг», «метр»: 276…, PLU) — товару не переходят (ADR-113). */
+  measure_codes?: string[]
+  unit?: string
   price_tyiyn: number
   /** Закупка в Умаге — только владельцу (ADR-008). */
   cost_tyiyn?: number | null

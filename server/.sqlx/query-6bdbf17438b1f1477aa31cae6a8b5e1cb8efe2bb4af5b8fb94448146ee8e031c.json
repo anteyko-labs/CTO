@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select barcode, umag_key(barcode, name) as \"key!\", keys,\n                  array(select c from unnest(umag_product_codes(codes, unit)) c\n                        where not exists (select 1 from jsonb_array_elements(code_conflicts) j\n                                          where j ->> 'code' = c)) as \"codes!\",\n                  product_id as \"product_id!\"\n           from old_catalog where branch_id = $1 and product_id is not null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "barcode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "keys",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "codes!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "6bdbf17438b1f1477aa31cae6a8b5e1cb8efe2bb4af5b8fb94448146ee8e031c"
+}

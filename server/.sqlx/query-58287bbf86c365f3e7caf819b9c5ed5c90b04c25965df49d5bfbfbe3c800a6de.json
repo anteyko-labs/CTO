@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.id from old_catalog o\n           where o.product_id = any($1::text[]::uuid[])\n              or exists (select 1 from jsonb_array_elements(o.code_conflicts) j\n                         where j ->> 'product_id' = any($1))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "58287bbf86c365f3e7caf819b9c5ed5c90b04c25965df49d5bfbfbe3c800a6de"
+}

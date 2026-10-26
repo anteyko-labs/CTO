@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.id from old_catalog o\n           where o.branch_id = $1 and o.product_id is null\n             and o.keys_bare && array(select umag_bare(b.code) from product_barcodes b\n                                      where b.product_id = $2 and not b.internal)\n             and not exists (select 1 from unnest(o.keys) c\n                             cross join lateral code_products(c) x\n                             join products p on p.id = x.product_id\n                             where x.product_id <> $2 and not p.archived and not x.internal)\n             and not exists (select 1 from old_catalog_link_rejects r\n                             where r.branch_id = $1 and r.umag_barcode = umag_key(o.barcode, o.name)\n                               and r.product_id = $2)\n           order by o.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9cb34ba9b9da2f6c432423477a6fcf6a8ad6403dd9fc48dd1158a9edc6dcc527"
+}

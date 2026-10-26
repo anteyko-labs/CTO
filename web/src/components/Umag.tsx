@@ -12,7 +12,7 @@ import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { presetFromHit } from '../lib/oldCatalog'
 import { can } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
-import { codesShort, hitCodes, linkSummary, linkUmag, opIds, searchUmag, UMAG_NO_RIGHT, unlinkedHit } from '../lib/umagLink'
+import { codesShort, hitCodes, hitMeasureCodes, linkSummary, linkUmag, opIds, searchUmag, UMAG_NO_RIGHT, umagPer, umagUnitWord, unlinkedHit } from '../lib/umagLink'
 import { qtyText } from '../lib/units'
 import { ProductFormModal } from './ProductFormModal'
 import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Notice, toast } from './ui'
@@ -49,6 +49,8 @@ export function UmagHitModal({
 }) {
   const user = useUser()
   const mayEdit = can(user, 'products')
+  // Закупка в Умаге — владельцу и тому, кто вводит приход: в накладной она его (ADR-008, ADR-113).
+  const showCost = can(user, 'receipts') && hit.cost_tyiyn !== null
   const [stage, setStage] = useState<Stage>(mayEdit ? start : 'info')
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   // Код строки уже у товара, а строка не связана: скорее всего, это он — предложим первым.
@@ -85,6 +87,7 @@ export function UmagHitModal({
   }
 
   const codes = hitCodes(hit)
+  const measure = hitMeasureCodes(hit)
   return (
     <Modal title="Товар из старой базы Умаг" onClose={onClose}>
       <div className="flex flex-col gap-3" data-testid="umag-modal">
@@ -99,16 +102,30 @@ export function UmagHitModal({
         <dl className="grid grid-cols-2 gap-3 text-sm">
           <div>
             <dt className="text-slate-500">Цена продажи в Умаге</dt>
-            <dd className="text-base font-semibold tabular-nums">{hit.price_tyiyn ? formatSom(hit.price_tyiyn) : '—'}</dd>
+            <dd className="text-base font-semibold tabular-nums">
+              {hit.price_tyiyn ? formatSom(hit.price_tyiyn) : '—'}
+              {hit.price_tyiyn ? <span className="text-sm font-normal text-slate-500">{umagPer(hit.unit)}</span> : null}
+            </dd>
           </div>
-          <div>
-            <dt className="text-slate-500">Закупка в Умаге</dt>
-            <dd className="text-base font-semibold tabular-nums">{hit.cost_tyiyn ? formatSom(hit.cost_tyiyn) : '—'}</dd>
-          </div>
+          {showCost && (
+            <div data-testid="umag-cost">
+              <dt className="text-slate-500">Закупка в Умаге</dt>
+              <dd className="text-base font-semibold tabular-nums">
+                {hit.cost_tyiyn ? formatSom(hit.cost_tyiyn) : '—'}
+                {hit.cost_tyiyn ? <span className="text-sm font-normal text-slate-500">{umagPer(hit.unit)}</span> : null}
+              </dd>
+            </div>
+          )}
         </dl>
         <div className="text-sm">
           <span className="text-slate-500">Коды:</span> {codes.length > 0 ? codes.join(', ') : '—'}
         </div>
+        {measure.length > 0 && (
+          <div className="text-sm text-slate-600" data-testid="umag-measure-codes">
+            Коды {measure.join(', ')} в Умаге продавали {umagUnitWord(hit.unit)}: к товару они не перейдут — на кассе они добавили бы
+            всю тару.
+          </div>
+        )}
         {code && <div className="text-sm text-slate-600">Код {code} есть в базе Умаг, а среди товаров его нет.</div>}
         {mayEdit ? (
           <>
@@ -262,7 +279,7 @@ export function UmagPickerBlock({
                   <span className="ml-2 text-xs text-slate-500">{codesShort(h)}</span>
                 </span>
                 <span className="flex shrink-0 items-center gap-2 text-right text-xs text-slate-500">
-                  {h.price_tyiyn ? formatSom(h.price_tyiyn) : ''}
+                  {h.price_tyiyn ? `${formatSom(h.price_tyiyn)}${umagPer(h.unit)}` : ''}
                   {mayEdit && <span className="rounded border border-sky-300 px-1.5 py-0.5 font-medium text-sky-700">Завести</span>}
                 </span>
               </button>
@@ -305,7 +322,7 @@ export function UmagSearchBlock({
               <div className="text-xs text-slate-500">{[codesShort(h), h.supplier, h.category].filter(Boolean).join(' · ')}</div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <span className="text-sm tabular-nums">{h.price_tyiyn ? formatSom(h.price_tyiyn) : '—'}</span>
+              <span className="text-sm tabular-nums">{h.price_tyiyn ? `${formatSom(h.price_tyiyn)}${umagPer(h.unit)}` : '—'}</span>
               {mayEdit && (
                 <>
                   <Button variant="secondary" className="min-h-[34px] px-3 py-1" onClick={() => onOpen(h, 'pick')}>

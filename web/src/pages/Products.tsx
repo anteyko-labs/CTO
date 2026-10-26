@@ -16,7 +16,7 @@ import { stockText } from '../components/ProductPicker'
 import { UmagHitModal, UmagSearchBlock } from '../components/Umag'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { get, newOpId, patch, post, put, qs } from '../lib/api'
+import { ApiError, get, newOpId, patch, post, put, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
 import { formatLiters, formatSom, parseSom } from '../lib/format'
@@ -25,7 +25,8 @@ import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
 import { qtyText } from '../lib/units'
 import type { Category, OldCatalogHit, Product, ProductList, ProductRow, StockChip, StockMismatch } from '../lib/types'
-import { resolveCode } from '../lib/umagLink'
+import { findByBarcode, readSnapshot } from '../lib/offline'
+import { offlineCodeText, resolveCode, type CodeOutcome } from '../lib/umagLink'
 import { BranchBreakdown, BranchScope } from '../components/BranchScope'
 import { useAllBranches, type AllBranches } from '../lib/branchReport'
 
@@ -223,17 +224,30 @@ export default function Products() {
   }
 
   /**
-   * Enter в поиске — скан или набранный код: товар — его карточка; код из Умага — связанная строка
-   * даёт товар, несвязанная — окно Умага; нигде нет — «Код не найден» (SPEC-35 §2).
+   * Enter в поиске — скан или набранный код: товар (по коду или артикулу) — его карточка; код из
+   * Умага — связанная строка даёт товар, несвязанная — окно Умага; нигде нет — «Код не найден»
+   * (SPEC-35 §2). Без сети — снимок каталога; несвязанную строку Умага без сети не узнать.
    */
   const onSearchEnter = () => {
     const code = q.trim()
     if (!/^\S{3,}$/.test(code)) return
     void scan.run(async () => {
-      const out = await resolveCode(code)
+      let out: CodeOutcome
+      try {
+        out = await resolveCode(code)
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 0)) throw e
+        const snap = await readSnapshot()
+        const found = snap ? findByBarcode(snap, code) : undefined
+        if (found) {
+          setEditing(found)
+          return
+        }
+        throw new Error(offlineCodeText(code))
+      }
       if (out.kind === 'product') setEditing(out.product)
       else if (out.kind === 'umag') setUmagHit({ hit: out.hit, code, start: 'info' })
-      else if (/^\d{4,}$/.test(code)) {
+      else if (out.kind === 'unknown' && /^\d{4,}$/.test(code)) {
         if (mayAdd) setUnknownCode(code)
         else throw new Error(`Код ${code} не найден ни у товаров, ни в базе Умаг`)
       }

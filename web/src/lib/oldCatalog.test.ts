@@ -37,6 +37,21 @@ describe('карточка из старой программы', () => {
     expect(p).toMatchObject({ categoryId: 'oil', liters: '4', price: '2000', cost: '1502' })
   })
 
+  it('строка «литр»: код карточки — заводской EAN, а не код литра Умага (276…, PLU)', () => {
+    const liter = hit({ name: 'CASTROL MAGNATEC 5W30 4Л', unit: 'литр', barcode: '2760391', codes: ['2760391', '1392', '4008177071423'] })
+    expect(presetFromHit(liter, cats).barcode).toBe('4008177071423')
+    expect(presetFromHit(liter, cats, '', '1392').barcode).toBe('4008177071423')
+    expect(presetFromHit(liter, cats, '', '4008177071423').barcode).toBe('4008177071423')
+    // Без заводского кода — пусто: код выдаст программа.
+    expect(presetFromHit(hit({ unit: 'литр', barcode: '2760391', codes: ['2760391', '1392'] }), cats, '', '2760391').barcode).toBe('')
+    // Без кодов от сервера — по тому же правилу на устройстве.
+    expect(presetFromHit(hit({ unit: 'кг', barcode: '2760445', article: '', codes: undefined }), cats).barcode).toBe('')
+  })
+
+  it('без права на закупку (сервер не отдал её) — закупка пустая', () => {
+    expect(presetFromHit(hit({ cost_tyiyn: null }), cats).cost).toBe('')
+  })
+
   it('код скана важнее кода из списка; неизвестная категория — запомненная', () => {
     const p = presetFromHit(hit({ category: 'Прочее' }), cats, 'flt', '222')
     expect(p.barcode).toBe('222')

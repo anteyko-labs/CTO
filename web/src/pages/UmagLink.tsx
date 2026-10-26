@@ -23,6 +23,7 @@ import {
   searchUmag,
   similarityText,
   umagPairs,
+  umagPer,
   umagStats,
   unlinkUmag,
 } from '../lib/umagLink'
@@ -183,7 +184,9 @@ function Pairs({ tick, onChanged }: { tick: number; onChanged: () => void }) {
                 <div className="text-xs uppercase text-slate-400">Умаг</div>
                 <div className="font-medium">{p.umag.name}</div>
                 <div className="text-xs text-slate-500">
-                  {[codesShort(p.umag), p.umag.price_tyiyn ? formatSom(p.umag.price_tyiyn) : ''].filter(Boolean).join(' · ')}
+                  {[codesShort(p.umag), p.umag.price_tyiyn ? `${formatSom(p.umag.price_tyiyn)}${umagPer(p.umag.unit)}` : '']
+                    .filter(Boolean)
+                    .join(' · ')}
                 </div>
               </div>
               <div className="flex gap-2 md:justify-end">
@@ -250,7 +253,7 @@ function Rows({ tick, onChanged }: { tick: number; onChanged: () => void }) {
               <div className="min-w-0 flex-1">
                 <div className="font-medium">{h.name}</div>
                 <div className="text-xs text-slate-500">
-                  {[codesShort(h), h.price_tyiyn ? formatSom(h.price_tyiyn) : '', h.supplier].filter(Boolean).join(' · ')}
+                  {[codesShort(h), h.price_tyiyn ? `${formatSom(h.price_tyiyn)}${umagPer(h.unit)}` : '', h.supplier].filter(Boolean).join(' · ')}
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {h.product_id ? (

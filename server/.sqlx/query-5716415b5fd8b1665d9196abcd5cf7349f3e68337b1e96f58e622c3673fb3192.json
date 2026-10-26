@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select c.code as \"code!\", o.product_id as \"product_id!\"\n           from unnest($1::uuid[]) with ordinality as r(id, n)\n           join old_catalog o on o.id = r.id\n           cross join lateral unnest(umag_product_codes(o.codes, o.unit)) with ordinality as c(code, k)\n           where o.product_id is not null\n           order by r.n, c.k",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null,
+      true
+    ]
+  },
+  "hash": "5716415b5fd8b1665d9196abcd5cf7349f3e68337b1e96f58e622c3673fb3192"
+}

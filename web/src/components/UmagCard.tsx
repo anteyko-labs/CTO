@@ -1,12 +1,13 @@
 // Блок «Умаг» в карточке товара (SPEC-35 §3): связанная строка старой базы — название, коды, цена в
 // Умаге; «Связать другую» и «Отвязать». Отвязка оставляет коды у товара (их убирают в списке кодов
-// карточки). У товара одна строка Умага: «Связать другую» связывает новую и отвязывает прежнюю.
+// карточки). «Связать другую» связывает новую и отвязывает прежнюю; если строк Умага у товара
+// несколько (дубли в Умаге), видны все — лишнюю можно отвязать.
 import { useState } from 'react'
 import { get } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
-import type { OldCatalogHit, Product } from '../lib/types'
-import { hitCodes, linkSummary, linkUmag, opIds, sameCode, searchUmag, unlinkUmag } from '../lib/umagLink'
+import type { OldCatalogHit, Product, ProductUmag } from '../lib/types'
+import { hitCodes, linkSummary, linkUmag, opIds, sameCode, searchUmag, umagPer, umagUnitWord, unlinkUmag } from '../lib/umagLink'
 import { Button, Empty, ErrorBox, Field, Loading, toast } from './ui'
 
 export function UmagCard({
@@ -27,11 +28,14 @@ export function UmagCard({
   const act = useAction()
   const [ops] = useState(opIds)
   const umag = load.data?.umag ?? null
+  const more = load.data?.umag_more ?? []
   if (!load.data) return null
   // Коды строки, которых у товара нет: заняты другим товаром или убраны из карточки (SPEC-35 §1).
-  // Товара без кода не бывает: пустой список — ещё не известен, берём ответ сервера.
+  // Коды меры (литр, кг, метр) товару не переходят — они отдельно (ADR-113). Товара без кода не
+  // бывает: пустой список — ещё не известен, берём ответ сервера.
   const own = codes && codes.length > 0 ? codes : load.data.barcodes
-  const missing = (umag?.codes ?? []).filter((c) => !own.some((b) => sameCode(b, c)))
+  const measure = umag?.measure_codes ?? []
+  const missing = (umag?.codes ?? []).filter((c) => !measure.includes(c) && !own.some((b) => sameCode(b, c)))
 
   const choose = (h: OldCatalogHit) =>
     void act.run(async () => {
@@ -49,12 +53,12 @@ export function UmagCard({
       setTick((t) => t + 1)
     })
 
-  const unlink = () => {
-    if (!umag) return
-    if (!window.confirm(`Отвязать строку Умага «${umag.name}»? Коды останутся у товара.`)) return
+  const unlink = (row: ProductUmag | null) => {
+    if (!row) return
+    if (!window.confirm(`Отвязать строку Умага «${row.name}»? Коды останутся у товара.`)) return
     void act.run(async () => {
-      const key = `unlink:${umag.id}`
-      await unlinkUmag(umag.id, ops.get(key))
+      const key = `unlink:${row.id}`
+      await unlinkUmag(row.id, ops.get(key))
       ops.done(key)
       toast('Строка Умага отвязана, коды остались у товара')
       setTick((t) => t + 1)
@@ -72,7 +76,7 @@ export function UmagCard({
               {umag ? 'Связать другую' : 'Связать со строкой Умага'}
             </Button>
             {umag && (
-              <Button variant="danger-outline" className={small} disabled={act.busy} onClick={unlink}>
+              <Button variant="danger-outline" className={small} disabled={act.busy} onClick={() => unlink(umag)}>
                 Отвязать
               </Button>
             )}
@@ -84,12 +88,40 @@ export function UmagCard({
           <div className="font-medium">{umag.name}</div>
           <div className="text-slate-600">Коды: {umag.codes.length > 0 ? umag.codes.join(', ') : umag.barcode || '—'}</div>
           <div className="text-slate-600">
-            Цена в Умаге {umag.price_tyiyn ? formatSom(umag.price_tyiyn) : '—'}
-            {umag.cost_tyiyn != null && umag.cost_tyiyn > 0 && ` · закупка ${formatSom(umag.cost_tyiyn)}`}
+            Цена в Умаге {umag.price_tyiyn ? `${formatSom(umag.price_tyiyn)}${umagPer(umag.unit ?? '')}` : '—'}
+            {umag.cost_tyiyn != null && umag.cost_tyiyn > 0 && ` · закупка ${formatSom(umag.cost_tyiyn)}${umagPer(umag.unit ?? '')}`}
           </div>
+          {measure.length > 0 && (
+            <div className="text-slate-600" data-testid="umag-card-measure">
+              Коды {measure.join(', ')} в Умаге продавали {umagUnitWord(umag.unit ?? '')} — у товара их нет: на кассе они добавили бы всю тару
+            </div>
+          )}
           {missing.length > 0 && (
             <div className="text-amber-800" data-testid="umag-card-missing">
               Не у этого товара: {missing.join(', ')} — код у другого товара (конфликт) или убран из карточки
+            </div>
+          )}
+          {more.length > 0 && (
+            <div className="mt-2 border-t border-slate-100 pt-2" data-testid="umag-card-more">
+              <div className="text-xs font-medium uppercase text-slate-500">Ещё связаны со строками Умага: {more.length}</div>
+              <ul className="mt-1 flex flex-col gap-1">
+                {more.map((m) => (
+                  <li key={m.id} className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="min-w-0">
+                      <span className="font-medium">{m.name}</span>
+                      <span className="ml-2 text-xs text-slate-500">
+                        {m.codes.join(', ') || m.barcode}
+                        {m.price_tyiyn ? ` · ${formatSom(m.price_tyiyn)}${umagPer(m.unit ?? '')}` : ''}
+                      </span>
+                    </span>
+                    {mayEdit && (
+                      <Button variant="danger-outline" className={small} disabled={act.busy} onClick={() => unlink(m)}>
+                        Отвязать
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

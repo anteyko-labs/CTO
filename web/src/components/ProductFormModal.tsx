@@ -9,7 +9,7 @@ import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { canisterPourPrice } from '../lib/money'
 import type { CardPreset } from '../lib/oldCatalog'
 import { KIND_LABELS, type Category, type CategoryKind, type OldCatalogHit, type Product } from '../lib/types'
-import { hitCodes } from '../lib/umagLink'
+import { hitMeasureCodes, hitProductCodes, umagUnitWord } from '../lib/umagLink'
 import { Badge, Button, Checkbox, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
 import { UmagCard } from './UmagCard'
 
@@ -309,9 +309,15 @@ export function ProductFormModal({
       {preset && !editing && (
         <div className="mb-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
           Данные взяты из старой программы{umagRow ? ' (база Умаг)' : ''}: {preset.name}. Проверьте категорию, цену и характеристики.
-          {umagRow && hitCodes(umagRow).length > 0 && (
+          {umagRow && hitProductCodes(umagRow).length > 0 && (
             <div className="mt-1" data-testid="umag-codes">
-              Коды Умага перейдут к товару (кроме занятых другими товарами): {hitCodes(umagRow).join(', ')}
+              Коды Умага перейдут к товару (кроме занятых другими товарами): {hitProductCodes(umagRow).join(', ')}
+            </div>
+          )}
+          {umagRow && hitMeasureCodes(umagRow).length > 0 && (
+            <div className="mt-1" data-testid="umag-measure-codes">
+              Коды {hitMeasureCodes(umagRow).join(', ')} в Умаге продавали {umagUnitWord(umagRow.unit)} — к товару не перейдут: на кассе они
+              добавили бы всю тару.
             </div>
           )}
         </div>

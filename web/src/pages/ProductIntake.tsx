@@ -424,9 +424,11 @@ export default function ProductIntake() {
                       </span>
                       <span className="shrink-0 text-right text-sm">
                         <Money value={h.price_tyiyn} zero="—" className="font-semibold" />
-                        <span className="block text-xs text-slate-500">
-                          закуп <Money value={h.cost_tyiyn} zero="—" />
-                        </span>
+                        {h.cost_tyiyn !== null && (
+                          <span className="block text-xs text-slate-500">
+                            закуп <Money value={h.cost_tyiyn} zero="—" />
+                          </span>
+                        )}
                       </span>
                     </button>
                   </li>

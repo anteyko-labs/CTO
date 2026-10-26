@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, barcode, keys, codes from old_catalog where branch_id = $1 order by id",
+  "query": "select id, barcode, umag_key(barcode, name) as \"key!\", keys,\n                  umag_product_codes(codes, unit) as \"codes!\"\n           from old_catalog where branch_id = $1 order by id",
   "describe": {
     "columns": [
       {
@@ -15,12 +15,17 @@
       },
       {
         "ordinal": 2,
+        "name": "key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
         "name": "keys",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 3,
-        "name": "codes",
+        "ordinal": 4,
+        "name": "codes!",
         "type_info": "TextArray"
       }
     ],
@@ -32,9 +37,10 @@
     "nullable": [
       false,
       false,
+      null,
       false,
-      false
+      null
     ]
   },
-  "hash": "72288e04538b28589ed23d83c6d5f5cf74a7fb6010e482d537414dce70488219"
+  "hash": "dfc9e37696d6c4e113d38f6f2e064edb027c3c8d21e82ff84937fbfcb88d7b5c"
 }

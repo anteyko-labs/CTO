@@ -395,6 +395,49 @@ async fn fill_branch(w: &World, branch: Uuid, admin: &str, tag: &str) -> String 
         json!({ "name": format!("Статья {tag}") }),
     )
     .await;
+    // Список Умага филиала (SPEC-35): строки с меткой, одна связана с общим товаром, одна пара —
+    // «Не то». Коды у филиалов разные: товары общие, их коды — тоже.
+    let code = |n: u32| format!("46{}{n:010}", if branch == w.a { 1 } else { 2 });
+    api.ok(
+        "PUT",
+        "/api/v1/old-catalog",
+        owner,
+        at,
+        json!([
+            { "name": format!("Умаг {tag} связана"), "barcode": code(1), "extra_code": code(2) },
+            { "name": format!("Умаг {tag} не то"), "barcode": code(3) },
+            { "name": format!("Умаг {tag} свободна"), "barcode": code(4) }
+        ]),
+    )
+    .await;
+    let row = |c: String| async move {
+        let hits = api
+            .get(
+                &format!("/api/v1/old-catalog/search?barcode={c}"),
+                owner,
+                at,
+            )
+            .await;
+        id(&hits[0])
+    };
+    let linked = row(code(1)).await;
+    api.ok(
+        "POST",
+        &format!("/api/v1/old-catalog/{linked}/link"),
+        owner,
+        at,
+        json!({ "op_id": op(), "product_id": w.item }),
+    )
+    .await;
+    let rejected = row(code(3)).await;
+    api.ok(
+        "POST",
+        &format!("/api/v1/old-catalog/{rejected}/reject"),
+        owner,
+        at,
+        json!({ "op_id": op(), "product_id": w.item }),
+    )
+    .await;
     sup
 }
 
@@ -535,6 +578,8 @@ fn kitchen_sink(ids: &BTreeMap<String, Vec<Uuid>>, route: &str, item: &str) -> V
         }),
         "/defects/{id}/resolve" => json!({ "kind": "write_off" }),
         "/revisions/{id}/lines" => json!({ "product_id": item, "counted_qty": 1 }),
+        // Строка Умага по id: тело проходит проверку, ответ решает поиск строки (SPEC-35).
+        "/old-catalog/{id}/link" | "/old-catalog/{id}/reject" => json!({ "product_id": item }),
         _ => json!({}),
     };
     let mut body = json!({
@@ -604,6 +649,7 @@ async fn admin_of_branch_b_sees_and_changes_nothing_of_branch_a(pool: PgPool) {
         "employees",
         "expense_articles",
         "party_ledger",
+        "old_catalog",
     ] {
         assert!(
             ids.contains_key(t),

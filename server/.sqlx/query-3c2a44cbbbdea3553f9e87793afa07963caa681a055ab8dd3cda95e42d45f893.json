@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select umag_barcode, product_id from old_catalog_link_rejects where branch_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "umag_barcode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3c2a44cbbbdea3553f9e87793afa07963caa681a055ab8dd3cda95e42d45f893"
+}

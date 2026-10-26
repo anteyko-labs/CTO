@@ -483,3 +483,152 @@ test('без права «Товары и штрихкоды»: в приход�
   expect(denied.status()).toBe(403)
   await ctx.close()
 })
+
+// ---------- Проверка 26.10.2026 ----------
+
+/** Свободный короткий код (7 цифр — как 276… Умага, или 4 — как PLU): ни у одного товара его нет. */
+async function freeCode(request: APIRequestContext, digits: number): Promise<string> {
+  for (;;) {
+    const code = String(Math.floor(Math.random() * 9 * 10 ** (digits - 1)) + 10 ** (digits - 1))
+    const res = await request.get(`/api/v1/products/by-barcode/${code}`)
+    if (res.status() === 404) return code
+  }
+}
+
+test('ревизия: скан наклейки с нулём впереди (в Умаге нуль потерян) — +1, курсор в сканере; следующий скан — другой товар', async ({ page }) => {
+  await login(page)
+  const catName = `Ревизия Умаг ${RUN}`
+  const cat = await category(page.request, catName)
+  // Код Умага у товара — без нуля впереди, как в Excel; на наклейке — с нулём.
+  const umagCode = `719${RUN}1`
+  const oil = await product(page.request, cat, `Масло US ${RUN}`, [`11${RUN}01`, umagCode], 50_000)
+  const other = await product(page.request, cat, `Щётка US ${RUN}`, [`97${RUN}`], 10_000)
+
+  await page.goto('/revision')
+  await page.getByLabel('Что пересчитываем').selectOption({ label: catName })
+  await page.getByRole('button', { name: 'Начать ревизию' }).click()
+  await expect(page.getByRole('heading', { name: /Ревизия № \d+/ })).toBeVisible()
+  const scanner = page.getByPlaceholder('Сканируйте штрихкод')
+  const counted = (id: string) => page.locator(`[data-count="${id}"]`)
+  await scanner.fill(umagCode)
+  await scanner.press('Enter')
+  await expect(counted(oil.id)).toHaveValue('1')
+  await scanner.fill(`0${umagCode}`)
+  await scanner.press('Enter')
+  await expect(counted(oil.id)).toHaveValue('2')
+  await expect(scanner).toBeFocused()
+  // Следующий скан — другой товар, а не цифры в количестве первого.
+  await scanner.fill(`97${RUN}`)
+  await scanner.press('Enter')
+  await expect(counted(other.id)).toHaveValue('1')
+  await expect(counted(oil.id)).toHaveValue('2')
+  await expect(scanner).toBeFocused()
+  // Черновик ревизии не оставляем: объединение карточек ждёт проведения или отмены.
+  await page.getByRole('button', { name: 'Отменить ревизию' }).click()
+  await expect(page.getByRole('button', { name: 'Отменить ревизию' })).toHaveCount(0)
+})
+
+test('«Товары»: Enter по артикулу своего товара — его карточка, а не окно Умага; без сети — текст про связь', async ({ page, context }) => {
+  await login(page)
+  const cat = await category(page.request, `Свечи артикул ${RUN}`)
+  const article = `BKR${RUN}E`
+  const own = `Свеча NGK своя ${RUN}`
+  const p = await apiPost<Product>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat,
+    name: own,
+    article,
+    barcodes: [`81${RUN}17`],
+    sale_price_tyiyn: 30_000,
+  })
+  const umagCode = `82${RUN}17`
+  await putUmag(page.request, [
+    { name: `NGK ${article} Умаг`, barcode: umagCode, article, price_tyiyn: 30_000, unit: 'шт' },
+    { name: `Свеча только в Умаге ${RUN}`, barcode: `83${RUN}17`, price_tyiyn: 25_000, unit: 'шт' },
+  ])
+
+  await page.goto('/products')
+  const search = page.getByLabel('Поиск', { exact: true })
+  await search.fill(article)
+  await search.press('Enter')
+  const card = page.getByRole('dialog', { name: 'Товар' })
+  await expect(card.locator('#product-name')).toHaveValue(own)
+  await expect(page.getByTestId('umag-modal')).toHaveCount(0)
+  await card.getByRole('button', { name: /Отмена|Закрыть/ }).first().click()
+  expect(p.id).toBeTruthy()
+
+  // Без сети: код несвязанной строки Умага — понятный текст, а не «Нет связи с сервером».
+  await context.setOffline(true)
+  await search.fill(`83${RUN}17`)
+  await search.press('Enter')
+  await expect(page.getByText(`Без сети: код 83${RUN}17 среди товаров не найден. Если он есть в базе Умаг, завести товар можно, когда будет связь`)).toBeVisible()
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/tovary-offline-umag.png` })
+  await context.setOffline(false)
+})
+
+test('строка «литр»: коды литра Умага не становятся кодами канистры — касса «Код не найден», EAN канистры — товар', async ({ page }) => {
+  await login(page)
+  const liter = await freeCode(page.request, 7)
+  const plu = await freeCode(page.request, 4)
+  const ean = `40${RUN}23`
+  const name = `CASTROL ТЕСТ ${RUN} 5W30 4Л`
+  await putUmag(page.request, [{ name, barcode: liter, extra_code: `${plu};${ean}`, unit: 'литр', price_tyiyn: 110_000, cost_tyiyn: 80_000 }])
+
+  // Приход: код литра — окно Умага с пояснением; карточка канистры — с заводским EAN.
+  await page.goto('/receipts/new')
+  const picker = page.locator('#receipt-picker')
+  await picker.fill(liter)
+  await picker.press('Enter')
+  const modal = page.getByTestId('umag-modal')
+  await expect(modal.getByTestId('umag-measure-codes')).toContainText(`Коды ${liter}, ${plu} в Умаге продавали литр`)
+  await expect(modal).toContainText(money('1 100 с за л'))
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/prihod-umag-liter-modal.png` })
+  await modal.getByTestId('umag-create').click()
+  const card = page.getByRole('dialog', { name: 'Новый товар' })
+  await expect(card.locator('#product-barcode')).toHaveValue(ean)
+  await expect(card.locator('#product-container')).toHaveValue('4')
+  await expect(card.getByTestId('umag-measure-codes')).toBeVisible()
+  await card.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(card).toBeHidden()
+  await expect(page.getByText(`1. ${name}`)).toBeVisible()
+  const p = await apiGet<Product>(page.request, `/products/by-barcode/${ean}`)
+  expect(p.barcodes).not.toContain(liter)
+  expect(p.barcodes).not.toContain(plu)
+  expect((await page.request.get(`/api/v1/products/by-barcode/${liter}`)).status()).toBe(404)
+  // Повторный скан кода литра в приходе — связанная строка даёт тот же товар.
+  await picker.fill(liter)
+  await picker.press('Enter')
+  await expect(page.locator('#line-1-count')).toHaveValue('2')
+
+  // Касса: код литра — «Код не найден», а не канистра в чеке.
+  await page.goto('/')
+  const kassa = page.getByPlaceholder(PICKER)
+  await kassa.fill(liter)
+  await kassa.press('Enter')
+  await expect(page.getByRole('dialog', { name: `Код ${liter} не найден` })).toBeVisible()
+  await page.getByRole('dialog', { name: `Код ${liter} не найден` }).getByRole('button', { name: 'Отмена' }).click()
+  await kassa.fill(ean)
+  await kassa.press('Enter')
+  await expect(page.getByTestId('cart')).toContainText(name)
+})
+
+test('закупка Умага: администратору без права прихода не видна', async ({ page, browser }) => {
+  await login(page)
+  const code = `84${RUN}18`
+  await putUmag(page.request, [{ name: `Ремень закупка ${RUN}`, barcode: code, price_tyiyn: 35_000, cost_tyiyn: 31_700, unit: 'шт' }])
+  const { ctx, page: admin } = await adminWith(page, browser, ['products'])
+  const hits = await apiGet<{ cost_tyiyn: number | null }[]>(admin.request, `/old-catalog/search?barcode=${code}`)
+  expect(hits[0].cost_tyiyn).toBe(31_700)
+  await admin.goto('/products')
+  const search = admin.getByLabel('Поиск', { exact: true })
+  await search.fill(code)
+  await search.press('Enter')
+  const modal = admin.getByTestId('umag-modal')
+  await expect(modal).toContainText(money('350 с'))
+  await expect(modal.getByTestId('umag-cost')).toHaveCount(0)
+  await ctx.close()
+  const cashierLike = await adminWith(page, browser, ['sale_return', 'debt_payment'])
+  const denied = await apiGet<{ cost_tyiyn: number | null }[]>(cashierLike.page.request, `/old-catalog/search?barcode=${code}`)
+  expect(denied[0].cost_tyiyn).toBeNull()
+  await cashierLike.ctx.close()
+})

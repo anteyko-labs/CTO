@@ -12,6 +12,7 @@ import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import type { Category, Product } from '../lib/types'
+import { sameCode } from '../lib/umagCodes'
 import ProductIntake from './ProductIntake'
 
 interface Head {
@@ -117,24 +118,9 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   // Длинный склад — по страницам; поиск в списке возвращает на первую.
   const pager = usePager(lines, 'revision.lines', q)
 
-  // Скан: штучный товар +1, у масла — фокус на поле литров (на его странице).
-  const onScan = () => {
-    const code = scan.trim()
-    if (!code) return
-    const l = rev.lines.find((x) => x.barcodes.includes(code))
-    setScan('')
-    if (!l) {
-      // Нет в ревизии: товара нет и в программе — предлагаем завести с найденным количеством.
-      void get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
-        .then((p) => goTo(p))
-        .catch((e) => {
-          if (e instanceof ApiError && e.status === 404) {
-            act.setError(null)
-            setAdding({ barcode: code })
-          } else act.setError(e instanceof Error ? e.message : 'Ошибка')
-        })
-      return
-    }
+  /** Товар строки посчитан сканом: штучный +1 (курсор остаётся в сканере), у масла — фокус на поле
+   *  литров (на его странице). */
+  const countLine = (l: Line) => {
     act.setError(null)
     if (l.unit === 'piece') save(l, (l.counted_qty ?? 0) + 1)
     else {
@@ -143,6 +129,32 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
       // Поле появится после перехода на страницу.
       setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 0)
     }
+  }
+
+  // Скан: код строки ревизии — и с потерянными Excel нулями впереди (код Умага, SPEC-35 §1); нет —
+  // товар по коду на сервере: в ревизии — та же строка, вне её — сообщение; нигде — новая карточка.
+  const onScan = () => {
+    const code = scan.trim()
+    if (!code) return
+    const l = rev.lines.find((x) => x.barcodes.includes(code)) ?? rev.lines.find((x) => x.barcodes.some((b) => sameCode(b, code)))
+    setScan('')
+    if (l) {
+      countLine(l)
+      return
+    }
+    void get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+      .then((p) => {
+        const mine = rev.lines.find((x) => x.product_id === p.id)
+        if (mine) countLine(mine)
+        else goTo(p)
+      })
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 404) {
+          // Нет в ревизии: товара нет и в программе — предлагаем завести с найденным количеством.
+          act.setError(null)
+          setAdding({ barcode: code })
+        } else act.setError(e instanceof Error ? e.message : 'Ошибка')
+      })
   }
 
   const counted = rev.lines.filter((l) => l.counted_qty !== null)

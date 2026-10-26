@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with names as (\n               select p.id, umag_norm_name(p.name) as k from products p where not p.archived\n               union\n               select p.id, umag_norm_name(p.brand || ' ' || p.name) from products p\n               where not p.archived and btrim(p.brand) <> ''\n           ), single as (\n               select name_norm from old_catalog where branch_id = $1\n               group by name_norm having count(*) = 1\n           )\n           select o.id as \"id!\", (array_agg(distinct n.id))[1] as \"product_id!\"\n           from old_catalog o\n           join single s on s.name_norm = o.name_norm\n           join names n on n.k = o.name_norm and n.k <> ''\n           where o.branch_id = $1 and o.product_id is null and not (o.id = any($2))\n             and not exists (select 1 from unnest(o.keys) c\n                             cross join lateral code_products(c) x\n                             join products q on q.id = x.product_id\n                             where not q.archived and not x.internal)\n             and not exists (select 1 from old_catalog_link_rejects r\n                             where r.branch_id = $1 and r.umag_barcode = umag_key(o.barcode, o.name)\n                               and r.product_id = n.id)\n           group by o.id\n           having count(distinct n.id) = 1\n           order by o.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "product_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "98a46bcf563e0bac790f134f5914a2f395715ae04d39efc99dfc4121691d55ad"
+}

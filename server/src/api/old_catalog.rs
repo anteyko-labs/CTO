@@ -63,6 +63,8 @@ pub struct ImportRow {
 }
 
 const MAX_ROWS: usize = 50_000;
+/// Предел «доп. кода» строки: в нём бывает и двадцать EAN через «;».
+const MAX_EXTRA_CODE: usize = 2_000;
 
 /// Связи строк Умага филиала меняет одна операция за раз (выгрузка, связывание, автосвязывание,
 /// новый товар): они не перебивают друг друга. Берётся до записи кодов товара — иначе две
@@ -80,9 +82,13 @@ pub(crate) async fn lock_branch(conn: &mut PgConnection, branch_id: Uuid) -> App
 /// Строка прежнего списка, связанная с товаром: по ней новая выгрузка восстанавливает связь.
 struct LinkedRow {
     barcode: String,
+    /// Ключ строки (`umag_key`): штрихкод, без него — название; так же записаны отказы «Не то».
+    key: String,
     /// Штрихкод и «доп. коды» — по ним узнаётся та же строка в новой выгрузке.
     keys: Vec<String>,
-    /// Все коды строки — они уже были у товара.
+    /// Коды строки, которые уже были у товара: переносимые, кроме отмеченных конфликтом — код,
+    /// занятый тогда другим товаром, товару не переходил, и новая выгрузка перенесёт его, если он
+    /// освободился.
     codes: Vec<String>,
     product_id: Uuid,
 }
@@ -91,7 +97,9 @@ struct LinkedRow {
 struct FreshRow {
     id: Uuid,
     barcode: String,
+    key: String,
     keys: Vec<String>,
+    /// Коды, которые переходят товару (`umag_product_codes`).
     codes: Vec<String>,
 }
 
@@ -104,14 +112,23 @@ struct Restored {
 }
 
 /// Связи новой выгрузки (SPEC-35 §1): строка с тем же штрихкодом получает прежний товар; без
-/// него — строка с общим кодом (штрихкод или «доп. код»), если он ведёт к одному товару. Разные
-/// товары — связи нет, решит человек. Переносятся только новые коды строки: коды, которые
-/// владелец убрал из карточки товара, выгрузка не возвращает.
-fn restore_links(old: &[LinkedRow], fresh: &[FreshRow]) -> Vec<Restored> {
+/// него — строка с общим кодом (штрихкод или «доп. код»), если он ведёт к одному товару, а строка
+/// без штрихкода и «доп. кодов» — по названию. Разные товары — связи нет, решит человек. Пара,
+/// отвязанная или отвергнутая («Не то», `rejects`: ключ строки и товар), не возвращается.
+/// Переносятся только новые коды строки: коды, которые владелец убрал из карточки товара,
+/// выгрузка не возвращает.
+fn restore_links(
+    old: &[LinkedRow],
+    fresh: &[FreshRow],
+    rejects: &HashSet<(String, Uuid)>,
+) -> Vec<Restored> {
     let mut by_barcode: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut by_key: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
     for (i, o) in old.iter().enumerate() {
-        if !o.barcode.is_empty() {
+        if o.barcode.is_empty() {
+            by_name.entry(o.key.as_str()).or_default().push(i);
+        } else {
             by_barcode.entry(o.barcode.as_str()).or_default().push(i);
         }
         for k in &o.keys {
@@ -134,11 +151,17 @@ fn restore_links(old: &[LinkedRow], fresh: &[FreshRow]) -> Vec<Restored> {
                 .copied()
                 .collect();
         }
+        if matched.is_empty() && n.barcode.is_empty() {
+            matched = by_name.get(n.key.as_str()).cloned().unwrap_or_default();
+        }
         let products: HashSet<Uuid> = matched.iter().map(|&i| old[i].product_id).collect();
         let products: Vec<Uuid> = products.into_iter().collect();
         let &[product_id] = products.as_slice() else {
             continue;
         };
+        if rejects.contains(&(n.key.clone(), product_id)) {
+            continue;
+        }
         let before: HashSet<&str> = matched
             .iter()
             .flat_map(|&i| old[i].codes.iter().map(String::as_str))
@@ -183,7 +206,11 @@ async fn import(
     let mut tx = state.pool.begin().await?;
     lock_branch(&mut tx, branch_id).await?;
     let old: Vec<LinkedRow> = sqlx::query!(
-        r#"select barcode, keys, codes, product_id as "product_id!"
+        r#"select barcode, umag_key(barcode, name) as "key!", keys,
+                  array(select c from unnest(umag_product_codes(codes, unit)) c
+                        where not exists (select 1 from jsonb_array_elements(code_conflicts) j
+                                          where j ->> 'code' = c)) as "codes!",
+                  product_id as "product_id!"
            from old_catalog where branch_id = $1 and product_id is not null"#,
         branch_id
     )
@@ -192,10 +219,20 @@ async fn import(
     .into_iter()
     .map(|r| LinkedRow {
         barcode: r.barcode,
+        key: r.key,
         keys: r.keys,
         codes: r.codes,
         product_id: r.product_id,
     })
+    .collect();
+    let rejects: HashSet<(String, Uuid)> = sqlx::query!(
+        "select umag_barcode, product_id from old_catalog_link_rejects where branch_id = $1",
+        branch_id
+    )
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(|r| (r.umag_barcode, r.product_id))
     .collect();
     sqlx::query!("delete from old_catalog where branch_id = $1", branch_id)
         .execute(&mut *tx)
@@ -224,7 +261,9 @@ async fn import(
         &text(|r| &r.name, 300),
         &text(|r| &r.barcode, 64),
         &text(|r| &r.article, 100),
-        &text(|r| &r.extra_code, 100),
+        // «Доп. код» — несколько кодов подряд: обрезанный на 100 знаках, он оставлял обрывок
+        // последнего кода (проверка 26.10.2026); каждый кусок — не длиннее кода (`umag_codes`).
+        &text(|r| &r.extra_code, MAX_EXTRA_CODE),
         &money(|r| r.cost_tyiyn),
         &money(|r| r.price_tyiyn),
         &text(|r| &r.unit, 20),
@@ -234,7 +273,9 @@ async fn import(
     .execute(&mut *tx)
     .await?;
     let fresh: Vec<FreshRow> = sqlx::query!(
-        r#"select id, barcode, keys, codes from old_catalog where branch_id = $1 order by id"#,
+        r#"select id, barcode, umag_key(barcode, name) as "key!", keys,
+                  umag_product_codes(codes, unit) as "codes!"
+           from old_catalog where branch_id = $1 order by id"#,
         branch_id
     )
     .fetch_all(&mut *tx)
@@ -243,11 +284,12 @@ async fn import(
     .map(|r| FreshRow {
         id: r.id,
         barcode: r.barcode,
+        key: r.key,
         keys: r.keys,
         codes: r.codes,
     })
     .collect();
-    let plan = restore_links(&old, &fresh);
+    let plan = restore_links(&old, &fresh, &rejects);
     let mut copied = Vec::new();
     if !plan.is_empty() {
         let (rows_ids, products): (Vec<Uuid>, Vec<Uuid>) =
@@ -343,7 +385,9 @@ struct Hit {
     name: String,
     barcode: String,
     article: String,
-    cost_tyiyn: i64,
+    /// Закупка в Умаге — тем, кто заводит карточку с закупкой: владелец, права «Приход»,
+    /// «Ревизия», «Товары и штрихкоды» (ADR-008, ADR-113); остальным — `null`.
+    cost_tyiyn: Option<i64>,
     price_tyiyn: i64,
     unit: String,
     supplier: String,
@@ -361,13 +405,36 @@ struct Hit {
     conflicts: Vec<CodeConflict>,
 }
 
+/// Права, с которыми карточку заводят с закупкой: приход (закупка строки), ревизия и «Сканер
+/// товаров» (по ней оценивается найденный остаток). Им видна закупка в Умаге (ADR-113).
+const COST_RIGHTS: [&str; 3] = ["receipts", "revision", "products"];
+
+/// Видна ли пользователю закупка в Умаге в подсказках.
+async fn sees_umag_cost(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<bool> {
+    if user.is_owner() {
+        return Ok(true);
+    }
+    let rights: Vec<String> = COST_RIGHTS.iter().map(|r| r.to_string()).collect();
+    Ok(sqlx::query_scalar!(
+        r#"select exists (select 1 from user_permissions
+                          where user_id = $1 and branch_id = $2 and permission = any($3)) as "e!""#,
+        user.id,
+        user.branch_id,
+        &rights
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// Строки Умага в порядке `ids`. `code` и `text` — то, что искали: совпавший код — `exact`.
+/// `cost` — показать ли закупку (`sees_umag_cost`).
 async fn load_hits(
     conn: &mut PgConnection,
     branch_id: Uuid,
     ids: &[Uuid],
     code: &str,
     text: &str,
+    cost: bool,
 ) -> AppResult<Vec<Hit>> {
     let rows = sqlx::query!(
         r#"select o.id, o.name, o.barcode, o.article, o.cost_tyiyn, o.price_tyiyn, o.unit,
@@ -403,7 +470,7 @@ async fn load_hits(
                     name: r.name,
                     barcode: r.barcode,
                     article: r.article,
-                    cost_tyiyn: r.cost_tyiyn,
+                    cost_tyiyn: cost.then_some(r.cost_tyiyn),
                     price_tyiyn: r.price_tyiyn,
                     unit: r.unit,
                     supplier: r.supplier,
@@ -431,6 +498,7 @@ async fn search(
 ) -> AppResult<Json<Vec<Hit>>> {
     let code = q.barcode.trim();
     let text = q.q.trim();
+    check_search(code, text)?;
     if code.is_empty() && text.chars().count() < 2 {
         return Ok(Json(vec![]));
     }
@@ -454,16 +522,38 @@ async fn search(
     )
     .fetch_all(&mut *conn)
     .await?;
+    let cost = sees_umag_cost(&mut conn, &user).await?;
     Ok(Json(
-        load_hits(&mut conn, user.branch_id, &ids, code, text).await?,
+        load_hits(&mut conn, user.branch_id, &ids, code, text, cost).await?,
     ))
+}
+
+/// Предел текста поиска по Умагу (ADR-090): сходство названий с длинным текстом считается секунды.
+const MAX_SEARCH_TEXT: usize = 100;
+
+/// Поиск по Умагу — код не длиннее кода товара, текст — не длиннее 100 знаков.
+fn check_search(code: &str, text: &str) -> AppResult<()> {
+    if code.chars().count() > 64 {
+        return Err(invalid("код для поиска — не длиннее 64 знаков"));
+    }
+    if text.chars().count() > MAX_SEARCH_TEXT {
+        return Err(invalid(format!(
+            "текст для поиска — не длиннее {MAX_SEARCH_TEXT} знаков"
+        )));
+    }
+    Ok(())
 }
 
 /// Переносит коды строк Умага связанным товарам (SPEC-35 §1): код становится кодом товара с
 /// источником «Умаг», если его нет ни у одного товара и у другого товара нет того же числового
-/// кода с нулями впереди. Занятый код остаётся отметкой конфликта у строки. Товар в архиве
-/// кодов не получает. Возвращает перенесённые коды в порядке пар.
-async fn copy_codes(conn: &mut PgConnection, pairs: &[(String, Uuid)]) -> AppResult<Vec<String>> {
+/// кода с нулями впереди. Один код (и тот же числовой с другим числом нулей впереди) в одной
+/// пачке получает первый товар по порядку пар, строка другого — отметку конфликта. Занятый код
+/// остаётся отметкой конфликта у строки. Товар в архиве кодов не получает. Возвращает
+/// перенесённые коды с товаром в порядке пар.
+async fn copy_codes(
+    conn: &mut PgConnection,
+    pairs: &[(String, Uuid)],
+) -> AppResult<Vec<(String, Uuid)>> {
     let (codes, products): (Vec<String>, Vec<Uuid>) = pairs
         .iter()
         .filter(|(c, _)| barcode::is_acceptable(c))
@@ -474,12 +564,12 @@ async fn copy_codes(conn: &mut PgConnection, pairs: &[(String, Uuid)]) -> AppRes
     }
     let done: HashSet<String> = sqlx::query_scalar!(
         r#"insert into product_barcodes (code, product_id, internal, source)
-           select distinct on (t.code) t.code, t.product_id, false, 'umag'
+           select distinct on (umag_bare(t.code)) t.code, t.product_id, false, 'umag'
            from unnest($1::text[], $2::uuid[]) with ordinality as t(code, product_id, n)
            join products p on p.id = t.product_id and not p.archived
            where not exists (select 1 from product_barcodes b where b.code = t.code)
              and not exists (select 1 from code_products(t.code) x where x.product_id <> t.product_id)
-           order by t.code, t.n
+           order by umag_bare(t.code), t.n
            on conflict (code) do nothing
            returning code"#,
         &codes,
@@ -492,17 +582,18 @@ async fn copy_codes(conn: &mut PgConnection, pairs: &[(String, Uuid)]) -> AppRes
     let mut seen = HashSet::new();
     Ok(codes
         .into_iter()
-        .filter(|c| done.contains(c) && seen.insert(c.clone()))
+        .zip(products)
+        .filter(|(c, _)| done.contains(c) && seen.insert(c.clone()))
         .collect())
 }
 
-/// Отметки «конфликт кода» строк заново: коды строки, которые нашли бы другой товар.
+/// Отметки «конфликт кода» строк заново: переносимые коды строки, которые нашли бы другой товар.
 async fn refresh_conflicts(conn: &mut PgConnection, ids: &[Uuid]) -> AppResult<()> {
     sqlx::query!(
         r#"update old_catalog o set code_conflicts = coalesce((
                select jsonb_agg(jsonb_build_object('code', c.code, 'product_id', x.product_id,
                                                    'product_name', p.name) order by c.n)
-               from unnest(o.codes) with ordinality as c(code, n)
+               from unnest(umag_product_codes(o.codes, o.unit)) with ordinality as c(code, n)
                cross join lateral (select y.product_id from code_products(c.code) y
                                    where y.product_id <> o.product_id
                                    order by (y.code = c.code) desc, y.code limit 1) x
@@ -517,9 +608,61 @@ async fn refresh_conflicts(conn: &mut PgConnection, ids: &[Uuid]) -> AppResult<(
     Ok(())
 }
 
+/// У товара убрали код (SPEC-35 §1): строки Умага, чей код был занят этим товаром (отметка
+/// конфликта), получают освободившийся код своему товару; отметки — заново. Без этого код
+/// пропадал молча: отметка устаревала, а новая выгрузка считала код уже перенесённым.
+/// Возвращает перенесённые коды с товаром.
+pub(crate) async fn codes_freed(
+    conn: &mut PgConnection,
+    from_product: Uuid,
+) -> AppResult<Vec<(String, Uuid)>> {
+    let rows = sqlx::query!(
+        r#"select o.id, o.product_id as "product_id!", j ->> 'code' as "code!"
+           from old_catalog o cross join lateral jsonb_array_elements(o.code_conflicts) j
+           where o.product_id is not null and j ->> 'product_id' = $1::text
+           order by o.id"#,
+        from_product.to_string()
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pairs: Vec<(String, Uuid)> = rows
+        .iter()
+        .map(|r| (r.code.clone(), r.product_id))
+        .collect();
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let copied = copy_codes(&mut *conn, &pairs).await?;
+    refresh_conflicts(&mut *conn, &ids).await?;
+    Ok(copied)
+}
+
+/// Отметки конфликтов строк, связанных с этими товарами или отмеченных их кодами, — заново
+/// (объединение карточек переносит коды и связи дубля на основную).
+pub(crate) async fn refresh_conflicts_of(
+    conn: &mut PgConnection,
+    products: &[Uuid],
+) -> AppResult<()> {
+    let ids: Vec<String> = products.iter().map(Uuid::to_string).collect();
+    let rows = sqlx::query_scalar!(
+        r#"select o.id from old_catalog o
+           where o.product_id = any($1::text[]::uuid[])
+              or exists (select 1 from jsonb_array_elements(o.code_conflicts) j
+                         where j ->> 'product_id' = any($1))"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    refresh_conflicts(&mut *conn, &rows).await
+}
+
 /// Ставит связи строк с товарами и переносит коды строк; отметки конфликтов — заново.
-/// Возвращает перенесённые коды.
-async fn link_rows(conn: &mut PgConnection, links: &[(Uuid, Uuid)]) -> AppResult<Vec<String>> {
+/// Возвращает перенесённые коды с товаром.
+async fn link_rows(
+    conn: &mut PgConnection,
+    links: &[(Uuid, Uuid)],
+) -> AppResult<Vec<(String, Uuid)>> {
     if links.is_empty() {
         return Ok(Vec::new());
     }
@@ -536,7 +679,7 @@ async fn link_rows(conn: &mut PgConnection, links: &[(Uuid, Uuid)]) -> AppResult
         r#"select c.code as "code!", o.product_id as "product_id!"
            from unnest($1::uuid[]) with ordinality as r(id, n)
            join old_catalog o on o.id = r.id
-           cross join lateral unnest(o.codes) with ordinality as c(code, k)
+           cross join lateral unnest(umag_product_codes(o.codes, o.unit)) with ordinality as c(code, k)
            where o.product_id is not null
            order by r.n, c.k"#,
         &rows
@@ -609,7 +752,11 @@ async fn link_row(
     )
     .execute(&mut *conn)
     .await?;
-    let copied = link_rows(&mut *conn, &[(row_id, product_id)]).await?;
+    let copied: Vec<String> = link_rows(&mut *conn, &[(row_id, product_id)])
+        .await?
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
     let conflicts = sqlx::query_scalar!(
         "select code_conflicts from old_catalog where id = $1",
         row_id
@@ -638,33 +785,19 @@ async fn link_row(
 }
 
 /// Строки Умага, чей штрихкод или «доп. код» (не выданный программой) теперь только у этого
-/// товара — то же правило, что автосвязывание по точному коду. Без отказов «Не то» для пары.
+/// товара — то же правило, что автосвязывание по точному коду: числовой код сравнивается без
+/// нулей впереди с обеих сторон (код товара «0R12» и строка «00R12» — один код). Без отказов
+/// «Не то» для пары.
 async fn rows_coded_for(
     conn: &mut PgConnection,
     ctx: &Ctx,
     product_id: Uuid,
 ) -> AppResult<Vec<Uuid>> {
-    // Коды товара и числовые — без нулей впереди: строки Умага ищутся по индексу кодов.
-    let mut keys: Vec<String> = Vec::new();
-    for code in sqlx::query_scalar!(
-        "select code from product_barcodes where product_id = $1 and not internal",
-        product_id
-    )
-    .fetch_all(&mut *conn)
-    .await?
-    {
-        let bare = code.trim_start_matches('0');
-        if code.chars().all(|c| c.is_ascii_digit()) && !bare.is_empty() && bare != code {
-            keys.push(bare.to_string());
-        }
-        keys.push(code);
-    }
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
     Ok(sqlx::query_scalar!(
         r#"select o.id from old_catalog o
-           where o.branch_id = $1 and o.product_id is null and o.keys && $3
+           where o.branch_id = $1 and o.product_id is null
+             and o.keys_bare && array(select umag_bare(b.code) from product_barcodes b
+                                      where b.product_id = $2 and not b.internal)
              and not exists (select 1 from unnest(o.keys) c
                              cross join lateral code_products(c) x
                              join products p on p.id = x.product_id
@@ -674,8 +807,7 @@ async fn rows_coded_for(
                                and r.product_id = $2)
            order by o.id"#,
         ctx.user.branch_id,
-        product_id,
-        &keys
+        product_id
     )
     .fetch_all(&mut *conn)
     .await?)
@@ -886,13 +1018,16 @@ struct AutoLinkOut {
     by_name: usize,
 }
 
-/// В журнале автосвязывания — пары, но не больше этого числа: запись не разрастается.
+/// Пар в одной записи журнала автосвязывания: больше — несколько записей (часть 1 из N), чтобы
+/// запись не разрасталась, а по журналу восстанавливалась каждая связь.
 const AUDIT_PAIRS: usize = 500;
 
 /// «Связать автоматически» (SPEC-35 §3): строка без связи получает товар, если её штрихкод или
 /// «доп. код» (не выданный программой) есть ровно у одного действующего товара или её название
 /// после нормализации (регистр, пробелы, кавычки, «ё»→«е») совпадает с названием ровно одного
-/// товара. Пары «не то» не связываются. Коды строк переносятся товарам.
+/// товара, а в списке филиала такое название — только у неё (одинаковые названия у разных
+/// строк Умага — разные товары, решит человек). Пары «не то» не связываются. Коды строк
+/// переносятся товарам.
 async fn auto_link(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -935,10 +1070,14 @@ async fn auto_link(
                union
                select p.id, umag_norm_name(p.brand || ' ' || p.name) from products p
                where not p.archived and btrim(p.brand) <> ''
+           ), single as (
+               select name_norm from old_catalog where branch_id = $1
+               group by name_norm having count(*) = 1
            )
            select o.id as "id!", (array_agg(distinct n.id))[1] as "product_id!"
            from old_catalog o
-           join names n on n.k = umag_norm_name(o.name) and n.k <> ''
+           join single s on s.name_norm = o.name_norm
+           join names n on n.k = o.name_norm and n.k <> ''
            where o.branch_id = $1 and o.product_id is null and not (o.id = any($2))
              and not exists (select 1 from unnest(o.keys) c
                              cross join lateral code_products(c) x
@@ -965,23 +1104,56 @@ async fn auto_link(
         by_code: by_code.len(),
         by_name: by_name.len(),
     };
-    ops::audit(
-        &mut tx,
-        &ctx,
-        KIND,
-        "old_catalog",
-        None,
-        json!({
-            "linked": out.linked,
-            "by_code": out.by_code,
-            "by_name": out.by_name,
-            "copied": copied.len(),
-            "pairs": all.iter().take(AUDIT_PAIRS)
-                .map(|(r, p)| json!({ "umag_id": r, "product_id": p }))
-                .collect::<Vec<_>>(),
-        }),
+    // Журнал: каждая пара — строка (id и штрихкод: id меняются с новой выгрузкой), товар и
+    // перенесённые ему коды этой строки.
+    let ids: Vec<Uuid> = all.iter().map(|(r, _)| *r).collect();
+    let rows: HashMap<Uuid, (String, Vec<String>)> = sqlx::query!(
+        r#"select id, barcode, umag_product_codes(codes, unit) as "codes!"
+           from old_catalog where id = any($1)"#,
+        &ids
     )
-    .await?;
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(|r| (r.id, (r.barcode, r.codes)))
+    .collect();
+    let copied_to: HashSet<(&str, Uuid)> = copied.iter().map(|(c, p)| (c.as_str(), *p)).collect();
+    let pairs: Vec<Value> = all
+        .iter()
+        .map(|(r, p)| {
+            let (barcode, codes) = rows.get(r).cloned().unwrap_or_default();
+            let moved: Vec<String> = codes
+                .into_iter()
+                .filter(|c| copied_to.contains(&(c.as_str(), *p)))
+                .collect();
+            json!({ "umag_id": r, "barcode": barcode, "product_id": p, "copied": moved })
+        })
+        .collect();
+    let chunks: Vec<&[Value]> = if pairs.is_empty() {
+        vec![&[]]
+    } else {
+        pairs.chunks(AUDIT_PAIRS).collect()
+    };
+    let parts = chunks.len();
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            KIND,
+            "old_catalog",
+            None,
+            json!({
+                "linked": out.linked,
+                "by_code": out.by_code,
+                "by_name": out.by_name,
+                "copied": copied.len(),
+                "part": i + 1,
+                "parts": parts,
+                "pairs": chunk,
+            }),
+        )
+        .await?;
+    }
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -1131,7 +1303,8 @@ fn brands_in<'a>(text: &str, known: &'a [String]) -> HashSet<&'a str> {
         .collect()
 }
 
-/// Пара не расходится: объём, вес, вязкость и бренд, если они есть в обоих названиях, совпадают.
+/// Пара не расходится: объём, вес, вязкость и бренд, если они есть в обоих названиях, совпадают;
+/// килограммы и литры (антифриз «5 кг» и «5 л») — с допуском в четверть.
 fn compatible(product: &str, umag: &str, brands: &[String]) -> bool {
     let (a, b) = (name_marks(product), name_marks(umag));
     fn differ<T: PartialEq>(x: &Option<T>, y: &Option<T>) -> bool {
@@ -1143,8 +1316,155 @@ fn compatible(product: &str, umag: &str, brands: &[String]) -> bool {
     {
         return false;
     }
+    let far = |x: i64, y: i64| x.abs_diff(y).saturating_mul(4) > x.max(y).unsigned_abs();
+    if let (Some(v), None, None, Some(w)) | (None, Some(w), Some(v), None) =
+        (a.volume_ml, a.weight_g, b.volume_ml, b.weight_g)
+        && far(v, w)
+    {
+        return false;
+    }
     let (pa, pb) = (brands_in(product, brands), brands_in(umag, brands));
     pa.is_empty() || pb.is_empty() || !pa.is_disjoint(&pb)
+}
+
+/// Куски названия для сравнения пар: слова, номера деталей, вязкость; объём и вес («4л», «5 кг»,
+/// «0,5 л») пропускаются — их сравнивает `compatible`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NameTokens {
+    /// Слова из трёх и больше букв и куски с буквами и цифрами («hx7», «x7», «5w30»), без единиц
+    /// меры и служебных слов.
+    words: Vec<String>,
+    /// Номера деталей: куски с цифрами, кроме вязкости («fc158», «71275», «3000»).
+    parts: Vec<String>,
+    /// Латинские слова из трёх и больше букв («castrol», «felix»).
+    latin: Vec<String>,
+}
+
+/// Вязкость отдельным куском: «5w30», «10w-40», «15/40».
+fn is_viscosity(tok: &str) -> bool {
+    let c: Vec<char> = tok.chars().collect();
+    let lead = c.iter().take_while(|x| x.is_ascii_digit()).count();
+    if !(1..=2).contains(&lead) || !matches!(c.get(lead), Some('w' | '/')) {
+        return false;
+    }
+    let rest: String = c[lead + 1..].iter().filter(|x| **x != '-').collect();
+    rest.len() == 2 && rest.chars().all(|x| x.is_ascii_digit())
+}
+
+/// Слова, номера деталей и латинские слова названия (`NameTokens`).
+fn name_tokens(name: &str) -> NameTokens {
+    const STOP: [&str; 10] = [
+        "для", "без", "под", "над", "при", "или", "the", "and", "for", "with",
+    ];
+    let t = norm_text(name);
+    // Запятая и точка между цифрами — дробь («0,5 л»), на краях куска — разделитель.
+    let raw: Vec<&str> = t
+        .split(|c: char| c.is_whitespace() || "()[];«»\"'+!?:*".contains(c))
+        .map(|x| x.trim_matches(|c: char| c == ',' || c == '.' || c == '-'))
+        .filter(|x| !x.is_empty())
+        .collect();
+    let mut out = NameTokens::default();
+    let push = |list: &mut Vec<String>, x: &str| {
+        if !list.iter().any(|y| y == x) {
+            list.push(x.to_string());
+        }
+    };
+    for (i, tok) in raw.iter().enumerate() {
+        let has_digit = tok.chars().any(|c| c.is_ascii_digit());
+        // Число с единицей — слитно («4л», «0,5l») или следующим словом («5 кг») — мера.
+        let num_end = tok
+            .find(|c: char| !(c.is_ascii_digit() || c == ',' || c == '.'))
+            .unwrap_or(tok.len());
+        if has_digit && num_end > 0 {
+            let unit = &tok[num_end..];
+            let next_is_unit = raw
+                .get(i + 1)
+                .is_some_and(|n| unit_of(n.trim_end_matches('.')).is_some());
+            if (unit.is_empty() && next_is_unit) || (!unit.is_empty() && unit_of(unit).is_some()) {
+                continue;
+            }
+        }
+        let joined: String = tok.chars().filter(|c| c.is_alphanumeric()).collect();
+        if joined.is_empty() {
+            continue;
+        }
+        let has_letter = joined.chars().any(char::is_alphabetic);
+        if has_digit {
+            let viscosity = is_viscosity(tok);
+            if !viscosity {
+                push(&mut out.parts, &joined);
+            }
+            if has_letter && joined.chars().count() >= 2 {
+                push(&mut out.words, &joined);
+            }
+        } else if joined.chars().count() >= 3
+            && unit_of(&joined).is_none()
+            && !STOP.contains(&joined.as_str())
+        {
+            push(&mut out.words, &joined);
+            if joined.chars().all(|c| c.is_ascii_alphabetic()) {
+                push(&mut out.latin, &joined);
+            }
+        }
+    }
+    out
+}
+
+/// Одно слово: то же или с другим окончанием («каркас» — «каркасная», «щетка» — «щеткой»); куски
+/// с цифрами — только те же.
+fn same_word(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.chars().chain(b.chars()).any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let shorter = a.chars().count().min(b.chars().count());
+    let common = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    shorter >= 4 && common >= 4.max(shorter.saturating_sub(2))
+}
+
+/// Сколько слов `a` есть в `b` (каждое слово `b` — один раз).
+fn common_words(a: &[String], b: &[String]) -> usize {
+    let mut used = vec![false; b.len()];
+    let mut n = 0;
+    for x in a {
+        if let Some(j) = (0..b.len()).find(|&j| !used[j] && same_word(x, &b[j])) {
+            used[j] = true;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Номер детали тот же: совпадает или один содержит другой («w71275» и «71275»).
+fn same_part(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    a == b || (short.len() >= 3 && long.contains(short))
+}
+
+/// Пара похожа на правду (SPEC-35 §3, проверка 26.10.2026): признаки названий не расходятся
+/// (`compatible`), общих слов — не меньше двух («фильтр хай» — не «фильтр вехчай»), номера
+/// деталей, если они есть в обоих названиях, совпадают («FC-158» — не «ST385»), латинские слова
+/// обоих названий пересекаются («Felix» — не «X-COOL»).
+fn plausible(product: &str, umag: &str, brands: &[String]) -> bool {
+    if !compatible(product, umag, brands) {
+        return false;
+    }
+    let (a, b) = (name_tokens(product), name_tokens(umag));
+    if common_words(&a.words, &b.words) < 2 {
+        return false;
+    }
+    if !a.parts.is_empty()
+        && !b.parts.is_empty()
+        && !a
+            .parts
+            .iter()
+            .any(|x| b.parts.iter().any(|y| same_part(x, y)))
+    {
+        return false;
+    }
+    a.latin.is_empty() || b.latin.is_empty() || common_words(&a.latin, &b.latin) > 0
 }
 
 /// Сходство названий для показа: тысячные доли → число 0…1 («0.734»). Сравнивают и сортируют
@@ -1158,7 +1478,7 @@ fn share(permille: i32) -> AppResult<serde_json::Number> {
 
 /// Самое меньшее сходство названий пары (SPEC-35 §3).
 const MIN_SIMILARITY: &str = "0.45";
-/// Сколько похожих строк Умага показывать у одного товара.
+/// Сколько похожих строк Умага показывать у одного товара и сколько товаров — у одной строки.
 const PER_PRODUCT: usize = 3;
 
 #[derive(Deserialize)]
@@ -1206,6 +1526,7 @@ async fn pairs(
     .fetch_one(&mut *tx)
     .await?;
     let text = q.q.trim().to_string();
+    check_search("", &text)?;
     let rows = sqlx::query!(
         r#"with free as (
                select p.id, p.name, p.brand, p.article,
@@ -1214,10 +1535,13 @@ async fn pairs(
                from products p
                where not p.archived
                  and not exists (select 1 from old_catalog l where l.branch_id = $1 and l.product_id = p.id)
+                 -- Код товара — штрихкод или «доп. код» строки Умага (и с другим числом нулей
+                 -- впереди): строка уже его, она не «похожая».
                  and not exists (select 1 from product_barcodes b
                                  where b.product_id = p.id and not b.internal
                                    and exists (select 1 from old_catalog l
-                                               where l.branch_id = $1 and l.keys @> array[b.code]))
+                                               where l.branch_id = $1
+                                                 and l.keys_bare @> array[umag_bare(b.code)]))
            )
            select f.id as "product_id!", f.name as "product_name!", f.brand as "brand!",
                   f.article as "article!", f.full_name as "full_name!",
@@ -1236,7 +1560,8 @@ async fn pairs(
                  and similarity(o.name, f.full_name) >= $4::text::real
                offset 0
            ) o
-           where not exists (select 1 from product_barcodes b where b.code = any(o.keys) and not b.internal)
+           where not exists (select 1 from unnest(o.keys) c
+                             cross join lateral code_products(c) x where not x.internal)
              and not exists (select 1 from old_catalog_link_rejects r
                              where r.branch_id = $1 and r.umag_barcode = umag_key(o.barcode, o.name)
                                and r.product_id = f.id)
@@ -1267,7 +1592,7 @@ async fn pairs(
     }
     let mut per: HashMap<Uuid, Vec<Cand>> = HashMap::new();
     for r in rows {
-        if !compatible(&r.full_name, &r.umag_name, &brands) {
+        if !plausible(&r.full_name, &r.umag_name, &brands) {
             continue;
         }
         per.entry(r.product_id).or_default().push(Cand {
@@ -1283,10 +1608,25 @@ async fn pairs(
             sim: r.sim,
         });
     }
-    let mut all: Vec<Cand> = per
+    // У товара — до трёх самых похожих строк, и у строки Умага — до трёх товаров: одну строку
+    // («АРОМАТИЗАТОР») не предлагают десяткам товаров.
+    let mut per_umag: HashMap<Uuid, Vec<Cand>> = HashMap::new();
+    for mut v in per.into_values() {
+        v.sort_by(|a, b| b.sim.cmp(&a.sim).then(a.umag_name.cmp(&b.umag_name)));
+        v.truncate(PER_PRODUCT);
+        for c in v {
+            per_umag.entry(c.umag_id).or_default().push(c);
+        }
+    }
+    let mut all: Vec<Cand> = per_umag
         .into_values()
         .flat_map(|mut v| {
-            v.sort_by(|a, b| b.sim.cmp(&a.sim).then(a.umag_name.cmp(&b.umag_name)));
+            v.sort_by(|a, b| {
+                b.sim
+                    .cmp(&a.sim)
+                    .then_with(|| a.product.name.cmp(&b.product.name))
+                    .then(a.product.id.cmp(&b.product.id))
+            });
             v.truncate(PER_PRODUCT);
             v
         })
@@ -1317,7 +1657,8 @@ async fn pairs(
         .take(usize::try_from(size).unwrap_or(0))
         .collect();
     let ids: Vec<Uuid> = page.iter().map(|c| c.umag_id).collect();
-    let hits: HashMap<Uuid, Hit> = load_hits(&mut tx, user.branch_id, &ids, "", "")
+    let cost = sees_umag_cost(&mut tx, &user).await?;
+    let hits: HashMap<Uuid, Hit> = load_hits(&mut tx, user.branch_id, &ids, "", "", cost)
         .await?
         .into_iter()
         .map(|h| (h.id, h))
@@ -1347,32 +1688,46 @@ pub struct ProductUmag {
     pub name: String,
     pub barcode: String,
     pub codes: Vec<String>,
+    /// Коды меры (строка «литр», «кг», «метр»: 276…, PLU): товару не переходят — на кассе они
+    /// добавили бы всю тару (ADR-113).
+    pub measure_codes: Vec<String>,
+    pub unit: String,
     pub price_tyiyn: i64,
     /// Закупка в Умаге — только владельцу (ADR-008).
     pub cost_tyiyn: Option<i64>,
 }
 
+/// Строки Умага филиала, связанные с товаром, — первая по порядку и остальные: у товара их
+/// бывает несколько (канистра и литр, дубли в Умаге), лишнюю видно и её можно отвязать.
 pub(crate) async fn product_umag(
     conn: &mut PgConnection,
     user: &CurrentUser,
     product_id: Uuid,
-) -> AppResult<Option<ProductUmag>> {
-    let row = sqlx::query!(
-        r#"select id, name, barcode, codes, price_tyiyn, cost_tyiyn from old_catalog
-           where branch_id = $1 and product_id = $2 order by id limit 1"#,
+) -> AppResult<Vec<ProductUmag>> {
+    let rows = sqlx::query!(
+        r#"select id, name, barcode, codes, unit, price_tyiyn, cost_tyiyn,
+                  array(select c from unnest(codes) c
+                        where not (c = any(umag_product_codes(codes, unit)))) as "measure!"
+           from old_catalog
+           where branch_id = $1 and product_id = $2 order by id"#,
         user.branch_id,
         product_id
     )
-    .fetch_optional(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(row.map(|r| ProductUmag {
-        id: r.id,
-        name: r.name,
-        barcode: r.barcode,
-        codes: r.codes,
-        price_tyiyn: r.price_tyiyn,
-        cost_tyiyn: user.is_owner().then_some(r.cost_tyiyn),
-    }))
+    Ok(rows
+        .into_iter()
+        .map(|r| ProductUmag {
+            id: r.id,
+            name: r.name,
+            barcode: r.barcode,
+            codes: r.codes,
+            measure_codes: r.measure,
+            unit: r.unit,
+            price_tyiyn: r.price_tyiyn,
+            cost_tyiyn: user.is_owner().then_some(r.cost_tyiyn),
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -1435,14 +1790,85 @@ mod tests {
         assert!(!compatible("Mobil Super 5W-40", "CASTROL 5W40 4L", &brands));
         // Бренда нет в одном из названий — не мешает.
         assert!(compatible("Масло 5W-40", "MOBIL SUPER 5W40 4Л", &brands));
-        // Вес и объём не сравниваются между собой.
+        // Килограммы и литры — с допуском в четверть: 5 кг антифриза — не 1 л и не 10 л.
         assert!(compatible(
             "Антифриз Felix зелёный 5 кг",
             "АНТИФРИЗ X-COOL ЗЕЛЁНЫЙ 5Л",
             &brands
         ));
+        assert!(!compatible(
+            "Антифриз Felix 5 кг",
+            "АНТИФРИЗ зелёный 1Л",
+            &brands
+        ));
+        assert!(!compatible("Sintec G12 5 кг", "VERTEX G12+ 10Л", &brands));
         // Бренд — словом, а не частью слова.
         assert!(compatible("Automobil 5W-40", "CASTROL 5W40", &brands));
+    }
+
+    #[test]
+    fn false_pairs_from_the_point_are_dropped() {
+        // Ложные пары рабочей базы 26.10.2026 (проверка похожих пар).
+        let brands = vec!["aykos".to_string()];
+        for (product, umag) in [
+            // Номера деталей разные.
+            ("FC-158 (Toyota)", "SCT ST385 TOYOTA"),
+            ("C-224 (Nissan)", "SCT SM 148 (W 610/83)"),
+            // Марки латиницей разные: Felix — не X-COOL, Sintec — не Vertex.
+            ("Антифриз Felix зелёный 5 кг", "АНТИФРИЗ X-COOL ЗЕЛЁНЫЙ 5Л"),
+            ("Антифриз Sintec G12 5 кг", "АНТИФРИЗ VERTEX G12+ 5Л"),
+            // Объём и вес не сходятся.
+            ("Антифриз Felix 5 кг", "АНТИФРИЗ зелёный 1Л"),
+            // Одно общее слово — не пара.
+            ("фильтр хай", "фильтр вехчай"),
+            ("Ароматизатор 5", "АРОМАТИЗАТОР ОЛЕНЬ"),
+            ("Ароматизатор Ёлочка", "АРОМАТИЗАТОР w"),
+        ] {
+            assert!(!plausible(product, umag, &brands), "{product} ↔ {umag}");
+        }
+        // Настоящие пары остаются.
+        for (product, umag) in [
+            ("Castrol Magnatec 5W-30 4 л", "CASTROL MAGNATEC 5W30 4Л"),
+            ("Idemitsu 5W-30", "IDEMITSU 5W30 4Л"),
+            ("ZIC X7 5W-30", "ZIC X7 5W30 4Л"),
+            ("Shell Helix HX7 10W-40", "SHELL HX7 10W40 4Л EURO"),
+            ("Тормозная жидкость DOT-4 0,5 л", "Дот тормозная жидкость"),
+            ("Фильтр общий", "Фильтр общий"),
+            (
+                "Щётка стеклоочистителя каркасная 12345678",
+                "Щетка стеклоочистителя каркас 12345678",
+            ),
+            ("Фильтр масляный W 712/75 (VW)", "ФИЛЬТР МАСЛЯНЫЙ W712/75"),
+            (
+                "Тормозная жидкость DOT-4 0,5 л",
+                "ТОРМОЗНАЯ ЖИДКОСТЬ DOT-4 0,5Л",
+            ),
+            ("Масло Ромашка 5W-30 4л", "Масло Ромашка 5W-30 4л тара"),
+        ] {
+            assert!(plausible(product, umag, &brands), "{product} ↔ {umag}");
+        }
+    }
+
+    #[test]
+    fn name_tokens_skip_volume_and_weight() {
+        let parts = |s: &str| name_tokens(s).parts;
+        assert_eq!(parts("FC-158 (Toyota)"), ["fc158"]);
+        assert_eq!(parts("SCT SM 148 (W 610/83)"), ["148", "61083"]);
+        assert!(parts("CASTROL MAGNATEC 5W30 4Л").is_empty());
+        assert!(parts("Масло 10W-40 4 л").is_empty());
+        assert!(parts("LUKOIL 15/40 0,5 l").is_empty());
+        assert!(parts("Антифриз 5 кг").is_empty());
+        assert_eq!(parts("АНТИФРИЗ VERTEX G12+ 10Л"), ["g12"]);
+        let t = name_tokens("Shell Helix HX7 10W-40 4 л");
+        assert_eq!(t.words, ["shell", "helix", "hx7", "10w40"]);
+        assert_eq!(t.parts, ["hx7"]);
+        assert_eq!(t.latin, ["shell", "helix"]);
+        assert!(same_part("w71275", "71275"));
+        assert!(!same_part("fc158", "st385"));
+        assert!(same_word("каркас", "каркасная"));
+        assert!(same_word("щетка", "щеткой"));
+        assert!(!same_word("литол", "литий"));
+        assert!(!same_word("хай", "хайвей"));
     }
 
     #[test]
@@ -1460,52 +1886,59 @@ mod tests {
     fn new_upload_keeps_links() {
         let p1 = uid(1);
         let p2 = uid(2);
+        let p3 = uid(3);
+        let row = |barcode: &str, keys: &[&str], codes: &[&str], product_id| LinkedRow {
+            barcode: barcode.into(),
+            key: if barcode.is_empty() {
+                "name:масло без кода".into()
+            } else {
+                barcode.into()
+            },
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            codes: codes.iter().map(|k| k.to_string()).collect(),
+            product_id,
+        };
+        let fresh = |id, barcode: &str, key: &str, keys: &[&str]| FreshRow {
+            id: uid(id),
+            barcode: barcode.into(),
+            key: key.into(),
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            codes: keys.iter().map(|k| k.to_string()).collect(),
+        };
         let old = vec![
-            LinkedRow {
-                barcode: "2760488".into(),
-                keys: vec!["2760488".into(), "1489".into()],
-                codes: vec!["2760488".into(), "1489".into()],
-                product_id: p1,
-            },
-            LinkedRow {
-                barcode: "2760500".into(),
-                keys: vec!["2760500".into(), "4600".into()],
-                codes: vec!["2760500".into(), "4600".into()],
-                product_id: p2,
-            },
+            row("2760488", &["2760488", "1489"], &["2760488", "1489"], p1),
+            // «4601» был занят другим товаром (конфликт): товару он не переходил.
+            row(
+                "2760500",
+                &["2760500", "4600", "4601"],
+                &["2760500", "4600"],
+                p2,
+            ),
+            // Строка без штрихкода и «доп. кода» — узнаётся по названию.
+            row("", &[], &["ART-0001"], p3),
         ];
-        let fresh = vec![
+        let fresh_rows = vec![
             // Тот же штрихкод, новый «доп. код» — переносится только он.
-            FreshRow {
-                id: uid(10),
-                barcode: "2760488".into(),
-                keys: vec!["2760488".into(), "1489".into(), "8809451090361".into()],
-                codes: vec!["2760488".into(), "1489".into(), "8809451090361".into()],
-            },
-            // Новый штрихкод, но прежний «доп. код».
-            FreshRow {
-                id: uid(11),
-                barcode: "2770000".into(),
-                keys: vec!["2770000".into(), "4600".into()],
-                codes: vec!["2770000".into(), "4600".into()],
-            },
+            fresh(
+                10,
+                "2760488",
+                "2760488",
+                &["2760488", "1489", "8809451090361"],
+            ),
+            // Новый штрихкод, но прежний «доп. код»; освободившийся «4601» переносится.
+            fresh(11, "2770000", "2770000", &["2770000", "4600", "4601"]),
             // Коды двух разных товаров — связи нет.
-            FreshRow {
-                id: uid(12),
-                barcode: "2780000".into(),
-                keys: vec!["2780000".into(), "1489".into(), "4600".into()],
-                codes: vec!["2780000".into(), "1489".into(), "4600".into()],
-            },
+            fresh(12, "2780000", "2780000", &["2780000", "1489", "4600"]),
             // Новая строка.
-            FreshRow {
-                id: uid(13),
-                barcode: "2790000".into(),
-                keys: vec!["2790000".into()],
-                codes: vec!["2790000".into()],
-            },
+            fresh(13, "2790000", "2790000", &["2790000"]),
+            // Та же строка без штрихкода — по названию.
+            fresh(14, "", "name:масло без кода", &[]),
+            // Отвязанная пара («Не то») — не возвращается.
+            fresh(15, "2760501", "2760501", &["2760501", "4600"]),
         ];
+        let rejects: HashSet<(String, Uuid)> = [("2760501".to_string(), p2)].into();
         assert_eq!(
-            restore_links(&old, &fresh),
+            restore_links(&old, &fresh_rows, &rejects),
             vec![
                 Restored {
                     row_id: uid(10),
@@ -1515,7 +1948,12 @@ mod tests {
                 Restored {
                     row_id: uid(11),
                     product_id: p2,
-                    new_codes: vec!["2770000".into()],
+                    new_codes: vec!["2770000".into(), "4601".into()],
+                },
+                Restored {
+                    row_id: uid(14),
+                    product_id: p3,
+                    new_codes: vec![],
                 },
             ]
         );

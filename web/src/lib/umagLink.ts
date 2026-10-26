@@ -3,45 +3,24 @@
 // связывания. На кассе Умага нет: код Умага связанного товара — код самого товара.
 import { ApiError, get, getPage, newOpId, post, qs, type Page } from './api'
 import type { OldCatalogHit, Product, UmagAutoLink, UmagConflict, UmagLinkResult, UmagPair, UmagStats } from './types'
+import { isMeasureCode, productCodes, umagCodes } from './umagCodes'
 
-/** Артикул — код, если в нём только цифры, латиница и дефис и знаков не меньше четырёх. */
-const CODE_LIKE = /^[0-9A-Za-z-]+$/
+export { articleIsCode, extraIsCode, isMeasureCode, isMeasureUnit, productCodes, sameCode, umagCodes, umagPer, umagUnitWord } from './umagCodes'
 
-/**
- * Коды строки Умага, как на сервере: штрихкод, артикул (если похож на код) и каждый «доп. код»
- * (через «;», «,» или пробел). Пустые и повторы выкидываются, порядок — как в строке.
- */
-export function umagCodes(row: { barcode: string; article: string; extra_code?: string }): string[] {
-  const out: string[] = []
-  const add = (c: string) => {
-    const t = c.trim()
-    if (t && !out.includes(t)) out.push(t)
-  }
-  add(row.barcode)
-  const article = row.article.trim()
-  if (article.length >= 4 && CODE_LIKE.test(article)) add(article)
-  for (const c of (row.extra_code ?? '').split(/[;,\s]+/)) add(c)
-  return out
-}
-
-/** Коды найденной строки: от сервера, у прежнего ответа — штрихкод и артикул-код. */
+/** Коды найденной строки: от сервера, у прежнего ответа — по тому же правилу на устройстве. */
 export const hitCodes = (h: Pick<OldCatalogHit, 'barcode' | 'article' | 'codes'>): string[] => h.codes ?? umagCodes(h)
 
-const DIGITS = /^\d+$/
+/** Коды найденной строки, которые перейдут товару: без кодов меры строки «литр» (ADR-113). */
+export const hitProductCodes = (h: Pick<OldCatalogHit, 'barcode' | 'article' | 'codes' | 'unit'>): string[] =>
+  productCodes(hitCodes(h), h.unit)
 
-/**
- * Тот же код: совпал как есть или, у чисто числовых, без нулей впереди — Excel их теряет
- * (как `GET /products/by-barcode` на сервере, SPEC-35 §1).
- */
-export function sameCode(a: string, b: string): boolean {
-  const x = a.trim()
-  const y = b.trim()
-  if (x === '' || y === '') return false
-  if (x === y) return true
-  if (!DIGITS.test(x) || !DIGITS.test(y)) return false
-  const nx = x.replace(/^0+/, '')
-  return nx !== '' && nx === y.replace(/^0+/, '')
-}
+/** Коды меры найденной строки: остаются в Умаге. */
+export const hitMeasureCodes = (h: Pick<OldCatalogHit, 'barcode' | 'article' | 'codes' | 'unit'>): string[] =>
+  hitCodes(h).filter((c) => isMeasureCode(c, h.unit))
+
+/** Без сети код не найден среди товаров (SPEC-35 §2): несвязанную строку Умага не узнать. */
+export const offlineCodeText = (code: string): string =>
+  `Без сети: код ${code} среди товаров не найден. Если он есть в базе Умаг, завести товар можно, когда будет связь`
 
 /** Коды строки коротко: первые три и сколько ещё. */
 export function codesShort(h: Pick<OldCatalogHit, 'barcode' | 'article' | 'codes'>): string {
@@ -77,28 +56,35 @@ export function umagStep(hits: readonly OldCatalogHit[]): UmagStep {
 
 /** Чем кончился поиск кода там, где виден Умаг. */
 export type CodeOutcome =
-  /** Товар учёта: по своему коду (`code`) или через связанную строку Умага (`umag`). */
-  | { kind: 'product'; product: Product; via: 'code' | 'umag' }
+  /** Товар учёта: по своему коду (`code`), артикулу (`article`) или через связанную строку Умага (`umag`). */
+  | { kind: 'product'; product: Product; via: 'code' | 'article' | 'umag' }
+  /** Тот же артикул у нескольких своих товаров — они в списке поиска, окна нет. */
+  | { kind: 'own'; products: Product[] }
   | { kind: 'umag'; hit: OldCatalogHit }
   | { kind: 'unknown' }
 
 export interface CodeLookup {
   byBarcode: (code: string) => Promise<Product>
+  /** Свои товары по тексту — среди них ищется точный артикул. */
+  searchOwn: (text: string) => Promise<Product[]>
   searchUmag: (code: string) => Promise<OldCatalogHit[]>
   productById: (id: string) => Promise<Product>
 }
 
 const serverLookup: CodeLookup = {
   byBarcode: (code) => get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`),
+  searchOwn: (text) => get<Product[]>(`/products${qs({ q: text, limit: 15 })}`),
   // Список Умага — подсказка: сбой поиска в нём не мешает, код просто «не найден».
   searchUmag: (code) => searchUmag({ barcode: code }).catch(() => []),
   productById: (id) => get<Product>(`/products/${id}`),
 }
 
 /**
- * Скан или ввод кода (SPEC-35 §2): код товара (и без потерянных нулей) → товар; нет (404) — точная
- * строка Умага: связана — её товар, не связана — окно Умага; нигде — «Код не найден». Ничего не
- * записывает. Прочие ошибки — наружу: без сети вызывающий ищет в снимке каталога.
+ * Скан или ввод кода (SPEC-35 §2): код товара (и без потерянных нулей) → товар; нет (404) — свой
+ * товар с таким артикулом (артикул — не код, но это он: окно Умага «среди товаров его нет» было бы
+ * неправдой); нет — точная строка Умага: связана — её товар, не связана — окно Умага; нигде —
+ * «Код не найден». Ничего не записывает. Прочие ошибки — наружу: без сети вызывающий ищет в
+ * снимке каталога.
  */
 export async function resolveCode(code: string, api: CodeLookup = serverLookup): Promise<CodeOutcome> {
   try {
@@ -106,6 +92,10 @@ export async function resolveCode(code: string, api: CodeLookup = serverLookup):
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 404)) throw e
   }
+  const key = code.trim().toLowerCase()
+  const own = (await api.searchOwn(code)).filter((p) => p.article.trim().toLowerCase() === key)
+  if (own.length === 1 && own[0]) return { kind: 'product', product: own[0], via: 'article' }
+  if (own.length > 1) return { kind: 'own', products: own }
   const step = umagStep(await api.searchUmag(code))
   if (step.kind === 'linked') return { kind: 'product', product: await api.productById(step.productId), via: 'umag' }
   if (step.kind === 'umag') return { kind: 'umag', hit: step.hit }

@@ -3,6 +3,7 @@
 import { litersInput, somInput } from './format'
 import { divRound } from './money'
 import type { Category, OldCatalogHit } from './types'
+import { isMeasureCode, isMeasureUnit, productCodes, umagCodes } from './umagCodes'
 import { containerFromName } from './xlsx'
 
 export interface CardPreset {
@@ -21,6 +22,17 @@ export interface CardPreset {
 export const isLiterUnit = (unit: string): boolean => /литр|^л\.?$|л$/i.test(unit.trim())
 
 /**
+ * Код новой карточки: скан, иначе штрихкод строки. У строки меры («литр», «кг», «метр») её коды
+ * Умага (276…, PLU) продавали литр — карточка канистры берёт заводской код (EAN), а без него код
+ * выдаст программа: иначе касса по коду литра добавляла бы канистру (ADR-113).
+ */
+function cardBarcode(h: OldCatalogHit, scanned: string): string {
+  if (!isMeasureUnit(h.unit)) return scanned || h.barcode
+  if (scanned && !isMeasureCode(scanned, h.unit)) return scanned
+  return productCodes(h.codes ?? umagCodes(h), h.unit)[0] ?? ''
+}
+
+/**
  * Поля карточки из позиции старого списка. Категория — по названию из старой программы, у масла —
  * первая категория масел, иначе запомненная `sticky`. Код скана важнее кода из списка.
  */
@@ -37,7 +49,7 @@ export function presetFromHit(h: OldCatalogHit, categories: Category[], sticky =
   const unknownTare = liter && !ml
   return {
     name: h.name,
-    barcode: scanned || h.barcode,
+    barcode: cardBarcode(h, scanned),
     article: h.article,
     categoryId,
     liters: ml ? litersInput(ml) : '',
