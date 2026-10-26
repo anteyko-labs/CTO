@@ -1,10 +1,11 @@
 // Печать масляной книжки на ленте 80 мм: последняя замена по строкам книжки, следующая по каждой
-// строке и QR-код на Телеграм-бот (SPEC-16, SPEC-27).
+// строке и QR-код на Телеграм-бот (SPEC-16, SPEC-27). После чека — следующая по строкам этого чека,
+// остальные строки — «По прошлым заменам» с датой замены (ADR-111).
 import { printInFrame } from './printFrame'
 import QRCode from 'qrcode'
 import { get } from './api'
 import { formatDate } from './format'
-import { recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from './oilBook'
+import { recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsBeforeSale, slotsOfSale, slotsWithNext, type SlotNext, type VehicleBook } from './oilBook'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -15,11 +16,17 @@ export async function botLink(): Promise<string | null> {
   return r.username ? `https://t.me/${r.username}` : null
 }
 
-export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null; master?: string | null; link: string | null }): Promise<string> {
+/** `saleId` — книжка печатается после этого чека: следующая замена — по его строкам. */
+export async function oilBookHtml(
+  b: VehicleBook,
+  opts: { client?: string | null; master?: string | null; link: string | null; saleId?: string | null },
+): Promise<string> {
   const last = b.records[0]
-  // Следующая замена по каждой строке книжки (SPEC-27), масло первым.
-  const next = slotsWithNext(b)
-    .map((n) => `<div class="row"><span>${esc(n.label)}</span><b>${esc(slotNextText(n))}</b></div>`)
+  // Следующая замена по каждой строке книжки (SPEC-27), масло первым; после чека — по строкам чека.
+  const row = (n: SlotNext, label: string) => `<div class="row"><span>${esc(label)}</span><b>${esc(slotNextText(n))}</b></div>`
+  const next = (opts.saleId ? slotsOfSale(b, opts.saleId) : slotsWithNext(b)).map((n) => row(n, n.label)).join('')
+  const before = (opts.saleId ? slotsBeforeSale(b, opts.saleId) : [])
+    .map((n) => row(n, n.last_date ? `${n.label} (замена ${formatDate(n.last_date)})` : n.label))
     .join('')
   const qr = opts.link ? await QRCode.toString(opts.link, { type: 'svg', margin: 0, errorCorrectionLevel: 'M' }) : ''
   const history = b.records
@@ -62,6 +69,7 @@ export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null
         : '<div class="muted">Замен пока не было</div>'
     }
     ${next ? `<div class="next">Следующая замена — что наступит раньше${next}</div>` : ''}
+    ${before ? `<div class="muted">По прошлым заменам</div>${before}` : ''}
     ${history ? `<div class="muted">Прошлые замены</div><table>${history}</table>` : ''}
     ${
       qr
@@ -71,7 +79,7 @@ export async function oilBookHtml(b: VehicleBook, opts: { client?: string | null
   </body></html>`
 }
 
-/** Печать на чековом принтере через диалог браузера. */
-export async function printOilBook(b: VehicleBook, opts: { client?: string | null; master?: string | null } = {}): Promise<void> {
+/** Печать на чековом принтере через диалог браузера; `saleId` — после этого чека (ADR-111). */
+export async function printOilBook(b: VehicleBook, opts: { client?: string | null; master?: string | null; saleId?: string | null } = {}): Promise<void> {
   printInFrame(await oilBookHtml(b, { ...opts, link: await botLink() }))
 }

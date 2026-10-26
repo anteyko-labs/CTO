@@ -19,7 +19,7 @@ import { BankQrPanel, useBankQr } from '../components/BankQrPanel'
 import { qrForCard, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
-import { nextText, recordLines, recordMileage, slotLabel, slotNextText, slotsWithNext, type VehicleBook } from '../lib/oilBook'
+import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
 import { extraChoices, nextPayload, nextRows, nextTooLow, receiptBook, type OwnIntervals } from '../lib/nextChange'
@@ -1092,7 +1092,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
           .then((book) => {
             setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
-            if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name })
+            if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
           })
           .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
       }
@@ -1792,7 +1792,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   Печать чека
                 </Button>
                 {done.book && (
-                  <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name })}>
+                  <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id })}>
                     Печать книжки
                   </Button>
                 )}
@@ -1819,17 +1819,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 {done.book.records[0].declined?.trim() && (
                   <div className="text-amber-800">Рекомендовано: {done.book.records[0].declined}</div>
                 )}
-                {slotsWithNext(done.book).length > 0 ? (
-                  slotsWithNext(done.book).map((n) => (
-                    <div key={n.slot} className="text-slate-700">
-                      Следующая · {n.label}: <b>{slotNextText(n)}</b>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-slate-700">
-                    Следующая замена: <b>{nextText(done.book)}</b>
+                {/* Следующая — по строкам этого чека, не по прошлым заменам машины (ADR-111). */}
+                {slotsOfSale(done.book, done.sale.id).map((n) => (
+                  <div key={n.slot} className="text-slate-700">
+                    Следующая · {n.label}: <b>{slotNextText(n)}</b>
                   </div>
-                )}
+                ))}
               </div>
             )}
           </Card>
