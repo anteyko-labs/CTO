@@ -247,7 +247,7 @@ const viscosityOf = (p: Product): string => String((p.attrs as Record<string, st
 // себестоимости не видит (сервер её не отдаёт), цену не меняет и перелив не отменяет.
 export default function OilTransfer() {
   const owner = useUser().role === 'owner'
-  const products = useLoad(() => get<Product[]>('/products?kind=oil&limit=500'), [])
+  const products = useLoad(() => get<Product[]>('/products?kind=oil'), [])
   const history = useLoad(() => get<TransferRow[]>('/oil/transfers'), [])
   const historyPager = usePager(history.data ?? [], 'oil.transfers')
   // Отметки «исправлен → / исправление» — одним запросом на список; администратору не нужны.

@@ -631,6 +631,10 @@ async fn search_products(
         .filter(|s| !s.is_empty())
         .map(|s| Uuid::parse_str(s).map_err(|_| invalid("неверный category_id")))
         .transpose()?;
+    let kind = params.get("kind").filter(|s| !s.is_empty()).cloned();
+    // Отбор по виду без `limit` — весь вид целиком: перелив выбирает из всех масел,
+    // а не из первых по алфавиту.
+    let whole_kind = kind.is_some() && !params.contains_key("limit");
     let f = ProductFilter {
         q: params.get("q").cloned(),
         category_id,
@@ -638,12 +642,12 @@ async fn search_products(
         ids: None,
         include_archived: params.get("archived").is_some_and(|v| v == "true"),
         low_only: params.get("low").is_some_and(|v| v == "true"),
-        kind: params.get("kind").filter(|s| !s.is_empty()).cloned(),
+        kind,
         limit: params
             .get("limit")
             .and_then(|v| v.parse().ok())
             .unwrap_or(50),
-        no_limit: false,
+        no_limit: whole_kind,
         stock: StockChip::All,
     };
     let mut conn = state.pool.acquire().await?;

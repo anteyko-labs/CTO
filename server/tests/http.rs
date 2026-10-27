@@ -253,7 +253,7 @@ async fn last_owner_cannot_be_disabled(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn catalog_rules(pool: PgPool) {
-    let app = setup(pool).await;
+    let app = setup(pool.clone()).await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let (_, _, cat) = call(
         &app,
@@ -335,6 +335,19 @@ async fn catalog_rules(pool: PgPool) {
     let (_, _, oils) = call(&app, "GET", "/api/v1/products?kind=oil", Some(&admin), None).await;
     assert!(has(&oils));
     assert!(oils.as_array().unwrap().iter().all(|x| x["unit"] == "ml"));
+    // Масел больше 500, искомое — последним по алфавиту: в списке перелива оно есть.
+    sqlx::query(
+        "insert into products (id, category_id, name, unit, container_ml)
+         select gen_random_uuid(), $1::uuid, 'Aaa масло ' || lpad(g::text, 4, '0'), 'ml', 1000
+         from generate_series(1, 520) g",
+    )
+    .bind(&cat_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, _, oils) = call(&app, "GET", "/api/v1/products?kind=oil", Some(&admin), None).await;
+    assert_eq!(oils.as_array().map(Vec::len), Some(521));
+    assert!(has(&oils));
     let (_, _, other) = call(
         &app,
         "GET",
