@@ -2,7 +2,7 @@
 // перелив масла, акт сверки и запрет продажи ниже закупки (SPEC-10, SPEC-11, SPEC-14, ADR-043).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickCashier } from './cashier'
+import { pickCashier, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -195,7 +195,7 @@ test('услуга «масло клиента»: ставка мастера и
   await expect(page.getByRole('listitem').filter({ hasText: service })).toBeVisible()
   await expect(page.getByRole('button', { name: 'В сервис' })).toHaveClass(/bg-sky-600/)
   await pickCashier(page, cashier)
-  await page.locator('#master-select').selectOption({ label: master })
+  await pickMaster(page, master)
   // Без клиента не провести: касса отмечает недостающее.
   await expect(page.getByTestId('service-client-needs')).toContainText('телефон клиента')
   await expect(page.getByRole('button', { name: 'Провести чек' })).toBeDisabled()
@@ -524,7 +524,7 @@ test('замена в сервисе у физлица: машина, обяза
   await page.locator('#service-fee').fill('200')
   await page.getByRole('button', { name: 'Создать и добавить в чек' }).click()
   await pickCashier(page, cashier)
-  await page.locator('#master-select').selectOption({ label: master })
+  await pickMaster(page, master)
   await expect(page.getByText(/Масляная книжка: выберите клиента и машину/)).toBeVisible()
 
   // У физлица тоже выбирается машина; новая заводится не выходя из чека.

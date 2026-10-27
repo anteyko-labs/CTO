@@ -5,6 +5,7 @@
 import { openDB, type IDBPDatabase } from 'idb'
 import { ApiError, api, deviceId, noServerAnswer, serverReachable, setServerReachable } from './api'
 import { branchHeaders, selectedBranch } from './branch'
+import { cartIsEmpty } from './cartDraft'
 import { searchRank } from './pickerResults'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 import { sameCode } from './umagLink'
@@ -35,6 +36,13 @@ export interface Snapshot {
    *  снимка — нет. */
   bank_accounts?: { id: string; name: string; default_card?: boolean; default_transfer?: boolean; default_invoice?: boolean; fee_rate_bp?: number }[]
   oil_change_master_fee_tyiyn: number
+  saved_at: string
+}
+
+/** Время и версия снимка — отдельно от него (SPEC-36 §16): полоса связи и проверка 304 не читают
+ *  весь снимок (2,5 МБ на 5 000 товаров). */
+export interface SnapshotMeta {
+  version: string
   saved_at: string
 }
 
@@ -104,6 +112,47 @@ export async function readSnapshot(): Promise<Snapshot | null> {
   }
 }
 
+const META = 'meta'
+const SERVICES = 'services'
+
+export const snapshotMeta = (snap: Snapshot): SnapshotMeta => ({ version: snap.version, saved_at: snap.saved_at })
+
+/** Снимок целиком и рядом — его время, версия и услуги: их читают без большого снимка. */
+async function saveSnapshot(snap: Snapshot): Promise<void> {
+  const tx = (await db()).transaction(SNAP, 'readwrite')
+  await Promise.all([tx.store.put(snap, 'current'), tx.store.put(snapshotMeta(snap), META), tx.store.put(snap.services ?? null, SERVICES), tx.done])
+}
+
+/** Время и версия снимка. У снимка, сохранённого до SPEC-36 §16, их нет — берутся из него один раз. */
+export async function readSnapshotMeta(): Promise<SnapshotMeta | null> {
+  try {
+    const d = await db()
+    const meta = (await d.get(SNAP, META)) as SnapshotMeta | undefined
+    if (meta) return meta
+    const snap = (await d.get(SNAP, 'current')) as Snapshot | undefined
+    if (!snap) return null
+    await d.put(SNAP, snapshotMeta(snap), META)
+    return snapshotMeta(snap)
+  } catch {
+    return null
+  }
+}
+
+/** Услуги из снимка — без чтения всего снимка: «Вид замены» и «Услуги» открываются сразу. */
+export async function readSnapshotServices(): Promise<Service[] | null> {
+  try {
+    const d = await db()
+    const list = (await d.get(SNAP, SERVICES)) as Service[] | null | undefined
+    if (list !== undefined) return list
+    const snap = (await d.get(SNAP, 'current')) as Snapshot | undefined
+    if (!snap) return null
+    await d.put(SNAP, snap.services ?? null, SERVICES)
+    return snap.services ?? null
+  } catch {
+    return null
+  }
+}
+
 /** Снимок на устройстве сохранён заново: полоса связи перечитывает его сразу, а не раз в минуту —
  *  плашка «снимок каталога устарел» уходит, как только снимок пришёл. */
 export const SNAPSHOT_EVENT = 'avtodom:snapshot'
@@ -112,31 +161,55 @@ const snapshotSaved = () => {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(SNAPSHOT_EVENT))
 }
 
-/** Тянет снимок с сервера; 304 — прежний снимок, но проверенный сейчас. Без сети молча пропускает. */
-export async function refreshSnapshot(): Promise<Snapshot | null> {
-  const current = await readSnapshot()
+/** Что делать с ответом на запрос снимка (чистая функция — проверяется тестом):
+ *  `touch` — 304, снимок прежний: обновить только время; `save` — сохранить новый снимок;
+ *  `later` — новый снимок есть, но в чеке строки: большой снимок не качаем и не разбираем, пока
+ *  чек не опустеет; `skip` — ответ без снимка. */
+export type SnapshotStep = 'touch' | 'save' | 'later' | 'skip'
+
+export function snapshotStep(status: number, hasSnapshot: boolean, cartEmpty: boolean): SnapshotStep {
+  if (status === 304) return hasSnapshot ? 'touch' : 'skip'
+  if (status < 200 || status >= 300) return 'skip'
+  // Снимка ещё нет — он нужен кассе без сети сразу, даже с непустым чеком.
+  return cartEmpty || !hasSnapshot ? 'save' : 'later'
+}
+
+/** Новый снимок отложен до пустого чека. */
+let snapshotWaits = false
+
+/** Тянет снимок с сервера; 304 — прежний снимок, но проверенный сейчас: обновляется только его
+ *  время. Новый большой снимок — когда чек пуст (SPEC-36 §16). Без сети молча пропускает. */
+export async function refreshSnapshot(): Promise<void> {
+  const meta = await readSnapshotMeta()
+  const abort = new AbortController()
   try {
     const res = await fetch('/api/v1/offline/snapshot', {
-      headers: { ...branchHeaders(), ...(current?.version ? { 'if-none-match': `"${current.version}"` } : {}) },
+      headers: { ...branchHeaders(), ...(meta?.version ? { 'if-none-match': `"${meta.version}"` } : {}) },
       credentials: 'same-origin',
+      signal: abort.signal,
     })
     setServerReachable(![502, 503, 504, 530].includes(res.status))
-    if (res.status === 304 && current) {
+    const step = snapshotStep(res.status, meta !== null, cartIsEmpty())
+    if (step === 'touch' && meta) {
       // Сервер подтвердил, что снимок не менялся: он свежий, предупреждение «устарел» уходит.
-      const fresh = { ...current, saved_at: new Date().toISOString() }
-      await (await db()).put(SNAP, fresh, 'current')
+      await (await db()).put(SNAP, { ...meta, saved_at: new Date().toISOString() }, META)
+      snapshotWaits = false
       snapshotSaved()
-      return fresh
+      return
     }
-    if (!res.ok) return current
+    if (step === 'later') {
+      abort.abort()
+      snapshotWaits = true
+      return
+    }
+    if (step !== 'save') return
     const snap = (await res.json()) as Snapshot
     snap.saved_at = new Date().toISOString()
-    await (await db()).put(SNAP, snap, 'current')
+    await saveSnapshot(snap)
+    snapshotWaits = false
     snapshotSaved()
-    return snap
   } catch {
-    setServerReachable(false)
-    return current
+    if (!abort.signal.aborted) setServerReachable(false)
   }
 }
 
@@ -146,8 +219,9 @@ export async function refreshSnapshot(): Promise<Snapshot | null> {
  */
 export async function takeFromSnapshot(lines: { product_id: string; units: number }[]): Promise<void> {
   try {
+    if (lines.length === 0) return
     const snap = await readSnapshot()
-    if (!snap || lines.length === 0) return
+    if (!snap) return
     await (await db()).put(SNAP, subtractStock(snap, lines), 'current')
   } catch {
     // Без хранилища остаток обновится со следующим снимком.
@@ -232,7 +306,7 @@ export function findByBarcode(snap: Snapshot, code: string): SnapshotProduct | u
 }
 
 /** Снимок старше двух часов: цены и остатки могли измениться (SPEC-09). */
-export function snapshotIsStale(snap: Snapshot | null): boolean {
+export function snapshotIsStale(snap: Pick<SnapshotMeta, 'saved_at'> | null): boolean {
   if (!snap) return true
   return Date.now() - new Date(snap.saved_at).getTime() > 2 * 60 * 60 * 1000
 }
@@ -662,8 +736,9 @@ export async function syncOutbox(force = false): Promise<void> {
 export function startOfflineLoop(user: QueueUser): () => void {
   setQueueUser(user)
   const tick = () => {
-    // Сервер не отвечал — проверяем его дешёвым запросом снимка (304), а не ждём 10 минут.
-    if (!serverReachable()) void refreshSnapshot()
+    // Сервер не отвечал — проверяем его дешёвым запросом снимка (304), а не ждём 10 минут. Новый
+    // снимок ждал пустого чека — чек пуст, берём его.
+    if (!serverReachable() || (snapshotWaits && cartIsEmpty())) void refreshSnapshot()
     void syncOutbox()
   }
   const back = () => {

@@ -3,6 +3,7 @@
 // прокручивается.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -177,7 +178,7 @@ test.describe('режим кассы 1366×768', () => {
     await expect(left.locator('#mileage')).toBeVisible()
     await expect(left.getByText(/Пробег сейчас/)).toBeInViewport()
     await expect(left.getByRole('button', { name: 'Мастер рекомендовал' })).toBeInViewport()
-    await left.locator('#master-select').selectOption({ label: `Мастер слева ${RUN}` })
+    await pickMaster(left, `Мастер слева ${RUN}`)
 
     // Цели касания — не ниже 56 точек.
     await expect(left.locator('[data-client]')).toContainText(`Клиент${RUN}`)

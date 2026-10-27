@@ -5,7 +5,7 @@ import {
   foreignWaiting,
   isOwnItem,
   pendingCount,
-  readSnapshot,
+  readSnapshotMeta,
   receiptOf,
   receiptsWord,
   rejectedItems,
@@ -15,7 +15,7 @@ import {
   syncOutbox,
   watchOutbox,
   type OutboxItem,
-  type Snapshot,
+  type SnapshotMeta,
 } from '../lib/offline'
 import { useUser } from '../lib/auth'
 import { formatDateTime, formatKg, formatLiters, formatSom } from '../lib/format'
@@ -42,13 +42,14 @@ export function OfflineBar() {
   const user = useUser()
   const online = useServerOnline()
   const [items, setItems] = useState<OutboxItem[]>([])
-  const [snap, setSnap] = useState<Snapshot | null>(null)
+  const [snap, setSnap] = useState<SnapshotMeta | null>(null)
   const [open, setOpen] = useState(false)
   const [confirmDrop, setConfirmDrop] = useState<string | null>(null)
 
   useEffect(() => {
     const stop = watchOutbox(setItems)
-    const reread = () => void readSnapshot().then(setSnap)
+    // Только время и версия снимка, не весь снимок (SPEC-36 §16).
+    const reread = () => void readSnapshotMeta().then(setSnap)
     reread()
     const t = setInterval(reread, 60_000)
     // Снимок только что сохранён — перечитываем сразу: плашка «устарел» не висит до минуты.
@@ -61,7 +62,7 @@ export function OfflineBar() {
   }, [])
   // Снимок обновился (в том числе подтверждён ответом 304) — перечитываем его вместе с очередью.
   useEffect(() => {
-    void readSnapshot().then(setSnap)
+    void readSnapshotMeta().then(setSnap)
   }, [items, online])
 
   const own = items.filter((i) => isOwnItem(i, user.id))

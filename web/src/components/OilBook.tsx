@@ -13,10 +13,10 @@ import { Pager, usePager } from './Pager'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
 import { VehicleFormModal } from './VehicleFormModal'
 
-/** Касса: под выбранной машиной — прошлая замена и следующая по каждой строке книжки. */
-export function OilHint({ vehicleId }: { vehicleId: string }) {
-  const book = useLoad(() => get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`), [vehicleId])
-  const b = book.data
+/** Касса: под выбранной машиной — прошлая замена и следующая по каждой строке книжки. Книжку
+ *  касса грузит сама один раз на машину и передаёт сюда (SPEC-36 §16): окно клиента её не
+ *  перезапрашивает. */
+export function OilHint({ book: b }: { book: VehicleBook | null }) {
   if (!b) return null
   const last = b.records[0]
   const notes = cashierNotesText(b.client_notes)

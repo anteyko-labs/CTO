@@ -126,3 +126,9 @@ export function useNumField(): (kind: KeypadKind, opts?: { decimals?: number; qu
     'data-keypad-quick': opts?.quick?.length ? opts.quick.join(';') : undefined,
   })
 }
+
+/** Мастер и кассир в режиме кассы (SPEC-36 §16): до трёх вариантов — кнопки в ряд (высота как у
+ *  прежнего списка, страница не растёт), больше — одна кнопка и окно с крупными кнопками. */
+export function personPickLayout(choices: number): 'inline' | 'window' {
+  return choices <= 3 ? 'inline' : 'window'
+}

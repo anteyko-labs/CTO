@@ -27,6 +27,7 @@ import { cartGoods, cartSources, extraChoices, extraSlots, filtersNote, goodShor
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
+import { PersonPick } from '../components/PersonPick'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon, type IconName } from '../components/icons'
@@ -809,7 +810,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
 
   // Прошлый пробег машины: лишний ноль уйдёт в книжку, на печать и клиенту в бот.
+  // Книжка грузится один раз на машину — её же показывает подсказка OilHint (SPEC-36 §16).
   const book = useLoad(() => (vehicleId ? get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`) : Promise.resolve(null)), [vehicleId])
+  // Пока грузится книжка другой машины, прежнюю не показываем.
+  const carBook = book.data && book.data.vehicle_id === vehicleId ? book.data : null
   // Пробег — в единице машины (км или мили, ADR-084); прошлый — переведён в неё же.
   // Без связи книжки нет — единица машины из снимка кассы (ADR-093).
   const snapCar = useLoad(
@@ -1392,9 +1396,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   ) : null
   const customerFields = (
     <>
-      {topupMaster && (
+      {/* Режим кассы: мастер и кассир — кнопками от 56 вместо списка (SPEC-36 §16). */}
+      {topupMaster && touch && (
+        <PersonPick id="master-select" label="Мастер" hint="По желанию: выбран — ему ставка за доливку" value={masterId} people={masters} empty="— без мастера —" onChange={setMasterId} />
+      )}
+      {topupMaster && !touch && (
         <Field label="Мастер" hint="По желанию: выбран — ему ставка за доливку">
-          <select id="master-select" className={touch ? 'min-h-[56px] text-lg' : ''} value={masterId} onChange={(e) => setMasterId(e.target.value)}>
+          <select id="master-select" value={masterId} onChange={(e) => setMasterId(e.target.value)}>
             <option value="">— без мастера —</option>
             {masters.map((e) => (
               <option key={e.id} value={e.id}>
@@ -1406,16 +1414,20 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       )}
       {saleType === 'service' && (
         <>
-          <Field label="Мастер" required>
-            <select id="master-select" className={serviceLeft ? 'min-h-[56px] text-lg' : ''} value={masterId} onChange={(e) => setMasterId(e.target.value)}>
-              <option value="">— выберите —</option>
-              {masters.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.full_name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {touch ? (
+            <PersonPick id="master-select" label="Мастер" required value={masterId} people={masters} onChange={setMasterId} />
+          ) : (
+            <Field label="Мастер" required>
+              <select id="master-select" value={masterId} onChange={(e) => setMasterId(e.target.value)}>
+                <option value="">— выберите —</option>
+                {masters.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.full_name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
           {/* Вид замены обязателен: мастеру — сумма ставок видов замены чека (ADR-096). */}
           {serviceLeft ? (
             // Слева под чеком — коротко: сами виды и их цены уже в строках чека.
@@ -1527,7 +1539,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
         </div>
       )}
-      {party && vehicleId && !touch && <OilHint vehicleId={vehicleId} />}
+      {party && vehicleId && !touch && <OilHint book={carBook} />}
       {/* Чек «В сервис» — с данными клиента (ADR-100): что не хватает — со звёздочкой; имя и
           телефон дописываются в карточку прямо здесь. */}
       {/* Слева под чеком недостающее и так видно строкой «Не хватает» у «Провести» — блок нужен
@@ -1738,7 +1750,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   <>
                     <button
                       type="button"
-                      className={`rounded border border-rose-300 bg-rose-50 px-2 font-medium text-rose-700 ${touch ? 'min-h-[44px]' : 'py-0.5'}`}
+                      className={`rounded border border-rose-300 bg-rose-50 px-2 font-medium text-rose-700 ${touch ? 'min-h-[56px] px-3' : 'py-0.5'}`}
                       onClick={() => {
                         setConfirmDrop(null)
                         discardParked(p)
@@ -1746,14 +1758,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     >
                       Точно удалить?
                     </button>
-                    <button type="button" className={`px-1 text-slate-500 ${touch ? 'min-h-[44px]' : ''}`} onClick={() => setConfirmDrop(null)}>
+                    <button type="button" className={`px-1 text-slate-500 ${touch ? 'min-h-[56px] min-w-[56px]' : ''}`} onClick={() => setConfirmDrop(null)}>
                       Нет
                     </button>
                   </>
                 ) : (
                   <button
                     type="button"
-                    className={`text-slate-400 hover:text-rose-600 ${touch ? 'min-h-[44px] min-w-[44px]' : ''}`}
+                    className={`text-slate-400 hover:text-rose-600 ${touch ? 'min-h-[56px] min-w-[56px] text-lg' : ''}`}
                     aria-label="Удалить отложенный чек"
                     onClick={() => setConfirmDrop(p.id)}
                   >
@@ -2245,7 +2257,21 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               Кассир: <b>{shift.data.cashier_name}</b> <span className="text-slate-500">(смена № {shift.data.number})</span>
             </div>
           ) : (
-            (shiftKnown || fix) && (
+            (shiftKnown || fix) &&
+            (touch ? (
+              <PersonPick
+                id="cashier-select"
+                label="Кассир"
+                required
+                hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : 'Запомнится на этом устройстве до открытия смены'}
+                value={cashierId}
+                people={cashiers}
+                onChange={(id) => {
+                  setCashierId(id)
+                  if (!fix) remember(CASHIER_KEY, id)
+                }}
+              />
+            ) : (
               <Field label="Кассир" required hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : 'Запомнится на этом устройстве до открытия смены'}>
                 <select
                   id="cashier-select"
@@ -2263,7 +2289,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                   ))}
                 </select>
               </Field>
-            )
+            ))
           )}
           {!serviceLeft && customerFields}
           {touch ? (
@@ -2700,14 +2726,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     <input
                       {...num('decimal')}
                       aria-label={PAYMENT_LABELS[m]}
-                      className="min-h-[56px]! w-full pt-4 pb-0.5 text-lg font-semibold"
+                      className={`min-h-[56px]! w-full pt-4 pb-0.5 text-lg font-semibold ${mixedLeft !== null && mixedLeft > 0 && !split[m] ? 'pr-[4.5rem]' : ''}`}
                       value={split[m]}
                       onChange={(e) => setSplit({ ...split, [m]: e.target.value })}
                     />
+                    {/* «+ остаток» — во всю высоту поля, от 56 точек (ui-rules §9, SPEC-36 §16). */}
                     {mixedLeft !== null && mixedLeft > 0 && !split[m] && (
                       <button
                         type="button"
-                        className="absolute right-1 bottom-1 min-h-[30px]! min-w-0! rounded border border-sky-300 bg-white px-1.5 text-xs text-sky-700"
+                        className="absolute top-0 right-0 bottom-0 min-h-[56px]! min-w-[64px]! rounded-r-md border border-sky-300 bg-sky-50 px-1.5 text-sm leading-tight font-medium text-sky-700 active:bg-sky-100"
                         aria-label={`остаток → ${PAYMENT_LABELS[m]}`}
                         onClick={() => setSplit({ ...split, [m]: somInput(mixedLeft) })}
                       >
@@ -2832,7 +2859,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             <div data-client-modal>
               <ClientPicker party={party} contactId={contactId} vehicleId={vehicleId} onParty={pickParty} onContact={setContactId} onVehicle={pickVehicle} service={saleType === 'service'} />
             </div>
-            {party && vehicleId && <OilHint vehicleId={vehicleId} />}
+            {party && vehicleId && <OilHint book={carBook} />}
             <Button className="min-h-[64px]! text-xl!" onClick={() => setClientOpen(false)}>
               Готово
             </Button>

@@ -15,6 +15,9 @@ import {
   retryDelayMs,
   searchSnapshotClients,
   sendOutcome,
+  snapshotIsStale,
+  snapshotMeta,
+  snapshotStep,
   staleSending,
   subtractStock,
   waitsRetry,
@@ -161,5 +164,27 @@ describe('снимок кассы без сети', () => {
     expect(searchSnapshotClients(snap, '012345678').map((c) => c.id)).toEqual(['c2'])
     expect(searchSnapshotClients(snap, '093aaa').map((c) => c.id)).toEqual(['c1'])
     expect(searchSnapshotClients(null, 'исаков')).toEqual([])
+  })
+})
+
+describe('снимок без лишних чтений (SPEC-36 §16)', () => {
+  it('304 — только время; новый снимок — сразу при пустом чеке, иначе ждёт пустого', () => {
+    expect(snapshotStep(304, true, false)).toBe('touch')
+    expect(snapshotStep(304, true, true)).toBe('touch')
+    expect(snapshotStep(200, true, true)).toBe('save')
+    expect(snapshotStep(200, true, false)).toBe('later')
+  })
+  it('снимка ещё нет — сохраняется и при непустом чеке; ошибка сервера — пропуск', () => {
+    expect(snapshotStep(200, false, false)).toBe('save')
+    expect(snapshotStep(304, false, true)).toBe('skip')
+    expect(snapshotStep(500, true, true)).toBe('skip')
+    expect(snapshotStep(401, false, true)).toBe('skip')
+  })
+  it('время и версия снимка — отдельно; «устарел» считается по ним', () => {
+    const snap = { version: 'v1', saved_at: new Date().toISOString(), products: [] } as unknown as Snapshot
+    expect(snapshotMeta(snap)).toEqual({ version: 'v1', saved_at: snap.saved_at })
+    expect(snapshotIsStale(snapshotMeta(snap))).toBe(false)
+    expect(snapshotIsStale({ saved_at: new Date(Date.now() - 3 * 3600_000).toISOString() })).toBe(true)
+    expect(snapshotIsStale(null)).toBe(true)
   })
 })

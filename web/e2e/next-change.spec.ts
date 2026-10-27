@@ -3,7 +3,7 @@
 // чеке и при повторной печати; без сети — уходит с чеком и печатается из очереди. Режим кассы
 // 1366×768 — блок помещается без прокрутки страницы, цели касания ≥ 56.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { pickCashier } from './cashier'
+import { pickCashier, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -112,7 +112,7 @@ test.describe('режим кассы 1366×768', () => {
     // Машина встаёт сама, когда загрузится карточка клиента: «Готово» раньше — окно закроется без неё.
     await expect(dlg.getByLabel('Машина')).toHaveValue(s.vehicle.id)
     await dlg.getByRole('button', { name: 'Готово' }).tap()
-    await left.locator('#master-select').selectOption({ label: s.master })
+    await pickMaster(left, s.master)
     await left.locator('#mileage').fill('217000')
     // Раскладку меряем без временной плашки «снимок каталога устарел»: снимок кассы ещё сохраняется.
     await expect(page.getByText(/снимок каталога устарел/)).toHaveCount(0, { timeout: 30_000 })
@@ -192,7 +192,7 @@ test.describe('режим кассы 1366×768', () => {
     // Машина встаёт сама, когда загрузится карточка клиента: «Готово» раньше — окно закроется без неё.
     await expect(dlg.getByLabel('Машина')).toHaveValue(s.vehicle.id)
     await dlg.getByRole('button', { name: 'Готово' }).tap()
-    await left.locator('#master-select').selectOption({ label: s.master })
+    await pickMaster(left, s.master)
     await left.locator('#mileage').fill('217000')
     await expect(left.getByTestId('next-change').getByLabel(`Следующая замена: ${s.anti}`)).toHaveValue('277000')
     await expect(page.getByText(/снимок каталога устарел/)).toHaveCount(0, { timeout: 30_000 })
@@ -272,7 +272,7 @@ test('чек «В сервис»: следующая замена в книжк�
     await page.getByRole('button', { name: 'В сервис' }).click()
     await addKinds(page, [s.oil, s.anti], false)
     await pickCashier(page, s.cashier)
-    await page.locator('#master-select').selectOption({ label: s.master })
+    await pickMaster(page, s.master)
     await page.locator('[data-client-input]').fill(s.plate)
     await page.getByRole('button', { name: new RegExp(s.last) }).first().click()
     await page.locator('#mileage').fill('217000')

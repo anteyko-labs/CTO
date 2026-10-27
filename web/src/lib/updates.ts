@@ -5,17 +5,7 @@ export let apply: ((reload?: boolean) => Promise<void>) | null = null
 export const listeners = new Set<() => void>()
 export let ready = false
 
-/** Пустой ли чек на кассе: черновик хранится в sessionStorage (см. Cashier.tsx). */
-export function cartIsEmpty(): boolean {
-  try {
-    const raw = sessionStorage.getItem('avtodom.cart')
-    if (!raw) return true
-    const d = JSON.parse(raw) as { lines?: unknown[] }
-    return !d.lines || d.lines.length === 0
-  } catch {
-    return true
-  }
-}
+export { cartIsEmpty } from './cartDraft'
 
 export function startUpdates(): void {
   if (apply || !('serviceWorker' in navigator)) return

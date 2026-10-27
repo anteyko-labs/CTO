@@ -11,10 +11,21 @@ import { fluidText, isFluid, recordLines, recordMileage, recordText, slotLabel, 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 
-/** Ссылка на бота, если он подключён на сервере. */
-export async function botLink(): Promise<string | null> {
-  const r = await get<{ username: string | null }>('/telegram/bot').catch(() => ({ username: null }))
-  return r.username ? `https://t.me/${r.username}` : null
+let botCache: Promise<string | null> | null = null
+
+/** Ссылка на бота, если он подключён на сервере. Спрашивается один раз за сессию (SPEC-36 §16):
+ *  книжка печатается после каждого чека «В сервис»; ключ бота меняется только
+ *  перезапуском сервера. Без ответа сервера не запоминается — следующая
+ *  печать спросит снова. */
+export function botLink(): Promise<string | null> {
+  botCache ??= get<{ username: string | null }>('/telegram/bot').then(
+    (r) => (r.username ? `https://t.me/${r.username}` : null),
+    () => {
+      botCache = null
+      return null
+    },
+  )
+  return botCache
 }
 
 const STYLE = `<style>

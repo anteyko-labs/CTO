@@ -2,6 +2,7 @@
 // машина находятся по снимку, неверный пробег не теряет чек, отклонённый сервером чек виден на кассе.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -128,7 +129,7 @@ test('без сети: перезагрузка, клиент из снимка,
   await page.getByRole('dialog', { name: 'Вид замены' }).getByPlaceholder('Найти услугу').fill(`Вид снимка ${RUN}`)
   await page.getByTestId('service-choices').getByRole('button', { name: new RegExp(`Вид снимка ${RUN}`) }).click()
   await page.getByRole('dialog', { name: 'Вид замены' }).getByRole('button', { name: 'Готово' }).click()
-  await page.locator('#master-select').selectOption({ label: `Мастер снимка ${RUN}` })
+  await pickMaster(page, `Мастер снимка ${RUN}`)
   await page.locator('[data-client-input]').fill(plate)
   await page.getByRole('button', { name: new RegExp(`Клиент${RUN}`) }).click()
   await expect(page.locator('#mileage')).toBeVisible()

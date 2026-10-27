@@ -7,6 +7,7 @@
 // коробки и тормозная жидкость.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { choosePerson, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -139,8 +140,8 @@ async function login(page: Page, touch: boolean) {
 /** Кассир, мастер, клиент с машиной и пробег 217 000 в чеке «В сервис». */
 async function serviceDetails(page: Page, s: Setup, touch: boolean, hit: (l: Locator) => Promise<void>) {
   const select = page.locator('#cashier-select')
-  if (await select.isVisible()) await select.selectOption({ label: s.cashier })
-  await page.locator('#master-select').selectOption({ label: s.master })
+  if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
+  await pickMaster(page, s.master)
   if (touch) {
     await hit(page.getByTestId('service-left').getByRole('button', { name: 'Выбрать клиента' }))
     const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
@@ -206,8 +207,8 @@ for (const mode of [
       await hit(kinds.getByRole('button', { name: 'Готово' }))
       await scan(s.oilCode, 2)
       const select = page.locator('#cashier-select')
-      if (await select.isVisible()) await select.selectOption({ label: s.cashier })
-      await page.locator('#master-select').selectOption({ label: s.master })
+      if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
+      await pickMaster(page, s.master)
       if (mode.touch) {
         await hit(page.getByTestId('service-left').getByRole('button', { name: 'Выбрать клиента' }))
         const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
