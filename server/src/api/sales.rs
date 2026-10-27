@@ -36,8 +36,9 @@ pub fn routes() -> Router<AppState> {
 /// Ставка мастера за замену по умолчанию — 30 сом (ADR-027).
 pub const DEFAULT_OIL_CHANGE_FEE: i64 = 3000;
 
-/// Ставка замены из настроек филиала.
-async fn oil_change_fee(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+/// Ставка мастеру по умолчанию из настроек филиала: за чек «в сервис» без вида замены со старого
+/// устройства (ADR-096) и для новой услуги (ADR-112).
+pub(crate) async fn oil_change_fee(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
     let v = sqlx::query_scalar!(
         "select value from settings where branch_id = $1 and key = 'sales'",
         branch_id

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select o.id, o.name, o.barcode, o.article, o.cost_tyiyn, o.price_tyiyn, o.unit,\n                  o.supplier, o.category, o.codes, o.code_conflicts, o.product_id,\n                  p.name as \"product_name?\",\n                  (($3 <> '' and (o.article = $3 or umag_has_code(o.codes, $3)))\n                   or ($4 <> '' and umag_has_code(o.codes, $4))) as \"exact!\",\n                  -- Без связи заведённой считается строка, чей штрихкод или «доп. код» уже у\n                  -- товара (не выданный программой: свои коды магазина в Умаге могут совпасть с\n                  -- нашими; артикул бывает общим у разных товаров).\n                  coalesce(o.product_id,\n                           (select x.product_id from unnest(o.keys) with ordinality as c(code, n)\n                            cross join lateral code_products(c.code) x\n                            where not x.internal\n                            order by c.n, (x.code = c.code) desc limit 1)) as linked\n           from old_catalog o\n           left join products p on p.id = o.product_id\n           where o.branch_id = $1 and o.id = any($2)",
+  "query": "select o.id, o.name, o.barcode, o.article, o.cost_tyiyn, o.price_tyiyn, o.unit,\n                  o.supplier, o.category, o.codes, o.code_conflicts, o.product_id,\n                  p.name as \"product_name?\",\n                  -- Без связи заведённой считается строка, чей штрихкод или «доп. код» уже у\n                  -- товара (не выданный программой: свои коды магазина в Умаге могут совпасть с\n                  -- нашими; артикул бывает общим у разных товаров).\n                  coalesce(o.product_id,\n                           (select x.product_id from unnest(o.keys) with ordinality as c(code, n)\n                            cross join lateral code_products(c.code) x\n                            where not x.internal\n                            order by c.n, (x.code = c.code) desc limit 1)) as linked\n           from old_catalog o\n           left join products p on p.id = o.product_id\n           where o.branch_id = $1 and o.id = any($2)",
   "describe": {
     "columns": [
       {
@@ -70,11 +70,6 @@
       },
       {
         "ordinal": 13,
-        "name": "exact!",
-        "type_info": "Bool"
-      },
-      {
-        "ordinal": 14,
         "name": "linked",
         "type_info": "Uuid"
       }
@@ -82,9 +77,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "UuidArray",
-        "Text",
-        "Text"
+        "UuidArray"
       ]
     },
     "nullable": [
@@ -101,9 +94,8 @@
       false,
       true,
       false,
-      null,
       null
     ]
   },
-  "hash": "f1fb8e86f5f688f3831945d4433bca7b866e6922e400598dbb5c4bee24ca8d11"
+  "hash": "df6e43b082d8e52ece27922224f84789cc9f81b858d6be720fc801c524f3a694"
 }

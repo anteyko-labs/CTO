@@ -426,22 +426,19 @@ async fn sees_umag_cost(conn: &mut PgConnection, user: &CurrentUser) -> AppResul
     .await?)
 }
 
-/// Строки Умага в порядке `ids`. `code` и `text` — то, что искали: совпавший код — `exact`.
-/// `cost` — показать ли закупку (`sees_umag_cost`).
+/// Строки Умага в порядке `ids`; `exact` — строки, чей код совпал с искомым. `cost` — показать
+/// ли закупку (`sees_umag_cost`).
 async fn load_hits(
     conn: &mut PgConnection,
     branch_id: Uuid,
     ids: &[Uuid],
-    code: &str,
-    text: &str,
+    exact: &HashSet<Uuid>,
     cost: bool,
 ) -> AppResult<Vec<Hit>> {
     let rows = sqlx::query!(
         r#"select o.id, o.name, o.barcode, o.article, o.cost_tyiyn, o.price_tyiyn, o.unit,
                   o.supplier, o.category, o.codes, o.code_conflicts, o.product_id,
                   p.name as "product_name?",
-                  (($3 <> '' and (o.article = $3 or umag_has_code(o.codes, $3)))
-                   or ($4 <> '' and umag_has_code(o.codes, $4))) as "exact!",
                   -- Без связи заведённой считается строка, чей штрихкод или «доп. код» уже у
                   -- товара (не выданный программой: свои коды магазина в Умаге могут совпасть с
                   -- нашими; артикул бывает общим у разных товаров).
@@ -454,9 +451,7 @@ async fn load_hits(
            left join products p on p.id = o.product_id
            where o.branch_id = $1 and o.id = any($2)"#,
         branch_id,
-        ids,
-        code,
-        text
+        ids
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -475,7 +470,7 @@ async fn load_hits(
                     unit: r.unit,
                     supplier: r.supplier,
                     category: r.category,
-                    exact: r.exact,
+                    exact: exact.contains(&r.id),
                     linked_product_id: r.linked,
                     product_id: r.product_id,
                     product_name: r.product_name,
@@ -488,9 +483,19 @@ async fn load_hits(
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
+/// Набранный текст, похожий на код (латиница, цифры и дефис, есть цифра, от трёх знаков): он
+/// ищется и среди кодов строк Умага — артикул без учёта регистра, а от четырёх знаков и по началу
+/// кода (замечание заказчика 26.10.2026: «в приходе по коду тоже чтобы искал»). Иначе — пусто.
+fn typed_code(text: &str) -> &str {
+    let code_like = text.len() >= 3
+        && text.chars().any(|c| c.is_ascii_digit())
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if code_like { text } else { "" }
+}
+
 /// Подсказки: сначала точное совпадение кода (штрихкод, артикул, «доп. код», числовой код без
-/// потерянных нулей), потом похожие названия; среди них не заведённые — выше: блок «Из старой
-/// базы Умаг» показывает только их (SPEC-35 §2).
+/// потерянных нулей), потом коды, начинающиеся с набранного, потом похожие названия; среди них не
+/// заведённые — выше: блок «Из старой базы Умаг» показывает только их (SPEC-35 §2).
 async fn search(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -503,14 +508,26 @@ async fn search(
         return Ok(Json(vec![]));
     }
     let mut conn = state.pool.acquire().await?;
-    let ids = sqlx::query_scalar!(
-        r#"select o.id from old_catalog o
+    let found = sqlx::query!(
+        r#"select o.id, m.exact as "exact!"
+           from old_catalog o
+           cross join lateral (
+               select
+                 -- Код совпал: штрихкод, артикул, «доп. код» (и числовой без потерянных нулей).
+                 (($2 <> '' and (o.article = $2 or umag_has_code(o.codes, $2)))
+                  or ($3 <> '' and umag_has_code(o.codes, $3))
+                  or ($4 <> '' and lower(o.article) = lower($4))) as exact,
+                 -- Код строки начинается с набранного: штрихкод или «доп. код» набирают по
+                 -- цифрам, список Умага подсказывает, не дожидаясь Enter.
+                 ($4 <> '' and length($4) >= 4
+                  and exists (select 1 from unnest(o.codes) c
+                              where starts_with(lower(c), lower($4)))) as code_prefix
+           ) m
            where o.branch_id = $1
-             and (($2 <> '' and (o.article = $2 or umag_has_code(o.codes, $2)))
+             and (m.exact or m.code_prefix
                   or ($3 <> '' and (o.name ilike '%' || $3 || '%' or similarity(o.name, $3) >= 0.25
-                                    or o.article ilike $3 || '%' or umag_has_code(o.codes, $3))))
-           order by (($2 <> '' and (o.article = $2 or umag_has_code(o.codes, $2)))
-                     or ($3 <> '' and umag_has_code(o.codes, $3))) desc,
+                                    or o.article ilike $3 || '%')))
+           order by m.exact desc, m.code_prefix desc,
                     (o.product_id is null
                      and not exists (select 1 from unnest(o.keys) c
                                      cross join lateral code_products(c) x where not x.internal)) desc,
@@ -518,13 +535,16 @@ async fn search(
            limit 20"#,
         user.branch_id,
         code,
-        text
+        text,
+        typed_code(text)
     )
     .fetch_all(&mut *conn)
     .await?;
+    let ids: Vec<Uuid> = found.iter().map(|r| r.id).collect();
+    let exact: HashSet<Uuid> = found.iter().filter(|r| r.exact).map(|r| r.id).collect();
     let cost = sees_umag_cost(&mut conn, &user).await?;
     Ok(Json(
-        load_hits(&mut conn, user.branch_id, &ids, code, text, cost).await?,
+        load_hits(&mut conn, user.branch_id, &ids, &exact, cost).await?,
     ))
 }
 
@@ -1658,7 +1678,7 @@ async fn pairs(
         .collect();
     let ids: Vec<Uuid> = page.iter().map(|c| c.umag_id).collect();
     let cost = sees_umag_cost(&mut tx, &user).await?;
-    let hits: HashMap<Uuid, Hit> = load_hits(&mut tx, user.branch_id, &ids, "", "", cost)
+    let hits: HashMap<Uuid, Hit> = load_hits(&mut tx, user.branch_id, &ids, &HashSet::new(), cost)
         .await?
         .into_iter()
         .map(|h| (h.id, h))

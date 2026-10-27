@@ -554,15 +554,23 @@ async fn create_service(
     Json(req): Json<ServiceReq>,
 ) -> AppResult<Json<ServiceOut>> {
     let name = required(&req.name, "название")?;
-    // Без ставки по умолчанию: её задаёт владелец, как и остальную оплату труда (ADR-019, ADR-043).
-    let fee = req.master_fee_tyiyn.unwrap_or(0);
+    // Ставка мастеру по умолчанию — 30 сом за каждую услугу (ADR-112, замечание заказчика
+    // 26.10.2026); владелец меняет её в карточке услуги.
+    let fee = match req.master_fee_tyiyn {
+        Some(f) => f,
+        None => {
+            let mut c = state.pool.acquire().await?;
+            crate::api::sales::oil_change_fee(&mut c, ctx.user.branch_id).await?
+        }
+    };
     if req.price_tyiyn < 0 || fee < 0 {
         return Err(invalid("суммы не отрицательны"));
     }
     ops::check_amount(req.price_tyiyn)?;
     ops::check_amount(fee)?;
     // Ставку мастера и «бесплатно с нашим маслом» задаёт владелец: это цена и оплата труда.
-    if (fee != 0
+    // Ставка по умолчанию (не задана в запросе) — правило владельца, её может поставить и администратор.
+    if (req.master_fee_tyiyn.is_some_and(|f| f != 0)
         || req.free_with_oil
         || req.oil_category_id.is_some()
         || req.book_slot.is_some()
@@ -673,7 +681,7 @@ async fn import_services(
 
 /// Услуги из выгрузки старой программы на новой точке: только владелец, одной транзакцией.
 /// Названия, которые уже есть (без учёта регистра и пробелов по краям), пропускаются; ставка
-/// мастера — 0, её задаёт владелец в карточке услуги.
+/// мастера — по умолчанию, 30 сом (ADR-112), владелец меняет её в карточке услуги.
 pub async fn import_services_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -708,6 +716,8 @@ pub async fn import_services_tx(
         .fetch_all(&mut *conn)
         .await?;
     let mut seen: std::collections::HashSet<String> = existing.into_iter().collect();
+    // Ставка мастеру по умолчанию — 30 сом за каждую услугу (ADR-112).
+    let default_fee = crate::api::sales::oil_change_fee(&mut *conn, ctx.user.branch_id).await?;
     let mut created = 0i64;
     let mut skipped = Vec::new();
     for (name, price) in items {
@@ -717,11 +727,12 @@ pub async fn import_services_tx(
         }
         let id = new_id();
         sqlx::query!(
-            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot) values ($1, $2, $3, $4, 0, $5)",
+            "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot) values ($1, $2, $3, $4, $5, $6)",
             id,
             ctx.user.branch_id,
             name,
             price,
+            default_fee,
             crate::api::oil_book::service_slot_by_name(&name)
         )
         .execute(&mut *conn)

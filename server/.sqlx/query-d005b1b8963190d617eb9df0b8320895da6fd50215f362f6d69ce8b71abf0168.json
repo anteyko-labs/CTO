@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.id, m.exact as \"exact!\"\n           from old_catalog o\n           cross join lateral (\n               select\n                 -- Код совпал: штрихкод, артикул, «доп. код» (и числовой без потерянных нулей).\n                 (($2 <> '' and (o.article = $2 or umag_has_code(o.codes, $2)))\n                  or ($3 <> '' and umag_has_code(o.codes, $3))\n                  or ($4 <> '' and lower(o.article) = lower($4))) as exact,\n                 -- Код строки начинается с набранного: штрихкод или «доп. код» набирают по\n                 -- цифрам, список Умага подсказывает, не дожидаясь Enter.\n                 ($4 <> '' and length($4) >= 4\n                  and exists (select 1 from unnest(o.codes) c\n                              where starts_with(lower(c), lower($4)))) as code_prefix\n           ) m\n           where o.branch_id = $1\n             and (m.exact or m.code_prefix\n                  or ($3 <> '' and (o.name ilike '%' || $3 || '%' or similarity(o.name, $3) >= 0.25\n                                    or o.article ilike $3 || '%')))\n           order by m.exact desc, m.code_prefix desc,\n                    (o.product_id is null\n                     and not exists (select 1 from unnest(o.keys) c\n                                     cross join lateral code_products(c) x where not x.internal)) desc,\n                    similarity(o.name, $3) desc, o.name, o.id\n           limit 20",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "exact!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "d005b1b8963190d617eb9df0b8320895da6fd50215f362f6d69ce8b71abf0168"
+}

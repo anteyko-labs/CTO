@@ -11308,3 +11308,52 @@ async fn invoice_payment_lands_on_its_account(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(balance_of(&pool, &card_bank).await, before + 50_000);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn old_catalog_found_by_typed_code(pool: PgPool) {
+    // Замечание заказчика 26.10.2026: «в приходе по коду чтобы тоже искал» — набранный код
+    // (штрихкод, «доп. код», артикул; целиком, по началу, без потерянных нулей) находит строку Умага.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let rows = json!([
+        { "name": "AZMOL DISEL 10W40 200L", "barcode": "2760458", "extra_code": "1459", "unit": "шт" },
+        { "name": "LED ЛАМПА M3 H11", "barcode": "2110000050825", "extra_code": "2011303430805", "unit": "шт" },
+        { "name": "Фильтр C-110", "barcode": "123456789012", "article": "C-110", "unit": "шт" },
+        { "name": "ГАЗПРОМ ЛИТОЛ 24", "barcode": "4670026845129", "unit": "шт" }
+    ]);
+    let (s, _, _) = call(&app, "PUT", "/api/v1/old-catalog", Some(&owner), Some(rows)).await;
+    assert_eq!(s, StatusCode::OK);
+    let first = |q: &str| {
+        let app = app.clone();
+        let owner = owner.clone();
+        let uri = format!("/api/v1/old-catalog/search?q={q}");
+        async move {
+            let (s, _, hits) = call(&app, "GET", &uri, Some(&owner), None).await;
+            assert_eq!(s, StatusCode::OK, "{hits}");
+            hits
+        }
+    };
+    // «Доп. код» целиком — точное совпадение.
+    let hits = first("1459").await;
+    assert_eq!(hits[0]["name"], "AZMOL DISEL 10W40 200L", "{hits}");
+    assert_eq!(hits[0]["exact"], json!(true));
+    // Штрихкод по началу, пока набирают.
+    let hits = first("21100000508").await;
+    assert_eq!(hits[0]["name"], "LED ЛАМПА M3 H11", "{hits}");
+    assert_eq!(hits[0]["exact"], json!(false));
+    // «Доп. код» второй строки целиком и заводской код с нулём впереди, потерянным Excel.
+    assert_eq!(first("2011303430805").await[0]["name"], "LED ЛАМПА M3 H11");
+    assert_eq!(first("0123456789012").await[0]["exact"], json!(true));
+    // Артикул латиницей с дефисом, без учёта регистра.
+    let hits = first("c-110").await;
+    assert_eq!(hits[0]["name"], "Фильтр C-110", "{hits}");
+    assert_eq!(hits[0]["exact"], json!(true));
+    // Поиск по названию как раньше.
+    assert_eq!(
+        first("%D0%BB%D0%B8%D1%82%D0%BE%D0%BB").await[0]["name"],
+        "ГАЗПРОМ ЛИТОЛ 24"
+    );
+    // Чужие цифры ничего не находят.
+    let hits = first("99999999").await;
+    assert_eq!(hits.as_array().map(Vec::len), Some(0), "{hits}");
+}

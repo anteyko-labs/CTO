@@ -14,10 +14,10 @@ export function resultsMatch(text: string, foundFor: string): boolean {
 export type EnterPlan =
   /** Код целиком (сканер или набранный штрихкод) — точный поиск по коду. */
   | 'code'
-  /** Найдено по всему набранному тексту — берём выделенную строку. */
+  /** Найдено по всему набранному тексту — выбор из показанного. */
   | 'choose'
   /** Показано найденное только по началу текста (или ещё ничего) — сначала спросить сервер о
-   *  полном тексте и взять первое из ответа (SPEC-30 §13). */
+   *  полном тексте (SPEC-30 §13). */
   | 'search'
 
 /**
@@ -39,28 +39,57 @@ export function searchRank(p: { name: string; article: string; barcodes: string[
   return 2
 }
 
-/** Чем кончился Enter: товар из списка, поиск по коду или ничего (текст поменяли, пока ждали). */
-export type EnterOutcome<T> = { kind: 'pick'; item: T; fresh?: T[] } | { kind: 'code'; fresh?: T[] } | { kind: 'stale' }
+/** Короткий код из цифр (доп. код Умага на ценнике, «1024»): ищется только как код. */
+export const isShortCode = (text: string): boolean => /^\d{1,5}$/.test(text.trim())
+
+/** Чем кончился Enter: товар из списка, поиск по коду, найдено несколько — строку выбирает
+ *  кассир, или ничего (текст поменяли, пока ждали). */
+export type EnterOutcome<T> =
+  | { kind: 'pick'; item: T; fresh?: T[] }
+  | { kind: 'code'; fresh?: T[] }
+  | { kind: 'ambiguous'; fresh?: T[] }
+  | { kind: 'stale' }
 
 /**
- * Enter в поле поиска. Найдено по всему тексту — выделенная строка; показано найденное по
- * началу текста — сразу (без задержки набора) спрашиваем полный текст и берём первое из ответа.
- * Строку, выбранную стрелками в том же тексте, кассир выбрал сам — её и берём.
- * `current` — что в поле сейчас: пока ждали ответа, текст могли поменять.
+ * Что взять из найденного по всему тексту. Только однозначное (исправлено 26.10.2026: «в чеке
+ * постоянно добавляет воздушный фильтр» — Enter клал первую из найденных строк, а первым по
+ * названию почти всегда шёл воздушный фильтр):
+ * - ровно одна строка точно совпала по коду или артикулу — она;
+ * - строка из цифр — только точный код: нет его среди найденного — искать как код, а не брать
+ *   товар, у которого эти цифры в названии («1024» → «E1024L01 ВОЗДУШКА»);
+ * - найдена одна строка — она; ничего — искать как код; несколько — выбирает кассир.
+ */
+function decide<T>(list: T[], q: string, exact: (item: T, q: string) => boolean, fresh: T[] | undefined): EnterOutcome<T> {
+  const withFresh = <O extends EnterOutcome<T>>(o: O): O => (fresh === undefined ? o : { ...o, fresh })
+  const exacts = list.filter((x) => exact(x, q))
+  if (exacts.length === 1) return withFresh({ kind: 'pick', item: exacts[0] })
+  if (/^\d+$/.test(q)) return withFresh({ kind: 'code' })
+  if (exacts.length === 0 && list.length === 1) return withFresh({ kind: 'pick', item: list[0] })
+  if (list.length === 0) return withFresh({ kind: 'code' })
+  return withFresh({ kind: 'ambiguous' })
+}
+
+/**
+ * Enter в поле поиска. Строку, выбранную стрелками в том же тексте, кассир выбрал сам — её и
+ * берём. Иначе — из найденного по всему тексту и только однозначное (`decide`); показано
+ * найденное по началу текста — сразу (без задержки набора) спрашиваем полный текст.
+ * `current` — что в поле сейчас: пока ждали ответа, текст могли поменять. `exact` — строка
+ * точно совпала по коду или артикулу.
  */
 export async function resolveEnter<T>(
   s: { text: string; foundFor: string; found: T[]; active: number; navigated: boolean },
   searchFull: (q: string) => Promise<T[]>,
   current: () => string,
+  exact: (item: T, q: string) => boolean = () => false,
 ): Promise<EnterOutcome<T>> {
   const q = s.text.trim()
   const plan = planEnter(s.text, s.foundFor, s.found.length)
-  if (plan === 'choose' || (plan === 'search' && s.navigated && s.found.length > 0 && resultsMatch(q, s.foundFor))) {
+  if (plan !== 'code' && s.navigated && s.found.length > 0 && resultsMatch(q, s.foundFor)) {
     return { kind: 'pick', item: s.found[s.active] ?? s.found[0] }
   }
   if (plan === 'code') return { kind: 'code' }
+  if (plan === 'choose') return decide(s.found, q, exact, undefined)
   const fresh = await searchFull(q)
   if (current().trim() !== q) return { kind: 'stale' }
-  const first = fresh[0]
-  return first === undefined ? { kind: 'code', fresh } : { kind: 'pick', item: first, fresh }
+  return decide(fresh, q, exact, fresh)
 }

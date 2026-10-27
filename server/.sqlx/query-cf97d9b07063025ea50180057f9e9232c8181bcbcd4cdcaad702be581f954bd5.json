@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into services (id, branch_id, name, price_tyiyn, master_fee_tyiyn, book_slot) values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf97d9b07063025ea50180057f9e9232c8181bcbcd4cdcaad702be581f954bd5"
+}
