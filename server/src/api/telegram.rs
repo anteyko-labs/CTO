@@ -2706,9 +2706,77 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
             let (title, details) = describe(ev.action, data);
             (format!("{title}: {emp}"), details)
         }
+        "payout.post" => {
+            let from = account_name(
+                conn,
+                data.get("account_id")
+                    .and_then(Value::as_str)
+                    .and_then(|s| Uuid::parse_str(s).ok()),
+            )
+            .await?;
+            payout_text(data, emp, from.as_deref())
+        }
         a if FEED.contains(&a) => feed_text(a, data, ev.employee),
         _ => describe(ev.action, data),
     })
+}
+
+/// Выплата в ленте: сколько, из какой кассы и за что (ADR-122). «Аванс» — только вид аванса,
+/// «сверх заработанного» — только когда выдали больше, чем заработано.
+fn payout_text(data: &Value, emp: &str, from: Option<&str>) -> (String, String) {
+    let mut parts = vec![money_of(data, "amount_tyiyn")];
+    if let Some(from) = from {
+        parts[0] = format!("{} из «{from}»", parts[0]);
+    }
+    let lines: Vec<(&str, i64)> = data
+        .get("lines")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| {
+                    Some((
+                        l.get("purpose")?.as_str()?,
+                        l.get("amount_tyiyn")?.as_i64()?,
+                    ))
+                })
+                .filter(|(p, _)| *p != "general")
+                .collect()
+        })
+        .unwrap_or_default();
+    match lines.as_slice() {
+        [] => {}
+        [(p, _)] => parts.push(format!("за что: {}", crate::api::payroll::purpose_label(p))),
+        many => parts.push(format!(
+            "за что: {}",
+            many.iter()
+                .map(|(p, a)| format!(
+                    "{} {}",
+                    crate::api::payroll::purpose_label(p),
+                    format_som(*a)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+    // Прежние записи журнала без `over_tyiyn`: «сверх» отмечал флаг `advance` у выплаты без вида.
+    let over = match data.get("over_tyiyn").and_then(Value::as_i64) {
+        Some(o) => o,
+        None if lines.is_empty() && data.get("advance").and_then(Value::as_bool) == Some(true) => {
+            -1
+        }
+        None => 0,
+    };
+    if over > 0 {
+        parts.push(format!("сверх заработанного {}", format_som(over)));
+    } else if over < 0 {
+        parts.push("сверх заработанного".into());
+    }
+    let title = if lines.iter().all(|(p, _)| *p == "advance") && !lines.is_empty() {
+        format!("👛 Аванс: {emp}")
+    } else {
+        format!("👛 Выплата: {emp}")
+    };
+    (title, parts.join(" · "))
 }
 
 fn comment_tail(c: &str) -> String {
@@ -2809,18 +2877,6 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
             format!("Товара на {}", money_of(data, "total")),
         ),
         "expense.reverse" => ("↩️ Расход отменён".into(), money_of(data, "amount_tyiyn")),
-        "payout.post" => (
-            format!("👛 Выплата: {emp}"),
-            format!(
-                "{}{}",
-                money_of(data, "amount_tyiyn"),
-                if data.get("advance").and_then(Value::as_bool) == Some(true) {
-                    " · аванс сверх заработанного"
-                } else {
-                    ""
-                }
-            ),
-        ),
         "payroll.salary" => (
             format!("🗓 Оклад: {emp}"),
             format!("{} за {}", money_of(data, "amount_tyiyn"), txt("month")),
@@ -4180,5 +4236,47 @@ mod tests {
         assert!(!in_send_window(20));
         assert_eq!(days_word(2), "2 дня");
         assert_eq!(days_word(5), "5 дней");
+    }
+
+    #[test]
+    fn payout_text_says_where_from_and_what_for() {
+        // Аванс в пределах заработанного — без «сверх»; касса и вид видны.
+        let (t, d) = payout_text(
+            &json!({ "amount_tyiyn": 100_000, "advance": true, "over_tyiyn": 0,
+                     "lines": [{ "purpose": "advance", "amount_tyiyn": 100_000 }] }),
+            "Айбек",
+            Some("Касса"),
+        );
+        assert_eq!(t, "👛 Аванс: Айбек");
+        assert_eq!(d, "1 000 с из «Касса» · за что: аванс");
+        let (t, d) = payout_text(
+            &json!({ "amount_tyiyn": 150_000, "advance": false, "over_tyiyn": 0,
+                     "lines": [{ "purpose": "percent", "amount_tyiyn": 50_000 },
+                               { "purpose": "bonus", "amount_tyiyn": 100_000 }] }),
+            "Айбек",
+            Some("Касса"),
+        );
+        assert_eq!(t, "👛 Выплата: Айбек");
+        assert_eq!(
+            d,
+            "1 500 с из «Касса» · за что: проценты 500 с, бонус 1 000 с"
+        );
+        assert!(!d.contains("сверх"));
+        // Сверх заработанного — только когда так и есть.
+        let (_, d) = payout_text(
+            &json!({ "amount_tyiyn": 300_000, "advance": true, "over_tyiyn": 200_000,
+                     "lines": [{ "purpose": "advance", "amount_tyiyn": 300_000 }] }),
+            "Нурлан",
+            None,
+        );
+        assert_eq!(d, "3 000 с · за что: аванс · сверх заработанного 2 000 с");
+        // Прежняя запись журнала: одна сумма с флагом «аванс».
+        let (t, d) = payout_text(
+            &json!({ "amount_tyiyn": 5_000, "advance": true }),
+            "Нурлан",
+            None,
+        );
+        assert_eq!(t, "👛 Выплата: Нурлан");
+        assert_eq!(d, "50 с · сверх заработанного");
     }
 }

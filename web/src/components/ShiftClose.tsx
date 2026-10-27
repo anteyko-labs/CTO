@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Checkbox, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
 import { ShiftBank } from './ShiftBank'
 import { printShift } from './shiftPrint'
-import { get, newOpId, post } from '../lib/api'
+import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { useCan } from '../lib/permissions'
 import { formatSom, parseSom, somInput } from '../lib/format'
@@ -14,10 +14,24 @@ import { useAction } from '../lib/hooks'
 import { useNumField } from '../lib/cashierMode'
 import { accountLabel, handoverChoices, payAccounts } from '../lib/accounts'
 import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
-import type { CashAccount, PayrollRow, Shift, ShiftSettings } from '../lib/types'
+import type { CashAccount, PayoutRemains, PayrollRow, Shift, ShiftSettings } from '../lib/types'
+import { initialLines, payoutLines, type PayoutLineDraft } from '../lib/payouts'
+import { PayoutLinesEditor } from './PayrollForms'
 
-/** Выплата сотруднику при закрытии смены: галочка, сумма (не больше к выдаче) и свой op_id. */
-type PayLine = { employee_id: string; name: string; owed: number; on: boolean; sum: string; opId: string }
+/**
+ * Выплата сотруднику при закрытии смены: галочка, строки по видам (ADR-122) и свой op_id. Остатки
+ * по видам грузятся, когда сотрудника отметили; `rem` — ответ `/payroll/remains`.
+ */
+type PayLine = {
+  employee_id: string
+  name: string
+  owed: number
+  on: boolean
+  opId: string
+  rem: PayoutRemains | null
+  lines: PayoutLineDraft[]
+  loadError: string | null
+}
 
 type Closing = {
   shift: Shift
@@ -29,6 +43,8 @@ type Closing = {
   pay: PayLine[]
   /** Откуда выплатить отмеченным: касса смены или, у владельца, любой счёт (SPEC-29 §13). */
   payFrom: string
+  /** Пароль владельца: выплата кассиру при закрытии — только с ним (ADR-122). */
+  ownerPassword: string
 }
 
 type Handover = { shift: Shift; sum: string; opId: string; to: string }
@@ -92,11 +108,12 @@ export function useShiftClose(onChanged: () => void): {
       }
       // Кому сколько к выдаче: заработанное сегодня и невыплаченное за прошлые дни (SPEC-27).
       // Администратору сервер отдаёт только мастеров: кассирам выплачивает владелец (SPEC-30 §6).
+      // Кассир этой смены сам себе не выплачивает — его строки нет (ADR-122).
       const staff = can('payroll_pay') ? await get<PayrollRow[]>('/payroll/day') : []
       const pay = staff
-        .filter((r) => r.balance_tyiyn > 0)
-        .map((r) => ({ employee_id: r.employee_id, name: r.full_name, owed: r.balance_tyiyn, on: false, sum: somInput(r.balance_tyiyn), opId: newOpId() }))
-      setClosing({ shift: fresh, counted: null, comment: '', opId: newOpId(), force: false, pay, payFrom: fresh.account_id })
+        .filter((r) => r.balance_tyiyn > 0 && r.employee_id !== fresh.cashier_employee_id)
+        .map((r) => ({ employee_id: r.employee_id, name: r.full_name, owed: r.balance_tyiyn, on: false, opId: newOpId(), rem: null, lines: [], loadError: null }))
+      setClosing({ shift: fresh, counted: null, comment: '', opId: newOpId(), force: false, pay, payFrom: fresh.account_id, ownerPassword: '' })
     })
 
   /** Окно «Сдать кассу»: куда — предлагает сервер (куда сдавали в прошлый раз или сейф магазина). */
@@ -116,18 +133,31 @@ export function useShiftClose(onChanged: () => void): {
   const fromTill = !closing || !shift || closing.payFrom === shift.account_id || !closing.payFrom
   // Выплаты при закрытии уменьшают «должно быть»: пересчитывают то, что осталось после них.
   const payLines = closing?.pay ?? []
-  const payBad = payLines.some((p) => {
-    const v = parseSom(p.sum)
-    return p.on && (v === null || v <= 0 || v > p.owed)
-  })
-  const payTotal = payLines.reduce((acc, p) => (p.on ? acc + Math.max(parseSom(p.sum) ?? 0, 0) : acc), 0)
+  const payResults = payLines.map((p) => payoutLines(p.lines, parseSom))
+  const payBad = payLines.some((p, i) => p.on && (!p.rem || payResults[i].error !== null))
+  const payTotal = payLines.reduce((acc, p, i) => (p.on ? acc + payResults[i].total : acc), 0)
   const payCount = payLines.filter((p) => p.on).length
+  // Кассиру при закрытии выплачивает только владелец своим паролем (ADR-122).
+  const needPassword = payLines.some((p) => p.on && p.rem?.is_cashier)
   // «Должно быть» уменьшают только выплаты из кассы смены.
   const tillPay = fromTill ? payTotal : 0
   const expectedAfter = (shift?.expected_tyiyn ?? 0) - tillPay
   const countedText = closing?.counted ?? somInput(expectedAfter)
   const setPay = (i: number, patch: Partial<PayLine>) =>
-    closing && setClosing({ ...closing, pay: closing.pay.map((p, j) => (j === i ? { ...p, ...patch } : p)) })
+    setClosing((c) => (c ? { ...c, pay: c.pay.map((p, j) => (j === i ? { ...p, ...patch } : p)) } : c))
+  const setPayLine = (i: number, k: number, patch: Partial<PayoutLineDraft>) =>
+    setClosing((c) =>
+      c ? { ...c, pay: c.pay.map((p, j) => (j === i ? { ...p, lines: p.lines.map((l, m) => (m === k ? { ...l, ...patch } : l)) } : p)) } : c,
+    )
+  /** Отметить сотрудника: остатки по видам — с сервера, строки — как в окне «Выплата». */
+  const togglePay = (i: number, on: boolean) => {
+    setPay(i, { on })
+    const p = closing?.pay[i]
+    if (!on || !p || p.rem) return
+    void get<PayoutRemains>(`/payroll/remains${qs({ employee_id: p.employee_id })}`)
+      .then((rem) => setPay(i, { rem, lines: initialLines(rem, { owner, advance: false }, somInput), loadError: null }))
+      .catch((e: unknown) => setPay(i, { loadError: e instanceof Error ? e.message : String(e) }))
+  }
   const closeDiff = (() => {
     if (!closing || !shift) return null
     const counted = parseSom(countedText)
@@ -135,6 +165,7 @@ export function useShiftClose(onChanged: () => void): {
   })()
   const closeMissing = missingWithFocus(
     [!payBad, 'суммы выплат: больше нуля и не больше к выдаче', '#close-pay'],
+    [!needPassword || closing?.ownerPassword !== '', 'пароль владельца — выплата кассиру', '#close-owner-password'],
     [tillPay <= (shift?.expected_tyiyn ?? 0), 'выплат больше, чем в кассе', '#close-pay'],
     [parseSom(countedText) !== null, 'сколько денег в кассе', '#close-counted'],
     [!closeDiff || Boolean(closing?.comment.trim()), 'комментарий к расхождению', '#close-comment'],
@@ -147,14 +178,17 @@ export function useShiftClose(onChanged: () => void): {
       const counted = parseSom(countedText)
       if (counted === null) throw new Error('Неверная сумма')
       // Выплаты и закрытие — одна операция на сервере: либо всё, либо ничего (SPEC-27).
+      // По видам (ADR-122): каждая выплата — строки «за что».
       const payouts = closing.pay
-        .filter((p) => p.on)
-        .map((p) => ({ op_id: p.opId, employee_id: p.employee_id, amount_tyiyn: parseSom(p.sum) ?? 0, account_id: closing.payFrom || undefined }))
+        .map((p, i) => ({ p, lines: payResults[i].lines }))
+        .filter(({ p }) => p.on)
+        .map(({ p, lines }) => ({ op_id: p.opId, employee_id: p.employee_id, lines, account_id: closing.payFrom || undefined }))
       const res = await post<Shift>(`/shifts/${shift.id}/close`, {
         op_id: closing.opId,
         counted_tyiyn: counted,
         comment: closing.comment,
         payouts,
+        ...(needPassword ? { owner_password: closing.ownerPassword } : {}),
       })
       setClosing(null)
       onChanged()
@@ -208,21 +242,38 @@ export function useShiftClose(onChanged: () => void): {
               <div id="close-pay" className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
                 <div className="text-sm font-medium">{fromTill ? 'Выплатить из кассы' : 'Выплатить сотрудникам'}</div>
                 {closing.pay.map((p, i) => (
-                  <div key={p.employee_id} className="flex flex-wrap items-center gap-2" data-testid="close-pay-row">
-                    <div className="min-w-0 flex-1">
-                      <Checkbox label={p.name} checked={p.on} onChange={(v) => setPay(i, { on: v })} />
-                      <div className="pl-7 text-xs text-slate-500">к выдаче {formatSom(p.owed)}</div>
+                  <div key={p.employee_id} className="flex flex-col gap-2" data-testid="close-pay-row">
+                    <div className="min-w-0">
+                      <Checkbox label={p.name} checked={p.on} onChange={(v) => togglePay(i, v)} />
+                      <div className="pl-7 text-xs text-slate-500">
+                        к выдаче {formatSom(p.owed)}
+                        {p.on && p.rem?.is_cashier && ' · кассиру — с паролем владельца'}
+                      </div>
                     </div>
-                    <input
-                      aria-label={`Сумма для ${p.name}`}
-                      className="w-32"
-                      {...num('decimal')}
-                      disabled={!p.on}
-                      value={p.sum}
-                      onChange={(e) => setPay(i, { sum: e.target.value })}
-                    />
+                    {p.on && p.loadError && <div className="text-sm text-rose-700">{p.loadError}</div>}
+                    {p.on && p.rem && p.lines.length > 0 && (
+                      <PayoutLinesEditor
+                        lines={p.lines}
+                        onChange={(k, patch) => setPayLine(i, k, patch)}
+                        total={payResults[i].total}
+                        numProps={num('decimal')}
+                        name={p.name}
+                      />
+                    )}
+                    {p.on && p.rem && p.lines.length === 0 && <div className="text-sm text-slate-600">Выплачивать нечего: по всем видам выдано.</div>}
                   </div>
                 ))}
+                {needPassword && (
+                  <Field label="Пароль владельца" required hint="Кассиру выплачивает владелец: кассир смены не выплачивает сам себе">
+                    <input
+                      id="close-owner-password"
+                      type="password"
+                      autoComplete="current-password"
+                      value={closing.ownerPassword}
+                      onChange={(e) => setClosing({ ...closing, ownerPassword: e.target.value })}
+                    />
+                  </Field>
+                )}
                 {owner && payFromList.length > 1 && (
                   <Field label="Выплатить из">
                     <select id="close-pay-from" value={closing.payFrom} onChange={(e) => setClosing({ ...closing, payFrom: e.target.value })}>
@@ -235,8 +286,8 @@ export function useShiftClose(onChanged: () => void): {
                   </Field>
                 )}
                 <div className="text-xs text-slate-500">
-                  Заработанное сегодня и невыплаченное за прошлые дни. Можно выдать меньше; аванс сверх заработанного — только владелец, в
-                  «Расчёте».
+                  Заработанное сегодня и невыплаченное за прошлые дни — по видам. Можно выдать меньше; аванс — в «Расчёте» или кнопкой
+                  «Выплата сотруднику» на кассе.
                 </div>
               </div>
             )}

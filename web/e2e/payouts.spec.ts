@@ -78,3 +78,65 @@ test('выплата бонуса и аванса одной операцией;
   await expect(entries.getByText(/· бонус ·/)).toBeVisible()
   await expect(entries.getByText(/· аванс ·/)).toBeVisible()
 })
+
+test('закрытие смены: кассира смены нет, кассиру — только с паролем владельца, по видам', async ({ page }) => {
+  await login(page)
+  // Прежнюю смену — закрыть: эту открывает свой кассир.
+  const cur = await apiGet<{ id: string; expected_tyiyn: number } | null>(page.request, '/shifts/current')
+  if (cur) {
+    await apiPost(page.request, `/shifts/${cur.id}/close`, { op_id: crypto.randomUUID(), counted_tyiyn: Math.max(cur.expected_tyiyn, 0), comment: 'сквозной тест' })
+    await apiPost(page.request, `/shifts/${cur.id}/handover`, { op_id: crypto.randomUUID(), amount_tyiyn: 0 })
+  }
+  const own = `Кассир смены ${RUN}`
+  const other = `Кассир другой ${RUN}`
+  const a = await apiPost<{ id: string }>(page.request, '/employees', { full_name: own, is_cashier: true, pin: '2468' })
+  const b = await apiPost<{ id: string }>(page.request, '/employees', { full_name: other, is_cashier: true, pin: '1357' })
+  const shift = await apiPost<{ id: string }>(page.request, '/shifts/open', { op_id: crypto.randomUUID(), cashier_employee_id: a.id, cashier_pin: '2468' })
+  await apiPost(page.request, '/cash/movements', { op_id: crypto.randomUUID(), kind: 'cash_in', amount_tyiyn: 500_000, comment: `размен ${RUN}` })
+  for (const id of [a.id, b.id]) {
+    await apiPost(page.request, '/payroll/accruals', { op_id: crypto.randomUUID(), employee_id: id, kind: 'bonus', amount_tyiyn: 40_000, comment: 'за неделю' })
+  }
+
+  // Сервер: выплата кассиру при закрытии без пароля владельца — 403.
+  const cur2 = await apiGet<{ expected_tyiyn: number }>(page.request, '/shifts/current')
+  const denied = await page.request.post(`/api/v1/shifts/${shift.id}/close`, {
+    headers: DEVICE,
+    data: {
+      op_id: crypto.randomUUID(),
+      counted_tyiyn: cur2.expected_tyiyn - 40_000,
+      payouts: [{ op_id: crypto.randomUUID(), employee_id: b.id, lines: [{ purpose: 'bonus', amount_tyiyn: 40_000 }] }],
+    },
+  })
+  expect(denied.status()).toBe(403)
+  expect(await denied.text()).toContain('Кассиру выплачивает владелец')
+
+  await page.goto('/shift')
+  await page.getByRole('button', { name: 'Закрыть смену' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Закрыть смену' })
+  // Кассира этой смены в списке нет.
+  await expect(dialog.getByTestId('close-pay-row').filter({ hasText: other })).toHaveCount(1)
+  await expect(dialog.getByTestId('close-pay-row').filter({ hasText: own })).toHaveCount(0)
+  const row = dialog.getByTestId('close-pay-row').filter({ hasText: other })
+  await row.getByRole('checkbox').first().check()
+  // Строки по видам — то же окно, что в «Расчёте».
+  await expect(dialog.getByLabel(`Выплатить: Бонус (${other})`)).toBeChecked()
+  await expect(dialog.getByLabel(`Сумма: Бонус (${other})`)).toHaveValue(/400/)
+  await expect(dialog.getByText(/− выплаты 400\sс/)).toBeVisible()
+  const submit = dialog.getByRole('button', { name: 'Выплатить отмеченным и закрыть' })
+  // Без пароля владельца — не закрыть; неверный пароль — ошибка сервера.
+  await expect(dialog.getByText(/пароль владельца — выплата кассиру/)).toBeVisible()
+  await expect(submit).toBeDisabled()
+  await dialog.locator('#close-owner-password').fill('не тот пароль')
+  await submit.click()
+  await expect(dialog.getByText('неверный пароль владельца')).toBeVisible()
+  await dialog.locator('#close-owner-password').fill(OWNER_PASSWORD)
+  await submit.click()
+  await expect(page.getByText(/Выплачено 1, смена закрыта/)).toBeVisible()
+  await page.getByRole('button', { name: 'Деньги остались в кассе' }).click()
+  await expect(page.getByText('Отмечено: деньги остались в кассе')).toBeVisible()
+
+  const rem = await apiGet<Remains>(page.request, `/payroll/remains?employee_id=${b.id}`)
+  expect(rem.remains.bonus_tyiyn).toBe(0)
+  const own_ = await apiGet<Remains>(page.request, `/payroll/remains?employee_id=${a.id}`)
+  expect(own_.remains.bonus_tyiyn).toBe(40_000)
+})

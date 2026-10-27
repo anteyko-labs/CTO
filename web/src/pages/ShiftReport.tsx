@@ -10,6 +10,7 @@ import { formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, form
 import { useAction, useLoad } from '../lib/hooks'
 import { ShiftBank } from '../components/ShiftBank'
 import { printShift } from '../components/shiftPrint'
+import { PURPOSE_LABELS } from '../lib/payouts'
 import {
   CANCEL_REASONS,
   TABS,
@@ -587,6 +588,7 @@ function totalsLabel(key: string, label: string): string {
     transfers_out: 'Переводы из кассы',
     expenses: 'Расходы',
     payouts: 'Выплаты',
+    advances: 'Авансы',
     debt_repayments: 'Оплаты долга',
     supplier_payments: 'Оплаты поставщикам',
     supplier_refunds: 'Деньги от поставщиков',
@@ -706,10 +708,16 @@ function DebtsTab({ data }: { data: Report }) {
 function PayoutsTab({ data }: { data: Report }) {
   const rows = data.payouts
   const pager = usePager(rows, 'shift_report.payouts')
+  // Авансы — отдельно от выплат заработанного (ADR-122).
+  const advances = rows.filter((p) => p.purpose === 'advance')
+  const advanceSum = advances.reduce((a, p) => a + p.amount_tyiyn, 0)
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Tile label="Выдано сотрудникам" value={formatSom(data.payouts_tyiyn)} hint={`${rows.length} ${plural(rows.length, ['выплата', 'выплаты', 'выплат'])}`} />
+        {advances.length > 0 && (
+          <Tile label="Из них авансы" value={formatSom(advanceSum)} hint={`${advances.length} ${plural(advances.length, ['аванс', 'аванса', 'авансов'])}`} testId="payouts-advances" />
+        )}
       </div>
       <Card>
         {rows.length === 0 ? (
@@ -731,7 +739,10 @@ function PayoutsTab({ data }: { data: Report }) {
                   <td className="px-2 py-2 text-right font-medium">
                     <Money value={p.amount_tyiyn} tone="negative" />
                   </td>
-                  <td className="px-2 py-2 text-slate-600">{p.comment || '—'}</td>
+                  <td className="px-2 py-2" data-testid="payout-purpose">
+                    {PURPOSE_LABELS[p.purpose ?? 'general'] ?? p.purpose}
+                    {p.comment && <div className="text-xs text-slate-500">{p.comment}</div>}
+                  </td>
                   <td className="px-2 py-2">{p.account_name ?? 'не из кассы'}</td>
                   <td className="px-2 py-2">{p.user_name}</td>
                 </tr>

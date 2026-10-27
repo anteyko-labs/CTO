@@ -851,34 +851,51 @@ struct OpenReq {
     owner_password: Option<String>,
 }
 
+/// Пароль владельца, который вошёл на этом устройстве (ADR-081, ADR-122): открытие смены за
+/// кассира и выплата кассиру при закрытии. Администратору — 403 `not_owner`. Проверка — до
+/// транзакции: неверная попытка записывается и тогда, когда операция не прошла; пять неверных
+/// за 15 минут — блокировка на 15 минут.
+async fn verify_owner_password(
+    state: &AppState,
+    ctx: &Ctx,
+    password: &str,
+    not_owner: &str,
+) -> AppResult<()> {
+    use crate::api::auth::{MAX_FAILURES, clear_attempts, reserve_with_limit};
+    if !ctx.user.is_owner() {
+        return Err(AppError::ForbiddenWith(not_owner.into()));
+    }
+    if password.len() > 200 {
+        return Err(invalid("неверный пароль владельца"));
+    }
+    let key = format!("shift-owner|{}", ctx.user.id);
+    if let Some(minutes) = reserve_with_limit(state, &key, MAX_FAILURES).await? {
+        return Err(AppError::TooManyRequests(format!(
+            "слишком много неверных паролей, повторите через {minutes} мин"
+        )));
+    }
+    let hash = sqlx::query_scalar!("select password_hash from users where id = $1", ctx.user.id)
+        .fetch_one(&state.pool)
+        .await?;
+    if !crate::auth::verify_password(password.to_string(), hash).await {
+        return Err(invalid("неверный пароль владельца"));
+    }
+    clear_attempts(state, &key).await
+}
+
 /// Открытие смены подтверждает кассир своим PIN или владелец своим паролем (ADR-081).
 /// Проверка — до транзакции: неверная попытка записывается и тогда, когда смену не открыли.
 /// Пять неверных подряд за 15 минут — блокировка на 15 минут (как у входа, ADR-016).
 async fn confirm_opener(state: &AppState, ctx: &Ctx, req: &OpenReq) -> AppResult<&'static str> {
     use crate::api::auth::{MAX_FAILURES, clear_attempts, reserve_with_limit};
     if let Some(password) = req.owner_password.as_deref().filter(|p| !p.is_empty()) {
-        if !ctx.user.is_owner() {
-            return Err(AppError::ForbiddenWith(
-                "паролем смену открывает только владелец; кассир вводит свой PIN".into(),
-            ));
-        }
-        if password.len() > 200 {
-            return Err(invalid("неверный пароль владельца"));
-        }
-        let key = format!("shift-owner|{}", ctx.user.id);
-        if let Some(minutes) = reserve_with_limit(state, &key, MAX_FAILURES).await? {
-            return Err(AppError::TooManyRequests(format!(
-                "слишком много неверных паролей, повторите через {minutes} мин"
-            )));
-        }
-        let hash =
-            sqlx::query_scalar!("select password_hash from users where id = $1", ctx.user.id)
-                .fetch_one(&state.pool)
-                .await?;
-        if !crate::auth::verify_password(password.to_string(), hash).await {
-            return Err(invalid("неверный пароль владельца"));
-        }
-        clear_attempts(state, &key).await?;
+        verify_owner_password(
+            state,
+            ctx,
+            password,
+            "паролем смену открывает только владелец; кассир вводит свой PIN",
+        )
+        .await?;
         return Ok("owner_password");
     }
     let emp = sqlx::query!(
@@ -1041,14 +1058,22 @@ struct CloseReq {
     /// Выплаты отмеченным сотрудникам из кассы смены перед пересчётом (SPEC-27, ADR-071).
     #[serde(default)]
     payouts: Vec<ClosePayout>,
+    /// Пароль владельца: выплата кассиру при закрытии только с ним (ADR-122) — кассир смены
+    /// не выплачивает сам себе.
+    #[serde(default)]
+    owner_password: Option<String>,
 }
 
-/// Выплата при закрытии: обычная выплата SPEC-07 со своим `op_id`.
+/// Выплата при закрытии: обычная выплата SPEC-07 со своим `op_id` — по видам `lines`
+/// (ADR-122) или, как раньше, одной суммой `amount_tyiyn` без вида.
 #[derive(Deserialize)]
 struct ClosePayout {
     op_id: Uuid,
     employee_id: Uuid,
+    #[serde(default)]
     amount_tyiyn: i64,
+    #[serde(default)]
+    lines: Vec<crate::api::payroll::PayoutLine>,
     /// Откуда выплатить (SPEC-29 §13): без него — касса смены. Владелец — любой действующий
     /// счёт, администратор — только касса смены (ADR-076).
     #[serde(default)]
@@ -1067,6 +1092,34 @@ async fn close_shift(
         return Err(invalid("сумма не может быть меньше нуля"));
     }
     ops::check_balance(req.counted_tyiyn)?;
+    if req.payouts.len() > 100 {
+        return Err(invalid("слишком много выплат за раз"));
+    }
+    // Кассиру при закрытии выплачивает только владелец своим паролем (ADR-122): иначе кассир
+    // смены за кассой владельца выдал бы деньги сам себе. Пароль — до транзакции (ADR-081).
+    let paid: Vec<Uuid> = req.payouts.iter().map(|p| p.employee_id).collect();
+    let to_cashier = !paid.is_empty()
+        && sqlx::query_scalar!(
+            r#"select exists(select 1 from employees
+                             where id = any($1) and branch_id = $2 and is_cashier) as "e!""#,
+            &paid,
+            branch_id
+        )
+        .fetch_one(&state.pool)
+        .await?;
+    if to_cashier {
+        match req.owner_password.as_deref().filter(|p| !p.is_empty()) {
+            Some(password) => {
+                verify_owner_password(&state, &ctx, password, "Кассиру выплачивает владелец")
+                    .await?
+            }
+            None => {
+                return Err(AppError::ForbiddenWith(
+                    "Кассиру выплачивает владелец".into(),
+                ));
+            }
+        }
+    }
     let mut tx = state.pool.begin().await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
@@ -1084,9 +1137,6 @@ async fn close_shift(
     // выдаёт только заработанное), и «должно быть» считается уже после них.
     let mut paid_out: i64 = 0;
     if !req.payouts.is_empty() {
-        if req.payouts.len() > 100 {
-            return Err(invalid("слишком много выплат за раз"));
-        }
         let mut seen_emp = std::collections::HashSet::new();
         let mut seen_op = std::collections::HashSet::from([req.op_id]);
         for p in &req.payouts {
@@ -1100,25 +1150,32 @@ async fn close_shift(
         let comment = format!("при закрытии смены № {}", shift.number);
         for p in &req.payouts {
             let from = p.account_id.unwrap_or(shift.account_id);
-            crate::api::payroll::post_payout_tx(
+            // По видам (ADR-122): те же правила, что у выплаты в «Расчёте».
+            let out = crate::api::payroll::post_payouts_tx(
                 &mut tx,
                 &ctx,
-                crate::api::payroll::PayoutReq {
-                    op_id: p.op_id,
-                    employee_id: p.employee_id,
-                    amount_tyiyn: p.amount_tyiyn,
-                    source: Some("account".into()),
-                    account_id: Some(from),
-                    advance: false,
-                    comment: comment.clone(),
+                crate::api::payroll::PayoutsReq {
+                    base: crate::api::payroll::PayoutReq {
+                        op_id: p.op_id,
+                        employee_id: p.employee_id,
+                        amount_tyiyn: p.amount_tyiyn,
+                        source: Some("account".into()),
+                        account_id: Some(from),
+                        advance: false,
+                        comment: comment.clone(),
+                    },
+                    lines: p.lines.clone(),
+                    purpose: None,
                 },
             )
             .await?;
             // «Должно быть» уменьшают только выплаты из кассы смены.
             if from == shift.account_id {
-                paid_out = paid_out
-                    .checked_add(p.amount_tyiyn)
-                    .ok_or_else(crate::error::overflow)?;
+                for l in &out.lines {
+                    paid_out = paid_out
+                        .checked_add(l.amount_tyiyn)
+                        .ok_or_else(crate::error::overflow)?;
+                }
             }
         }
     }

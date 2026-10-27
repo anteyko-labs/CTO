@@ -301,6 +301,8 @@ pub struct PayoutRow {
     pub employee_name: String,
     /// У сторно — с минусом.
     pub amount_tyiyn: i64,
+    /// За что (ADR-122): `percent`, `service_fee`, `bonus`, `salary`, `advance`, у прежних — `general`.
+    pub purpose: String,
     pub comment: String,
     pub account_name: Option<String>,
     pub reversal: bool,
@@ -333,7 +335,7 @@ pub struct ShiftReport {
 }
 
 /// Вид движения наличных и сторона: приход (`true`) или расход.
-const FLOW: [(&str, &str, bool); 17] = [
+const FLOW: [(&str, &str, bool); 18] = [
     ("cash_sales", "Продажи наличными", true),
     ("debt_repayments", "Оплаты долга покупателей", true),
     ("cash_in", "Внесения", true),
@@ -345,6 +347,7 @@ const FLOW: [(&str, &str, bool); 17] = [
     ("sale_returns", "Возвраты покупателям", false),
     ("expenses", "Расходы", false),
     ("payouts", "Выплаты сотрудникам", false),
+    ("advances", "Авансы", false),
     ("cash_out", "Изъятия", false),
     ("transfers_out", "Переводы из кассы", false),
     ("battery_intake", "Приём аккумуляторов", false),
@@ -403,6 +406,15 @@ fn flow_key(kind: &str, doc_type: &str, orig_kind: Option<&str>, amount: i64) ->
             _ => by_sign("other_in", "other_out"),
         },
         _ => by_sign("other_in", "other_out"),
+    }
+}
+
+/// Аванс — отдельной строкой от «Выплат сотрудникам» (ADR-122), сторно аванса — туда же.
+fn advance_key(key: &'static str, payout_purpose: Option<&str>) -> &'static str {
+    if key == "payouts" && payout_purpose == Some("advance") {
+        "advances"
+    } else {
+        key
     }
 }
 
@@ -524,7 +536,9 @@ async fn cash_flow(conn: &mut PgConnection, s: &ShiftOut, w: &Window) -> AppResu
     let rows = sqlx::query!(
         r#"select m.kind, m.doc_type, m.doc_id, m.amount_tyiyn, m.created_at,
                   (select o.kind from cash_movements o
-                   where m.doc_type = 'cash_movement' and o.id = m.doc_id) as "orig_kind?"
+                   where m.doc_type = 'cash_movement' and o.id = m.doc_id) as "orig_kind?",
+                  (select p.purpose from payouts p
+                   where m.doc_type = 'payout' and p.id = m.doc_id) as "payout_purpose?"
            from cash_movements m
            where m.account_id = $1 and m.created_at >= $2
              and (m.created_at < coalesce($3, 'infinity'::timestamptz)
@@ -549,7 +563,10 @@ async fn cash_flow(conn: &mut PgConnection, s: &ShiftOut, w: &Window) -> AppResu
                 .ok_or_else(crate::error::overflow)?;
             continue;
         }
-        let key = flow_key(&r.kind, &r.doc_type, r.orig_kind.as_deref(), r.amount_tyiyn);
+        let key = advance_key(
+            flow_key(&r.kind, &r.doc_type, r.orig_kind.as_deref(), r.amount_tyiyn),
+            r.payout_purpose.as_deref(),
+        );
         add(&mut by, key, r.amount_tyiyn)?;
     }
     // «Должно быть» — то же, что на экране «Смена»; если движения разошлись с ним (гонка при
@@ -994,6 +1011,8 @@ async fn money(
                   ea.name as "article?", ea.owner_only as "article_owner_only?",
                   (select emp.full_name from payouts p join employees emp on emp.id = p.employee_id
                    where m.doc_type = 'payout' and p.id = m.doc_id) as "employee?",
+                  (select p.purpose from payouts p
+                   where m.doc_type = 'payout' and p.id = m.doc_id) as "payout_purpose?",
                   (select pt.name from party_ledger l join parties pt on pt.id = l.party_id
                    where (m.doc_type = 'repayment' and l.doc_type = 'repayment' and l.doc_id = m.doc_id)
                       or (m.doc_type = 'ledger_reversal' and l.id = m.doc_id)
@@ -1019,7 +1038,10 @@ async fn money(
     .await?;
     let mut out: Vec<MoneyRow> = Vec::with_capacity(moves.len());
     for m in moves {
-        let key = flow_key(&m.kind, &m.doc_type, m.orig_kind.as_deref(), m.amount_tyiyn);
+        let key = advance_key(
+            flow_key(&m.kind, &m.doc_type, m.orig_kind.as_deref(), m.amount_tyiyn),
+            m.payout_purpose.as_deref(),
+        );
         let key = match key {
             "count_plus" | "count_minus" | "other_in" | "other_out" => "other",
             k => k,
@@ -1116,6 +1138,7 @@ async fn money(
         "supplier_refunds",
         "expenses",
         "payouts",
+        "advances",
         "supplier_payments",
         "battery_intake",
         "cash_out",
@@ -1162,6 +1185,7 @@ fn money_label(key: &str) -> &'static str {
         "transfers" => "Перевод между счетами",
         "expenses" => "Расход",
         "payouts" => "Выплата",
+        "advances" => "Аванс",
         "supplier_payments" => "Оплата поставщику",
         "debt_repayments" => "Оплата долга",
         "supplier_refunds" => "Деньги от поставщика",
@@ -1225,7 +1249,7 @@ async fn payouts(
     Ok(sqlx::query_as!(
         PayoutRow,
         r#"select p.id, p.number, p.created_at, e.full_name as employee_name, p.amount_tyiyn,
-                  p.comment, a.name as "account_name?", p.reversal_of is not null as "reversal!",
+                  p.purpose, p.comment, a.name as "account_name?", p.reversal_of is not null as "reversal!",
                   u.full_name as user_name
            from payouts p
            join employees e on e.id = p.employee_id

@@ -337,4 +337,51 @@ test.describe('режим кассы 1366×768: «Чек смены» и «За�
     await expect.poll(async () => (await prints(page)).filter((t) => t.includes(`Чек смены № ${shift.number}`)).length).toBe(2)
     await page.evaluate(() => localStorage.removeItem('avtodom.cashier_mode'))
   })
+
+  test('«Выплата сотруднику» на кассе; аванс — отдельной строкой в отчёте и чеке смены (SPEC-36 §11)', async ({ page }) => {
+    await page.addInitScript(PRINT_STUB)
+    await login(page)
+    const { shift } = await shiftWithSales(page.request, 'Д')
+    const master = `Мастер аванса ${RUN}`
+    const m = await apiPost<{ id: string }>(page.request, '/employees', { full_name: master, is_master: true })
+    await page.goto('/')
+    await page.evaluate(() => localStorage.setItem('avtodom.cashier_mode', '1'))
+    await page.reload()
+    // Одна кнопка среди редких действий кассы — под палец, страница не прокручивается.
+    const btn = page.getByRole('button', { name: 'Выплата сотруднику' })
+    await expect(btn).toHaveCount(1)
+    const box = (await btn.boundingBox())!
+    expect(box.height).toBeGreaterThanOrEqual(56)
+    expect(box.width).toBeGreaterThanOrEqual(56)
+    expect(
+      await page.evaluate(() => {
+        const el = document.scrollingElement ?? document.documentElement
+        return el.scrollHeight <= window.innerHeight + 1 && el.scrollWidth <= window.innerWidth + 1
+      }),
+    ).toBe(true)
+    await btn.tap()
+    const dialog = page.getByRole('dialog')
+    const pick = dialog.locator('#staff-payout-employee')
+    await expect(pick.locator('option', { hasText: master })).toHaveCount(1)
+    // Кассир смены сам себе не выплачивает — его в списке нет.
+    await expect(pick.locator('option', { hasText: `Кассир чека Д ${RUN}` })).toHaveCount(0)
+    await pick.selectOption(m.id)
+    await dialog.getByLabel('Выплатить: Аванс').check()
+    await dialog.getByLabel('Сумма: Аванс').fill('300')
+    await dialog.getByRole('button', { name: 'Выплатить', exact: true }).tap()
+    await expect(page.getByText('Выплачено из кассы')).toBeVisible()
+    await page.evaluate(() => localStorage.removeItem('avtodom.cashier_mode'))
+
+    // Отчёт смены: «Авансы» — своей строкой, во вкладке «Выплаты» — за что.
+    await page.goto(`/shifts/${shift.id}`)
+    await expect(page.getByText('Авансы', { exact: true }).first()).toBeVisible()
+    await page.getByRole('tab', { name: /Выплаты/ }).click()
+    await expect(page.getByTestId('payouts-advances')).toContainText(money('300 с'))
+    await expect(page.getByRole('row', { name: new RegExp(master) }).getByTestId('payout-purpose')).toContainText('Аванс')
+    await page.getByRole('button', { name: 'Печать чека смены' }).click()
+    await expect.poll(async () => (await prints(page)).length).toBe(1)
+    const check = (await prints(page))[0]
+    expect(check).toMatch(new RegExp(`Авансы 300,00 с ${master} 300,00 с`))
+    await closeOpenShift(page.request)
+  })
 })

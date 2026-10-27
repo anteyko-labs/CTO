@@ -8,6 +8,7 @@ import { amountInput, fixedText } from '../lib/docFix'
 import { formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
+import { useNumField, useTouchMode } from '../lib/cashierMode'
 import { initialLines, payoutLines, PURPOSE_LABELS, type PayoutLineDraft } from '../lib/payouts'
 import type { CashAccount, PayoutRemains } from '../lib/types'
 import { FIX_SUBMIT, FixBanner, type FixMode } from './FixDraft'
@@ -112,6 +113,7 @@ function PayoutLinesForm({ employeeId, onCancel, onDone }: { employeeId: string;
   const set = (i: number, patch: Partial<PayoutLineDraft>) => setEdited(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)))
   const [comment, setComment] = useState('')
   const from = usePayFrom('')
+  const num = useNumField()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
   const [opId] = useState(newOpId)
   const act = useAction()
@@ -146,39 +148,13 @@ function PayoutLinesForm({ employeeId, onCancel, onDone }: { employeeId: string;
       {lines.length === 0 ? (
         <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">Выплачивать нечего: по всем видам выдано.</div>
       ) : (
-        <div className="flex flex-col divide-y divide-slate-100 rounded-md border border-slate-200">
-          {lines.map((l, i) => {
-            const label = PURPOSE_LABELS[l.purpose]
-            const over = l.checked && l.purpose !== 'advance' && (parseSom(l.sum) ?? 0) > l.remain
-            return (
-              <div key={l.purpose} className="flex flex-wrap items-center gap-3 px-3 py-2">
-                <label className="flex min-h-[42px] min-w-48 flex-1 items-center gap-2 text-sm">
-                  <input type="checkbox" aria-label={`Выплатить: ${label}`} checked={l.checked} onChange={(e) => set(i, { checked: e.target.checked })} />
-                  <span>
-                    <span className="font-medium">{label}</span>
-                    <span className="block text-xs text-slate-500">
-                      {l.purpose === 'advance'
-                        ? `в счёт ${rem.data?.advance_to === 'salary' ? 'оклада' : 'оплаты за услуги'}${owner ? '; можно сверх заработанного' : ''}`
-                        : `к выдаче ${formatSom(l.remain)}`}
-                    </span>
-                  </span>
-                </label>
-                <input
-                  className={`w-36 text-right ${over ? 'border-rose-400' : ''}`}
-                  inputMode="decimal"
-                  aria-label={`Сумма: ${label}`}
-                  value={l.sum}
-                  disabled={!l.checked}
-                  onChange={(e) => set(i, { sum: e.target.value })}
-                />
-              </div>
-            )
-          })}
-          <div className="flex items-center justify-between px-3 py-2 font-semibold">
-            <span>Итого</span>
-            <Money value={result.total} />
-          </div>
-        </div>
+        <PayoutLinesEditor
+          lines={lines}
+          onChange={set}
+          total={result.total}
+          numProps={num('decimal')}
+          advanceHint={`в счёт ${rem.data?.advance_to === 'salary' ? 'оклада' : 'оплаты за услуги'}${owner ? '; можно сверх заработанного' : ''}`}
+        />
       )}
       {withheld < 0 && (
         <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -190,6 +166,68 @@ function PayoutLinesForm({ employeeId, onCancel, onDone }: { employeeId: string;
       </Field>
       <ErrorBox error={act.error ?? (lines.length > 0 && result.lines.length > 0 ? result.error : null)} />
       <Footer label="Выплатить" fix={false} onCancel={onCancel} onSubmit={pay} disabled={act.busy || !rem.data || result.error !== null} />
+    </div>
+  )
+}
+
+/**
+ * Строки выплаты по видам (ADR-122): галочка, к выдаче, сумма; внизу итог. Одно и то же в «Расчёте»,
+ * при закрытии смены и на кассе. `numProps` — поле суммы с экранной клавиатурой режима кассы.
+ */
+export function PayoutLinesEditor({
+  lines,
+  onChange,
+  total,
+  advanceHint,
+  numProps,
+  name,
+}: {
+  lines: PayoutLineDraft[]
+  onChange: (i: number, patch: Partial<PayoutLineDraft>) => void
+  total: number
+  advanceHint?: string
+  numProps?: Record<string, unknown>
+  /** Чьи строки — в подписях полей, когда в окне несколько сотрудников. */
+  name?: string
+}) {
+  const touch = useTouchMode()
+  const of = name ? ` (${name})` : ''
+  return (
+    <div className="flex flex-col divide-y divide-slate-100 rounded-md border border-slate-200" data-testid="payout-lines">
+      {lines.map((l, i) => {
+        const label = PURPOSE_LABELS[l.purpose]
+        const over = l.checked && l.purpose !== 'advance' && (parseSom(l.sum) ?? 0) > l.remain
+        return (
+          <div key={l.purpose} className="flex flex-wrap items-center gap-3 px-3 py-2">
+            <label className={`flex min-w-48 flex-1 items-center gap-2 text-sm ${touch ? 'min-h-[56px]' : 'min-h-[42px]'}`}>
+              <input
+                type="checkbox"
+                className={touch ? 'h-6 w-6' : undefined}
+                aria-label={`Выплатить: ${label}${of}`}
+                checked={l.checked}
+                onChange={(e) => onChange(i, { checked: e.target.checked })}
+              />
+              <span>
+                <span className="font-medium">{label}</span>
+                <span className="block text-xs text-slate-500">{l.purpose === 'advance' ? (advanceHint ?? '') : `к выдаче ${formatSom(l.remain)}`}</span>
+              </span>
+            </label>
+            <input
+              className={`w-36 text-right ${touch ? 'min-h-[56px]' : ''} ${over ? 'border-rose-400' : ''}`}
+              inputMode="decimal"
+              {...numProps}
+              aria-label={`Сумма: ${label}${of}`}
+              value={l.sum}
+              disabled={!l.checked}
+              onChange={(e) => onChange(i, { sum: e.target.value })}
+            />
+          </div>
+        )
+      })}
+      <div className="flex items-center justify-between px-3 py-2 font-semibold">
+        <span>Итого{of}</span>
+        <Money value={total} />
+      </div>
     </div>
   )
 }

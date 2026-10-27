@@ -137,6 +137,8 @@ export interface PayoutRow {
   created_at: string
   employee_name: string
   amount_tyiyn: number
+  /** За что (ADR-122); у прежних выплат — `general`. */
+  purpose?: string
   comment: string
   account_name: string | null
   reversal: boolean

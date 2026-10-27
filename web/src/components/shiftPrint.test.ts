@@ -128,6 +128,21 @@ describe('чек смены (SPEC-36 §10)', () => {
     expect(t).toContain('Выручка 1 500,00 с')
   })
 
+  it('авансы — отдельной строкой от выплат, у выплаты — за что (ADR-122)', () => {
+    const r = report(false)
+    r.cash.outgo = [
+      { key: 'payouts', label: 'Выплаты сотрудникам', amount_tyiyn: 50_000 },
+      { key: 'advances', label: 'Авансы', amount_tyiyn: 20_000 },
+    ]
+    const base = { created_at: '2026-10-27T05:00:00Z', comment: '', account_name: 'Касса', reversal: false, user_name: 'Админ' }
+    r.payouts = [
+      { ...base, id: 'p1', number: 1, employee_name: 'Иман', amount_tyiyn: 50_000, purpose: 'percent' },
+      { ...base, id: 'p2', number: 2, employee_name: 'Нурлан', amount_tyiyn: 20_000, purpose: 'advance' },
+    ]
+    const t = plain(shiftHtml(r))
+    expect(t).toMatch(/Выплаты сотрудникам 500,00 с Иман, проценты 500,00 с Авансы 200,00 с Нурлан 200,00 с/)
+  })
+
   it('безнал печатается и без движений по счёту', () => {
     const r = report(false)
     r.shift.bank_split = [{ account_id: 'b', name: 'Счёт', card_tyiyn: 0, transfer_tyiyn: 0, fee_tyiyn: 0, total_tyiyn: 0, landed_tyiyn: 0 }]

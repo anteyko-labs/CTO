@@ -465,7 +465,9 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
     assert_eq!(amount_of(&c["outgo"], "expenses"), 30_000);
     assert_eq!(amount_of(&c["outgo"], "cash_out"), 10_000);
     assert_eq!(amount_of(&c["outgo"], "transfers_out"), 100_000);
-    assert_eq!(amount_of(&c["outgo"], "payouts"), 15_000);
+    // Аванс — своей строкой, не в «Выплатах сотрудникам» (ADR-122).
+    assert_eq!(amount_of(&c["outgo"], "advances"), 15_000);
+    assert_eq!(amount_of(&c["outgo"], "payouts"), 0);
     assert_eq!(c["expected_tyiyn"], 245_000);
     assert!(c["counted_tyiyn"].is_null());
 
@@ -511,7 +513,7 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
     assert_eq!(amount_of(mt, "cash_in"), 500_000);
     assert_eq!(amount_of(mt, "cash_out"), 10_000);
     assert_eq!(amount_of(mt, "expenses"), 30_000);
-    assert_eq!(amount_of(mt, "payouts"), 15_000);
+    assert_eq!(amount_of(mt, "advances"), 15_000);
     assert_eq!(amount_of(mt, "transfers_out"), 100_000);
     assert_eq!(amount_of(mt, "debt_repayments"), 20_000);
     assert_eq!(amount_of(mt, "supplier_payments"), 200_000);
@@ -526,7 +528,7 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
         .find(|m| m["kind"] == "debt_repayments")
         .unwrap();
     assert_eq!(repay["counterparty"], "ОсОО Клиент");
-    let payout = money.iter().find(|m| m["kind"] == "payouts").unwrap();
+    let payout = money.iter().find(|m| m["kind"] == "advances").unwrap();
     assert_eq!(payout["counterparty"], "Мастер Бек");
 
     let debts = r["debts"].as_array().unwrap();
@@ -546,6 +548,7 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
     assert_eq!(payouts.len(), 1);
     assert_eq!(payouts[0]["employee_name"], "Мастер Бек");
     assert_eq!(payouts[0]["account_name"], "Касса");
+    assert_eq!(payouts[0]["purpose"], "advance");
     assert_eq!(r["payouts_tyiyn"], 15_000);
 
     let cancelled = r["cancelled"].as_array().unwrap();

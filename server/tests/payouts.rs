@@ -699,3 +699,186 @@ async fn month_keeps_disabled_employee_while_money_is_open(pool: PgPool) {
     assert!(ids.contains(&gone.as_str()), "{m}");
     assert!(!ids.contains(&quiet.as_str()), "{m}");
 }
+
+impl W {
+    async fn shift(&self) -> Value {
+        get(&self.app, &self.owner, "/api/v1/shifts/current").await
+    }
+
+    /// Закрыть смену с выплатами: пересчитано ровно «должно быть» минус выплаты из кассы.
+    async fn close(
+        &self,
+        who: &str,
+        payouts: Value,
+        paid: i64,
+        password: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let shift = self.shift().await;
+        let id = shift["id"].as_str().unwrap().to_string();
+        let expected = shift["expected_tyiyn"].as_i64().unwrap();
+        let mut body = json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": expected - paid, "payouts": payouts });
+        if let Some(p) = password {
+            body["owner_password"] = json!(p);
+        }
+        let (s, _, out) = call(
+            &self.app,
+            "POST",
+            &format!("/api/v1/shifts/{id}/close"),
+            Some(who),
+            Some(body),
+        )
+        .await;
+        (s, out)
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn shift_close_pays_by_purpose_and_cashier_only_with_owner_password(pool: PgPool) {
+    // Закрытие смены: выплаты по видам; кассиру — только с паролем владельца (ADR-122).
+    let w = world(pool).await;
+    w.accrue(&w.cashier, "revenue_percent", 50_000).await;
+    w.accrue(&w.cashier, "bonus", 20_000).await;
+    let to_cashier = || {
+        json!([{ "op_id": Uuid::now_v7(), "employee_id": w.cashier,
+                 "lines": [{ "purpose": "percent", "amount_tyiyn": 50_000 },
+                           { "purpose": "bonus", "amount_tyiyn": 20_000 }] }])
+    };
+    // Без пароля владельца — 403, даже у владельца: за его кассой может сидеть кассир.
+    let (s, out) = w.close(&w.owner, to_cashier(), 70_000, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    assert!(
+        out["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Кассиру выплачивает владелец"),
+        "{out}"
+    );
+    // Неверный пароль — 422; пароль от администратора — 403.
+    let (s, out) = w
+        .close(&w.owner, to_cashier(), 70_000, Some("не тот"))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    let (s, out) = w
+        .close(&w.admin, to_cashier(), 70_000, Some("owner-pass-1"))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    assert!(w.purposes(&w.cashier).await.is_empty());
+    assert!(w.shift().await["closed_at"].is_null());
+    // Строка больше остатка своего вида — 422, смена не закрыта.
+    let (s, out) = w
+        .close(
+            &w.owner,
+            json!([{ "op_id": Uuid::now_v7(), "employee_id": w.cashier,
+                     "lines": [{ "purpose": "bonus", "amount_tyiyn": 30_000 }] }]),
+            30_000,
+            Some("owner-pass-1"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    // С паролем — проведено: две записи по видам, «должно быть» уменьшилось на обе.
+    let (s, out) = w
+        .close(&w.owner, to_cashier(), 70_000, Some("owner-pass-1"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["diff_tyiyn"], 0, "{out}");
+    assert_eq!(
+        w.purposes(&w.cashier).await,
+        vec![
+            ("percent".to_string(), 50_000),
+            ("bonus".to_string(), 20_000)
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn admin_closes_shift_paying_master_for_services(pool: PgPool) {
+    // Администратор при закрытии выплачивает мастеру за услуги без пароля; бонус — владелец.
+    let w = world(pool).await;
+    w.accrue(&w.master, "service_fee", 3_000).await;
+    w.accrue(&w.master, "bonus", 10_000).await;
+    let (s, out) = w
+        .close(
+            &w.admin,
+            json!([{ "op_id": Uuid::now_v7(), "employee_id": w.master,
+                     "lines": [{ "purpose": "bonus", "amount_tyiyn": 10_000 }] }]),
+            10_000,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    let (s, out) = w
+        .close(
+            &w.admin,
+            json!([{ "op_id": Uuid::now_v7(), "employee_id": w.master,
+                     "lines": [{ "purpose": "service_fee", "amount_tyiyn": 3_000 }] }]),
+            3_000,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["diff_tyiyn"], 0, "{out}");
+    assert_eq!(
+        w.purposes(&w.master).await,
+        vec![("service_fee".to_string(), 3_000)]
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn shift_report_shows_advances_apart_from_payouts(pool: PgPool) {
+    // Отчёт смены: «Авансы» — отдельной строкой от «Выплат сотрудникам», у выплаты — за что.
+    let w = world(pool).await;
+    w.accrue(&w.cashier, "revenue_percent", 50_000).await;
+    let (s, out) = w
+        .pay(
+            &w.owner,
+            &w.cashier,
+            json!([{ "purpose": "percent", "amount_tyiyn": 50_000 },
+                   { "purpose": "advance", "amount_tyiyn": 200_000 }]),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Для ленты: сколько выдано сверх заработанного.
+    let data: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'payout.post' order by created_at desc limit 1",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(data["over_tyiyn"], 200_000, "{data}");
+    let id = w.shift().await["id"].as_str().unwrap().to_string();
+    let rep = get(&w.app, &w.owner, &format!("/api/v1/shifts/{id}/report")).await;
+    let outgo = rep["cash"]["outgo"].as_array().unwrap();
+    let line = |k: &str| {
+        outgo.iter().find(|l| l["key"] == k).map(|l| {
+            (
+                l["label"].as_str().unwrap().to_string(),
+                l["amount_tyiyn"].as_i64().unwrap(),
+            )
+        })
+    };
+    assert_eq!(
+        line("payouts"),
+        Some(("Выплаты сотрудникам".into(), 50_000)),
+        "{outgo:?}"
+    );
+    assert_eq!(
+        line("advances"),
+        Some(("Авансы".into(), 200_000)),
+        "{outgo:?}"
+    );
+    let mut purposes: Vec<&str> = rep["payouts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["purpose"].as_str().unwrap())
+        .collect();
+    purposes.sort_unstable();
+    assert_eq!(purposes, vec!["advance", "percent"]);
+    let totals = rep["money_totals"].as_array().unwrap();
+    assert!(
+        totals
+            .iter()
+            .any(|l| l["key"] == "advances" && l["amount_tyiyn"] == 200_000),
+        "{totals:?}"
+    );
+}

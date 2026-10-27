@@ -1,6 +1,7 @@
 // Чек смены 80 мм (SPEC-36 §10, ADR-120): печать через окно браузера, как товарный чек. Данные —
 // отчёт смены `GET /shifts/{id}/report`; себестоимость и прибыль сервер отдаёт только владельцу,
 // и шаблон показывает их только при `owner_view` (инвариант 6).
+import { PURPOSE_LABELS } from '../lib/payouts'
 import { get } from '../lib/api'
 import { branchLabel } from '../lib/branch'
 import { formatDateTime, formatSomExact } from '../lib/format'
@@ -59,11 +60,18 @@ export function shiftHtml(r: ShiftReport): string {
     (banks.length > 1 ? row('Весь безнал смены', all.total, { strong: true }) + row('Упало на счета', all.landed, { sub: true }) : '') +
     (banks.length === 0 ? '<tr><td colspan="2">Безналичных счетов нет</td></tr>' : '')
 
-  // Выплаты — кому сколько, под строкой «Выплаты сотрудникам».
-  const payouts = r.payouts.map((p) => row(`${p.employee_name}${p.reversal ? ' (сторно)' : ''}`, p.amount_tyiyn, { deep: true })).join('')
+  // Выплаты — кому сколько и за что, под строкой «Выплаты сотрудникам»; авансы — под «Авансами» (ADR-122).
+  const whom = (advance: boolean) =>
+    r.payouts
+      .filter((p) => (p.purpose === 'advance') === advance)
+      .map((p) => {
+        const what = !advance && p.purpose && p.purpose !== 'general' ? `, ${PURPOSE_LABELS[p.purpose]?.toLowerCase() ?? p.purpose}` : ''
+        return row(`${p.employee_name}${what}${p.reversal ? ' (сторно)' : ''}`, p.amount_tyiyn, { deep: true })
+      })
+      .join('')
   const outgo = c.outgo
     .filter((l) => l.amount_tyiyn !== 0)
-    .map((l) => row(l.label, l.amount_tyiyn, { sub: true }) + (l.key === 'payouts' ? payouts : ''))
+    .map((l) => row(l.label, l.amount_tyiyn, { sub: true }) + (l.key === 'payouts' ? whom(false) : l.key === 'advances' ? whom(true) : ''))
     .join('')
   const diff = c.diff_tyiyn
   const cash =

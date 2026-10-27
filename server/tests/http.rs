@@ -9009,7 +9009,9 @@ async fn handover_to_chosen_account_and_payouts_from_any_account(pool: PgPool) {
         let body = json!({
             "op_id": Uuid::now_v7(), "counted_tyiyn": 2_500_000,
             "payouts": [{ "op_id": Uuid::now_v7(), "employee_id": cashier,
-                          "amount_tyiyn": 30_000, "account_id": account }]
+                          "amount_tyiyn": 30_000, "account_id": account }],
+            // Кассиру при закрытии — только с паролем владельца (ADR-122).
+            "owner_password": "owner-pass-1"
         });
         let uri = format!("/api/v1/shifts/{sid}/close");
         async move { call(&app, "POST", &uri, Some(&who), Some(body)).await }

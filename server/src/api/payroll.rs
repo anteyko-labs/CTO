@@ -2403,15 +2403,6 @@ async fn post_payout(
     Ok(Json(out))
 }
 
-/// Выплата одной суммой — закрытие смены (SPEC-27).
-pub async fn post_payout_tx(
-    conn: &mut PgConnection,
-    ctx: &Ctx,
-    req: PayoutReq,
-) -> AppResult<PayoutOut> {
-    post_payouts_tx(conn, ctx, req.into()).await
-}
-
 /// Строк в одной выплате — не больше, чем видов.
 const MAX_PAYOUT_LINES: usize = PAYOUT_PURPOSES.len();
 
@@ -2620,6 +2611,8 @@ pub async fn post_payouts_tx(
         json!({
             "amount_tyiyn": total,
             "advance": advance,
+            // Сколько выдано сверх всего заработанного — для ленты владельца.
+            "over_tyiyn": total.saturating_sub(balance.max(0)).max(0),
             "account_id": id,
             "lines": lines,
         }),

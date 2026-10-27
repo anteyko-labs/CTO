@@ -10,6 +10,7 @@ import { CorrectionBanner } from '../components/Correction'
 import { balanceText, ClientPicker } from '../components/ClientPicker'
 import { GiftPicker } from '../components/GiftPicker'
 import { QuickExpense } from '../components/QuickExpense'
+import { StaffPayout } from '../components/StaffPayout'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
@@ -374,6 +375,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // докупили больше — касса спросит снова.
   const [giftAsked, setGiftAsked] = useState<Record<string, number>>({})
   const [expense, setExpense] = useState(false)
+  const [staffPay, setStaffPay] = useState(false)
   const [servicesOpen, setServicesOpen] = useState(false)
   // «В сервис» сразу открывает выбор вида замены (ADR-096).
   const [kindsOpen, setKindsOpen] = useState(false)
@@ -1782,7 +1784,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             // «В сервис» место под чеком занимают данные замены (SPEC-30 §17) — редкие действия кассы
             // доступны на вынос.
             serviceLeft ? null : (
-            <div className={`mt-2 grid grid-cols-2 gap-2 ${user.role === 'owner' && !fix ? 'sm:grid-cols-5' : 'sm:grid-cols-4'}`}>
+            <div className={`mt-2 grid grid-cols-2 gap-2 ${['sm:grid-cols-4', 'sm:grid-cols-5', 'sm:grid-cols-6'][Number(user.role === 'owner' && !fix) + Number(can(user, 'payroll_pay') && !fix)]}`}>
               {can(user, 'debt_payment') && (
                 <button type="button" className={tbtn} onClick={() => setDebtPay(true)}>
                   <Icon name="debts" className="h-5 w-5 shrink-0" />
@@ -1803,6 +1805,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <button type="button" className={tbtn} onClick={sellBatteries}>
                 Аккумуляторы на вес
               </button>
+              {/* Выплата сотруднику (SPEC-36 §11): то же окно, что в «Расчёте»; правила — на сервере. */}
+              {can(user, 'payroll_pay') && !fix && (
+                <button type="button" className={tbtn} onClick={() => setStaffPay(true)}>
+                  <Icon name="payroll" className="h-5 w-5 shrink-0" />
+                  Выплата сотруднику
+                </button>
+              )}
               {/* Возврат без чека — только владелец (ADR-105). */}
               {user.role === 'owner' && !fix && (
                 <button type="button" className={tbtn} onClick={() => setNoReceipt(true)}>
@@ -1830,6 +1839,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 items={[
                   ...(can(user, 'battery_intake') ? [{ label: 'Приём аккумуляторов', onClick: () => setBatteryIntake(true) }] : []),
                   { label: 'Аккумуляторы на вес', onClick: sellBatteries },
+                  ...(can(user, 'payroll_pay') ? [{ label: 'Выплата сотруднику', onClick: () => setStaffPay(true) }] : []),
                   ...(user.role === 'owner' ? [{ label: 'Возврат без чека', onClick: () => setNoReceipt(true) }] : []),
                 ]}
               />
@@ -2812,6 +2822,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       )}
       {giftRule && <GiftPicker rule={giftRule} onPick={addGift} onClose={() => setGiftRule(null)} />}
       {expense && <QuickExpense onClose={() => setExpense(false)} />}
+      {staffPay && <StaffPayout shiftCashier={shiftCashier} onClose={() => setStaffPay(false)} />}
       {bonusOpen && (
         <BonusRedeem
           total={total}
