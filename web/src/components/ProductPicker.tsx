@@ -8,7 +8,7 @@ import { formatKg, formatOilStock, formatSom } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
 import { isShortCode, resolveEnter, resultsMatch, searchRank } from '../lib/pickerResults'
 import { useKeyboardTop } from '../lib/cashierMode'
-import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
+import { findByBarcode, lookupOffline, readSnapshot, searchSnapshot } from '../lib/offline'
 import { SCAN_EVENT } from '../lib/scanner'
 import type { OldCatalogHit, Product } from '../lib/types'
 import { searchUmag, umagStep, unlinkedHit } from '../lib/umagLink'
@@ -243,7 +243,7 @@ export function ProductPicker({
     try {
       pick(await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`), 'scan', code)
     } catch (e) {
-      if (e instanceof ApiError && e.status === 0) {
+      if (lookupOffline(e)) {
         const snap = await readSnapshot()
         const found = snap ? findByBarcode(snap, code) : undefined
         if (found) {

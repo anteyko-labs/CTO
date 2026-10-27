@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, noServerAnswer, uuidv7 } from './api'
+import { ApiError, api, noServerAnswer, randomId, uuidv7 } from './api'
 
 const reply = (body: string, status: number) => vi.fn(async () => new Response(body, { status }))
 
@@ -69,5 +69,20 @@ describe('идентификатор операции', () => {
     expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(parseInt(id.replace(/-/g, '').slice(0, 12), 16)).toBe(Date.parse('2026-10-20T00:00:00Z'))
     expect(uuidv7(1) < uuidv7(2)).toBe(true)
+  })
+})
+
+describe('случайный идентификатор', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('UUID версии 4 без crypto.randomUUID (простой HTTP не с localhost)', () => {
+    vi.spyOn(crypto, 'randomUUID').mockImplementation(() => {
+      throw new TypeError('crypto.randomUUID is not a function')
+    })
+    const id = randomId()
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(randomId()).not.toBe(id)
   })
 })

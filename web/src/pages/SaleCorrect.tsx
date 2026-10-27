@@ -2,7 +2,7 @@
 // исходного и верный чек одной операцией; после — переход к новому чеку.
 import { Link, useParams } from 'react-router-dom'
 import { ErrorBox, Loading } from '../components/ui'
-import { get } from '../lib/api'
+import { get, randomId } from '../lib/api'
 import { loadCorrectionDraft } from '../lib/corrections'
 import { useLoad } from '../lib/hooks'
 import { saleFixState, type SaleDraftDoc } from '../lib/saleFix'
@@ -19,7 +19,7 @@ async function loadFix(id: string) {
     doc.party_id ? get<Party>(`/parties/${doc.party_id}`) : Promise.resolve(null),
   ])
   const byId = new Map(products.filter((p): p is Product => p !== null).map((p) => [p.id, p]))
-  const state = saleFixState(doc, byId, new Map(services.map((s) => [s.id, s])), party, () => crypto.randomUUID())
+  const state = saleFixState(doc, byId, new Map(services.map((s) => [s.id, s])), party, () => randomId())
   return { originalId: id, number: draft.number, state }
 }
 

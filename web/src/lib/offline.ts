@@ -3,7 +3,7 @@
 // кода и для онлайна, и для офлайна, поэтому обрыв связи ничего не теряет.
 
 import { openDB, type IDBPDatabase } from 'idb'
-import { ApiError, api, deviceId, noServerAnswer, serverReachable, setServerReachable } from './api'
+import { ApiError, api, deviceId, noServerAnswer, randomId, serverReachable, setServerReachable } from './api'
 import { branchHeaders, selectedBranch } from './branch'
 import { cartIsEmpty } from './cartDraft'
 import { searchRank } from './pickerResults'
@@ -430,7 +430,7 @@ function tempNumber(): string {
     localStorage.setItem(TEMP_COUNTER_KEY, String(n))
     return formatTempNumber(deviceId, String(n).padStart(4, '0'))
   } catch {
-    const seq = Date.now().toString(36).slice(-4) + crypto.randomUUID().slice(0, 2)
+    const seq = Date.now().toString(36).slice(-4) + randomId().slice(0, 2)
     return formatTempNumber(deviceId, seq.toUpperCase())
   }
 }
@@ -590,6 +590,16 @@ export function setQueueUser(u: QueueUser | null): void {
 export function keepInQueue(e: unknown): boolean {
   if (!(e instanceof ApiError)) return true
   return noServerAnswer(e) || e.status >= 500 || e.status === 401
+}
+
+/**
+ * Поиск товара по коду не получил ответа по существу: связи нет, прокси без сервера (502 Caddy,
+ * пока сервер перезапускается) или сервер упал (5xx) — товар ищется в снимке кассы. «Не найден»
+ * (404) и прочие отказы остаются ответом сервера.
+ */
+export function lookupOffline(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return true
+  return noServerAnswer(e) || e.status >= 500
 }
 
 /** Что делать с чеком после ошибки отправки из очереди. */
