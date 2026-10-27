@@ -441,7 +441,16 @@ export interface SaleBook {
   plate: string
   mileage: number | null
   mileage_unit: 'km' | 'mi'
-  lines: { label: string; next_mileage: number; unit: 'km' | 'mi'; next_date: string | null }[]
+  lines: { label: string; next_mileage: number; unit: 'km' | 'mi'; next_date: string | null; slot?: BookSlot }[]
+  /** «Залито» — жидкости чека с товаром и количеством (ADR-116); у старого чека нет. */
+  filled?: SaleBookFill[]
+}
+
+/** Жидкость чека в чеке книжки: «Антифриз» — «Sintec G12 · 2 шт» или «масло клиента» (ADR-116). */
+export interface SaleBookFill {
+  slot: BookSlot
+  label: string
+  product: string
 }
 
 export interface SaleListItem {

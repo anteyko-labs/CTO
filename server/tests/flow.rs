@@ -10977,11 +10977,12 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
         .iter()
         .map(|l| (l.label.clone(), l.next_mileage))
         .collect();
+    // Строкой книжки, а не услугой (ADR-116).
     assert_eq!(
         printed,
         vec![
-            ("Замена масла".to_string(), 225_000),
-            ("Замена антифриза".to_string(), 250_000)
+            ("Масло двигателя".to_string(), 225_000),
+            ("Антифриз".to_string(), 250_000)
         ]
     );
     assert_eq!(
@@ -11136,11 +11137,12 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
     // печатный чек, в книжку и в бот. Цель по строке, которой в чеке нет, книжка не добавляет.
     use avtodom_server::api::oil_book::{books, record_lines};
     let w = seed(&pool).await;
-    // Воздушный фильтр в общей категории «Фильтры»: строка книжки — по типу фильтра.
+    // Топливный фильтр в общей категории «Фильтры»: строка книжки — по типу фильтра. Топливный —
+    // по своему сроку и с заменой масла (масляный, воздушный и салонный — на пробег масла, ADR-117).
     let air = Uuid::now_v7();
     sqlx::query(
         "insert into products (id, category_id, name, unit, attrs)
-         select $1, category_id, 'Фильтр воздушный MANN C-110', 'piece', '{\"filter_type\": \"воздушный\"}'::jsonb
+         select $1, category_id, 'Фильтр топливный MANN WK-842', 'piece', '{\"filter_type\": \"топливный\"}'::jsonb
          from products where id = $2",
     )
     .bind(air)
@@ -11157,7 +11159,7 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
     .await
     .unwrap();
     // У общей категории «Фильтры» (её строка — масляный фильтр) интервал владельца 9 000 км / 200
-    // дней: воздушному фильтру он не подходит — срок по умолчанию строки, как в книжке (`slot_next`).
+    // дней: топливному фильтру он не подходит — срок по умолчанию строки, как в книжке (`slot_next`).
     sqlx::query(
         "update categories set book_interval_km = 9000, book_interval_days = 200
          where id = (select category_id from products where id = $1)",
@@ -11184,7 +11186,7 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
     req.mileage = Some(217_000);
     req.next_changes = vec![
         next_change(Some(w.service), None, Some(225_000)),
-        next_change(None, Some("air_filter"), Some(232_000)),
+        next_change(None, Some("fuel_filter"), Some(232_000)),
         // Антифриза в чеке нет: такой строки книжка не добавляет.
         next_change(None, Some("antifreeze"), Some(277_000)),
     ];
@@ -11195,19 +11197,15 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
             .fetch_one(&pool)
             .await
             .unwrap();
-    let year = day.checked_add_days(chrono::Days::new(365));
-    // Печатный чек: масло — по услуге, воздушный фильтр — строкой книжки, срок — год по умолчанию.
+    let year = day.checked_add_days(chrono::Days::new(730));
+    // Печатный чек — только жидкости (ADR-116): фильтр в книжке, но не в чеке.
     let book = sale.book.unwrap();
     let printed: Vec<(&str, i32)> = book
         .lines
         .iter()
         .map(|l| (l.label.as_str(), l.next_mileage))
         .collect();
-    assert_eq!(
-        printed,
-        vec![("Замена масла", 225_000), ("Фильтр воздушный", 232_000)]
-    );
-    assert_eq!(book.lines[1].next_date, year);
+    assert_eq!(printed, vec![("Масло двигателя", 225_000)]);
     // Книжка: цель — у строки этого товара, без услуги; строки антифриза нет.
     let mut conn = pool.acquire().await.unwrap();
     let b = books(&mut conn, Some(client.0), None)
@@ -11225,10 +11223,10 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
         got,
         vec![
             ("oil", Some("Замена масла"), Some(225_000)),
-            ("air_filter", None, Some(232_000))
+            ("fuel_filter", None, Some(232_000))
         ]
     );
-    let air_next = b.slots.iter().find(|n| n.slot == "air_filter").unwrap();
+    let air_next = b.slots.iter().find(|n| n.slot == "fuel_filter").unwrap();
     assert_eq!(
         (air_next.next_km, air_next.next_date),
         (Some(232_000), year)
@@ -11238,7 +11236,7 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
     let lines = record_lines(rec, "");
     assert!(
         lines.iter().any(|l| l.starts_with(
-            "Фильтр воздушный: Фильтр воздушный MANN C-110 · 1 шт — следующая замена на 232 000 км"
+            "Фильтр топливный: Фильтр топливный MANN WK-842 · 1 шт — следующая замена на 232 000 км"
         )),
         "{lines:?}"
     );

@@ -71,26 +71,20 @@ export function saleHtml(sale: Sale, change: number | null): string {
   </body></html>`
 }
 
-/** Масляная книжка чека «В сервис» (SPEC-34 §4): машина, пробег сейчас и следующие замены;
- *  строки без напоминания не печатаются. */
+/** Масляная книжка чека «В сервис» (SPEC-34 §4, ADR-116): машина, пробег сейчас, что залито —
+ *  жидкости с товаром — и следующая замена по ним, только пробег (ADR-115); строки без напоминания
+ *  не печатаются. */
 export function bookHtml(sale: Pick<Sale, 'sale_type' | 'kind' | 'book'>): string {
   const b = sale.book
   if (!b || sale.kind === 'return' || sale.sale_type !== 'service') return ''
   const car = [b.brand, b.model].map((x) => x.trim()).filter(Boolean).join(' ')
-  const day = (iso: string) => {
-    const [y, m, d] = iso.split('-')
-    return `${d}.${m}.${y}`
-  }
-  const lines = b.lines
-    .map(
-      (l) =>
-        `<div class="nx">${esc(l.label)} — следующая замена на пробеге ${esc(mileageText(l.next_mileage, l.unit))}${l.next_date ? ` или до ${day(l.next_date)}` : ''}</div>`,
-    )
-    .join('')
+  const filled = (b.filled ?? []).map((f) => `<div>${esc(f.label)}: ${esc(f.product)}</div>`).join('')
+  const lines = b.lines.map((l) => `<div>${esc(l.label)}: на ${esc(mileageText(l.next_mileage, l.unit))}</div>`).join('')
   return `<div class="book"><b>Масляная книжка</b>
     <div>Машина: ${esc([car, b.plate.trim()].filter(Boolean).join(', '))}</div>
     ${b.mileage !== null ? `<div>Пробег сейчас: ${esc(mileageText(b.mileage, b.mileage_unit))}</div>` : ''}
-    ${lines}</div>`
+    ${filled ? `<div class="nx">Залито:</div>${filled}` : ''}
+    ${lines ? `<div class="nx">Следующая замена:</div>${lines}` : ''}</div>`
 }
 
 /** Дата чека: день и время записи; если учётный день другой (чек без сети после полуночи,

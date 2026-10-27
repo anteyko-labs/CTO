@@ -2,8 +2,12 @@
 // книжки. Поле заполнено заранее — пробег сейчас + интервал (у машины свой — он, иначе услуги);
 // кассир меняет число или очищает (пустое — не напоминать по этой строке). «+ ещё строку» — только
 // позиции этого чека (уточнение заказчика 26.10.2026): товары со строкой книжки, а не справочник услуг.
+// Масляный, воздушный и салонный фильтры при строке масла двигателя своих строк не дают — они на
+// пробег масла (ADR-117).
 import { productTitle } from './battery'
+import { formatLiters } from './format'
 import { fromKm, type MileageUnit } from './mileage'
+import { isFluid } from './oilBook'
 import { BOOK_SLOT_LABELS, type BookSlot, type Product, type SaleBook, type Service } from './types'
 
 export interface NextRow {
@@ -18,6 +22,17 @@ export interface NextRow {
   value: string
   prefill: string
   interval_days: number | null
+  /** У строки масла двигателя — фильтры чека, которые идут на тот же пробег: «воздушный». */
+  filters?: string[]
+}
+
+/** Фильтры, которые меняют вместе с маслом двигателя (ADR-117); топливный — по своему сроку. */
+const WITH_OIL: Partial<Record<BookSlot, string>> = { oil_filter: 'масляный', air_filter: 'воздушный', cabin_filter: 'салонный' }
+const followsOil = (slot: BookSlot): boolean => WITH_OIL[slot] !== undefined
+
+/** «и фильтры: воздушный, салонный — на тот же пробег» под строкой масла; фильтров нет — ''. */
+export function filtersNote(r: Pick<NextRow, 'filters'>): string {
+  return r.filters?.length ? `и ${r.filters.length > 1 ? 'фильтры' : 'фильтр'}: ${r.filters.join(', ')} — на тот же пробег` : ''
 }
 
 /** Интервал строки у машины (SPEC-27): км и дни. */
@@ -49,6 +64,18 @@ export interface CartPosition {
   product?: Product
   service?: Service
   gift?: boolean
+  /** Вид строки и количество, как набрал кассир, — для «что залито» (ADR-116). */
+  kind?: string
+  qtyText?: string
+}
+
+/** Товар чека со строкой книжки: что и сколько залили. */
+export interface CartGood {
+  slot: BookSlot
+  name: string
+  kind: string
+  qty: string
+  containerMl: number | null
 }
 
 const SLOTS = new Set<string>(Object.keys(BOOK_SLOT_LABELS))
@@ -133,6 +160,42 @@ export function cartSources(lines: readonly CartPosition[], categories: readonly
   return out
 }
 
+/** Товары чека со строкой книжки (не «прочее») по порядку строк; подарок книжка не пишет. */
+export function cartGoods(lines: readonly CartPosition[], categories: readonly CategoryBook[] | null): CartGood[] {
+  const out: CartGood[] = []
+  for (const l of lines) {
+    const p = l.product
+    if (!p || l.gift) continue
+    const slot = productSlot(categories?.find((c) => c.id === p.category_id)?.book_slot, p.attrs?.filter_type)
+    if (!slot || slot === 'other') continue
+    out.push({ slot, name: productTitle(p), kind: l.kind ?? 'piece', qty: (l.qtyText ?? '1').trim(), containerMl: p.container_ml ?? null })
+  }
+  return out
+}
+
+/** Товар на кассе под строкой «Следующей замены»: «Sintec G12 × 2», «Totachi × 1 кан.», «ATF × 1,5 л». */
+export function goodShort(g: CartGood): string {
+  const qty = g.kind === 'container' ? `${g.qty} кан.` : g.kind === 'pour' ? `${g.qty} л` : g.qty
+  return `${g.name} × ${qty}`
+}
+
+/** Товар в чеке книжки — как запись книжки на сервере: «Sintec G12 · 2 шт», «Totachi · 1 кан. × 4 л». */
+export function goodBook(g: CartGood): string {
+  const liters = (ml: number) => formatLiters(ml).replace(/ /g, ' ')
+  const qty =
+    g.kind === 'container' && g.containerMl ? `${g.qty} кан. × ${liters(g.containerMl)}` : g.kind === 'pour' ? `${g.qty} л` : `${g.qty} шт`
+  return `${g.name} · ${qty}`
+}
+
+/**
+ * «Это замена?» (ADR-117): в чеке «В сервис» моторного масла не меньше канистры его категории
+ * (`enough` — категории масла с канистрой), а услуги масла двигателя нет — без неё это доливка.
+ */
+export function oilChangeHint(lines: readonly CartPosition[], categories: readonly CategoryBook[] | null, enough: ReadonlySet<string>): boolean {
+  if (lines.some((l) => l.service && serviceSlot(l.service) === 'oil')) return false
+  return [...enough].some((id) => categories?.find((c) => c.id === id)?.book_slot === 'oil')
+}
+
 export function nextRows(args: {
   /** Позиции чека со строкой книжки (`cartSources`). */
   sources: readonly NextSource[]
@@ -167,7 +230,13 @@ export function nextRows(args: {
     const s = args.sources.find((x) => x.slot === slot)
     if (s) add(s, true)
   }
-  return out
+  // Есть строка масла двигателя — масляный, воздушный и салонный фильтры чека своих строк не дают:
+  // сервер ставит им цель масла (ADR-117). Под строкой масла — какие фильтры с ней.
+  const oil = out.find((r) => r.slot === 'oil')
+  if (!oil) return out
+  const filters = [...new Set(args.sources.map((s) => s.slot).filter(followsOil))]
+  if (filters.length) oil.filters = filters.map((s) => WITH_OIL[s] ?? s)
+  return out.filter((r) => !followsOil(r.slot))
 }
 
 /** Строка, где следующая замена меньше пробега сейчас: «Провести» нельзя. */
@@ -195,8 +264,10 @@ export function nextPayload(rows: NextRow[]): NextChange[] {
  */
 export function extraChoices(sources: readonly NextSource[], rows: readonly NextRow[]): NextSource[] {
   const used = new Set<BookSlot>(rows.map((r) => r.slot))
+  // Фильтры, которые идут с маслом, при строке масла не предлагаются (ADR-117).
+  const withOil = used.has('oil')
   return sources.filter((s) => {
-    if (used.has(s.slot)) return false
+    if (used.has(s.slot) || (withOil && followsOil(s.slot))) return false
     used.add(s.slot)
     return true
   })
@@ -229,28 +300,38 @@ const addDays = (iso: string, days: number): string => {
   return d.toISOString().slice(0, 10)
 }
 
-/** Книжка для печатного чека, пока чек в очереди без сети (SPEC-34 §4): как отдаст сервер — услуга,
- *  а у строки по товару — строка книжки. */
+/** Книжка для печатного чека, пока чек в очереди без сети (SPEC-34 §4): как отдаст сервер — только
+ *  жидкости строк «Следующей замены» (ADR-116): что залито — товары чека этой строки, без товара —
+ *  своё у клиента; следующая замена — непустые строки. */
 export function receiptBook(
   car: { brand: string; model: string; plate: string },
   mileage: string,
   unit: MileageUnit,
   rows: NextRow[],
   today: string,
+  goods: readonly CartGood[] = [],
 ): SaleBook {
+  const fluids = rows.filter((r) => isFluid(r.slot))
   return {
     brand: car.brand,
     model: car.model,
     plate: car.plate,
     mileage: mileage ? Number(mileage) : null,
     mileage_unit: unit,
-    lines: rows
+    lines: fluids
       .filter((r) => r.value !== '')
       .map((r) => ({
-        label: r.service_id ? r.label : BOOK_SLOT_LABELS[r.slot],
+        label: BOOK_SLOT_LABELS[r.slot],
         next_mileage: Number(r.value),
         unit,
         next_date: r.interval_days ? addDays(today, r.interval_days) : null,
+        slot: r.slot,
       })),
+    filled: fluids.flatMap((r) => {
+      const label = BOOK_SLOT_LABELS[r.slot]
+      const own = goods.filter((g) => g.slot === r.slot)
+      if (own.length) return own.map((g) => ({ slot: r.slot, label, product: goodBook(g) }))
+      return [{ slot: r.slot, label, product: r.slot === 'oil' || r.slot === 'gear_oil' ? 'масло клиента' : 'жидкость клиента' }]
+    }),
   }
 }

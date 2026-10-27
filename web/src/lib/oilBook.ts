@@ -93,12 +93,21 @@ export function recordLines(r: OilRecord): BookLine[] {
   return out
 }
 
-/** «следующая замена на 225 000 км или до 05.01.2027» — цель кассира у строки; без цели — ''. */
+/** «следующая замена на 225 000 км» — цель кассира у строки, только пробег (ADR-115); у цели без
+ *  пробега — «по сроку до 05.01.2027»; без цели — ''. */
 export function lineNextText(l: BookLine): string {
-  const at = l.next_mileage != null ? `на ${mileageText(l.next_mileage, l.next_unit ?? 'km')}` : null
-  const by = l.next_date ? `до ${formatDate(l.next_date)}` : null
-  const when = [at, by].filter(Boolean).join(' или ')
-  return when ? `следующая замена ${when}` : ''
+  if (l.next_mileage != null) return `следующая замена на ${mileageText(l.next_mileage, l.next_unit ?? 'km')}`
+  return l.next_date ? `следующая замена по сроку до ${formatDate(l.next_date)}` : ''
+}
+
+/** Жидкости книжки (ADR-116, ADR-117): масло двигателя, масло в коробке, антифриз, тормозная. */
+export const isFluid = (slot: BookSlot): boolean => slot === 'oil' || slot === 'gear_oil' || slot === 'antifreeze' || slot === 'brake_fluid'
+
+/** Чем залили строку книжки: товар с количеством; строка по услуге без товара — своё у клиента. */
+export function fluidText(l: BookLine): string {
+  const own = l.text === (l.service ?? '') || l.text === slotLabel(l.slot)
+  if (!own) return l.text
+  return l.slot === 'oil' || l.slot === 'gear_oil' ? 'масло клиента' : 'жидкость клиента'
 }
 
 /** Что сделали одной строкой: «Масло 5W-30 · Фильтр W712». */
@@ -116,13 +125,15 @@ export function recordMileage(r: Pick<OilRecord, 'mileage' | 'mileage_unit' | 'm
   return r.mileage_km !== null ? mileageText(r.mileage_km, 'km') : null
 }
 
-/** «на 93 000 км или до 12.04.2027» (в милях — у машины в милях); пусто — срока нет. */
+/** «на 93 000 км» (в милях — у машины в милях) — только пробег (ADR-115); у строки без пробега —
+ *  «по сроку до 12.04.2027»; пусто — срока нет. */
 export function slotNextText(n: Pick<SlotNext, 'next_km' | 'next_date' | 'next_mileage' | 'unit'>): string {
   const at = n.next_mileage !== undefined && n.next_mileage !== null ? mileageText(n.next_mileage, n.unit) : n.next_km !== null ? km(n.next_km) : null
-  return [at !== null ? `на ${at}` : null, n.next_date ? `до ${formatDate(n.next_date)}` : null].filter(Boolean).join(' или ')
+  if (at !== null) return `на ${at}`
+  return n.next_date ? `по сроку до ${formatDate(n.next_date)}` : ''
 }
 
-/** Следующая замена масла одной строкой: «на 93 000 км или до 12.04.2027». */
+/** Следующая замена масла одной строкой: «на 93 000 км». */
 export function nextText(b: VehicleBook): string {
   return slotNextText({ ...b, unit: b.mileage_unit }) || 'пока не с чего считать'
 }
@@ -146,12 +157,6 @@ function saleSlots(b: VehicleBook, saleId: string): Set<string> {
 export function slotsOfSale(b: VehicleBook, saleId: string): SlotNext[] {
   const own = saleSlots(b, saleId)
   return slotsWithNext(b).filter((n) => own.has(n.slot))
-}
-
-/** Остальные строки книжки со сроком — по прошлым заменам (в печати — с датой замены). */
-export function slotsBeforeSale(b: VehicleBook, saleId: string): SlotNext[] {
-  const own = saleSlots(b, saleId)
-  return slotsWithNext(b).filter((n) => !own.has(n.slot))
 }
 
 /** Самый ранний срок по строкам: просрочена ли замена хоть по одной. */

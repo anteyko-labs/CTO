@@ -546,6 +546,7 @@ test('замена в сервисе у физлица: машина, обяза
   await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка')), { message: 'книжка ушла на печать' }).toBe(true)
   const html = (await prints(page)).find((h) => h.includes('Масляная книжка')) ?? ''
   expect(html).toContain(plate)
-  expect(html).toContain('Замена масла (масло клиента) книжка')
+  // Чек книжки (ADR-116): у замены без нашего масла — «масло клиента».
+  expect(html).toMatch(/Залито:[\s\S]*Масло двигателя[\s\S]*масло клиента/)
   expect(html).toMatch(/120\s500 км/)
 })

@@ -333,7 +333,8 @@ for (const mode of [
       await open(page)
       const g = await goods(page.request)
       const tag = `${RUN}${++seq}`
-      const service = `Замена масла в моторе ещё скан ${tag}`
+      // Замена масла в коробке: с маслом двигателя фильтры своих строк не дают (ADR-117), а здесь нужны.
+      const service = `Замена масла в коробке ещё скан ${tag}`
       await api(page.request, 'POST', '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
       const last = `Скан${tag}`
       const party = await api<{ id: string }>(page.request, 'POST', '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0703${tag.slice(-6)}` })
