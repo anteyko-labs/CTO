@@ -41,25 +41,41 @@ export default function UmagLink() {
         back={<StockBackLink to="/products" label="Товары" />}
         subtitle="Коды строки старой базы Умаг становятся кодами товара: по ним товар найдут касса, приход, ревизия — и касса без сети."
       />
-      <div data-testid="umag-page" className="flex flex-col gap-4">
-        <Summary stats={stats.data} error={stats.error} onChanged={changed} />
-        {empty ? (
-          <Card>
-            <Empty icon="products">
-              Список Умага не загружен. Владелец загружает выгрузку Excel в «Ревизия и товары» →{' '}
-              <Link to="/revision?tab=scan" className="text-sky-700 underline">
-                «Сканер товаров»
-              </Link>
-              .
-            </Empty>
-          </Card>
-        ) : (
-          <>
-            <Pairs tick={tick} onChanged={changed} />
-            <Rows tick={tick} onChanged={changed} />
-          </>
-        )}
-      </div>
+      {/* Пары и строки — когда известно, включён ли Умаг: выключенный отвечает 409. */}
+      {!stats.data ? (
+        stats.error ? <ErrorBox error={stats.error} /> : <Loading />
+      ) : stats.data.enabled === false ? (
+        // Умаг выключен (SPEC-36 §15): связывать нечего, коды у товаров остались.
+        <Card>
+          <Empty icon="products">
+            Старая база Умаг выключена — связывать нечего, перенесённые коды остались у товаров. Включает владелец в{' '}
+            <Link to="/settings" className="text-sky-700 underline">
+              «Настройках»
+            </Link>
+            .
+          </Empty>
+        </Card>
+      ) : (
+        <div data-testid="umag-page" className="flex flex-col gap-4">
+          <Summary stats={stats.data} error={stats.error} onChanged={changed} />
+          {empty ? (
+            <Card>
+              <Empty icon="products">
+                Список Умага не загружен. Владелец загружает выгрузку Excel в «Ревизия и товары» →{' '}
+                <Link to="/revision?tab=scan" className="text-sky-700 underline">
+                  «Сканер товаров»
+                </Link>
+                .
+              </Empty>
+            </Card>
+          ) : (
+            <>
+              <Pairs tick={tick} onChanged={changed} />
+              <Rows tick={tick} onChanged={changed} />
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }

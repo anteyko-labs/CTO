@@ -459,6 +459,8 @@ pub struct ProductFilter {
     pub no_limit: bool,
     /// Отбор по складу в списке товаров (SPEC-30 §11); поиску и складу не нужен.
     pub stock: StockChip,
+    /// Подытоги по категориям — «Склад → Остатки» (SPEC-36 §14).
+    pub group_category: bool,
 }
 
 pub(crate) fn escape_like(s: &str) -> String {
@@ -668,6 +670,7 @@ async fn search_products(
             .unwrap_or(50),
         no_limit: whole_kind,
         stock: StockChip::All,
+        group_category: false,
     };
     let mut conn = state.pool.acquire().await?;
     Ok(Json(query_products(&mut conn, &user, f).await?))
@@ -748,6 +751,8 @@ pub enum StockChip {
     Stale,
     /// Отмечен «проверить».
     Review,
+    /// Остаток не ноль — «Склад → Остатки» (SPEC-36 §14); минус тоже виден.
+    InStock,
 }
 
 impl StockChip {
@@ -757,6 +762,7 @@ impl StockChip {
             "out" => Self::Out,
             "stale" => Self::Stale,
             "review" => Self::Review,
+            "in_stock" => Self::InStock,
             _ => Self::All,
         }
     }
@@ -768,6 +774,7 @@ impl StockChip {
             Self::Out => p.stock_qty <= 0,
             Self::Stale => stale,
             Self::Review => p.needs_review,
+            Self::InStock => p.stock_qty != 0,
         }
     }
 }
@@ -816,6 +823,61 @@ pub struct ProductListTotals {
     /// Срок залежалости, дней (ADR-039).
     #[serde(default)]
     pub stale_days: i32,
+    /// Подытоги по категориям (`group=category`, SPEC-36 §14) — по всему отбору, по названию.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_totals: Option<Vec<CategoryTotal>>,
+}
+
+/// Подытог категории в «Склад → Остатки»: позиции, количество по единицам, суммы.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CategoryTotal {
+    pub category_id: Uuid,
+    pub name: String,
+    pub kind: String,
+    /// Позиций в группе.
+    pub count: i64,
+    /// Штучного товара, шт.
+    pub pieces: i64,
+    /// Масла, мл.
+    pub ml: i64,
+    /// Весового товара, г.
+    pub grams: i64,
+    /// Тара, если у всего масла группы она одна: тогда итог показывают «кан. + л».
+    pub container_ml: Option<i64>,
+    /// По закупке — только владельцу (ADR-008).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase_tyiyn: Option<i64>,
+    pub sale_tyiyn: i64,
+}
+
+/// Подытог категории, пока складываются строки: тара — одна на всё масло или разная.
+struct GroupAcc {
+    total: CategoryTotal,
+    purchase: i64,
+    tare: Option<Option<i64>>,
+}
+
+impl GroupAcc {
+    fn add(&mut self, p: &ProductOut, v: &Valuation) -> Option<()> {
+        let t = &mut self.total;
+        t.count = t.count.checked_add(1)?;
+        let qty = match p.unit.as_str() {
+            "ml" => &mut t.ml,
+            "g" => &mut t.grams,
+            _ => &mut t.pieces,
+        };
+        *qty = qty.checked_add(p.stock_qty)?;
+        if p.unit == "ml" {
+            self.tare = match self.tare {
+                None => Some(p.container_ml),
+                Some(c) if c == p.container_ml => Some(c),
+                Some(_) => Some(None),
+            };
+        }
+        t.sale_tyiyn = t.sale_tyiyn.checked_add(v.stock_sale)?;
+        self.purchase = self.purchase.checked_add(v.stock_purchase)?;
+        Some(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -839,6 +901,7 @@ pub async fn product_list(
     let limit = usize::try_from(f.limit.clamp(1, 2000)).unwrap_or(2000);
     f.no_limit = true;
     let chip = f.stock;
+    let grouped = f.group_category;
     let rows = query_products_raw(conn, user, f).await?;
     // Залежалые (ADR-039) — тем же запросом, что сводка и бот: числа сходятся.
     let (stale_days, stale_rows) = crate::api::receipts::stale_list(conn, user.branch_id).await?;
@@ -855,6 +918,7 @@ pub async fn product_list(
         })
         .collect();
     let mut counts = StockCounts::default();
+    let mut groups: HashMap<Uuid, GroupAcc> = HashMap::new();
     let mut items = Vec::with_capacity(rows.len());
     let (mut purchase, mut sale) = (0i64, 0i64);
     for (mut p, raw) in rows {
@@ -880,6 +944,28 @@ pub async fn product_list(
         sale = sale
             .checked_add(v.stock_sale)
             .ok_or_else(crate::error::overflow)?;
+        if grouped {
+            groups
+                .entry(p.category_id)
+                .or_insert_with(|| GroupAcc {
+                    total: CategoryTotal {
+                        category_id: p.category_id,
+                        name: String::new(),
+                        kind: p.category_kind.clone(),
+                        count: 0,
+                        pieces: 0,
+                        ml: 0,
+                        grams: 0,
+                        container_ml: None,
+                        purchase_tyiyn: None,
+                        sale_tyiyn: 0,
+                    },
+                    purchase: 0,
+                    tare: None,
+                })
+                .add(&p, &v)
+                .ok_or_else(crate::error::overflow)?;
+        }
         let code = if p.article.trim().is_empty() {
             p.barcodes.first().cloned().unwrap_or_default()
         } else {
@@ -933,6 +1019,35 @@ pub async fn product_list(
         };
         unit.then(o).then_with(|| by_name(a, b))
     });
+    let category_totals = if grouped {
+        let ids: Vec<Uuid> = groups.keys().copied().collect();
+        let names: HashMap<Uuid, String> =
+            sqlx::query!("select id, name from categories where id = any($1)", &ids)
+                .fetch_all(&mut *conn)
+                .await?
+                .into_iter()
+                .map(|r| (r.id, r.name))
+                .collect();
+        let mut list: Vec<CategoryTotal> = groups
+            .into_values()
+            .map(|g| {
+                let mut t = g.total;
+                t.name = names.get(&t.category_id).cloned().unwrap_or_default();
+                t.container_ml = g.tare.flatten();
+                t.purchase_tyiyn = owner.then_some(g.purchase);
+                t
+            })
+            .collect();
+        list.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.category_id.cmp(&b.category_id))
+        });
+        Some(list)
+    } else {
+        None
+    };
     // Страница отбора (SPEC-28 §2): итоги — по всему отбору, строки — только страницы.
     items.drain(..offset.min(items.len()));
     items.truncate(limit);
@@ -944,6 +1059,7 @@ pub async fn product_list(
             sale_tyiyn: sale,
             counts,
             stale_days,
+            category_totals,
         },
     })
 }
@@ -970,6 +1086,7 @@ async fn list_products(
         stock: params
             .get("stock")
             .map_or(StockChip::All, |s| StockChip::parse(s)),
+        group_category: params.get("group").is_some_and(|v| v == "category"),
         ..Default::default()
     };
     let sort = params.get("sort").map_or("name", String::as_str);

@@ -1,13 +1,13 @@
 // Каркас приложения: вход, меню по ролям (боковое и нижнее на телефоне), маршруты всех экранов.
 // Какой экран за какую спецификацию отвечает — docs/DEVELOPMENT.md, раздел «Карта кода».
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
 import { can } from './lib/permissions'
 import type { Permission } from './lib/types'
 import { logoutWarning, outboxItems, startOfflineLoop } from './lib/offline'
 import { useTouchMode } from './lib/cashierMode'
-import { stockToProducts } from './lib/stockLink'
+import Stock from './pages/Stock'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
 import { BranchSwitch } from './components/BranchSwitch'
@@ -104,8 +104,9 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/receipts', label: 'Приход', icon: 'incoming', permission: ['receipts', 'stock_in'] },
       { to: '/suppliers', label: 'Поставщики', icon: 'truck' },
       { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return', permission: 'supplier_returns' },
-      // «Остатки» — в «Товарах» (SPEC-30 §11).
       { to: '/products', label: 'Товары', icon: 'products' },
+      // «Склад → Остатки» — что лежит на складе (SPEC-36 §14); «Товары» — справочник.
+      { to: '/stock', label: 'Остатки', icon: 'stock' },
       { to: '/top-products', label: 'Продаваемые', icon: 'star' },
       { to: '/revision', label: 'Ревизия и товары', icon: 'revision', permission: ['revision', 'products'] },
       { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', permission: 'oil_transfer' },
@@ -180,12 +181,6 @@ function useUnseen(enabled: boolean): number {
     }
   }, [enabled])
   return n
-}
-
-/** «Остатки» вошли в «Товары» (SPEC-30 §11): старый адрес — туда же, с теми же отборами. */
-function StockRedirect() {
-  const { search } = useLocation()
-  return <Navigate to={stockToProducts(search)} replace />
 }
 
 /** Пересоздаёт страницу при смене :id, чтобы окна и идентификаторы операций не переносились между документами. */
@@ -337,7 +332,7 @@ function Shell() {
           <Route path="/receipts/new" element={<ReceiptNew />} />
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           {owner && <Route path="/receipts/:id/correct" element={<ByParam><ReceiptCorrect /></ByParam>} />}
-          <Route path="/stock" element={<StockRedirect />} />
+          <Route path="/stock" element={<Stock />} />
           <Route path="/products" element={<Products />} />
           {/* Связь товаров со старой базой Умаг (SPEC-35 §3): владелец и право «Товары и штрихкоды». */}
           {can(user, 'products') && <Route path="/products/umag" element={<UmagLink />} />}

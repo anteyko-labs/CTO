@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { productsLink, stockToProducts } from './stockLink'
+import { isOldStockLink, productsLink, stockToProducts } from './stockLink'
 
 describe('«Остатки» ведут на «Товары» (SPEC-30 §11)', () => {
   it('без отборов — просто «Товары»', () => {
@@ -18,5 +18,15 @@ describe('«Остатки» ведут на «Товары» (SPEC-30 §11)', (
   it('ссылки сводки — на нужный отбор', () => {
     expect(productsLink('low')).toBe('/products?stock=low')
     expect(productsLink()).toBe('/products')
+  })
+})
+
+describe('«Склад → Остатки» на /stock (SPEC-36 §14)', () => {
+  it('без отборов — новая страница, с отбором или «Браком» — «Товары»', () => {
+    expect(isOldStockLink('')).toBe(false)
+    expect(isOldStockLink('?q=лампа&category_id=abc')).toBe(false)
+    expect(isOldStockLink('?filter=low')).toBe(true)
+    expect(isOldStockLink('?low=true')).toBe(true)
+    expect(isOldStockLink('?tab=defects')).toBe(true)
   })
 })

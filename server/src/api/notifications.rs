@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 67] = [
+pub(crate) const WATCHED: [&str; 69] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -87,6 +87,8 @@ pub(crate) const WATCHED: [&str; 67] = [
     "bank_recon.mismatch",
     "optima.key",
     "settings.optima",
+    "old_catalog.disable",
+    "old_catalog.enable",
 ];
 
 #[derive(Serialize)]
@@ -1117,6 +1119,23 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 match text("reason") {
                     r if r.is_empty() => String::new(),
                     r => format!(" ({r})"),
+                }
+            ),
+        ),
+        "old_catalog.disable" | "old_catalog.enable" => (
+            if action == "old_catalog.enable" {
+                "Старая база Умаг включена".into()
+            } else {
+                "Старая база Умаг выключена".into()
+            },
+            format!(
+                "строк в списке: {}, связано с товарами: {}{}",
+                num("rows").unwrap_or(0),
+                num("linked").unwrap_or(0),
+                if action == "old_catalog.enable" {
+                    ""
+                } else {
+                    "; коды у товаров остались"
                 }
             ),
         ),

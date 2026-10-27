@@ -12,6 +12,7 @@ import { findByBarcode, readSnapshot, searchSnapshot } from '../lib/offline'
 import { SCAN_EVENT } from '../lib/scanner'
 import type { OldCatalogHit, Product } from '../lib/types'
 import { searchUmag, umagStep, unlinkedHit } from '../lib/umagLink'
+import { useUmagOn } from '../lib/umagSwitch'
 import { UmagHitModal, UmagPickerBlock, type UmagDone } from './Umag'
 
 /** Как выбрали товар: сканом (код целиком) или из списка найденных. */
@@ -75,6 +76,8 @@ export function ProductPicker({
   const input = useRef<HTMLInputElement>(null)
   const query = useDebounced(text.trim(), 200)
   const withOld = umag || Boolean(onPickOld)
+  // Выключенный Умаг (SPEC-36 §15): подсказок нет (сервер), и в тексте о нём не говорим.
+  const umagOn = useUmagOn(withOld)
   // Что в поле сейчас — для Enter, который ждёт ответа сервера (SPEC-30 §13).
   const textNow = useRef(text)
   useLayoutEffect(() => {
@@ -248,7 +251,7 @@ export function ProductPicker({
           return
         }
         setMessage(
-          withOld
+          withOld && umagOn
             ? `Без сети: код ${code} среди товаров не найден. Если он есть в базе Умаг, завести товар можно, когда будет связь`
             : `Без сети: код ${code} в снимке каталога не найден`,
         )

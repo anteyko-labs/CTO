@@ -1,5 +1,5 @@
-// «Остатки» вошли в «Товары» (SPEC-30 §11): старый адрес `/stock` ведёт на «Товары» с теми же
-// отборами, ссылки сводки — сразу на нужный отбор.
+// «Остатки» вошли в «Товары» (SPEC-30 §11): старый адрес `/stock` с отборами ведёт на «Товары» с теми же
+// отборами, ссылки сводки — сразу на нужный отбор. Без отборов `/stock` — «Склад → Остатки» (SPEC-36 §14).
 import type { StockChip } from './types'
 
 const CHIPS: readonly StockChip[] = ['low', 'out', 'stale', 'review']
@@ -25,4 +25,13 @@ export function stockToProducts(search: string): string {
   if (from.get('tab') === 'defects') to.set('tab', 'defects')
   const s = to.toString()
   return s ? `/products?${s}` : '/products'
+}
+
+/**
+ * Старая ссылка «Остатков» с отбором по складу или вкладкой «Брак» — её место в «Товарах»;
+ * без них `/stock` — «Склад → Остатки» (поиск и категория там свои).
+ */
+export function isOldStockLink(search: string): boolean {
+  const p = new URLSearchParams(search)
+  return ['filter', 'low', 'stock', 'tab'].some((k) => p.has(k))
 }

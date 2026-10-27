@@ -29,6 +29,7 @@ import { findByBarcode, readSnapshot } from '../lib/offline'
 import { offlineCodeText, resolveCode, type CodeOutcome } from '../lib/umagLink'
 import { BranchBreakdown, BranchScope } from '../components/BranchScope'
 import { useAllBranches, type AllBranches } from '../lib/branchReport'
+import { useUmagOn } from '../lib/umagSwitch'
 
 interface Selected {
   product: Product
@@ -80,6 +81,8 @@ export default function Products() {
   const [all, setAll] = useAllBranches(owner && Boolean(user.several_branches))
   // Заводить товары — право администратора «Товары и штрихкоды» (ADR-097).
   const mayAdd = useCan()('products')
+  // Выключенный Умаг (SPEC-36 §15) — без «Связать с Умагом».
+  const umagOn = useUmagOn()
   // Отбор по складу и вкладка — в адресе: ссылки сводки и старый адрес «Остатков» ведут сюда.
   const [search, setSearch] = useSearchParams()
   const chip = chipOf(search.get('stock'))
@@ -243,7 +246,7 @@ export default function Products() {
           setEditing(found)
           return
         }
-        throw new Error(offlineCodeText(code))
+        throw new Error(umagOn ? offlineCodeText(code) : `Без сети: код ${code} в снимке каталога не найден`)
       }
       if (out.kind === 'product') setEditing(out.product)
       else if (out.kind === 'umag') setUmagHit({ hit: out.hit, code, start: 'info' })
@@ -306,7 +309,7 @@ export default function Products() {
                 Сверить остатки
               </Button>
             )}
-            {mayAdd && (
+            {mayAdd && umagOn && (
               <Button variant="secondary" onClick={() => navigate('/products/umag')} title="Связать товары со строками старой базы Умаг: их коды станут кодами товаров">
                 Связать с Умагом
               </Button>

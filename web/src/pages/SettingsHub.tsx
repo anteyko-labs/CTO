@@ -1,9 +1,11 @@
 // Настройки одним экраном: этикетки, документы, Телеграм и баллы, Optima Business, комиссия банка, статьи расходов,
-// филиалы, пользователи, категории и поставщики.
+// филиалы, пользователи, категории и поставщики. Владельцу — выключатель старой базы Умаг (SPEC-36 §15).
 import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
-import { PageHeader } from '../components/ui'
+import { Badge, Button, Card, ErrorBox, PageHeader, toast } from '../components/ui'
 import { useUser } from '../lib/auth'
+import { useAction } from '../lib/hooks'
+import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
 const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean }[] = [
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
@@ -42,6 +44,44 @@ export default function SettingsHub() {
           </Link>
         ))}
       </div>
+      {owner && <UmagSwitchCard />}
     </div>
+  )
+}
+
+/**
+ * «Старая база Умаг: включена / выключена» (ADR-126). Выключенный Умаг не подсказывает и не
+ * связывает; перенесённые товарам коды остаются, список и связи хранятся — включается обратно.
+ */
+function UmagSwitchCard() {
+  const s = useUmagSwitch()
+  const act = useAction()
+  const toggle = (enabled: boolean) =>
+    void act.run(async () => {
+      await saveUmagSwitch(enabled)
+      toast(enabled ? 'Старая база Умаг включена' : 'Старая база Умаг выключена — коды у товаров остались')
+    })
+  return (
+    <Card className="mt-4" data-testid="umag-switch">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="font-medium">Старая база Умаг:</span>
+        {s ? <Badge tone={s.enabled ? 'green' : 'slate'}>{s.enabled ? 'включена' : 'выключена'}</Badge> : <span className="text-sm text-slate-500">…</span>}
+        {s && (
+          <span className="text-sm text-slate-500">
+            строк {s.rows.toLocaleString('ru-RU')}, связей с товарами {s.linked.toLocaleString('ru-RU')}
+          </span>
+        )}
+        {s && (
+          <Button variant="secondary" className="ml-auto" disabled={act.busy} onClick={() => toggle(!s.enabled)}>
+            {s.enabled ? 'Выключить' : 'Включить'}
+          </Button>
+        )}
+      </div>
+      <p className="mt-2 text-sm text-slate-500">
+        Выключенная база не подсказывает в «Товарах», приходе, ревизии и «Сканере товаров», связывать с ней нельзя. Коды, уже перенесённые
+        товарам, остаются — старые наклейки сканируются, в том числе без сети.
+      </p>
+      <ErrorBox error={act.error} />
+    </Card>
   )
 }
