@@ -63,6 +63,14 @@ jobs:
           -e PGHOST=localhost -e PGUSER=postgres -e PGPASSWORD=postgres
           postgres:16 bash deploy/check-restore.sh
 
+  registry:
+    # Реестр-навигатор docs/nav/registry.json собран из текущих файлов (scripts/registry.py).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Реестр-навигатор не устарел
+        run: python3 scripts/registry.py --check
+
   web:
     runs-on: ubuntu-latest
     defaults:

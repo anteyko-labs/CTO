@@ -68,4 +68,13 @@ if printf '%s
   fi
 fi
 
+# 5. Реестр-навигатор docs/nav/registry.json (scripts/registry.py). Устарел — только предупреждение,
+# коммит не останавливается; в CI та же проверка падает.
+if printf '%s\n' "$staged" | grep -qE '^(docs/tier-4/spec-.*\.md|docs/tier-5/decisions\.md|server/src/.*\.rs|server/migrations/.*\.sql|server/tests/.*\.rs|web/src/.*\.tsx?|web/e2e/.*\.ts|scripts/registry\.py)$'; then
+  py=$(command -v python3 || command -v python)
+  if [ -n "$py" ] && [ -f "$top/scripts/registry.py" ] && ! "$py" "$top/scripts/registry.py" --check >/dev/null 2>&1; then
+    echo "pre-commit: предупреждение — docs/nav/registry.json устарел; обновите: python3 scripts/registry.py" >&2
+  fi
+fi
+
 exit $fail

@@ -2,7 +2,7 @@
 type: doc
 status: ready
 tier: 3
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # Путеводитель разработчика
@@ -16,6 +16,8 @@ updated: 2026-10-26
 3. [tier-1/CHECKLIST.md](tier-1/CHECKLIST.md) — что сделано и что следующее.
 4. [tier-3/arch-core.md](tier-3/arch-core.md) — модель данных, соглашения API, роли.
 5. Спецификация нужной функции в [tier-4/](tier-4/) и связанные ADR в [tier-5/decisions.md](tier-5/decisions.md).
+
+Чтобы найти нужное, не читая большие файлы целиком: карта по темам — [nav/NAV.md](nav/NAV.md), реестр со ссылками «файл:строка» (SPEC, ADR, маршруты, функции, миграции, таблицы, тесты) — `docs/nav/registry.json`. Реестр собирает `python3 scripts/registry.py` (после правки кода, SPEC, ADR, миграций или тестов); `--check` — проверка свежести: pre-commit предупреждает, CI падает.
 
 ## 2. Карта кода
 
@@ -122,7 +124,8 @@ pub async fn post_x_tx(conn: &mut PgConnection, ctx: &Ctx, req: XReq) -> AppResu
 | Клиент | `cd web && npx tsc -b && npx oxlint src && npm test && npm run build` | Типы, lint, модульные тесты, сборка |
 | Браузер | `cd web && npm run e2e` | Сквозной путь: товар → приход → продажа → возврат → остатки, права администратора. Нужен запущенный сервер с владельцем `owner` / `owner-pass-1` |
 | База | `PGHOST=localhost PGUSER=postgres PGPASSWORD=… deploy/check-restore.sh` | Копия базы со всеми миграциями и строками Умага восстанавливается, как на точке (`restore.ps1`): `pg_dump -Fc` → `pg_restore --no-owner` в чистую базу владельца без прав суперпользователя, код 0 и те же строки. Своя копия: `SOURCE_DB=<база>` |
-| Перед коммитом | `.githooks/pre-commit`, `commit-msg` | Формат и clippy для `server/`, секреты, файлы окружения, длина заголовка коммита |
+| Перед коммитом | `.githooks/pre-commit`, `commit-msg` | Формат и clippy для `server/`, секреты, файлы окружения, длина заголовка коммита; свежесть `docs/nav/registry.json` — предупреждение |
+| Реестр | `python3 scripts/registry.py --check` | `docs/nav/registry.json` собран из текущих файлов (в CI — задача `registry`) |
 | GitHub | `.github/workflows/ci.yml` | Всё перечисленное на каждый push, включая браузерные тесты |
 
 Хуки включаются после клонирования: `git config core.hooksPath .githooks`.
