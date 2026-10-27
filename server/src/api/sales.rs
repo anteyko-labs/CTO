@@ -541,6 +541,22 @@ fn seen_list(l: &SaleLineReq, offline: bool) -> Option<i64> {
     }
 }
 
+/// На сколько спешат часы кассы: «3 ч», «1 ч 20 мин», «4 дн.».
+fn ahead_text(d: chrono::Duration) -> String {
+    // До ближайшей минуты: чек приходит через доли секунды после отметки времени.
+    let min = ((d.num_seconds() + 30) / 60).max(0);
+    let (days, hours, mins) = (min / 1440, min % 1440 / 60, min % 60);
+    if days >= 2 {
+        format!("{days} дн.")
+    } else if days * 24 + hours > 0 && mins > 0 {
+        format!("{} ч {mins} мин", days * 24 + hours)
+    } else if days * 24 + hours > 0 {
+        format!("{} ч", days * 24 + hours)
+    } else {
+        format!("{mins} мин")
+    }
+}
+
 /// Масла среди товаров: товар → (категория вида «масло», объём канистры).
 async fn oil_products(
     conn: &mut PgConnection,
@@ -1128,10 +1144,20 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let offline = req.offline && req.client_time.is_some();
     // Что чек без сети обошёл из проверок онлайн-продажи — владельцу одним уведомлением (ADR-062).
     let mut bypass: Vec<String> = Vec::new();
+    // Время устройства впереди сервера: чек из очереди ушёл почти сразу, а часы кассы спешат.
+    // До часа — это время проведения, без уведомления владельцу (проверка 27.10.2026: каждый чек
+    // кассы, спешащей на 6 минут, приходил владельцу как «расходится больше чем на 2 дня»).
+    let now = Utc::now();
     if offline
         && let Some(t) = req.client_time
-        && (t < Utc::now() - chrono::Duration::days(2)
-            || t > Utc::now() + chrono::Duration::minutes(5))
+        && t > now
+        && t <= now + chrono::Duration::hours(1)
+    {
+        req.client_time = Some(now);
+    }
+    if offline
+        && let Some(t) = req.client_time
+        && (t < now - chrono::Duration::days(2) || t > now + chrono::Duration::minutes(5))
     {
         // Часы устройства сбиты (или оно давно не включалось): день чека — день проведения (SPEC-08).
         // Бишкек — UTC+6 круглый год.
@@ -1139,9 +1165,16 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             || t.format("%d.%m.%Y %H:%M UTC").to_string(),
             |tz| t.with_timezone(&tz).format("%d.%m.%Y %H:%M").to_string(),
         );
-        bypass.push(format!(
-            "время на устройстве {shown} расходится с сервером больше чем на 2 дня — проверьте часы кассы; чек записан днём проведения"
-        ));
+        bypass.push(if t > now {
+            format!(
+                "часы кассы спешат на {} (время на устройстве {shown}) — проверьте часы кассы; чек записан днём проведения",
+                ahead_text(t - now)
+            )
+        } else {
+            format!(
+                "время на устройстве {shown} отстаёт от сервера больше чем на 2 дня — проверьте часы кассы; чек записан днём проведения"
+            )
+        });
     }
     // Чек другого пользователя этой кассы владелец отправляет от себя (SPEC-09): сервер
     // проводит его от владельца, а в журнал пишет, чей он был.
