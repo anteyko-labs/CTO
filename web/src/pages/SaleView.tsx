@@ -8,11 +8,12 @@ import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { can } from '../lib/permissions'
 import { batteryShare, paymentLabel } from '../lib/battery'
-import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
+import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { divRound } from '../lib/money'
 import { returnWithholds } from '../lib/serviceSale'
+import { returnDebtCap, splitReturn } from '../lib/returnSplit'
 import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
@@ -25,6 +26,8 @@ interface ReturnedAll {
   /** Сколько уже вернули аккумулятором и всем остальным (положительные). */
   battery: number
   other: number
+  /** Сколько из `other` уже снято с долга. */
+  debt: number
 }
 
 /** Возвращённое по строкам исходного чека: количество и сумма (положительные); оплаты возвратов. */
@@ -32,6 +35,7 @@ async function loadReturned(sale: Sale): Promise<ReturnedAll> {
   const map = new Map<number, Returned>()
   let battery = 0
   let other = 0
+  let debt = 0
   const returns = await Promise.all(sale.returns.map((r) => get<Sale>(`/sales/${r.id}`)))
   for (const r of returns) {
     for (const l of r.lines) {
@@ -43,9 +47,10 @@ async function loadReturned(sale: Sale): Promise<ReturnedAll> {
     for (const p of r.payments) {
       if (p.method === 'battery') battery -= p.amount_tyiyn
       else other -= p.amount_tyiyn
+      if (p.method === 'debt') debt -= p.amount_tyiyn
     }
   }
-  return { lines: map, battery, other }
+  return { lines: map, battery, other, debt }
 }
 
 
@@ -61,11 +66,22 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   // Наличные из кассы возвращаются только при открытой смене (ADR-065): предупреждаем заранее.
   const shift = useLoad(() => get<{ id: string } | null>('/shifts/current'), [])
   const [qty, setQty] = useState<Record<number, string>>({})
-  // Возврат — тем же способом, каким платили: долговой чек списывается с долга, а не выдаётся наличными.
+  // Возврат — тем же способом, каким платили. Долговая часть снимается с долга отдельным полем
+  // (SPEC-36 §8), остаток — деньгами.
   const paidBy = [...sale.payments].sort((a, b) => b.amount_tyiyn - a.amount_tyiyn).map((p) => p.method)
   // Аккумулятор деньгами не возвращается — его часть уходит отдельно (ниже).
-  const methods: PaymentMethod[] = [...new Set<PaymentMethod>([...paidBy, 'cash', 'card', 'transfer'])].filter((m) => m !== 'battery')
-  const [method, setMethod] = useState<PaymentMethod>(paidBy.find((m) => m !== 'battery') ?? 'cash')
+  const methods: PaymentMethod[] = [...new Set<PaymentMethod>([...paidBy, 'cash', 'card', 'transfer'])].filter(
+    (m) => m !== 'battery' && m !== 'debt',
+  )
+  const [method, setMethod] = useState<PaymentMethod>(paidBy.find((m) => m !== 'battery' && m !== 'debt') ?? 'cash')
+  const paidDebt = sale.payments.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0)
+  // Сколько клиент должен сейчас: долг могли погасить после чека — тогда возврат деньгами.
+  const party = useLoad(
+    () => (paidDebt > 0 && sale.party_id ? get<Party>(`/parties/${sale.party_id}`) : Promise.resolve(null)),
+    [sale.id],
+  )
+  // Последняя правка «С долга» или «Деньгами»; null — делит окно.
+  const [edit, setEdit] = useState<{ field: 'debt' | 'money'; text: string } | null>(null)
   const [comment, setComment] = useState('')
   // Лом из оплаты уже продан — часть «аккумулятором» владелец возвращает деньгами (SPEC-27).
   const [batteryCash, setBatteryCash] = useState(false)
@@ -94,16 +110,26 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
   const withheld = withholds.reduce((acc, w) => acc + w.amount, 0)
   const total = returnedSum - withheld
   const invalid = rows.some((r) => !r.ok)
-  const noShift = method === 'cash' && total > 0 && shift.data === null
   const paidBattery = sale.payments.filter((p) => p.method === 'battery').reduce((acc, p) => acc + p.amount_tyiyn, 0)
   const paidOther = sale.payments.filter((p) => p.method !== 'battery').reduce((acc, p) => acc + p.amount_tyiyn, 0)
   const batteryPart = batteryCash
     ? 0
     : batteryShare(total, paidBattery - (returned.data?.battery ?? 0), paidOther - (returned.data?.other ?? 0))
+  const debtLeft = paidDebt - (returned.data?.debt ?? 0)
+  const owes = Math.max(0, party.data?.balance_tyiyn ?? 0)
+  const split = splitReturn(
+    total - batteryPart,
+    returnDebtCap(debtLeft, owes),
+    edit && { field: edit.field, value: parseSom(edit.text) },
+  )
+  const noShift = method === 'cash' && split.money > 0 && shift.data === null
   const payments = [
-    ...(total - batteryPart > 0 ? [{ method, amount_tyiyn: total - batteryPart }] : []),
+    ...(split.money > 0 ? [{ method, amount_tyiyn: split.money }] : []),
+    ...(split.debt > 0 ? [{ method: 'debt' as const, amount_tyiyn: split.debt }] : []),
     ...(batteryPart > 0 ? [{ method: 'battery' as const, amount_tyiyn: batteryPart }] : []),
   ]
+  const shown = (field: 'debt' | 'money') =>
+    edit?.field === field ? edit.text : edit && parseSom(edit.text) === null ? '' : somInput(split[field])
 
   const submit = () =>
     run(async () => {
@@ -119,7 +145,7 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
 
   return (
     <Modal title={`Возврат по чеку № ${sale.number}`} onClose={onClose} wide>
-      {returned.loading ? (
+      {returned.loading || party.loading ? (
         <Loading />
       ) : (
         <div className="flex flex-col gap-3">
@@ -136,32 +162,60 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
                     placeholder={l.kind === 'pour' ? 'литры' : l.kind === 'weight' ? 'кг' : '0'}
                     disabled={left <= 0}
                     value={qty[l.line_no] ?? ''}
-                    onChange={(e) => setQty({ ...qty, [l.line_no]: e.target.value })}
+                    onChange={(e) => {
+                      setQty({ ...qty, [l.line_no]: e.target.value })
+                      setEdit(null)
+                    }}
                   />
                 </td>
                 <td className="px-2 py-2 text-right">{refund ? formatSom(refund) : '—'}</td>
               </tr>
             ))}
           </Table>
+          {paidDebt > 0 && (
+            <div className="flex flex-col gap-2">
+              <Notice tone="amber">
+                <span data-testid="return-debt-hint">
+                  Клиент должен {formatSom(owes)}, по этому чеку в долг {formatSom(Math.max(0, debtLeft))}
+                </span>
+              </Notice>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="С долга" hint="Деньги не выдаются: сумма снимается с долга клиента" error={split.ok ? null : 'С долга — не больше, чем клиент должен по этому чеку'}>
+                  <input
+                    id="return-debt"
+                    inputMode="decimal"
+                    value={shown('debt')}
+                    onChange={(e) => setEdit({ field: 'debt', text: e.target.value })}
+                  />
+                </Field>
+                <Field label="Деньгами">
+                  <input
+                    id="return-money"
+                    inputMode="decimal"
+                    value={shown('money')}
+                    onChange={(e) => setEdit({ field: 'money', text: e.target.value })}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field
-              label="Как вернуть"
+              label={paidDebt > 0 ? 'Как вернуть деньги' : 'Как вернуть'}
               hint={
-                method === 'debt'
-                  ? 'Деньги не выдаются: сумма снимается с долга клиента'
-                  : method === 'bonus'
-                    ? 'Баллы вернутся клиенту'
-                    : method === 'cash'
-                      ? 'Наличные из кассы'
-                      : method === 'invoice'
-                        ? 'Перечислением со счёта, куда пришла оплата по счёту'
-                        : 'Возврат на карту / QR через терминал'
+                method === 'bonus'
+                  ? 'Баллы вернутся клиенту'
+                  : method === 'cash'
+                    ? 'Наличные из кассы'
+                    : method === 'invoice'
+                      ? 'Перечислением со счёта, куда пришла оплата по счёту'
+                      : 'Возврат на карту / QR через терминал'
               }
             >
-              <select value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
+              <select id="return-method" value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
                 {methods.map((m) => (
                   <option key={m} value={m}>
-                    {m === 'debt' ? 'С долга по чеку' : PAYMENT_LABELS[m]}
+                    {PAYMENT_LABELS[m]}
                     {paidBy.includes(m) ? ' (как платили)' : ''}
                   </option>
                 ))}
@@ -207,12 +261,12 @@ function ReturnModal({ sale, onClose }: { sale: Sale; onClose: () => void }) {
               или верните на карту.
             </Notice>
           )}
-          <ErrorBox error={error ?? returned.error} />
+          <ErrorBox error={error ?? returned.error ?? party.error} />
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={onClose}>
               Отмена
             </Button>
-            <Button variant="danger" disabled={busy || invalid || noShift || chosen.length === 0 || !comment.trim()} onClick={() => void submit()}>
+            <Button variant="danger" disabled={busy || invalid || !split.ok || noShift || chosen.length === 0 || !comment.trim()} onClick={() => void submit()}>
               Оформить возврат
             </Button>
           </div>
