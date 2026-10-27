@@ -199,26 +199,29 @@ test('приход: «Это уже есть — выбрать товар» с�
 
 test('приход: начало кода Умага и код целиком без Enter — строки Умага в списке', async ({ page }) => {
   await login(page)
-  // Как DOLCE и MEDORI рабочей выгрузки: заводские коды с общим началом, у каждой — «доп. коды».
+  // Как в рабочей выгрузке: у DOLCE и MEDORI коды с общим началом 467372689, у FENIX — только 4673.
+  // Цифр кода в названиях нет: иначе строка нашлась бы и по сходству названия.
   const head = `9${RUN}`
-  const dolce = `DOLCE ТЕСТ ${RUN}`
-  const medori = `MEDORI ТЕСТ ${RUN}`
+  const dolce = 'DOLCE LIFE PERFUME 6ML'
+  const medori = 'MEDORI PERFUME КАПСУЛА'
+  const fenix = 'FENIX DOT 4'
   await putUmag(page.request, [
     { name: dolce, barcode: `${head}0100`, extra_code: `${head}0117;${head}0131`, price_tyiyn: 25_000, unit: 'шт' },
     { name: medori, barcode: `${head}0222`, extra_code: `${head}0291;${head}0208`, price_tyiyn: 40_000, unit: 'шт' },
+    { name: fenix, barcode: `${head.slice(0, 4)}${(Number(head[4]) + 1) % 10}00000001`, price_tyiyn: 12_500, unit: 'шт' },
   ])
 
   await page.goto('/receipts/new')
   const picker = page.locator('#receipt-picker')
   const hit = (name: string) => page.getByTestId('umag-block').locator('[data-old-hit]').filter({ hasText: name })
-  // Начало кода (от четырёх знаков) — обе строки, пока набирают.
-  for (const typed of [head.slice(0, 4), head]) {
-    await picker.fill(typed)
-    await expect(hit(dolce)).toBeVisible()
-    await expect(hit(medori)).toBeVisible()
-  }
+  // Начало кода от четырёх знаков, пока набирают: «4673» — все три строки, «467372689» — две.
+  await picker.fill(head.slice(0, 4))
+  for (const name of [dolce, medori, fenix]) await expect(hit(name)).toBeVisible()
+  await picker.fill(head)
+  await expect(hit(fenix)).toHaveCount(0)
+  for (const name of [dolce, medori]) await expect(hit(name)).toBeVisible()
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/prihod-umag-prefix.png` })
-  // Штрихкод и «доп. код» целиком, без Enter, — только своя строка.
+  // Штрихкод и «доп. код» целиком и начало «доп. кода», без Enter, — только своя строка.
   for (const typed of [`${head}0222`, `${head}0291`, `${head}029`]) {
     await picker.fill(typed)
     await expect(hit(medori)).toBeVisible()
