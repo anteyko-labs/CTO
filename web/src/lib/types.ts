@@ -168,6 +168,8 @@ export interface Service {
   /** Интервал для кассы: заданный или по умолчанию строки книжки. */
   interval_km?: number | null
   interval_days?: number | null
+  /** Доливка — продаётся на вынос, без клиента и книжки (ADR-118). */
+  takeaway?: boolean
 }
 
 export interface Supplier {

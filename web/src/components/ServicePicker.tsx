@@ -5,7 +5,7 @@ import { useUser } from '../lib/auth'
 import { formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { servicePriceText, type OilEnough } from '../lib/serviceSale'
+import { kindChoices, servicePriceText, type OilEnough } from '../lib/serviceSale'
 import type { Service } from '../lib/types'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
 
@@ -37,7 +37,7 @@ export function ServicePicker({
   ourOil?: OilEnough
   /** Выбор вида замены для чека «В сервис». */
   kinds?: boolean
-  /** Виды замены, уже стоящие в чеке: отмечены сразу. */
+  /** Виды замены, уже стоящие в чеке: отмечены сразу. Доливки здесь нет — «Готово» их не трогает. */
   selected?: string[]
   /** «Готово» в выборе видов замены: все отмеченные. */
   onDone?: (picked: Service[]) => void
@@ -60,8 +60,10 @@ export function ServicePicker({
   const [picked, setPicked] = useState<string[]>(selected)
   const toggle = (id: string) => setPicked((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
 
-  // Виды замены — сверху: их выбирают в каждом чеке «В сервис».
-  const active = (list.data ?? []).filter((s) => s.active).sort((a, b) => Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
+  // Виды замены — сверху: их выбирают в каждом чеке «В сервис». В окне «Вид замены» доливок нет
+  // (они на вынос, ADR-118), сначала замены — услуги со строкой книжки (SPEC-36 §5).
+  const enabled = (list.data ?? []).filter((s) => s.active)
+  const active = kinds ? kindChoices(enabled) : enabled.sort((a, b) => Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
   const q = query.trim().toLowerCase()
   const shown = q ? active.filter((s) => s.name.toLowerCase().includes(q)) : active
 

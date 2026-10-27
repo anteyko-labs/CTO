@@ -41,6 +41,8 @@ struct FavService {
     /// Интервал для кассы: заданный владельцем или по умолчанию строки книжки.
     interval_km: Option<i32>,
     interval_days: Option<i32>,
+    /// Доливка — на вынос (ADR-118).
+    takeaway: bool,
 }
 
 #[derive(Serialize)]
@@ -87,7 +89,7 @@ async fn get_favorites(
             "service" => {
                 if let Some(s) = sqlx::query!(
                     r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active,
-                              book_slot, book_interval_km, book_interval_days
+                              book_slot, book_interval_km, book_interval_days, takeaway
                        from services where id = $1 and active"#,
                     r.id
                 )
@@ -113,6 +115,7 @@ async fn get_favorites(
                             book_slot: s.book_slot,
                             interval_km,
                             interval_days,
+                            takeaway: s.takeaway,
                         }),
                     });
                 }

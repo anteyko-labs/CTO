@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select book_slot, book_interval_km, book_interval_days from services where id = $1",
+  "query": "select book_slot, book_interval_km, book_interval_days, takeaway from services where id = $1",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,11 @@
         "ordinal": 2,
         "name": "book_interval_days",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "takeaway",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -27,8 +32,9 @@
     "nullable": [
       false,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "7c723b43715511ce09fd43a534b9581174d36d77c550a41c966eef5877099641"
+  "hash": "d67da01c614669246bd5d8c65f04ab9cdfb73ecec50397f2a15f2901ae347910"
 }

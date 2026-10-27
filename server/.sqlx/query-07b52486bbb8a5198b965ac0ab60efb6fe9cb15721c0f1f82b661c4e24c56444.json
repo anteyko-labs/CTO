@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select s.id, s.name, s.book_slot from sale_lines l join services s on s.id = l.service_id\n           where l.sale_id = $1 and s.book_slot <> 'other' order by l.line_no",
+  "query": "select s.id, s.name, s.book_slot from sale_lines l join services s on s.id = l.service_id\n           where l.sale_id = $1 and s.book_slot <> 'other' and not s.takeaway order by l.line_no",
   "describe": {
     "columns": [
       {
@@ -30,5 +30,5 @@
       false
     ]
   },
-  "hash": "ea2f27c5cce96b1e26296b9bbb668968c9f26784b51987a11b200331930be022"
+  "hash": "07b52486bbb8a5198b965ac0ab60efb6fe9cb15721c0f1f82b661c4e24c56444"
 }

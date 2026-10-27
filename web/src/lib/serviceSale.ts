@@ -37,6 +37,15 @@ export function oilEnough(lines: readonly OilLine[]): OilEnough {
   return out
 }
 
+/**
+ * Окно «Вид замены» (SPEC-36 §5): без доливок (они на вынос, ADR-118); сначала замены — услуги со
+ * строкой книжки, потом остальные; внутри — «бесплатно с нашим маслом» выше, дальше по порядку списка.
+ */
+export function kindChoices<T extends Pick<Service, 'book_slot' | 'free_with_oil' | 'takeaway'>>(list: readonly T[]): T[] {
+  const change = (s: T) => Number(Boolean(s.book_slot && s.book_slot !== 'other'))
+  return list.filter((s) => !s.takeaway).sort((a, b) => change(b) - change(a) || Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
+}
+
 type PricedService = Pick<Service, 'price_tyiyn' | 'free_with_oil' | 'oil_category_id'>
 
 /** Услуга бесплатна: «бесплатно с нашим маслом», категория масла выбрана и такого масла в чеке
