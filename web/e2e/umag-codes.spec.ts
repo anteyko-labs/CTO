@@ -762,3 +762,104 @@ test('закупка Умага: администратору без права 
   expect(denied[0].cost_tyiyn).toBeNull()
   await cashierLike.ctx.close()
 })
+
+async function umagSwitch(request: APIRequestContext, enabled: boolean) {
+  const res = await request.put('/api/v1/settings/old-catalog', { data: { enabled }, headers: DEVICE })
+  expect(res.ok(), await res.text()).toBeTruthy()
+}
+
+test('выключатель Умага: блоков и окон нет, касса находит товар по перенесённому коду и без сети; включается одной кнопкой', async ({ page, context }) => {
+  await login(page)
+  const cat = await category(page.request, `Выключатель Умаг ${RUN}`)
+  const own = `Фильтр выключателя ${RUN}`
+  const p = await product(page.request, cat, own, [`84${RUN}18`], 45_000)
+  await stock(page.request, p.id, 5, 20_000)
+  const extra = `85${RUN}18`
+  const extra2 = `86${RUN}18`
+  const free = `Фильтр только в Умаге выкл ${RUN}`
+  const freeCode = `87${RUN}19`
+  await putUmag(page.request, [
+    { name: `Фильтр Умаг выкл ${RUN}`, barcode: `84${RUN}18`, extra_code: `${extra} ${extra2}`, price_tyiyn: 45_000, unit: 'шт' },
+    { name: free, barcode: freeCode, price_tyiyn: 30_000, unit: 'шт' },
+  ])
+  const row = await umagRow(page.request, extra)
+  await apiPost(page.request, `/old-catalog/${row.id}/link`, { op_id: crypto.randomUUID(), product_id: p.id })
+
+  try {
+    // «Настройки → Старая база Умаг»: включена, строк и связей; «Выключить».
+    await page.goto('/settings')
+    const sw = page.getByTestId('umag-switch')
+    await expect(sw).toContainText('включена')
+    await expect(sw).toContainText(/строк \d/)
+    await sw.getByRole('button', { name: 'Выключить' }).click()
+    await expect(sw).toContainText('выключена')
+    if (SHOTS) await sw.screenshot({ path: `${SHOTS}/settings-umag-off.png` })
+    // Журнал — в ленте владельца.
+    const feed = await apiGet<{ items: { title: string }[] }>(page.request, '/notifications?limit=10')
+    expect(feed.items.map((i) => i.title)).toContain('Старая база Умаг выключена')
+
+    // «Товары»: ни «Связать с Умагом», ни блока строк Умага; в карточке нет блока «Умаг».
+    await page.goto('/products')
+    await expect(page.getByRole('heading', { name: 'Товары' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Связать с Умагом' })).toHaveCount(0)
+    const search = page.getByLabel('Поиск', { exact: true })
+    await search.fill(free)
+    await expect(page.getByText('Товары не найдены')).toBeVisible()
+    await expect(page.getByTestId('umag-block')).toHaveCount(0)
+    await search.fill(own)
+    await page.getByRole('row', { name: new RegExp(own) }).click()
+    await expect(page.getByRole('dialog', { name: 'Товар' }).locator('#product-name')).toHaveValue(own)
+    await expect(page.getByTestId('umag-card')).toHaveCount(0)
+    await page.goto('/products/umag')
+    await expect(page.getByText('Старая база Умаг выключена')).toBeVisible()
+    await expect(page.getByTestId('umag-page')).toHaveCount(0)
+
+    // Приход: незаведённый код Умага — «Код не найден», окна Умага нет; перенесённый код — товар.
+    await page.goto('/receipts/new')
+    const picker = page.locator('#receipt-picker')
+    await expect(picker).toHaveAttribute('placeholder', 'Сканируйте штрихкод или пишите название')
+    await picker.fill(freeCode)
+    await picker.press('Enter')
+    await expect(page.getByRole('dialog', { name: `Код ${freeCode} не найден` })).toBeVisible()
+    await expect(page.getByTestId('umag-modal')).toHaveCount(0)
+    await page.getByRole('dialog', { name: `Код ${freeCode} не найден` }).getByRole('button', { name: 'Отмена' }).click()
+    await picker.fill(extra)
+    await picker.press('Enter')
+    await expect(page.getByText(`1. ${own}`)).toBeVisible()
+
+    // «Сканер товаров»: ни списка старой программы, ни загрузки, ни подсказок.
+    await page.goto('/revision?tab=scan')
+    await expect(page.locator('[data-intake-scan]')).toBeVisible()
+    await expect(page.getByText('Список старой программы')).toHaveCount(0)
+    await expect(page.getByText('Из старой программы', { exact: true })).toHaveCount(0)
+    await expect(page.getByText(/старой программ/)).toHaveCount(0)
+
+    // Касса: перенесённый код Умага — товар в чеке; без сети — тоже.
+    await page.goto('/')
+    await page.waitForSelector('[data-picker]')
+    await expect(page.getByText(/снимок каталога устарел/)).toHaveCount(0, { timeout: 10_000 })
+    await page.waitForTimeout(2500)
+    const kassa = page.getByPlaceholder(PICKER)
+    await kassa.fill(extra)
+    await kassa.press('Enter')
+    await expect(page.getByTestId('cart')).toContainText(own)
+    await context.setOffline(true)
+    await kassa.fill(extra2)
+    await kassa.press('Enter')
+    await expect(page.getByRole('textbox', { name: 'Кол-во' })).toHaveValue('2')
+    await context.setOffline(false)
+
+    // Включить обратно одной кнопкой — «Связать с Умагом» и блок в карточке на месте.
+    await page.goto('/settings')
+    await page.getByTestId('umag-switch').getByRole('button', { name: 'Включить' }).click()
+    await expect(page.getByTestId('umag-switch')).toContainText('включена')
+    await page.goto('/products')
+    await expect(page.getByRole('button', { name: 'Связать с Умагом' })).toBeVisible()
+    await page.getByLabel('Поиск', { exact: true }).fill(own)
+    await page.getByRole('row', { name: new RegExp(own) }).click()
+    await expect(page.getByTestId('umag-card')).toContainText(`Фильтр Умаг выкл ${RUN}`)
+  } finally {
+    await context.setOffline(false)
+    await umagSwitch(page.request, true)
+  }
+})

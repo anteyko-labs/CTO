@@ -90,7 +90,9 @@ export default function ProductIntake() {
   const mayCount = can('revision')
   const mayCreate = can('products')
   const categories = useLoad(() => get<Category[]>('/categories'), [])
-  const stats = useLoad(() => get<{ rows: number; imported_at: string | null }>('/old-catalog'), [])
+  const stats = useLoad(() => get<{ rows: number; imported_at: string | null; enabled?: boolean }>('/old-catalog'), [])
+  // Выключенный Умаг (SPEC-36 §15): ни списка, ни загрузки, ни подсказок.
+  const umagOn = stats.data?.enabled === true
   const [revisionOn, setRevision] = useState(read(MODE_KEY) === '1')
   const revision = revisionOn && mayCount
   const [text, setText] = useState('')
@@ -348,7 +350,7 @@ export default function ProductIntake() {
     <div>
       <PageHeader
         title="Работа с товарами"
-        subtitle="Сканируйте штрихкод — товар найдётся у нас или в списке старой программы. Enter не нужен."
+        subtitle={`Сканируйте штрихкод — товар найдётся у нас${umagOn ? ' или в списке старой программы' : ''}. Enter не нужен.`}
         actions={
           mayCount && (
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm">
@@ -359,18 +361,20 @@ export default function ProductIntake() {
         }
       />
       <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">
-        <span>
-          Список старой программы:{' '}
-          {stats.data?.rows ? (
-            <>
-              <b>{stats.data.rows.toLocaleString('ru-RU')}</b> {plural(stats.data.rows, ['позиция', 'позиции', 'позиций'])}
-              {stats.data.imported_at && <> · загружен {formatDateTime(stats.data.imported_at)}</>}
-            </>
-          ) : (
-            'не загружен'
-          )}
-        </span>
-        {owner && (
+        {umagOn && (
+          <span>
+            Список старой программы:{' '}
+            {stats.data?.rows ? (
+              <>
+                <b>{stats.data.rows.toLocaleString('ru-RU')}</b> {plural(stats.data.rows, ['позиция', 'позиции', 'позиций'])}
+                {stats.data.imported_at && <> · загружен {formatDateTime(stats.data.imported_at)}</>}
+              </>
+            ) : (
+              'не загружен'
+            )}
+          </span>
+        )}
+        {owner && umagOn && (
           <label className="cursor-pointer text-sky-700 underline">
             {upload.busy ? 'Загружаю…' : stats.data?.rows ? 'загрузить заново' : 'загрузить Excel'}
             <input
@@ -410,58 +414,60 @@ export default function ProductIntake() {
               }}
             />
           </Card>
-          <Card className="p-0">
-            <div className="border-b border-slate-200 px-4 py-2 text-sm font-medium">Из старой программы</div>
-            {hits.length === 0 ? (
-              <div className="px-4 py-6 text-center text-sm text-slate-500">
-                {stats.data?.rows ? 'Подсказки появятся при скане или вводе названия' : 'Загрузите Excel из старой программы — будут подсказки'}
-              </div>
-            ) : (
-              <ul className="max-h-[60vh] divide-y divide-slate-100 overflow-y-auto">
-                {hits.map((h) => (
-                  <li key={h.id}>
-                    <button
-                      type="button"
-                      className={`flex w-full items-start gap-3 px-4 py-2.5 text-left hover:bg-sky-50 ${form?.from?.id === h.id ? 'bg-sky-50' : ''}`}
-                      onClick={() => {
-                        // Связанная строка — это уже заведённый товар (SPEC-35): показываем его, дубля не заводим.
-                        if (h.product_id) {
-                          const id = h.product_id
-                          void act.run(async () => showFound(await get<Product>(`/products/${id}`)))
-                          return
-                        }
-                        const code = form?.barcode || (found ? '' : text.trim())
-                        setFound(null)
-                        setForm(fromHit(h, code))
-                        loadSimilar(h.name)
-                      }}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-medium">{h.name}</span>
-                        <span className="block text-xs text-slate-500">
-                          {[h.barcode && `код ${h.barcode}`, h.supplier, h.unit].filter(Boolean).join(' · ')}
+          {umagOn && (
+            <Card className="p-0">
+              <div className="border-b border-slate-200 px-4 py-2 text-sm font-medium">Из старой программы</div>
+              {hits.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-slate-500">
+                  {stats.data?.rows ? 'Подсказки появятся при скане или вводе названия' : 'Загрузите Excel из старой программы — будут подсказки'}
+                </div>
+              ) : (
+                <ul className="max-h-[60vh] divide-y divide-slate-100 overflow-y-auto">
+                  {hits.map((h) => (
+                    <li key={h.id}>
+                      <button
+                        type="button"
+                        className={`flex w-full items-start gap-3 px-4 py-2.5 text-left hover:bg-sky-50 ${form?.from?.id === h.id ? 'bg-sky-50' : ''}`}
+                        onClick={() => {
+                          // Связанная строка — это уже заведённый товар (SPEC-35): показываем его, дубля не заводим.
+                          if (h.product_id) {
+                            const id = h.product_id
+                            void act.run(async () => showFound(await get<Product>(`/products/${id}`)))
+                            return
+                          }
+                          const code = form?.barcode || (found ? '' : text.trim())
+                          setFound(null)
+                          setForm(fromHit(h, code))
+                          loadSimilar(h.name)
+                        }}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium">{h.name}</span>
+                          <span className="block text-xs text-slate-500">
+                            {[h.barcode && `код ${h.barcode}`, h.supplier, h.unit].filter(Boolean).join(' · ')}
+                          </span>
+                          <span className="mt-1 flex flex-wrap gap-1">
+                            {h.exact && <Badge tone="green">этот штрихкод</Badge>}
+                            {(h.product_id || h.linked_product_id) && (
+                              <Badge tone="slate">{h.product_name ? `заведён: ${h.product_name}` : 'уже заведён'}</Badge>
+                            )}
+                          </span>
                         </span>
-                        <span className="mt-1 flex flex-wrap gap-1">
-                          {h.exact && <Badge tone="green">этот штрихкод</Badge>}
-                          {(h.product_id || h.linked_product_id) && (
-                            <Badge tone="slate">{h.product_name ? `заведён: ${h.product_name}` : 'уже заведён'}</Badge>
+                        <span className="shrink-0 text-right text-sm">
+                          <Money value={h.price_tyiyn} zero="—" className="font-semibold" />
+                          {h.cost_tyiyn !== null && (
+                            <span className="block text-xs text-slate-500">
+                              закуп <Money value={h.cost_tyiyn} zero="—" />
+                            </span>
                           )}
                         </span>
-                      </span>
-                      <span className="shrink-0 text-right text-sm">
-                        <Money value={h.price_tyiyn} zero="—" className="font-semibold" />
-                        {h.cost_tyiyn !== null && (
-                          <span className="block text-xs text-slate-500">
-                            закуп <Money value={h.cost_tyiyn} zero="—" />
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
         </div>
 
         <div className="flex min-w-0 flex-col gap-3">
@@ -616,8 +622,8 @@ export default function ProductIntake() {
           {!found && !form && (
             <Card>
               <Empty icon="products">
-                Отсканируйте товар. Найдётся у нас — увидите остаток{revision ? ' и впишете, сколько на полке' : ''}. Нет — карточка заполнится из
-                старой программы или откроется новая.
+                Отсканируйте товар. Найдётся у нас — увидите остаток{revision ? ' и впишете, сколько на полке' : ''}. Нет —{' '}
+                {umagOn ? 'карточка заполнится из старой программы или откроется новая' : 'откроется новая карточка'}.
               </Empty>
             </Card>
           )}

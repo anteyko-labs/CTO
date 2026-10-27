@@ -93,9 +93,8 @@ test('«Остатки» ведут на «Товары» с теми же от�
   await product(page.request, cat.id, low, { qty: 2, min: 5 })
   await product(page.request, cat.id, plenty, { qty: 10, min: 2 })
 
-  // Пункта «Остатки» в меню нет; старый адрес с отбором — «Товары» с тем же отбором.
+  // «Склад → Остатки» теперь отдельный экран (SPEC-36 §14); старый адрес с отбором — «Товары» с тем же отбором.
   await page.goto('/')
-  await expect(page.getByRole('link', { name: 'Остатки' })).toHaveCount(0)
   await page.goto('/stock?filter=low')
   await expect(page).toHaveURL(/\/products\?stock=low$/)
   await expect(page.getByRole('heading', { name: 'Товары' })).toBeVisible()

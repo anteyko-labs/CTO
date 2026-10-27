@@ -7,6 +7,7 @@ import { get } from '../lib/api'
 import { formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import type { OldCatalogHit, Product, ProductUmag } from '../lib/types'
+import { useUmagOn } from '../lib/umagSwitch'
 import { hitCodes, linkSummary, linkUmag, opIds, sameCode, searchUmag, umagPer, umagUnitWord, unlinkUmag } from '../lib/umagLink'
 import { Button, Empty, ErrorBox, Field, Loading, toast } from './ui'
 
@@ -29,7 +30,9 @@ export function UmagCard({
   const [ops] = useState(opIds)
   const umag = load.data?.umag ?? null
   const more = load.data?.umag_more ?? []
-  if (!load.data) return null
+  // Умаг выключен (SPEC-36 §15) — блока нет.
+  const on = useUmagOn()
+  if (!load.data || !on) return null
   // Коды строки, которых у товара нет: заняты другим товаром или убраны из карточки (SPEC-35 §1).
   // Коды меры (литр, кг, метр) товару не переходят — они отдельно (ADR-113). Товара без кода не
   // бывает: пустой список — ещё не известен, берём ответ сервера.

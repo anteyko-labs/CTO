@@ -36,6 +36,110 @@ pub fn routes() -> Router<AppState> {
         .route("/old-catalog/{id}/link", routing::post(link))
         .route("/old-catalog/{id}/unlink", routing::post(unlink))
         .route("/old-catalog/{id}/reject", routing::post(reject))
+        .route(
+            "/settings/old-catalog",
+            routing::get(get_switch).put(put_switch),
+        )
+}
+
+/// Включена ли старая база Умаг у филиала (SPEC-36 §15, ADR-126). Нет настройки — включена.
+pub(crate) async fn enabled(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<bool> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'old_catalog'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(v.and_then(|v| v.get("enabled").and_then(Value::as_bool))
+        .unwrap_or(true))
+}
+
+/// Связывание при выключенном Умаге — 409: список и связи хранятся, но не меняются.
+async fn require_enabled(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
+    if enabled(conn, branch_id).await? {
+        Ok(())
+    } else {
+        Err(AppError::Conflict("Умаг выключен".into()))
+    }
+}
+
+/// Выключатель Умага в настройках: состояние, строк в списке и связей с товарами.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SwitchOut {
+    pub enabled: bool,
+    pub rows: i64,
+    pub linked: i64,
+}
+
+async fn switch_out(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<SwitchOut> {
+    let on = enabled(&mut *conn, branch_id).await?;
+    let r = sqlx::query!(
+        r#"select count(*) as "rows!", count(product_id) as "linked!"
+           from old_catalog where branch_id = $1"#,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(SwitchOut {
+        enabled: on,
+        rows: r.rows,
+        linked: r.linked,
+    })
+}
+
+async fn get_switch(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<SwitchOut>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(switch_out(&mut conn, user.branch_id).await?))
+}
+
+#[derive(Deserialize)]
+struct SwitchReq {
+    enabled: bool,
+}
+
+/// Включить или выключить Умаг — только владелец; журнал и лента владельца.
+async fn put_switch(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<SwitchReq>,
+) -> AppResult<Json<SwitchOut>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let branch_id = ctx.user.branch_id;
+    let mut tx = state.pool.begin().await?;
+    lock_branch(&mut tx, branch_id).await?;
+    let before = enabled(&mut tx, branch_id).await?;
+    if before != req.enabled {
+        sqlx::query!(
+            r#"insert into settings (branch_id, key, value) values ($1, 'old_catalog', $2)
+               on conflict (branch_id, key) do update set value = excluded.value"#,
+            branch_id,
+            json!({ "enabled": req.enabled })
+        )
+        .execute(&mut *tx)
+        .await?;
+        let out = switch_out(&mut tx, branch_id).await?;
+        ops::audit(
+            &mut tx,
+            &ctx,
+            if req.enabled {
+                "old_catalog.enable"
+            } else {
+                "old_catalog.disable"
+            },
+            "settings",
+            None,
+            json!({ "rows": out.rows, "linked": out.linked }),
+        )
+        .await?;
+    }
+    let out = switch_out(&mut tx, branch_id).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 /// Связывать, отвязывать и разбирать пары — право «Товары и штрихкоды» (ADR-097).
@@ -338,9 +442,13 @@ struct Stats {
     unlinked: i64,
     /// Строк с кодом, занятым другим товаром.
     conflicts: i64,
+    /// Умаг включён (SPEC-36 §15): выключенный не подсказывает и не связывает.
+    enabled: bool,
 }
 
 async fn stats(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Stats>> {
+    let mut conn = state.pool.acquire().await?;
+    let on = enabled(&mut conn, user.branch_id).await?;
     let r = sqlx::query!(
         r#"select count(*) as "rows!", max(imported_at) as imported_at,
                   count(product_id) as "linked!",
@@ -348,9 +456,10 @@ async fn stats(State(state): State<AppState>, user: CurrentUser) -> AppResult<Js
            from old_catalog where branch_id = $1"#,
         user.branch_id
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(Json(Stats {
+        enabled: on,
         rows: r.rows,
         imported_at: r.imported_at,
         linked: r.linked,
@@ -508,6 +617,10 @@ async fn search(
         return Ok(Json(vec![]));
     }
     let mut conn = state.pool.acquire().await?;
+    // Выключенный Умаг ничего не подсказывает (SPEC-36 §15).
+    if !enabled(&mut conn, user.branch_id).await? {
+        return Ok(Json(vec![]));
+    }
     let found = sqlx::query!(
         r#"select o.id, m.exact as "exact!"
            from old_catalog o
@@ -842,6 +955,13 @@ pub(crate) async fn link_product_rows(
     product_id: Uuid,
     from_row: Option<Uuid>,
 ) -> AppResult<()> {
+    // Выключенный Умаг (SPEC-36 §15): строку не связать, по коду строки сами не связываются.
+    if !enabled(&mut *conn, ctx.user.branch_id).await? {
+        return match from_row {
+            Some(_) => Err(AppError::Conflict("Умаг выключен".into())),
+            None => Ok(()),
+        };
+    }
     if let Some(row) = from_row {
         match link_row(&mut *conn, ctx, row, product_id, "created").await {
             Err(AppError::NotFound) => {
@@ -883,6 +1003,7 @@ async fn link(
     const KIND: &str = "old_catalog.link";
     let mut tx = state.pool.begin().await?;
     require_permission(&mut tx, &ctx.user, RIGHT).await?;
+    require_enabled(&mut tx, ctx.user.branch_id).await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
@@ -1005,6 +1126,7 @@ async fn reject(
     const KIND: &str = "old_catalog.reject";
     let mut tx = state.pool.begin().await?;
     require_permission(&mut tx, &ctx.user, RIGHT).await?;
+    require_enabled(&mut tx, ctx.user.branch_id).await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
@@ -1056,6 +1178,7 @@ async fn auto_link(
     const KIND: &str = "old_catalog.auto_link";
     let mut tx = state.pool.begin().await?;
     require_permission(&mut tx, &ctx.user, RIGHT).await?;
+    require_enabled(&mut tx, ctx.user.branch_id).await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
     }
@@ -1538,6 +1661,7 @@ async fn pairs(
 ) -> AppResult<Paged<PairOut>> {
     let mut tx = state.pool.begin().await?;
     require_permission(&mut tx, &user, RIGHT).await?;
+    require_enabled(&mut tx, user.branch_id).await?;
     // Порог оператора «%» — для поиска похожих по индексу названий.
     sqlx::query_scalar!(
         "select set_config('pg_trgm.similarity_threshold', $1, true)",
@@ -1724,6 +1848,10 @@ pub(crate) async fn product_umag(
     user: &CurrentUser,
     product_id: Uuid,
 ) -> AppResult<Vec<ProductUmag>> {
+    // Выключенный Умаг: блока «Умаг» в карточке нет (SPEC-36 §15).
+    if !enabled(&mut *conn, user.branch_id).await? {
+        return Ok(Vec::new());
+    }
     let rows = sqlx::query!(
         r#"select id, name, barcode, codes, unit, price_tyiyn, cost_tyiyn,
                   array(select c from unnest(codes) c

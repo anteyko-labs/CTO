@@ -52,6 +52,7 @@ import { nextField, type LineField } from '../lib/receiptKeys'
 import { defaultPaySource, notEnough, paidNow, partProblem, paySources, type PayMode } from '../lib/receiptPay'
 import { useCan } from '../lib/permissions'
 import type { CashAccount, LastReceipt, Product, Receipt, StockIn, Supplier } from '../lib/types'
+import { useUmagOn } from '../lib/umagSwitch'
 
 /** Вид документа на экране: приход от поставщика или оприходование без поставщика. */
 export type ReceiptKind = 'receipt' | 'stock_in'
@@ -110,6 +111,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const can = useCan()
   const [kind, setKind] = useState<ReceiptKind>(fix?.kind ?? (params.get('kind') === 'stock_in' || !can('receipts') ? 'stock_in' : 'receipt'))
   const stockIn = kind === 'stock_in'
+  // Выключенный Умаг (SPEC-36 §15) в подсказках не упоминается.
+  const umagOn = useUmagOn()
   const calcOf = (l: Line) => lineCalc(l, stockIn)
   const suppliers = useLoad(() => get<Supplier[]>('/suppliers'), [])
   const [supplierId, setSupplierId] = useState(fix?.state.supplierId ?? '')
@@ -694,8 +697,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
           {target !== null && (
             <div className="mb-2" data-testid="draft-target">
               <Notice tone="sky">
-                Выберите товар для строки накладной «{unmatched.find((l) => l.no === target)?.name}» — найдите его в поиске, в том числе в старой
-                базе Умаг.{' '}
+                Выберите товар для строки накладной «{unmatched.find((l) => l.no === target)?.name}» — найдите его в поиске{umagOn ? ', в том числе в старой базе Умаг' : ''}.{' '}
                 <button type="button" className="underline" onClick={() => setTarget(null)}>
                   Отмена
                 </button>
@@ -713,7 +715,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
               umag={!stockIn}
               umagAddLabel="Завести и добавить"
               placeholder={
-                stockIn ? 'Сканируйте штрихкод или пишите название' : 'Сканируйте штрихкод или пишите название — подскажем и из старой базы Умаг'
+                stockIn || !umagOn ? 'Сканируйте штрихкод или пишите название' : 'Сканируйте штрихкод или пишите название — подскажем и из старой базы Умаг'
               }
             />
           </div>

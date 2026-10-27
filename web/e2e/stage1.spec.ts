@@ -117,8 +117,8 @@ test('администратор не видит пользователей и �
   const adminPage = await ctx.newPage()
   await login(adminPage, admin, adminPassword)
   await expect(adminPage.getByRole('link', { name: 'Пользователи' })).toHaveCount(0)
-  // «Остатки» — в «Товарах» (SPEC-30 §11): пункта меню нет, сверки у администратора нет.
-  await expect(adminPage.getByRole('link', { name: 'Остатки' })).toHaveCount(0)
+  // Сверки остатков у администратора нет (SPEC-30 §11); «Склад → Остатки» ему виден (SPEC-36 §14).
+  await expect(adminPage.getByRole('link', { name: 'Остатки', exact: true }).first()).toBeVisible()
   await adminPage.getByRole('link', { name: 'Товары', exact: true }).first().click()
   await expect(adminPage.getByRole('heading', { name: 'Товары', exact: true })).toBeVisible()
   await expect(adminPage.getByRole('button', { name: 'Сверить остатки' })).toHaveCount(0)

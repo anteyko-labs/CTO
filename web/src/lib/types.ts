@@ -315,7 +315,26 @@ export interface ProductList {
     counts?: Record<StockChip, number>
     /** Срок залежалости, дней. */
     stale_days?: number
+    /** Подытоги по категориям (`group=category`, «Склад → Остатки», SPEC-36 §14). */
+    category_totals?: CategoryTotal[]
   }
+}
+
+/** Подытог категории в «Склад → Остатки»: позиции, количество по единицам, суммы. */
+export interface CategoryTotal {
+  category_id: string
+  name: string
+  kind: CategoryKind
+  count: number
+  /** Штуки, мл масла, граммы. */
+  pieces: number
+  ml: number
+  grams: number
+  /** Тара, если у всего масла группы она одна, — тогда итог «кан. + л». */
+  container_ml: number | null
+  /** Только владельцу. */
+  purchase_tyiyn?: number
+  sale_tyiyn: number
 }
 
 export interface TopProduct {
@@ -1266,6 +1285,8 @@ export interface UmagLinkResult {
 export interface UmagStats {
   rows: number
   imported_at: string | null
+  /** Умаг включён (SPEC-36 §15). */
+  enabled?: boolean
   linked?: number
   unlinked?: number
   conflicts?: number
@@ -1326,4 +1347,11 @@ export interface ServiceKinds {
   from: string
   to: string
   kinds: ServiceKind[]
+}
+
+/** Выключатель старой базы Умаг (SPEC-36 §15): состояние, строк и связей. */
+export interface UmagSwitch {
+  enabled: boolean
+  rows: number
+  linked: number
 }
