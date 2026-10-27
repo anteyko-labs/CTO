@@ -10984,10 +10984,10 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body())).await;
         assert_eq!(s, StatusCode::OK, "{perm} {uri}: {out}");
     }
-    // Каждое право, кроме скидки (её проверяет чек) и перелива (своя проверка), закрывает
-    // хотя бы одно действие из списка.
+    // Каждое право, кроме скидки (её проверяет чек), перелива и аванса (свои проверки, аванс —
+    // в tests/payouts.rs), закрывает хотя бы одно действие из списка.
     for p in avtodom_server::auth::PERMISSIONS {
-        if p.key != "discount" && p.key != "oil_transfer" {
+        if !matches!(p.key, "discount" | "oil_transfer" | "payroll_advance") {
             assert!(cases.iter().any(|c| c.0 == p.key), "{} без проверки", p.key);
         }
     }

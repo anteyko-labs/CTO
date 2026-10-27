@@ -20,6 +20,7 @@ export type Permission =
   | 'battery_intake'
   | 'products'
   | 'clients'
+  | 'payroll_advance'
 
 /** Филиал (SPEC-33). */
 export interface Branch {
@@ -441,7 +442,16 @@ export interface SaleBook {
   plate: string
   mileage: number | null
   mileage_unit: 'km' | 'mi'
-  lines: { label: string; next_mileage: number; unit: 'km' | 'mi'; next_date: string | null }[]
+  lines: { label: string; next_mileage: number; unit: 'km' | 'mi'; next_date: string | null; slot?: BookSlot }[]
+  /** «Залито» — жидкости чека с товаром и количеством (ADR-116); у старого чека нет. */
+  filled?: SaleBookFill[]
+}
+
+/** Жидкость чека в чеке книжки: «Антифриз» — «Sintec G12 · 2 шт» или «масло клиента» (ADR-116). */
+export interface SaleBookFill {
+  slot: BookSlot
+  label: string
+  product: string
 }
 
 export interface SaleListItem {
@@ -759,6 +769,36 @@ export interface PayrollRow {
   base_tyiyn: number | null
   paid_tyiyn: number
   balance_tyiyn: number
+  /** Оклад за месяц и за смену за день (ADR-122). */
+  salary_tyiyn?: number
+  bonus_tyiyn?: number
+  /** Удержания и недостача за день — с минусом. */
+  withheld_tyiyn?: number
+  /** Из выданного за день — авансом. */
+  advance_tyiyn?: number
+}
+
+/** Вид выплаты (ADR-122); `general` — прежние выплаты без вида. */
+export type PayoutPurpose = 'percent' | 'service_fee' | 'bonus' | 'salary' | 'advance'
+
+/** Остатки сотрудника по видам — `GET /payroll/remains`. */
+export interface PayoutRemains {
+  employee_id: string
+  full_name: string
+  is_cashier: boolean
+  is_master: boolean
+  remains: {
+    percent_tyiyn: number
+    service_fee_tyiyn: number
+    bonus_tyiyn: number
+    /** Оклад минус авансы — с минусом, пока аванс не закрыт окладом. */
+    salary_tyiyn: number
+    /** Удержание, которое ещё не из чего вычесть (с минусом). */
+    withheld_tyiyn: number
+  }
+  balance_tyiyn: number
+  /** Аванс в счёт оклада или оплаты за услуги. */
+  advance_to: 'salary' | 'service_fee'
 }
 
 // ---------- Прибыль и сводка (SPEC-08) ----------

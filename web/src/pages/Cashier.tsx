@@ -22,7 +22,7 @@ import { OilHint } from '../components/OilBook'
 import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
-import { cartSources, extraChoices, extraSlots, nextPayload, nextRows, nextTooLow, pruneNext, receiptBook, snapshotCategories, type CategoryBook, type OwnIntervals } from '../lib/nextChange'
+import { cartGoods, cartSources, extraChoices, extraSlots, filtersNote, goodShort, nextPayload, nextRows, nextTooLow, oilChangeHint, pruneNext, receiptBook, snapshotCategories, type CategoryBook, type OwnIntervals } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
@@ -844,6 +844,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const nextList = nextOn ? nextRows({ sources: nextSources, extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals }) : []
   const nextChoices = nextOn ? extraChoices(nextSources, nextList) : []
   const nextLow = nextTooLow(nextList, mileage)
+  // Что залили по строке — под её подписью: «Антифриз — Sintec G12 × 2» (ADR-116); канистра
+  // моторного масла без услуги масла — «Это замена?» (ADR-117).
+  const nextGoods = nextOn ? cartGoods(lines, categories.data) : []
+  const goodsOf = (slot: BookSlot) =>
+    nextGoods
+      .filter((g) => g.slot === slot)
+      .map(goodShort)
+      .join(', ')
+  const oilHint = nextOn && oilChangeHint(lines, categories.data, ourOil)
   // Убрали товар или услугу из чека — строка «Следующей замены» по ним и правка кассира уходят (и из
   // черновика, и из отложенного). Товары в чеке, а категорий нет — их строки не посчитать, ничего не трогаем.
   const nextSourceKey = nextSources.map((s) => s.slot).join(',')
@@ -1079,7 +1088,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4).
           book:
             nextOn && (book.data ?? snapCar.data)
-              ? receiptBook(book.data ?? snapCar.data ?? { brand: '', model: '', plate: '' }, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }))
+              ? receiptBook(book.data ?? snapCar.data ?? { brand: '', model: '', plate: '' }, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods)
               : null,
         }) as unknown as Sale
       // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
@@ -1260,6 +1269,22 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       «{serviceLeft ? slotLabel(nextLow.slot) : nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
     </span>
   )
+  // Под строками: фильтры на пробег масла и «Это замена?» (ADR-117).
+  const nextFilters = nextList.map(filtersNote).find(Boolean)
+  const nextNotes = (nextFilters || oilHint) && (
+    <>
+      {nextFilters && (
+        <span className="text-xs text-slate-600" data-testid="next-filters">
+          Масло двигателя: {nextFilters}
+        </span>
+      )}
+      {oilHint && (
+        <span className="text-xs text-amber-800" data-testid="oil-change-hint">
+          Это замена? Выберите вид «Замена масла в моторе»
+        </span>
+      )}
+    </>
+  )
   // Блок нужен, когда есть строки или что добавить «+ ещё»; в режиме кассы в нём и «Мастер рекомендовал».
   const nextShown = nextList.length > 0 || nextChoices.length > 0
   const openNextExtra = () => {
@@ -1285,8 +1310,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           <div key={r.slot} className="flex min-w-0 shrink-0 flex-col gap-1" data-next-row>
             {/* Подпись — во всю ширину поля и «✕» у строки по товару («Фильтр воздушный» целиком), но
                 шире ряд не делает. */}
-            <label htmlFor={`next-${r.slot}`} className="w-0 min-w-full truncate text-sm text-slate-700" title={r.label}>
+            <label htmlFor={`next-${r.slot}`} className="w-0 min-w-full truncate text-sm text-slate-700" title={[r.label, goodsOf(r.slot)].filter(Boolean).join(' — ')}>
               {slotLabel(r.slot)}
+              {goodsOf(r.slot) && (
+                <span className="block truncate text-xs text-slate-500" data-next-goods>
+                  {goodsOf(r.slot)}
+                </span>
+              )}
             </label>
             <span className="flex gap-1">
               {nextInput(r)}
@@ -1317,6 +1347,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </button>
       </div>
       {nextLowText}
+      {nextNotes}
     </div>
   ) : nextShown ? (
     <div className="flex min-w-0 flex-col gap-1" data-testid="next-change">
@@ -1330,6 +1361,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             <label htmlFor={`next-${r.slot}`} className="min-w-0 flex-1 text-sm leading-tight" title={r.label}>
               {r.label}
               <span className="text-slate-500"> — следующая на пробеге</span>
+              {goodsOf(r.slot) && (
+                <span className="block text-xs text-slate-500" data-next-goods>
+                  {slotLabel(r.slot)} — {goodsOf(r.slot)}
+                </span>
+              )}
             </label>
             {nextInput(r)}
             {nextRemove(r)}
@@ -1342,6 +1378,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         )}
       </div>
       {nextLowText}
+      {nextNotes}
     </div>
   ) : null
   const customerFields = (

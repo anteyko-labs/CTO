@@ -207,7 +207,7 @@ test('масляная книжка: замена с пробегом, след�
   const plate = `01KG${RUN.slice(-3)}AAA`
   const vehicle = await apiPost<{ id: string }>(page.request, `/parties/${party.id}/vehicles`, { plate })
   // Чек «В сервис» — с видом замены (ADR-096).
-  const kind = await apiPost<{ id: string }>(page.request, '/services', { name: `Замена книжки ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
+  const kind = await apiPost<{ id: string }>(page.request, '/services', { name: `Замена масла книжки ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
   await apiPost(page.request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'service',

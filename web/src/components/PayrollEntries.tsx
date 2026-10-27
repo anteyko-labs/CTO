@@ -10,6 +10,7 @@ import { FixDraft, type FixMode } from './FixDraft'
 import { Pager, usePager } from './Pager'
 import { ExtraForm, PayoutForm, SalaryForm, type ExtraDoc, type PayoutDoc, type SalaryDoc } from './PayrollForms'
 import { Button, Empty, ErrorBox, Field, Loading, Modal, Money, toast } from './ui'
+import { PURPOSE_LABELS } from '../lib/payouts'
 
 interface AccrualRow {
   id: string
@@ -28,6 +29,8 @@ interface PayoutRow {
   id: string
   number: number
   amount_tyiyn: number
+  /** За что (ADR-122); `general` — прежняя выплата без вида. */
+  purpose?: string
   source: string
   account_name: string | null
   comment: string
@@ -49,7 +52,7 @@ const KIND_LABELS: Record<string, string> = {
   penalty: 'Удержание',
   shortage: 'Недостача',
   revenue_percent: '% с чеков',
-  service_fee: 'За замены',
+  service_fee: 'Мастеру за услуги',
 }
 
 type Target = { what: 'accrual'; row: AccrualRow } | { what: 'payout'; row: PayoutRow }
@@ -153,7 +156,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                 ? target.t.row.kind === 'shortage'
                   ? `Удержание недостачи ${formatSom(-target.t.row.amount_tyiyn)} снимется с кассира. Недостача кассы останется в отчёте о прибыли и уменьшит её на эту сумму.`
                   : `${KIND_LABELS[target.t.row.kind] ?? target.t.row.kind} ${formatSom(target.t.row.amount_tyiyn)} за ${formatDate(target.t.row.business_date)} будет отменён записью с минусом.`
-                : `Выплата № ${target.t.row.number} на ${formatSom(target.t.row.amount_tyiyn)} отменится${target.t.row.account_name ? `, деньги вернутся в «${target.t.row.account_name}» (нужна открытая смена)` : ''}.`}
+                : `Выплата № ${target.t.row.number}${target.t.row.purpose && target.t.row.purpose !== 'general' ? ` (${(PURPOSE_LABELS[target.t.row.purpose] ?? target.t.row.purpose).toLowerCase()})` : ''} на ${formatSom(target.t.row.amount_tyiyn)} отменится${target.t.row.account_name ? `, деньги вернутся в «${target.t.row.account_name}» (нужна открытая смена)` : ''}.`}
             </div>
             <Field label="Причина" required>
               <input autoFocus value={target.reason} onChange={(e) => setTarget({ ...target, reason: e.target.value })} />
@@ -220,7 +223,9 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                     <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                       <span className={struck(p)}>
                         № {p.number} · {formatDateTime(p.created_at)} · {p.reversal_of ? 'Сторно: ' : ''}
-                        <Money value={p.amount_tyiyn} tone="negative" /> · {p.account_name ? `из «${p.account_name}»` : 'мимо касс'}
+                        <Money value={p.amount_tyiyn} tone="negative" />
+                        {p.purpose && p.purpose !== 'general' && <> · {(PURPOSE_LABELS[p.purpose] ?? p.purpose).toLowerCase()}</>} ·{' '}
+                        {p.account_name ? `из «${p.account_name}»` : 'мимо касс'}
                         {p.comment && <span className="text-slate-500"> — {p.comment}</span>} <CorrectionBadges mark={payMarks.data?.get(p.id)} />
                         <span className="block text-xs text-slate-400">{p.user_name}</span>
                       </span>

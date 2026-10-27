@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\", c.book_interval_km, c.book_interval_days\n           from categories c where c.id = $1 for update",
+  "query": "select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\", c.book_interval_km, c.book_interval_days,\n                  c.kind\n           from categories c where c.id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,11 @@
         "ordinal": 2,
         "name": "book_interval_days",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -27,8 +32,9 @@
     "nullable": [
       null,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "67e05b8d31288aad40a8429652a4862b52f608153ac86722e5e84fcd5a387ecf"
+  "hash": "86dcca514b1ddef35d6ca22b234079affe2e3afabb491071950258fe7d710b60"
 }

@@ -1,8 +1,10 @@
 // SPEC-34, уточнение заказчика 26.10.2026: «+ ещё строку» в «Следующей замене» — только позиции этого
 // чека («он только что в чеке набирает, должен предлагать, а не все подряд»; «он предлагает антифриз
-// и т. д., он должен с чека предлагать»). В чеке масло, воздушный фильтр и замена масла: предлагается
-// только «Фильтр воздушный (…)» — ни услуг справочника, ни антифриза из каталога; добавленная строка
-// уходит с чеком в книжку и печать; удалили фильтр из чека — строка ушла.
+// и т. д., он должен с чека предлагать»). В чеке масло, топливный фильтр и замена масла: предлагается
+// только «Фильтр топливный (…)» — ни услуг справочника, ни антифриза из каталога; добавленная строка
+// уходит с чеком в книжку; удалили фильтр из чека — строка ушла. Масляный, воздушный и салонный
+// фильтры при замене масла своих строк не дают (ADR-117), поэтому здесь — топливный фильтр, масло
+// коробки и тормозная жидкость.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
 
@@ -48,26 +50,29 @@ async function api<T>(request: APIRequestContext, path: string, data?: unknown):
   return (await res.json()) as T
 }
 
-/** Масло, воздушный фильтр (в общей категории фильтров — по типу) и антифриз на складе; в справочнике —
- *  замена масла и замена антифриза. */
+/** Масло, топливный фильтр (в общей категории фильтров — по типу), масло коробки, тормозная жидкость и
+ *  антифриз на складе; в справочнике — замена масла и замена антифриза. */
 async function setup(request: APIRequestContext) {
   const tag = `${RUN}${++seq}`
   const safe = await ownerSafe(request)
   const oilCat = await api<{ id: string }>(request, '/categories', { name: `Масла ещё ${tag}`, kind: 'oil' })
   const filterCat = await api<{ id: string }>(request, '/categories', { name: `Фильтры ещё ${tag}`, kind: 'filter' })
   const antiCat = await api<{ id: string }>(request, '/categories', { name: `Антифризы ещё ${tag}`, kind: 'other', book: { slot: 'antifreeze', interval_km: 60_000, interval_days: 730 } })
+  // Строки книжки — по названию категории (ADR-117).
+  const gearCat = await api<{ id: string; book_slot: string }>(request, '/categories', { name: `Трансмиссионные масла ещё ${tag}`, kind: 'oil' })
+  const brakeCat = await api<{ id: string; book_slot: string }>(request, '/categories', { name: `Тормозные жидкости ещё ${tag}`, kind: 'other' })
+  expect([gearCat.book_slot, brakeCat.book_slot]).toEqual(['gear_oil', 'brake_fluid'])
   const oilCode = `46${tag}1`
-  const airCode = `46${tag}2`
-  const oilFilterCode = `46${tag}4`
-  const cabinCode = `46${tag}5`
-  const airName = `Фильтр воздушный ещё ${tag}`
+  const fuelCode = `46${tag}2`
+  const gearCode = `46${tag}4`
+  const brakeCode = `46${tag}5`
+  const fuelName = `Фильтр топливный ещё ${tag}`
   const oil = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: oilCat.id, name: `Масло ещё ${tag} 5W-30`, container_ml: 4000, barcodes: [oilCode], sale_price_tyiyn: 300_000 })
-  const air = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: filterCat.id, name: airName, attrs: { filter_type: 'воздушный' }, barcodes: [airCode], sale_price_tyiyn: 60_000 })
+  const air = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: filterCat.id, name: fuelName, attrs: { filter_type: 'топливный' }, barcodes: [fuelCode], sale_price_tyiyn: 60_000 })
   // Антифриз есть в каталоге и на складе, но не в чеке: его не предлагать.
   const anti = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: antiCat.id, name: `Антифриз ещё ${tag}`, barcodes: [`46${tag}3`], sale_price_tyiyn: 90_000 })
-  // Масляный и салонный фильтры — в той же общей категории фильтров.
-  const oilFilter = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: filterCat.id, name: `Фильтр масляный ещё ${tag}`, attrs: { filter_type: 'масляный' }, barcodes: [oilFilterCode], sale_price_tyiyn: 40_000 })
-  const cabin = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: filterCat.id, name: `Фильтр салонный ещё ${tag}`, attrs: { filter_type: 'салонный' }, barcodes: [cabinCode], sale_price_tyiyn: 50_000 })
+  const oilFilter = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: gearCat.id, name: `Масло КПП ещё ${tag} 75W-90`, container_ml: 1000, barcodes: [gearCode], sale_price_tyiyn: 40_000 })
+  const cabin = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: brakeCat.id, name: `Тормозная жидкость ещё ${tag}`, barcodes: [brakeCode], sale_price_tyiyn: 50_000 })
   await api(request, '/receipts', {
     op_id: crypto.randomUUID(),
     paid_from: safe,
@@ -75,7 +80,7 @@ async function setup(request: APIRequestContext) {
       { product_id: oil.id, qty: 40_000, cost_tyiyn: 2_000_000 },
       { product_id: air.id, qty: 10, cost_tyiyn: 300_000 },
       { product_id: anti.id, qty: 5, cost_tyiyn: 300_000 },
-      { product_id: oilFilter.id, qty: 10, cost_tyiyn: 200_000 },
+      { product_id: oilFilter.id, qty: 10_000, cost_tyiyn: 200_000 },
       { product_id: cabin.id, qty: 10, cost_tyiyn: 250_000 },
     ],
   })
@@ -92,7 +97,7 @@ async function setup(request: APIRequestContext) {
   const party = await api<{ id: string }>(request, '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0702${tag.slice(-6)}` })
   const plate = `08KG${tag.slice(-3)}AFQ`
   const vehicle = await api<{ id: string }>(request, `/parties/${party.id}/vehicles`, { plate, brand: 'Toyota', model: 'Camry' })
-  return { oilCode, airCode, oilFilterCode, cabinCode, airName, service, serviceId: svcOil.id, antiService, antiServiceId: svcAnti.id, master, cashier, last, plate, vehicle }
+  return { oilCode, fuelCode, gearCode, brakeCode, fuelName, service, serviceId: svcOil.id, antiService, antiServiceId: svcAnti.id, master, cashier, last, plate, vehicle }
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>
@@ -225,16 +230,16 @@ for (const mode of [
       const more = block.getByRole('button', { name: '+ ещё строку' })
       await expect(more).toHaveCount(0)
 
-      // Воздушный фильтр в чеке — «+ ещё» предлагает только его.
-      await scan(s.airCode, 3)
+      // Топливный фильтр в чеке — «+ ещё» предлагает только его.
+      await scan(s.fuelCode, 3)
       await expect(more).toBeVisible()
       if (mode.touch) expect((await more.boundingBox())!.height).toBeGreaterThanOrEqual(56)
       await hit(more)
       const dlg = page.getByRole('dialog', { name: 'Следующая замена: ещё строка' })
       const choices = dlg.getByTestId('next-extra-choices').getByRole('button').filter({ hasNotText: 'Отмена' })
-      const airLabel = `Фильтр воздушный (${s.airName})`
+      const fuelLabel = `Фильтр топливный (${s.fuelName})`
       await expect(choices).toHaveCount(1)
-      await expect(choices.first()).toHaveText(airLabel)
+      await expect(choices.first()).toHaveText(fuelLabel)
       // Ни услуг справочника (замена антифриза), ни антифриза из каталога.
       await expect(dlg.getByText(/антифриз/i)).toHaveCount(0)
       await expect(dlg.getByText(/Замена/)).toHaveCount(0)
@@ -249,9 +254,9 @@ for (const mode of [
       await hit(choices.first())
       await expect(dlg).toHaveCount(0)
 
-      // Строка фильтра: пробег + 15 000 км (по умолчанию строки), «+ ещё» больше нечего.
-      const airField = block.getByLabel(`Следующая замена: ${airLabel}`)
-      await expect(airField).toHaveValue('232000')
+      // Строка фильтра: пробег + 30 000 км (по умолчанию строки), «+ ещё» больше нечего.
+      const fuelField = block.getByLabel(`Следующая замена: ${fuelLabel}`)
+      await expect(fuelField).toHaveValue('247000')
       await expect(more).toHaveCount(0)
       if (mode.touch) {
         await expect(block).toBeInViewport({ ratio: 1 })
@@ -262,12 +267,12 @@ for (const mode of [
 
       // Строка переживает перезагрузку (черновик чека).
       await page.reload()
-      await expect(block.getByLabel(`Следующая замена: ${airLabel}`)).toHaveValue('232000')
+      await expect(block.getByLabel(`Следующая замена: ${fuelLabel}`)).toHaveValue('247000')
 
       // Удалили фильтр из чека — его строки «Следующей замены» нет.
-      await hit(cart.filter({ hasText: s.airName }).getByRole('button', { name: 'Удалить строку' }))
+      await hit(cart.filter({ hasText: s.fuelName }).getByRole('button', { name: 'Удалить строку' }))
       await expect(cart).toHaveCount(2)
-      await expect(airField).toHaveCount(0)
+      await expect(fuelField).toHaveCount(0)
       await expect(more).toHaveCount(0)
       await shot(page, 'next-cart-removed-1366')
       if (mode.touch) {
@@ -275,43 +280,43 @@ for (const mode of [
         await page.waitForTimeout(400)
         await hit(page.getByRole('button', { name: 'Вернуть' }))
         await expect(cart).toHaveCount(3)
-        await expect(airField).toHaveValue('232000')
+        await expect(fuelField).toHaveValue('247000')
       } else {
         // Снова в чеке — строка сама не возвращается, «+ ещё» снова предлагает фильтр.
-        await scan(s.airCode, 3)
-        await expect(airField).toHaveCount(0)
+        await scan(s.fuelCode, 3)
+        await expect(fuelField).toHaveCount(0)
         await hit(more)
-        await hit(dlg.getByRole('button', { name: airLabel }))
-        await expect(airField).toHaveValue('232000')
+        await hit(dlg.getByRole('button', { name: fuelLabel }))
+        await expect(fuelField).toHaveValue('247000')
       }
-      await airField.fill('233000')
+      await fuelField.fill('233000')
 
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
 
-      // Итог чека: следующая замена масла и воздушного фильтра этого чека.
+      // Итог чека: следующая замена масла и топливного фильтра этого чека.
       const written = page.getByText(/Записано в масляную книжку/).locator('..')
       await expect(written).toContainText(/Следующая · Масло двигателя: на 225\s000 км/)
-      await expect(written).toContainText(/Следующая · Фильтр воздушный: на 233\s000 км/)
+      await expect(written).toContainText(/Следующая · Фильтр топливный: на 233\s000 км/)
       await expect(written).not.toContainText('Антифриз')
       await shot(page, 'next-cart-done-1366')
 
-      // Книжка, напечатанная после чека: обе строки в «Следующей замене».
+      // Чек книжки, напечатанный после чека: только жидкости — масло; фильтра нет (ADR-116).
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка'))).toBe(true)
       const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка')) ?? '')
-      const next = book.split('Следующая замена — что наступит раньше')[1]?.split(/По прошлым заменам|Прошлые замены/)[0] ?? ''
-      expect(next).toContain('Масло двигателя')
-      expect(next).toContain('Фильтр воздушный')
-      expect(next).not.toContain('Антифриз')
+      const next = book.split('Следующая замена:')[1] ?? ''
+      expect(next).toContain('Масло двигателя на 225 000 км')
+      expect(book).not.toContain('Фильтр')
+      expect(book).not.toContain('Антифриз')
 
-      // Печатный чек: блок «Масляная книжка» — масло по услуге, фильтр строкой книжки.
+      // Печатный чек: блок «Масляная книжка» — тоже только жидкости.
       await hit(page.getByRole('button', { name: 'Печать чека' }))
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Товарный чек'))).toBe(true)
       const receipt = plain((await prints(page)).filter((h) => h.includes('Товарный чек')).at(-1) ?? '')
-      expect(receipt).toContain(`${s.service} — следующая замена на пробеге 225 000 км`)
-      expect(receipt).toContain('Фильтр воздушный — следующая замена на пробеге 233 000 км')
-      expect(receipt).not.toContain('Антифриз —')
+      expect(receipt).toContain('Следующая замена: Масло двигателя: на 225 000 км')
+      expect(receipt).not.toContain('Фильтр топливный:')
+      expect(receipt).not.toContain('Антифриз')
 
       // Книжка машины: цель — у строки фильтра этого чека; строк, которых нет в чеке, нет.
       const b = await api<{ records: { lines: { slot: string; next_mileage: number | null }[] }[]; slots: { slot: string; next_mileage?: number | null }[] }>(
@@ -320,9 +325,9 @@ for (const mode of [
       )
       expect(b.records[0].lines.map((l) => [l.slot, l.next_mileage])).toEqual([
         ['oil', 225000],
-        ['air_filter', 233000],
+        ['fuel_filter', 233000],
       ])
-      expect(b.slots.find((x) => x.slot === 'air_filter')?.next_mileage).toBe(233000)
+      expect(b.slots.find((x) => x.slot === 'fuel_filter')?.next_mileage).toBe(233000)
       expect(b.slots.some((x) => x.slot === 'antifreeze')).toBe(false)
       if (mode.touch) await hit(page.getByRole('button', { name: 'Выйти из режима кассы' }))
     })
@@ -394,8 +399,8 @@ test.describe('режим кассы 1366×768: «+ ещё» под пальце
     const s = await setup(page.request)
     await page.reload()
     await serviceKind(page, s)
-    await scan(page, s.airCode, 2)
-    await scan(page, s.cabinCode, 3)
+    await scan(page, s.fuelCode, 2)
+    await scan(page, s.brakeCode, 3)
     await serviceDetails(page, s, true, hit)
     // Пробег — экранной клавиатурой по «⌨» (ADR-101): она остаётся открытой и после касания кнопки.
     const mileage = page.locator('#mileage')
@@ -414,10 +419,10 @@ test.describe('режим кассы 1366×768: «+ ещё» под пальце
       const mine = await b.evaluate((el, p) => el.contains(document.elementFromPoint(p.x, p.y)), { x: box.x + box.width - 8, y: box.y + box.height / 2 })
       expect(mine, await b.innerText()).toBe(true)
     }
-    await hit(dlg.getByRole('button', { name: /Фильтр салонный/ }))
+    await hit(dlg.getByRole('button', { name: /Тормозная жидкость/ }))
     await expect(dlg).toHaveCount(0)
     await expect(mileage).toHaveValue('217000')
-    await expect(page.getByTestId('next-change').getByLabel(/Следующая замена: Фильтр салонный/)).toHaveValue('232000')
+    await expect(page.getByTestId('next-change').getByLabel(/Следующая замена: Тормозная жидкость/)).toHaveValue('257000')
   })
 
   test('строка, добавленная «+ ещё», видна, даже когда карточка замены прокручивается', async ({ page }) => {
@@ -431,9 +436,9 @@ test.describe('режим кассы 1366×768: «+ ещё» под пальце
     await expect(lines(page)).toHaveCount(0)
     await serviceKind(page, s)
     await scan(page, s.oilCode, 2)
-    await scan(page, s.oilFilterCode, 3)
-    await scan(page, s.airCode, 4)
-    await scan(page, s.cabinCode, 5)
+    await scan(page, s.gearCode, 3)
+    await scan(page, s.fuelCode, 4)
+    await scan(page, s.brakeCode, 5)
     await serviceDetails(page, s, true, hit)
     const block = page.getByTestId('next-change')
     const card = page.getByTestId('service-left')
@@ -470,8 +475,8 @@ test.describe('режим кассы 1366×768: «+ ещё» под пальце
     await page.reload()
     await serviceKind(page, s)
     await scan(page, s.oilCode, 2)
-    await scan(page, s.oilFilterCode, 3)
-    await scan(page, s.airCode, 4)
+    await scan(page, s.gearCode, 3)
+    await scan(page, s.fuelCode, 4)
     await serviceDetails(page, s, true, hit)
     await expect(page.getByTestId('next-change')).toBeVisible()
     const list = page.getByTestId('cart')
