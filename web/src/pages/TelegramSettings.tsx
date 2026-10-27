@@ -12,7 +12,7 @@ interface Status {
   linked_at: string | null
 }
 
-/** Процент баллов с покупки: «0,5» ↔ 50 сотых процента (SPEC-19). */
+/** Процент баллов за замену масла (ADR-124): «0,5» ↔ 50 сотых процента (SPEC-19). */
 function LoyaltyRate() {
   const st = useLoad(() => get<{ rate_bp: number }>('/settings/loyalty'), [])
   const [text, setText] = useState<string | null>(null)
@@ -25,8 +25,9 @@ function LoyaltyRate() {
     <Card className="flex flex-wrap items-end gap-3 text-sm">
       <div className="min-w-0 flex-1 text-slate-700">
         <CardTitle>Баллы клиентам</CardTitle>
-        Клиенты, подключившиеся к боту по номеру, получают {shown(st.data.rate_bp)} % от оплаченного деньгами баллами (1 балл = 1 сом). Списать
-        баллы — на кассе «Услуги → Скидка баллами». Списанные баллы уменьшают чистую прибыль.
+        За каждую замену масла — бонусные баллы: клиенты, подключившиеся к боту по номеру, получают {shown(st.data.rate_bp)} % от
+        оплаченного деньгами по чеку «В сервис» с услугой замены масла (1 балл = 1 сом); другие покупки баллов не дают. Списать
+        баллы можно в любом чеке — на кассе «Услуги → Скидка баллами». Списанные баллы уменьшают чистую прибыль.
       </div>
       {text === null ? (
         <Button variant="secondary" onClick={() => setText(shown(st.data!.rate_bp))}>
