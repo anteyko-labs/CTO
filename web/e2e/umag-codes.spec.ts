@@ -527,6 +527,23 @@ async function freeCode(request: APIRequestContext, digits: number): Promise<str
   }
 }
 
+/** EAN-13 по двенадцати цифрам: контрольная цифра в конце. */
+function ean13(body: string): string {
+  const sum = [...body].reduce((s, d, i) => s + Number(d) * (i % 2 === 0 ? 1 : 3), 0)
+  return `${body}${(10 - (sum % 10)) % 10}`
+}
+
+/** Код строки «литр», как в Умаге (276…), и её весовая наклейка «1 литр»: код строки, количество
+ *  01000 (1,000 л) и контрольная цифра. Оба кода свободны. */
+async function freeLiterCodes(request: APIRequestContext): Promise<{ liter: string; sticker: string }> {
+  for (;;) {
+    const liter = `276${String(Math.floor(Math.random() * 10_000)).padStart(4, '0')}`
+    const sticker = ean13(`${liter}01000`)
+    const found = await Promise.all([liter, sticker].map((c) => request.get(`/api/v1/products/by-barcode/${c}`)))
+    if (found.every((r) => r.status() === 404)) return { liter, sticker }
+  }
+}
+
 test('ревизия: скан наклейки с нулём впереди (в Умаге нуль потерян) — +1, курсор в сканере; следующий скан — другой товар', async ({ page }) => {
   await login(page)
   const catName = `Ревизия Умаг ${RUN}`
@@ -642,6 +659,49 @@ test('строка «литр»: коды литра Умага не стано�
   await kassa.fill(ean)
   await kassa.press('Enter')
   await expect(page.getByTestId('cart')).toContainText(name)
+})
+
+test('строка «литр»: наклейка «1 литр» (код строки + 01000) — не код канистры: карточка без неё, касса «Код не найден»', async ({ page }) => {
+  await login(page)
+  // Как IDEMITSU 5W30 4Л рабочей выгрузки: 2760275, PLU 1276 и наклейка 2760275010002, заводского кода нет.
+  const { liter, sticker } = await freeLiterCodes(page.request)
+  const plu = await freeCode(page.request, 4)
+  const name = `IDEMITSU ТЕСТ ${RUN} 5W30 4Л`
+  await putUmag(page.request, [{ name, barcode: liter, extra_code: `${plu};${sticker}`, unit: 'литр', price_tyiyn: 105_000, cost_tyiyn: 80_000 }])
+
+  // Приход: скан наклейки — окно Умага, все три кода — коды литра.
+  await page.goto('/receipts/new')
+  const picker = page.locator('#receipt-picker')
+  await picker.fill(sticker)
+  await picker.press('Enter')
+  const modal = page.getByTestId('umag-modal')
+  await expect(modal.getByTestId('umag-measure-codes')).toContainText(`Коды ${liter}, ${plu}, ${sticker} в Умаге продавали литр`)
+  await modal.getByTestId('umag-create').click()
+  // Заводского кода у строки нет: поле кода пустое — код выдаст программа.
+  const card = page.getByRole('dialog', { name: 'Новый товар' })
+  await expect(card.locator('#product-name')).toHaveValue(name)
+  await expect(card.locator('#product-container')).toHaveValue('4')
+  await expect(card.locator('#product-barcode')).toHaveValue('')
+  await expect(card.getByTestId('umag-measure-codes')).toContainText(sticker)
+  await expect(card.getByTestId('umag-codes')).toHaveCount(0)
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/prihod-umag-liter-sticker-card.png` })
+  await card.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(card).toBeHidden()
+  await expect(page.getByText(`1. ${name}`)).toBeVisible()
+  const row = await umagRow(page.request, sticker)
+  expect(row.product_id).toBeTruthy()
+  const p = await apiGet<Product>(page.request, `/products/${row.product_id}`)
+  expect(p.barcodes).toHaveLength(1)
+  expect(p.barcodes[0]).toMatch(/^22\d{11}$/)
+  for (const code of [sticker, liter, plu]) expect((await page.request.get(`/api/v1/products/by-barcode/${code}`)).status()).toBe(404)
+
+  // Касса: наклейка «1 литр» — «Код не найден», а не канистра в чеке.
+  await page.goto('/')
+  const kassa = page.getByPlaceholder(PICKER)
+  await kassa.fill(sticker)
+  await kassa.press('Enter')
+  await expect(page.getByRole('dialog', { name: `Код ${sticker} не найден` })).toBeVisible()
+  await expect(page.getByTestId('cart')).not.toContainText(name)
 })
 
 test('«Сканер товаров»: строка «литр» без заводского кода — карточка без кода литра, код выдаёт программа', async ({ page }) => {

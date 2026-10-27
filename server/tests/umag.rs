@@ -1461,6 +1461,113 @@ async fn measure_rows_keep_their_codes_in_umag(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn liter_sticker_of_measure_row_stays_in_umag(pool: PgPool) {
+    // Рабочая выгрузка (повторная проверка 26.10.2026): у строки «литр» кроме 276… и PLU — весовая
+    // наклейка «1 литр» (EAN-13 магазина: код строки 2760275, количество 01000 и контрольная) и
+    // коды магазина 211…. Это не заводские коды канистры: товару они не переходят, на кассе —
+    // «Код не найден».
+    let t = setup(pool).await;
+    t.import(json!([
+        { "name": "IDEMITSU 5W30 4Л", "barcode": "2760275", "extra_code": "1276;2760275010002",
+          "unit": "литр", "price_tyiyn": 105_000 },
+        { "name": "TOYOTA ATF WS 4L", "barcode": "2760161",
+          "extra_code": "2110000000073;1162;4008177071423", "unit": "литр", "price_tyiyn": 110_000 },
+        { "name": "AZMOL 80W90 200Л", "barcode": "2760099", "extra_code": "2760099010004",
+          "unit": "кг", "price_tyiyn": 60_000 },
+        // У штучной строки код магазина 211… — её код (наклейка на самой вещи).
+        { "name": "LED ЛАМПА H11", "barcode": "2110000050825", "unit": "шт", "price_tyiyn": 50_000 }
+    ]))
+    .await;
+    let oil = t.category("Масла", "oil").await;
+    // Своя карточка канистры связана со строкой «литр» (похожие пары → «Связать»).
+    let idemitsu = t
+        .product(
+            &t.owner,
+            json!({ "category_id": oil, "name": "Idemitsu 5W-30", "container_ml": 4000,
+                    "barcodes": ["4600000000990"], "sale_price_tyiyn": 260_000 }),
+        )
+        .await;
+    let row = t.row("2760275010002").await;
+    let (s, linked) = t.link(&row, &idemitsu, &t.owner).await;
+    assert_eq!(s, StatusCode::OK, "{linked}");
+    assert_eq!(linked["copied"], json!([]), "{linked}");
+    assert_eq!(t.codes(&idemitsu).await, ["4600000000990"]);
+    // Касса: наклейка «1 литр», код строки и PLU — «Код не найден», а не канистра в чеке.
+    for code in ["2760275010002", "2760275", "1276"] {
+        assert_eq!(
+            t.by_code(code, &t.admin).await.0,
+            StatusCode::NOT_FOUND,
+            "{code}"
+        );
+    }
+    // «Товары» и «Приход»: наклейка находит строку Умага, а через связь — товар.
+    let hit = t.hit("2760275010002").await;
+    assert_eq!(
+        (hit["exact"].clone(), hit["product_id"].clone()),
+        (json!(true), json!(idemitsu))
+    );
+    let card = t
+        .get(&format!("/api/v1/products/{idemitsu}"), &t.owner)
+        .await;
+    assert_eq!(
+        strs(&card["umag"]["measure_codes"]),
+        ["2760275", "1276", "2760275010002"]
+    );
+    // Карточка из строки «литр»: заводской EAN переходит, код магазина 211… — нет.
+    let row = t.row("2760161").await;
+    let atf = t
+        .ok(
+            "POST",
+            "/api/v1/products",
+            &t.admin,
+            json!({ "op_id": Uuid::now_v7(), "category_id": oil, "name": "Toyota ATF WS 4 л",
+                    "container_ml": 4000, "sale_price_tyiyn": 440_000, "old_catalog_id": row }),
+        )
+        .await;
+    let atf = atf["id"].as_str().unwrap().to_string();
+    let codes = t.codes(&atf).await;
+    assert!(codes.contains(&"4008177071423".to_string()), "{codes:?}");
+    for code in ["2110000000073", "2760161", "1162"] {
+        assert!(!codes.contains(&code.to_string()), "{codes:?}");
+        assert_eq!(
+            t.by_code(code, &t.admin).await.0,
+            StatusCode::NOT_FOUND,
+            "{code}"
+        );
+    }
+    // Строка «кг» без заводского кода: код выдаёт программа, наклейка остаётся в Умаге.
+    let row = t.row("2760099").await;
+    let azmol = t
+        .product(
+            &t.admin,
+            json!({ "category_id": oil, "name": "AZMOL 80W90 200 л", "container_ml": 200_000,
+                    "sale_price_tyiyn": 9_000_000, "old_catalog_id": row }),
+        )
+        .await;
+    let codes = t.codes(&azmol).await;
+    assert_eq!(codes.len(), 1, "{codes:?}");
+    assert!(codes[0].starts_with("22"), "{codes:?}");
+    assert_eq!(
+        t.by_code("2760099010004", &t.admin).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // Штучная строка: код магазина 211… — код товара.
+    let lamps = t.category("Лампы", "other").await;
+    let row = t.row("2110000050825").await;
+    let lamp = t
+        .product(
+            &t.admin,
+            json!({ "category_id": lamps, "name": "Лампа H11", "sale_price_tyiyn": 50_000,
+                    "old_catalog_id": row }),
+        )
+        .await;
+    assert_eq!(
+        t.by_code("2110000050825", &t.admin).await.1["id"],
+        json!(lamp)
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn auto_link_by_name_needs_a_single_row(pool: PgPool) {
     // Одинаковое название у нескольких строк Умага — разные товары (цены, EAN разные).
     let t = setup(pool).await;

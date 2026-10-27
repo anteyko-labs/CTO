@@ -48,6 +48,17 @@ describe('карточка из старой программы', () => {
     expect(presetFromHit(hit({ unit: 'кг', barcode: '2760445', article: '', codes: undefined }), cats).barcode).toBe('')
   })
 
+  it('строка «литр» с наклейкой «1 литр» и без заводского кода — код карточки выдаст программа', () => {
+    // Рабочая выгрузка: MULLER SN 5W40 5L — 2760320, наклейка 2760320010001 (код строки + 01000 + контрольная), PLU 1321.
+    const muller = hit({ name: 'MULLER SN 5W40 5L', unit: 'литр', barcode: '2760320', article: '', codes: ['2760320', '2760320010001', '1321'] })
+    expect(presetFromHit(muller, cats).barcode).toBe('')
+    expect(presetFromHit(muller, cats, '', '2760320010001').barcode).toBe('')
+    // Скан наклейки с потерянным нулём впереди — тоже код меры.
+    expect(presetFromHit(muller, cats, '', '02760320010001').barcode).toBe('')
+    // Код магазина 211… у строки «литр» — тоже не код канистры.
+    expect(presetFromHit(hit({ unit: 'литр', barcode: '2760161', article: '', codes: ['2760161', '2110000000073'] }), cats).barcode).toBe('')
+  })
+
   it('без права на закупку (сервер не отдал её) — закупка пустая', () => {
     expect(presetFromHit(hit({ cost_tyiyn: null }), cats).cost).toBe('')
   })

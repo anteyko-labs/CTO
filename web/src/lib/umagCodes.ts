@@ -40,12 +40,21 @@ export function isMeasureUnit(unit: string): boolean {
   return /^(л|лт|литр[а-я]*|кг|килограмм[а-я]*|г|гр|грамм[а-я]*|м|метр[а-я]*)\.?$/.test(unit.trim().toLowerCase())
 }
 
+/** Числовой код без потерянных Excel нулей впереди; остальные — как есть (`umag_bare` на сервере). */
+function bare(code: string): string {
+  const c = code.trim()
+  const stripped = c.replace(/^0+/, '')
+  return DIGITS.test(c) && stripped !== '' ? stripped : c
+}
+
 /**
- * Код меры: у строки «литр», «кг», «метр» — коды Умага короче восьми цифр (276…, PLU). В Умаге они
- * продавали литр или килограмм; товару учёта (канистра, ведро) не переходят — на кассе они
- * добавили бы всю тару (ADR-113).
+ * Код меры у строки «литр», «кг», «метр» — не заводской код: короче восьми цифр (276…, PLU) или
+ * EAN-13 магазина с префиксом 2 — весовая наклейка «1 литр» (код строки 2760275, количество 01000
+ * и контрольная — 2760275010002) и коды магазина Умага 211…. В Умаге он продавал литр или
+ * килограмм; товару учёта (канистра, ведро) не переходит — на кассе добавил бы всю тару (ADR-113;
+ * как `umag_measure_code` на сервере).
  */
-export const isMeasureCode = (code: string, unit: string): boolean => isMeasureUnit(unit) && /^\d{1,7}$/.test(code)
+export const isMeasureCode = (code: string, unit: string): boolean => isMeasureUnit(unit) && /^(\d{1,7}|2\d{12})$/.test(bare(code))
 
 /** Коды строки, которые переходят товару (`umag_product_codes` на сервере). */
 export const productCodes = (codes: readonly string[], unit: string): string[] => codes.filter((c) => !isMeasureCode(c, unit))

@@ -65,23 +65,33 @@ alter table old_catalog
 create index old_catalog_keys_bare_idx on old_catalog using gin (keys_bare) with (fastupdate = off);
 create index old_catalog_name_norm_idx on old_catalog (branch_id, name_norm);
 
--- 3. Строку Умага продавали мерой (литр, кг, метр): её коды Умага (276…, PLU — короче восьми
--- цифр) продавали литр или килограмм, а у товара учёта (канистра, ведро) такой код добавил бы на
--- кассе всю тару. Товару переходят только остальные коды — заводские EAN (ADR-113).
+-- 3. Строку Умага продавали мерой (литр, кг, метр): её коды Умага продавали литр или килограмм,
+-- а у товара учёта (канистра, ведро) такой код добавил бы на кассе всю тару. Товару переходят
+-- только заводские коды (ADR-113).
 create function umag_by_measure(unit text) returns boolean
     language sql immutable parallel safe as $$
     select lower(btrim(coalesce(unit, ''))) ~ '^(л|лт|литр[а-я]*|кг|килограмм[а-я]*|г|гр|грамм[а-я]*|м|метр[а-я]*)\.?$'
+$$;
+
+-- Код меры строки «литр», «кг», «метр» — не заводской код: короче восьми цифр (276…, PLU) или
+-- EAN-13 магазина с префиксом 2: весовая наклейка «1 литр» (код строки 2760275, количество
+-- 01000 и контрольная — 2760275010002) и коды магазина Умага 211…. Числовой — и с потерянными
+-- нулями впереди (повторная проверка рабочей выгрузки 26.10.2026, ADR-113).
+create function umag_measure_code(c text, unit text) returns boolean
+    language sql immutable parallel safe as $$
+    select umag_by_measure(unit) and umag_bare(btrim(coalesce(c, ''))) ~ '^([0-9]{1,7}|2[0-9]{12})$'
 $$;
 
 create function umag_product_codes(codes text[], unit text) returns text[]
     language sql immutable parallel safe as $$
     select coalesce(array_agg(t.c order by t.n), '{}')
     from unnest(codes) with ordinality as t(c, n)
-    where not (umag_by_measure(unit) and t.c ~ '^[0-9]{1,7}$')
+    where not umag_measure_code(t.c, unit)
 $$;
 
 -- 4. Коды товаров, перенесённые из Умага по прежнему правилу и не коды по новому: слова и знаки
--- («CITY», «-», «1L»), обрывки («46»), коды меры строк «литр». У товара остаётся хотя бы один код.
+-- («CITY», «-», «1L»), обрывки («46»), коды меры строк «литр» (и наклейка «1 литр»). У товара
+-- остаётся хотя бы один код.
 with junk as (
     select b.code, b.product_id from product_barcodes b
     where b.source = 'umag'
@@ -89,10 +99,9 @@ with junk as (
             and not exists (select 1 from old_catalog o where btrim(o.barcode) = b.code)
             and not exists (select 1 from old_catalog o
                             where btrim(o.article) = b.code and umag_article_ok(b.code)))
-           or (b.code ~ '^[0-9]{1,7}$'
-               and exists (select 1 from old_catalog o
-                           where o.product_id = b.product_id and umag_by_measure(o.unit)
-                             and b.code = any(o.codes))))
+           or exists (select 1 from old_catalog o
+                      where o.product_id = b.product_id and b.code = any(o.codes)
+                        and umag_measure_code(b.code, o.unit)))
 )
 delete from product_barcodes b using junk j
 where b.code = j.code

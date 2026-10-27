@@ -88,6 +88,21 @@ describe('коды строки Умага — как на сервере (SPEC-
     expect(isMeasureUnit('')).toBe(false)
   })
 
+  it('строка «литр»: наклейка «1 литр» и коды магазина 211… — тоже коды меры, заводской EAN переходит', () => {
+    // Рабочая выгрузка (повторная проверка 26.10.2026): IDEMITSU 5W30 4Л — код строки 2760275, PLU 1276
+    // и весовая наклейка 2760275010002 (код строки + 01000 — 1,000 л + контрольная); TOYOTA ATF WS 4L — 2110000000073.
+    const idemitsu = hit({ unit: 'литр', codes: ['2760275', '1276', '2760275010002'] })
+    expect(hitProductCodes(idemitsu)).toEqual([])
+    expect(hitMeasureCodes(idemitsu)).toEqual(['2760275', '1276', '2760275010002'])
+    const toyota = hit({ unit: 'литр', codes: ['2760161', '2110000000073', '1162', '4008177071423'] })
+    expect(hitProductCodes(toyota)).toEqual(['4008177071423'])
+    expect(hitMeasureCodes(hit({ unit: 'кг', codes: ['2760099', '2760099010004'] }))).toEqual(['2760099', '2760099010004'])
+    // С потерянным нулём впереди — тот же код меры.
+    expect(hitMeasureCodes(hit({ unit: 'литр', codes: ['02760275010002'] }))).toEqual(['02760275010002'])
+    // У штучной строки код магазина 211… — её код.
+    expect(hitProductCodes(hit({ unit: 'шт', codes: ['2110000050825'] }))).toEqual(['2110000050825'])
+  })
+
   it('пустые и повторы выкидываются, порядок — как в строке', () => {
     expect(umagCodes({ barcode: '  ', article: '', extra_code: ' ; ,' })).toEqual([])
     expect(umagCodes({ barcode: '4600000000017', article: '4600000000017', extra_code: '4600000000017;5000;5000' })).toEqual([
