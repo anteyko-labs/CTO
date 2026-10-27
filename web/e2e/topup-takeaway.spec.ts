@@ -2,6 +2,7 @@
 // машины, мастер по желанию; в «Виде замены» доливок нет, замены — первыми; 1 л моторного масла на
 // вынос — без вопроса «Это замена масла?»; флажок — на экране «Услуги».
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { personValue, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -95,8 +96,8 @@ test('доливка на вынос: без клиента, мастер по �
     await expect(page.getByTestId('service-kinds')).toHaveCount(0)
     const masterSelect = page.locator('#master-select')
     await expect(masterSelect).toBeVisible()
-    await expect(masterSelect).toHaveValue('')
-    if (withMaster) await masterSelect.selectOption({ label: master })
+    expect(await personValue(masterSelect)).toBe('')
+    if (withMaster) await pickMaster(page, master)
     const posted = page.waitForResponse((r) => r.url().endsWith('/api/v1/sales') && r.request().method() === 'POST')
     await page.getByRole('button', { name: 'Провести чек' }).first().click()
     const res = await posted

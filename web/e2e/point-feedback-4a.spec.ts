@@ -1,7 +1,7 @@
 // Касса по доработкам 21.10.2026 (SPEC-30 §1–4): оплата «По счёту», вид замены в чеке «В сервис» с
 // ценой по нашему маслу, данные клиента для замены, правка цены только с правом «Скидка в чеке».
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { pickCashier } from './cashier'
+import { pickCashier, pickMaster } from './cashier'
 import { ownerSafe } from './safe'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
@@ -130,7 +130,7 @@ test('«В сервис»: вид замены, бесплатно с нашим
   await scan(page, code)
   await expect(kindLine.getByLabel('Цена', { exact: true })).toHaveValue('0')
 
-  await page.locator('#master-select').selectOption({ label: master })
+  await pickMaster(page, master)
   // Данные клиента обязательны: без клиента, телефона, машины и пробега — не провести.
   const submit = page.getByRole('button', { name: 'Провести чек' })
   const needs = page.getByTestId('service-client-needs')

@@ -5,6 +5,7 @@
 // пробегу; фильтры с заменой масла — на пробег масла; канистра без услуги масла — «Это замена?».
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { choosePerson, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -141,8 +142,8 @@ for (const mode of [
       await page.keyboard.press('Enter')
       await expect(page.getByTestId('cart').getByRole('listitem')).toHaveCount(2)
       const select = page.locator('#cashier-select')
-      if (await select.isVisible()) await select.selectOption({ label: s.cashier })
-      await page.locator('#master-select').selectOption({ label: s.master })
+      if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
+      await pickMaster(page, s.master)
       if (mode.touch) {
         await hit(page.getByTestId('service-left').getByRole('button', { name: 'Выбрать клиента' }))
         const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
@@ -219,8 +220,8 @@ for (const mode of [
         await hit(kinds.getByRole('button', { name: 'Готово' }))
         for (const [i, code] of codes.entries()) await scan(code, i + 2)
         const select = page.locator('#cashier-select')
-        if (await select.isVisible()) await select.selectOption({ label: s.cashier })
-        await page.locator('#master-select').selectOption({ label: s.master })
+        if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
+        await pickMaster(page, s.master)
         if (mode.touch) {
           await hit(page.getByTestId('service-left').getByRole('button', { name: 'Выбрать клиента' }))
           const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })

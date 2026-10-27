@@ -1,15 +1,56 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { get, noServerAnswer, post } from '../lib/api'
-import { readSnapshot } from '../lib/offline'
+import { readSnapshotServices } from '../lib/offline'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
-import { useAction, useLoad } from '../lib/hooks'
+import { errorText, useAction } from '../lib/hooks'
 import { kindChoices, servicePriceText, type OilEnough } from '../lib/serviceSale'
+import { FIRST_TILES, sameServices } from '../lib/serviceList'
 import type { Service } from '../lib/types'
 import { Button, Empty, ErrorBox, Field, Loading, Missing, Modal } from './ui'
 
 const NO_OIL: OilEnough = new Set<string>()
+
+/** Последний свежий список услуг за сессию: следующее окно открывается с ним сразу. */
+let lastServices: Service[] | null = null
+
+/**
+ * Список услуг окна (SPEC-36 §16): сразу — последний свежий или из снимка кассы, свежий с сервера —
+ * в фоне. Без сети остаётся снимок (SPEC-09); ошибка — только если списка нет совсем.
+ */
+function useServices(): { data: Service[] | null; error: string | null } {
+  const [data, setData] = useState<Service[] | null>(lastServices)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    let fresh = false
+    let shown = lastServices !== null
+    if (!shown)
+      void readSnapshotServices().then((list) => {
+        if (!alive || fresh || !list) return
+        shown = true
+        setData(list)
+      })
+    get<Service[]>('/services')
+      .then((list) => {
+        lastServices = list
+        fresh = true
+        if (alive) setData((cur) => (sameServices(cur, list) ? cur : list))
+      })
+      .catch(async (e: unknown) => {
+        const snap = noServerAnswer(e) ? await readSnapshotServices() : null
+        if (!alive) return
+        if (snap) {
+          if (!shown) setData(snap)
+        } else if (!shown) setError(errorText(e))
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+  return { data, error }
+}
 
 /**
  * Услуги в кассе: все заведённые работы плитками и новая услуга прямо отсюда (ADR-043).
@@ -44,15 +85,7 @@ export function ServicePicker({
 }) {
   const owner = useUser().role === 'owner'
   // Без связи — услуги из снимка кассы: работа уже сделана, чек пробивается (SPEC-09).
-  const list = useLoad(
-    () =>
-      get<Service[]>('/services').catch(async (e: unknown) => {
-        const snap = noServerAnswer(e) ? await readSnapshot() : null
-        if (!snap?.services) throw e
-        return snap.services
-      }),
-    [],
-  )
+  const list = useServices()
   const [query, setQuery] = useState('')
   const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean } | null>(null)
   const { busy, error, run } = useAction()
@@ -66,6 +99,7 @@ export function ServicePicker({
   const active = kinds ? kindChoices(enabled) : enabled.sort((a, b) => Number(Boolean(b.free_with_oil)) - Number(Boolean(a.free_with_oil)))
   const q = query.trim().toLowerCase()
   const shown = q ? active.filter((s) => s.name.toLowerCase().includes(q)) : active
+  const [limit, setLimit] = useState(FIRST_TILES)
 
   const notFilled = form
     ? missingWithFocus(
@@ -84,6 +118,7 @@ export function ServicePicker({
         master_fee_tyiyn: owner && form.fee.trim() ? (parseSom(form.fee) ?? 0) : 0,
         free_with_oil: owner && form.free,
       })
+      if (lastServices) lastServices = [...lastServices, created]
       onPick(created)
     })
 
@@ -165,7 +200,7 @@ export function ServicePicker({
               </Button>
             </div>
           </div>
-        ) : list.loading && !list.data ? (
+        ) : !list.data && !list.error ? (
           <Loading />
         ) : shown.length === 0 ? (
           <Empty>{q ? 'Такой услуги нет — создайте её кнопкой «Новая услуга».' : 'Услуг пока нет. Создайте первую — она сразу встанет в чек.'}</Empty>
@@ -174,8 +209,12 @@ export function ServicePicker({
           <div
             className={`grid max-h-[calc(100dvh-21rem)] gap-2 overflow-y-auto overscroll-contain p-0.5 ${kinds ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}
             data-testid="service-choices"
+            onScroll={(e) => {
+              const el = e.currentTarget
+              if (limit < shown.length && el.scrollTop + el.clientHeight > el.scrollHeight - 300) setLimit((n) => n + FIRST_TILES * 2)
+            }}
           >
-            {shown.map((s) => {
+            {shown.slice(0, limit).map((s) => {
               const on = multi && picked.includes(s.id)
               return (
               <button

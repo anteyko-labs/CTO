@@ -3,6 +3,7 @@
 // Клавиатура сама не появляется — только по кнопке, и остаётся до «Скрыть» (ADR-101).
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { choosePerson } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -462,4 +463,96 @@ test('клавиатура режима кассы: только по кнопк
   await expect(page.getByText('Чек пуст')).toBeVisible()
   await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
   await expect(page.getByRole('link', { name: 'Сводка' })).toBeVisible()
+})
+
+test('режим кассы: мастер и кассир кнопками, ✕ отложенного, «Нет» и «+ остаток» — от 56 (SPEC-36 §16)', async ({ page }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Цели ${RUN}`, kind: 'other' })
+  const name = `Ароматизатор цели ${RUN}`
+  const p = await apiPost<{ id: string; name: string; unit: string; sale_price_tyiyn: number }>(page.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name,
+    sale_price_tyiyn: 50_000,
+  })
+  await apiPost(page.request, '/receipts', { op_id: crypto.randomUUID(), paid_from: await ownerSafe(page.request), lines: [{ product_id: p.id, qty: 10, cost_tyiyn: 300_000 }] })
+  const cashier = `Кассир цели ${RUN}`
+  await apiPost(page.request, '/employees', { full_name: cashier, is_cashier: true, pin: '1470' })
+  const master = `Мастер цели ${RUN}`
+  await apiPost(page.request, '/employees', { full_name: master, is_master: true })
+  const service = `Замена масла цели ${RUN}`
+  await apiPost(page.request, '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+  await closeOpenShift(page.request)
+
+  // Чек со строкой и отложенный чек — как после перерыва.
+  await page.goto('/')
+  await page.evaluate((p) => {
+    const line = { key: 'k1', kind: 'piece', product: p, qtyText: '1', priceText: String(p.sale_price_tyiyn / 100) }
+    localStorage.setItem('avtodom.cashier_mode', '1')
+    sessionStorage.setItem('avtodom.cart', JSON.stringify({ saleType: 'takeaway', masterId: '', lines: [line], comment: '' }))
+    localStorage.setItem(
+      'avtodom.parked',
+      JSON.stringify([{ id: 'p1', at: new Date().toISOString(), label: 'Иван', saleType: 'takeaway', masterId: '', lines: [line], comment: '', party: null, contactId: '', vehicleId: '' }]),
+    )
+  }, p)
+  await page.reload()
+  await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
+  const big = async (l: Locator, what: string) => {
+    const s = await size(l)
+    expect(s.height, `${what}: высота`).toBeGreaterThanOrEqual(56)
+    expect(s.width, `${what}: ширина`).toBeGreaterThanOrEqual(56)
+  }
+
+  // ✕ у отложенного, «Точно удалить?» и «Нет».
+  await big(page.getByRole('button', { name: 'Удалить отложенный чек' }), '✕')
+  await page.getByRole('button', { name: 'Удалить отложенный чек' }).tap()
+  await big(page.getByRole('button', { name: 'Точно удалить?' }), 'Точно удалить?')
+  await big(page.getByRole('button', { name: 'Нет', exact: true }), 'Нет')
+  expect(await noPageScroll(page)).toBe(true)
+  await page.getByRole('button', { name: 'Нет', exact: true }).tap()
+
+  // Кассир без открытой смены — кнопками, не системным списком.
+  const cashierField = page.locator('#cashier-select')
+  await expect(cashierField).toBeVisible()
+  expect(await cashierField.evaluate((e) => e.tagName)).not.toBe('SELECT')
+  await big(cashierField.getByRole('radio').or(cashierField).first(), 'кассир')
+  await choosePerson(page, 'cashier-select', cashier)
+  await expect(page.locator('[data-person-pick="cashier-select"]')).toContainText(cashier)
+
+  // «+ остаток» в смешанной оплате.
+  await page.locator('[data-pay]').getByRole('button', { name: 'Смешанная', exact: true }).tap()
+  await big(page.getByRole('button', { name: 'остаток → Наличные' }), '+ остаток')
+  expect(await noPageScroll(page)).toBe(true)
+  await page.getByRole('button', { name: 'остаток → Наличные' }).tap()
+  await expect(page.getByTestId('mixed-touch')).toContainText('Разнесено полностью')
+  await page.locator('[data-pay]').getByRole('button', { name: 'Наличные', exact: true }).tap()
+
+  // Мастер в чеке «В сервис» — кнопками; в окне выбора — тоже от 56.
+  await page.getByRole('button', { name: 'В сервис' }).first().tap()
+  const kinds = page.getByRole('dialog', { name: 'Вид замены' })
+  await kinds.getByPlaceholder('Найти услугу').fill(service)
+  await kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }).tap()
+  await kinds.getByRole('button', { name: 'Готово' }).tap()
+  const masterField = page.locator('#master-select')
+  await expect(masterField).toBeVisible()
+  expect(await masterField.evaluate((e) => e.tagName)).not.toBe('SELECT')
+  if ((await masterField.getAttribute('role')) === 'radiogroup') {
+    const choice = masterField.getByRole('radio', { name: master, exact: true })
+    await big(choice, 'мастер')
+    await choice.tap()
+  } else {
+    await big(masterField, 'мастер')
+    await masterField.tap()
+    const choice = page.getByTestId('person-choices').getByRole('button', { name: master, exact: true })
+    await choice.scrollIntoViewIfNeeded()
+    await big(choice, 'мастер в окне')
+    await choice.tap()
+  }
+  await expect(masterField).toContainText(master)
+  await expect(masterField).toHaveAttribute('data-value', /.+/)
+  expect(await noPageScroll(page)).toBe(true)
+
+  await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
+  await page.getByRole('button', { name: 'Точно очистить?' }).tap()
+  await page.evaluate(() => localStorage.removeItem('avtodom.parked'))
 })

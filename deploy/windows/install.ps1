@@ -90,11 +90,14 @@ if (Test-Path $cert) {
   New-Item -ItemType Directory -Force -Path $certOut | Out-Null
   Copy-Item -Force $cert "$certOut\root.crt"
   Copy-Item -Force "$Here\install-cert.ps1" $certOut
+  # Адрес кассы для ярлыка на моноблоке (install-cert.ps1): печать без окна, ADR-127.
+  Set-Content -Encoding UTF8 -Path "$certOut\kassa-url.txt" -Value "https://$ServerIp"
 }
 Write-Host ''
 Write-Host "Готово. Касса: https://$ServerIp" -ForegroundColor Green
 if (Test-Path "$certOut\root.crt") {
-  Write-Host "Для моноблока: скопируйте папку $certOut на флешку и запустите там install-cert.ps1 (см. README)."
+  Write-Host "Для моноблока: скопируйте папку $certOut на флешку и запустите там install-cert.ps1 (см. README) —"
+  Write-Host '   он установит сертификат и ярлык кассы «Avtodom касса» с печатью без окна.'
 } else {
   Write-Host "Сертификат ещё не создан — смотрите $Root\logs\caddy.log и запустите install.ps1 ещё раз" -ForegroundColor Yellow
 }

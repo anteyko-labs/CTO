@@ -5,6 +5,7 @@
 // у строки фильтра. Сканер здесь — как настоящий: знаки и Enter, без щелчка в поле поиска.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { choosePerson, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -120,7 +121,7 @@ for (const mode of [
       const select = page.locator('#cashier-select')
       const onShift = page.getByTestId(mode.touch ? 'mode-shift' : 'shift-cashier')
       await expect(select.or(onShift)).toBeVisible()
-      if (await select.isVisible()) await select.selectOption({ label: name })
+      if (await select.isVisible()) await choosePerson(page, 'cashier-select', name)
     }
 
     async function open(page: Page) {
@@ -408,7 +409,7 @@ for (const mode of [
     })
 
     if (mode.touch) {
-      test('выбрали мастера в списке, затем скан: товар встаёт', async ({ page }) => {
+      test('выбрали мастера кнопкой, затем скан: товар встаёт', async ({ page }) => {
         await open(page)
         const g = await goods(page.request)
         const service = `Замена масла в моторе мастер ${RUN}${++seq}`
@@ -421,13 +422,11 @@ for (const mode of [
         await kinds.getByPlaceholder('Найти услугу').fill(service)
         await kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }).tap()
         await kinds.getByRole('button', { name: 'Готово' }).tap()
-        const select = page.locator('#master-select')
-        await select.focus()
-        await select.selectOption({ label: master })
-        await expect(select).toBeFocused()
+        // Мастер — кнопками режима кассы (SPEC-36 §16): после выбора скан идёт в чек.
+        await pickMaster(page, master)
         await scan(page, g.oil.code)
         await expect(row(page, g.oil.name)).toBeVisible()
-        await expect(select).toHaveValue(/.+/)
+        await expect(page.locator('#master-select')).toHaveAttribute('data-value', /.+/)
       })
 
       test('экранная клавиатура открыта: плитка, затем скан', async ({ page }) => {

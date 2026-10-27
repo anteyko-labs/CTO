@@ -1,13 +1,12 @@
 // Каркас приложения: вход, меню по ролям (боковое и нижнее на телефоне), маршруты всех экранов.
 // Какой экран за какую спецификацию отвечает — docs/DEVELOPMENT.md, раздел «Карта кода».
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Fragment, Suspense, useEffect, useState, type ReactNode } from 'react'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
 import { can } from './lib/permissions'
 import type { Permission } from './lib/types'
 import { logoutWarning, outboxItems, startOfflineLoop } from './lib/offline'
 import { useTouchMode } from './lib/cashierMode'
-import Stock from './pages/Stock'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
 import { BranchSwitch } from './components/BranchSwitch'
@@ -15,53 +14,58 @@ import { setBranchLabel } from './lib/branch'
 import { UpdateBanner } from './components/UpdateBanner'
 import { startUpdates } from './lib/updates'
 import { Button, Loading, Modal, Toaster } from './components/ui'
+import { PageBoundary } from './components/PageBoundary'
+import { lazyPage } from './lib/lazyPage'
 import { Icon, type IconName } from './components/icons'
 import { get, serverReachable } from './lib/api'
-import SettingsHub from './pages/SettingsHub'
+// Касса и вход — в основной части сборки; остальные экраны грузятся отдельно (SPEC-36 §16).
 import Cashier from './pages/Cashier'
-import Accounts from './pages/Accounts'
-import Categories from './pages/Categories'
-import ClientCard from './pages/ClientCard'
-import Bank from './pages/Bank'
-import BankRecon from './pages/BankRecon'
-import OptimaSettings from './pages/OptimaSettings'
-import Debts from './pages/Debts'
-import Income from './pages/Income'
-import Clients from './pages/Clients'
-import Employees from './pages/Employees'
-import Expenses from './pages/Expenses'
-import Gifts from './pages/Gifts'
-import LabelSettingsPage from './pages/LabelSettings'
 import Login from './pages/Login'
-import Notifications from './pages/Notifications'
-import Profit, { OwnerDashboard } from './pages/Owner'
-import Payroll from './pages/Payroll'
-import Products from './pages/Products'
-import UmagLink from './pages/UmagLink'
-import TopProducts from './pages/TopProducts'
-import ReceiptCorrect from './pages/ReceiptCorrect'
-import ReceiptNew from './pages/ReceiptNew'
-import ReceiptView from './pages/ReceiptView'
-import Receipts from './pages/Receipts'
-import SaleCorrect from './pages/SaleCorrect'
-import SaleView from './pages/SaleView'
-import SalesDay from './pages/SalesDay'
-import Services from './pages/Services'
-import Shift from './pages/Shift'
-import ShiftReport from './pages/ShiftReport'
-import DebtDocsSettings from './pages/DebtDocsSettings'
-import OilTransfer from './pages/OilTransfer'
-import Revision from './pages/Revision'
-import StockInCorrect from './pages/StockInCorrect'
-import StockInView from './pages/StockInView'
-import SupplierReturnsPage from './pages/SupplierReturns'
-import TelegramSettings from './pages/TelegramSettings'
-import ClientMessages from './pages/ClientMessages'
-import ExpenseArticles from './pages/ExpenseArticles'
-import SupplierCard from './pages/SupplierCard'
-import Suppliers from './pages/Suppliers'
-import Users from './pages/Users'
-import Branches from './pages/Branches'
+const SettingsHub = lazyPage(() => import('./pages/SettingsHub'))
+const Stock = lazyPage(() => import('./pages/Stock'))
+const Accounts = lazyPage(() => import('./pages/Accounts'))
+const Categories = lazyPage(() => import('./pages/Categories'))
+const ClientCard = lazyPage(() => import('./pages/ClientCard'))
+const Bank = lazyPage(() => import('./pages/Bank'))
+const BankRecon = lazyPage(() => import('./pages/BankRecon'))
+const OptimaSettings = lazyPage(() => import('./pages/OptimaSettings'))
+const Debts = lazyPage(() => import('./pages/Debts'))
+const Income = lazyPage(() => import('./pages/Income'))
+const Clients = lazyPage(() => import('./pages/Clients'))
+const Employees = lazyPage(() => import('./pages/Employees'))
+const Expenses = lazyPage(() => import('./pages/Expenses'))
+const Gifts = lazyPage(() => import('./pages/Gifts'))
+const LabelSettingsPage = lazyPage(() => import('./pages/LabelSettings'))
+const Notifications = lazyPage(() => import('./pages/Notifications'))
+const Profit = lazyPage(() => import('./pages/Owner'))
+const OwnerDashboard = lazyPage(() => import('./pages/Owner').then((m) => ({ default: m.OwnerDashboard })))
+const Payroll = lazyPage(() => import('./pages/Payroll'))
+const Products = lazyPage(() => import('./pages/Products'))
+const UmagLink = lazyPage(() => import('./pages/UmagLink'))
+const TopProducts = lazyPage(() => import('./pages/TopProducts'))
+const ReceiptCorrect = lazyPage(() => import('./pages/ReceiptCorrect'))
+const ReceiptNew = lazyPage(() => import('./pages/ReceiptNew'))
+const ReceiptView = lazyPage(() => import('./pages/ReceiptView'))
+const Receipts = lazyPage(() => import('./pages/Receipts'))
+const SaleCorrect = lazyPage(() => import('./pages/SaleCorrect'))
+const SaleView = lazyPage(() => import('./pages/SaleView'))
+const SalesDay = lazyPage(() => import('./pages/SalesDay'))
+const Services = lazyPage(() => import('./pages/Services'))
+const Shift = lazyPage(() => import('./pages/Shift'))
+const ShiftReport = lazyPage(() => import('./pages/ShiftReport'))
+const DebtDocsSettings = lazyPage(() => import('./pages/DebtDocsSettings'))
+const OilTransfer = lazyPage(() => import('./pages/OilTransfer'))
+const Revision = lazyPage(() => import('./pages/Revision'))
+const StockInCorrect = lazyPage(() => import('./pages/StockInCorrect'))
+const StockInView = lazyPage(() => import('./pages/StockInView'))
+const SupplierReturnsPage = lazyPage(() => import('./pages/SupplierReturns'))
+const TelegramSettings = lazyPage(() => import('./pages/TelegramSettings'))
+const ClientMessages = lazyPage(() => import('./pages/ClientMessages'))
+const ExpenseArticles = lazyPage(() => import('./pages/ExpenseArticles'))
+const SupplierCard = lazyPage(() => import('./pages/SupplierCard'))
+const Suppliers = lazyPage(() => import('./pages/Suppliers'))
+const Users = lazyPage(() => import('./pages/Users'))
+const Branches = lazyPage(() => import('./pages/Branches'))
 
 interface NavItem {
   to: string
@@ -211,6 +215,7 @@ function Shell() {
   }
   // Режим кассы (SPEC-29): на экране «Касса» — без меню, всё крупнее, цифры экранной клавиатурой.
   const touch = useTouchMode()
+  const { pathname } = useLocation()
   useEffect(() => {
     document.documentElement.classList.toggle('cashier-mode', touch)
     return () => document.documentElement.classList.remove('cashier-mode')
@@ -323,6 +328,8 @@ function Shell() {
           </Modal>
         )}
         <div className={touch ? 'px-3 pb-3 md:px-4 lg:min-h-0 lg:flex-1' : 'p-4 md:p-6'}>
+        <PageBoundary resetKey={pathname}>
+        <Suspense fallback={<Loading />}>
         <Routes>
           <Route path="/" element={<Cashier />} />
           <Route path="/sales" element={<SalesDay />} />
@@ -377,6 +384,8 @@ function Shell() {
           {owner && <Route path="/settings/branches" element={<Branches />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
+        </PageBoundary>
         </div>
       </main>
       {!touch && (
