@@ -1303,6 +1303,12 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     // Чек «в сервис» — с видом замены из справочника (ADR-096) и с данными клиента (ADR-100).
     // Чек без сети уже состоялся: проводится, а владелец получает причину.
     let service_kinds = prepared.iter().any(|p| p.service_id.is_some());
+    // Баллы клиенту — только за замену масла (ADR-124): чек «в сервис» с услугой «бесплатно с
+    // нашим маслом» и категорией масла (ADR-104), чьим бы ни было масло.
+    let oil_change = req.sale_type == "service"
+        && prepared
+            .iter()
+            .any(|p| p.service_id.is_some() && p.free_with_oil && p.oil_category.is_some());
     if req.sale_type == "service" {
         if !service_kinds {
             if !offline {
@@ -1584,8 +1590,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     .await?;
     insert_payments(conn, ctx, id, &req.payments, 1, None, business_date).await?;
     crate::api::bank_qr::link_sale(conn, id, &bank_qrs).await?;
-    // Баллы: списание оплатой «bonus» и начисление с денег (SPEC-19).
-    crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments).await?;
+    // Баллы: списание оплатой «bonus» (в любом чеке) и начисление с денег — только за замену
+    // масла (SPEC-19, ADR-124).
+    crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments, oil_change).await?;
     if debt_total > 0 {
         let party_id = req
             .party_id

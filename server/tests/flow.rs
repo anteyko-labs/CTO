@@ -1999,17 +1999,28 @@ async fn delivery_address_stays_on_check(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
-    // Баллы 0,5 % с оплаченного деньгами, только клиенту из бота; списание — оплата «bonus» (SPEC-19).
+    // Баллы 0,5 % с оплаченного деньгами — только за замену масла в чеке «В сервис» и только
+    // клиенту из бота; списание — оплата «bonus» в любом чеке (SPEC-19, ADR-124).
     use avtodom_server::api::loyalty::balance;
     use avtodom_server::api::telegram::bonus_notices;
     let w = seed(&pool).await;
     // Возврат наличными — только в открытую смену (ADR-065).
     open_till(&pool, &w).await;
-    receive(&pool, &w.admin, w.filter, 10, 10_000).await;
-    let party = Uuid::now_v7();
-    sqlx::query("insert into parties (id, branch_id, role, kind, name, phone) values ($1, $2, 'customer', 'person', 'Эрлан', '0555123456')")
-        .bind(party)
+    receive(&pool, &w.admin, w.filter, 20, 10_000).await;
+    receive(&pool, &w.admin, w.oil, 20_000, 600_000).await;
+    let client = service_client(&pool, &w).await;
+    let party = client.0;
+    // Услуга без флажка «Бесплатно с нашим маслом» и доливка на вынос (ADR-118).
+    let (wash, topup) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into services (id, branch_id, name, price_tyiyn) values ($1, $3, 'Мойка двигателя', 30000), ($2, $3, 'Доливка масла', 10000)")
+        .bind(wash)
+        .bind(topup)
         .bind(w.owner.user.branch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update services set takeaway = true where id = $1")
+        .bind(topup)
         .execute(&pool)
         .await
         .unwrap();
@@ -2025,53 +2036,122 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
             })
             .collect()
     };
-    let sale = |qty: i64, payments: Vec<PaymentReq>| {
-        let mut req = takeaway(&w, vec![line("piece", w.filter, qty, 50_000)], payments);
+    let to_go = |lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>| {
+        let mut req = takeaway(&w, lines, payments);
         req.party_id = Some(party);
         req
     };
-    // Не подключён к боту — баллов нет, оплатить ими нельзя.
-    sell(&pool, &w.owner, sale(1, cash(50_000))).await.unwrap();
+    // Замена масла: фильтр (строка 1), канистра нашего масла и услуга — бесплатно (ADR-104).
+    let oil_change = |filters: i64, payments: Vec<PaymentReq>| {
+        let mut lines = Vec::new();
+        if filters > 0 {
+            lines.push(line("piece", w.filter, filters, 50_000));
+        }
+        lines.push(line("container", w.oil, 1, 200_000));
+        lines.push(kind_line(w.service, 1, 0));
+        in_service(&w, client, takeaway(&w, lines, payments))
+    };
+    // Не подключён к боту — баллов нет и за замену, оплатить ими нельзя.
+    sell(&pool, &w.owner, oil_change(1, cash(250_000)))
+        .await
+        .unwrap();
     let mut conn = pool.acquire().await.unwrap();
     assert_eq!(balance(&mut conn, party).await.unwrap(), 0);
     assert!(matches!(
         sell(
             &pool,
             &w.owner,
-            sale(1, pay(&[("bonus", 100), ("cash", 49_900)]))
+            to_go(
+                vec![line("piece", w.filter, 1, 50_000)],
+                pay(&[("bonus", 100), ("cash", 49_900)])
+            )
         )
         .await,
         Err(AppError::Validation(_))
     ));
-    sqlx::query("insert into telegram_customers (chat_id, party_id, phone) values (555, $1, '+996555123456')")
-        .bind(party)
-        .execute(&pool)
+    sqlx::query(
+        "insert into telegram_customers (chat_id, party_id, phone) values (555, $1, '0700112233')",
+    )
+    .bind(party)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Покупка на вынос, доливка на вынос и чек «В сервис» без замены масла баллов не дают.
+    sell(
+        &pool,
+        &w.owner,
+        to_go(vec![line("piece", w.filter, 2, 50_000)], cash(100_000)),
+    )
+    .await
+    .unwrap();
+    sell(
+        &pool,
+        &w.owner,
+        to_go(
+            vec![
+                line("piece", w.filter, 1, 50_000),
+                kind_line(topup, 1, 10_000),
+            ],
+            cash(60_000),
+        ),
+    )
+    .await
+    .unwrap();
+    let no_change = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", w.filter, 1, 50_000),
+                kind_line(wash, 1, 30_000),
+            ],
+            cash(80_000),
+        ),
+    );
+    sell(&pool, &w.owner, no_change).await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 0);
+    // Замена масла: 2500 с наличными → 12,50 балла.
+    let changed = sell(&pool, &w.owner, oil_change(1, cash(250_000)))
         .await
         .unwrap();
-    // 1000 с наличными → 5 баллов.
-    sell(&pool, &w.owner, sale(2, cash(100_000))).await.unwrap();
-    assert_eq!(balance(&mut conn, party).await.unwrap(), 500);
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 1_250);
     // Больше, чем есть, не списать.
     assert!(matches!(
         sell(
             &pool,
             &w.owner,
-            sale(1, pay(&[("bonus", 600), ("cash", 49_400)]))
+            to_go(
+                vec![line("piece", w.filter, 1, 50_000)],
+                pay(&[("bonus", 1_300), ("cash", 48_700)])
+            )
         )
         .await,
         Err(AppError::Validation(_))
     ));
-    // Списали 5, остальное картой: начисление только с 495 с → 2,48.
-    let paid = sell(
+    // Списать можно в любом чеке: покупка на вынос — списано 5, начисления нет.
+    let spent = sell(
         &pool,
         &w.owner,
-        sale(1, pay(&[("bonus", 500), ("card", 49_500)])),
+        to_go(
+            vec![line("piece", w.filter, 1, 50_000)],
+            pay(&[("bonus", 500), ("cash", 49_500)]),
+        ),
     )
     .await
     .unwrap();
-    assert_eq!(balance(&mut conn, party).await.unwrap(), 248);
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 750);
+    // Замена с баллами: начисление только с денег — 1996 с картой → 9,98.
+    sell(
+        &pool,
+        &w.owner,
+        oil_change(0, pay(&[("bonus", 400), ("card", 199_600)])),
+    )
+    .await
+    .unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 1_348);
     drop(conn);
-    // Возврат: баллы обратно, начисленное с этого чека снимается.
+    // Возврат чека без начисления: баллы, которыми платили, вернулись, снимать нечего.
     let ret = |payments: Vec<PaymentReq>| ReturnReq {
         op_id: Uuid::now_v7(),
         battery_cash: false,
@@ -2085,7 +2165,7 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
         return_sale_tx(
             &mut tx,
             &w.owner,
-            paid.id,
+            spent.id,
             ret(pay(&[("bonus", 600), ("cash", 49_400)]))
         )
         .await,
@@ -2096,25 +2176,55 @@ async fn loyalty_points_accrue_redeem_and_return(pool: PgPool) {
     return_sale_tx(
         &mut tx,
         &w.owner,
-        paid.id,
+        spent.id,
         ret(pay(&[("bonus", 500), ("cash", 49_500)])),
     )
     .await
     .unwrap();
     tx.commit().await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    assert_eq!(balance(&mut conn, party).await.unwrap(), 500);
-    // Клиенту в бот — по сообщению на чек.
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 1_848);
+    drop(conn);
+    // Возврат фильтра из чека замены: начисленное снимается с возвращённых 500 с — 2,50.
+    let mut tx = pool.begin().await.unwrap();
+    return_sale_tx(&mut tx, &w.owner, changed.id, ret(cash(50_000)))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 1_598);
+    drop(conn);
+    // Чек без сети сервер разбирает так же: замена — начислено, покупка на вынос — нет.
+    let mut offline = oil_change(1, cash(250_000));
+    offline.offline = true;
+    offline.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    sell(&pool, &w.owner, offline).await.unwrap();
+    let mut offline = to_go(vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    offline.offline = true;
+    offline.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    sell(&pool, &w.owner, offline).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 2_848);
+    // Клиенту в бот — по сообщению на чек с баллами.
     let notices = bonus_notices(&mut conn).await.unwrap();
-    assert_eq!(notices.len(), 3);
     assert!(
-        notices[0].text.contains("начислено 5."),
+        notices[0].text.contains("начислено 12,50"),
         "{}",
         notices[0].text
     );
-    assert!(notices[1].text.contains("списано 5,") && notices[1].text.contains("начислено 2,48"));
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.text.contains("списано 4,") && n.text.contains("начислено 9,98")),
+        "{:?}",
+        notices.iter().map(|n| &n.text).collect::<Vec<_>>()
+    );
     let book = say(&mut conn, 555, "/баллы").await;
-    assert!(book.contains("Баллов: 5 "), "{book}");
+    assert!(book.contains("Баллов: 28,48 "), "{book}");
+    assert!(
+        book.contains("За каждую замену масла — бонусные баллы"),
+        "{book}"
+    );
 }
 
 fn pay(list: &[(&str, i64)]) -> Vec<PaymentReq> {
@@ -2478,17 +2588,18 @@ async fn offline_check_spends_points_only_if_balance_allows(pool: PgPool) {
         .await,
         Err(AppError::Validation(_))
     ));
-    // 20 000 с наличными → 100 баллов.
-    let mut big = takeaway(
-        &w,
-        vec![line("piece", w.filter, 1, 2_000_000)],
-        cash(2_000_000),
-    );
-    big.party_id = Some(party);
-    sell(&pool, &w.owner, big).await.unwrap();
+    // Накоплено 102 балла (за прежние замены масла).
+    sqlx::query("insert into loyalty_ledger (id, branch_id, party_id, kind, amount_tyiyn, doc_type, doc_id) values ($1, $2, $3, 'accrual', 10200, 'adjust', $1)")
+        .bind(Uuid::now_v7())
+        .bind(w.owner.user.branch_id)
+        .bind(party)
+        .execute(&pool)
+        .await
+        .unwrap();
     let mut conn = pool.acquire().await.unwrap();
-    assert_eq!(balance(&mut conn, party).await.unwrap(), 10_000);
-    // Хватает — чек из очереди проводится, баллы списаны, с денег начислено 0,5 %.
+    assert_eq!(balance(&mut conn, party).await.unwrap(), 10_200);
+    // Хватает — чек из очереди проводится, баллы списаны; покупка на вынос баллов не даёт
+    // (ADR-124).
     let posted = sell(
         &pool,
         &w.owner,
@@ -2594,6 +2705,15 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(linked.keys, Keys::Customer);
+    // Баллы — за замену масла, а не с каждой покупки (ADR-124).
+    assert!(
+        linked
+            .text
+            .contains("За каждую замену масла — бонусные баллы")
+            && !linked.text.contains("С каждой покупки"),
+        "{}",
+        linked.text
+    );
     assert!(
         linked.text.contains("01KG123ABC (Toyota)"),
         "{}",

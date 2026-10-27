@@ -1,5 +1,6 @@
 //! Бонусные баллы клиентов, подключённых к Телеграм-боту (SPEC-19, ADR-053).
-//! 1 балл = 1 сом; начисление — процент от оплаченного деньгами, списание — оплата чека баллами.
+//! 1 балл = 1 сом; начисление — процент от оплаченного деньгами за чек с заменой масла (ADR-124),
+//! списание — оплата чека баллами.
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
@@ -139,14 +140,16 @@ fn is_money(method: &str) -> bool {
     matches!(method, "cash" | "card" | "transfer" | "invoice")
 }
 
-/// Чек: списание баллов (оплата «bonus») и начисление с оплаченного деньгами.
-/// Долг и баллы не начисляют: начисление — только с реально полученных денег.
+/// Чек: списание баллов (оплата «bonus», в любом чеке) и начисление с оплаченного деньгами —
+/// только за замену масла (`oil_change`, ADR-124). Долг и баллы не начисляют: начисление — только
+/// с реально полученных денег.
 pub async fn on_sale(
     conn: &mut PgConnection,
     ctx: &Ctx,
     sale_id: Uuid,
     party_id: Option<Uuid>,
     payments: &[PaymentReq],
+    oil_change: bool,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let redeem = sum_of(payments, |m| m == "bonus")?;
@@ -188,7 +191,7 @@ pub async fn on_sale(
         )
         .await?;
     }
-    if member {
+    if member && oil_change {
         let rate = rate_bp(conn, branch_id).await?;
         let money = sum_of(payments, is_money)?;
         let accrual =
@@ -211,7 +214,8 @@ pub async fn on_sale(
 }
 
 /// Возврат: баллы, которыми платили, возвращаются на счёт; начисленное снимается с
-/// возвращённых денег по той же ставке, но не больше начисленного по чеку.
+/// возвращённых денег по той же ставке, но не больше начисленного по чеку. У чека без
+/// начисления (не замена масла, ADR-124) снимать нечего.
 pub async fn on_return(
     conn: &mut PgConnection,
     ctx: &Ctx,
