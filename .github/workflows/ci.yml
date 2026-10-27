@@ -41,6 +41,28 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
 
+  restore:
+    # Копия базы восстанавливается, как на точке (deploy/windows/restore.ps1): база со всеми
+    # миграциями и строками Умага → pg_dump -Fc → чистая база владельца без прав суперпользователя
+    # → pg_restore --no-owner, код 0 и те же строки.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      # Программы PostgreSQL — из того же образа, что база: pg_dump другой версии пишет копию,
+      # которую 16-я не читает.
+      - name: Копия базы восстанавливается
+        run: >
+          docker run --rm --network host -v "$PWD:/repo" -w /repo
+          -e PGHOST=localhost -e PGUSER=postgres -e PGPASSWORD=postgres
+          postgres:16 bash deploy/check-restore.sh
+
   web:
     runs-on: ubuntu-latest
     defaults:

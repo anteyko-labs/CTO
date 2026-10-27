@@ -2,6 +2,10 @@
 -- свободный текст: кроме кодов в нём слова и знаки («SHELLHELIX CITY 5W30 1L», «0888602305  U»), а
 -- прежняя выгрузка обрезала его на 100 знаках — обрывок EAN («…;46») становился общим кодом двух
 -- разных строк, и товар одной строки забирал другую (касса продавала не тот товар).
+--
+-- Вызовы своих функций внутри функций — со схемой `public.`: копия базы (pg_dump) восстанавливается
+-- с пустым search_path, и без схемы вычисляемые столбцы `old_catalog` не создаются
+-- (deploy/check-restore.sh).
 
 -- 1. Кусок «доп. кода» — код, если похож на код: латиница, цифры и дефис, не меньше четырёх
 -- цифр, с буквами — от шести знаков, не длиннее кода товара (64); вязкость («10W-40») — не код.
@@ -27,7 +31,7 @@ $$;
 
 create function umag_bare_codes(cs text[]) returns text[]
     language sql immutable parallel safe as $$
-    select coalesce(array_agg(umag_bare(t.c) order by t.n), '{}') from unnest(cs) with ordinality as t(c, n)
+    select coalesce(array_agg(public.umag_bare(t.c) order by t.n), '{}') from unnest(cs) with ordinality as t(c, n)
 $$;
 
 -- 2. Коды строки — заново: вычисляемые столбцы пересоздаются по новому правилу.
@@ -42,12 +46,12 @@ create or replace function umag_codes(barcode text, article text, extra_code tex
     select coalesce(array_agg(x.c order by x.n), '{}')
     from (select t.c, min(t.n) as n
           from unnest(array[btrim(coalesce(barcode, ''))]
-                      || case when umag_article_ok(btrim(coalesce(article, '')))
+                      || case when public.umag_article_ok(btrim(coalesce(article, '')))
                               then array[btrim(article)] else '{}'::text[] end
                       || array(select e.c
                                from unnest(regexp_split_to_array(btrim(coalesce(extra_code, '')),
                                                                  '[;,[:space:]]+')) with ordinality as e(c, k)
-                               where umag_extra_code_ok(e.c)
+                               where public.umag_extra_code_ok(e.c)
                                order by e.k))
                with ordinality as t(c, n)
           where t.c <> ''
@@ -79,14 +83,14 @@ $$;
 -- нулями впереди (повторная проверка рабочей выгрузки 26.10.2026, ADR-113).
 create function umag_measure_code(c text, unit text) returns boolean
     language sql immutable parallel safe as $$
-    select umag_by_measure(unit) and umag_bare(btrim(coalesce(c, ''))) ~ '^([0-9]{1,7}|2[0-9]{12})$'
+    select public.umag_by_measure(unit) and public.umag_bare(btrim(coalesce(c, ''))) ~ '^([0-9]{1,7}|2[0-9]{12})$'
 $$;
 
 create function umag_product_codes(codes text[], unit text) returns text[]
     language sql immutable parallel safe as $$
     select coalesce(array_agg(t.c order by t.n), '{}')
     from unnest(codes) with ordinality as t(c, n)
-    where not umag_measure_code(t.c, unit)
+    where not public.umag_measure_code(t.c, unit)
 $$;
 
 -- 4. Коды товаров, перенесённые из Умага по прежнему правилу и не коды по новому: слова и знаки

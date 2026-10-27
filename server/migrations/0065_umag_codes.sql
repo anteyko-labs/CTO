@@ -48,10 +48,11 @@ create function umag_norm_name(t text) returns text language sql immutable paral
     select btrim(regexp_replace(translate(lower(coalesce(t, '')), 'ё"«»''“”„`’', 'е'), '\s+', ' ', 'g'))
 $$;
 
--- Ключ строки Умага, переживающий новую выгрузку: штрихкод, без него — название.
+-- Ключ строки Умага, переживающий новую выгрузку: штрихкод, без него — название. Вызов своей
+-- функции — со схемой: копия базы восстанавливается с пустым search_path (deploy/check-restore.sh).
 create function umag_key(barcode text, name text) returns text language sql immutable parallel safe as $$
     select case when btrim(coalesce(barcode, '')) <> '' then btrim(barcode)
-                else 'name:' || umag_norm_name(name) end
+                else 'name:' || public.umag_norm_name(name) end
 $$;
 
 -- 2. «Не то» в похожих парах (SPEC-35 §3): пара больше не предлагается и не связывается
