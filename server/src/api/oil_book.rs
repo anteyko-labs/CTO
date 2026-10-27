@@ -74,9 +74,21 @@ pub fn slot_default(slot: &str) -> Option<(i32, i32)> {
     }
 }
 
-/// Строка книжки услуги по названию (SPEC-34 §1, как в миграции 0064): сначала фильтры (в
-/// «масляном фильтре» есть «масл»), потом антифриз, тормозная жидкость, коробка и масло мотора;
-/// остальное — «прочее» (в книжку не пишется и не напоминает).
+/// Мост, редуктор или раздатка в названии услуги (ADR-117, ADR-131): «мост» — с начала слова
+/// («самостоятельно» — не мост), «редукт», «раздатк». Их масло — не масло двигателя и не коробки:
+/// строка книжки «прочее», «бесплатно с нашим маслом» — от трансмиссионных масел (как в миграции
+/// 0071).
+pub fn axle_or_transfer_by_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.starts_with("мост"))
+        || ["редукт", "раздатк"].iter().any(|w| n.contains(w))
+}
+
+/// Строка книжки услуги по названию (SPEC-34 §1, как в миграции 0064, с уточнениями ADR-117 и
+/// ADR-131): сначала фильтры (в «масляном фильтре» есть «масл»), потом антифриз, тормозная
+/// жидкость, коробка и масло мотора; остальное — «прочее» (в книжку не пишется и без интервала
+/// владельца не напоминает).
 pub fn service_slot_by_name(name: &str) -> &'static str {
     let n = name.to_lowercase();
     let has = |w: &[&str]| w.iter().any(|x| n.contains(x));
@@ -97,16 +109,15 @@ pub fn service_slot_by_name(name: &str) -> &'static str {
     }
     // Доливка — не замена (ADR-117); масло моста, редуктора и раздатки — не масло двигателя и не
     // коробка: «прочее» (в «Замене масла мех. моста» есть «масл»).
-    // «Мост» — с начала слова: «самостоятельно» — не мост.
-    let bridge = n
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|w| w.starts_with("мост"));
-    if bridge || has(&["долив", "редукт", "раздатк"]) {
+    if axle_or_transfer_by_name(&n) || has(&["долив"]) {
         return "other";
     }
-    if has(&["антифриз", "тосол", "охлажд"]) {
+    // Радиатор охлаждения — не замена антифриза, тормозные колодки — не тормозная жидкость
+    // (ADR-131): «охлажд…» с «радиатор…» и «тормоз…» без «жидк…» — дальше по названию.
+    if has(&["антифриз", "тосол"]) || (has(&["охлажд"]) && !has(&["радиатор"]))
+    {
         "antifreeze"
-    } else if has(&["тормоз"]) {
+    } else if has(&["тормоз"]) && has(&["жидк"]) {
         "brake_fluid"
     } else if has(&["коробк", "акпп", "мкпп", "трансмис"]) {
         "gear_oil"
@@ -145,21 +156,46 @@ pub fn product_slot(category_slot: &str, filter_type: Option<&str>) -> Option<&'
     Some(by_category)
 }
 
-/// Строка книжки жидкости по названию товара (ADR-130): у товара категории без строки книжки
-/// (и не масла, не фильтра) «антифриз», «тосол», «охлажда…» — антифриз, «тормозн…» — тормозная
-/// жидкость; иначе `None`. Касса — то же правило (`nextChange.ts`, `nameSlot`).
+/// Строка книжки жидкости по названию товара (ADR-130, ADR-131): у товара категории без строки
+/// книжки (и не масла, не фильтра) «антифриз», «тосол», «охлажда…» и G11 / G12 / G12+ / G13 —
+/// антифриз; «тормозн…» и DOT 3 / 4 / 5 (5.1, «ROSDOT 4», «ДОТ-4») — тормозная жидкость; иначе
+/// `None`. Касса — то же правило (`nextChange.ts`, `nameSlot`).
 pub fn slot_by_product_name(name: &str) -> Option<&'static str> {
     let n = name.to_lowercase();
     if ["антифриз", "тосол", "охлажда"]
         .iter()
         .any(|w| n.contains(w))
+        || has_class_token(&n, &["g"], &["11", "12", "13"])
     {
         Some("antifreeze")
-    } else if n.contains("тормозн") {
+    } else if n.contains("тормозн")
+        || has_class_token(&n, &["dot", "дот", "rosdot", "росдот"], &["3", "4", "5"])
+    {
         Some("brake_fluid")
     } else {
         None
     }
+}
+
+/// Класс жидкости в названии (`n` — в нижнем регистре): слово из `words` с начала слова, после
+/// него через пробелы или дефис — число из `numbers`, за которым не идёт цифра: «dot 4», «dot-4»,
+/// «dot4», «dot 5.1», «g12+», «g-12». «g-force», «g 10w-40», «sg12», «g120» — не класс.
+fn has_class_token(n: &str, words: &[&str], numbers: &[&str]) -> bool {
+    n.char_indices()
+        .filter(|&(i, _)| {
+            n[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric())
+        })
+        .filter_map(|(i, _)| words.iter().find_map(|w| n[i..].strip_prefix(w)))
+        .any(|rest| {
+            let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '-');
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            numbers.contains(&&rest[..end])
+        })
 }
 
 /// Строка замены: что сделали по одной строке книжки.
@@ -1586,6 +1622,28 @@ mod tests {
             ("Тормозная жидкость DOT-4 0,5 л", Some("brake_fluid")),
             ("Омыватель стекла -20", None),
             ("Щётка стеклоочистителя", None),
+            // ADR-131: класс жидкости без слова «тормозная» / «антифриз».
+            ("FENIX DOT 4", Some("brake_fluid")),
+            ("DOT-4 MANNOL 0.5", Some("brake_fluid")),
+            ("Unix Dot4", Some("brake_fluid")),
+            ("ABRO dot3 354 мл", Some("brake_fluid")),
+            ("Motul DOT 5.1 0,5 л", Some("brake_fluid")),
+            ("ROSDOT 4 455 г", Some("brake_fluid")),
+            ("Жидкость ДОТ-4 Felix", Some("brake_fluid")),
+            ("SIBIRIA GREEN G11", Some("antifreeze")),
+            ("Sintec G12+", Some("antifreeze")),
+            ("Felix Carbox g12++ 5 кг", Some("antifreeze")),
+            ("Coolstream G13 1 кг", Some("antifreeze")),
+            ("Hepu P999-G12", Some("antifreeze")),
+            ("Щётка G-Force 600 мм", None),
+            ("G-Energy Expert G 10W-40 4 л", None),
+            ("G-Box ATF DX III", None),
+            ("Лампа G4 12V", None),
+            ("Кольцо SG12", None),
+            ("Артикул G1205", None),
+            ("Набор Dotted 3 шт", None),
+            ("DOT 45 мм", None),
+            ("Свеча NGK", None),
         ] {
             assert_eq!(slot_by_product_name(name), slot, "{name}");
         }
@@ -1617,8 +1675,25 @@ mod tests {
             ("Доливка антифриза", "other"),
             ("Замена тосола", "antifreeze"),
             ("Замена масла самостоятельно", "oil"),
+            // ADR-131: тормозная — только со словом «жидк…», радиатор охлаждения — не антифриз.
+            ("Замена тормозной жидкости", "brake_fluid"),
+            ("Замена тормозных колодок", "other"),
+            ("Прокачка тормозов", "other"),
+            ("Замена радиатора охлаждения", "other"),
+            ("Замена антифриза и радиатора", "antifreeze"),
+            ("ЗАМЕНА МАСЛА В МОСТУ", "other"),
+            ("Масло заднего моста и редуктора", "other"),
         ] {
             assert_eq!(service_slot_by_name(name), slot, "{name}");
+        }
+        for (name, axle) in [
+            ("Замена масла мех. моста", true),
+            ("Мостовой редуктор", true),
+            ("Масло в раздатку", true),
+            ("Замена масла самостоятельно", false),
+            ("Замена масла в коробке", false),
+        ] {
+            assert_eq!(axle_or_transfer_by_name(name), axle, "{name}");
         }
         assert_eq!(slot_label("antifreeze"), "Антифриз");
         assert!(is_slot("brake_fluid") && slot_default("other").is_none());

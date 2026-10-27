@@ -543,3 +543,209 @@ async fn book_slot_by_name_for_categories_and_services(pool: PgPool) {
     .await;
     assert_eq!(kept["book_slot"], "none");
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn axle_service_is_free_with_gear_oil(pool: PgPool) {
+    // ADR-131: новая услуга моста, редуктора или раздатки — «прочее», «бесплатно с нашим маслом» —
+    // от трансмиссионных масел, а не моторных; замена масла в моторе — от моторных.
+    let p = Point::new(pool).await;
+    let (status, cats) = call(&p.app, "GET", "/api/v1/categories", &p.owner, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let cat_id = |name: &str| {
+        cats.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap()["id"]
+            .clone()
+    };
+    for (name, slot, category) in [
+        ("Замена масла в редукторе", "other", "Трансмиссионные масла"),
+        ("Масло заднего моста", "other", "Трансмиссионные масла"),
+        ("Замена масла в раздатке", "other", "Трансмиссионные масла"),
+        ("Замена масла двигателя", "oil", "Моторные масла"),
+        ("Замена масла самостоятельно", "oil", "Моторные масла"),
+    ] {
+        let s = ok(
+            &p.app,
+            "POST",
+            "/api/v1/services",
+            &p.owner,
+            json!({ "name": name, "price_tyiyn": 20_000, "free_with_oil": true }),
+        )
+        .await;
+        assert_eq!(s["book_slot"], slot, "{name}");
+        assert_eq!(s["oil_category_id"], cat_id(category), "{name}");
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn category_saved_unchanged_keeps_its_book_slot(pool: PgPool) {
+    // ADR-131: категория без строки книжки, заведённая до ADR-117, при сохранении с прежним
+    // названием строку по названию не получает («Антифриз и жидкости» не становится целиком
+    // «Антифризом»); переименованная — получает.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app).await;
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "insert into categories (id, name, kind) values ($1, 'Антифриз и жидкости', 'other')",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let uri = format!("/api/v1/categories/{id}");
+    // Форма «Категория» присылает название всегда; пробелы по краям — то же название.
+    for name in ["Антифриз и жидкости", "  Антифриз и жидкости "]
+    {
+        let saved = ok(
+            &app,
+            "PATCH",
+            &uri,
+            &owner,
+            json!({ "name": name, "attributes": [] }),
+        )
+        .await;
+        assert_eq!(saved["book_slot"], "none", "{name}");
+        assert_eq!(stored_book_slot(&pool, id).await, None, "{name}");
+    }
+    let renamed = ok(&app, "PATCH", &uri, &owner, json!({ "name": "Антифризы" })).await;
+    assert_eq!(renamed["book_slot"], "antifreeze");
+    assert_eq!(
+        stored_book_slot(&pool, id).await.as_deref(),
+        Some("antifreeze")
+    );
+}
+
+/// Строка книжки категории, как она записана (пусто — не выбрана).
+async fn stored_book_slot(pool: &PgPool, id: Uuid) -> Option<String> {
+    sqlx::query_scalar("select book_slot from categories where id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Миграция 0071: меняет только данные справочника услуг, поэтому её можно выполнить ещё раз.
+async fn run_axle_migration(pool: &PgPool) {
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version == 71) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(pool).await.unwrap();
+    }
+}
+
+async fn add_oil_category(pool: &PgPool, name: &str, slot: Option<&str>, days_ago: i32) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "insert into categories (id, name, kind, book_slot, created_at)
+         values ($1, $2, 'oil', $3, now() - make_interval(days => $4))",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(slot)
+    .bind(days_ago)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+async fn add_service(
+    pool: &PgPool,
+    name: &str,
+    slot: &str,
+    free_with_oil: bool,
+    category: Option<Uuid>,
+) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "insert into services (id, branch_id, name, price_tyiyn, free_with_oil, oil_category_id, book_slot)
+         select $1, id, $2, 20000, $3, $4, $5 from branches",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(free_with_oil)
+    .bind(category)
+    .bind(slot)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+/// Услуги: название, строка книжки, категория масла — по названию.
+async fn services_now(pool: &PgPool) -> Vec<(String, String, Option<Uuid>)> {
+    let mut rows: Vec<(String, String, Option<Uuid>)> =
+        sqlx::query_as("select name, book_slot, oil_category_id from services")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    rows.sort();
+    rows
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_moves_axle_services_to_other(pool: PgPool) {
+    // Миграция 0071 (ADR-131): услуги с «мост» (с начала слова), «редукт», «раздатк» на строке
+    // масла двигателя или коробки — в «прочее»; «бесплатно с нашим маслом» — от категории
+    // трансмиссионных масел (строка «Масло в коробке» или «трансмис», первая по заведению).
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version < 71) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    bootstrap::ensure_owner(&pool, Some(("owner".into(), "owner-pass-1".into())))
+        .await
+        .unwrap();
+    let motor = add_oil_category(&pool, "Моторные масла", None, 30).await;
+    // Трансмиссионной категории ещё нет — услуга уходит в «прочее», категория прежняя.
+    let lone = add_service(&pool, "Замена масла мех. моста", "oil", true, Some(motor)).await;
+    run_axle_migration(&pool).await;
+    let row: (String, Option<Uuid>) =
+        sqlx::query_as("select book_slot, oil_category_id from services where id = $1")
+            .bind(lone)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, ("other".to_string(), Some(motor)));
+
+    // Трансмиссионные категории: со строкой «Масло в коробке» (как «Трансмиссионные масла» в
+    // рабочей базе) и с «трансмис» в названии без строки; берётся первая по заведению.
+    let atf = add_oil_category(&pool, "Масло ATF", Some("gear_oil"), 20).await;
+    let gear = add_oil_category(&pool, "Трансмиссионные масла", None, 10).await;
+    for (name, slot, free, category) in [
+        ("ЗАМЕНА МАСЛА В МОСТУ", "oil", true, Some(motor)),
+        ("Масло в редуктор", "gear_oil", true, Some(gear)),
+        ("Замена масла в раздатке", "oil", false, Some(motor)),
+        ("Мост: замена масла", "oil", true, None),
+        ("Замена масла самостоятельно", "oil", true, Some(motor)),
+        ("Замена масла в моторе", "oil", true, Some(motor)),
+        ("Замена масла в коробке", "gear_oil", true, Some(gear)),
+        ("Смазка моста", "other", true, Some(motor)),
+        ("Тормозная жидкость моста", "brake_fluid", false, None),
+    ] {
+        add_service(&pool, name, slot, free, category).await;
+    }
+    run_axle_migration(&pool).await;
+    let s = |name: &str, slot: &str, category: Option<Uuid>| {
+        (name.to_string(), slot.to_string(), category)
+    };
+    let mut want = vec![
+        // Моторная категория — на трансмиссионную; без категории — тоже.
+        s("ЗАМЕНА МАСЛА В МОСТУ", "other", Some(atf)),
+        s("Мост: замена масла", "other", Some(atf)),
+        // Уже трансмиссионная — прежняя; без «бесплатно с нашим маслом» категория не меняется.
+        s("Масло в редуктор", "other", Some(gear)),
+        s("Замена масла в раздатке", "other", Some(motor)),
+        // Переведена первым запуском — второй её не трогает.
+        s("Замена масла мех. моста", "other", Some(motor)),
+        // Остальные услуги не меняются.
+        s("Замена масла самостоятельно", "oil", Some(motor)),
+        s("Замена масла в моторе", "oil", Some(motor)),
+        s("Замена масла в коробке", "gear_oil", Some(gear)),
+        s("Смазка моста", "other", Some(motor)),
+        s("Тормозная жидкость моста", "brake_fluid", None),
+    ];
+    want.sort();
+    assert_eq!(services_now(&pool).await, want);
+    // Повторный запуск ничего не меняет.
+    run_axle_migration(&pool).await;
+    assert_eq!(services_now(&pool).await, want);
+}

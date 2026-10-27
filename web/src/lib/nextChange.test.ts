@@ -259,6 +259,16 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     expect(nameSlot('Охлаждающая жидкость Felix')).toBe('antifreeze')
     expect(nameSlot('Тормозная жидкость DOT-4')).toBe('brake_fluid')
     expect(nameSlot('Свеча NGK')).toBeNull()
+    // ADR-131: класс жидкости без слова «тормозная» / «антифриз» — те же примеры, что на сервере.
+    for (const name of ['FENIX DOT 4', 'DOT-4 MANNOL 0.5', 'Unix Dot4', 'ABRO dot3 354 мл', 'Motul DOT 5.1 0,5 л', 'ROSDOT 4 455 г', 'Жидкость ДОТ-4 Felix']) {
+      expect(nameSlot(name), name).toBe('brake_fluid')
+    }
+    for (const name of ['SIBIRIA GREEN G11', 'Sintec G12+', 'Felix Carbox g12++ 5 кг', 'Coolstream G13 1 кг', 'Hepu P999-G12']) {
+      expect(nameSlot(name), name).toBe('antifreeze')
+    }
+    for (const name of ['Омыватель стекла -20', 'Щётка G-Force 600 мм', 'G-Energy Expert G 10W-40 4 л', 'G-Box ATF DX III', 'Лампа G4 12V', 'Кольцо SG12', 'Артикул G1205', 'Набор Dotted 3 шт', 'DOT 45 мм']) {
+      expect(nameSlot(name), name).toBeNull()
+    }
     // Строка категории важнее названия; «прочее» — не жидкость.
     expect(goodSlot(cat('c-misc', 'other'), { name: 'Антифриз G12', attrs: {} })).toBe('other')
     expect(goodSlot(undefined, { name: 'Антифриз G12', attrs: {} })).toBeNull()

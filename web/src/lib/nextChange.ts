@@ -113,12 +113,19 @@ export function productSlot(categorySlot: string | null | undefined, filterType:
   return slot
 }
 
-/** Строка жидкости по названию товара (ADR-130) — как `oil_book::slot_by_product_name`: «антифриз»,
- *  «тосол», «охлажда…» — антифриз; «тормозн…» — тормозная жидкость; иначе null. */
+/** Класс жидкости в названии (ADR-131) — как `oil_book::has_class_token`: слово с начала слова, после
+ *  него через пробелы или дефис — число, за которым не идёт цифра. «g-force», «g 10w-40», «sg12»,
+ *  «g120» — не класс. */
+const ANTIFREEZE_CLASS = /(?:^|[^\p{Alphabetic}\p{N}])g[\s-]*1[123](?!\d)/u
+const BRAKE_CLASS = /(?:^|[^\p{Alphabetic}\p{N}])(?:dot|дот|rosdot|росдот)[\s-]*[345](?!\d)/u
+
+/** Строка жидкости по названию товара (ADR-130, ADR-131) — как `oil_book::slot_by_product_name`:
+ *  «антифриз», «тосол», «охлажда…» и G11 / G12 / G12+ / G13 — антифриз; «тормозн…» и DOT 3 / 4 / 5
+ *  (5.1, «ROSDOT 4», «ДОТ-4») — тормозная жидкость; иначе null. */
 export function nameSlot(name: string): BookSlot | null {
   const n = name.toLowerCase()
-  if (['антифриз', 'тосол', 'охлажда'].some((w) => n.includes(w))) return 'antifreeze'
-  if (n.includes('тормозн')) return 'brake_fluid'
+  if (['антифриз', 'тосол', 'охлажда'].some((w) => n.includes(w)) || ANTIFREEZE_CLASS.test(n)) return 'antifreeze'
+  if (n.includes('тормозн') || BRAKE_CLASS.test(n)) return 'brake_fluid'
   return null
 }
 
