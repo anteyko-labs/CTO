@@ -39,6 +39,8 @@ struct Bank {
     fail: Arc<Mutex<Option<(u16, String)>>>,
     /// Задержка выписки, мс.
     statement_delay_ms: Arc<Mutex<u64>>,
+    /// Задержка ответа статуса по номеру транзакции, мс.
+    status_delay_ms: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl Bank {
@@ -139,6 +141,10 @@ async fn qr_status(
     if !key_ok(&b, format!("status/{tx}"), &headers, String::new()) {
         return denied();
     }
+    let delay = b.status_delay_ms.lock().unwrap().get(&tx).copied();
+    if let Some(ms) = delay {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
     if let Some((code, body)) = b.fail.lock().unwrap().clone() {
         return (StatusCode::from_u16(code).unwrap(), body);
     }
@@ -215,10 +221,22 @@ async fn call(
     cookie: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    call_on(app, Uuid::now_v7(), method, uri, cookie, body).await
+}
+
+/// Запрос с устройства `device`.
+async fn call_on(
+    app: &Router,
+    device: Uuid,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("x-device-id", Uuid::now_v7().to_string());
+        .header("x-device-id", device.to_string());
     if let Some(c) = cookie {
         req = req.header(header::COOKIE, c);
     }
@@ -415,6 +433,46 @@ impl World {
             Some(json!({ "op_id": op_id, "amount_tyiyn": amount })),
         )
         .await
+    }
+
+    /// QR с кассы `device`.
+    async fn new_qr_on(&self, device: Uuid, amount: i64) -> Value {
+        let (code, v) = call_on(
+            &self.app,
+            device,
+            "POST",
+            "/api/v1/bank-qr",
+            Some(&self.admin),
+            Some(json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": amount })),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        v
+    }
+
+    /// Ждущие и оплаченные без чека QR кассы `device`.
+    async fn open_on(&self, device: Uuid) -> Vec<Value> {
+        let (code, v) = call_on(
+            &self.app,
+            device,
+            "GET",
+            "/api/v1/bank-qr/open",
+            Some(&self.admin),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        v.as_array().unwrap().clone()
+    }
+
+    async fn status_of(&self, id: &Value) -> Value {
+        get(
+            &self.app,
+            &format!("/api/v1/bank-qr/{}", id.as_str().unwrap()),
+            &self.admin,
+        )
+        .await["status"]
+            .clone()
     }
 
     async fn poll(&self) {
@@ -1145,4 +1203,200 @@ async fn bank_500_tells_owner_to_check_key(pool: PgPool) {
                 && i["details"].as_str().unwrap().contains("Unknown Error")),
         "{n}"
     );
+}
+
+// ---------- ADR-130: опрос QR, замена QR, QR кассы ----------
+
+/// Банк долго отвечает по одному QR — свежий QR в том же проходе отмечается оплаченным сразу:
+/// запросы идут параллельно, статус ждём не дольше 4 с.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn slow_status_of_one_qr_does_not_delay_fresh_one(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    let (_, slow) = w.new_qr(Uuid::now_v7(), 10_000).await;
+    let (_, fresh) = w.new_qr(Uuid::now_v7(), 20_000).await;
+    bank.status_delay_ms
+        .lock()
+        .unwrap()
+        .insert("tx-1".into(), 30_000);
+    bank.set_status("tx-2", 200, &paid("tx-2", "200.00", "op-2"));
+    let started = std::time::Instant::now();
+    let (pool, optima) = (w.pool.clone(), w.optima.clone().unwrap());
+    let pass = tokio::spawn(async move { bank_qr::poll_once(&pool, &optima).await });
+    let mut status = Value::Null;
+    for _ in 0..30 {
+        status = w.status_of(&fresh["id"]).await;
+        if status == "paid" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, "paid");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    // Медленный ответ оборвался по сроку, проход закончился, QR ждёт дальше.
+    pass.await.unwrap().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(w.status_of(&slow["id"]).await, "waiting");
+}
+
+/// Банк ответил ERROR, а потом всё же провёл оплату — «оплачен». Не ждущий QR спрашиваем не
+/// чаще раза в 10 с.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn error_then_late_processed_is_paid(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    let (_, a) = w.new_qr(Uuid::now_v7(), 10_000).await;
+    let (_, b) = w.new_qr(Uuid::now_v7(), 20_000).await;
+    bank.set_status("tx-1", 200, r#"{"status":"ERROR","transactionId":"tx-1"}"#);
+    bank.set_status("tx-2", 200, r#"{"status":"ERROR","transactionId":"tx-2"}"#);
+    w.poll().await;
+    assert_eq!(w.status_of(&a["id"]).await, "error");
+    assert_eq!(w.status_of(&b["id"]).await, "error");
+    let calls_a = bank.calls("status/tx-1").len();
+    bank.set_status("tx-2", 200, &paid("tx-2", "200.00", "op-2"));
+    w.poll().await;
+    assert_eq!(w.status_of(&b["id"]).await, "paid");
+    assert_eq!(bank.calls("status/tx-1").len(), calls_a + 1);
+    let paid_audit = w.audit("bank_qr.paid").await;
+    assert_eq!(paid_audit.len(), 1);
+    assert_eq!(paid_audit[0]["late"], true);
+    assert_eq!(paid_audit[0]["after_cancel"], false);
+    // Сразу ещё раз — отклонённый QR не спрашиваем.
+    w.poll().await;
+    assert_eq!(bank.calls("status/tx-1").len(), calls_a + 1);
+    let q = get(
+        &w.app,
+        &format!("/api/v1/bank-qr/{}", b["id"].as_str().unwrap()),
+        &w.admin,
+    )
+    .await;
+    assert_eq!(q["paid_tyiyn"], 20_000);
+    let (code, v) = w.card_sale(20_000, b["id"].as_str()).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+}
+
+/// «Отменить» нажали, пока шёл запрос статуса, а банк ответил «оплачено» — «после отмены»
+/// решается по состоянию на момент записи: владельцу сразу.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cancel_during_poll_alerts_owner_at_once(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    let (_, qr) = w.new_qr(Uuid::now_v7(), 55_000).await;
+    let id = qr["id"].as_str().unwrap().to_string();
+    bank.status_delay_ms
+        .lock()
+        .unwrap()
+        .insert("tx-1".into(), 800);
+    bank.set_status("tx-1", 200, &paid("tx-1", "550.00", "op-1"));
+    let (pool, optima) = (w.pool.clone(), w.optima.clone().unwrap());
+    let pass = tokio::spawn(async move { bank_qr::poll_once(&pool, &optima).await });
+    for _ in 0..50 {
+        if !bank.calls("status/tx-1").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let c = ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/bank-qr/{id}/cancel"),
+        &w.admin,
+        json!({}),
+    )
+    .await;
+    assert_eq!(c["status"], "cancelled");
+    pass.await.unwrap().unwrap();
+    assert_eq!(w.status_of(&qr["id"]).await, "paid");
+    let paid_audit = w.audit("bank_qr.paid").await;
+    assert_eq!(paid_audit[0]["after_cancel"], true);
+    let alerts = w.audit("bank_qr.unclaimed").await;
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0]["after_cancel"], true);
+}
+
+/// Новый QR с той же кассы отменяет прежний ждущий: его больше не ждут, а оплата по нему —
+/// владельцу сразу. QR другой кассы не трогается.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn new_qr_cancels_previous_of_same_device(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    let (till, other) = (Uuid::now_v7(), Uuid::now_v7());
+    let first = w.new_qr_on(till, 30_000).await;
+    let elsewhere = w.new_qr_on(other, 40_000).await;
+    let second = w.new_qr_on(till, 30_000).await;
+    assert_eq!(w.status_of(&first["id"]).await, "cancelled");
+    assert_eq!(w.status_of(&elsewhere["id"]).await, "waiting");
+    assert_eq!(w.status_of(&second["id"]).await, "waiting");
+    let cancels = w.audit("bank_qr.cancel").await;
+    assert_eq!(cancels.len(), 1);
+    assert_eq!(cancels[0]["replaced_by"], second["id"]);
+    // Покупатель всё же оплатил первый QR.
+    bank.set_status("tx-1", 200, &paid("tx-1", "300.00", "op-1"));
+    w.poll().await;
+    assert_eq!(w.status_of(&first["id"]).await, "paid");
+    let alerts = w.audit("bank_qr.unclaimed").await;
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0]["after_cancel"], true);
+}
+
+/// QR кассы за 40 минут: ждущие (с картинкой) и оплаченные без чека; чужой кассы, отменённые,
+/// привязанные к чеку и старые — нет.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn open_qrs_of_device(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    let (till, other) = (Uuid::now_v7(), Uuid::now_v7());
+    assert!(w.open_on(till).await.is_empty());
+    let a = w.new_qr_on(till, 25_000).await;
+    w.new_qr_on(other, 40_000).await;
+    let open = w.open_on(till).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["id"], a["id"]);
+    assert_eq!(open[0]["status"], "waiting");
+    assert!(open[0]["qr_base64"].is_string());
+    // Оплачен — в списке с суммой оплаты, пока чека нет; отменить его нельзя.
+    bank.set_status("tx-1", 200, &paid("tx-1", "250.00", "op-1"));
+    w.poll().await;
+    let (code, _) = call_on(
+        &w.app,
+        till,
+        "POST",
+        &format!("/api/v1/bank-qr/{}/cancel", a["id"].as_str().unwrap()),
+        Some(&w.admin),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CONFLICT);
+    let open = w.open_on(till).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0]["status"], "paid");
+    assert_eq!(open[0]["paid_tyiyn"], 25_000);
+    assert!(open[0].get("qr_base64").is_none());
+    // Отменённый — не в списке; оплаченный, привязанный к чеку, — тоже.
+    let b = w.new_qr_on(till, 15_000).await;
+    let (code, _) = call_on(
+        &w.app,
+        till,
+        "POST",
+        &format!("/api/v1/bank-qr/{}/cancel", b["id"].as_str().unwrap()),
+        Some(&w.admin),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(w.open_on(till).await.len(), 1);
+    let (code, v) = w.card_sale(25_000, a["id"].as_str()).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    assert!(w.open_on(till).await.is_empty());
+    // Старше 40 минут — не в списке.
+    let c = w.new_qr_on(till, 5_000).await;
+    assert_eq!(w.open_on(till).await.len(), 1);
+    sqlx::query(
+        "update bank_qr set created_at = now() - interval '41 minutes' where id = $1::uuid",
+    )
+    .bind(c["id"].as_str().unwrap())
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    assert!(w.open_on(till).await.is_empty());
 }

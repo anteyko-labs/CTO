@@ -1138,11 +1138,12 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         "optima.key" => (
             "⚠️ Ключ Optima Business не подходит".into(),
             format!(
-                "банк отказал по ключу{} — QR на сумму и сверка не работают, проверьте ключ в настройке точки",
+                "банк отказал по ключу{} — QR на сумму и сверка не работают, проверьте ключ в настройке точки; {}",
                 match text("reason") {
                     r if r.is_empty() => String::new(),
                     r => format!(" ({r})"),
-                }
+                },
+                crate::api::optima::KEY_HINT
             ),
         ),
         "old_catalog.disable" | "old_catalog.enable" => (

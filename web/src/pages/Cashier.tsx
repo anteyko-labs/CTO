@@ -16,8 +16,8 @@ import { ProductPicker, stockText } from '../components/ProductPicker'
 import { DebtorPayment } from '../components/RepaymentModal'
 import { BatteryIntake, type BatteryInfo } from '../components/BatteryIntake'
 import { BonusRedeem, type BonusUse } from '../components/BonusRedeem'
-import { BankQrPanel, useBankQr } from '../components/BankQrPanel'
-import { qrForCard, type OptimaStatus } from '../lib/optima'
+import { BankQrPanel, useBankQr, useOpenQrs } from '../components/BankQrPanel'
+import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
 import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
@@ -338,6 +338,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // исправлении чека её нет.
   const optima = useLoad(() => (fix ? Promise.resolve(null) : get<OptimaStatus>('/optima/status').catch(() => null)), [])
   const bankQr = useBankQr()
+  // QR этой кассы с сервера: оплата по QR не теряется после перезагрузки и «Отменить» (ADR-130).
+  const openQrs = useOpenQrs(Boolean(optima.data?.qr))
+  const stray = strayQr(openQrs.list, bankQr.qr?.id)
   const [bankPick, setBankPick] = useState<Record<NoncashMethod, string>>(fix?.state.bankPick ?? NO_BANK_PICK)
   const bankList = banks.data ?? []
   const bankFor = (method: NoncashMethod): string =>
@@ -882,6 +885,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setError(null)
     setGiftAsked({})
     setPriceChanges([])
+    openQrs.forget(bankQr.qr?.id)
+    openQrs.refresh()
     bankQr.clear()
     attempt.current = null
   }
@@ -1292,8 +1297,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     focusField(focus)
   }
 
-  // QR банка ждёт оплаты — чек ждёт его (панель QR сама говорит «Ждём оплату»).
-  const canSubmit = !busy && blockers.length === 0 && bankQr.qr?.status !== 'waiting'
+  // QR банка ждёт оплаты — чек ждёт его (панель QR сама говорит «Ждём оплату»); без связи с
+  // сервером не ждёт: кассир отмечает оплату вручную (ADR-130).
+  const canSubmit = !busy && blockers.length === 0 && (bankQr.qr?.status !== 'waiting' || bankQr.lost)
   // На вынос с канистрой моторного масла — сначала «Это замена масла?» (SPEC-29 §18, ADR-118): один
   // раз на чек; 0,5–1 л — доливка, без вопроса.
   const askOil = !fix && saleType === 'takeaway' && !oilAsked && askOilChange(ourOil, categories.data)
@@ -2376,6 +2382,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             now={bankQr.now}
             touch
             busy={bankQr.busy}
+            lost={bankQr.lost}
             onCancel={() => void bankQr.cancel()}
             onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
           />
@@ -2616,16 +2623,32 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               </div>
             ))}
           <ErrorBox error={bankQr.error} />
+          {!fix && stray && (
+            <button
+              type="button"
+              data-testid={stray.status === 'paid' ? 'bank-qr-stray' : 'bank-qr-stray-waiting'}
+              className={`flex w-full items-center justify-center gap-2 rounded-md px-3 text-left font-semibold ${
+                stray.status === 'paid' ? 'border-2 border-emerald-600 bg-emerald-50 text-emerald-900' : 'border border-sky-600 bg-white text-sky-800'
+              } ${touch ? 'min-h-[56px] text-lg' : 'min-h-12 text-base'}`}
+              onClick={() => bankQr.adopt(stray)}
+            >
+              <Icon name="scan" className="h-5 w-5 shrink-0" />
+              {stray.status === 'paid'
+                ? `Оплачен QR на ${formatSom(qrPaidSum(stray))} — привязать к чеку`
+                : `Ждём оплату QR на ${formatSom(stray.amount_tyiyn)} — показать`}
+            </button>
+          )}
           {bankQr.qr?.status === 'paid' && (
             <div
               className={`rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 ${touch ? 'text-xl' : 'text-base'}`}
               role="status"
               data-testid="bank-qr-paid"
             >
-              <b>Оплачено {formatSom(bankQr.qr.amount_tyiyn)}</b> по QR банка — проведите чек
-              {bankQr.qr.amount_tyiyn !== cardDue && (
-                <div className="mt-1 text-sm text-amber-800">
-                  Картой к оплате {formatSom(cardDue)} — верните сумму {formatSom(bankQr.qr.amount_tyiyn)}, иначе чек уйдёт без QR, а владелец увидит оплату без чека.
+              <b>Оплачено {formatSom(qrPaidSum(bankQr.qr))}</b> по QR банка — проведите чек
+              {!qrForCard(bankQr.qr, cardDue) && (
+                <div className="mt-1 text-sm font-semibold text-amber-800" data-testid="bank-qr-mismatch">
+                  Картой к оплате {formatSom(cardDue)}, а по QR оплачено {formatSom(qrPaidSum(bankQr.qr))} — сделайте оплату картой ровно{' '}
+                  {formatSom(qrPaidSum(bankQr.qr))}, иначе чек уйдёт без QR, а владелец увидит оплату без чека.
                 </div>
               )}
             </div>
@@ -2636,6 +2659,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               now={bankQr.now}
               touch={false}
               busy={bankQr.busy}
+              lost={bankQr.lost}
               onCancel={() => void bankQr.cancel()}
               onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
             />

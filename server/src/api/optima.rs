@@ -23,8 +23,12 @@ use crate::state::AppState;
 
 pub const DEFAULT_URL: &str = "https://api.optimabusiness.kg";
 
-/// Запрос QR и его статуса — короткий: касса ждёт.
+/// Запрос QR — короткий: касса ждёт.
 const QUICK: Duration = Duration::from_secs(10);
+/// Запрос статуса QR (ADR-130): медленный ответ по одному QR не держит опрос остальных.
+const STATUS: Duration = Duration::from_secs(4);
+/// Соединение с банком (ADR-130).
+const CONNECT: Duration = Duration::from_secs(3);
 /// Выписка за 14 дней может собираться дольше.
 const SLOW: Duration = Duration::from_secs(90);
 
@@ -140,6 +144,9 @@ pub enum BankError {
     Failed { text: String, streak: u32 },
 }
 
+/// Подсказка о ключе (ADR-130): ключ банка живёт 90 дней.
+pub const KEY_HINT: &str = "ключ банка действует 90 дней — возможно, истёк: Optima Business → Настройки → Ключ (API Key) → Пересоздать";
+
 /// Столько 5xx подряд — владельцу «проверьте ключ»: изредка банк отвечает так и при верном.
 pub const FAILED_STREAK_ALERT: u32 = 5;
 
@@ -147,7 +154,9 @@ impl BankError {
     /// Текст для кассы и владельца.
     pub fn message(&self) -> String {
         match self {
-            Self::Key(_) => "Ключ Optima Business не подходит — владельцу: проверьте ключ".into(),
+            Self::Key(_) => {
+                format!("Ключ Optima Business не подходит — владельцу: проверьте ключ; {KEY_HINT}")
+            }
             Self::NotFound => "банк не нашёл операцию".into(),
             Self::Rejected(m) => format!("Банк отклонил: {m}"),
             Self::Unavailable(_) | Self::Failed { .. } => {
@@ -160,7 +169,7 @@ impl BankError {
     pub fn owner_message(&self) -> String {
         match self {
             Self::Failed { text, .. } => format!(
-                "Банк ответил ошибкой: {text}. Так банк отвечает и на неверный ключ — проверьте ключ Optima Business"
+                "Банк ответил ошибкой: {text}. Так банк отвечает и на неверный ключ — проверьте ключ Optima Business; {KEY_HINT}"
             ),
             e => e.message(),
         }
@@ -460,7 +469,15 @@ fn error_text(raw: &[u8]) -> String {
 impl Optima {
     pub fn new(key: SecretKey, url: Option<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            // Переадресацию не выполняем: ключ в заголовке не должен уйти на другой адрес (ADR-130).
+            http: reqwest::Client::builder()
+                .connect_timeout(CONNECT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "банк: клиент HTTP с настройками не собран");
+                    reqwest::Client::new()
+                }),
             key,
             url: url
                 .unwrap_or_else(|| DEFAULT_URL.into())
@@ -622,7 +639,7 @@ impl Optima {
             .send(
                 self.http
                     .get(format!("{}/api/v2/get-qr-transaction-info/{id}", self.url)),
-                QUICK,
+                STATUS,
                 "статус QR",
             )
             .await?;
