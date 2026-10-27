@@ -10,6 +10,7 @@ import {
   receiptsWord,
   rejectedItems,
   removeRejected,
+  SNAPSHOT_EVENT,
   snapshotIsStale,
   syncOutbox,
   watchOutbox,
@@ -47,11 +48,15 @@ export function OfflineBar() {
 
   useEffect(() => {
     const stop = watchOutbox(setItems)
-    void readSnapshot().then(setSnap)
-    const t = setInterval(() => void readSnapshot().then(setSnap), 60_000)
+    const reread = () => void readSnapshot().then(setSnap)
+    reread()
+    const t = setInterval(reread, 60_000)
+    // Снимок только что сохранён — перечитываем сразу: плашка «устарел» не висит до минуты.
+    window.addEventListener(SNAPSHOT_EVENT, reread)
     return () => {
       stop()
       clearInterval(t)
+      window.removeEventListener(SNAPSHOT_EVENT, reread)
     }
   }, [])
   // Снимок обновился (в том числе подтверждён ответом 304) — перечитываем его вместе с очередью.

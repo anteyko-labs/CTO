@@ -64,6 +64,12 @@ async function queueBadReceipt(page: Page, userId: string): Promise<void> {
   }, userId)
 }
 
+test('после входа плашка «снимок каталога устарел» уходит, как только снимок сохранён', async ({ page }) => {
+  // Снимок приходит за доли секунды: плашка не висит до следующего перечитывания (раз в минуту).
+  await login(page)
+  await expect(page.getByText(/снимок каталога устарел/)).toHaveCount(0, { timeout: 10_000 })
+})
+
 test('без сети: перезагрузка, клиент из снимка, пробег, отклонённый чек', async ({ page, context }) => {
   const code = `27${RUN}093`
   const product = `Фильтр снимка ${RUN}`

@@ -169,7 +169,10 @@ test.describe('режим кассы 1366×768', () => {
     await left.getByRole('button', { name: 'Выбрать клиента' }).tap()
     const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
     await dlg.locator('[data-client-input]').fill(`Клиент${RUN}`)
-    await dlg.getByRole('button', { name: new RegExp(`Клиент${RUN}`) }).first().tap()
+    // Найденный клиент, а не «+ Новый клиент «…»» (он на экране, пока поиск не ответил); машина встаёт
+    // сама, когда загрузится карточка клиента, — «Готово» раньше закроет окно без неё.
+    await dlg.getByRole('button', { name: new RegExp(`^Клиент${RUN}`) }).first().tap()
+    await expect(dlg.getByLabel('Машина')).not.toHaveValue('')
     await dlg.getByRole('button', { name: 'Готово' }).tap()
     await expect(left.locator('#mileage')).toBeVisible()
     await expect(left.getByText(/Пробег сейчас/)).toBeInViewport()

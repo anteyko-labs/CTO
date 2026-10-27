@@ -55,21 +55,22 @@ async function goods(request: APIRequestContext) {
   const filters = await api<{ id: string }>(request, 'POST', '/categories', { name: `Фильтры скан ${tag}`, kind: 'filter' })
   const oils = await api<{ id: string }>(request, 'POST', '/categories', { name: `Масла скан ${tag}`, kind: 'oil' })
   const safe = await ownerSafe(request)
-  const make = async (name: string, code: string, category: string, extra: { container_ml?: number; price: number; qty: number; cost: number }): Promise<Goods> => {
+  const make = async (name: string, code: string, category: string, extra: { container_ml?: number; price: number; qty: number; cost: number; filter?: string }): Promise<Goods> => {
     const p = await api<{ id: string }>(request, 'POST', '/products', {
       op_id: crypto.randomUUID(),
       category_id: category,
       name,
       barcodes: [code],
       container_ml: extra.container_ml,
+      attrs: extra.filter ? { filter_type: extra.filter } : undefined,
       sale_price_tyiyn: extra.price,
     })
     await api(request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: safe, lines: [{ product_id: p.id, qty: extra.qty, cost_tyiyn: extra.cost }] })
     return { id: p.id, name, code }
   }
   return {
-    air: await make(`Фильтр воздушный скан ${tag}`, `46${tag}1`, filters.id, { price: 60_000, qty: 20, cost: 600_000 }),
-    oilFilter: await make(`Фильтр масляный скан ${tag}`, `46${tag}2`, filters.id, { price: 40_000, qty: 20, cost: 400_000 }),
+    air: await make(`Фильтр воздушный скан ${tag}`, `46${tag}1`, filters.id, { price: 60_000, qty: 20, cost: 600_000, filter: 'воздушный' }),
+    oilFilter: await make(`Фильтр масляный скан ${tag}`, `46${tag}2`, filters.id, { price: 40_000, qty: 20, cost: 400_000, filter: 'масляный' }),
     oil: await make(`Масло моторное скан ${tag}`, `46${tag}3`, oils.id, { container_ml: 4000, price: 300_000, qty: 40_000, cost: 2_000_000 }),
     oil2: await make(`Масло с подарком скан ${tag}`, `46${tag}4`, oils.id, { container_ml: 4000, price: 320_000, qty: 40_000, cost: 2_000_000 }),
   }
@@ -325,6 +326,84 @@ for (const mode of [
       await expect(row(page, g.oil.name)).toBeVisible()
       await expect(card).toHaveAttribute('aria-pressed', 'true')
       await expect(qty(page, g.air.name)).toHaveValue('1')
+    })
+
+    test('«+ ещё строку» в «Следующей замене», её окно и «✕», затем скан: товар встаёт, окно и строки не меняются', async ({ page }) => {
+      test.setTimeout(90_000)
+      await open(page)
+      const g = await goods(page.request)
+      const tag = `${RUN}${++seq}`
+      const service = `Замена масла в моторе ещё скан ${tag}`
+      await api(page.request, 'POST', '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+      const last = `Скан${tag}`
+      const party = await api<{ id: string }>(page.request, 'POST', '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0703${tag.slice(-6)}` })
+      const plate = `09KG${tag.slice(-3)}SCN`
+      const vehicle = await api<{ id: string }>(page.request, 'POST', `/parties/${party.id}/vehicles`, { plate, brand: 'Toyota', model: 'Camry' })
+      await page.reload()
+      await expect(picker(page)).toBeFocused()
+      await scan(page, g.air.code)
+      await expect(row(page, g.air.name)).toBeVisible()
+      await hit(page.getByRole('button', { name: 'В сервис' }))
+      const kinds = page.getByRole('dialog', { name: 'Вид замены' })
+      await kinds.getByPlaceholder('Найти услугу').fill(service)
+      await hit(kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }))
+      await hit(kinds.getByRole('button', { name: 'Готово' }))
+      await expect(kinds).toHaveCount(0)
+      if (mode.touch) {
+        await hit(page.getByTestId('service-left').getByRole('button', { name: 'Выбрать клиента' }))
+        const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
+        await dlg.locator('[data-client-input]').fill(plate)
+        await hit(dlg.getByRole('button', { name: new RegExp(last) }).first())
+        await expect(dlg.getByLabel('Машина')).toHaveValue(vehicle.id)
+        await hit(dlg.getByRole('button', { name: 'Готово' }))
+      } else {
+        await page.locator('[data-client-input]').fill(plate)
+        await page.getByRole('button', { name: new RegExp(last) }).first().click()
+      }
+      await page.locator('#mileage').fill('217000')
+      const block = page.getByTestId('next-change')
+      const fields = block.locator('input[id^="next-"]')
+      await expect(fields).toHaveCount(1)
+      const more = block.getByRole('button', { name: '+ ещё строку' })
+      const extra = page.getByRole('dialog', { name: 'Следующая замена: ещё строка' })
+
+      // Окно открыто — скан встаёт в чек за окном; варианты окна — из строк чека, строк не прибавилось.
+      await hit(more)
+      await expect(extra).toBeVisible()
+      // Кнопка «⌨» у поля поиска за окном не ложится поверх окна.
+      await expect(page.getByTestId('keyboard-field-button')).toHaveCount(0)
+      await scan(page, g.oilFilter.code)
+      await expect(row(page, g.oilFilter.name)).toBeVisible()
+      await expect(extra).toBeVisible()
+      await expect(extra.getByRole('button', { name: /Фильтр масляный/ })).toBeVisible()
+      await expect(fields).toHaveCount(1)
+
+      // Окно закрыли без выбора («Отмена» под пальцем, Escape мышью) — скан не теряется и окно не открывает.
+      if (mode.touch) await hit(extra.getByRole('button', { name: 'Отмена' }))
+      else await page.keyboard.press('Escape')
+      await expect(extra).toHaveCount(0)
+      await scan(page, g.oil.code)
+      await expect(row(page, g.oil.name)).toBeVisible()
+      await expect(extra).toHaveCount(0)
+      await expect(fields).toHaveCount(1)
+
+      // Выбрали позицию — строка встала; скан добавляет товар, окно не открывается, строк столько же.
+      await hit(more)
+      await hit(extra.getByRole('button', { name: /Фильтр воздушный/ }))
+      await expect(extra).toHaveCount(0)
+      await expect(fields).toHaveCount(2)
+      await scan(page, g.oil2.code)
+      await expect(row(page, g.oil2.name)).toBeVisible()
+      await expect(extra).toHaveCount(0)
+      await expect(fields).toHaveCount(2)
+
+      // «✕» у строки — строка ушла; скан прибавляет отсканированное, «✕» и «+ ещё» не нажимаются.
+      await hit(block.getByRole('button', { name: /^Убрать строку Фильтр воздушный/ }))
+      await expect(fields).toHaveCount(1)
+      await scan(page, g.air.code)
+      await expect(qty(page, g.air.name)).toHaveValue('2')
+      await expect(extra).toHaveCount(0)
+      await expect(fields).toHaveCount(1)
     })
 
     if (mode.touch) {

@@ -27,7 +27,9 @@ export interface Snapshot {
   employees: { id: string; full_name: string; is_cashier: boolean; is_master: boolean }[]
   /** Услуги, категории и клиенты для работы без сети (ADR-093); у старого снимка — нет. */
   services?: Service[]
-  categories?: { id: string; name: string; kind: CategoryKind }[]
+  /** У категории — строка книжки и интервал: «+ ещё строку» по товарам чека (SPEC-34); у снимка до
+   *  26.10.2026 их нет. */
+  categories?: { id: string; name: string; kind: CategoryKind; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null }[]
   clients?: SnapshotClient[]
   /** Безналичные счета для карты, перевода и «По счёту» без сети (ADR-076, ADR-095); у старого
    *  снимка — нет. */
@@ -102,6 +104,14 @@ export async function readSnapshot(): Promise<Snapshot | null> {
   }
 }
 
+/** Снимок на устройстве сохранён заново: полоса связи перечитывает его сразу, а не раз в минуту —
+ *  плашка «снимок каталога устарел» уходит, как только снимок пришёл. */
+export const SNAPSHOT_EVENT = 'avtodom:snapshot'
+
+const snapshotSaved = () => {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(SNAPSHOT_EVENT))
+}
+
 /** Тянет снимок с сервера; 304 — прежний снимок, но проверенный сейчас. Без сети молча пропускает. */
 export async function refreshSnapshot(): Promise<Snapshot | null> {
   const current = await readSnapshot()
@@ -115,12 +125,14 @@ export async function refreshSnapshot(): Promise<Snapshot | null> {
       // Сервер подтвердил, что снимок не менялся: он свежий, предупреждение «устарел» уходит.
       const fresh = { ...current, saved_at: new Date().toISOString() }
       await (await db()).put(SNAP, fresh, 'current')
+      snapshotSaved()
       return fresh
     }
     if (!res.ok) return current
     const snap = (await res.json()) as Snapshot
     snap.saved_at = new Date().toISOString()
     await (await db()).put(SNAP, snap, 'current')
+    snapshotSaved()
     return snap
   } catch {
     setServerReachable(false)

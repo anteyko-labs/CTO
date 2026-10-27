@@ -62,6 +62,9 @@ struct SnapProduct {
     category_kind: String,
     unit: String,
     container_ml: Option<i64>,
+    /// Характеристики товара: у фильтра строку книжки решает его тип (`oil_book::product_slot`) —
+    /// касса без сети предлагает «+ ещё строку» в «Следующей замене» по товарам чека (SPEC-34).
+    attrs: serde_json::Value,
     barcodes: Vec<String>,
     sale_price_tyiyn: i64,
     pour_price_per_l_tyiyn: Option<i64>,
@@ -91,6 +94,11 @@ struct SnapCategory {
     id: Uuid,
     name: String,
     kind: String,
+    /// Строка книжки товаров категории и её интервал, как в `GET /categories`: касса без сети
+    /// предлагает «+ ещё строку» по товарам чека и заполняет пробег заранее (SPEC-34).
+    book_slot: String,
+    book_interval_km: Option<i32>,
+    book_interval_days: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -183,7 +191,7 @@ async fn snapshot(
     let mut conn = state.pool.acquire().await?;
     let products = sqlx::query!(
         r#"select p.id, p.name, p.brand, p.article, p.category_id, c.kind as category_kind, p.unit,
-                  p.container_ml as "container_ml?",
+                  p.container_ml as "container_ml?", p.attrs,
                   coalesce(bp.sale_price_tyiyn, 0) as "sale_price_tyiyn!",
                   coalesce(bp.stock_qty, 0) as "stock_qty!",
                   coalesce((select array_agg(b.code order by b.created_at)
@@ -213,6 +221,7 @@ async fn snapshot(
         category_kind: r.category_kind,
         unit: r.unit,
         container_ml: r.container_ml,
+        attrs: r.attrs,
         barcodes: r.barcodes,
         sale_price_tyiyn: r.sale_price_tyiyn,
         stock_qty: r.stock_qty,
@@ -256,7 +265,10 @@ async fn snapshot(
     .collect::<Vec<_>>();
     let categories = sqlx::query_as!(
         SnapCategory,
-        "select id, name, kind from categories order by name"
+        r#"select id, name, kind,
+                  coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
+                  book_interval_km, book_interval_days
+           from categories order by name"#
     )
     .fetch_all(&mut *conn)
     .await?;
