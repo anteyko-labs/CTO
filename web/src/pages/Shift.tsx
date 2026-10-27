@@ -1,23 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, Notice, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
 import { Icon } from '../components/icons'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
-import { get, getPage, newOpId, post } from '../lib/api'
+import { get, getPage, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { useCan } from '../lib/permissions'
 import { ShiftOpenModal } from '../components/ShiftOpen'
 import { StaffPayList } from '../components/StaffPayList'
-import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
+import { ShiftBank } from '../components/ShiftBank'
+import { useShiftClose } from '../components/ShiftClose'
+import { printShift } from '../components/shiftPrint'
+import { formatDate, formatDateTime, formatSom, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { MOVEMENT_LABELS, shiftSales } from '../lib/income'
-import { accountLabel, handoverChoices, isTill, overdrawText, payAccounts } from '../lib/accounts'
-import { pendingCount, syncOutbox, watchOutbox } from '../lib/offline'
+import { accountLabel, isTill, overdrawText } from '../lib/accounts'
 import { correctionMarks, loadCorrections, numberText } from '../lib/corrections'
 import { movementDoc, movementFields, transferDoc, transferFields, type MovementDoc, type TransferDoc } from '../lib/moneyFix'
-import type { CashAccount, CashMovement, Employee, PayrollRow, Shift as ShiftRow } from '../lib/types'
+import type { CashAccount, CashMovement, Employee, Shift as ShiftRow, ShiftSettings } from '../lib/types'
 
 /** Виды движений словами — общие с «Счётом» и «Куда сколько поступило». */
 const KIND_LABELS = MOVEMENT_LABELS
@@ -52,20 +54,6 @@ function Row({ label, value, signed = false, strong = false }: { label: string; 
   )
 }
 
-/** Выплата сотруднику при закрытии смены: галочка, сумма (не больше к выдаче) и свой op_id. */
-type PayLine = { employee_id: string; name: string; owed: number; on: boolean; sum: string; opId: string }
-
-type Closing = {
-  /** null — пересчёт не правили: подставляется «должно быть» после выплат. */
-  counted: string | null
-  comment: string
-  opId: string
-  force: boolean
-  pay: PayLine[]
-  /** Откуда выплатить отмеченным: касса смены или, у владельца, любой счёт (SPEC-29 §13). */
-  payFrom: string
-}
-
 /** Исправление проведённого внесения, изъятия или перевода (SPEC-29 §24): то же окно, заполненное
  *  исходным документом; `filled` — поля уже взяты из него. */
 type MoneyFix = { kind: 'cash_movement' | 'cash_transfer'; id: string; filled: boolean }
@@ -88,12 +76,6 @@ export default function Shift() {
   const [open, setOpen] = useState(false)
   const [money, setMoney] = useState<MoneyForm | null>(null)
   const correction = useCorrection<MovementDoc | TransferDoc>(money?.fix?.kind ?? 'cash_movement', money?.fix?.id ?? null)
-  const [closing, setClosing] = useState<Closing | null>(null)
-  // Чеки этого устройства, ещё не ушедшие на сервер: их наличные уже в кассе, а в «должно быть» —
-  // ещё нет. Закрыть смену до их отправки — ложная недостача (ADR-059).
-  const [unsent, setUnsent] = useState(0)
-  useEffect(() => watchOutbox((items) => setUnsent(pendingCount(items))), [])
-  const [handover, setHandover] = useState<{ shift: ShiftRow; sum: string; opId: string; to: string } | null>(null)
   const [reopen, setReopen] = useState<{ shift: ShiftRow; reason: string; opId: string } | null>(null)
   const [history, setHistory] = useState<string>('')
   const [reverse, setReverse] = useState<{ m: CashMovement; comment: string; opId: string } | null>(null)
@@ -116,79 +98,32 @@ export default function Shift() {
     setMovesTick((t) => t + 1)
   }
   const pastPager = usePager(past.data ?? [], 'shift.past')
+  // Закрытие смены и «Сдать кассу» — то же окно, что в полосе режима кассы (SPEC-36 §10).
+  const closer = useShiftClose(reloadAll)
   const closeDialogs = () => {
     act.setError(null)
     setOpen(false)
     setMoney(null)
-    setClosing(null)
-    setHandover(null)
+    closer.cancel()
     setReopen(null)
     setReverse(null)
   }
-
-  const startClosing = () =>
+  // Чек смены 80 мм (SPEC-36 §10): печать из списка смен и с открытой смены.
+  const printCheck = (id: string) => void act.run(() => printShift(id))
+  const settings = useLoad(() => get<ShiftSettings>('/settings/shift'), [])
+  const togglePrint = (v: boolean) => {
+    // Отметка меняется сразу; не сохранилось — возвращается как было.
+    settings.setData({ print_on_close: v })
     void act.run(async () => {
-      closeDialogs()
-      if (!shift) return
-      // Заодно толкаем отправку очереди: связь могла вернуться. Не ждём — без ответа сервера это
-      // до 20 с, а число неотправленных в окне обновится само.
-      void syncOutbox()
-      // Сумму «должно быть» берём свежую с сервера: за время на экране могли пройти чеки с другого
-      // устройства, и старая сумма дала бы недостачу, которой нет.
-      const fresh = await get<ShiftRow | null>('/shifts/current')
-      current.reload()
-      if (fresh) current.setData(fresh)
-      // Кому сколько к выдаче: заработанное сегодня и невыплаченное за прошлые дни (SPEC-27).
-      // Администратору сервер отдаёт только мастеров: кассирам выплачивает владелец (SPEC-30 §6).
-      const staff = can('payroll_pay') ? await get<PayrollRow[]>('/payroll/day') : []
-      const pay = staff
-        .filter((r) => r.balance_tyiyn > 0)
-        .map((r) => ({ employee_id: r.employee_id, name: r.full_name, owed: r.balance_tyiyn, on: false, sum: somInput(r.balance_tyiyn), opId: newOpId() }))
-      setClosing({ counted: null, comment: '', opId: newOpId(), force: false, pay, payFrom: fresh?.account_id ?? shift.account_id })
+      try {
+        settings.setData(await put<ShiftSettings>('/settings/shift', { print_on_close: v }))
+      } catch (e) {
+        settings.setData({ print_on_close: !v })
+        throw e
+      }
+      toast(v ? 'Чек смены будет печататься после сдачи кассы' : 'Чек смены сам не печатается')
     })
-
-  const closeShift = () =>
-    void act.run(async () => {
-      if (!shift || !closing) return
-      const counted = parseSom(countedText)
-      if (counted === null) throw new Error('Неверная сумма')
-      // Выплаты и закрытие — одна операция на сервере: либо всё, либо ничего (SPEC-27).
-      const payouts = closing.pay
-        .filter((p) => p.on)
-        .map((p) => ({ op_id: p.opId, employee_id: p.employee_id, amount_tyiyn: parseSom(p.sum) ?? 0, account_id: closing.payFrom || undefined }))
-      const res = await post<ShiftRow>(`/shifts/${shift.id}/close`, {
-        op_id: closing.opId,
-        counted_tyiyn: counted,
-        comment: closing.comment,
-        payouts,
-      })
-      setClosing(null)
-      reloadAll()
-      toast(payouts.length > 0 ? `Выплачено ${payouts.length}, смена закрыта` : 'Смена закрыта')
-      // Деньги сдают сразу: подставляем всё, что пересчитали, кассир оставит размен.
-      startHandover(res)
-    })
-
-  /** Окно «Сдать кассу»: куда — предлагает сервер (куда сдавали в прошлый раз или сейф магазина). */
-  const startHandover = (s: ShiftRow) => {
-    setHandover({ shift: s, sum: somInput(s.counted_tyiyn ?? 0), opId: newOpId(), to: '' })
-    void get<{ account_id: string | null }>('/shifts/handover-target')
-      .then((t) => setHandover((h) => (h && h.shift.id === s.id && !h.to ? { ...h, to: t.account_id ?? '' } : h)))
-      .catch(() => undefined)
   }
-
-  const submitHandover = (amount: number) =>
-    void act.run(async () => {
-      if (!handover) return
-      await post(`/shifts/${handover.shift.id}/handover`, {
-        op_id: handover.opId,
-        amount_tyiyn: amount,
-        ...(amount > 0 && handoverTo ? { to_account_id: handoverTo } : {}),
-      })
-      setHandover(null)
-      reloadAll()
-      toast(amount > 0 ? `Касса сдана: ${formatSom(amount)} → ${handoverAcc?.name ?? 'сейф'}` : 'Отмечено: деньги остались в кассе')
-    })
 
   const submitReopen = () =>
     void act.run(async () => {
@@ -291,38 +226,6 @@ export default function Shift() {
       money.fix.kind === 'cash_transfer' ? transferFields(fixDraft.doc as TransferDoc) : movementFields(fixDraft.doc as MovementDoc, till?.id ?? null)
     setMoney({ ...money, ...fields, fix: { ...money.fix, filled: true } })
   }
-  // Выплаты при закрытии: владелец — с любого счёта, администратор — из кассы смены (SPEC-29 §13).
-  const payFromList = payAccounts(accs, owner)
-  const fromTill = !closing || !shift || closing.payFrom === shift.account_id || !closing.payFrom
-  const { list: handoverList, pick: handoverPick } = handoverChoices(accs, handover?.to)
-  const handoverTo = handover?.to && handoverList.some((a) => a.id === handover.to) ? handover.to : handoverPick
-  const handoverAcc = accs.find((a) => a.id === handoverTo)
-  // Выплаты при закрытии уменьшают «должно быть»: пересчитывают то, что осталось после них.
-  const payLines = closing?.pay ?? []
-  const payBad = payLines.some((p) => {
-    const v = parseSom(p.sum)
-    return p.on && (v === null || v <= 0 || v > p.owed)
-  })
-  const payTotal = payLines.reduce((acc, p) => (p.on ? acc + Math.max(parseSom(p.sum) ?? 0, 0) : acc), 0)
-  const payCount = payLines.filter((p) => p.on).length
-  // «Должно быть» уменьшают только выплаты из кассы смены.
-  const tillPay = fromTill ? payTotal : 0
-  const expectedAfter = (shift?.expected_tyiyn ?? 0) - tillPay
-  const countedText = closing?.counted ?? somInput(expectedAfter)
-  const setPay = (i: number, patch: Partial<PayLine>) =>
-    closing && setClosing({ ...closing, pay: closing.pay.map((p, j) => (j === i ? { ...p, ...patch } : p)) })
-  const closeDiff = (() => {
-    if (!closing || !shift) return null
-    const counted = parseSom(countedText)
-    return counted === null ? null : counted - expectedAfter
-  })()
-  const closeMissing = missingWithFocus(
-    [!payBad, 'суммы выплат: больше нуля и не больше к выдаче', '#close-pay'],
-    [tillPay <= (shift?.expected_tyiyn ?? 0), 'выплат больше, чем в кассе', '#close-pay'],
-    [parseSom(countedText) !== null, 'сколько денег в кассе', '#close-counted'],
-    [!closeDiff || Boolean(closing?.comment.trim()), 'комментарий к расхождению', '#close-comment'],
-    [unsent === 0 || Boolean(closing?.force), 'отметку «закрыть всё равно»', '#close-force input'],
-  )
   const moneyMissing = money
     ? missingWithFocus(
         [(parseSom(money.sum) ?? 0) > 0, 'сумму', '#money-sum'],
@@ -333,15 +236,13 @@ export default function Shift() {
         [!money.fix || Boolean(correction.comment.trim()), 'что и почему исправляете', '#correction-comment'],
       )
     : []
-  const handoverSum = handover ? parseSom(handover.sum) : null
-  const handoverMax = handover ? (handover.shift.counted_tyiyn ?? 0) : 0
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Смена и кассы" />
       <ErrorBox error={current.error ?? accounts.error} />
 
-      {pending && !handover && (
+      {pending && !closer.open && (
         <Card className="flex flex-wrap items-center justify-between gap-3 border-amber-300 bg-amber-50">
           <div>
             <div className="font-medium">Смена № {pending.number} закрыта, касса не сдана</div>
@@ -352,7 +253,7 @@ export default function Shift() {
           <Button
             onClick={() => {
               closeDialogs()
-              startHandover(pending)
+              closer.startHandover(pending)
             }}
           >
             Сдать кассу
@@ -400,15 +301,10 @@ export default function Shift() {
                 <Row key={m.key} label={m.label} value={m.value} />
               ))}
               {sales.rest !== 0 && <Row label="Исправления и прочее" value={sales.rest} signed />}
-              {(shift.bank_split ?? []).length > 1 && (
-                <>
-                  <div className="mt-2 text-xs text-slate-500">Безнал по счетам:</div>
-                  {(shift.bank_split ?? []).map((b) => (
-                    <Row key={b.account_id} label={`на «${b.name}»`} value={b.total_tyiyn} />
-                  ))}
-                </>
-              )}
-              {shift.bank_fee_tyiyn > 0 && <Row label="Комиссия банка" value={-shift.bank_fee_tyiyn} signed />}
+              {/* Безнал по счетам — всегда, даже при одном счёте (SPEC-36 §9). */}
+              <div className="mt-3">
+                <ShiftBank list={shift.bank_split ?? []} />
+              </div>
             </div>
             )}
             <div>
@@ -438,7 +334,17 @@ export default function Shift() {
               <Icon name="history" className="h-4 w-4" />
               Отчёт смены
             </Link>
-            <Button onClick={startClosing}>Закрыть смену</Button>
+            <Button variant="secondary" onClick={() => printCheck(shift.id)}>
+              Печать чека смены
+            </Button>
+            <Button
+              onClick={() => {
+                closeDialogs()
+                closer.startClosing()
+              }}
+            >
+              Закрыть смену
+            </Button>
           </div>
         </Card>
       ) : (
@@ -508,8 +414,15 @@ export default function Shift() {
       </Card>
 
       <Card>
-        <h2 className="mb-3 font-semibold">Прошлые смены</h2>
-        <ErrorBox error={past.error} />
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-semibold">Прошлые смены</h2>
+          {owner && settings.data && (
+            <div data-testid="print-on-close">
+              <Checkbox label="Печатать чек смены после сдачи кассы" checked={settings.data.print_on_close} onChange={togglePrint} />
+            </div>
+          )}
+        </div>
+        <ErrorBox error={past.error ?? (closer.open || money || reopen || reverse ? null : act.error)} />
         {(past.data ?? []).length === 0 ? (
           <Empty>Смен ещё не было</Empty>
         ) : (
@@ -536,6 +449,9 @@ export default function Shift() {
                   <Link to={`/shifts/${s.id}`} className="inline-flex min-h-9 items-center rounded-md border border-slate-300 bg-white px-3 py-1 text-sm font-medium text-slate-800 hover:bg-slate-50">
                     Отчёт
                   </Link>
+                  <Button variant="secondary" className="min-h-9 px-3 py-1" aria-label={`Печать чека смены № ${s.number}`} onClick={() => printCheck(s.id)}>
+                    Печать чека смены
+                  </Button>
                   {/* Переоткрыть можно только последнюю смену: после более поздней — 409 (ADR-071). */}
                   {owner && pastPager.page === 0 && i === 0 && s.counted_tyiyn !== null && !shift && (
                     <Button
@@ -571,159 +487,7 @@ export default function Shift() {
         />
       )}
 
-      {closing && shift && (
-        <Modal title="Закрыть смену" onClose={closeDialogs}>
-          <div className="flex flex-col gap-3">
-            {unsent > 0 && (
-              <Notice tone="rose">
-                <div className="font-medium">
-                  {unsent} {unsent === 1 ? 'чек ещё не отправлен' : unsent < 5 ? 'чека ещё не отправлены' : 'чеков ещё не отправлены'} — дождитесь связи
-                </div>
-                <div className="mt-1">
-                  Их деньги уже в кассе, но в «должно быть» их ещё нет: закрытие сейчас покажет недостачу, которой нет. Когда чеки уйдут,
-                  предупреждение исчезнет само.
-                </div>
-                <div id="close-force" className="mt-2">
-                  <Checkbox label="Закрыть всё равно" checked={closing.force} onChange={(v) => setClosing({ ...closing, force: v })} />
-                </div>
-              </Notice>
-            )}
-            {closing.pay.length > 0 && (
-              <div id="close-pay" className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
-                <div className="text-sm font-medium">{fromTill ? 'Выплатить из кассы' : 'Выплатить сотрудникам'}</div>
-                {closing.pay.map((p, i) => (
-                  <div key={p.employee_id} className="flex flex-wrap items-center gap-2" data-testid="close-pay-row">
-                    <div className="min-w-0 flex-1">
-                      <Checkbox label={p.name} checked={p.on} onChange={(v) => setPay(i, { on: v })} />
-                      <div className="pl-7 text-xs text-slate-500">к выдаче {formatSom(p.owed)}</div>
-                    </div>
-                    <input
-                      aria-label={`Сумма для ${p.name}`}
-                      className="w-32"
-                      inputMode="decimal"
-                      disabled={!p.on}
-                      value={p.sum}
-                      onChange={(e) => setPay(i, { sum: e.target.value })}
-                    />
-                  </div>
-                ))}
-                {owner && payFromList.length > 1 && (
-                  <Field label="Выплатить из">
-                    <select id="close-pay-from" value={closing.payFrom} onChange={(e) => setClosing({ ...closing, payFrom: e.target.value })}>
-                      {payFromList.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {accountLabel(a)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                )}
-                <div className="text-xs text-slate-500">
-                  Заработанное сегодня и невыплаченное за прошлые дни. Можно выдать меньше; аванс сверх заработанного — только владелец, в
-                  «Расчёте».
-                </div>
-              </div>
-            )}
-            <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-700" data-testid="close-noncash">
-              Безнал за смену: карта / QR банка <b className="tabular-nums">{formatSom(shift.card_tyiyn)}</b> · QR владельцу{' '}
-              <b className="tabular-nums">{formatSom(shift.transfer_tyiyn)}</b>
-              {(shift.invoice_tyiyn ?? 0) !== 0 && (
-                <>
-                  {' '}
-                  · по счёту <b className="tabular-nums">{formatSom(shift.invoice_tyiyn ?? 0)}</b>
-                </>
-              )}
-              {(shift.bank_split ?? []).length > 1 && (
-                <ul className="mt-1 text-xs" data-testid="close-noncash-banks">
-                  {(shift.bank_split ?? []).map((b) => (
-                    <li key={b.account_id}>
-                      {b.name}: карта / QR банка {formatSom(b.card_tyiyn)} · QR владельцу {formatSom(b.transfer_tyiyn)}
-                      {(b.invoice_tyiyn ?? 0) !== 0 && ` · по счёту ${formatSom(b.invoice_tyiyn ?? 0)}`}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="text-xs text-slate-500">В кассе этих денег нет — сверьте с терминалом и выпиской банка.</div>
-            </div>
-            <div className="text-sm text-slate-600">
-              Должно быть в кассе: {formatSom(shift.expected_tyiyn)}
-              {tillPay > 0 && (
-                <>
-                  {' '}
-                  − выплаты {formatSom(tillPay)} = <b>{formatSom(expectedAfter)}</b>
-                </>
-              )}
-            </div>
-            <Field label="Факт в кассе, с" required hint={tillPay > 0 ? 'Пересчитайте после выдачи денег' : undefined}>
-              <input
-                id="close-counted"
-                autoFocus
-                inputMode="decimal"
-                value={countedText}
-                onChange={(e) => setClosing({ ...closing, counted: e.target.value })}
-              />
-            </Field>
-            {closeDiff !== null && closeDiff !== 0 && (
-              <div className={`rounded-md px-3 py-2 text-sm ${closeDiff < 0 ? 'bg-rose-50 text-rose-800' : 'bg-amber-50 text-amber-800'}`}>
-                {closeDiff < 0 ? 'Недостача' : 'Излишек'} {formatSom(Math.abs(closeDiff))}
-                {closeDiff < 0 && ` · будет удержана с кассира ${shift.cashier_name}`}
-              </div>
-            )}
-            <Field label="Комментарий" required={Boolean(closeDiff)} hint="Обязателен при расхождении">
-              <input id="close-comment" value={closing.comment} onChange={(e) => setClosing({ ...closing, comment: e.target.value })} />
-            </Field>
-            <Missing items={closeMissing} />
-            <ErrorBox error={act.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={closeDialogs}>
-                Отмена
-              </Button>
-              <Button disabled={act.busy || closeMissing.length > 0} onClick={closeShift}>
-                {payCount > 0 ? 'Выплатить отмеченным и закрыть' : 'Закрыть'}
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {handover && (
-        <Modal title={`Сдать кассу · смена № ${handover.shift.number}`} onClose={closeDialogs}>
-          <div className="flex flex-col gap-3">
-            <div className="text-sm text-slate-600">В кассе {formatSom(handoverMax)}. Сколько сдать? Остальное останется на размен.</div>
-            <Field label="Куда сдать" required>
-              <select id="handover-to" value={handoverTo} onChange={(e) => setHandover({ ...handover, to: e.target.value })}>
-                {handoverList.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {accountLabel(a)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Сдать, с" required>
-              <input autoFocus inputMode="decimal" value={handover.sum} onChange={(e) => setHandover({ ...handover, sum: e.target.value })} />
-            </Field>
-            {handoverSum !== null && handoverSum >= 0 && handoverSum <= handoverMax && (
-              <div className="text-sm text-slate-600">Останется в кассе: {formatSom(handoverMax - handoverSum)}</div>
-            )}
-            {handoverSum !== null && handoverSum > handoverMax && (
-              <div className="text-sm text-rose-700">В кассе столько нет</div>
-            )}
-            <ErrorBox error={act.error} />
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="secondary" disabled={act.busy} onClick={() => submitHandover(0)}>
-                Деньги остались в кассе
-              </Button>
-              <Button
-                disabled={act.busy || handoverSum === null || handoverSum <= 0 || handoverSum > handoverMax || !handoverTo}
-                onClick={() => handoverSum !== null && submitHandover(handoverSum)}
-              >
-                Сдать в «{handoverAcc?.name ?? '…'}»
-              </Button>
-            </div>
-            <div className="text-xs text-slate-400">Владелец получит уведомление: сколько сдали, куда и кто кассир.</div>
-          </div>
-        </Modal>
-      )}
+      {closer.modals}
 
       {reopen && (
         <Modal title={`Переоткрыть смену № ${reopen.shift.number}`} onClose={closeDialogs}>

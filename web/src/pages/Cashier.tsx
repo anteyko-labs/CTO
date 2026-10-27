@@ -1649,7 +1649,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     >
       {touch && (
         <div className="lg:col-span-2">
-          <CashierModeBar shift={shift.loading && !shiftKnown ? undefined : shift.data} onOpenShift={startShift} />
+          <CashierModeBar shift={shift.loading && !shiftKnown ? undefined : shift.data} onOpenShift={startShift} onShiftChanged={shift.reload} />
         </div>
       )}
       <div className={`flex min-w-0 flex-col ${touch ? `${serviceLeft ? 'gap-2' : 'gap-3'} lg:min-h-0` : 'gap-4'}`}>

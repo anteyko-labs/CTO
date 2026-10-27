@@ -726,3 +726,317 @@ async fn cancelled_lines_without_shift_and_bad_lines(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// Сумма строк со знаком.
+fn signed_sum(lines: &Value) -> i64 {
+    lines
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["amount_tyiyn"].as_i64().unwrap())
+        .sum()
+}
+
+/// Чистая прибыль за смену (SPEC-36 §9, ADR-120): формула прибыли дня по времени смены, без
+/// оклада, только владельцу; две смены за день без чеков вне смен в сумме дают прибыль дня.
+/// Безнал по счетам — по движениям счетов: виден и при одном счёте, с оплатой долга картой,
+/// возвратом на карту и «упало на счёт» = итог − комиссия.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn shift_net_profit_and_noncash_by_account(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let item = ok(
+        &app,
+        &owner,
+        "/api/v1/products",
+        json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр", "sale_price_tyiyn": 50_000 }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cashier = ok(
+        &app,
+        &owner,
+        "/api/v1/employees",
+        json!({ "full_name": "Иман", "is_cashier": true, "pin": "1234" }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let client = ok(
+        &app,
+        &admin,
+        "/api/v1/parties",
+        json!({ "name": "ОсОО Клиент", "kind": "company", "inn": "01234567890123" }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accounts = get(&app, &owner, "/api/v1/cash/accounts").await;
+    let by_name = |name: &str| {
+        accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let safe = by_name("Сейф магазина");
+    let bank = by_name("Счёт");
+    let banks = accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["kind"] == "bank" && a["active"] == true)
+        .count();
+    assert_eq!(banks, 1, "по умолчанию один безналичный счёт");
+    // Пустой счёт владельца в безнал смены не попадает: администратор его не видит (ADR-037).
+    ok(
+        &app,
+        &owner,
+        "/api/v1/cash/accounts",
+        json!({ "op_id": Uuid::now_v7(), "name": "Личный", "kind": "bank", "owner_only": true }),
+    )
+    .await;
+    // Товар приходит до смен: накладная в смены не входит.
+    ok(
+        &app,
+        &owner,
+        "/api/v1/receipts",
+        json!({
+            "op_id": Uuid::now_v7(), "payment": "paid", "paid_from": safe,
+            "lines": [{ "product_id": item, "qty": 20, "cost_tyiyn": 20_000 }]
+        }),
+    )
+    .await;
+    let household = get(&app, &admin, "/api/v1/expense-articles")
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Хозтовары")
+        .unwrap()["id"]
+        .clone();
+
+    // Смена 1: наличные и карта, расход, недостача при закрытии.
+    let s1 = ok(
+        &app,
+        &admin,
+        "/api/v1/shifts/open",
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" }),
+    )
+    .await;
+    let s1 = s1["id"].as_str().unwrap().to_string();
+    sale(
+        &app,
+        &admin,
+        &cashier,
+        json!([line(&item, 2, 50_000)]),
+        json!([pay("cash", 100_000)]),
+        json!({}),
+    )
+    .await;
+    let card_sale = sale(
+        &app,
+        &admin,
+        &cashier,
+        json!([line(&item, 1, 50_000)]),
+        json!([pay("card", 50_000)]),
+        json!({}),
+    )
+    .await;
+    ok(
+        &app,
+        &admin,
+        "/api/v1/expenses",
+        json!({ "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 3_000, "comment": "швабра" }),
+    )
+    .await;
+    let cur = get(&app, &admin, "/api/v1/shifts/current").await;
+    let expected = cur["expected_tyiyn"].as_i64().unwrap();
+    ok(
+        &app,
+        &admin,
+        &format!("/api/v1/shifts/{s1}/close"),
+        json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": expected - 1_000, "comment": "не хватает" }),
+    )
+    .await;
+    ok(
+        &app,
+        &admin,
+        &format!("/api/v1/shifts/{s1}/handover"),
+        json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": 0 }),
+    )
+    .await;
+
+    // Смена 2: продажа в долг, оплата долга картой, возврат чека первой смены на карту.
+    let s2 = ok(
+        &app,
+        &admin,
+        "/api/v1/shifts/open",
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" }),
+    )
+    .await;
+    let s2 = s2["id"].as_str().unwrap().to_string();
+    sale(
+        &app,
+        &admin,
+        &cashier,
+        json!([line(&item, 1, 50_000)]),
+        json!([pay("debt", 50_000)]),
+        json!({ "party_id": client }),
+    )
+    .await;
+    ok(
+        &app,
+        &admin,
+        "/api/v1/debts/repayments",
+        json!({ "op_id": Uuid::now_v7(), "party_id": client, "amount_tyiyn": 30_000, "method": "card" }),
+    )
+    .await;
+    let card_id = card_sale["id"].as_str().unwrap();
+    ok(
+        &app,
+        &owner,
+        &format!("/api/v1/sales/{card_id}/return"),
+        json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }], "payments": [pay("card", 50_000)] }),
+    )
+    .await;
+
+    // Открытая смена: чистая прибыль — сумма слагаемых, администратору её нет.
+    let r2 = get(&app, &owner, &format!("/api/v1/shifts/{s2}/report")).await;
+    let v2 = &r2["revenue"];
+    let net2 = v2["net_profit_tyiyn"].as_i64().unwrap();
+    assert_eq!(signed_sum(&v2["profit"]), net2, "{v2}");
+    assert_eq!(
+        amount_of(&v2["profit"], "gross"),
+        v2["gross_tyiyn"].as_i64().unwrap()
+    );
+    let a2 = get(&app, &admin, &format!("/api/v1/shifts/{s2}/report")).await;
+    assert!(
+        a2["revenue"].get("net_profit_tyiyn").is_none(),
+        "{}",
+        a2["revenue"]
+    );
+    assert!(a2["revenue"].get("profit").is_none());
+    assert!(a2["revenue"].get("gross_tyiyn").is_none());
+
+    // Безнал второй смены: один счёт, оплата долга картой и возврат на карту — в нём.
+    let split = r2["shift"]["bank_split"].as_array().unwrap();
+    assert_eq!(split.len(), 1, "{split:?}");
+    let b = &split[0];
+    assert_eq!(b["account_id"], json!(bank));
+    assert_eq!(b["card_tyiyn"], 0);
+    assert_eq!(b["debt_tyiyn"], 30_000);
+    assert_eq!(b["returns_tyiyn"], 50_000);
+    assert_eq!(b["total_tyiyn"], 30_000 - 50_000);
+    // Комиссия: с оплаты долга взята, с возвращённого чека — вернулась.
+    let fee2 = b["fee_tyiyn"].as_i64().unwrap();
+    assert_eq!(fee2, 150 - 250);
+    assert_eq!(b["landed_tyiyn"].as_i64().unwrap(), -20_000 - fee2);
+    // Тот же блок у администратора — безнал не секрет.
+    assert_eq!(a2["shift"]["bank_split"], r2["shift"]["bank_split"]);
+
+    let cur = get(&app, &admin, "/api/v1/shifts/current").await;
+    let expected = cur["expected_tyiyn"].as_i64().unwrap();
+    ok(
+        &app,
+        &admin,
+        &format!("/api/v1/shifts/{s2}/close"),
+        json!({ "op_id": Uuid::now_v7(), "counted_tyiyn": expected, "comment": "" }),
+    )
+    .await;
+
+    // Первая смена: продажа картой — в счёте, комиссия вычтена из «упало»; недостача входит.
+    let r1 = get(&app, &owner, &format!("/api/v1/shifts/{s1}/report")).await;
+    // Для чека смены: кто закрыл.
+    assert_eq!(r1["shift"]["closed_by"], "Админ");
+    let b1 = &r1["shift"]["bank_split"][0];
+    assert_eq!(b1["card_tyiyn"], 50_000);
+    assert_eq!(b1["total_tyiyn"], 50_000);
+    let fee1 = b1["fee_tyiyn"].as_i64().unwrap();
+    assert_eq!(fee1, 250, "комиссия счёта по умолчанию — 0,5 %");
+    assert_eq!(b1["landed_tyiyn"].as_i64().unwrap(), 50_000 - fee1);
+    assert_eq!(fee1, r1["revenue"]["bank_fee_tyiyn"].as_i64().unwrap());
+    let v1 = &r1["revenue"];
+    assert_eq!(amount_of(&v1["profit"], "cash_diff"), -1_000);
+    assert_eq!(amount_of(&v1["profit"], "expenses"), -3_000);
+    assert_eq!(amount_of(&v1["profit"], "bank_fee"), -fee1);
+    // Недостачу удержали с кассира: начисление −1 000 с компенсирует её в прибыли (ADR-065).
+    let payroll1 = amount_of(&v1["profit"], "payroll");
+    let gross1 = v1["gross_tyiyn"].as_i64().unwrap();
+    assert_eq!(gross1, 150_000 - 3_000);
+    assert_eq!(
+        v1["net_profit_tyiyn"].as_i64().unwrap(),
+        gross1 + payroll1 - fee1 - 3_000 - 1_000
+    );
+    assert_eq!(
+        signed_sum(&v1["profit"]),
+        v1["net_profit_tyiyn"].as_i64().unwrap()
+    );
+
+    // Две смены за день, чеков вне смен нет, оклада нет: сумма чистых — чистая прибыль дня.
+    let r2 = get(&app, &owner, &format!("/api/v1/shifts/{s2}/report")).await;
+    let day = get(&app, &owner, "/api/v1/reports/profit").await;
+    assert_eq!(day["from"], day["to"]);
+    assert_eq!(
+        v1["net_profit_tyiyn"].as_i64().unwrap()
+            + r2["revenue"]["net_profit_tyiyn"].as_i64().unwrap(),
+        day["totals"]["net_tyiyn"].as_i64().unwrap(),
+        "смена 1: {}\nсмена 2: {}\nдень: {}",
+        v1["profit"],
+        r2["revenue"]["profit"],
+        day["totals"]
+    );
+}
+
+/// Настройка «печатать чек смены после сдачи кассы» (SPEC-36 §10): по умолчанию включена, меняет
+/// только владелец, читают все.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn shift_print_setting(pool: PgPool) {
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    assert_eq!(
+        get(&app, &admin, "/api/v1/settings/shift").await,
+        json!({ "print_on_close": true })
+    );
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/shift",
+        Some(&admin),
+        Some(json!({ "print_on_close": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, out) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/shift",
+        Some(&owner),
+        Some(json!({ "print_on_close": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(
+        get(&app, &admin, "/api/v1/settings/shift").await,
+        json!({ "print_on_close": false })
+    );
+}

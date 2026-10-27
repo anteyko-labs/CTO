@@ -7,7 +7,9 @@ import { Pager, usePager } from '../components/Pager'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get } from '../lib/api'
 import { formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
-import { useLoad } from '../lib/hooks'
+import { useAction, useLoad } from '../lib/hooks'
+import { ShiftBank } from '../components/ShiftBank'
+import { printShift } from '../components/shiftPrint'
 import {
   CANCEL_REASONS,
   TABS,
@@ -77,6 +79,7 @@ export default function ShiftReport() {
   const tab = tabOf(params.get('tab'))
   const setTab = (t: TabKey) => setParams(t === 'overview' ? {} : { tab: t }, { replace: true })
   const r = useLoad(() => get<Report>(`/shifts/${id}/report`), [id])
+  const printing = useAction()
   const data = r.data
 
   if (r.loading && !data) return <Loading />
@@ -117,9 +120,15 @@ export default function ShiftReport() {
           </span>
         }
         actions={
-          <Button variant="secondary" className="no-print" onClick={() => window.print()}>
-            Печать
-          </Button>
+          <span className="no-print flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => window.print()}>
+              Печать
+            </Button>
+            {/* Чек смены 80 мм (SPEC-36 §10) — рядом с печатью отчёта на A4. */}
+            <Button variant="secondary" disabled={printing.busy} onClick={() => void printing.run(() => printShift(s.id))}>
+              Печать чека смены
+            </Button>
+          </span>
         }
       />
 
@@ -142,6 +151,7 @@ export default function ShiftReport() {
           </button>
         ))}
       </div>
+      <ErrorBox error={printing.error} />
 
       {tab === 'overview' && <Overview data={data} />}
       {tab === 'sales' && <SalesTab data={data} />}
@@ -162,9 +172,18 @@ function Overview({ data }: { data: Report }) {
   const owner = data.owner_view && v.gross_tyiyn !== undefined
   return (
     <div className="flex flex-col gap-4">
-      <div className={`grid grid-cols-2 gap-3 ${owner ? 'lg:grid-cols-4' : 'lg:grid-cols-3'}`}>
+      <div className={`grid grid-cols-2 gap-3 ${owner ? 'lg:grid-cols-5' : 'lg:grid-cols-3'}`}>
         <Tile label="Выручка за смену" value={formatSom(v.net_tyiyn)} hint={`${v.sales_count} ${plural(v.sales_count, ['чек', 'чека', 'чеков'])}`} testId="tile-revenue" />
         {owner && <Tile label="Валовая прибыль" value={formatSom(v.gross_tyiyn ?? 0)} tone="green" testId="tile-gross" />}
+        {owner && v.net_profit_tyiyn !== undefined && (
+          <Tile
+            label="Чистая прибыль"
+            value={formatSom(v.net_profit_tyiyn)}
+            tone={v.net_profit_tyiyn < 0 ? 'rose' : 'green'}
+            hint="без оклада"
+            testId="tile-net-profit"
+          />
+        )}
         <Tile label={c.counted_tyiyn === null ? 'Должно быть в кассе' : 'Пересчитали при закрытии'} value={formatSom(c.counted_tyiyn ?? c.expected_tyiyn)} hint={c.counted_tyiyn === null ? 'смена идёт' : `должно было быть ${formatSom(c.expected_tyiyn)}`} />
         <Tile
           label="Разница"
@@ -249,15 +268,10 @@ function Overview({ data }: { data: Report }) {
               <Row key={m.method} label={methodName(m.method)} value={m.amount_tyiyn} sub testId={`method-${m.method}`} />
             ))}
             {v.rest_tyiyn !== 0 && <Row label="Исправления и прочее" value={v.rest_tyiyn} sub />}
-            {(data.shift.bank_split ?? []).length > 1 && (
-              <>
-                <div className="mt-2 text-xs text-slate-500">Безнал по счетам:</div>
-                {(data.shift.bank_split ?? []).map((b) => (
-                  <Row key={b.account_id} label={`на «${b.name}»`} value={b.total_tyiyn} sub />
-                ))}
-              </>
-            )}
-            {v.bank_fee_tyiyn > 0 && <Row label="Комиссия банка" value={v.bank_fee_tyiyn} sign="−" sub />}
+            {/* Безнал по счетам — всегда, даже при одном счёте; по движениям счетов (SPEC-36 §9). */}
+            <div className="mt-3">
+              <ShiftBank list={data.shift.bank_split ?? []} />
+            </div>
             {owner && (
               <div className="mt-3 rounded-md bg-emerald-50 px-3 py-2" data-testid="gross">
                 <Row label="Себестоимость проданного" value={v.cost_sold_tyiyn ?? 0} sub />
@@ -269,6 +283,22 @@ function Overview({ data }: { data: Report }) {
                     Строк без цены закупки: {v.cost_unknown_lines} — их себестоимость пока ноль, укажите цену товара.
                   </div>
                 )}
+              </div>
+            )}
+            {owner && v.net_profit_tyiyn !== undefined && (
+              // Чистая прибыль за смену (ADR-120): формула прибыли дня по времени смены.
+              <div className="mt-3 rounded-md bg-sky-50 px-3 py-2" data-testid="net-profit">
+                {/* Валовая — строкой выше; здесь — что из неё вычли или прибавили. */}
+                {(v.profit ?? [])
+                  .filter((l) => l.key !== 'gross')
+                  .map((l) => (
+                    <Row key={l.key} label={l.label} value={Math.abs(l.amount_tyiyn)} sign={l.amount_tyiyn < 0 ? '−' : '+'} sub testId={`profit-${l.key}`} />
+                  ))}
+                <Row label="Чистая прибыль за смену" value={v.net_profit_tyiyn} strong tone={v.net_profit_tyiyn < 0 ? 'rose' : 'green'} testId="net-profit-total" />
+                <div className="pt-1 text-xs text-slate-500">
+                  Без оклада — оклад начисляется в конце месяца. Чеки вне смен в смены не входят, поэтому сумма по сменам может не
+                  совпасть с прибылью дня.
+                </div>
               </div>
             )}
           </div>
