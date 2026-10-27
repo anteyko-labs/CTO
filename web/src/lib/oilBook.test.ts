@@ -124,12 +124,16 @@ describe('чек книжки после чека — только этот че
       slot('antifreeze', 'Антифриз', '2026-10-26', 280_000, '2028-10-26'),
     ],
   }
-  const plain = (html: string) => html.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+  const plain = (html: string | null) => (html ?? '').replace(/<style[\s\S]*?<\/style>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
   it('строки этого чека', () => {
     expect(slotsOfSale(book, 's8').map((n) => n.slot)).toEqual(['oil', 'oil_filter', 'antifreeze'])
     // Записи чека в книжке нет — строк чека тоже нет.
     expect(slotsOfSale(book, 'другой')).toEqual([])
+  })
+
+  it('после чека без записи книжки — не печатаем, прошлых замен нет (ADR-130)', async () => {
+    expect(await oilBookHtml(book, { link: null, saleId: 'другой' })).toBeNull()
   })
 
   it('залито и следующая замена — по жидкостям, с товаром; без фильтров, мастера, рекомендаций и истории', async () => {

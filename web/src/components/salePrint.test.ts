@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { bookHtml, saleHtml } from './salePrint'
 import type { Sale } from '../lib/types'
+import { formatSomExact } from '../lib/format'
 
 const sale = (over: Partial<Sale>): Sale =>
   ({
@@ -57,5 +58,25 @@ describe('печать чека «В сервис» с масляной книж
     expect(bookHtml(sale({ book: null }))).toBe('')
     expect(bookHtml(sale({ book, sale_type: 'takeaway' }))).toBe('')
     expect(bookHtml(sale({ book, kind: 'return' }))).toBe('')
+  })
+})
+
+describe('строки товарного чека (ADR-130)', () => {
+  const l = (over: Record<string, unknown>) => ({ name: '', kind: 'piece', qty: 1, unit_price_tyiyn: 0, amount_tyiyn: 0, container_ml: null, withheld_for: null, ...over })
+  it('услуга — название и сумма одной строкой, «× цена» только при количестве больше одного; товар — как был', () => {
+    const lines = [
+      l({ name: 'Замена масла', kind: 'service', qty: 1, unit_price_tyiyn: 50000, amount_tyiyn: 50000 }),
+      l({ name: 'Мойка', kind: 'service', qty: 2, unit_price_tyiyn: 30000, amount_tyiyn: 60000 }),
+      l({ name: 'Фильтр W712', kind: 'piece', qty: 1, unit_price_tyiyn: 70000, amount_tyiyn: 70000 }),
+    ]
+    const html = saleHtml(sale({ lines } as unknown as Partial<Sale>), null)
+    expect(html).toContain(`<tr><td>Замена масла</td><td class="r">${formatSomExact(50000)}</td></tr>`)
+    expect(html).toContain(`<tr><td>Мойка</td><td class="r">${formatSomExact(60000)}</td></tr>`)
+    const som = (t: number) => plain(formatSomExact(t))
+    const t = plain(html)
+    expect(t).toContain(`2 × ${som(30000)}`)
+    expect(t).not.toContain(`1 × ${som(50000)}`)
+    expect(t).not.toContain('усл.')
+    expect(t).toContain(`Фильтр W712 1 шт × ${som(70000)} ${som(70000)}`)
   })
 })

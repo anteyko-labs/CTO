@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cartGoods, cartSources, extraChoices, extraSlots, filtersNote, goodShort, nextPayload, nextRows, nextTooLow, oilChangeHint, productSlot, pruneNext, receiptBook, snapshotCategories, type CategoryBook } from './nextChange'
+import { cartGoods, cartSources, extraChoices, extraSlots, filtersNote, goodShort, goodSlot, nameSlot, nextPayload, nextRows, nextTooLow, oilChangeHint, productSlot, pruneNext, receiptBook, snapshotCategories, type CategoryBook } from './nextChange'
 import type { Product, Service } from './types'
 
 const svc = (id: string, name: string, slot: Service['book_slot'], km: number | null, days: number | null = 365): Service => ({
@@ -251,5 +251,24 @@ describe('следующая замена в чеке (SPEC-34)', () => {
       'Totachi 5W-30 4 л × 1 кан.',
       'Totachi 5W-30 розлив × 0,5 л',
     ])
+  })
+
+  it('товар категории без строки книжки — жидкость по названию, как на сервере (ADR-130)', () => {
+    expect(nameSlot('Антифриз Sintec G12 красный 5 кг')).toBe('antifreeze')
+    expect(nameSlot('ТОСОЛ А-40М')).toBe('antifreeze')
+    expect(nameSlot('Охлаждающая жидкость Felix')).toBe('antifreeze')
+    expect(nameSlot('Тормозная жидкость DOT-4')).toBe('brake_fluid')
+    expect(nameSlot('Свеча NGK')).toBeNull()
+    // Строка категории важнее названия; «прочее» — не жидкость.
+    expect(goodSlot(cat('c-misc', 'other'), { name: 'Антифриз G12', attrs: {} })).toBe('other')
+    expect(goodSlot(undefined, { name: 'Антифриз G12', attrs: {} })).toBeNull()
+    // Рабочая база: «Антифриз и жидкости» без строки книжки + услуга «Замена антифриза».
+    const sintec = product('p20', 'Антифриз Sintec G12 красный 5 кг', 'c-plugs')
+    const lines = [{ product: sintec, kind: 'piece', qtyText: '1' }, { service: anti }]
+    const goods = cartGoods(lines, categories)
+    expect(goods.map((g) => g.slot)).toEqual(['antifreeze'])
+    const rows = nextRows({ sources: cartSources(lines, categories), extra: [], edits: {}, mileage: '120000', unit: 'km', own: {} })
+    const b = receiptBook({ brand: '', model: '', plate: '1' }, '120000', 'km', rows, '2026-10-27', goods)
+    expect(b.filled).toEqual([{ slot: 'antifreeze', label: 'Антифриз', product: 'Антифриз Sintec G12 красный 5 кг · 1 шт' }])
   })
 })

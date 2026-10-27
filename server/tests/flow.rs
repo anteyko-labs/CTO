@@ -11132,7 +11132,7 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
         "{err:?}"
     );
     // Масло — 225 000, антифриз — 250 000, мойка («прочее») — не в книжку, тормозная жидкость
-    // (её в чеке нет) — строкой «+ ещё», но пустой: не напоминать.
+    // (её в чеке нет) — не пишется (ADR-130).
     let sale = sell(
         &pool,
         &w.owner,
@@ -11187,8 +11187,7 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
     let slot = |s: &str| b.slots.iter().find(|n| n.slot == s).cloned();
     assert_eq!(slot("oil").unwrap().next_km, Some(225_000));
     assert_eq!(slot("antifreeze").unwrap().next_mileage, Some(250_000));
-    let brake_next = slot("brake_fluid").unwrap();
-    assert_eq!((brake_next.next_km, brake_next.next_date), (None, None));
+    assert!(slot("brake_fluid").is_none());
     assert!(slot("other").is_none());
     assert_eq!(b.next_km, Some(225_000));
     // Бот клиента: строка замены с целью.
@@ -11425,6 +11424,100 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
         )),
         "{lines:?}"
     );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn fluid_by_product_name_and_no_target_without_line(pool: PgPool) {
+    // ADR-130: товар категории без строки книжки получает строку по названию — «Залито» в чеке
+    // книжки показывает антифриз, а не «жидкость клиента». Цель по услуге, которой в чеке нет,
+    // сервер не пишет (запас для кассы до 26.10.2026 снят).
+    use avtodom_server::api::oil_book::books;
+    let w = seed(&pool).await;
+    let antifreeze = book_service(&pool, &w, "Замена антифриза", "antifreeze").await;
+    let brake = book_service(&pool, &w, "Замена тормозной жидкости", "brake_fluid").await;
+    let (cat, sintec) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query("insert into categories (id, name, kind, book_slot) values ($1, 'Антифриз и жидкости', 'other', null)")
+        .bind(cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into products (id, category_id, name, unit) values ($1, $2, 'Антифриз Sintec G12 красный 5 кг', 'piece')")
+        .bind(sintec)
+        .bind(cat)
+        .execute(&pool)
+        .await
+        .unwrap();
+    receive(&pool, &w.admin, sintec, 2, 60_000).await;
+    let client = service_client(&pool, &w).await;
+    let mut req = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", sintec, 1, 90_000),
+                kind_line(antifreeze, 1, 50_000),
+            ],
+            cash(140_000),
+        ),
+    );
+    req.mileage_km = None;
+    req.mileage = Some(120_000);
+    req.next_changes = vec![
+        next_change(Some(antifreeze), None, Some(180_000)),
+        // Услуги тормозной в чеке нет — строки книжки по ней не будет.
+        next_change(Some(brake), None, Some(160_000)),
+    ];
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    let book = sale.book.unwrap();
+    let filled: Vec<(&str, &str)> = book
+        .filled
+        .iter()
+        .map(|f| (f.slot.as_str(), f.product.as_str()))
+        .collect();
+    assert_eq!(
+        filled,
+        vec![("antifreeze", "Антифриз Sintec G12 красный 5 кг · 1 шт")]
+    );
+    let printed: Vec<(&str, i32)> = book
+        .lines
+        .iter()
+        .map(|l| (l.slot.as_str(), l.next_mileage))
+        .collect();
+    assert_eq!(printed, vec![("antifreeze", 180_000)]);
+    let mut conn = pool.acquire().await.unwrap();
+    let b = books(&mut conn, Some(client.0), None)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let slots: Vec<(&str, Option<&str>)> = b.records[0]
+        .lines
+        .iter()
+        .map(|l| (l.slot.as_str(), l.service.as_deref()))
+        .collect();
+    assert_eq!(slots, vec![("antifreeze", Some("Замена антифриза"))]);
+    assert!(b.slots.iter().all(|n| n.slot != "brake_fluid"));
+    drop(conn);
+
+    // Тот же антифриз с заменой масла, без услуги и цели по антифризу — доливка: строки антифриза
+    // в книжке нет (ADR-117).
+    let req = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("piece", sintec, 1, 90_000),
+                kind_line(w.service, 1, 20_000),
+            ],
+            cash(110_000),
+        ),
+    );
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    let book = sale.book.unwrap();
+    assert!(book.filled.iter().all(|f| f.slot != "antifreeze"));
+    assert!(book.filled.iter().any(|f| f.slot == "oil"));
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

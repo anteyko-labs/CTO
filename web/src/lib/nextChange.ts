@@ -113,6 +113,23 @@ export function productSlot(categorySlot: string | null | undefined, filterType:
   return slot
 }
 
+/** Строка жидкости по названию товара (ADR-130) — как `oil_book::slot_by_product_name`: «антифриз»,
+ *  «тосол», «охлажда…» — антифриз; «тормозн…» — тормозная жидкость; иначе null. */
+export function nameSlot(name: string): BookSlot | null {
+  const n = name.toLowerCase()
+  if (['антифриз', 'тосол', 'охлажда'].some((w) => n.includes(w))) return 'antifreeze'
+  if (n.includes('тормозн')) return 'brake_fluid'
+  return null
+}
+
+/** Строка книжки товара чека: по категории (`productSlot`), а у категории без строки (не масла, не
+ *  фильтра) — по названию товара (ADR-130). Категории нет (не загружены) — null. */
+export function goodSlot(category: Pick<CategoryBook, 'book_slot'> | undefined, p: Pick<Product, 'name' | 'attrs'>): BookSlot | null {
+  if (!category) return null
+  if (category.book_slot === 'none') return nameSlot(p.name)
+  return productSlot(category.book_slot, p.attrs?.filter_type)
+}
+
 /** Категории из снимка кассы — без связи. У снимка до 26.10.2026 строк книжки нет: null, как будто
  *  категории не загружены (товары не предлагаются, черновик не трогается). */
 export function snapshotCategories(
@@ -151,7 +168,7 @@ export function cartSources(lines: readonly CartPosition[], categories: readonly
     const p = l.product
     if (!p || l.gift) continue
     const cat = categories?.find((c) => c.id === p.category_id)
-    const slot = productSlot(cat?.book_slot, p.attrs?.filter_type)
+    const slot = goodSlot(cat, p)
     if (!cat || !slot || slot === 'other') continue
     // Интервал категории этой строки, иначе строки по умолчанию; дни — те же, что возьмёт сервер.
     const [km, days] = categoryInterval(categories ?? [], slot, cat) ?? SLOT_DEFAULT[slot] ?? [null, null]
@@ -166,7 +183,7 @@ export function cartGoods(lines: readonly CartPosition[], categories: readonly C
   for (const l of lines) {
     const p = l.product
     if (!p || l.gift) continue
-    const slot = productSlot(categories?.find((c) => c.id === p.category_id)?.book_slot, p.attrs?.filter_type)
+    const slot = goodSlot(categories?.find((c) => c.id === p.category_id), p)
     if (!slot || slot === 'other') continue
     out.push({ slot, name: productTitle(p), kind: l.kind ?? 'piece', qty: (l.qtyText ?? '1').trim(), containerMl: p.container_ml ?? null })
   }

@@ -145,6 +145,23 @@ pub fn product_slot(category_slot: &str, filter_type: Option<&str>) -> Option<&'
     Some(by_category)
 }
 
+/// Строка книжки жидкости по названию товара (ADR-130): у товара категории без строки книжки
+/// (и не масла, не фильтра) «антифриз», «тосол», «охлажда…» — антифриз, «тормозн…» — тормозная
+/// жидкость; иначе `None`. Касса — то же правило (`nextChange.ts`, `nameSlot`).
+pub fn slot_by_product_name(name: &str) -> Option<&'static str> {
+    let n = name.to_lowercase();
+    if ["антифриз", "тосол", "охлажда"]
+        .iter()
+        .any(|w| n.contains(w))
+    {
+        Some("antifreeze")
+    } else if n.contains("тормозн") {
+        Some("brake_fluid")
+    } else {
+        None
+    }
+}
+
 /// Строка замены: что сделали по одной строке книжки.
 #[derive(Serialize, Clone, Default)]
 pub struct BookLine {
@@ -294,7 +311,8 @@ pub async fn record_from_sale(
     targets: &[NextTarget],
 ) -> AppResult<()> {
     let rows = sqlx::query!(
-        // Строка книжки категории; не задана — по виду: масла, фильтры (как было).
+        // Строка книжки категории; не задана — по виду: масла, фильтры (как было); категория без
+        // строки — по названию товара (ADR-130).
         r#"select p.name, c.id as category_id,
                   coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                   p.attrs ->> 'filter_type' as filter_type, l.kind, l.qty, p.container_ml
@@ -302,7 +320,6 @@ pub async fn record_from_sale(
            join products p on p.id = l.product_id
            join categories c on c.id = p.category_id
            where l.sale_id = $1 and not l.gift
-             and coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) <> 'none'
            order by l.line_no"#,
         sale_id
     )
@@ -311,7 +328,12 @@ pub async fn record_from_sale(
     let mut lines: Vec<BookLine> = rows
         .iter()
         .filter_map(|r| {
-            product_slot(&r.book_slot, r.filter_type.as_deref()).map(|slot| {
+            let slot = if r.book_slot == "none" {
+                slot_by_product_name(&r.name)
+            } else {
+                product_slot(&r.book_slot, r.filter_type.as_deref())
+            };
+            slot.map(|slot| {
                 BookLine::plain(
                     slot,
                     format!("{} · {}", r.name, qty_text(&r.kind, r.qty, r.container_ml)),
@@ -365,32 +387,17 @@ pub async fn record_from_sale(
     .collect::<Vec<_>>();
     let mut seen: Vec<&str> = Vec::new();
     for t in targets {
-        let found = lines.iter().position(|l| l.slot == t.slot);
-        // Цель без услуги — строка книжки товара этого чека: «+ ещё строку» предлагает только
-        // позиции чека (SPEC-34 §2, уточнение 26.10.2026). Такой строки в чеке нет — цель не
-        // пишется: строки, которой не было в чеке, в книжке не появится.
-        if seen.contains(&t.slot.as_str()) || (found.is_none() && t.service_id.is_none()) {
+        // Цель — только по строке книжки этого чека (товар или услуга): «+ ещё строку» предлагает
+        // только позиции чека (SPEC-34 §2). Такой строки в чеке нет — цель не пишется, даже с
+        // услугой (запас для кассы до 26.10.2026 снят, ADR-130).
+        let Some(at) = lines.iter().position(|l| l.slot == t.slot) else {
+            continue;
+        };
+        if seen.contains(&t.slot.as_str()) {
             continue;
         }
         seen.push(&t.slot);
         changed.push(t.slot.clone());
-        let at = match found {
-            Some(i) => i,
-            None => {
-                // Услуги в чеке нет (касса до 26.10.2026 предлагала «+ ещё» из справочника услуг,
-                // такой чек может прийти из очереди) — строка с названием услуги.
-                let text = t
-                    .service_name
-                    .clone()
-                    .unwrap_or_else(|| slot_label(&t.slot).to_string());
-                lines.push(BookLine {
-                    service_id: t.service_id,
-                    service: t.service_name.clone(),
-                    ..BookLine::plain(&t.slot, text, None)
-                });
-                lines.len() - 1
-            }
-        };
         let days = match t.next {
             None => None,
             Some(_) => {
@@ -1569,6 +1576,20 @@ async fn edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fluid_slot_by_product_name() {
+        for (name, slot) in [
+            ("Антифриз Sintec G12 красный 5 кг", Some("antifreeze")),
+            ("ТОСОЛ А-40М 1 кг", Some("antifreeze")),
+            ("Охлаждающая жидкость Felix", Some("antifreeze")),
+            ("Тормозная жидкость DOT-4 0,5 л", Some("brake_fluid")),
+            ("Омыватель стекла -20", None),
+            ("Щётка стеклоочистителя", None),
+        ] {
+            assert_eq!(slot_by_product_name(name), slot, "{name}");
+        }
+    }
 
     #[test]
     fn service_slot_by_its_name() {

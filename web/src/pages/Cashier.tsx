@@ -1259,8 +1259,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       const client = party?.name ?? null
       void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
         .then((book) => {
+          // Записи этого чека нет — книжку после чека не показываем и не печатаем (ADR-130).
+          if (!book.records.some((r) => r.sale_id === sale.id)) return
           setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
-          if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
+          return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
         })
         .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
     }
@@ -2041,7 +2043,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <Button variant="secondary" onClick={() => printSale(done.sale, done.change)}>
                   Печать чека
                 </Button>
-                {done.book && (
+                {done.book?.records.some((r) => r.sale_id === done.sale.id) && (
                   <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id })}>
                     Печать книжки
                   </Button>

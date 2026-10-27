@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.name, c.id as category_id,\n                  coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                  p.attrs ->> 'filter_type' as filter_type, l.kind, l.qty, p.container_ml\n           from sale_lines l\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id\n           where l.sale_id = $1 and not l.gift\n             and coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) <> 'none'\n           order by l.line_no",
+  "query": "select p.name, c.id as category_id,\n                  coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                  p.attrs ->> 'filter_type' as filter_type, l.kind, l.qty, p.container_ml\n           from sale_lines l\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id\n           where l.sale_id = $1 and not l.gift\n           order by l.line_no",
   "describe": {
     "columns": [
       {
@@ -54,5 +54,5 @@
       true
     ]
   },
-  "hash": "b4cb79c47cf95993b49d720c02d7df31a223cafdcb52127726ef9396390c2d03"
+  "hash": "990e94edc519b1f045304bc3698275b384866d2b2cf373bf1865a505cfa65f8c"
 }

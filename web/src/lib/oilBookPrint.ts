@@ -81,13 +81,16 @@ async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link:
   </body></html>`
 }
 
-/** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); без него — выписка. */
+/** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); записи этого чека нет —
+ *  null, после чека прошлые замены не печатаются (ADR-130). Без `saleId` — выписка. */
 export async function oilBookHtml(
   b: VehicleBook,
   opts: { client?: string | null; master?: string | null; link: string | null; saleId?: string | null },
-): Promise<string> {
-  const own = opts.saleId ? b.records.find((r) => r.sale_id === opts.saleId) : undefined
-  if (opts.saleId && own) return saleCheckHtml(b, own, opts.saleId, opts.link)
+): Promise<string | null> {
+  if (opts.saleId) {
+    const own = b.records.find((r) => r.sale_id === opts.saleId)
+    return own ? saleCheckHtml(b, own, opts.saleId, opts.link) : null
+  }
   const last = b.records[0]
   // Следующая замена по каждой строке книжки (SPEC-27), масло первым; только пробег (ADR-115).
   const next = slotsWithNext(b)
@@ -124,5 +127,6 @@ export async function oilBookHtml(
 
 /** Печать на чековом принтере через диалог браузера; `saleId` — после этого чека (ADR-116). */
 export async function printOilBook(b: VehicleBook, opts: { client?: string | null; master?: string | null; saleId?: string | null } = {}): Promise<void> {
-  printInFrame(await oilBookHtml(b, { ...opts, link: await botLink() }))
+  const html = await oilBookHtml(b, { ...opts, link: await botLink() })
+  if (html) printInFrame(html)
 }

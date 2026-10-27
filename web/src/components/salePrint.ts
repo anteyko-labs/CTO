@@ -33,8 +33,13 @@ export function saleHtml(sale: Sale, change: number | null): string {
     .join('')
   const rows = sale.lines
     .filter((l) => l.withheld_for == null)
-    .map(
-      (l) => `<tr><td colspan="2">${esc(l.name)}</td></tr>
+    .map((l) =>
+      // Услуга — название и сумма одной строкой; «N × цена» — только при количестве больше одного (ADR-130).
+      l.kind === 'service'
+        ? `<tr><td>${esc(l.name)}</td><td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>${
+            l.qty > 1 ? `<tr><td class="muted" colspan="2">${l.qty} × ${esc(formatSomExact(l.unit_price_tyiyn))}</td></tr>` : ''
+          }`
+        : `<tr><td colspan="2">${esc(l.name)}</td></tr>
       <tr><td class="muted">${esc(lineQtyText(l))} × ${esc(formatSomExact(l.unit_price_tyiyn))}${l.kind === 'pour' ? '/л' : l.kind === 'weight' ? '/кг' : ''}</td>
       <td class="r">${esc(formatSomExact(l.amount_tyiyn))}</td></tr>`,
     )
