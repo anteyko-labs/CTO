@@ -87,7 +87,7 @@ export const draftFileUrl = (id: string): string => `/api/v1/receipt-drafts/${id
 export function suggestFor(
   line: Pick<DraftLine, 'qty_milli' | 'liters' | 'price_tyiyn' | 'sum_tyiyn' | 'quantity' | 'unit'>,
   product: Pick<Product, 'unit' | 'container_ml'>,
-): { count: number | null; each: number | null; note: string | null } {
+): { count: number | null; each: number | null; note: string | null; measure?: 'l' | 'kg' } {
   const notes: string[] = []
   const q = line.qty_milli
   let count: number | null = null
@@ -100,9 +100,15 @@ export function suggestFor(
       each = line.price_tyiyn === null ? null : divRound(line.price_tyiyn * c, 1000)
       notes.push(`${formatLiters(q)} = ${count} кан. по ${formatLiters(c)}`)
     } else {
-      each = null
-      notes.push(`${formatLiters(q)} не делится на канистры по ${formatLiters(c)} — укажите число канистр`)
+      // Не делится на канистры — строка в литрах с ценой литра из накладной (SPEC-36 §13).
+      if (each === null && line.sum_tyiyn !== null) each = divRound(line.sum_tyiyn * 1000, q)
+      notes.push(`${formatLiters(q)} не делится на канистры по ${formatLiters(c)} — строка в литрах, цена за литр`)
+      return { count: q, each, note: notes.join('; '), measure: 'l' }
     }
+  } else if (product.unit === 'g' && q !== null) {
+    // На вес: количество — килограммы до 3 знаков, цена — за кг (SPEC-36 §13).
+    if (each === null && line.sum_tyiyn !== null && q > 0) each = divRound(line.sum_tyiyn * 1000, q)
+    return { count: q, each, note: null, measure: 'kg' }
   } else if (q !== null && q % 1000 === 0) {
     count = q / 1000
   } else if (q !== null) {

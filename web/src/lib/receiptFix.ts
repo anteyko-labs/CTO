@@ -1,10 +1,11 @@
 // Исправление прихода владельцем (SPEC-29 §24): исходная накладная с сервера → поля экрана
 // «Новый приход». Экран тот же; здесь только перевод строк и расчёта в его поля.
 import { divRound } from './money'
-import { somInput } from './format'
-import { isOil, withSalePrice, type PriceFields } from './receiptLines'
+import { litersInput, somInput } from './format'
+import { isOil, lineCalc, withSalePrice, type PriceFields, type QtyMode } from './receiptLines'
 import type { PayMode } from './receiptPay'
 import type { Product } from './types'
+import { kgInput } from './units'
 
 /** Накладная в виде запроса проведения — так её отдаёт `GET /corrections/draft/receipt/{id}`. */
 export interface ReceiptDraftDoc {
@@ -21,6 +22,7 @@ export interface ReceiptFixLine extends PriceFields {
   key: string
   product: Product
   count: string
+  mode?: QtyMode
 }
 
 export interface ReceiptFixState {
@@ -31,14 +33,27 @@ export interface ReceiptFixState {
   partText: string
   paidFrom: string
   lines: ReceiptFixLine[]
-  /** Строки, сумма которых не делится на количество: цена за штуку округлена — проверьте. */
+  /** Строки, сумма которых не делится на количество: цена за единицу округлена — проверьте. */
   rounded: string[]
 }
 
 /**
- * Поля прихода из исходной накладной. Масло — канистрами, цена — за штуку или канистру (сумма
- * строки ÷ количество); цена продажи — поставленная этим приходом, иначе текущая цена товара.
- * Карточки нет или масло не целыми канистрами — ошибка: строку нельзя потерять.
+ * Количество и цена строки в полях экрана: штуки и канистры — целым числом, цена за штуку или
+ * канистру (сумма ÷ количество); масло не целыми канистрами — литрами с ценой литра (SPEC-36 §13);
+ * на вес — кг с ценой за кг.
+ */
+function fixFields(p: Product, qty: number, cost: number): { count: string; per: number; mode?: QtyMode } {
+  if (p.unit === 'g') return { count: kgInput(qty), per: divRound(cost * 1000, qty) }
+  if (!isOil(p)) return { count: String(qty), per: divRound(cost, qty) }
+  if (qty % p.container_ml !== 0) return { count: litersInput(qty), per: divRound(cost * 1000, qty), mode: 'l' }
+  const n = qty / p.container_ml
+  return { count: String(n), per: divRound(cost, n), mode: 'can' }
+}
+
+/**
+ * Поля прихода из исходной накладной; цена продажи — поставленная этим приходом, иначе текущая цена
+ * товара. Сумма строки с округлённой ценой за единицу не сходится с исходной — строка в `rounded`.
+ * Карточки нет — ошибка: строку нельзя потерять.
  */
 export function receiptFixState(doc: ReceiptDraftDoc, products: Map<string, Product>, nextKey: () => string): ReceiptFixState {
   const lines: ReceiptFixLine[] = []
@@ -48,14 +63,19 @@ export function receiptFixState(doc: ReceiptDraftDoc, products: Map<string, Prod
     // накладная сторнировалась бы целиком (проверка 20.10.2026).
     const product = products.get(l.product_id)
     if (!product) throw new Error('Не удалось загрузить товар строки — обновите страницу и попробуйте ещё раз')
-    if (isOil(product) && l.qty % product.container_ml !== 0) {
-      throw new Error(`«${product.name}»: в накладной не целое число канистр — исправьте сторно и новым приходом`)
-    }
-    const n = isOil(product) ? l.qty / product.container_ml : l.qty
-    const per = divRound(l.cost_tyiyn, n)
-    if (per * n !== l.cost_tyiyn) rounded.push(product.name)
+    const f = fixFields(product, l.qty, l.cost_tyiyn)
+    const tare = f.mode === 'l' ? (product.container_ml ?? undefined) : undefined
     const sale = l.sale_price_tyiyn ?? product.sale_price_tyiyn
-    lines.push({ key: nextKey(), product, count: String(n), ...withSalePrice({ price: somInput(per), salePrice: '', markup: '' }, somInput(sale)) })
+    const line: ReceiptFixLine = {
+      key: nextKey(),
+      product,
+      count: f.count,
+      ...(f.mode ? { mode: f.mode } : {}),
+      ...withSalePrice({ price: somInput(f.per), salePrice: '', markup: '' }, somInput(sale), tare),
+    }
+    const c = lineCalc(line)
+    if (typeof c === 'string' || c.cost !== l.cost_tyiyn) rounded.push(product.name)
+    lines.push(line)
   }
   return {
     supplierId: doc.supplier_id ?? '',

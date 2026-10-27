@@ -8,7 +8,9 @@ import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters } from '../lib/format'
+import { OilCountInput, type OilCount } from '../components/OilCountInput'
+import { formatDateTime, formatSom, litersInput, parseLiters } from '../lib/format'
+import { countText, kgInput, oilFields, parseKg, parseOil, viscosityFromName, viscosityKey } from '../lib/units'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import type { Category, Product } from '../lib/types'
@@ -38,6 +40,8 @@ interface Line {
   expected_qty: number
   counted_qty: number | null
   value_delta_tyiyn?: number
+  /** Вязкость масла из карточки (SPEC-36 §13). */
+  viscosity?: string | null
 }
 
 interface RevisionOut {
@@ -67,15 +71,27 @@ const STATUS: Record<Head['status'], [string, 'amber' | 'green' | 'slate']> = {
   cancelled: ['отменена', 'slate'],
 }
 
-const qtyText = (l: Pick<Line, 'unit'>, q: number) => (l.unit === 'ml' ? formatLiters(q) : l.unit === 'g' ? formatKg(q) : `${q} шт`)
+/** Масло в таре: вводится «кан. + л» (SPEC-36 §13). */
+const oilTare = (l: Pick<Line, 'unit' | 'container_ml'>): number | null => (l.unit === 'ml' && l.container_ml ? l.container_ml : null)
 
-/** Поле пересчёта: штуки целым числом, масло литрами с запятой. */
+/** Поле пересчёта: штуки целым числом, масло без тары литрами, на вес — кг; все дробные — до 3 знаков. */
 function parseCount(l: Line, text: string): number | null {
   const t = text.trim()
   if (!t) return null
-  // Масло — литрами, аккумуляторы на вес — килограммами; оба с тремя знаками.
-  if (l.unit === 'ml' || l.unit === 'g') return parseLiters(t)
+  if (l.unit === 'ml') return parseLiters(t)
+  if (l.unit === 'g') return parseKg(t)
   return /^\d+$/.test(t) ? Number(t) : null
+}
+
+/** Посчитанное в поле: литры или кг — с запятой; граммы в поле не показываются (ошибка ×1000). */
+const countInput = (l: Line, q: number): string => (l.unit === 'ml' ? litersInput(q) : l.unit === 'g' ? kgInput(q) : String(q))
+
+/** Вязкость строки: из карточки; у масла без неё — из названия, с пометкой. */
+function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string; fromName: boolean } | null {
+  if (l.viscosity) return { v: l.viscosity, fromName: false }
+  if (l.unit !== 'ml') return null
+  const v = viscosityFromName(l.name)
+  return v ? { v, fromName: true } : null
 }
 
 function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) {
@@ -83,6 +99,10 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   const [scan, setScan] = useState('')
   const [filter, setFilter] = useState('')
   const [edits, setEdits] = useState<Record<string, string>>({})
+  /** Масло в таре: поля «кан.» и «+ л» строки, пока их правят. */
+  const [oilEdits, setOilEdits] = useState<Record<string, OilCount>>({})
+  /** Отбор по вязкости (ключ `viscosityKey`), пусто — все. */
+  const [visc, setVisc] = useState('')
   const [posting, setPosting] = useState<{ comment: string; opId: string } | null>(null)
   /** «Товар не из программы»: окно новой карточки, с кодом, если его отсканировали. */
   const [adding, setAdding] = useState<{ barcode?: string } | null>(null)
@@ -98,31 +118,69 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
       return
     }
     setFilter(l.name)
+    setVisc('')
     setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
   }
 
-  const save = (l: Line, qty: number | null) =>
+  const save = (l: Line, qty: number | null) => {
+    // Записанный ввод убирается из правок, только если его не успели поменять, пока шёл запрос:
+    // иначе новое число пропало бы, не записавшись.
+    const sent = edits[l.product_id]
+    const sentOil = oilEdits[l.product_id]
     void act.run(async () => {
       if (qty === null) await del(`/revisions/${rev.head.id}/lines/${l.product_id}`)
       else await put(`/revisions/${rev.head.id}/lines`, { product_id: l.product_id, counted_qty: qty })
-      setEdits((e) => {
-        const next = { ...e }
-        delete next[l.product_id]
-        return next
-      })
+      const drop =
+        <T,>(was: T | undefined) =>
+        (e: Record<string, T>) => {
+          if (e[l.product_id] !== was) return e
+          const next = { ...e }
+          delete next[l.product_id]
+          return next
+        }
+      setEdits(drop(sent))
+      setOilEdits(drop(sentOil))
       onChanged()
     })
+  }
 
+  /** Поля масла ушли из фокуса: «кан. + л» → мл; оба пустые — строка не посчитана. */
+  const saveOil = (l: Line, tare: number) => {
+    const e = oilEdits[l.product_id]
+    if (!e) return
+    const ml = parseOil(e.cans, e.liters, tare)
+    if (ml === null) {
+      act.setError(`Неверное количество: ${l.name}`)
+      return
+    }
+    save(l, ml === 'empty' ? null : ml)
+  }
+
+  // Поиск — по названию, артикулу и вязкости; отбор «Вязкость» — по строкам ревизии (SPEC-36 §13).
   const q = filter.trim().toLowerCase()
-  const lines = q ? rev.lines.filter((l) => l.name.toLowerCase().includes(q) || l.article.toLowerCase().includes(q)) : rev.lines
+  const qKey = viscosityKey(filter)
+  const viscs = new Map<string, string>()
+  for (const l of rev.lines) {
+    const v = viscosityOf(l)
+    if (v && !viscs.has(viscosityKey(v.v))) viscs.set(viscosityKey(v.v), v.v)
+  }
+  const viscOptions = [...viscs.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru', { numeric: true }))
+  const lines = rev.lines.filter((l) => {
+    const v = viscosityOf(l)
+    if (visc && (!v || viscosityKey(v.v) !== visc)) return false
+    if (!q) return true
+    return l.name.toLowerCase().includes(q) || l.article.toLowerCase().includes(q) || (v !== null && qKey.length >= 3 && viscosityKey(v.v).includes(qKey))
+  })
   // Длинный склад — по страницам; поиск в списке возвращает на первую.
-  const pager = usePager(lines, 'revision.lines', q)
+  const pager = usePager(lines, 'revision.lines', `${q}|${visc}`)
 
-  /** Товар строки посчитан сканом: штучный +1 (курсор остаётся в сканере), у масла — фокус на поле
-   *  литров (на его странице). */
+  /** Товар строки посчитан сканом: штучный +1, масло в таре +1 канистра — курсор остаётся в сканере;
+   *  на вес и масло без тары — фокус на поле количества (на его странице). */
   const countLine = (l: Line) => {
     act.setError(null)
+    const tare = oilTare(l)
     if (l.unit === 'piece') save(l, (l.counted_qty ?? 0) + 1)
+    else if (tare) save(l, (l.counted_qty ?? 0) + tare)
     else {
       const at = lines.indexOf(l)
       if (at >= 0) pager.setPage(Math.floor(at / pager.size))
@@ -167,7 +225,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
       {draft && (
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Сканер" hint="Скан штучного товара прибавляет 1; у масла введите литры в строке">
+            <Field label="Сканер" hint="Скан прибавляет 1 штуку или 1 канистру; початую тару впишите литрами в строке">
               <input
                 autoFocus
                 data-picker
@@ -178,7 +236,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
               />
             </Field>
             <Field label="Найти в списке">
-              <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название или артикул" />
+              <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Название, артикул или вязкость" />
             </Field>
           </div>
           <div>
@@ -193,6 +251,19 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
           </div>
         </Card>
       )}
+      {viscOptions.length > 0 && (
+        <label className="flex items-center gap-2 self-start text-sm text-slate-600">
+          Вязкость:
+          <select id="revision-viscosity" value={visc} onChange={(e) => setVisc(e.target.value)}>
+            <option value="">все</option>
+            {viscOptions.map(([key, v]) => (
+              <option key={key} value={key}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <ErrorBox error={act.error} />
       <Card className="p-0">
         {lines.length === 0 ? (
@@ -202,21 +273,46 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
             {pager.shown.map((l) => {
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
+              const tare = oilTare(l)
+              const v = viscosityOf(l)
               return (
                 <tr key={l.product_id}>
                   <td className="px-2 py-2">
-                    <div className="font-medium">{l.name}</div>
+                    <div className="font-medium">
+                      {l.name}{' '}
+                      {v &&
+                        (v.fromName ? (
+                          <span className="text-xs font-normal text-slate-400" data-testid="viscosity-from-name" title="Вязкость из названия — заполните в карточке">
+                            {v.v} · из названия — заполните в карточке
+                          </span>
+                        ) : (
+                          <span data-testid="viscosity">
+                            <Badge tone="sky">{v.v}</Badge>
+                          </span>
+                        ))}
+                    </div>
                     {l.article && <div className="text-xs text-slate-500">{l.article}</div>}
                   </td>
-                  <td className="whitespace-nowrap px-2 py-2">{qtyText(l, l.expected_qty)}</td>
+                  <td className="whitespace-nowrap px-2 py-2" data-testid="expected">
+                    {countText(l, l.expected_qty)}
+                  </td>
                   <td className="whitespace-nowrap px-2 py-2">
-                    {draft ? (
+                    {draft && tare ? (
+                      <OilCountInput
+                        containerMl={tare}
+                        dataCount={l.product_id}
+                        value={oilEdits[l.product_id] ?? (l.counted_qty === null ? { cans: '', liters: '' } : oilFields(l.counted_qty, tare))}
+                        onChange={(val) => setOilEdits({ ...oilEdits, [l.product_id]: val })}
+                        onCommit={() => saveOil(l, tare)}
+                      />
+                    ) : draft ? (
                       <input
                         data-count={l.product_id}
                         className="w-24"
-                        inputMode={l.unit === 'ml' ? 'decimal' : 'numeric'}
-                        placeholder={l.unit === 'ml' ? 'л' : 'шт'}
-                        value={edit ?? (l.counted_qty === null ? '' : l.unit === 'ml' ? formatLiters(l.counted_qty).replace(/\s*л$/, '') : String(l.counted_qty))}
+                        inputMode={l.unit === 'piece' ? 'numeric' : 'decimal'}
+                        placeholder={l.unit === 'ml' ? 'л' : l.unit === 'g' ? 'кг' : 'шт'}
+                        aria-label={l.unit === 'ml' ? 'Пересчитано, л' : l.unit === 'g' ? 'Пересчитано, кг' : 'Пересчитано, шт'}
+                        value={edit ?? (l.counted_qty === null ? '' : countInput(l, l.counted_qty))}
                         onChange={(e) => setEdits({ ...edits, [l.product_id]: e.target.value })}
                         onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
                         onBlur={() => {
@@ -232,11 +328,11 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                     ) : l.counted_qty === null ? (
                       '—'
                     ) : (
-                      qtyText(l, l.counted_qty)
+                      countText(l, l.counted_qty)
                     )}
                   </td>
                   <td className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                    {diff === null ? '—' : diff === 0 ? 'сходится' : `${diff > 0 ? '+' : '−'}${qtyText(l, Math.abs(diff))}`}
+                    {diff === null ? '—' : diff === 0 ? 'сходится' : `${diff > 0 ? '+' : '−'}${countText(l, Math.abs(diff))}`}
                     {l.unit === 'ml' && diff !== null && diff !== 0 && (
                       <div className="mt-0.5">
                         {overNorm(l, rev.oil_norm_bp) ? <Badge tone="rose">сверх нормы</Badge> : <Badge tone="slate">в норме</Badge>}

@@ -61,6 +61,9 @@ pub struct RevisionLine {
     /// Масло: расхождение больше нормы (вопрос 32, ADR-052).
     #[serde(default)]
     pub over_norm: bool,
+    /// Вязкость масла из карточки (`attrs.viscosity`) — в строке ревизии (SPEC-36 §13, ADR-123).
+    #[serde(default)]
+    pub viscosity: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -107,6 +110,7 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
     let lines = if h.status == "posted" {
         sqlx::query!(
             r#"select p.id, p.name, p.article, p.unit, p.container_ml,
+                      nullif(p.attrs->>'viscosity', '') as viscosity,
                       coalesce((select array_agg(b.code order by b.code) from product_barcodes b
                                 where b.product_id = p.id), '{}') as "barcodes!",
                       x.expected_qty, x.counted_qty, x.value_delta_tyiyn
@@ -128,12 +132,14 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             counted_qty: Some(r.counted_qty),
             value_delta_tyiyn: owner.then_some(r.value_delta_tyiyn),
             unit: r.unit,
+            viscosity: r.viscosity,
         })
         .collect()
     } else {
         // Черновик: товары категории (или все) и пересчитанное, сверху — уже посчитанные.
         sqlx::query!(
             r#"select p.id, p.name, p.article, p.unit, p.container_ml,
+                      nullif(p.attrs->>'viscosity', '') as viscosity,
                       coalesce((select array_agg(b.code order by b.code) from product_barcodes b
                                 where b.product_id = p.id), '{}') as "barcodes!",
                       coalesce(l.stock_at_count, bp.stock_qty, 0) as "expected!", l.counted_qty as "counted?"
@@ -163,6 +169,7 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             expected_qty: r.expected,
             counted_qty: r.counted,
             value_delta_tyiyn: None,
+            viscosity: r.viscosity,
         })
         .collect()
     };

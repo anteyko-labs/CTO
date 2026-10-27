@@ -42,9 +42,32 @@ describe('исправление прихода: исходная накладн
     expect(receiptFixState(doc({ paid_now_tyiyn: null, paid_from: null }), all, key)).toMatchObject({ payMode: 'debt', partText: '', paidFrom: '' })
   })
 
-  it('строку нельзя потерять: нет карточки или масло не целыми канистрами — ошибка', () => {
+  it('строку нельзя потерять: нет карточки — ошибка', () => {
     expect(() => receiptFixState(doc(), new Map([['oil', oil]]), key)).toThrow(/товар строки/)
-    const half = doc({ lines: [{ product_id: 'oil', qty: 6000, cost_tyiyn: 300_000, sale_price_tyiyn: null }] })
-    expect(() => receiptFixState(half, new Map([['oil', oil]]), key)).toThrow(/не целое число канистр/)
+  })
+
+  it('масло не целыми канистрами — литрами с ценой литра; на вес — кг (SPEC-36 §13)', () => {
+    const scrap = { id: 'g', name: 'Лом', unit: 'g', container_ml: null, sale_price_tyiyn: 12_000 } as Product
+    const s = receiptFixState(
+      doc({
+        lines: [
+          { product_id: 'oil', qty: 18_000, cost_tyiyn: 810_000, sale_price_tyiyn: null },
+          { product_id: 'g', qty: 129_300, cost_tyiyn: 1_293_000, sale_price_tyiyn: null },
+          { product_id: 'oil', qty: 6000, cost_tyiyn: 100_001, sale_price_tyiyn: null },
+        ],
+      }),
+      new Map([
+        ['oil', oil],
+        ['g', scrap],
+      ]),
+      key,
+    )
+    expect(s.lines.map((l) => [l.count, l.mode, l.price, l.markup])).toEqual([
+      ['18', 'l', '450', '11,1'],
+      ['129,3', undefined, '100', '20,0'],
+      ['6', 'l', '166,67', '200,0'],
+    ])
+    // 6 л по 166,67 с = 1 000,02 с, а было 1 000,01 с — цена литра округлена, проверьте.
+    expect(s.rounded).toEqual(['Масло'])
   })
 })
