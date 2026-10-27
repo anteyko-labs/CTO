@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id as \"employee_id!\", e.full_name as \"full_name!\",\n             e.is_master as \"is_master!\", e.is_cashier as \"is_cashier!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date < $2), 0)::bigint\n             - coalesce((select sum(p.amount_tyiyn) from payouts p\n                         where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)::bigint\n               as \"opening!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2), 0)::bigint as \"accrued!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'service_fee'), 0)::bigint as \"service_fee!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as \"percent!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2\n                         and a.kind in ('monthly_salary', 'shift_fee')), 0)::bigint as \"salary!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'bonus'), 0)::bigint as \"bonus!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2\n                         and a.kind in ('penalty', 'shortage')), 0)::bigint as \"withheld!\",\n             coalesce((select sum(a.base_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as \"base!\",\n             coalesce((select sum(p.amount_tyiyn) from payouts p\n                       where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as \"paid!\",\n             coalesce((select sum(p.amount_tyiyn) from payouts p\n                       where p.employee_id = e.id and p.purpose = 'advance'\n                         and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as \"advance!\"\n           from employees e\n           where e.branch_id = $1\n           order by e.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_master!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_cashier!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "opening!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "service_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "salary!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "withheld!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "base!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "paid!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "advance!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3bb41258d3e510f7256292b04a094c5ed2f16edb3fbccd8c3e23cec6c31587b4"
+}

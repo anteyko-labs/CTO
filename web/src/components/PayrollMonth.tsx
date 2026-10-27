@@ -25,6 +25,8 @@ interface MonthRow {
   shortage_tyiyn: number
   accrued_tyiyn: number
   paid_tyiyn: number
+  /** Из выданного — авансом (ADR-122). */
+  advance_tyiyn?: number
   closing_tyiyn: number
   salary_done: boolean
   salary_rule_tyiyn: number | null
@@ -61,6 +63,7 @@ export function PayrollMonth() {
   const current = shiftMonth(todayBishkek(), 0)
   const rows = data.data?.rows ?? []
   const total = (key: keyof MonthRow) => rows.reduce((acc, r) => acc + (r[key] as number), 0)
+  const advances = rows.reduce((acc, r) => acc + (r.advance_tyiyn ?? 0), 0)
 
   return (
     <div className="flex flex-col gap-4">
@@ -88,7 +91,7 @@ export function PayrollMonth() {
         <Empty>В этом месяце начислений не было</Empty>
       ) : (
         <Card className="p-0 [&_th:not(:first-child)]:text-right">
-          <Table head={['Сотрудник', 'На начало', 'Оклад', '% с прибыли', 'Мастеру', 'За смену', 'Бонус', 'Удержано', 'Начислено', 'Выплачено', 'На конец', '']}>
+          <Table head={['Сотрудник', 'На начало', 'Оклад', '% с прибыли', 'Мастеру', 'За смену', 'Бонус', 'Удержано', 'Начислено', 'Выплачено', 'Аванс', 'На конец', '']}>
             {rows.map((r) => (
               <tr key={r.employee_id}>
                 <td className="min-w-36 px-2 py-2 font-medium">
@@ -107,7 +110,8 @@ export function PayrollMonth() {
                 <td className="px-2 py-2 md:text-right">{cell(r.bonus_tyiyn)}</td>
                 <td className="px-2 py-2 text-rose-700 md:text-right">{cell(r.penalty_tyiyn + r.shortage_tyiyn)}</td>
                 <td className="px-2 py-2 font-medium md:text-right">{cell(r.accrued_tyiyn)}</td>
-                <td className="px-2 py-2 md:text-right">{cell(r.paid_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.paid_tyiyn - (r.advance_tyiyn ?? 0))}</td>
+                <td className="px-2 py-2 md:text-right">{cell(r.advance_tyiyn ?? 0)}</td>
                 <td className="px-2 py-2 font-semibold md:text-right">
                   <Money value={r.closing_tyiyn} tone="negative" />
                 </td>
@@ -139,7 +143,8 @@ export function PayrollMonth() {
               <td className="px-2 py-2 md:text-right">{cell(total('bonus_tyiyn'))}</td>
               <td className="px-2 py-2 md:text-right">{cell(total('penalty_tyiyn') + total('shortage_tyiyn'))}</td>
               <td className="px-2 py-2 md:text-right">{cell(total('accrued_tyiyn'))}</td>
-              <td className="px-2 py-2 md:text-right">{cell(total('paid_tyiyn'))}</td>
+              <td className="px-2 py-2 md:text-right">{cell(total('paid_tyiyn') - advances)}</td>
+              <td className="px-2 py-2 md:text-right">{cell(advances)}</td>
               <td className="px-2 py-2 md:text-right">
                 <Money value={total('closing_tyiyn')} tone="negative" />
               </td>

@@ -18,7 +18,7 @@ use crate::api::cash::{MovementReq, TransferReq};
 use crate::api::catalog::{PricesReq, ProductFilter, ProductOut, query_products};
 use crate::api::expenses::ExpenseReq;
 use crate::api::parties::{AdjustReq, ListQuery, PartyOut, RepaymentReq, search_parties};
-use crate::api::payroll::{AccrualReq, PayoutReq, SalaryReq};
+use crate::api::payroll::{AccrualReq, PayoutLine, PayoutReq, PayoutsReq, SalaryReq};
 use crate::api::receipts::{PurchasePriceReq, ReceiptLineReq, ReceiptReq};
 use crate::auth::{Ctx, CurrentUser, Role};
 use crate::domain::money::{format_som, format_som_signed, parse_liters, parse_spoken_som};
@@ -49,7 +49,7 @@ pub enum DraftOp {
     Repayment(RepaymentReq),
     DebtAdjust(AdjustReq),
     Accrual(AccrualReq),
-    Payout(PayoutReq),
+    Payout(PayoutsReq),
     Salary(SalaryReq),
     Prices {
         product_id: Uuid,
@@ -172,15 +172,28 @@ pub async fn execute(conn: &mut PgConnection, ctx: &Ctx, op: DraftOp) -> AppResu
             }
         }
         DraftOp::Payout(req) => {
-            let what = if req.advance {
+            let what = if req.base.advance {
                 "аванс"
             } else {
                 "выплата"
             };
-            let amount = req.amount_tyiyn;
-            let out = crate::api::payroll::post_payout_tx(conn, ctx, req).await?;
+            let out = crate::api::payroll::post_payouts_tx(conn, ctx, req).await?;
+            let lines: Vec<PayoutLine> = out
+                .lines
+                .iter()
+                .map(|l| PayoutLine {
+                    purpose: l.purpose.clone(),
+                    amount_tyiyn: l.amount_tyiyn,
+                })
+                .collect();
+            let amount = lines.iter().map(|l| l.amount_tyiyn).sum::<i64>();
             Posted {
-                text: format!("{what} № {} — {}", out.number, format_som(amount)),
+                text: format!(
+                    "{what} № {} — {}{}",
+                    out.number,
+                    format_som(amount),
+                    purposes_text(&lines).replace('\n', " · ")
+                ),
                 number: Some(out.number),
             }
         }
@@ -1161,6 +1174,79 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
     }))
 }
 
+/// Вид выплаты словами владельца (ADR-122).
+fn purpose_of(word: &str) -> Result<&'static str, String> {
+    let w = norm(word);
+    let w = w.trim_start_matches("за ");
+    Ok(if w.starts_with("процент") || w.starts_with('%') {
+        "percent"
+    } else if w.starts_with("мастер") || w.starts_with("услуг") || w.starts_with("замен")
+    {
+        "service_fee"
+    } else if w.starts_with("бонус") || w.starts_with("прем") {
+        "bonus"
+    } else if w.starts_with("оклад") || w.starts_with("зарплат") {
+        "salary"
+    } else if w.starts_with("аванс") {
+        "advance"
+    } else {
+        return Err(format!(
+            "за что «{word}» — не понять: проценты, мастеру, бонус, оклад или аванс"
+        ));
+    })
+}
+
+/// Сумма по остаткам видов по порядку; больше заработанного — одной суммой без вида
+/// (проверка откажет так же, как прежде).
+fn split_by_remains(
+    sum: i64,
+    remains: &crate::api::payroll::Remains,
+    to_salary: bool,
+) -> Vec<PayoutLine> {
+    let mut left = sum;
+    let mut lines = Vec::new();
+    let mut r = *remains;
+    for p in ["percent", "service_fee", "bonus", "salary"] {
+        let have = r.bucket(p, to_salary).map_or(0, |b| (*b).max(0));
+        let take = have.min(left);
+        if take > 0 {
+            lines.push(PayoutLine {
+                purpose: p.into(),
+                amount_tyiyn: take,
+            });
+            left -= take;
+        }
+    }
+    if left > 0 || lines.is_empty() {
+        return vec![PayoutLine {
+            purpose: "general".into(),
+            amount_tyiyn: sum,
+        }];
+    }
+    lines
+}
+
+/// «За что: проценты 500 с, бонус 1 000 с» с новой строки; без вида и у аванса (он назван
+/// в заголовке) — пусто.
+fn purposes_text(lines: &[PayoutLine]) -> String {
+    let parts: Vec<String> = lines
+        .iter()
+        .filter(|l| l.purpose != "general" && l.purpose != "advance")
+        .map(|l| {
+            format!(
+                "{} {}",
+                crate::api::payroll::purpose_label(&l.purpose),
+                format_som(l.amount_tyiyn)
+            )
+        })
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("\nЗа что: {}", parts.join(", "))
+    }
+}
+
 async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &Value) -> Step {
     let branch_id = user.branch_id;
     let operation = norm(&take!(need(input, "operation", "что сделать")));
@@ -1203,22 +1289,42 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
         || operation.starts_with("выда")
         || operation.starts_with("аванс")
     {
-        let advance = operation.starts_with("аванс");
+        let named = match take!(field(input, "purpose")) {
+            None => None,
+            Some(w) => Some(take!(purpose_of(&w))),
+        };
+        let advance = operation.starts_with("аванс") || named == Some("advance");
         let sum = take!(amount(input, "amount"));
         let src_q = take!(field(input, "source"));
         let src = take!(account(conn, branch_id, src_q.as_deref()).await?);
-        let earned = sqlx::query_scalar!(
-            r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
-                    - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,
-            e.id
-        )
-        .fetch_one(&mut *conn)
-        .await?;
+        let (remains, to_salary) =
+            crate::api::payroll::remains_of(conn, branch_id, Some(e.id), None)
+                .await?
+                .into_iter()
+                .next()
+                .map(|(_, r, t)| (r, t))
+                .unwrap_or_default();
+        let earned = remains.total();
         let (source, account_id) = match &src {
             Source::Account { id, .. } => ("account", Some(*id)),
         };
+        // За что (ADR-122): названный вид; иначе — по остаткам видов по порядку
+        // проценты → мастеру → бонусы → оклад. Больше заработанного — одной суммой, как прежде.
+        let lines = if advance {
+            vec![PayoutLine {
+                purpose: "advance".into(),
+                amount_tyiyn: sum,
+            }]
+        } else if let Some(p) = named {
+            vec![PayoutLine {
+                purpose: p.into(),
+                amount_tyiyn: sum,
+            }]
+        } else {
+            split_by_remains(sum, &remains, to_salary)
+        };
         let summary = format!(
-            "{}\nСотрудник: {} (к выплате сейчас {})\nСумма: {}\nОткуда: {}\nКомментарий: {}",
+            "{}\nСотрудник: {} (к выплате сейчас {})\nСумма: {}{}\nОткуда: {}\nКомментарий: {}",
             if advance {
                 "Аванс сотруднику"
             } else {
@@ -1227,6 +1333,7 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             one_line(&e.name),
             format_som(earned),
             format_som(sum),
+            purposes_text(&lines),
             src.line(),
             quoted(&text)
         );
@@ -1239,14 +1346,18 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             balance_hint(&src)
         };
         return Ok(Ok(Built {
-            op: DraftOp::Payout(PayoutReq {
-                op_id,
-                employee_id: e.id,
-                amount_tyiyn: sum,
-                source: Some(source.into()),
-                account_id,
-                advance,
-                comment: text,
+            op: DraftOp::Payout(PayoutsReq {
+                base: PayoutReq {
+                    op_id,
+                    employee_id: e.id,
+                    amount_tyiyn: sum,
+                    source: Some(source.into()),
+                    account_id,
+                    advance,
+                    comment: text,
+                },
+                lines,
+                purpose: None,
             }),
             kind: if advance { "advance" } else { "payout" },
             summary,
@@ -1703,7 +1814,7 @@ async fn stale_refs(
 ) -> AppResult<Option<String>> {
     let (employee, party, products): (Option<Uuid>, Option<Uuid>, Vec<Uuid>) = match op {
         DraftOp::Accrual(r) => (Some(r.employee_id), None, Vec::new()),
-        DraftOp::Payout(r) => (Some(r.employee_id), None, Vec::new()),
+        DraftOp::Payout(r) => (Some(r.base.employee_id), None, Vec::new()),
         DraftOp::Salary(r) => (Some(r.employee_id), None, Vec::new()),
         DraftOp::Repayment(r) => (None, Some(r.party_id), Vec::new()),
         DraftOp::DebtAdjust(r) => (None, Some(r.party_id), Vec::new()),
@@ -1777,6 +1888,41 @@ async fn finish(conn: &mut PgConnection, id: Uuid, status: &str, result: Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payout_draft_names_purposes_and_splits_by_remains() {
+        // В черновике выплаты — за что; по умолчанию все виды по порядку (ADR-122).
+        assert_eq!(purpose_of("за проценты"), Ok("percent"));
+        assert_eq!(purpose_of("Мастеру за услуги"), Ok("service_fee"));
+        assert_eq!(purpose_of("премия"), Ok("bonus"));
+        assert_eq!(purpose_of("оклад"), Ok("salary"));
+        assert!(purpose_of("на хлеб").is_err());
+        let remains = crate::api::payroll::Remains {
+            percent_tyiyn: 50_000,
+            service_fee_tyiyn: 0,
+            bonus_tyiyn: 100_000,
+            salary_tyiyn: -1_000_000,
+            withheld_tyiyn: 0,
+        };
+        let line = |p: &str, a: i64| PayoutLine {
+            purpose: p.into(),
+            amount_tyiyn: a,
+        };
+        assert_eq!(
+            split_by_remains(120_000, &remains, true),
+            vec![line("percent", 50_000), line("bonus", 70_000)]
+        );
+        // Больше заработанного — одной суммой, проверка откажет, как прежде.
+        assert_eq!(
+            split_by_remains(200_000, &remains, true),
+            vec![line("general", 200_000)]
+        );
+        assert_eq!(
+            purposes_text(&[line("percent", 50_000), line("bonus", 70_000)]),
+            "\nЗа что: проценты 500 с, бонус 700 с"
+        );
+        assert_eq!(purposes_text(&[line("advance", 50_000)]), "");
+    }
 
     #[test]
     fn names_match_by_word_starts() {

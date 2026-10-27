@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.number, p.employee_id, p.amount_tyiyn, p.account_id, p.comment, e.full_name\n                   from payouts p join employees e on e.id = p.employee_id\n                   where p.id = $1 and p.branch_id = $2",
+  "query": "select p.number, p.employee_id, p.amount_tyiyn, p.account_id, p.comment, p.purpose,\n                          e.full_name\n                   from payouts p join employees e on e.id = p.employee_id\n                   where p.id = $1 and p.branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -30,6 +30,11 @@
       },
       {
         "ordinal": 5,
+        "name": "purpose",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
         "name": "full_name",
         "type_info": "Text"
       }
@@ -46,8 +51,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "10537ca142d1b9eeb5da2627f4ceae51dc0da84c1ac1e3a4e84bd01f7f76988d"
+  "hash": "d5c40bb18210c6fa541df6ba76ae44b732e437b346aad859553565a09ffc66b4"
 }
