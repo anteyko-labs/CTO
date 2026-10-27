@@ -1,11 +1,18 @@
 name: Windows package
 
 # Пакет для компьютера точки: сервер .exe, клиент, Caddy и скрипты установки (ADR-057).
+# Собирается только после зелёного CI того же коммита в main (проверка 27.10.2026: пакет считался
+# «успешным», когда тесты падали). Ручной запуск тоже проверяет CI своего коммита.
 on:
   workflow_dispatch:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths: ['server/**', 'web/**', 'deploy/windows/**', '.github/workflows/windows-package.yml']
+
+permissions:
+  contents: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,9 +21,24 @@ env:
 
 jobs:
   package:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: windows-latest
     steps:
+      - name: CI этого коммита зелёный
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runs = gh run list --repo $env:GITHUB_REPOSITORY --workflow CI --commit $env:GITHUB_SHA --json conclusion | ConvertFrom-Json
+          if (-not ($runs | Where-Object { $_.conclusion -eq 'success' })) {
+            Write-Host "CI для $env:GITHUB_SHA не зелёный (или ещё идёт) — пакет не собираем"
+            exit 1
+          }
       - uses: actions/checkout@v4
+        with:
+          # После CI — ровно тот коммит, который он проверил.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       # Скрипты установки на точке нельзя проверить на машине разработчика: здесь — разбор
       # каждого .ps1 настоящим PowerShell (Windows PowerShell 5.1, как на точке, и pwsh).
       - name: Синтаксис скриптов установки
@@ -29,6 +51,14 @@ jobs:
             foreach ($e in $errors) { Write-Host "$($f.Name):$($e.Extent.StartLineNumber): $($e.Message)"; $bad++ }
           }
           if ($bad -gt 0) { exit 1 }
+      # Ошибки, которые разбор не ловит (PSScriptAnalyzer, только уровень «ошибка»).
+      - name: Проверка скриптов установки
+        shell: powershell
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser }
+          $found = @(Invoke-ScriptAnalyzer -Path deploy/windows -Severity ParseError, Error)
+          $found | Format-Table -AutoSize ScriptName, Line, RuleName, Message | Out-String -Width 300 | Write-Host
+          if ($found.Count -gt 0) { exit 1 }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -58,6 +88,8 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/caddyserver/caddy/releases/download/v$env:CADDY_VERSION/caddy_$($env:CADDY_VERSION)_windows_amd64.zip" -OutFile $zip
           Expand-Archive $zip -DestinationPath caddy-tmp
           Copy-Item caddy-tmp/caddy.exe $out/
+          # Какой коммит в пакете (с зелёным CI).
+          Set-Content "$out/commit.txt" "${{ github.event.workflow_run.head_sha || github.sha }}"
       - uses: actions/upload-artifact@v4
         with:
           name: avtodom-windows

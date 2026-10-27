@@ -6,7 +6,7 @@
 
 ## 0. Подготовка (заранее)
 
-1. Скачать пакет: GitHub → репозиторий → Actions → «Windows package» → последний успешный запуск → архив **avtodom-windows**.
+1. Скачать пакет: GitHub → репозиторий → Actions → «Windows package» → последний успешный запуск → архив **avtodom-windows**. Пакет собирается только после зелёного CI того же коммита (все тесты прошли); коммит пакета — в `commit.txt`.
 2. Скачать установщики: PostgreSQL 16 для Windows (enterprisedb.com), Google Drive для компьютера, Tailscale для Windows и для телефона.
 
 ## 1. Компьютер-сервер
