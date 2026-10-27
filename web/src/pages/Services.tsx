@@ -22,6 +22,19 @@ const ABOUT =
   'У услуги «Бесплатно с нашим маслом» цена — 0, если в чеке нашего масла её категории не меньше канистры; иначе — цена клиенту. ' +
   'Если клиент вернёт масло и его останется меньше канистры, цена замены удержится из возврата.'
 
+const TAKEAWAY_LABEL = 'Доливка — продаётся на вынос'
+const TAKEAWAY_HINT = 'Касса пробивает её «На вынос» без клиента, машины и книжки; мастер — по желанию. В окне «Вид замены» её нет'
+
+/** Флажок «Доливка — на вынос» (ADR-118): меняет владелец; у новой услуги — по названию («долив»). */
+function TakeawayBox({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex flex-col gap-1" data-testid="service-takeaway">
+      <Checkbox label={TAKEAWAY_LABEL} checked={checked} onChange={onChange} />
+      <div className="-mt-1 pl-7 text-xs text-slate-500">{TAKEAWAY_HINT}</div>
+    </div>
+  )
+}
+
 /** Пустое поле «Мастеру» — ставка по умолчанию (30 сом за каждую услугу, ADR-112): сервер ставит её сам. */
 function amounts(price: string, fee: string): { price_tyiyn: number; master_fee_tyiyn?: number } {
   const p = parseSom(price)
@@ -133,6 +146,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
     free: Boolean(service.free_with_oil),
     oilCat: service.oil_category_id ?? '',
     active: service.active,
+    takeaway: Boolean(service.takeaway),
   })
   const [book, setBook] = useState<BookForm>({
     slot: service.book_slot ?? 'other',
@@ -149,6 +163,7 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
         free_with_oil: form.free,
         ...(owner && form.oilCat ? { oil_category_id: form.oilCat } : {}),
         ...(owner ? bookPayload(book, true) : {}),
+        ...(owner ? { takeaway: form.takeaway } : {}),
         active: form.active,
       })
       onSaved()
@@ -183,6 +198,11 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
           <BookFields idPrefix="service-edit-book" value={book} onChange={setBook} />
         ) : (
           <div className="text-sm text-slate-600">Строка книжки: {BOOK_SLOT_LABELS[service.book_slot ?? 'other']} — меняет владелец</div>
+        )}
+        {owner ? (
+          <TakeawayBox checked={form.takeaway} onChange={(v) => setForm({ ...form, takeaway: v })} />
+        ) : (
+          service.takeaway && <div className="text-sm text-slate-600">{TAKEAWAY_LABEL} — меняет владелец</div>
         )}
         <Checkbox label="Активна" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
         <ErrorBox error={error} />
@@ -297,7 +317,9 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
 export default function Services() {
   const owner = useUser().role === 'owner'
   const list = useLoad(() => get<Service[]>('/services'), [])
-  const [form, setForm] = useState({ name: '', price: '', fee: '', free: false, oilCat: '' })
+  // Флажок доливки: пока владелец его не трогал (null) — по названию услуги, как на сервере.
+  const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean; oilCat: string; takeaway: boolean | null }>({ name: '', price: '', fee: '', free: false, oilCat: '', takeaway: null })
+  const takeawayShown = form.takeaway ?? /долив/i.test(form.name)
   // Ставка мастеру по умолчанию — за каждую услугу (ADR-112): подсказка в пустом поле.
   const salesSettings = useLoad(() => get<{ oil_change_master_fee_tyiyn: number }>('/settings/sales'), [])
   const defaultFee = salesSettings.data?.oil_change_master_fee_tyiyn
@@ -328,8 +350,9 @@ export default function Services() {
         free_with_oil: owner && form.free,
         ...(owner && form.free && form.oilCat ? { oil_category_id: form.oilCat } : {}),
         ...(owner ? bookPayload(book, false) : {}),
+        ...(owner && form.takeaway !== null ? { takeaway: form.takeaway } : {}),
       })
-      setForm({ name: '', price: '', fee: '', free: false, oilCat: '' })
+      setForm({ name: '', price: '', fee: '', free: false, oilCat: '', takeaway: null })
       setBook({ slot: '', km: '', days: '' })
       setAdding(false)
       list.reload()
@@ -417,7 +440,14 @@ export default function Services() {
                 className={`cursor-pointer hover:bg-slate-50 ${s.active ? '' : 'text-slate-400'}`}
                 onClick={() => setEditing(s)}
               >
-                <td className="px-2 py-2 font-medium">{s.name}</td>
+                <td className="px-2 py-2 font-medium">
+                  {s.name}
+                  {s.takeaway && (
+                    <span className="ml-2 align-middle">
+                      <Badge tone="amber">на вынос</Badge>
+                    </span>
+                  )}
+                </td>
                 <td className="px-2 py-2 md:text-right">
                   <Money value={s.price_tyiyn} />
                 </td>
@@ -499,6 +529,7 @@ export default function Services() {
               />
             )}
             {owner && <BookFields idPrefix="service-book" value={book} onChange={setBook} byName />}
+            {owner && <TakeawayBox checked={takeawayShown} onChange={(v) => setForm({ ...form, takeaway: v })} />}
             <ErrorBox error={error} />
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Missing items={notFilled} className="mr-auto" />

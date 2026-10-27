@@ -1,11 +1,26 @@
 // Касса и замена масла (SPEC-29 §18, §23): спросить «Это замена масла?» и проверить «через сколько
 // менять», который кассир ставит прямо в чеке.
 import { toKm, type MileageUnit } from './mileage'
-import type { CategoryKind } from './types'
 
-/** В чеке есть моторное масло (товар категории масел): тогда на вынос спрашиваем, не замена ли это. */
-export function hasEngineOil(lines: readonly { product?: { category_kind?: CategoryKind } | null; gift?: boolean }[]): boolean {
-  return lines.some((l) => !l.gift && l.product?.category_kind === 'oil')
+/**
+ * «Это замена масла?» на вынос (ADR-118): моторного масла не меньше канистры его категории.
+ * 0,5–1 л — доливка, без вопроса. `enough` — категории масла, которого в чеке не меньше канистры
+ * (`oilEnough`); моторная — со строкой книжки «Масло двигателя». Категории ещё не загрузились —
+ * спрашиваем от канистры любого масла.
+ */
+export function askOilChange(enough: ReadonlySet<string>, categories: readonly { id: string; book_slot: string }[] | null | undefined): boolean {
+  if (!categories) return enough.size > 0
+  return [...enough].some((id) => categories.find((c) => c.id === id)?.book_slot === 'oil')
+}
+
+/** В чеке есть услуга, которая требует «В сервис», — любая, кроме доливки (ADR-118). */
+export function hasServiceWork(lines: readonly { kind: string; service?: { takeaway?: boolean } | null }[]): boolean {
+  return lines.some((l) => l.kind === 'service' && !l.service?.takeaway)
+}
+
+/** В чеке есть доливка — на вынос можно выбрать мастера (ADR-118). */
+export function hasTopup(lines: readonly { kind: string; service?: { takeaway?: boolean } | null }[]): boolean {
+  return lines.some((l) => l.kind === 'service' && Boolean(l.service?.takeaway))
 }
 
 /** Интервал из чека: от 500 до 200 000 км (мили переводятся) и от 1 до 1095 дней — как на сервере;

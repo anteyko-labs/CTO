@@ -22,7 +22,7 @@ import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
 import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
-import { hasEngineOil } from '../lib/oilChange'
+import { askOilChange, hasServiceWork, hasTopup } from '../lib/oilChange'
 import { cartGoods, cartSources, extraChoices, extraSlots, filtersNote, goodShort, nextPayload, nextRows, nextTooLow, oilChangeHint, pruneNext, receiptBook, snapshotCategories, type CategoryBook, type OwnIntervals } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
@@ -662,7 +662,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
 
   /** Услуга встаёт строкой, чек становится «в сервис»: работу делает мастер. Цена — по
-   *  каталогу с учётом масла в чеке (ADR-096). */
+   *  каталогу с учётом масла в чеке (ADR-096). Доливка тип чека не меняет: она продаётся и на
+   *  вынос, без клиента и машины (ADR-118). */
   const addService = (s: Service) => {
     setDone(null)
     setServicesOpen(false)
@@ -672,7 +673,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(same) ?? 0) + 1) } : l))
       return [...ls, { key: nextKey(), kind: 'service', service: s, qtyText: '1', priceText: somInput(listPrice({ kind: 'service', service: s }, cartOil(ls))) }]
     })
-    setSaleType('service')
+    if (!s.takeaway) setSaleType('service')
     focusPicker()
   }
 
@@ -681,7 +682,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setDone(null)
     setKindsOpen(false)
     const ids = new Set(picked.map((s) => s.id))
-    const gone = lines.filter((l) => l.kind === 'service' && l.service && !ids.has(l.service.id))
+    // Доливки в окне нет (ADR-118) — «Готово» их не убирает.
+    const gone = lines.filter((l) => l.kind === 'service' && l.service && !l.service.takeaway && !ids.has(l.service.id))
     const fresh = picked.filter((s) => !lines.some((l) => l.kind === 'service' && l.service?.id === s.id))
     setLines((ls) => [
       ...ls.filter((l) => !gone.some((g) => g.key === l.key)),
@@ -754,7 +756,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // «В сервис» — сразу выбор вида замены: без него чек не провести (ADR-096).
   const changeType = (t: 'takeaway' | 'service') => {
     setSaleType(t)
-    if (t === 'service' && !lines.some((l) => l.kind === 'service')) setKindsOpen(true)
+    if (t === 'service' && !hasServiceWork(lines)) setKindsOpen(true)
   }
 
   /** Шаг количества: 1 шт или канистра, 0,5 л для розлива. */
@@ -834,7 +836,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Строка книжки товара — по его категории. Категории нужны чеку «В сервис» с машиной, где есть
   // товары, и читаются заново для каждого такого чека (касса открыта весь день); без связи — из снимка.
   const hasGoods = lines.some((l) => l.product && !l.gift)
-  const needCategories = nextOn && hasGoods
+  // На вынос с канистрой масла — тоже: «Это замена масла?» только от моторного (ADR-118).
+  const needCategories = (nextOn && hasGoods) || (saleType === 'takeaway' && ourOil.size > 0)
   const categories = useLoad(
     () =>
       needCategories
@@ -969,7 +972,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   const invoiceAmount = payments?.filter((p) => p.method === 'invoice').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // Чек «В сервис»: вид замены и данные клиента (ADR-096, ADR-100).
-  const serviceKinds = lines.filter((l) => l.kind === 'service')
+  // Виды замены — услуги чека, кроме доливки (она идёт и на вынос, ADR-118).
+  const serviceKinds = lines.filter((l) => l.kind === 'service' && !l.service?.takeaway)
+  // На вынос с доливкой мастер — по желанию: выбран — ставка услуги, нет — ничего (ADR-118).
+  const topupMaster = saleType === 'takeaway' && hasTopup(lines)
   const clientNeeds =
     saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
   // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
@@ -980,7 +986,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [lines.length === 0 || valid, 'количество и цены в строках', undefined, 'кол-во и цены'],
     [Boolean(cashierId), 'кассира', '#cashier-select', 'кассир'],
     [saleType !== 'service' || Boolean(masterId), 'мастера', '#master-select', 'мастер'],
-    [saleType === 'service' || !lines.some((l) => l.kind === 'service'), 'для услуги — режим «В сервис»', undefined, 'режим «В сервис»'],
+    [saleType === 'service' || !hasServiceWork(lines), 'для услуги — режим «В сервис»', undefined, 'режим «В сервис»'],
     [saleType !== 'service' || serviceKinds.length > 0, 'вид замены', '[data-service-kind]', 'вид замены'],
     // Без связи данные клиента не дописать: чек уйдёт, владелец увидит, чего не хватало.
     ...(online ? clientNeeds : []).map((n): Check =>
@@ -1023,7 +1029,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       const content = {
         sale_type: saleType,
         cashier_id: cashierId,
-        master_id: saleType === 'service' ? masterId : null,
+        master_id: saleType === 'service' ? masterId : topupMaster && masterId ? masterId : null,
         party_id: party?.id ?? bonus?.party_id ?? null,
         contact_id: party && contactId ? contactId : null,
         vehicle_id: party && vehicleId ? vehicleId : null,
@@ -1071,7 +1077,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           kind: 'sale',
           sale_type: saleType,
           cashier_name: cashierName,
-          master_name: saleType === 'service' ? (masters.find((m) => m.id === masterId)?.full_name ?? null) : null,
+          master_name: saleType === 'service' || topupMaster ? (masters.find((m) => m.id === masterId)?.full_name ?? null) : null,
           party_name: party?.name ?? null,
           total_tyiyn: total,
           created_at: new Date().toISOString(),
@@ -1162,8 +1168,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   // QR банка ждёт оплаты — чек ждёт его (панель QR сама говорит «Ждём оплату»).
   const canSubmit = !busy && blockers.length === 0 && bankQr.qr?.status !== 'waiting'
-  // На вынос с моторным маслом — сначала «Это замена масла?» (SPEC-29 §18): один раз на чек.
-  const askOil = !fix && saleType === 'takeaway' && !oilAsked && hasEngineOil(lines)
+  // На вынос с канистрой моторного масла — сначала «Это замена масла?» (SPEC-29 §18, ADR-118): один
+  // раз на чек; 0,5–1 л — доливка, без вопроса.
+  const askOil = !fix && saleType === 'takeaway' && !oilAsked && askOilChange(ourOil, categories.data)
   const trySubmit = () => {
     if (askOil) {
       setOilQuestion(true)
@@ -1385,6 +1392,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   ) : null
   const customerFields = (
     <>
+      {topupMaster && (
+        <Field label="Мастер" hint="По желанию: выбран — ему ставка за доливку">
+          <select id="master-select" className={touch ? 'min-h-[56px] text-lg' : ''} value={masterId} onChange={(e) => setMasterId(e.target.value)}>
+            <option value="">— без мастера —</option>
+            {masters.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.full_name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       {saleType === 'service' && (
         <>
           <Field label="Мастер" required>

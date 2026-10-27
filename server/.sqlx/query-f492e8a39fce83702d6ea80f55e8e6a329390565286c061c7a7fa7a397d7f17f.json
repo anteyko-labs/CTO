@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and (active or $2)",
+  "query": "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, takeaway from services where id = $1 and (active or $2)",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,11 @@
         "ordinal": 5,
         "name": "oil_category_id",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "takeaway",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -46,8 +51,9 @@
       false,
       false,
       false,
-      true
+      true,
+      false
     ]
   },
-  "hash": "49183b3a8ff2c08d0ea8b5a6ef8f22437a721c71227eb6300673cd8721023891"
+  "hash": "f492e8a39fce83702d6ea80f55e8e6a329390565286c061c7a7fa7a397d7f17f"
 }

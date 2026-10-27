@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days from services order by name",
+  "query": "update services set name = coalesce($2, name), price_tyiyn = coalesce($3, price_tyiyn),\n             master_fee_tyiyn = coalesce($4, master_fee_tyiyn), active = coalesce($5, active),\n             free_with_oil = coalesce($6, free_with_oil),\n             oil_category_id = coalesce($7, oil_category_id),\n             book_slot = coalesce($8, book_slot),\n             book_interval_km = case when $11 then null else coalesce($9, book_interval_km) end,\n             book_interval_days = case when $11 then null else coalesce($10, book_interval_days) end,\n             takeaway = coalesce($12, takeaway)\n           where id = $1\n           returning id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active, book_slot, book_interval_km, book_interval_days, book_interval_km as interval_km, book_interval_days as interval_days, takeaway",
   "describe": {
     "columns": [
       {
@@ -62,10 +62,28 @@
         "ordinal": 11,
         "name": "interval_days",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "takeaway",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8",
+        "Bool",
+        "Bool",
+        "Uuid",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bool",
+        "Bool"
+      ]
     },
     "nullable": [
       false,
@@ -79,8 +97,9 @@
       true,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "f4a8d6d7afe5db3dfcbfbc13909c5493c113cf5eb5353432248afd2cdee08227"
+  "hash": "7fd8fa21e6dfb4579221f19c9261c4b241bb34fba30b87f0974aa2c1378eeb08"
 }

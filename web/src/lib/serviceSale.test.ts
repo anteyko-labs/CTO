@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientNamed, isDiscount, looksLikePlate, oilAmountText, oilEnough, returnWithholds, serviceClientMissing, servicePrice, servicePriceText, withholdAmount } from './serviceSale'
+import { clientNamed, isDiscount, kindChoices, looksLikePlate, oilAmountText, oilEnough, returnWithholds, serviceClientMissing, servicePrice, servicePriceText, withholdAmount } from './serviceSale'
 import type { Party } from './types'
 
 const money = (v: number) => `${v / 100} с`
@@ -97,5 +97,19 @@ describe('looksLikePlate', () => {
     expect(looksLikePlate('0555 123 456')).toBe(false)
     expect(looksLikePlate('+996555123456')).toBe(false)
     expect(looksLikePlate('22501199000123')).toBe(false)
+  })
+})
+
+describe('окно «Вид замены» (SPEC-36 §5)', () => {
+  it('без доливок, сначала замены со строкой книжки', () => {
+    const list = [
+      { name: 'Мойка', book_slot: 'other' as const },
+      { name: 'Доливка КПП снизу', book_slot: 'other' as const, takeaway: true },
+      { name: 'Замена масла в коробке', book_slot: 'gear_oil' as const },
+      { name: 'Замена масла в моторе', book_slot: 'oil' as const, free_with_oil: true },
+      { name: 'Доливка масла', book_slot: 'oil' as const, takeaway: true },
+      { name: 'Развал', book_slot: undefined },
+    ]
+    expect(kindChoices(list).map((s) => s.name)).toEqual(['Замена масла в моторе', 'Замена масла в коробке', 'Мойка', 'Развал'])
   })
 })

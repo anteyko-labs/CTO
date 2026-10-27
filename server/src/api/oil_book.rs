@@ -323,9 +323,10 @@ pub async fn record_from_sale(
     // Услуги со строкой книжки (SPEC-34): масло клиента — товара-масла в чеке нет, но замена
     // масла — это замена (SPEC-16); антифриз, тормозная жидкость — так же. Товар той же строки
     // уже есть — услуга только подписывает его.
+    // Услуга-доливка (ADR-118) — не замена, даже если владелец дал ей строку книжки.
     let services = sqlx::query!(
         r#"select s.id, s.name, s.book_slot from sale_lines l join services s on s.id = l.service_id
-           where l.sale_id = $1 and s.book_slot <> 'other' order by l.line_no"#,
+           where l.sale_id = $1 and s.book_slot <> 'other' and not s.takeaway order by l.line_no"#,
         sale_id
     )
     .fetch_all(&mut *conn)

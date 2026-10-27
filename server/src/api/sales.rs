@@ -394,6 +394,29 @@ struct Prepared {
     /// меньше канистры цена по каталогу — 0.
     free_with_oil: bool,
     oil_category: Option<Uuid>,
+    /// Услуга-доливка (ADR-118): допустима и в чеке «На вынос».
+    takeaway: bool,
+}
+
+/// Названия услуг чека без флажка «доливка на вынос» (ADR-118).
+async fn takeaway_rejects(
+    conn: &mut PgConnection,
+    prepared: &[Prepared],
+) -> AppResult<Vec<String>> {
+    let ids: Vec<Uuid> = prepared
+        .iter()
+        .filter(|p| !p.takeaway)
+        .filter_map(|p| p.service_id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_scalar!(
+        "select name from services where id = any($1) order by name",
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?)
 }
 
 async fn prepare_line(
@@ -414,7 +437,7 @@ async fn prepare_line(
         let sid = l.service_id.ok_or_else(|| invalid("не указана услуга"))?;
         // Чек без сети принимаем и с услугой, которую успели отключить: работа уже сделана.
         let s = sqlx::query!(
-            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id from services where id = $1 and (active or $2)",
+            "select name, active, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, takeaway from services where id = $1 and (active or $2)",
             sid,
             offline
         )
@@ -439,6 +462,7 @@ async fn prepare_line(
             seen_list: seen_list(l, offline),
             free_with_oil: s.free_with_oil,
             oil_category: s.oil_category_id,
+            takeaway: s.takeaway,
         });
     }
     // Карточку могли влить в другую, пока чек лежал на устройстве: продаём основную.
@@ -502,6 +526,7 @@ async fn prepare_line(
         seen_list: seen_list(l, offline),
         free_with_oil: false,
         oil_category: None,
+        takeaway: false,
     })
 }
 
@@ -1140,11 +1165,16 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     };
     let has_service = req.lines.iter().any(|l| l.kind == "service");
     match req.sale_type.as_str() {
-        "takeaway" if has_service => return Err(invalid("услуги только в продаже «в сервис»")),
-        "takeaway" if req.master_id.is_some() => {
+        // Мастер на вынос — только у доливки (ADR-118): по желанию, за ставку услуги. Какие услуги
+        // допустимы на вынос, проверяется после разбора строк.
+        "takeaway" if req.master_id.is_some() && !has_service => {
             return Err(invalid("мастер указывается только в сервисе"));
         }
-        "takeaway" => {}
+        "takeaway" => {
+            if let Some(master) = req.master_id {
+                check_employee(conn, branch_id, master, true, offline, &mut bypass).await?;
+            }
+        }
         "service" => {
             let master = req
                 .master_id
@@ -1248,6 +1278,26 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         let p = prepare_line(conn, branch_id, l, offline, &mut bypass).await?;
         total = total.checked_add(p.amount).ok_or_else(overflow)?;
         prepared.push(p);
+    }
+    // На вынос — только услуги-доливки (ADR-118). Чек без сети уже состоялся (флажок могли
+    // снять, пока касса была без связи): проводится, а владелец получает причину.
+    if req.sale_type == "takeaway" {
+        let names = takeaway_rejects(conn, &prepared).await?;
+        if !names.is_empty() {
+            if !offline {
+                return Err(invalid(format!(
+                    "На вынос продаётся только доливка; «{}» — только в продаже «в сервис»",
+                    names.join("», «")
+                )));
+            }
+            bypass.push(format!("на вынос с услугой «{}»", names.join("», «")));
+        }
+    }
+    // Мастер не выбран (доливка на вынос, ADR-118) — ставки мастеру нет ни в строках, ни в чеке.
+    if req.master_id.is_none() {
+        for p in &mut prepared {
+            p.master_fee = 0;
+        }
     }
     with_our_oil(conn, &mut prepared).await?;
     // Чек «в сервис» — с видом замены из справочника (ADR-096) и с данными клиента (ADR-100).
@@ -2241,6 +2291,7 @@ pub async fn return_sale_tx(
                 seen_list: None,
                 free_with_oil: false,
                 oil_category: None,
+                takeaway: false,
             },
             line_no: rl.line_no,
             amount,
@@ -2905,6 +2956,7 @@ pub async fn no_receipt_return_tx(
             seen_list: None,
             free_with_oil: false,
             oil_category: None,
+            takeaway: false,
         });
     }
     if total <= 0 {
