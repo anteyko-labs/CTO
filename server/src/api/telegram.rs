@@ -1212,7 +1212,7 @@ async fn link_contact(
             let book = customer_book(conn, party_id).await?;
             Ok(Reply::new(
                 format!(
-                    "{}, вы подключены ✅\n\n💼 Как работник: кнопка «💼 Мой заработок» — сколько заработали за день и месяц, удержания и премии, ваши работы.\n\n🚗 Как клиент: напомним о замене масла, с покупок — бонусные баллы (1 балл = 1 сом). Кнопки «🚗 Мои машины», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
+                    "{}, вы подключены ✅\n\n💼 Как работник: кнопка «💼 Мой заработок» — сколько заработали за день и месяц, удержания и премии, ваши работы.\n\n🚗 Как клиент: напомним о замене масла, с покупок — бонусные баллы (1 балл = 1 сом). Кнопки «🚗 Мои машины», «📜 Прошлые ТО», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
                     e.name
                 ),
                 Keys::Both,
@@ -1240,7 +1240,7 @@ async fn link_contact(
             };
             Ok(Reply::new(
                 format!(
-                    "{name}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы», «💳 Мой долг».\n\n{book}{staff_note}"
+                    "{name}, вы подключены ✅\n\n• Напомним о замене масла за неделю и за день до срока.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «📜 Прошлые ТО», «⭐ Баллы», «💳 Мой долг».\n\n{book}{staff_note}"
                 ),
                 Keys::Customer,
             ))
@@ -1318,7 +1318,7 @@ async fn link_by_code(
     let book = customer_book(conn, p.id).await?;
     Ok(Reply::new(
         format!(
-            "{}, вы подключены ✅\n\n• Напомним о замене масла.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
+            "{}, вы подключены ✅\n\n• Напомним о замене масла.\n• С каждой покупки — бонусные баллы: 1 балл = 1 сом. Чтобы списать, назовите номер на кассе.\n\nКнопки внизу: «🚗 Мои машины», «📜 Прошлые ТО», «⭐ Баллы», «💳 Мой долг».\n\n{book}",
             p.name
         ),
         section_keys(true, employee),
@@ -2363,24 +2363,11 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
                 };
                 let (title, details) = event_text(conn, &ev).await?;
                 let who = r.who.map(|w| format!("\n— {w}")).unwrap_or_default();
-                let mut text = if details.is_empty() {
+                let text = if details.is_empty() {
                     format!("{title}{who}")
                 } else {
                     format!("{title}\n{details}{who}")
                 };
-                // Смену закрыли — следом итог её учётного дня, чтобы не нажимать «Сегодня».
-                if r.action == "shift.close"
-                    && let Some(id) = r.entity_id
-                    && let Some(day) =
-                        sqlx::query_scalar!("select business_date from shifts where id = $1", id)
-                            .fetch_optional(&mut *conn)
-                            .await?
-                {
-                    text = format!(
-                        "{text}\n\n{}",
-                        day_report(conn, r.branch_id, day, false).await?
-                    );
-                }
                 // Несколько филиалов — у события название филиала.
                 let text = branch_head(several, &r.branch_name, text);
                 texts.insert(r.id, text.clone());
@@ -2390,6 +2377,85 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
         out.push(Outgoing {
             audit_id: r.id,
             at: r.created_at,
+            chat_id: r.chat_id,
+            text,
+        });
+    }
+    out.extend(day_reports(conn, since, several).await?);
+    Ok(out)
+}
+
+/// «Итог дня» после последней смены учётного дня (ADR-121). День закончен, когда все его смены
+/// закрыты и при этом открыта смена следующего дня, наступили следующие сутки или уже 20:00 по
+/// Бишкеку (конец окна рассылки). Итог идёт в чат следом за сообщением о закрытии последней
+/// смены — когда то уже доставлено. Отметка доставки — по id этой смены: итог не повторяется, а
+/// смена, открытая и закрытая позже в тот же день, приносит новый итог.
+async fn day_reports(
+    conn: &mut PgConnection,
+    since: DateTime<Utc>,
+    several: bool,
+) -> AppResult<Vec<Outgoing>> {
+    let rows = sqlx::query!(
+        r#"with last as (
+             select distinct on (s.branch_id, s.business_date) s.id, s.branch_id, s.business_date
+             from shifts s
+             where s.business_date >= (now() at time zone 'Asia/Bishkek')::date - 2
+             order by s.branch_id, s.business_date, s.opened_at desc
+           ), closed as (
+             select l.id, l.branch_id, l.business_date, max(c.closed_at) as at
+             from last l join shift_closes c on c.shift_id = l.id
+             where not exists (select 1 from shift_reopens r where r.close_id = c.id)
+             group by l.id, l.branch_id, l.business_date
+           )
+           select l.id, l.branch_id, l.business_date, l.at as "at!", b.name as branch_name, t.chat_id
+           from closed l
+           join branches b on b.id = l.branch_id
+           join telegram_links t on true
+           join users o on o.id = t.user_id and o.active and o.role = 'owner'
+           where l.at > greatest($1::timestamptz, now() - interval '1 day', t.linked_at)
+             -- Последняя смена закрыта: закрытие позже действующего переоткрыли — смена открыта.
+             and not exists (
+               select 1 from shift_closes c
+               where c.shift_id = l.id and c.closed_at > l.at)
+             -- Другие смены того же дня (другие кассы) тоже закрыты.
+             and not exists (
+               select 1 from shifts x
+               where x.branch_id = l.branch_id and x.business_date = l.business_date
+                 and not exists (
+                   select 1 from shift_closes c
+                   where c.shift_id = x.id
+                     and not exists (select 1 from shift_reopens r where r.close_id = c.id)))
+             and (exists (select 1 from shifts n
+                          where n.branch_id = l.branch_id and n.business_date > l.business_date)
+                  or (now() at time zone 'Asia/Bishkek')::date > l.business_date
+                  or extract(hour from now() at time zone 'Asia/Bishkek') >= 20)
+             -- Сообщение о закрытии этой смены уже в чате.
+             and exists (
+               select 1 from audit_log a join telegram_sent s
+                 on s.audit_id = a.id and s.chat_id = t.chat_id
+               where a.action = 'shift.close' and a.entity_id = l.id)
+             and not exists (
+               select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = l.id)
+           order by l.at, t.chat_id"#,
+        since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut texts: HashMap<Uuid, String> = HashMap::new();
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let text = match texts.get(&r.id) {
+            Some(t) => t.clone(),
+            None => {
+                let report = day_report(conn, r.branch_id, r.business_date, false).await?;
+                let text = branch_head(several, &r.branch_name, report);
+                texts.insert(r.id, text.clone());
+                text
+            }
+        };
+        out.push(Outgoing {
+            audit_id: r.id,
+            at: r.at,
             chat_id: r.chat_id,
             text,
         });
@@ -2523,6 +2589,10 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
             Some(id) => sale_text(conn, id).await?,
             None => describe(ev.action, data),
         },
+        "sale.return" => match ev.entity_id {
+            Some(id) => return_text(conn, id).await?,
+            None => describe(ev.action, data),
+        },
         "shift.close" => {
             let diff = num("diff");
             let result = match diff {
@@ -2530,17 +2600,24 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
                 d if d < 0 => format!("недостача {}", format_som(-d)),
                 d => format!("излишек {}", format_som(d)),
             };
-            (
-                format!(
-                    "🔴 Смена № {} закрыта",
-                    shift_number(conn, ev.entity_id).await?
-                ),
+            let title = format!(
+                "🔴 Смена № {} закрыта",
+                shift_number(conn, ev.entity_id).await?
+            );
+            // Отчёт этой смены в виде владельца (ADR-121); «Итог дня» — отдельно, после
+            // последней смены дня (`day_reports`).
+            let report = match ev.entity_id {
+                Some(id) => shift_close_report(conn, id, diff).await?,
+                None => None,
+            };
+            let details = report.unwrap_or_else(|| {
                 format!(
                     "Должно быть {}, посчитали {} — {result}",
                     money_of(data, "expected"),
                     money_of(data, "counted")
-                ),
-            )
+                )
+            });
+            (title, details)
         }
         // О закрытии уже было сообщение «🔴 Смена № … закрыта» — здесь только сдача кассы.
         // Сдали кассу: сколько, куда и кто кассир (SPEC-29 §14); прежние записи — «в сейф».
@@ -2929,12 +3006,16 @@ fn feed_text(action: &str, data: &Value, employee: Option<&str>) -> (String, Str
 }
 
 /// Чек для владельца: номер, сумма, как платили, кто продал, клиент и машина; у чека «в сервис» —
-/// услуги и сколько мастеру (ADR-096).
+/// услуги и сколько мастеру (ADR-096). В долг — пометка «📒 В долг» и долг клиента после чека
+/// со сроком (ADR-121).
 pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, String)> {
     let s = sqlx::query!(
         r#"select s.number, s.total_tyiyn, s.sale_type, s.master_fee_tyiyn, c.full_name as cashier,
                   m.full_name as "master?", p.name as "party?", v.plate as "plate?",
-                  (select count(*) from sale_lines l where l.sale_id = s.id) as "lines!"
+                  s.party_id as "party_id?", s.created_at, p.due_days as "due_days?",
+                  (select count(*) from sale_lines l where l.sale_id = s.id) as "lines!",
+                  (select coalesce(sum(x.amount_tyiyn), 0) from sale_payments x
+                   where x.sale_id = s.id and x.method = 'debt')::bigint as "debt!"
            from sales s
            join employees c on c.id = s.cashier_id
            left join employees m on m.id = s.master_id
@@ -3014,15 +3095,164 @@ pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, 
             None => format!("клиент {p}"),
         });
     }
+    if s.debt > 0
+        && let Some(party_id) = s.party_id
+    {
+        let owed = debt_after(conn, party_id, s.created_at).await?;
+        details.push(debt_line(conn, party_id, owed, s.due_days, "теперь").await?);
+    }
     Ok((
         format!(
-            "🧾 Чек № {} — {} ({} поз.)",
+            "🧾 Чек № {} — {} ({} поз.){}",
             s.number,
             format_som(s.total_tyiyn),
-            s.lines
+            s.lines,
+            if s.debt > 0 {
+                " · 📒 В долг"
+            } else {
+                ""
+            }
         ),
         details.join("\n"),
     ))
+}
+
+/// Долг клиента на момент документа: журнал долга по всем филиалам до этого времени включительно
+/// (записи документа — в его транзакции, с тем же временем).
+async fn debt_after(conn: &mut PgConnection, party_id: Uuid, at: DateTime<Utc>) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from party_ledger
+           where party_id = $1 and created_at <= $2"#,
+        party_id,
+        at
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// «📒 Долг клиента теперь 400 с, срок до 10.11.2026»; срок — у карточки со сроком оплаты.
+async fn debt_line(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    owed: i64,
+    due_days: Option<i32>,
+    when: &str,
+) -> AppResult<String> {
+    let due = crate::api::parties::debt_dues(&mut *conn, &[(party_id, owed, due_days)])
+        .await?
+        .get(&party_id)
+        .and_then(|d| d.due_date);
+    Ok(format!(
+        "📒 Долг клиента {when} {}{}",
+        format_som(owed),
+        due.map(|d| format!(", срок до {}", d.format("%d.%m.%Y")))
+            .unwrap_or_default()
+    ))
+}
+
+/// Возврат для владельца (ADR-121): клиент, по какому чеку, как вернули — с долга, наличными, на
+/// карту — и долг клиента после возврата.
+async fn return_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, String)> {
+    let r = sqlx::query!(
+        r#"select r.number, r.total_tyiyn, r.created_at, o.number as "original?",
+                  p.id as "party_id?", p.name as "party?", p.due_days as "due_days?"
+           from sales r
+           left join sales o on o.id = r.reversal_of
+           left join parties p on p.id = coalesce(o.party_id, r.party_id)
+           where r.id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let how = sqlx::query!(
+        r#"select method, coalesce(-sum(amount_tyiyn), 0)::bigint as "amount!"
+           from sale_payments where sale_id = $1 group by method order by 2 desc"#,
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .filter(|p| p.amount != 0)
+    .map(|p| {
+        let how = match p.method.as_str() {
+            "debt" => "с долга",
+            "cash" => "наличными",
+            "card" => "на карту",
+            "transfer" => "переводом",
+            "invoice" => "на счёт",
+            "bonus" => "баллами",
+            "battery" => "аккумулятором",
+            other => other,
+        };
+        format!("{how} {}", format_som(p.amount))
+    })
+    .collect::<Vec<_>>();
+    let mut details = Vec::new();
+    if let Some(p) = &r.party {
+        details.push(format!("клиент {p}"));
+    }
+    if !how.is_empty() {
+        details.push(format!("вернули: {}", how.join(", ")));
+    }
+    if let Some(party_id) = r.party_id {
+        let owed = debt_after(conn, party_id, r.created_at).await?;
+        details.push(debt_line(conn, party_id, owed, r.due_days, "после возврата").await?);
+    }
+    Ok((
+        format!(
+            "↩️ Возврат № {}{} — {}",
+            r.number,
+            r.original
+                .map(|n| format!(" по чеку № {n}"))
+                .unwrap_or_default(),
+            format_som(r.total_tyiyn.saturating_abs())
+        ),
+        details.join("\n"),
+    ))
+}
+
+/// Отчёт закрытой смены для ленты владельца (ADR-121): тот же короткий отчёт, что «💵 Смена», в
+/// виде владельца, и недостача — сколько удержано с кассира. Смены нет — `None`.
+async fn shift_close_report(
+    conn: &mut PgConnection,
+    id: Uuid,
+    diff: i64,
+) -> AppResult<Option<String>> {
+    let Some(branch_id) = sqlx::query_scalar!("select branch_id from shifts where id = $1", id)
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let r = crate::api::shift_report::load(conn, branch_id, true, id).await?;
+    let mut extra = Vec::new();
+    if diff < 0 {
+        let held = sqlx::query!(
+            r#"select e.full_name, coalesce(-sum(a.amount_tyiyn), 0)::bigint as "v!"
+               from payroll_accruals a join employees e on e.id = a.employee_id
+               where a.doc_type = 'shift' and a.doc_id = $1 and a.kind = 'shortage'
+                 and a.reversal_of is null
+                 and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)
+               group by e.full_name order by e.full_name"#,
+            id
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .filter(|h| h.v > 0)
+        .map(|h| format!("{} {}", h.full_name, format_som(h.v)))
+        .collect::<Vec<_>>();
+        extra.push(format!(
+            "⚠️ Недостача {}{}",
+            format_som(-diff),
+            if held.is_empty() {
+                " — с кассира не удержано".to_string()
+            } else {
+                format!(" — удержано с кассира {}", held.join(", "))
+            }
+        ));
+    }
+    Ok(Some(crate::api::shift_report::report_text(&r, &extra)))
 }
 
 // ---------- Сеть ----------

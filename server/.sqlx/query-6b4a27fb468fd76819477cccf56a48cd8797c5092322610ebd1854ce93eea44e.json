@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.number, r.total_tyiyn, r.created_at, o.number as \"original?\",\n                  p.id as \"party_id?\", p.name as \"party?\", p.due_days as \"due_days?\"\n           from sales r\n           left join sales o on o.id = r.reversal_of\n           left join parties p on p.id = coalesce(o.party_id, r.party_id)\n           where r.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "original?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "party_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "party?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "due_days?",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "6b4a27fb468fd76819477cccf56a48cd8797c5092322610ebd1854ce93eea44e"
+}

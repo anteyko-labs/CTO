@@ -4794,8 +4794,9 @@ async fn bot_api_splits_long_text_and_keeps_token_out_of_logs() {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn bot_shift_close_reports_its_own_day_once(pool: PgPool) {
-    // Закрытие смены — одно сообщение «закрыта» с номером и итог её учётного дня, а не
-    // календарного; сдача кассы — отдельным сообщением без «закрыта» (ADR-063).
+    // Закрытие смены — одно сообщение «закрыта» с номером и отчётом смены, следом — итог её
+    // учётного дня, а не календарного; сдача кассы — отдельным сообщением без «закрыта»
+    // (ADR-063, ADR-121).
     use avtodom_server::api::telegram::pending;
     let w = seed(&pool).await;
     let branch = w.owner.user.branch_id;
@@ -4815,6 +4816,16 @@ async fn bot_shift_close_reports_its_own_day_once(pool: PgPool) {
     .bind(till)
     .bind(w.cashier)
     .bind(w.owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into shift_closes (id, shift_id, seq, expected_tyiyn, counted_tyiyn, diff_tyiyn, comment, user_id, device_id)
+         values ($1, $2, 1, 100000, 90000, -10000, 'не хватает', $3, $1)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(shift)
+    .bind(w.admin.user.id)
     .execute(&pool)
     .await
     .unwrap();
@@ -4854,14 +4865,10 @@ async fn bot_shift_close_reports_its_own_day_once(pool: PgPool) {
         "{}",
         closed[0].text
     );
+    // Отчёт этой смены, а «Итог дня» — отдельным сообщением после него (ADR-121).
     assert!(closed[0].text.contains("недостача 100 с"));
-    assert!(
-        closed[0]
-            .text
-            .contains(&format!("📊 Итог дня, {yesterday}")),
-        "{}",
-        closed[0].text
-    );
+    assert!(closed[0].text.contains("💰 Деньги в кассе"));
+    assert!(!closed[0].text.contains("Итог дня"), "{}", closed[0].text);
     let handover = msgs.iter().find(|m| !m.text.contains("закрыта")).unwrap();
     assert!(
         handover.text.starts_with("📥 Касса смены № 7 сдана")
@@ -4869,6 +4876,25 @@ async fn bot_shift_close_reports_its_own_day_once(pool: PgPool) {
         "{}",
         handover.text
     );
+    for m in &msgs {
+        avtodom_server::api::telegram::mark_sent(&mut conn, m)
+            .await
+            .unwrap();
+    }
+    // Смена вчерашнего учётного дня закрыта — день закончен: итог её дня, а не календарного.
+    let msgs = pending(&mut conn).await.unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert!(
+        msgs[0]
+            .text
+            .starts_with(&format!("📊 Итог дня, {yesterday}")),
+        "{}",
+        msgs[0].text
+    );
+    avtodom_server::api::telegram::mark_sent(&mut conn, &msgs[0])
+        .await
+        .unwrap();
+    assert!(pending(&mut conn).await.unwrap().is_empty());
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

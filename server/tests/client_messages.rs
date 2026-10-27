@@ -670,6 +670,13 @@ async fn bot_link_with_client_code(pool: PgPool) {
         .await
         .unwrap();
     assert!(r.text.contains("вы подключены"), "{}", r.text);
+    // В перечне кнопок — и «📜 Прошлые ТО» (SPEC-36 §7).
+    assert!(
+        r.text
+            .contains("«🚗 Мои машины», «📜 Прошлые ТО», «⭐ Баллы», «💳 Мой долг»"),
+        "{}",
+        r.text
+    );
     assert!(!r.text.contains(&code));
     let linked: Uuid =
         sqlx::query_scalar("select party_id from telegram_customers where chat_id = 601")
