@@ -197,6 +197,38 @@ test('приход: «Это уже есть — выбрать товар» с�
   expect((await umagRow(page.request, umagCode)).product_id).toBe(p.id)
 })
 
+test('приход: начало кода Умага и код целиком без Enter — строки Умага в списке', async ({ page }) => {
+  await login(page)
+  // Как DOLCE и MEDORI рабочей выгрузки: заводские коды с общим началом, у каждой — «доп. коды».
+  const head = `9${RUN}`
+  const dolce = `DOLCE ТЕСТ ${RUN}`
+  const medori = `MEDORI ТЕСТ ${RUN}`
+  await putUmag(page.request, [
+    { name: dolce, barcode: `${head}0100`, extra_code: `${head}0117;${head}0131`, price_tyiyn: 25_000, unit: 'шт' },
+    { name: medori, barcode: `${head}0222`, extra_code: `${head}0291;${head}0208`, price_tyiyn: 40_000, unit: 'шт' },
+  ])
+
+  await page.goto('/receipts/new')
+  const picker = page.locator('#receipt-picker')
+  const hit = (name: string) => page.getByTestId('umag-block').locator('[data-old-hit]').filter({ hasText: name })
+  // Начало кода (от четырёх знаков) — обе строки, пока набирают.
+  for (const typed of [head.slice(0, 4), head]) {
+    await picker.fill(typed)
+    await expect(hit(dolce)).toBeVisible()
+    await expect(hit(medori)).toBeVisible()
+  }
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/prihod-umag-prefix.png` })
+  // Штрихкод и «доп. код» целиком, без Enter, — только своя строка.
+  for (const typed of [`${head}0222`, `${head}0291`, `${head}029`]) {
+    await picker.fill(typed)
+    await expect(hit(medori)).toBeVisible()
+    await expect(hit(dolce)).toHaveCount(0)
+  }
+  // Строка из списка — карточка из Умага.
+  await hit(medori).click()
+  await expect(page.getByRole('dialog', { name: 'Новый товар' }).locator('#product-name')).toHaveValue(medori)
+})
+
 test('«Товары»: поиск по коду и тексту показывает Умаг; скан — окно и «Завести»; блок «Умаг» в карточке', async ({ page }) => {
   await login(page)
   const catName = `Антифризы Умаг ${RUN}`

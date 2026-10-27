@@ -11344,6 +11344,13 @@ async fn old_catalog_found_by_typed_code(pool: PgPool) {
     // «Доп. код» второй строки целиком и заводской код с нулём впереди, потерянным Excel.
     assert_eq!(first("2011303430805").await[0]["name"], "LED ЛАМПА M3 H11");
     assert_eq!(first("0123456789012").await[0]["exact"], json!(true));
+    // «Доп. код» по началу — тоже (SPEC-35 §2), но это не точное совпадение; меньше четырёх
+    // знаков — не начало кода.
+    let hits = first("20113034").await;
+    assert_eq!(hits[0]["name"], "LED ЛАМПА M3 H11", "{hits}");
+    assert_eq!(hits[0]["exact"], json!(false));
+    let hits = first("201").await;
+    assert_eq!(hits.as_array().map(Vec::len), Some(0), "{hits}");
     // Артикул латиницей с дефисом, без учёта регистра.
     let hits = first("c-110").await;
     assert_eq!(hits[0]["name"], "Фильтр C-110", "{hits}");
