@@ -93,6 +93,19 @@ pub fn buttons(id: Uuid) -> Vec<(String, String)> {
 
 /// Проводит операцию той же функцией, что программа. Вызывается внутри транзакции.
 pub async fn execute(conn: &mut PgConnection, ctx: &Ctx, op: DraftOp) -> AppResult<Posted> {
+    // Закрытый филиал — только для чтения и в боте, как на экране (ADR-128).
+    let archived = sqlx::query_scalar!(
+        "select archived from branches where id = $1",
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
+    if archived {
+        return Err(AppError::Conflict(
+            "филиал закрыт: изменения в нём недоступны".into(),
+        ));
+    }
     Ok(match op {
         DraftOp::Expense(req) => {
             let out = crate::api::expenses::post_expense_tx(conn, ctx, req).await?;

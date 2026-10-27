@@ -189,7 +189,9 @@ async fn get_one(
     Ok(Json(load(&mut conn, user.branch_id, id).await?))
 }
 
-/// «Отменить»: QR больше не ждём (у банка он истечёт сам). Оплаченный не отменяется.
+/// «Отменить»: QR больше не ждём. У банка срока нет (untilDateTime = null), поэтому отменённый
+/// QR ещё LATE_MINUTES опрашивается: оплата после отмены становится «оплачен» с тревогой
+/// владельцу. Оплаченный не отменяется.
 async fn cancel(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -264,13 +266,14 @@ async fn audit_as(
 pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
     // Неоплаченный в срок QR ещё LATE_MINUTES опрашивается: покупатель может оплатить
     // позже (тест банка 23.10.2026 — оплата через минуту после срока). Неопрошенная оплата
-    // через 12 с становится у банка ошибкой, а деньги — без чека.
+    // через 12 с становится у банка ошибкой, а деньги — без чека. Отменённый на кассе QR
+    // у банка остаётся живым — его опрашиваем так же.
     let waiting = sqlx::query!(
         r#"select id, branch_id, transaction_id, amount_tyiyn, user_id, device_id, expires_at,
                   status as "status!"
            from bank_qr
            where status = 'waiting'
-              or (status = 'unpaid' and sale_id is null
+              or (status in ('unpaid', 'cancelled') and sale_id is null
                   and expires_at > now() - make_interval(mins => $1))
            order by created_at limit 50"#,
         LATE_MINUTES as i32
@@ -280,7 +283,8 @@ pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
     for q in waiting {
         let now = Utc::now();
         let late = now > q.expires_at + Duration::seconds(GRACE_SECONDS);
-        let late_check = q.status == "unpaid";
+        let late_check = q.status != "waiting";
+        let after_cancel = q.status == "cancelled";
         let next = match bank.qr_status(&q.transaction_id).await {
             Ok(s) if s.status == "PROCESSED" => Some(("paid", Some(s))),
             // После срока ждём только оплату: остальное уже записано как «не оплачен».
@@ -301,7 +305,8 @@ pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
         let changed = sqlx::query!(
             r#"update bank_qr set status = $2, paid_tyiyn = $3, operation_id = $4,
                       paid_at = case when $2 = 'paid' then coalesce($5, now()) end
-               where id = $1 and (status = 'waiting' or ($2 = 'paid' and status = 'unpaid'))"#,
+               where id = $1
+                 and (status = 'waiting' or ($2 = 'paid' and status in ('unpaid', 'cancelled')))"#,
             q.id,
             status,
             paid_sum,
@@ -320,9 +325,26 @@ pub async fn poll_once(pool: &PgPool, bank: &Optima) -> AppResult<()> {
                 "bank_qr.paid",
                 q.id,
                 json!({ "amount": q.amount_tyiyn, "paid": paid_sum,
-                        "transaction_id": q.transaction_id, "late": late_check }),
+                        "transaction_id": q.transaction_id, "late": late_check,
+                        "after_cancel": after_cancel }),
             )
             .await?;
+            // Кассир этот QR уже не ждёт — владельцу сразу, без 15 минут.
+            if after_cancel {
+                sqlx::query!("update bank_qr set alerted_at = now() where id = $1", q.id)
+                    .execute(&mut *tx)
+                    .await?;
+                audit_as(
+                    &mut tx,
+                    q.branch_id,
+                    Some(q.user_id),
+                    Some(q.device_id),
+                    "bank_qr.unclaimed",
+                    q.id,
+                    json!({ "amount": paid_sum.unwrap_or(q.amount_tyiyn), "after_cancel": true }),
+                )
+                .await?;
+            }
         }
         tx.commit().await?;
     }

@@ -910,3 +910,87 @@ async fn firm_link_to_bot_without_public_url_and_test_send(pool: PgPool) {
     assert_eq!(st["oil_params"].as_array().unwrap().len(), 5);
     assert_eq!(st["purchase_params"].as_array().unwrap().len(), 7);
 }
+
+// ---------- Проверка 27.10.2026 ----------
+
+/// «Исправить» чека фирмы: сторно — не возврат, верный чек — не второй закуп (фирме уже
+/// писали об исходном).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn firm_sale_correction_sends_no_return_and_no_second_purchase(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.settings("avtodom_oil", "avtodom_purchase").await;
+    let (firm, driver, car) = w.firm("ОсОО Такси", "0555 44 55 66").await;
+    let sale = w.firm_sale(firm, driver, car, 1).await;
+    w.pass(10).await;
+    assert_eq!(w.wa.bodies().len(), 1);
+    let sid = sale["id"].as_str().unwrap();
+    let mut draft = get(
+        &w.app,
+        &format!("/api/v1/corrections/draft/sale/{sid}"),
+        &w.owner,
+    )
+    .await;
+    draft["doc"]["lines"][0]["qty"] = json!(2);
+    draft["doc"]["payments"] = json!([{ "method": "debt", "amount_tyiyn": 200_000 }]);
+    ok(
+        &w.app,
+        "POST",
+        "/api/v1/corrections",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "kind": "sale", "original_id": sid,
+                "comment": "две щётки", "doc": draft["doc"] }),
+    )
+    .await;
+    w.pass(10).await;
+    w.pass(11).await;
+    let wa = w.wa.bodies();
+    assert_eq!(wa.len(), 1, "{wa:?}");
+}
+
+/// Без интернета дольше получаса сообщение не становится «ошибкой»: связь вернулась —
+/// уходит.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn message_waits_for_connection_longer_than_thirty_tries(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    w.settings("avtodom_oil", "avtodom_purchase").await;
+    let (firm, driver, car) = w.firm("ОсОО Такси", "0555 44 55 66").await;
+    *w.wa.fail.lock().unwrap() = Some((
+        503,
+        json!({ "error": { "message": "Service temporarily unavailable", "code": 2 } }),
+    ));
+    w.firm_sale(firm, driver, car, 1).await;
+    for _ in 0..40 {
+        w.pass(10).await;
+        sqlx::query("update client_messages set next_try_at = now()")
+            .execute(&w.pool)
+            .await
+            .unwrap();
+    }
+    let (status, attempts): (String, i32) =
+        sqlx::query_as("select status, attempts from client_messages")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), attempts), ("pending", 40));
+    *w.wa.fail.lock().unwrap() = None;
+    w.pass(10).await;
+    assert_eq!(w.wa.bodies().len(), 1);
+    // Через двое суток от создания — «ошибка».
+    *w.wa.fail.lock().unwrap() = Some((
+        503,
+        json!({ "error": { "message": "Service temporarily unavailable", "code": 2 } }),
+    ));
+    w.firm_sale(firm, driver, car, 1).await;
+    w.pass(10).await;
+    sqlx::query("update client_messages set created_at = now() - interval '49 hours', next_try_at = now() where status = 'pending'")
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    w.pass(10).await;
+    let errors: i64 =
+        sqlx::query_scalar("select count(*) from client_messages where status = 'error'")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    assert_eq!(errors, 1);
+}

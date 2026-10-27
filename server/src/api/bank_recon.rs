@@ -229,7 +229,7 @@ async fn our_items(
             }
         })
         .collect();
-    // Погашения долга картой (не переводом) на этот счёт, кроме отменённых.
+    // Погашения долга картой (не переводом и не «По счёту») на этот счёт, кроме отменённых.
     let repayments = sqlx::query!(
         r#"select m.amount_tyiyn, m.created_at,
                   coalesce((select -sum(f.amount_tyiyn) from cash_movements f
@@ -242,7 +242,7 @@ async fn our_items(
              and not exists (select 1 from audit_log a
                              where a.branch_id = $1 and a.action = 'debt.repayment'
                                and a.data->>'repayment_id' = m.doc_id::text
-                               and a.data->>'method' = 'transfer')
+                               and a.data->>'method' in ('transfer', 'invoice'))
              and not exists (select 1 from party_ledger l join party_ledger r on r.reversal_of = l.id
                              where l.doc_type = 'repayment' and l.doc_id = m.doc_id)"#,
         branch_id,

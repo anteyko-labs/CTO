@@ -424,7 +424,8 @@ async fn require_party_right(
     if role == "customer" {
         crate::auth::require_permission(conn, user, "clients").await
     } else {
-        Ok(())
+        // Поставщика заводят и правят с правом «Приход товара» (ADR-097, ADR-128).
+        crate::auth::require_permission(conn, user, "receipts").await
     }
 }
 

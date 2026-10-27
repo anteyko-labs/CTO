@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())\n           on conflict (login) do update set\n             failures = case when login_attempts.locked_until > now() then login_attempts.failures\n                             when login_attempts.last_failed_at < now() - interval '1 day' then 1\n                             else login_attempts.failures + 1 end,\n             last_failed_at = case when login_attempts.locked_until > now()\n                                   then login_attempts.last_failed_at else now() end,\n             locked_until = case when login_attempts.locked_until > now()\n                                 then login_attempts.locked_until end\n           returning failures,\n                     coalesce(locked_until > now() + interval '1 year', false) as \"closed!\",\n                     ceil(extract(epoch from locked_until - now()) / 60)::bigint as \"left_min?\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failures",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "closed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "left_min?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "14aa53dcb6309a72453d702f7b600bc753c82afa2428c6c6fe7cd91b2d4b5a54"
+}

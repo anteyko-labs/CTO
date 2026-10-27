@@ -373,7 +373,11 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
     {
         // Только закупка (и приём аккумулятора, в том числе в оплату чека) задаёт цену: возврат по чеку с нулевой себестоимостью не обнуляет минус.
         per_unit(m.value_delta, m.qty_delta)
-    } else if qty > 0 && value < 0 {
+    } else if qty > 0
+        && (value < 0 || (value == 0 && m.doc_type == "oil_transfer_reversal" && m.qty_delta < 0))
+    {
+        // Отмена перелива после продаж из получателя может снять больше, чем стоит остаток
+        // (своё масло дешевле перелитого): оставшееся — по последней закупочной.
         Some(if after.last_cost_qty > 0 {
             per_unit(after.last_cost_tyiyn, after.last_cost_qty).unwrap_or(0)
         } else {
@@ -381,14 +385,15 @@ pub async fn apply_movement(conn: &mut PgConnection, m: Movement<'_>) -> AppResu
         })
     } else if qty > 0
         && value > 0
-        && matches!(
+        && (matches!(
             m.doc_type,
             "receipt_reversal" | "stock_in_reversal" | "battery_intake_reversal"
-        )
+        ) || (m.doc_type == "oil_transfer_reversal" && m.qty_delta < 0))
     {
         // Сторно дешёвой закупки после продаж оставляет остатку завышенную стоимость: продажи
         // считались по средней с этой закупкой. Остаток не дороже самой дорогой живой закупки,
-        // лишнее — переоценкой в себестоимость дня (ADR-087).
+        // лишнее — переоценкой в себестоимость дня (ADR-087). Так же у получателя после отмены
+        // перелива дешёвого масла: перелитое снимается по своей стоимости, а не по средней.
         let max = live_purchases(conn, m.branch_id, m.product_id)
             .await?
             .into_iter()

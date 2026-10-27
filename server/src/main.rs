@@ -86,6 +86,8 @@ async fn run() -> Result<(), String> {
         ));
     }
     state.public_url = config.public_url.clone();
+    // Старые строки попыток входа — раз в час (ADR-128).
+    avtodom_server::api::auth::spawn_cleanup(pool.clone());
     avtodom_server::api::client_messages::spawn(pool, &state);
     let web_dir = PathBuf::from(&config.web_dir);
     let web = web_dir

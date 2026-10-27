@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from branch_products\n                          where branch_id = $1 and product_id = $2 and stock_qty > 0\n                            and stock_value_tyiyn <= 0 and last_cost_qty = 0) as \"x!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "x!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cc7fccc1c772be26b99c47afeb3521992707ccf6b3da0b904c9344ec611d2b95"
+}

@@ -625,17 +625,24 @@ pub(crate) async fn bank_data(
         .filter_map(|r| r.doc_id)
         .collect();
     let repay_ids_text: Vec<String> = repay_ids.iter().map(Uuid::to_string).collect();
-    let transfer_repay: HashSet<Uuid> = sqlx::query_scalar!(
-        r#"select (data->>'repayment_id')::uuid as "id!" from audit_log
+    let mut transfer_repay: HashSet<Uuid> = HashSet::new();
+    let mut invoice_repay: HashSet<Uuid> = HashSet::new();
+    for r in sqlx::query!(
+        r#"select (data->>'repayment_id')::uuid as "id!", data->>'method' as "method!" from audit_log
            where branch_id = $1 and action = 'debt.repayment'
-             and data->>'repayment_id' = any($2) and data->>'method' = 'transfer'"#,
+             and data->>'repayment_id' = any($2) and data->>'method' in ('transfer', 'invoice')"#,
         branch_id,
         &repay_ids_text
     )
     .fetch_all(&mut *conn)
     .await?
-    .into_iter()
-    .collect();
+    {
+        if r.method == "invoice" {
+            invoice_repay.insert(r.id);
+        } else {
+            transfer_repay.insert(r.id);
+        }
+    }
 
     let mut card = BankIncome::default();
     let mut transfer = BankIncome::default();
@@ -668,7 +675,11 @@ pub(crate) async fn bank_data(
                 e.1 = e.1.saturating_add(r.amount_tyiyn);
             }
             ("debt_repayment", _, Some(id)) if r.doc_type == "repayment" => {
-                if transfer_repay.contains(&id) {
+                if invoice_repay.contains(&id) {
+                    invoice.repayments_tyiyn =
+                        invoice.repayments_tyiyn.saturating_add(r.amount_tyiyn);
+                    d.invoice_tyiyn = d.invoice_tyiyn.saturating_add(r.amount_tyiyn);
+                } else if transfer_repay.contains(&id) {
                     transfer.repayments_tyiyn =
                         transfer.repayments_tyiyn.saturating_add(r.amount_tyiyn);
                     d.transfer_tyiyn = d.transfer_tyiyn.saturating_add(r.amount_tyiyn);
@@ -707,7 +718,7 @@ pub(crate) async fn bank_data(
     transfer.total_tyiyn = transfer
         .sales_tyiyn
         .saturating_add(transfer.repayments_tyiyn);
-    invoice.total_tyiyn = invoice.sales_tyiyn;
+    invoice.total_tyiyn = invoice.sales_tyiyn.saturating_add(invoice.repayments_tyiyn);
     let change = rows
         .iter()
         .fold(0i64, |s, r| s.saturating_add(r.amount_tyiyn));

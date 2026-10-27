@@ -3703,6 +3703,44 @@ struct Pace {
     chats: HashMap<i64, Instant>,
 }
 
+/// Повторяющееся предупреждение о связи: в журнал при первом сбое, потом не чаще раза в час и
+/// при восстановлении. Точка без интернета — штатный режим, а server.log не ротируется
+/// (ADR-128).
+#[derive(Debug, Default)]
+pub struct Quiet {
+    failing: bool,
+    last: Option<Instant>,
+    skipped: u64,
+}
+
+impl Quiet {
+    pub const EVERY: Duration = Duration::from_secs(3600);
+
+    /// Сбой: `Some(пропущено)` — писать в журнал сейчас, `None` — промолчать.
+    pub fn fail(&mut self, now: Instant) -> Option<u64> {
+        self.failing = true;
+        match self.last {
+            Some(t) if now.saturating_duration_since(t) < Self::EVERY => {
+                self.skipped = self.skipped.saturating_add(1);
+                None
+            }
+            _ => {
+                self.last = Some(now);
+                Some(std::mem::take(&mut self.skipped))
+            }
+        }
+    }
+
+    /// Успех: `Some(пропущено)` — связь восстановилась после сбоев, сказать об этом.
+    pub fn ok(&mut self) -> Option<u64> {
+        if !std::mem::take(&mut self.failing) {
+            return None;
+        }
+        self.last = None;
+        Some(std::mem::take(&mut self.skipped))
+    }
+}
+
 /// Подключение к Телеграму. Адрес содержит ключ бота: он не печатается и не пишется в журнал
 /// (ошибки сети — без адреса).
 #[derive(Clone)]
@@ -3714,6 +3752,8 @@ pub struct Api {
     pace: std::sync::Arc<tokio::sync::Mutex<Pace>>,
     gap: Duration,
     chat_gap: Duration,
+    /// Предупреждения getUpdates без связи — не каждые 10 с.
+    quiet: std::sync::Arc<std::sync::Mutex<Quiet>>,
 }
 
 impl Api {
@@ -3729,6 +3769,15 @@ impl Api {
             })),
             gap: Duration::from_millis(50),
             chat_gap: Duration::from_secs(1),
+            quiet: std::sync::Arc::default(),
+        }
+    }
+
+    /// Сбой getUpdates: писать ли предупреждение (и сколько промолчали до него).
+    fn updates_failed(&self) -> Option<u64> {
+        match self.quiet.lock() {
+            Ok(mut q) => q.fail(Instant::now()),
+            Err(_) => Some(0),
         }
     }
 
@@ -3861,7 +3910,9 @@ impl Api {
         let resp = match sent {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e.without_url(), "телеграм: обновления не получены");
+                if let Some(skipped) = self.updates_failed() {
+                    tracing::warn!(error = %e.without_url(), skipped, "телеграм: обновления не получены");
+                }
                 return Err(Duration::from_secs(10));
             }
         };
@@ -3874,7 +3925,9 @@ impl Api {
             return Err(Duration::from_secs(30));
         }
         if !(200..300).contains(&status) {
-            tracing::warn!(status, "телеграм: обновления не получены");
+            if let Some(skipped) = self.updates_failed() {
+                tracing::warn!(status, skipped, "телеграм: обновления не получены");
+            }
             return Err(Duration::from_secs(if matches!(status, 401 | 404) {
                 60
             } else {
@@ -3882,13 +3935,22 @@ impl Api {
             }));
         }
         match resp.json::<TgResponse<Vec<Update>>>().await {
-            Ok(r) if r.ok => Ok(r.result.unwrap_or_default()),
+            Ok(r) if r.ok => {
+                if let Some(skipped) = self.quiet.lock().ok().and_then(|mut q| q.ok()) {
+                    tracing::info!(skipped, "телеграм: связь восстановлена");
+                }
+                Ok(r.result.unwrap_or_default())
+            }
             Ok(_) => {
-                tracing::warn!("телеграм: обновления не получены (ok = false)");
+                if let Some(skipped) = self.updates_failed() {
+                    tracing::warn!(skipped, "телеграм: обновления не получены (ok = false)");
+                }
                 Err(Duration::from_secs(10))
             }
             Err(e) => {
-                tracing::warn!(error = %e.without_url(), "телеграм: непонятный ответ на getUpdates");
+                if let Some(skipped) = self.updates_failed() {
+                    tracing::warn!(error = %e.without_url(), skipped, "телеграм: непонятный ответ на getUpdates");
+                }
                 Err(Duration::from_secs(10))
             }
         }
@@ -4351,6 +4413,23 @@ mod points_line_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_connection_warning_once_an_hour() {
+        let mut q = Quiet::default();
+        let t0 = Instant::now();
+        assert_eq!(q.ok(), None);
+        assert_eq!(q.fail(t0), Some(0));
+        // Сутки без интернета, попытка каждые 10 с: в журнал — раз в час.
+        let logged = (1..8640u64)
+            .filter(|i| q.fail(t0 + Duration::from_secs(i * 10)).is_some())
+            .count();
+        assert_eq!(logged, 23);
+        assert_eq!(q.ok(), Some(359));
+        assert_eq!(q.ok(), None);
+        // Новый сбой после восстановления — снова сразу.
+        assert_eq!(q.fail(t0 + Duration::from_secs(86_500)), Some(0));
+    }
 
     #[test]
     fn split_keeps_lines_and_limit() {

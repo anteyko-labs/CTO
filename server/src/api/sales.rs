@@ -2439,7 +2439,11 @@ pub async fn return_sale_tx(
     }
     // Долг уже погасили — списывать с долга нечего: иначе клиент окажется с авансом,
     // а процент кассира за возвращённый товар останется (возврат — деньгами).
-    if debt_req > 0 {
+    // Сторно внутри «Исправить» (у него свой учётный день) снимает долг чека целиком: верный
+    // чек проводится той же операцией и долг возвращает, погашенное остаётся авансом клиента,
+    // если верный чек не в долг (ADR-128).
+    let in_correction = req.business_date.is_some();
+    if debt_req > 0 && !in_correction {
         let owes = match orig.party_id {
             Some(pid) => {
                 sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", pid)
@@ -2732,6 +2736,12 @@ pub async fn return_sale_tx(
             counted_back = counted_back.checked_add(x.amount).ok_or_else(overflow)?;
         }
     }
+    // Удержанное за замену — выручка услуги без себестоимости, она остаётся в чеке: валовую
+    // возврата и сумму, вошедшую в процент, уменьшает на себя (ADR-104, ADR-128).
+    for w in &withholds {
+        gross_back = gross_back.checked_sub(w.amount).ok_or_else(overflow)?;
+        counted_back = counted_back.checked_sub(w.amount).ok_or_else(overflow)?;
+    }
     let return_date = sqlx::query_scalar!(
         r#"select business_date as "d!" from sales where id = $1"#,
         rid
@@ -2757,6 +2767,7 @@ pub async fn return_sale_tx(
                 .ok_or_else(overflow)?,
             full_return,
             fee_back: -fee_back,
+            in_correction,
         },
     )
     .await?;

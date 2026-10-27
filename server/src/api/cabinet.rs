@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::api::parties::{load_party, reconciliation_data};
-use crate::auth::{self, Ctx, Owner, hash_password, new_token, token_hash, verify_password};
+use crate::auth::{
+    self, Ctx, Owner, hash_password, new_token, token_hash, verify_login_password, verify_password,
+};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops;
 use crate::state::AppState;
@@ -144,13 +146,18 @@ async fn login(
     .fetch_optional(&state.pool)
     .await?;
     // Проверка идёт и для неизвестного ИНН, чтобы время ответа его не выдавало.
+    // Очередь проверок ограничена (ADR-128).
     let ok = match party.as_ref() {
         Some(p) => match &p.hash {
-            Some(h) => verify_password(req.password.clone(), h.clone()).await,
-            None => req.password == DEFAULT_PASSWORD,
+            Some(h) => verify_login_password(req.password.clone(), h.clone()).await?,
+            None => {
+                verify_login_password(req.password.clone(), state.dummy_hash.as_ref().clone())
+                    .await?;
+                req.password == DEFAULT_PASSWORD
+            }
         },
         None => {
-            verify_password(req.password.clone(), state.dummy_hash.as_ref().clone()).await;
+            verify_login_password(req.password.clone(), state.dummy_hash.as_ref().clone()).await?;
             false
         }
     };
@@ -181,8 +188,8 @@ async fn login(
         .await?;
     }
     sqlx::query!(
-        "delete from login_attempts where login = $1",
-        format!("{who}|{addr}")
+        "delete from login_attempts where login = any($1)",
+        &[format!("{who}|{addr}"), crate::api::auth::addr_key(&addr)][..]
     )
     .execute(&mut *tx)
     .await?;

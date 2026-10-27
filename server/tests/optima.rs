@@ -35,6 +35,10 @@ struct Bank {
     /// Тело выписки — текстом, суммы как у банка («990.00»).
     statement: Arc<Mutex<String>>,
     generated: Arc<Mutex<u32>>,
+    /// Ответ на любой запрос точек и статуса (как банк на неверный ключ: 500).
+    fail: Arc<Mutex<Option<(u16, String)>>>,
+    /// Задержка выписки, мс.
+    statement_delay_ms: Arc<Mutex<u64>>,
 }
 
 impl Bank {
@@ -92,6 +96,9 @@ async fn points(
     if !key_ok(&b, format!("points/{id}"), &headers, String::new()) {
         return denied();
     }
+    if let Some((code, body)) = b.fail.lock().unwrap().clone() {
+        return (StatusCode::from_u16(code).unwrap(), body);
+    }
     (
         StatusCode::OK,
         r#"[{"account":"1091820100040101","salePointInfoDtoList":[{"name":"Точка А","address":"Бишкек","code":101,"cashDtoList":[{"name":"Касса 1","code":1001},{"name":"Касса 2","code":"1002"}]}]}]"#.into(),
@@ -132,6 +139,9 @@ async fn qr_status(
     if !key_ok(&b, format!("status/{tx}"), &headers, String::new()) {
         return denied();
     }
+    if let Some((code, body)) = b.fail.lock().unwrap().clone() {
+        return (StatusCode::from_u16(code).unwrap(), body);
+    }
     match b.status.lock().unwrap().get(&tx) {
         Some((code, body)) => (StatusCode::from_u16(*code).unwrap(), body.clone()),
         None => (
@@ -154,6 +164,8 @@ async fn statement(
     ) {
         return denied();
     }
+    let delay = *b.statement_delay_ms.lock().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     (StatusCode::OK, b.statement.lock().unwrap().clone())
 }
 
@@ -626,7 +638,8 @@ async fn qr_for_sale_amount_paid_and_used_once(pool: PgPool) {
     let (code, v) = w.card_sale(20_000, Some(&id2)).await;
     assert_eq!(code, StatusCode::OK, "{v}");
 
-    // Банк отклонил — «ошибка»; «Отменить» — больше не ждём и не спрашиваем банк.
+    // Банк отклонил — «ошибка»; «Отменить» — кассир больше не ждёт, а сервер ещё спрашивает
+    // банк: у банка срока нет, покупатель может оплатить и после отмены.
     let (_, qr3) = w.new_qr(Uuid::now_v7(), 30_000).await;
     bank.set_status("tx-3", 200, r#"{"status":"ERROR","transactionId":"tx-3"}"#);
     w.poll().await;
@@ -652,7 +665,11 @@ async fn qr_for_sale_amount_paid_and_used_once(pool: PgPool) {
     assert_eq!(c["status"], "cancelled");
     let before = bank.calls("status/tx-4").len();
     w.poll().await;
-    assert_eq!(bank.calls("status/tx-4").len(), before);
+    assert_eq!(bank.calls("status/tx-4").len(), before + 1);
+    assert_eq!(
+        get(&w.app, &format!("/api/v1/bank-qr/{id4}"), &w.admin).await["status"],
+        "cancelled"
+    );
     assert_eq!(w.audit("bank_qr.cancel").await.len(), 1);
     assert_eq!(w.audit("bank_qr.create").await.len(), 4);
 
@@ -987,5 +1004,145 @@ async fn wrong_key_tells_owner(pool: PgPool) {
     assert_eq!(
         v["error"]["message"],
         "Банк недоступен — отметьте оплату вручную"
+    );
+}
+
+// ---------- Проверка 27.10.2026 ----------
+
+/// Отменённый на кассе QR у банка живой: оплату после «Отменить» сервер замечает —
+/// «оплачен», владельцу сразу «QR оплачен, чек не проведён», строка в отчёте смены.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cancelled_qr_paid_later_is_caught(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    let (_, qr) = w.new_qr(Uuid::now_v7(), 123_400).await;
+    let id = qr["id"].as_str().unwrap().to_string();
+    let c = ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/bank-qr/{id}/cancel"),
+        &w.admin,
+        json!({}),
+    )
+    .await;
+    assert_eq!(c["status"], "cancelled");
+    bank.set_status("tx-1", 200, &paid("tx-1", "1234.00", "op-1"));
+    w.poll().await;
+    let q = get(&w.app, &format!("/api/v1/bank-qr/{id}"), &w.admin).await;
+    assert_eq!(q["status"], "paid", "{q}");
+    assert_eq!(w.audit("bank_qr.paid").await.len(), 1);
+    assert_eq!(w.audit("bank_qr.unclaimed").await.len(), 1);
+    // Повторно не тревожит.
+    bank_qr::alert_unclaimed(&w.pool).await.unwrap();
+    w.poll().await;
+    assert_eq!(w.audit("bank_qr.unclaimed").await.len(), 1);
+    let n = get(&w.app, "/api/v1/notifications", &w.owner).await;
+    assert!(
+        n["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["title"] == "QR оплачен, чек не проведён: 1 234 с"
+                && i["details"].as_str().unwrap().contains("после «Отменить»")),
+        "{n}"
+    );
+    let shift = get(&w.app, "/api/v1/shifts/current", &w.owner).await;
+    let report = get(
+        &w.app,
+        &format!("/api/v1/shifts/{}/report", shift["id"].as_str().unwrap()),
+        &w.admin,
+    )
+    .await;
+    assert_eq!(report["qr_unclaimed"][0]["amount_tyiyn"], 123_400);
+    // Оплаченный — чек с ним проводится.
+    let (code, v) = w.card_sale(123_400, Some(&id)).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+}
+
+/// Сверка с банком ждёт выписку до 90 с — опрос QR в это время идёт.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn slow_statement_does_not_stop_qr_polling(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    *bank.statement_delay_ms.lock().unwrap() = 30_000;
+    fn after_six() -> chrono::DateTime<Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-10-22T07:00:00+06:00")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+    avtodom_server::api::optima::spawn_with_clock(
+        w.pool.clone(),
+        w.optima.clone().unwrap(),
+        after_six,
+    );
+    // Сверка началась и висит на выписке.
+    for _ in 0..50 {
+        if !bank.calls("statement").is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(bank.calls("statement").len(), 1);
+    let (_, qr) = w.new_qr(Uuid::now_v7(), 50_000).await;
+    let id = qr["id"].as_str().unwrap().to_string();
+    bank.set_status("tx-1", 200, &paid("tx-1", "500.00", "op-1"));
+    let mut status = Value::Null;
+    for _ in 0..60 {
+        let q = get(&w.app, &format!("/api/v1/bank-qr/{id}"), &w.admin).await;
+        status = q["status"].clone();
+        if status == "paid" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, "paid");
+}
+
+/// Неверный ключ банк возвращает как 500 «Unknown Error» — «Проверить связь» показывает
+/// текст банка, после пяти таких ответов подряд — владельцу «проверьте ключ».
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bank_500_tells_owner_to_check_key(pool: PgPool) {
+    let (w, bank) = with_bank(pool).await;
+    w.configure().await;
+    *bank.fail.lock().unwrap() = Some((
+        500,
+        json!({ "error": "Unknown Error", "code": 1000 }).to_string(),
+    ));
+    let c = ok(
+        &w.app,
+        "POST",
+        "/api/v1/settings/optima/check",
+        &w.owner,
+        json!({}),
+    )
+    .await;
+    assert_eq!(c["ok"], false);
+    let m = c["message"].as_str().unwrap();
+    assert!(
+        m.contains("Unknown Error (код 1000)") && m.contains("проверьте ключ"),
+        "{m}"
+    );
+    // Один сбой — владельцу ещё ничего (изредка банк так отвечает и при верном ключе).
+    assert!(w.audit("optima.key").await.is_empty());
+    for _ in 0..4 {
+        ok(
+            &w.app,
+            "POST",
+            "/api/v1/settings/optima/check",
+            &w.owner,
+            json!({}),
+        )
+        .await;
+    }
+    assert_eq!(w.audit("optima.key").await.len(), 1);
+    let n = get(&w.app, "/api/v1/notifications", &w.owner).await;
+    assert!(
+        n["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["title"] == "⚠️ Ключ Optima Business не подходит"
+                && i["details"].as_str().unwrap().contains("Unknown Error")),
+        "{n}"
     );
 }

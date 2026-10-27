@@ -1018,6 +1018,8 @@ async fn update_supplier(
 ) -> AppResult<Json<SupplierOut>> {
     let name = optional_required(req.name, "название")?;
     let mut tx = state.pool.begin().await?;
+    // Править поставщика — то же право, что заводить: «Приход товара» (ADR-097, ADR-128).
+    crate::auth::require_permission(&mut tx, &ctx.user, "receipts").await?;
     // Поставщик общий для филиалов, без branch_id (отступление записано в ADR-062): журнал
     // правки пишется в филиал того, кто правил.
     let before = sqlx::query!(
@@ -1211,6 +1213,8 @@ async fn put_labels(
     }
     let value = json!(req);
     let mut tx = state.pool.begin().await?;
+    // Этикетки — часть «Товары и штрихкоды» (ADR-128).
+    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'labels', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,

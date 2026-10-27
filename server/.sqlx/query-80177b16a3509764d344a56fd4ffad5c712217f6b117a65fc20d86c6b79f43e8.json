@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, branch_id, transaction_id, amount_tyiyn, user_id, device_id, expires_at,\n                  status as \"status!\"\n           from bank_qr\n           where status = 'waiting'\n              or (status = 'unpaid' and sale_id is null\n                  and expires_at > now() - make_interval(mins => $1))\n           order by created_at limit 50",
+  "query": "select id, branch_id, transaction_id, amount_tyiyn, user_id, device_id, expires_at,\n                  status as \"status!\"\n           from bank_qr\n           where status = 'waiting'\n              or (status in ('unpaid', 'cancelled') and sale_id is null\n                  and expires_at > now() - make_interval(mins => $1))\n           order by created_at limit 50",
   "describe": {
     "columns": [
       {
@@ -60,5 +60,5 @@
       false
     ]
   },
-  "hash": "90b5b9253c0defbfb79ef9ea165a8e41e2073d1ce229370dadb68273134fd75a"
+  "hash": "80177b16a3509764d344a56fd4ffad5c712217f6b117a65fc20d86c6b79f43e8"
 }
