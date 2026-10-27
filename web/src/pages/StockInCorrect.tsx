@@ -2,7 +2,7 @@
 // заполненный исходным документом. Сохранение — сторно исходного и верный документ одной операцией.
 import { Link, useParams } from 'react-router-dom'
 import { ErrorBox, Loading } from '../components/ui'
-import { get } from '../lib/api'
+import { get, randomId } from '../lib/api'
 import { loadCorrectionDraft } from '../lib/corrections'
 import { useLoad } from '../lib/hooks'
 import { stockInFixLines, type StockInDraftDoc } from '../lib/stockIn'
@@ -25,7 +25,7 @@ async function loadFix(id: string): Promise<ReceiptFix> {
       payMode: 'paid',
       partText: '',
       paidFrom: '',
-      lines: stockInFixLines(draft.doc, byId, () => crypto.randomUUID()),
+      lines: stockInFixLines(draft.doc, byId, () => randomId()),
       rounded: [],
     },
   }

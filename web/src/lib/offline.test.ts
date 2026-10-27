@@ -8,6 +8,7 @@ import {
   isOwnItem,
   keepInQueue,
   logoutWarning,
+  lookupOffline,
   pendingCount,
   queuedBody,
   receiptOf,
@@ -62,6 +63,15 @@ describe('ошибки отправки чека (ADR-062)', () => {
     expect(keepInQueue(new Error('что-то'))).toBe(true)
     expect(keepInQueue(err(422))).toBe(false)
     expect(keepInQueue(err(409))).toBe(false)
+  })
+
+  it('скан при 502 прокси и 5xx сервера ищет товар в снимке, 404 — «не найден»', () => {
+    expect(lookupOffline(err(502))).toBe(true)
+    expect(lookupOffline(err(500))).toBe(true)
+    expect(lookupOffline(err(0, 'network'))).toBe(true)
+    expect(lookupOffline(new Error('что-то'))).toBe(true)
+    expect(lookupOffline(err(404))).toBe(false)
+    expect(lookupOffline(err(401))).toBe(false)
   })
 
   it('отказ по существу — владельцу; 500 — ждать; 409 — повторить несколько раз', () => {

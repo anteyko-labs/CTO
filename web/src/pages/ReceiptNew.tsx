@@ -21,7 +21,7 @@ import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUplo
 import { docText, splitLines, suggestFor, totalMismatch, type Draft, type DraftLine, type DraftList } from '../lib/receiptDrafts'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Missing, Notice, PageHeader, Table, toast } from '../components/ui'
 import { accountLabel } from '../lib/accounts'
-import { get, newOpId, post } from '../lib/api'
+import { get, newOpId, post, randomId } from '../lib/api'
 import { postCorrection } from '../lib/corrections'
 import type { ReceiptFixState } from '../lib/receiptFix'
 import { formatLiters, formatSom, litersInput, parseSom, somInput } from '../lib/format'
@@ -176,7 +176,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     const prices = initialPrices(p, tare)
     const priced = each === null ? prices : withCost(prices, somInput(each), tare)
     const text = count === null ? '' : measure === 'l' ? litersInput(count) : measure === 'kg' ? kgInput(count) : String(count)
-    return { key: crypto.randomUUID(), product: p, count: text, ...(mode ? { mode } : {}), ...priced, hint }
+    return { key: randomId(), product: p, count: text, ...(mode ? { mode } : {}), ...priced, hint }
   }
 
   /** Открыть черновик накладной по фото: поставщик, номер, строки (SPEC-30 §9). */
@@ -262,7 +262,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         // Закупка из Умага — за канистру; в режиме «л» — за литр.
         const umagCost = cost && tare ? somInput(perLiter(parseSom(cost) ?? 0, tare)) : cost
         const priced = umagCost && !prices.price ? withCost(prices, umagCost, tare) : prices
-        return [...ls, { key: crypto.randomUUID(), product: p, count: firstCount(p, mode), ...(mode ? { mode } : {}), ...priced }]
+        return [...ls, { key: randomId(), product: p, count: firstCount(p, mode), ...(mode ? { mode } : {}), ...priced }]
       }
       // Повторный скан: ещё штука, канистра (в литрах — её объём) или килограмм.
       return ls.map((l, j) => (j === i ? { ...l, count: nextCount(p, l.mode, l.count) } : l))

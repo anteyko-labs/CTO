@@ -1,5 +1,5 @@
 // Фото накладной: подготовка выбранных файлов и загрузка к накладной (SPEC-29 §3, ADR-080).
-import { newOpId, qs, upload } from './api'
+import { newOpId, qs, randomId, upload } from './api'
 import { prepareFile, type Prepared } from './photo'
 
 /** Файл, ждущий загрузки: `opId` один на файл — повтор после обрыва не заведёт второй. */
@@ -14,7 +14,7 @@ export async function preparePhotos(files: FileList | File[]): Promise<PendingPh
   const out: PendingPhoto[] = []
   for (const f of Array.from(files)) {
     const p = await prepareFile(f)
-    out.push({ ...p, key: crypto.randomUUID(), opId: newOpId(), url: URL.createObjectURL(p.blob) })
+    out.push({ ...p, key: randomId(), opId: newOpId(), url: URL.createObjectURL(p.blob) })
   }
   return out
 }

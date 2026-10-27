@@ -11426,3 +11426,32 @@ async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool)
         "{lines:?}"
     );
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn offline_clock_ahead_is_named_as_such(pool: PgPool) {
+    // Часы кассы спешат (проверка 27.10.2026): на минуты — чек из очереди проводится временем
+    // сервера без уведомления владельцу; на часы — «часы кассы спешат на …», а не «расходится
+    // больше чем на 2 дня».
+    let w = seed(&pool).await;
+    receive(&pool, &w.admin, w.filter, 10, 20_000).await;
+    let sale = || takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    let mut req = sale();
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() + chrono::Duration::minutes(20));
+    sell(&pool, &w.admin, req).await.unwrap();
+    assert!(audit_data(&pool, "sale.offline_bypass").await.is_empty());
+    let mut req = sale();
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() + chrono::Duration::hours(3));
+    sell(&pool, &w.admin, req).await.unwrap();
+    let text = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
+    assert!(text.contains("часы кассы спешат на 3 ч"), "{text}");
+    assert!(!text.contains("2 дня"), "{text}");
+    // Отстают больше чем на 2 дня — прежний текст.
+    let mut req = sale();
+    req.offline = true;
+    req.client_time = Some(chrono::Utc::now() - chrono::Duration::days(3));
+    sell(&pool, &w.admin, req).await.unwrap();
+    let text = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
+    assert!(text.contains("больше чем на 2 дня"), "{text}");
+}

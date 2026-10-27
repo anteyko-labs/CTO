@@ -32,7 +32,8 @@ import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { printSale } from '../components/salePrint'
 import { Icon, type IconName } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, Field, Missing, Modal, Money, RowMenu, toast } from '../components/ui'
-import { ApiError, get, newOpId, noServerAnswer, patch, post, qs } from '../lib/api'
+import { ApiError, get, newOpId, noServerAnswer, patch, post, qs, randomId, serverReachable } from '../lib/api'
+import { priceChangeText, repriceLines, type FreshCatalog, type PriceChange } from '../lib/cartPrices'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { enqueueSale, keepInQueue, knownShift, markPending, markSent, readSnapshot, removeSale, requestPersistentStorage, saveKnownShift, takeFromSnapshot } from '../lib/offline'
 import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
@@ -122,7 +123,45 @@ function lineAmount(l: CartLine): number | null {
   return Number.isSafeInteger(amount) ? amount : null
 }
 
-const nextKey = () => crypto.randomUUID()
+const nextKey = () => randomId()
+
+/** Сколько ждём свежие цены перед проведением: дольше — берём снимок, чек не задерживаем. */
+const FRESH_WAIT_MS = 4_000
+
+/**
+ * Свежие товары и услуги чека: с сервера, без связи (или без ответа за 4 с) — из снимка кассы.
+ * Плитки, черновик и отложенный чек хранят товар целиком — цена в нём могла устареть.
+ */
+async function freshCatalog(lines: readonly CartLine[]): Promise<FreshCatalog> {
+  const ids = [...new Set(lines.flatMap((l) => (l.product && !l.gift ? [l.product.id] : [])))]
+  const needServices = lines.some((l) => l.service)
+  const products = new Map<string, Product>()
+  const services = new Map<string, Service>()
+  if (serverReachable()) {
+    const fromServer = Promise.all([
+      ...ids.map((id) =>
+        get<Product>(`/products/${id}`)
+          .then((p) => void products.set(id, p))
+          .catch(() => undefined),
+      ),
+      needServices
+        ? get<Service[]>('/services')
+            .then((list) => list.forEach((s) => services.set(s.id, s)))
+            .catch(() => undefined)
+        : Promise.resolve(),
+    ])
+    await Promise.race([fromServer, new Promise((r) => setTimeout(r, FRESH_WAIT_MS))])
+  }
+  // Копия на момент ожидания: опоздавший ответ сервера её уже не меняет.
+  const pm = new Map(products)
+  const sm = new Map(services)
+  if (ids.some((id) => !pm.has(id)) || (needServices && sm.size === 0)) {
+    const snap = await readSnapshot().catch(() => null)
+    for (const p of snap?.products ?? []) if (ids.includes(p.id) && !pm.has(p.id)) pm.set(p.id, p)
+    if (needServices && sm.size === 0) for (const s of snap?.services ?? []) sm.set(s.id, s)
+  }
+  return { products: pm, services: sm }
+}
 
 /** Незавершённый чек переживает переход на другой экран и перезагрузку вкладки. */
 const DRAFT_KEY = 'avtodom.cart'
@@ -471,6 +510,26 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Аналоги фильтров по кросс-номерам: подсказка в строке, особенно когда товара нет (SPEC-17).
   const [analogs, setAnalogs] = useState<Record<string, { id: string; name: string; stock_qty: number; sale_price_tyiyn: number }[]>>({})
   const { busy, error, setError, run } = useAction()
+  // Чек проводится: правка чека закрыта — ответ сервера сбросит его, а отложенная копия или
+  // «Очистить» продали бы или отменили уже проданное. Товар, отсканированный в это время, ждёт и
+  // встаёт в следующий чек (проверка 27.10.2026).
+  const sending = useRef(false)
+  const held = useRef<(() => void)[]>([])
+  const [heldCount, setHeldCount] = useState(0)
+  const hold = (add: () => void): boolean => {
+    if (!sending.current) return false
+    held.current.push(add)
+    setHeldCount(held.current.length)
+    return true
+  }
+  const releaseHeld = () => {
+    const adds = held.current
+    held.current = []
+    setHeldCount(0)
+    adds.forEach((add) => add())
+  }
+  // Цена в чеке сменилась в каталоге: что было и что стало.
+  const [priceChanges, setPriceChanges] = useState<PriceChange[]>([])
 
   // Исправление оставляет кассира и мастера исходного чека, даже если их уже отключили.
   const cashiers = employees.data?.filter((e) => e.is_cashier && (e.active || e.id === fix?.state.cashierId)) ?? []
@@ -665,8 +724,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   /** Услуга встаёт строкой, чек становится «в сервис»: работу делает мастер. Цена — по
    *  каталогу с учётом масла в чеке (ADR-096). Доливка тип чека не меняет: она продаётся и на
    *  вынос, без клиента и машины (ADR-118). */
-  const addService = (s: Service) => {
-    setDone(null)
+  const addService = (s: Service) => putService(s, false)
+  /** `keep` — строка из ожидания (выбрана во время проведения): «Чек № … проведён» не скрываем. */
+  const putService = (s: Service, keep: boolean) => {
+    if (hold(() => putService(s, true))) {
+      setServicesOpen(false)
+      setKindsOpen(false)
+      return
+    }
+    if (!keep) setDone(null)
     setServicesOpen(false)
     setKindsOpen(false)
     setLines((ls) => {
@@ -680,6 +746,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   /** «Готово» в окне «Вид замены»: отмеченные виды — в чек, снятые отметки — из чека (SPEC-30 §2). */
   const setKinds = (picked: Service[]) => {
+    if (sending.current) {
+      // Чек проводится — выбранные виды встанут в следующий чек.
+      setKindsOpen(false)
+      picked.forEach((s) => hold(() => putService(s, true)))
+      return
+    }
     setDone(null)
     setKindsOpen(false)
     const ids = new Set(picked.map((s) => s.id))
@@ -711,8 +783,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось заменить'))
 
-  const addProduct = (p: Product) => {
-    setDone(null)
+  const addProduct = (p: Product) => putProduct(p, false)
+  const putProduct = (p: Product, keep: boolean) => {
+    if (hold(() => putProduct(p, true))) return
+    if (!keep) setDone(null)
     loadAnalogs(p)
     askGift(p)
     const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
@@ -727,7 +801,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
 
   /** Аккумуляторы на вес: строка по весу, цена — продажная за кг или средняя закупка (ADR-048). */
-  const sellBatteries = () =>
+  const sellBatteries = (): void => {
+    if (hold(sellBatteries)) return
     void get<BatteryInfo>('/batteries')
       .then(async (info) => {
         setDone(null)
@@ -748,6 +823,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         focusAfterRender(`[data-weight="${key}"]`)
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Не удалось открыть продажу на вес'))
+  }
 
   const switchOil = (l: CartLine, kind: 'container' | 'pour') => {
     if (l.kind === kind) return
@@ -805,9 +881,29 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setPriceEdit(null)
     setError(null)
     setGiftAsked({})
+    setPriceChanges([])
     bankQr.clear()
     attempt.current = null
   }
+
+  const lineListOf = (l: CartLine, all: readonly CartLine[]): number => listPrice(l, cartOil(all))
+  /** Сверить цены чека с каталогом в фоне: черновик и возвращённый отложенный чек (проверка 27.10.2026). */
+  const refreshPrices = (base: readonly CartLine[]) => {
+    if (fix || base.length === 0) return
+    void freshCatalog(base)
+      .then((fresh) => {
+        const r = repriceLines(base, fresh, lineListOf)
+        if (r.changes.length === 0) return
+        setLines((cur) => repriceLines(cur, fresh, lineListOf).lines)
+        setPriceChanges(r.changes)
+      })
+      .catch(() => undefined)
+  }
+  // Черновик с прошлого раза — цены могли смениться, пока касса была на другом экране.
+  useEffect(() => {
+    refreshPrices(lines)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Прошлый пробег машины: лишний ноль уйдёт в книжку, на печать и клиенту в бот.
   // Книжка грузится один раз на машину — её же показывает подсказка OilHint (SPEC-36 §16).
@@ -883,7 +979,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   /** Откладывает текущий чек, возвращая новый список отложенных. */
   const parkCurrent = (list: Parked[]): Parked[] => {
     if (lines.length === 0) return list
-    const id = parkedId ?? crypto.randomUUID()
+    const id = parkedId ?? randomId()
     const item: Parked = {
       id,
       at: new Date().toISOString(),
@@ -906,6 +1002,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
 
   const park = () => {
+    if (sending.current) return
     const next = parkCurrent(parked)
     setParked(next)
     saveParked(next)
@@ -915,6 +1012,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
 
   const resume = (p: Parked) => {
+    if (sending.current) return
     // Текущий чек не теряется: он уходит в отложенные.
     const next = parkCurrent(parked).filter((x) => x.id !== p.id)
     setParked(next)
@@ -937,6 +1035,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
+    // Чек лежал отложенным — цены в нём могли смениться.
+    refreshPrices(p.lines)
     focusPicker()
   }
 
@@ -1030,134 +1130,156 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   const submit = () =>
     run(async () => {
-      const content = {
+      sending.current = true
+      try {
+        await submitNow()
+      } finally {
+        sending.current = false
+        // Отсканированное, пока чек проводился, — в следующий чек (или в этот, если сервер отказал).
+        releaseHeld()
+      }
+    })
+
+  const submitNow = async () => {
+    if (!fix) {
+      // Цена в чеке могла устареть (плитки, черновик, отложенный чек): сначала сверяем с
+      // каталогом. Сменилась — строки по новой цене, кассир видит разницу и проводит заново.
+      const fresh = await freshCatalog(lines)
+      const r = repriceLines(lines, fresh, lineListOf)
+      if (r.changes.length > 0) {
+        setLines(r.lines)
+        setPriceChanges(r.changes)
+        return
+      }
+    }
+    const content = {
+      sale_type: saleType,
+      cashier_id: cashierId,
+      master_id: saleType === 'service' ? masterId : topupMaster && masterId ? masterId : null,
+      party_id: party?.id ?? bonus?.party_id ?? null,
+      contact_id: party && contactId ? contactId : null,
+      vehicle_id: party && vehicleId ? vehicleId : null,
+      // Пробег — как вписали, в единице машины (ADR-084); сервер переведёт в км для интервалов.
+      mileage: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
+      mileage_unit: party && vehicleId && saleType === 'service' && mileage ? carUnit : null,
+      delivery_address: delivery?.trim() ?? '',
+      declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
+      // Следующая замена по услугам — в единице пробега чека (SPEC-34).
+      next_changes: nextOn ? nextPayload(nextList) : [],
+      comment,
+      lines: lines.map((l) => ({
+        kind: l.kind,
+        gift: Boolean(l.gift),
+        product_id: l.product?.id ?? null,
+        service_id: l.service?.id ?? null,
+        qty: lineQty(l),
+        unit_price_tyiyn: parseSom(l.priceText),
+        // Прайс, который видела касса: сервер отличит правку кассира от сменившегося прайса.
+        seen_list_price_tyiyn: l.gift ? 0 : lineList(l),
+      })),
+      payments,
+    }
+    if (fix) {
+      // Исправление: сторно исходного и верный чек одной операцией на сервере (SPEC-29 §24).
+      const doc = { ...content, business_date: businessDate }
+      const fixKey = JSON.stringify([doc, fixComment.trim()])
+      if (attempt.current?.key !== fixKey) attempt.current = { key: fixKey, opId: newOpId() }
+      const res = await postCorrection({ op_id: attempt.current.opId, kind: 'sale', original_id: fix.originalId, comment: fixComment.trim(), doc })
+      toast(`Чек исправлен: № ${res.new_number ?? ''}`)
+      navigate(`/sales/${res.new_id}`)
+      return
+    }
+    const key = JSON.stringify(content)
+    if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
+    const opId = attempt.current.opId
+    const body = { op_id: opId, client_time: new Date().toISOString(), ...content, removed_lines: forServer(dropped) }
+    // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
+    // нет связи, и после отправки (SPEC-09).
+    const cashierName = (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? ''
+    const receipt = (temp_no: string): Sale =>
+      ({
+        id: '',
+        number: temp_no,
+        kind: 'sale',
         sale_type: saleType,
-        cashier_id: cashierId,
-        master_id: saleType === 'service' ? masterId : topupMaster && masterId ? masterId : null,
-        party_id: party?.id ?? bonus?.party_id ?? null,
-        contact_id: party && contactId ? contactId : null,
-        vehicle_id: party && vehicleId ? vehicleId : null,
-        // Пробег — как вписали, в единице машины (ADR-084); сервер переведёт в км для интервалов.
-        mileage: party && vehicleId && saleType === 'service' && mileage ? Number(mileage) : null,
-        mileage_unit: party && vehicleId && saleType === 'service' && mileage ? carUnit : null,
-        delivery_address: delivery?.trim() ?? '',
-        declined: party && vehicleId && saleType === 'service' ? declined.trim() : '',
-        // Следующая замена по услугам — в единице пробега чека (SPEC-34).
-        next_changes: nextOn ? nextPayload(nextList) : [],
-        comment,
-        lines: lines.map((l) => ({
+        cashier_name: cashierName,
+        master_name: saleType === 'service' || topupMaster ? (masters.find((m) => m.id === masterId)?.full_name ?? null) : null,
+        party_name: party?.name ?? null,
+        total_tyiyn: total,
+        created_at: new Date().toISOString(),
+        lines: lines.map((l, i) => ({
+          line_no: i + 1,
           kind: l.kind,
           gift: Boolean(l.gift),
-          product_id: l.product?.id ?? null,
-          service_id: l.service?.id ?? null,
-          qty: lineQty(l),
-          unit_price_tyiyn: parseSom(l.priceText),
-          // Прайс, который видела касса: сервер отличит правку кассира от сменившегося прайса.
-          seen_list_price_tyiyn: l.gift ? 0 : lineList(l),
+          name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
+          container_ml: l.product?.container_ml ?? null,
+          qty: lineQty(l) ?? 0,
+          amount_tyiyn: lineAmount(l) ?? 0,
+          unit_price_tyiyn: parseSom(l.priceText) ?? 0,
+          list_price_tyiyn: lineList(l),
         })),
         payments,
+        // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4).
+        book:
+          nextOn && (book.data ?? snapCar.data)
+            ? receiptBook(book.data ?? snapCar.data ?? { brand: '', model: '', plate: '' }, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods)
+            : null,
+      }) as unknown as Sale
+    // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
+    const queued = await enqueueSale(opId, body, { user, receipt })
+    let sale: Sale
+    try {
+      sale = await post<Sale>('/sales', body)
+    } catch (e) {
+      // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504), сервер упал (500)
+      // или истёк вход (401): чек остаётся в очереди и уйдёт сам; повтор с тем же op_id второй
+      // продажи не создаст (ADR-013, ADR-062).
+      const noAnswer = e instanceof ApiError ? keepInQueue(e) : !navigator.onLine
+      if (!noAnswer) {
+        // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
+        await removeSale(opId).catch(() => undefined)
+        throw e
       }
-      if (fix) {
-        // Исправление: сторно исходного и верный чек одной операцией на сервере (SPEC-29 §24).
-        const doc = { ...content, business_date: businessDate }
-        const fixKey = JSON.stringify([doc, fixComment.trim()])
-        if (attempt.current?.key !== fixKey) attempt.current = { key: fixKey, opId: newOpId() }
-        const res = await postCorrection({ op_id: attempt.current.opId, kind: 'sale', original_id: fix.originalId, comment: fixComment.trim(), doc })
-        toast(`Чек исправлен: № ${res.new_number ?? ''}`)
-        navigate(`/sales/${res.new_id}`)
-        return
-      }
-      const key = JSON.stringify(content)
-      if (attempt.current?.key !== key) attempt.current = { key, opId: newOpId() }
-      const opId = attempt.current.opId
-      const body = { op_id: opId, client_time: new Date().toISOString(), ...content, removed_lines: forServer(dropped) }
-      // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
-      // нет связи, и после отправки (SPEC-09).
-      const cashierName = (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? ''
-      const receipt = (temp_no: string): Sale =>
-        ({
-          id: '',
-          number: temp_no,
-          kind: 'sale',
-          sale_type: saleType,
-          cashier_name: cashierName,
-          master_name: saleType === 'service' || topupMaster ? (masters.find((m) => m.id === masterId)?.full_name ?? null) : null,
-          party_name: party?.name ?? null,
-          total_tyiyn: total,
-          created_at: new Date().toISOString(),
-          lines: lines.map((l, i) => ({
-            line_no: i + 1,
-            kind: l.kind,
-            gift: Boolean(l.gift),
-            name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
-            container_ml: l.product?.container_ml ?? null,
-            qty: lineQty(l) ?? 0,
-            amount_tyiyn: lineAmount(l) ?? 0,
-            unit_price_tyiyn: parseSom(l.priceText) ?? 0,
-            list_price_tyiyn: lineList(l),
-          })),
-          payments,
-          // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4).
-          book:
-            nextOn && (book.data ?? snapCar.data)
-              ? receiptBook(book.data ?? snapCar.data ?? { brand: '', model: '', plate: '' }, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods)
-              : null,
-        }) as unknown as Sale
-      // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
-      const queued = await enqueueSale(opId, body, { user, receipt })
-      let sale: Sale
-      try {
-        sale = await post<Sale>('/sales', body)
-      } catch (e) {
-        // Ответа нет — обрыв, таймаут или сервер перезапускается (502/503/504), сервер упал (500)
-        // или истёк вход (401): чек остаётся в очереди и уйдёт сам; повтор с тем же op_id второй
-        // продажи не создаст (ADR-013, ADR-062).
-        const noAnswer = e instanceof ApiError ? keepInQueue(e) : !navigator.onLine
-        if (!noAnswer) {
-          // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
-          await removeSale(opId).catch(() => undefined)
-          throw e
-        }
-        await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
-        // Остаток в снимке уменьшается сразу: следующий покупатель видит, что товара стало меньше.
-        void takeFromSnapshot(lines.filter((l) => l.product).map((l) => ({ product_id: l.product?.id ?? '', units: lineUnits(l) })))
-        const offlineSale = queued.receipt ?? receipt(queued.temp_no)
-        setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
-        if (parkedId) dropParked(parkedId)
-        setParkedId(null)
-        reset()
-        focusPicker()
-        return
-      }
-      await markSent(opId, sale.number).catch(() => undefined)
-      setDone({ sale, change: payMode === 'cash' ? change : null })
-      // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
-      const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
-      if (bookVehicle) {
-        const client = party?.name ?? null
-        void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
-          .then((book) => {
-            setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
-            if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
-          })
-          .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
-      }
-      // Долг сразу оформляется бумагой: расписка физлица в двух экземплярах или накладная фирмы (SPEC-10).
-      if (sale.party_id && sale.payments.some((p) => p.method === 'debt')) {
-        const partyId = sale.party_id
-        void Promise.all([
-          get<Party>(`/parties/${partyId}`),
-          get<DebtDocSettings>('/settings/debt-docs'),
-          get<Reconciliation>(`/parties/${partyId}/reconciliation`),
-        ])
-          .then(([p, settings, history]) => printDebtDoc({ sale, party: p, settings, history }))
-          .catch(() => toast('Документ о долге не напечатан — напечатайте его из чека'))
-      }
+      await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
+      // Остаток в снимке уменьшается сразу: следующий покупатель видит, что товара стало меньше.
+      void takeFromSnapshot(lines.filter((l) => l.product).map((l) => ({ product_id: l.product?.id ?? '', units: lineUnits(l) })))
+      const offlineSale = queued.receipt ?? receipt(queued.temp_no)
+      setDone({ sale: offlineSale, change: payMode === 'cash' ? change : null })
       if (parkedId) dropParked(parkedId)
       setParkedId(null)
       reset()
       focusPicker()
-    })
+      return
+    }
+    await markSent(opId, sale.number).catch(() => undefined)
+    setDone({ sale, change: payMode === 'cash' ? change : null })
+    // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
+    const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
+    if (bookVehicle) {
+      const client = party?.name ?? null
+      void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
+        .then((book) => {
+          setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
+          if (book.records[0]?.sale_id === sale.id) return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
+        })
+        .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
+    }
+    // Долг сразу оформляется бумагой: расписка физлица в двух экземплярах или накладная фирмы (SPEC-10).
+    if (sale.party_id && sale.payments.some((p) => p.method === 'debt')) {
+      const partyId = sale.party_id
+      void Promise.all([
+        get<Party>(`/parties/${partyId}`),
+        get<DebtDocSettings>('/settings/debt-docs'),
+        get<Reconciliation>(`/parties/${partyId}/reconciliation`),
+      ])
+        .then(([p, settings, history]) => printDebtDoc({ sale, party: p, settings, history }))
+        .catch(() => toast('Документ о долге не напечатан — напечатайте его из чека'))
+    }
+    if (parkedId) dropParked(parkedId)
+    setParkedId(null)
+    reset()
+    focusPicker()
+  }
 
   /** Перейти к недостающему: клиент в режиме кассы — в своём окне. */
   const goToMissing = (focus: string | undefined) => {
@@ -1637,12 +1759,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // карточкой внизу колонки: всегда на экране, что бы ни было выше.
   const parkClear = (
     <>
-      <Button variant="secondary" className={`flex-1 ${touch ? 'min-h-[56px]! py-1! text-lg!' : ''}`} onClick={park}>
+      <Button variant="secondary" className={`flex-1 ${touch ? 'min-h-[56px]! py-1! text-lg!' : ''}`} disabled={busy} onClick={park}>
         Отложить
       </Button>
       {confirmClear ? (
         <Button
           variant="ghost"
+          disabled={busy}
           className={`flex-1 text-rose-700 ${touch ? 'min-h-[56px]! border border-rose-300 bg-rose-50 py-1! text-base! leading-tight' : ''}`}
           onClick={() => {
             setConfirmClear(false)
@@ -1655,7 +1778,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           Точно очистить?
         </Button>
       ) : (
-        <Button variant="ghost" className={`flex-1 ${touch ? 'min-h-[56px]! border border-slate-300 py-1! text-lg!' : ''}`} onClick={() => setConfirmClear(true)}>
+        <Button variant="ghost" className={`flex-1 ${touch ? 'min-h-[56px]! border border-slate-300 py-1! text-lg!' : ''}`} disabled={busy} onClick={() => setConfirmClear(true)}>
           Очистить
         </Button>
       )}
@@ -1742,7 +1865,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 key={p.id}
                 className={`inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 text-sm ${touch ? '' : 'py-1'}`}
               >
-                <button type="button" className="font-medium hover:text-sky-700" onClick={() => resume(p)}>
+                <button type="button" className="font-medium hover:text-sky-700" disabled={busy} onClick={() => resume(p)}>
                   {p.label || `Чек на ${p.lines.length} поз.`} · {formatSom(parkedTotal(p))}
                 </button>
                 {/* Удаление — с подтверждением, как «Очистить»: чек не пропадает от случайного касания. */}
@@ -1957,6 +2080,32 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           </Card>
         )}
 
+        {busy && heldCount > 0 && (
+          <div className="shrink-0 rounded-md border border-sky-200 bg-sky-50 px-3 py-1.5 text-sm text-sky-900" role="status">
+            Чек проводится — {heldCount === 1 ? 'новая позиция встанет' : `${heldCount} новых поз. встанут`} в следующий чек
+          </div>
+        )}
+        {priceChanges.length > 0 && (
+          <div
+            className="flex shrink-0 items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-900"
+            role="alert"
+            data-testid="price-changed"
+          >
+            <div className="min-w-0 flex-1">
+              <b>Цена в каталоге изменилась — проверьте итог:</b>{' '}
+              {priceChanges.map((c) => priceChangeText(c, formatSom)).join('; ')}
+            </div>
+            <button
+              type="button"
+              aria-label="Скрыть"
+              className={`shrink-0 text-amber-700 ${touch ? 'min-h-[56px] min-w-[56px] text-lg' : 'px-1'}`}
+              onClick={() => setPriceChanges([])}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* У чека «В сервис» под строками — данные замены; списку оставлено не меньше трёх строк и подписи
             «ещё N» (строка — 56 точек и поля), данные замены при нехватке места прокручиваются сами. */}
         <Card className={`p-0 ${touch ? `relative flex flex-col lg:flex-1 ${serviceLeft ? 'p-0! lg:min-h-[224px]' : 'lg:min-h-0'}` : ''}`}>
@@ -1981,6 +2130,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             ref={cartRef}
             className={touch ? 'relative lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain' : ''}
             data-testid="cart"
+            inert={busy}
             onScroll={
               touch
                 ? (e) => {

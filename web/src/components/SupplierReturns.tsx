@@ -4,7 +4,7 @@
 // формой (SPEC-29 §24, ADR-085).
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { get, newOpId, post, qs } from '../lib/api'
+import { get, newOpId, post, qs, randomId } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { qtyText } from '../lib/defects'
@@ -77,7 +77,7 @@ export function SupplierReturnModal({
 
   const add = (p: Product) => {
     if (lines.some((l) => l.product.id === p.id)) return
-    const key = crypto.randomUUID()
+    const key = randomId()
     setLines((ls) => [...ls, { key, product: p, qty: p.unit === 'piece' ? '1' : '', amount: '', manual: false, price: null }])
     void get<{ price_tyiyn: number | null }>(`/supplier-returns/price${qs({ supplier_id: supplierId, product_id: p.id })}`)
       .then((r) => setLines((ls) => ls.map((l) => (l.key === key ? recalc({ ...l, price: r.price_tyiyn }, l.qty) : l))))

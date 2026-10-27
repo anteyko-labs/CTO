@@ -7,16 +7,38 @@ $Root = 'C:\Avtodom'
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   throw 'Запустите PowerShell от имени администратора'
 }
-if (-not (Test-Path "$Here\config.ps1")) { throw 'Нет config.ps1: скопируйте config.example.ps1 в config.ps1 и заполните' }
-. "$Here\config.ps1"
+# Настройки: config.ps1 рядом (первая установка) или уже установленный C:\Avtodom\config.ps1
+# (повторный запуск — например, после смены адреса сервера в нём).
+if (Test-Path "$Here\config.ps1") {
+  $Config = "$Here\config.ps1"
+} elseif (Test-Path "$Root\config.ps1") {
+  $Config = "$Root\config.ps1"
+} else {
+  throw 'Нет config.ps1: скопируйте config.example.ps1 в config.ps1 и заполните'
+}
+. $Config
 if (-not (Test-Path "$PgBin\psql.exe")) { throw "Не найден PostgreSQL в $PgBin — установите PostgreSQL 16" }
+# Пароли из образца config.example.ps1 известны всем, кто видел пакет или репозиторий.
+$samples = @('Postgres-Pass-123', 'Avtodom-Db-2026-xyz', 'Change-Me-Now-1', 'owner-pass-1')
 foreach ($p in @(@{ N = 'PgSuperPassword'; V = $PgSuperPassword }, @{ N = 'DbPassword'; V = $DbPassword }, @{ N = 'OwnerPassword'; V = $OwnerPassword })) {
   # Только печатные латинские символы: русские буквы и пробелы ломают строку подключения,
   # а кавычка " и обратная косая \ — передачу аргументов psql в PowerShell 5.1.
   if ($p.V -notmatch '^[\x21-\x7E]{10,}$' -or $p.V -match '["\\]') {
     throw "Пароль $($p.N): латиница, цифры и знаки, без пробелов, кавычки `" и обратной косой \, не короче 10 символов"
   }
+  if ($samples -contains $p.V) {
+    throw "Пароль $($p.N) взят из образца config.example.ps1 — придумайте свой (для postgres — тот, что задан при установке PostgreSQL; если он совпадает с образцом, смените его)"
+  }
 }
+
+# Повторный запуск: работающие сервер и Caddy держат свои .exe — Windows не даст их заменить, а
+# новые Caddyfile и config.ps1 они прочитают только при запуске. Останавливаем, на шаге 6 запустим.
+$tasks = @('Avtodom сервер', 'Avtodom HTTPS')
+foreach ($t in $tasks) {
+  if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName $t }
+}
+Get-Process avtodom-server, caddy -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
 
 function Invoke-Pg([string[]]$PgArgs) {
   & "$PgBin\psql.exe" @PgArgs
@@ -30,11 +52,20 @@ function Invoke-Pg([string[]]$PgArgs) {
 Write-Host '1/6 Файлы программы' -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $Root, "$Root\logs", "$Root\backups", "$Root\caddy-data" | Out-Null
 Copy-Item -Force "$Here\avtodom-server.exe", "$Here\caddy.exe" $Root
+# Прежние экраны — целиком прочь: Copy-Item в существующую папку положил бы новые в web\web.
+if (Test-Path "$Root\web") { Remove-Item -Recurse -Force "$Root\web" }
 Copy-Item -Force -Recurse "$Here\web" $Root
-Copy-Item -Force "$Here\config.ps1", "$Here\start-server.ps1", "$Here\start-caddy.ps1", "$Here\backup.ps1", "$Here\restore.ps1", "$Here\update.ps1" $Root
+if ($Config -ne "$Root\config.ps1") { Copy-Item -Force $Config $Root }
+Copy-Item -Force "$Here\start-server.ps1", "$Here\start-caddy.ps1", "$Here\backup.ps1", "$Here\restore.ps1", "$Here\update.ps1", "$Here\rollback.ps1" $Root
 # Пароли и копии базы — только системе и администраторам (SID — имена групп зависят от языка Windows).
 & icacls $Root /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не удалось ограничить доступ к C:\Avtodom' }
+# В папке пакета config.ps1 лежал с обычными правами (его читает любой пользователь компьютера):
+# пароль postgres, базы, владельца и ключи. Копия в C:\Avtodom закрыта — исходный удаляем.
+if ($Config -ne "$Root\config.ps1") {
+  Remove-Item -Force $Config
+  Write-Host "   config.ps1 перенесён в $Root (доступ только администраторам); дальше настройки правятся там"
+}
 # Папку копий читает Google Drive от имени пользователя — ему чтение (только этой папки).
 & icacls "$Root\backups" /grant "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)RX" | Out-Null
 (Get-Content "$Here\Caddyfile" -Raw).Replace('SERVER_IP', $ServerIp) | Set-Content -Encoding UTF8 "$Root\Caddyfile"
@@ -72,6 +103,7 @@ Get-NetFirewallRule -DisplayName 'Avtodom HTTPS' -ErrorAction SilentlyContinue |
 New-NetFirewallRule -DisplayName 'Avtodom HTTPS' -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Any -RemoteAddress LocalSubnet | Out-Null
 
 Write-Host '6/6 Запуск' -ForegroundColor Cyan
+# Задачи остановлены в начале — запускаются с новыми Caddyfile и config.ps1.
 Start-ScheduledTask -TaskName 'Avtodom сервер'
 Start-ScheduledTask -TaskName 'Avtodom HTTPS'
 Start-Sleep -Seconds 8

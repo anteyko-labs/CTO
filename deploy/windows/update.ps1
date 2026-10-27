@@ -36,12 +36,20 @@ Write-Host '3/5 Прежняя версия — для отката' -Foreground
 # Откат = прежняя программа + копия базы перед обновлением (rollback.ps1). Новая версия меняет
 # базу при первом запуске, и прежняя программа на ней уже не запустится (ADR-089).
 $prev = "$Root\previous"
-if (Test-Path $prev) { Remove-Item -Recurse -Force $prev }
-New-Item -ItemType Directory -Force -Path $prev | Out-Null
-Copy-Item -Force "$Root\avtodom-server.exe" $prev
-if (Test-Path "$Root\web") { Copy-Item -Recurse -Force "$Root\web" $prev }
-Set-Content -Encoding UTF8 "$prev\dump.txt" $dump
-Write-Host "   $prev"
+# Повторный запуск того же пакета (сервер не ответил за 5 минут, запустили ещё раз): в C:\Avtodom
+# уже новая программа, а копия из шага 1 снята после обновления базы. Прежняя версия и копия
+# перед первым запуском остаются в previous — иначе откат вернул бы ту же новую версию.
+$same = (Get-FileHash "$Root\avtodom-server.exe").Hash -eq (Get-FileHash "$Here\avtodom-server.exe").Hash
+if ($same -and (Test-Path "$prev\avtodom-server.exe") -and (Test-Path "$prev\dump.txt")) {
+  Write-Host "   эта версия уже установлена — прежняя для отката остаётся: $prev" -ForegroundColor Yellow
+} else {
+  if (Test-Path $prev) { Remove-Item -Recurse -Force $prev }
+  New-Item -ItemType Directory -Force -Path $prev | Out-Null
+  Copy-Item -Force "$Root\avtodom-server.exe" $prev
+  if (Test-Path "$Root\web") { Copy-Item -Recurse -Force "$Root\web" $prev }
+  Set-Content -Encoding UTF8 "$prev\dump.txt" $dump
+  Write-Host "   $prev"
+}
 
 Write-Host '4/5 Новые файлы' -ForegroundColor Cyan
 Copy-Item -Force "$Here\avtodom-server.exe" $Root

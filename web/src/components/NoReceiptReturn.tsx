@@ -3,7 +3,7 @@
 // Товар вернётся на склад по средней себестоимости; 2 % кассиру и ставки мастеру не трогаются.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { get, newOpId, post } from '../lib/api'
+import { get, newOpId, post, randomId } from '../lib/api'
 import { productTitle } from '../lib/battery'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -67,7 +67,7 @@ export function NoReceiptReturn({ onClose, touch = false }: { onClose: () => voi
       const kind: SaleLineKind = p.unit === 'ml' ? 'container' : p.unit === 'g' ? 'weight' : 'piece'
       const same = ls.find((l) => l.product.id === p.id && l.kind === kind && (kind === 'piece' || kind === 'container'))
       if (same) return ls.map((l) => (l === same ? { ...l, qtyText: String((lineQty(l) ?? 0) + 1) } : l))
-      return [...ls, { key: crypto.randomUUID(), product: p, kind, qtyText: kind === 'weight' ? '' : '1', sumText: '' }]
+      return [...ls, { key: randomId(), product: p, kind, qtyText: kind === 'weight' ? '' : '1', sumText: '' }]
     })
   const update = (key: string, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 

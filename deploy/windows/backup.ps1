@@ -1,9 +1,9 @@
 ﻿# Ночная копия базы в C:\Avtodom\backups. В облако её уносит Google Drive: эта папка добавлена
 # в «Синхронизацию папок компьютера» (задача работает от SYSTEM и не видит диск G:). Без Google Drive
 # копия делается так же, только остаётся на этом компьютере.
-# Хранение: 7 последних годных ночных — за каждый день, затем по одной на неделю (4 недели)
-# и на месяц (3 месяца); копии перед обновлением и восстановлением — 30 дней, две последние —
-# всегда. Если копия сегодня не удалась, старые не удаляются, а владелец получает
+# Хранение: 7 последних годных ночных — за каждый день, а также самая ранняя копия каждой из
+# 5 последних недель и каждого из 4 последних месяцев (самой старой — не меньше 3 месяцев);
+# копии перед обновлением и восстановлением — 30 дней, две последние — всегда. Если копия сегодня не удалась, старые не удаляются, а владелец получает
 # «backup.failed» в «Уведомлениях» и в Телеграме.
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Backups = "$Root\backups"
@@ -74,22 +74,29 @@ Write-Log "копия готова: $file ($([math]::Round((Get-Item $file).Leng
 # Чистка — только после удачной копии.
 $now = Get-Date
 $dumps = @(Get-ChildItem $Backups -Filter 'avtodom-*.dump')
-# Ночные, от новых к старым: 7 последних годных — за каждый день, затем по одной годной на
-# неделю (4 недели) и на месяц (3 месяца). Остальные удаляются: в копиях лежат и фото накладных,
-# 30 полных копий быстро заняли бы весь Google Диск (ADR-089).
+# Ночные: 7 последних годных — за каждый день; кроме них — самая ранняя годная копия каждой из
+# 5 последних недель (текущая и 4 прежних) и каждого из 4 последних месяцев (текущий и 3 прежних).
+# Самая ранняя копия недели и месяца не меняется изо дня в день, поэтому самой старой копии всегда
+# не меньше 3 месяцев (89–120 дней) и всего их не больше 16. Остальные удаляются: в копиях лежат
+# и фото накладных, 30 полных копий быстро заняли бы весь Google Диск (ADR-089).
+# Раньше «месячной» оставалась самая поздняя копия месяца — и самая старая была 31–60 дней.
 $keep = @{}
-$days = 0
-$weeks = @{}
-$months = @{}
-foreach ($f in ($dumps | Where-Object { $_.Name -match '^avtodom-(\d{4}-\d{2}-\d{2})\.dump$' } | Sort-Object Name -Descending)) {
+$good = @($dumps | Where-Object { $_.Name -match '^avtodom-\d{4}-\d{2}-\d{2}\.dump$' } | Sort-Object Name | Where-Object { -not (Test-Dump $_.FullName) })
+# Имена с датой сортируются как даты: от старых к новым.
+$newest = @($good | Sort-Object Name -Descending | Select-Object -First 7)
+foreach ($f in $newest) { $keep[$f.Name] = $true }
+$firstOfWeek = [ordered]@{}
+$firstOfMonth = [ordered]@{}
+foreach ($f in $good) {
   $day = [datetime]::ParseExact($f.Name.Substring(8, 10), 'yyyy-MM-dd', $null)
-  if (Test-Dump $f.FullName) { continue }
-  if ($days -lt 7) { $keep[$f.Name] = $true; $days++; continue }
   $week = $day.AddDays(-(([int]$day.DayOfWeek + 6) % 7)).ToString('yyyy-MM-dd')
-  if ($weeks.Count -lt 4 -and -not $weeks.ContainsKey($week)) { $weeks[$week] = $true; $keep[$f.Name] = $true; continue }
   $month = $day.ToString('yyyy-MM')
-  if ($months.Count -lt 3 -and -not $months.ContainsKey($month)) { $months[$month] = $true; $keep[$f.Name] = $true; continue }
+  # Первая встреченная копия недели или месяца — самая ранняя.
+  if (-not $firstOfWeek.Contains($week)) { $firstOfWeek[$week] = $f.Name }
+  if (-not $firstOfMonth.Contains($month)) { $firstOfMonth[$month] = $f.Name }
 }
+foreach ($w in @($firstOfWeek.Keys | Sort-Object -Descending | Select-Object -First 5)) { $keep[$firstOfWeek[$w]] = $true }
+foreach ($m in @($firstOfMonth.Keys | Sort-Object -Descending | Select-Object -First 4)) { $keep[$firstOfMonth[$m]] = $true }
 foreach ($f in ($dumps | Where-Object { $_.Name -match '^avtodom-\d{4}-\d{2}-\d{2}\.dump$' })) {
   # Негодные и лишние — старше недели; свежие не трогаем, даже если они не прошли проверку.
   if (-not $keep.ContainsKey($f.Name) -and $f.LastWriteTime -lt $now.AddDays(-7)) {

@@ -2,7 +2,7 @@
 // Сохранение — сторно исходной и верная накладная одной операцией; после — переход к новой.
 import { Link, useParams } from 'react-router-dom'
 import { ErrorBox, Loading } from '../components/ui'
-import { get } from '../lib/api'
+import { get, randomId } from '../lib/api'
 import { loadCorrectionDraft } from '../lib/corrections'
 import { useLoad } from '../lib/hooks'
 import { receiptFixState, type ReceiptDraftDoc } from '../lib/receiptFix'
@@ -14,7 +14,7 @@ async function loadFix(id: string) {
   const ids = [...new Set(draft.doc.lines.map((l) => l.product_id))]
   const products = await Promise.all(ids.map((p) => get<Product>(`/products/${p}`)))
   const byId = new Map(products.filter((p): p is Product => p !== null).map((p) => [p.id, p]))
-  return { originalId: id, number: draft.number, state: receiptFixState(draft.doc, byId, () => crypto.randomUUID()) }
+  return { originalId: id, number: draft.number, state: receiptFixState(draft.doc, byId, () => randomId()) }
 }
 
 export default function ReceiptCorrect() {

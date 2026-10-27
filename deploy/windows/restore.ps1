@@ -11,7 +11,9 @@ param(
   [Parameter(Mandatory = $true)][string]$Dump,
   [switch]$Check,
   # Без вопроса «ВОССТАНОВИТЬ»: только для rollback.ps1, который спросил сам.
-  [switch]$Yes
+  [switch]$Yes,
+  # Сервер после восстановления не запускать: rollback.ps1 сначала вернёт прежнюю программу.
+  [switch]$NoStart
 )
 $ErrorActionPreference = 'Stop'
 # Остановка задачи сервера и чтение C:\Avtodom (доступ только администраторам) — без прав упадёт на полпути.
@@ -91,6 +93,12 @@ do {
 & "$PgBin\pg_dump.exe" -U avtodom -h 127.0.0.1 -d avtodom -Fc -f $safety
 $code = $LASTEXITCODE
 if ($code -ne 0 -or -not (Test-Path $safety)) {
+  Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+  if ($NoStart) {
+    Write-Host "Копия текущей базы не создалась (код $code) — восстановление отменено, база не тронута" -ForegroundColor Red
+    # Код 2: база не тронута (rollback.ps1 оставит новую программу и запустит её).
+    exit 2
+  }
   Start-ScheduledTask -TaskName 'Avtodom сервер'
   throw "Копия текущей базы не создалась (код $code) — восстановление отменено, база не тронута, сервер запущен"
 }
@@ -123,5 +131,9 @@ if ($code -ne 0) {
   exit 1
 }
 Add-Content -Encoding UTF8 "$Root\logs\backup.log" "$(Get-Date -Format s) база восстановлена из $($item.FullName)"
+if ($NoStart) {
+  Write-Host "База восстановлена из $($item.Name). Копия прежней базы: $safety" -ForegroundColor Green
+  exit 0
+}
 Start-ScheduledTask -TaskName 'Avtodom сервер'
 Write-Host "База восстановлена из $($item.Name), сервер запущен. Копия прежней базы: $safety" -ForegroundColor Green
