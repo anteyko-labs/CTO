@@ -90,7 +90,8 @@ test('расчёт кассира: 2 % за день, выплата, оклад
   const row = page.locator('tr', { hasText: cashier })
   await expect(row).toContainText(/10\sс/)
   await row.getByRole('button', { name: 'Выплатить' }).click()
-  await page.getByRole('button', { name: 'Выплатить', exact: true }).last().click()
+  // Кнопка окна выплаты, а не строки за ним: окно сначала грузит остатки по видам (ADR-122).
+  await page.getByRole('dialog').getByRole('button', { name: 'Выплатить', exact: true }).click()
   await expect(page.getByText('Выплачено из кассы')).toBeVisible()
 
   await page.getByRole('button', { name: 'За месяц' }).click()
