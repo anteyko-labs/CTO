@@ -160,6 +160,36 @@ test('вес в ревизии и в приходе — в кг: правка п
   await expect(page.getByTestId('receipt-sale-total')).toHaveText(money(saleText))
 })
 
+test('ревизия: две правки строки подряд — сохраняется последняя, даже если первая дошла до сервера позже', async ({ page }) => {
+  await login(page)
+  const info = await apiGet<{ product_id: string }>(page.request, '/batteries')
+  const scrap = await apiGet<{ id: string; category_id: string }>(page.request, `/products/${info.product_id}`)
+  const cats = await apiGet<{ id: string; name: string }[]>(page.request, '/categories')
+  await startRevision(page, cats.find((c) => c.id === scrap.category_id)!.name)
+  const list = await apiGet<{ id: string; status: string; category_id: string | null }[]>(page.request, '/revisions')
+  const mine = list.find((r) => r.status === 'draft' && r.category_id === scrap.category_id)!
+  const counted = async () => (await apiGet<{ counted_qty: number | null }>(page.request, `/revisions/${mine.id}/lines/${scrap.id}`)).counted_qty
+  // Первая запись идёт медленно (загруженный сервер): вторая не должна её обогнать.
+  let first = true
+  await page.route(/\/api\/v1\/revisions\/[0-9a-f-]+\/lines$/, async (route) => {
+    if (first) {
+      first = false
+      await new Promise((r) => setTimeout(r, 1_500))
+    }
+    await route.continue()
+  })
+  const field = page.locator(`[data-count="${scrap.id}"]`)
+  await field.fill('12,5')
+  await field.press('Enter')
+  await field.fill('12,6')
+  await field.press('Enter')
+  await page.waitForTimeout(2_500)
+  await expect.poll(counted).toBe(12_600)
+  await expect(field).toHaveValue('12,6')
+  await page.unroute(/\/api\/v1\/revisions\/[0-9a-f-]+\/lines$/)
+  await cancelRevision(page)
+})
+
 test('приход масла литрами: 18 л по 450 с = 8 100 с, остаток +18 л; «Исправить» — в литрах', async ({ page }) => {
   await login(page)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла прихода ${RUN}`, kind: 'oil' })

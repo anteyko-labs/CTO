@@ -1,7 +1,7 @@
 // Ревизия склада: пересчёт сканером по категориям, проведение владельцем (SPEC-15). Один экран с
 // «Работой с товарами» (SPEC-20): вкладки «Ревизия» и «Сканер товаров»; в ревизию вписывают и
 // товар, которого нет в программе — карточка заводится с найденным количеством (SPEC-29 §10).
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
@@ -122,31 +122,63 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
     setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
   }
 
+  // Правки — и в ref: Enter и уход из поля читают набранное сейчас, а не из прошлой отрисовки.
+  const editsNow = useRef(edits)
+  const oilEditsNow = useRef(oilEdits)
+  const putEdit = (id: string, text: string) => {
+    editsNow.current = { ...editsNow.current, [id]: text }
+    setEdits(editsNow.current)
+  }
+  const putOilEdit = (id: string, val: OilCount) => {
+    oilEditsNow.current = { ...oilEditsNow.current, [id]: val }
+    setOilEdits(oilEditsNow.current)
+  }
+  // Записи одной строки — по очереди: вторая правка уходит после ответа на первую, иначе на
+  // загруженном сервере первая могла дойти позже и затереть вторую (12,5 вместо 12,6).
+  const writes = useRef(new Map<string, Promise<unknown>>())
+
   const save = (l: Line, qty: number | null) => {
     // Записанный ввод убирается из правок, только если его не успели поменять, пока шёл запрос:
     // иначе новое число пропало бы, не записавшись.
-    const sent = edits[l.product_id]
-    const sentOil = oilEdits[l.product_id]
+    const id = l.product_id
+    const sent = editsNow.current[id]
+    const sentOil = oilEditsNow.current[id]
+    const prev = writes.current.get(id) ?? Promise.resolve()
+    const write = prev
+      .catch(() => undefined)
+      .then(() =>
+        qty === null ? del(`/revisions/${rev.head.id}/lines/${id}`) : put(`/revisions/${rev.head.id}/lines`, { product_id: id, counted_qty: qty }),
+      )
+    writes.current.set(id, write)
     void act.run(async () => {
-      if (qty === null) await del(`/revisions/${rev.head.id}/lines/${l.product_id}`)
-      else await put(`/revisions/${rev.head.id}/lines`, { product_id: l.product_id, counted_qty: qty })
-      const drop =
-        <T,>(was: T | undefined) =>
-        (e: Record<string, T>) => {
-          if (e[l.product_id] !== was) return e
-          const next = { ...e }
-          delete next[l.product_id]
-          return next
-        }
-      setEdits(drop(sent))
-      setOilEdits(drop(sentOil))
+      try {
+        await write
+      } finally {
+        if (writes.current.get(id) === write) writes.current.delete(id)
+      }
+      const drop = <T,>(cur: Record<string, T>, was: T | undefined): Record<string, T> | null => {
+        if (cur[id] === undefined || cur[id] !== was) return null
+        const next = { ...cur }
+        delete next[id]
+        return next
+      }
+      const e = drop(editsNow.current, sent)
+      if (e) {
+        editsNow.current = e
+        setEdits(e)
+      }
+      const o = drop(oilEditsNow.current, sentOil)
+      if (o) {
+        oilEditsNow.current = o
+        setOilEdits(o)
+      }
       onChanged()
     })
   }
 
   /** Поля масла ушли из фокуса: «кан. + л» → мл; оба пустые — строка не посчитана. */
   const saveOil = (l: Line, tare: number) => {
-    const e = oilEdits[l.product_id]
+    const e = oilEditsNow.current[l.product_id]
     if (!e) return
     const ml = parseOil(e.cans, e.liters, tare)
     if (ml === null) {
@@ -302,7 +334,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                         containerMl={tare}
                         dataCount={l.product_id}
                         value={oilEdits[l.product_id] ?? (l.counted_qty === null ? { cans: '', liters: '' } : oilFields(l.counted_qty, tare))}
-                        onChange={(val) => setOilEdits({ ...oilEdits, [l.product_id]: val })}
+                        onChange={(val) => putOilEdit(l.product_id, val)}
                         onCommit={() => saveOil(l, tare)}
                       />
                     ) : draft ? (
@@ -313,12 +345,13 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                         placeholder={l.unit === 'ml' ? 'л' : l.unit === 'g' ? 'кг' : 'шт'}
                         aria-label={l.unit === 'ml' ? 'Пересчитано, л' : l.unit === 'g' ? 'Пересчитано, кг' : 'Пересчитано, шт'}
                         value={edit ?? (l.counted_qty === null ? '' : countInput(l, l.counted_qty))}
-                        onChange={(e) => setEdits({ ...edits, [l.product_id]: e.target.value })}
+                        onChange={(e) => putEdit(l.product_id, e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
                         onBlur={() => {
-                          if (edit === undefined) return
-                          const v = parseCount(l, edit)
-                          if (edit.trim() && v === null) {
+                          const typed = editsNow.current[l.product_id]
+                          if (typed === undefined) return
+                          const v = parseCount(l, typed)
+                          if (typed.trim() && v === null) {
                             act.setError(`Неверное количество: ${l.name}`)
                             return
                           }
