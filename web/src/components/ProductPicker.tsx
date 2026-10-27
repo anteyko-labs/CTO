@@ -350,7 +350,7 @@ export function ProductPicker({
                 <span className="shrink-0 text-right text-xs text-slate-500">
                   {formatSom(p.sale_price_tyiyn)}
                   <br />
-                  {p.unit === 'ml' && p.container_ml ? formatOilStock(p.stock_qty, p.container_ml) : `${p.stock_qty} шт`}
+                  {stockText(p)}
                 </span>
               </button>
             </li>

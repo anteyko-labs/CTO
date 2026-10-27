@@ -597,6 +597,8 @@ pub async fn post_receipt_tx(
         // Розлив за литр считается от цены канистры (ADR-074) — отдельной проверки ему не нужно.
         let dearer_price = match (p.unit.as_str(), p.container_ml) {
             ("ml", Some(c)) => i128::from(p.sale) * qty < cost * i128::from(c),
+            // На вес: количество в граммах, цена продажи за кг (SPEC-36 §13).
+            ("g", _) => i128::from(p.sale) * qty < cost * 1000,
             _ => i128::from(p.sale) * qty < cost,
         };
         if dearer_price && !dearer.contains(&p.name) {

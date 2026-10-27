@@ -34,8 +34,21 @@ describe('накладная по фото', () => {
     expect(s.each).toBe(180_000)
     expect(nb(s.note)).toBe('20 л = 5 кан. по 4 л')
     const odd = suggestFor(line({ quantity: '10', unit: 'л', qty_milli: 10_000, liters: true, price_tyiyn: 45_000 }), canister)
-    expect(odd.count).toBeNull()
+    // 10 л по 4 л — строка в литрах: количество в мл, цена — за литр из накладной (SPEC-36 §13).
+    expect(odd).toMatchObject({ count: 10_000, each: 45_000, measure: 'l' })
     expect(nb(odd.note)).toContain('не делится')
+    const bySum = suggestFor(line({ quantity: '18', unit: 'л', qty_milli: 18_000, liters: true, sum_tyiyn: 810_000 }), canister)
+    expect(bySum).toMatchObject({ count: 18_000, each: 45_000, measure: 'l' })
+  })
+
+  it('на вес — килограммы и цена за кг', () => {
+    const scrap = { unit: 'g', container_ml: null } as const
+    expect(suggestFor(line({ quantity: '12,5', unit: 'кг', qty_milli: 12_500, price_tyiyn: 10_000 }), scrap)).toEqual({
+      count: 12_500,
+      each: 10_000,
+      note: null,
+      measure: 'kg',
+    })
   })
 
   it('штуки, дробное количество, цена по сумме', () => {

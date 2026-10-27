@@ -11409,3 +11409,145 @@ async fn old_catalog_found_by_typed_code(pool: PgPool) {
     let hits = first("99999999").await;
     assert_eq!(hits.as_array().map(Vec::len), Some(0), "{hits}");
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn revision_lines_carry_viscosity(pool: PgPool) {
+    // Вязкость масла — в строке ревизии, в черновике и в проведённой (SPEC-36 §13, ADR-123).
+    let app = setup(pool).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Масла ревизии", "kind": "oil" })),
+    )
+    .await;
+    let with = json!({
+        "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Totachi NIRO", "container_ml": 4000,
+        "attrs": { "viscosity": "5W-30" }
+    });
+    let (s, _, a) = call(&app, "POST", "/api/v1/products", Some(&owner), Some(with)).await;
+    assert_eq!(s, StatusCode::OK);
+    let without = json!({
+        "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "QUAKER STATE 5W30 4L", "container_ml": 4000
+    });
+    let (s, _, b) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(without),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, rev) = call(
+        &app,
+        "POST",
+        "/api/v1/revisions",
+        Some(&owner),
+        Some(json!({ "category_id": cat["id"] })),
+    )
+    .await;
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    let viscosity = |out: &Value, id: &Value| {
+        out["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["product_id"] == *id)
+            .map(|l| l["viscosity"].clone())
+            .unwrap()
+    };
+    let one = format!("/api/v1/revisions/{rid}");
+    let (_, _, out) = call(&app, "GET", &one, Some(&owner), None).await;
+    assert_eq!(viscosity(&out, &a["id"]), json!("5W-30"));
+    assert_eq!(viscosity(&out, &b["id"]), Value::Null);
+    for (p, qty) in [(&a, 9500), (&b, 4000)] {
+        let (s, _, _) = call(
+            &app,
+            "PUT",
+            &format!("/api/v1/revisions/{rid}/lines"),
+            Some(&owner),
+            Some(json!({ "product_id": p["id"], "counted_qty": qty })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let (s, _, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/revisions/{rid}/post"),
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, _, out) = call(&app, "GET", &one, Some(&owner), None).await;
+    assert_eq!(out["head"]["status"], "posted");
+    assert_eq!(viscosity(&out, &a["id"]), json!("5W-30"));
+    assert_eq!(viscosity(&out, &b["id"]), Value::Null);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipt_by_weight_compares_price_per_kg(pool: PgPool) {
+    // Весовой товар: количество в граммах, цена продажи за кг. Закупка дороже продажи — владелец
+    // узнаёт (ADR-042); сравнение — в одних единицах, без ошибки в 1000 раз (SPEC-36 §13).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let cat = Uuid::now_v7();
+    sqlx::query(
+        "insert into categories (id, name, kind) values ($1, 'Аккумуляторы на вес', 'battery')",
+    )
+    .bind(cat)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let pid = Uuid::now_v7();
+    sqlx::query(
+        "insert into products (id, category_id, name, unit) values ($1, $2, 'Лом АКБ', 'g')",
+    )
+    .bind(pid)
+    .bind(cat)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, _, supplier) = call(
+        &app,
+        "POST",
+        "/api/v1/suppliers",
+        Some(&owner),
+        Some(json!({ "name": "Сдатчик лома" })),
+    )
+    .await;
+    let flagged = || {
+        let pool = pool.clone();
+        async move {
+            let n: i64 = sqlx::query_scalar(
+                "select count(*) from audit_log where action = 'receipt.cost_above_price'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            n
+        }
+    };
+    // 10 кг по 15 с за кг = 150 с, продажа 20 с за кг — дешевле продажи, отметки нет.
+    // 10 кг по 30 с за кг = 300 с при той же продаже — дороже, отметка есть.
+    for (cost, sale, want) in [(15_000, Some(2_000), 0), (30_000, None, 1)] {
+        let mut line = json!({ "product_id": pid, "qty": 10_000, "cost_tyiyn": cost });
+        if let Some(s) = sale {
+            line["sale_price_tyiyn"] = json!(s);
+        }
+        let (s, _, body) = call(
+            &app,
+            "POST",
+            "/api/v1/receipts",
+            Some(&owner),
+            Some(json!({ "op_id": Uuid::now_v7(), "supplier_id": supplier["id"], "payment": "debt", "lines": [line] })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(flagged().await, want);
+    }
+}

@@ -11,6 +11,8 @@ import { presetFromHit } from '../lib/oldCatalog'
 import { can } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { searchUmag, umagStep } from '../lib/umagLink'
+import { parseOil } from '../lib/units'
+import { OilCountInput } from './OilCountInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
 
@@ -23,7 +25,10 @@ interface Form {
   liters: string
   price: string
   cost: string
+  /** На полке: штуки, у масла — канистры. */
   count: string
+  /** У масла — «+ л» початой тары. */
+  countL: string
   from: string | null
   /** Строка Умага, из которой заполнена карточка: товар с ней свяжется (SPEC-35). */
   umagId: string | null
@@ -39,15 +44,19 @@ const empty = (barcode = '', name = ''): Form => ({
   price: '',
   cost: '',
   count: '',
+  countL: '',
   from: null,
   umagId: null,
 })
 
-/** Количество на полке: штуки целым, масло литрами. */
-function countOf(oil: boolean, s: string): number | null {
-  const t = s.trim()
+/** Количество на полке: штуки целым; масло — «кан. + л» по объёму тары (SPEC-36 §13). */
+function countOf(tare: number | null, cans: string, liters: string): number | null {
+  if (tare !== null) {
+    const v = tare > 0 ? parseOil(cans, liters, tare) : null
+    return typeof v === 'number' ? v : null
+  }
+  const t = cans.trim()
   if (!t) return null
-  if (oil) return parseLiters(t)
   return /^\d+$/.test(t) ? Number(t) : null
 }
 
@@ -123,7 +132,7 @@ export function RevisionNewProduct({
   }
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f))
-  const count = form ? countOf(oil, form.count) : null
+  const count = form ? countOf(oil ? (ml ?? 0) : null, form.count, form.countL) : null
   const missing = form
     ? missingWithFocus(
         [Boolean(form.name.trim()), 'название', '#revnew-name'],
@@ -132,7 +141,7 @@ export function RevisionNewProduct({
         // Без цены товар продался бы за 0 с (проверка 20.10.2026): цена обязательна, как в «Товарах».
         [(parseSom(form.price) ?? 0) > 0, 'цену продажи', '#revnew-price'],
         [!form.cost.trim() || parseSom(form.cost) !== null, 'закупку числом', '#revnew-cost'],
-        [count !== null, oil ? 'сколько литров на полке' : 'сколько штук на полке', '#revnew-count'],
+        [count !== null, oil ? 'сколько на полке — канистры и литры' : 'сколько штук на полке', '#revnew-count'],
       )
     : []
 
@@ -208,15 +217,30 @@ export function RevisionNewProduct({
               <Field label={oil ? 'Закупка канистры, с' : 'Закупка, с'} hint="По ней ревизия оценит найденное">
                 <input id="revnew-cost" inputMode="decimal" value={form.cost} onChange={(e) => set('cost', e.target.value)} />
               </Field>
-              <Field label={oil ? 'На полке, л' : 'На полке, шт'} required>
-                <input
-                  id="revnew-count"
-                  inputMode={oil ? 'decimal' : 'numeric'}
-                  value={form.count}
-                  onChange={(e) => set('count', e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && missing.length === 0 && save()}
-                />
-              </Field>
+              {oil && ml !== null && ml > 0 ? (
+                <div className="sm:col-span-2">
+                  <Field label="На полке" required>
+                    <OilCountInput
+                      containerMl={ml}
+                      idPrefix="revnew-count"
+                      value={{ cans: form.count, liters: form.countL }}
+                      onChange={(v) => setForm((f) => (f ? { ...f, count: v.cans, countL: v.liters } : f))}
+                      onEnter={() => missing.length === 0 && save()}
+                    />
+                  </Field>
+                </div>
+              ) : (
+                <Field label={oil ? 'На полке — сначала объём тары' : 'На полке, шт'} required>
+                  <input
+                    id="revnew-count"
+                    inputMode="numeric"
+                    disabled={oil}
+                    value={form.count}
+                    onChange={(e) => set('count', e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && missing.length === 0 && save()}
+                  />
+                </Field>
+              )}
             </div>
             <Missing items={missing} />
           </>

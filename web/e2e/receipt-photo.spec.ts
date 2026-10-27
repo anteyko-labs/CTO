@@ -31,6 +31,9 @@ const INVOICE = {
   total: '6100',
 }
 
+/** Что «прочитает» сервис в текущей проверке. */
+let invoice: typeof INVOICE = INVOICE
+
 let service: http.Server | null = null
 
 test.beforeAll(async () => {
@@ -40,7 +43,7 @@ test.beforeAll(async () => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(
         JSON.stringify({
-          candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(INVOICE) }] }, finishReason: 'STOP' }],
+          candidates: [{ content: { role: 'model', parts: [{ text: JSON.stringify(invoice) }] }, finishReason: 'STOP' }],
           usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 200 },
         }),
       )
@@ -166,4 +169,44 @@ test('накладная по фото открывает заполненный
   page.once('dialog', (d) => void d.accept())
   await again.getByRole('button', { name: 'Убрать' }).click()
   await expect(again).toHaveCount(0)
+})
+
+test('накладная по фото: 18 л масла не делятся на канистры — строка в литрах с ценой литра', async ({ page }) => {
+  await login(page)
+  const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
+  test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
+  const oils = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла литрами фото ${RUN}`, kind: 'oil' })
+  const oil = await apiPost<{ id: string }>(page.request, '/products', {
+    op_id: crypto.randomUUID(), category_id: oils.id, name: `Масло бочка фото ${RUN}`, article: `BOIL-${RUN}`, container_ml: 4000, sale_price_tyiyn: 250_000,
+  })
+  invoice = {
+    ...INVOICE,
+    supplier_name: `Литровый поставщик ${RUN}`,
+    lines: [{ name: 'Масло 5W-30 разлив', code: `BOIL-${RUN}`, barcode: '', quantity: '18', unit: 'л', price: '450', sum: '8100' }],
+    total: '8100',
+  }
+  try {
+    const res = await page.request.post(`/api/v1/receipt-drafts?op_id=${crypto.randomUUID()}&name=litry.png`, {
+      data: PNG,
+      headers: { ...DEVICE, 'Content-Type': 'image/png' },
+    })
+    expect(res.ok(), await res.text()).toBeTruthy()
+    const draft = (await res.json()) as { id: string }
+    await page.goto(`/receipts/new?draft=${draft.id}`)
+    await expect(page.getByTestId('draft-banner')).toBeVisible()
+    await expect(page.getByTestId('line-1-mode-l')).toHaveAttribute('aria-checked', 'true')
+    await expect(page.locator('#line-1-count')).toHaveValue('18')
+    await expect(page.locator('#line-1-price')).toHaveValue('450')
+    await expect(page.getByTestId('draft-hint')).toContainText('строка в литрах, цена за литр')
+    await expect(page.getByTestId('receipt-total')).toHaveText(money('8 100 с'))
+    await expect(page.getByTestId('draft-total-ok')).toBeVisible()
+    expect(oil.id).toBeTruthy()
+    await page.goto('/receipts')
+    const row = page.getByTestId('receipt-draft').filter({ hasText: `Литровый поставщик ${RUN}` })
+    page.once('dialog', (d) => void d.accept())
+    await row.getByRole('button', { name: 'Убрать' }).click()
+    await expect(row).toHaveCount(0)
+  } finally {
+    invoice = INVOICE
+  }
 })

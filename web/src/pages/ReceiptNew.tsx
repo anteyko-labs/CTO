@@ -24,15 +24,32 @@ import { accountLabel } from '../lib/accounts'
 import { get, newOpId, post } from '../lib/api'
 import { postCorrection } from '../lib/corrections'
 import type { ReceiptFixState } from '../lib/receiptFix'
-import { formatLiters, formatSom, parseSom, somInput } from '../lib/format'
-import { initialPrices, isOil, lastText, lineCalc, parseCount, priceJumpText, withCost, withMarkup, withSalePrice } from '../lib/receiptLines'
+import { formatLiters, formatSom, litersInput, parseSom, somInput } from '../lib/format'
+import {
+  defaultMode,
+  firstCount,
+  initialPrices,
+  isOil,
+  lastPer,
+  lastText,
+  lineCalc,
+  literHints,
+  literTare,
+  nextCount,
+  priceJumpText,
+  switchMode,
+  withCost,
+  withMarkup,
+  withSalePrice,
+  type QtyMode,
+} from '../lib/receiptLines'
+import { kgInput, perLiter } from '../lib/units'
 import { missingWithFocus } from '../lib/forms'
 import { useFocusAfterRender } from '../lib/focus'
 import { useUser } from '../lib/auth'
 import { useAction, useLoad } from '../lib/hooks'
 import { nextField, type LineField } from '../lib/receiptKeys'
 import { defaultPaySource, notEnough, paidNow, partProblem, paySources, type PayMode } from '../lib/receiptPay'
-import { convertCount, stockInFirstCount, stockInLineCalc, stockInNextCount } from '../lib/stockIn'
 import { useCan } from '../lib/permissions'
 import type { CashAccount, LastReceipt, Product, Receipt, StockIn, Supplier } from '../lib/types'
 
@@ -42,8 +59,11 @@ export type ReceiptKind = 'receipt' | 'stock_in'
 interface Line {
   key: string
   product: Product
+  /** Количество: штуки, канистры или литры масла (по режиму), кг на вес. */
   count: string
-  /** Цена по накладной за штуку или канистру. */
+  /** Масло: канистрами или литрами (SPEC-36 §13); у остальных не задан. */
+  mode?: QtyMode
+  /** Цена по накладной за штуку, канистру, литр (режим «л») или кг. */
   price: string
   /** Наценка над ценой по накладной, %, с одним знаком. */
   markup: string
@@ -90,7 +110,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const can = useCan()
   const [kind, setKind] = useState<ReceiptKind>(fix?.kind ?? (params.get('kind') === 'stock_in' || !can('receipts') ? 'stock_in' : 'receipt'))
   const stockIn = kind === 'stock_in'
-  const calcOf = stockIn ? stockInLineCalc : lineCalc
+  const calcOf = (l: Line) => lineCalc(l, stockIn)
   const suppliers = useLoad(() => get<Supplier[]>('/suppliers'), [])
   const [supplierId, setSupplierId] = useState(fix?.state.supplierId ?? '')
   const [supplierDoc, setSupplierDoc] = useState(fix?.state.supplierDoc ?? '')
@@ -146,10 +166,14 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       .catch(() => setLines((ls) => ls.map((l) => (l.product.id === p.id ? { ...l, last: null } : l))))
 
   /** Строка прихода из строки накладной: количество и цена накладной, цена продажи — текущая. */
-  const draftLine = (p: Product, count: number | null, each: number | null, hint: Line['hint']): Line => {
-    const prices = initialPrices(p)
-    const priced = each === null ? prices : withCost(prices, somInput(each))
-    return { key: crypto.randomUUID(), product: p, count: count === null ? '' : String(count), ...priced, hint }
+  const draftLine = (p: Product, count: number | null, each: number | null, hint: Line['hint'], measure?: 'l' | 'kg'): Line => {
+    // Литры, не делящиеся на канистры, — строка в режиме «л» с ценой литра (SPEC-36 §13).
+    const mode: QtyMode | undefined = measure === 'l' ? 'l' : isOil(p) ? 'can' : undefined
+    const tare = literTare(p, mode)
+    const prices = initialPrices(p, tare)
+    const priced = each === null ? prices : withCost(prices, somInput(each), tare)
+    const text = count === null ? '' : measure === 'l' ? litersInput(count) : measure === 'kg' ? kgInput(count) : String(count)
+    return { key: crypto.randomUUID(), product: p, count: text, ...(mode ? { mode } : {}), ...priced, hint }
   }
 
   /** Открыть черновик накладной по фото: поставщик, номер, строки (SPEC-30 §9). */
@@ -167,9 +191,13 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     const doc = docText(d.invoice)
     if (doc) setSupplierDoc(doc)
     const { found, missing } = splitLines(d)
-    const added = found.flatMap((l) =>
-      l.product ? [draftLine(l.product, l.count, l.each_tyiyn, { invoice: l.name, check: l.match === 'similar', note: l.note })] : [],
-    )
+    const added = found.flatMap((l) => {
+      if (!l.product) return []
+      // Литры не целыми канистрами и товар на вес — по правилу экрана: литры или кг (SPEC-36 §13).
+      const own = suggestFor(l, l.product)
+      const s = own.measure ? own : { count: l.count, each: l.each_tyiyn, note: l.note }
+      return [draftLine(l.product, s.count, s.each, { invoice: l.name, check: l.match === 'similar', note: s.note }, own.measure)]
+    })
     setLines((ls) => [...ls, ...added])
     setUnmatched(missing)
     added.forEach((l) => loadLast(l.product))
@@ -204,7 +232,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     if (!src) return
     const s = suggestFor(src, p)
     setUnmatched((us) => us.filter((l) => l.no !== no))
-    setLines((ls) => [...ls, draftLine(p, s.count, s.each, { invoice: src.name, check: false, note: s.note })])
+    setLines((ls) => [...ls, draftLine(p, s.count, s.each, { invoice: src.name, check: false, note: s.note }, s.measure)])
     loadLast(p)
     focusId(`line-${lines.length + 1}-count`)
   }
@@ -224,16 +252,17 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       if (i < 0) {
         // Цена подставляется из прошлого прихода, цена продажи — текущая; их можно изменить.
         // Карточка из старой программы — закупка оттуда, пока своих приходов нет.
-        const prices = initialPrices(p)
-        const count = stockIn ? stockInFirstCount(p) : '1'
-        return [...ls, { key: crypto.randomUUID(), product: p, count, ...(cost && !prices.price ? withCost(prices, cost) : prices) }]
+        // Масло: в приходе — канистрами, в оприходовании — литрами (SPEC-36 §13).
+        const mode = isOil(p) ? defaultMode(stockIn) : undefined
+        const tare = literTare(p, mode)
+        const prices = initialPrices(p, tare)
+        // Закупка из Умага — за канистру; в режиме «л» — за литр.
+        const umagCost = cost && tare ? somInput(perLiter(parseSom(cost) ?? 0, tare)) : cost
+        const priced = umagCost && !prices.price ? withCost(prices, umagCost, tare) : prices
+        return [...ls, { key: crypto.randomUUID(), product: p, count: firstCount(p, mode), ...(mode ? { mode } : {}), ...priced }]
       }
-      return ls.map((l, j) => {
-        if (j !== i) return l
-        if (stockIn) return { ...l, count: stockInNextCount(p, l.count) }
-        const n = parseCount(l.count)
-        return { ...l, count: String(n === null ? 1 : n + 1) }
-      })
+      // Повторный скан: ещё штука, канистра (в литрах — её объём) или килограмм.
+      return ls.map((l, j) => (j === i ? { ...l, count: nextCount(p, l.mode, l.count) } : l))
     })
   }
 
@@ -254,11 +283,9 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill])
 
-  /** Смена вида: строки остаются, количество масла — канистрами в приходе, литрами в оприходовании. */
+  /** Смена вида: строки остаются как есть — у масла свой режим «кан. | л» (SPEC-36 §13). */
   const switchKind = (k: ReceiptKind) => {
-    if (k === kind) return
-    setKind(k)
-    setLines((ls) => ls.map((l) => ({ ...l, count: convertCount(l.product, l.count, k === 'stock_in') })))
+    if (k !== kind) setKind(k)
   }
 
   /** Этикетки на товар строки: столько же, сколько принимаем. */
@@ -400,10 +427,10 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     const body: { product_id: string; qty: number; price_tyiyn: number; sale_price_tyiyn?: number }[] = []
     for (let i = 0; i < lines.length; i++) {
       const c = calcs[i]
-      const price = parseSom(lines[i].price)
-      if (typeof c === 'string' || price === null) return
+      if (typeof c === 'string') return
       const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
-      body.push({ product_id: lines[i].product.id, qty: c.qty, price_tyiyn: price, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
+      // Цена — за штуку, канистру или кг: в режиме «л» строка переводит цену литра в цену канистры.
+      body.push({ product_id: lines[i].product.id, qty: c.qty, price_tyiyn: c.unitPrice, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
     }
     void save.run(async () => {
       const doc = { comment: comment.trim(), lines: body }
@@ -696,6 +723,10 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             <Table head={['Товар', 'Количество', stockIn ? 'Цена закупки' : 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма', 'По продаже', '']}>
               {lines.map((l, i) => {
                 const oil = isOil(l.product)
+                const weight = l.product.unit === 'g'
+                // Строка масла в литрах: цена — за литр, наценка — к закупке канистры.
+                const tare = literTare(l.product, l.mode)
+                const hints = literHints(l)
                 const c = calcs[i]
                 return (
                   <tr key={l.key} className="align-top">
@@ -716,44 +747,77 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                       )}
                     </td>
                     <td className="px-2 py-2">
+                      {oil && (
+                        // «кан. | л»: литрами — бочка, розлив, накладная в литрах (SPEC-36 §13).
+                        <div className="mb-1 inline-flex overflow-hidden rounded border border-slate-300 text-xs" role="radiogroup" aria-label={`Единица строки ${i + 1}`}>
+                          {(
+                            [
+                              ['can', 'кан.'],
+                              ['l', 'л'],
+                            ] as [QtyMode, string][]
+                          ).map(([m, label]) => (
+                            <button
+                              key={m}
+                              type="button"
+                              role="radio"
+                              aria-checked={l.mode === m}
+                              data-testid={`line-${i + 1}-mode-${m}`}
+                              className={`px-2 py-0.5 ${l.mode === m ? 'bg-sky-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
+                              onClick={() => setLines((ls) => ls.map((x) => (x.key === l.key ? switchMode(x, m) : x)))}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {stockIn && l.product.unit === 'ml'
-                          ? 'Литров'
-                          : stockIn && l.product.unit === 'g'
-                            ? 'Кг'
+                        {weight
+                          ? 'Кг'
+                          : tare
+                            ? 'Литров'
                             : oil
                               ? `Канистр (по ${formatLiters(l.product.container_ml ?? 0)})`
                               : 'Кол-во, шт'}
                         <input
                           id={`line-${i + 1}-count`}
                           className={`w-24 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
-                          inputMode={stockIn && l.product.unit !== 'piece' ? 'decimal' : 'numeric'}
+                          inputMode={weight || tare ? 'decimal' : 'numeric'}
                           value={l.count}
                           onKeyDown={onFieldKey(i + 1, 'count')}
                           onChange={(e) => updateLine(l.key, { count: e.target.value })}
                         />
                       </label>
+                      {hints?.split && (
+                        <div className="mt-1 text-xs text-slate-500" data-testid="liters-split">
+                          {hints.split}
+                        </div>
+                      )}
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {oil ? 'Цена канистры, с' : stockIn && l.product.unit === 'g' ? 'Цена за кг, с' : 'Цена за шт, с'}
+                        {tare ? 'Цена за литр, с' : oil ? 'Цена канистры, с' : weight ? 'Цена за кг, с' : 'Цена за шт, с'}
                         <input
                           id={`line-${i + 1}-price`}
                           className={`w-28 ${typeof c === 'string' ? 'border-rose-400' : ''}`}
                           inputMode="decimal"
                           value={l.price}
                           onKeyDown={onFieldKey(i + 1, 'price')}
-                          onChange={(e) => updateLine(l.key, withCost(l, e.target.value))}
+                          onChange={(e) => updateLine(l.key, withCost(l, e.target.value, tare))}
                         />
                       </label>
-                      {l.last && (
-                        <div className="mt-1 text-xs text-slate-500" data-testid="last-receipt">
-                          {lastText(l.last)}
+                      {hints?.perCan && (
+                        <div className="mt-1 text-xs text-slate-500" data-testid="liters-per-can">
+                          {hints.perCan}
                         </div>
                       )}
-                      {priceJumpText(l.price, l.last) && (
+                      {l.last && (
+                        <div className="mt-1 text-xs text-slate-500" data-testid="last-receipt">
+                          {lastText(l.last, lastPer(l.product))}
+                        </div>
+                      )}
+                      {priceJumpText(l.price, l.last, tare) && (
                         <div className="mt-1 max-w-[14rem] rounded bg-amber-50 px-1.5 py-1 text-xs text-amber-800" data-testid="price-jump">
-                          {priceJumpText(l.price, l.last)}
+                          {priceJumpText(l.price, l.last, tare)}
                         </div>
                       )}
                     </td>
@@ -767,13 +831,13 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                           inputMode="decimal"
                           value={l.markup}
                           onKeyDown={onFieldKey(i + 1, 'markup')}
-                          onChange={(e) => updateLine(l.key, withMarkup(l, e.target.value))}
+                          onChange={(e) => updateLine(l.key, withMarkup(l, e.target.value, tare))}
                         />
                       </label>
                     </td>
                     <td className="px-2 py-2">
                       <label className="flex flex-col gap-1 text-xs text-slate-500">
-                        {oil ? 'Продажа канистры, с' : stockIn && l.product.unit === 'g' ? 'Продажа за кг, с' : 'Продажа за шт, с'}
+                        {oil ? 'Продажа канистры, с' : weight ? 'Продажа за кг, с' : 'Продажа за шт, с'}
                         <input
                           id={`line-${i + 1}-sale`}
                           aria-label="Цена продажи"
@@ -781,7 +845,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                           inputMode="decimal"
                           value={l.salePrice}
                           onKeyDown={onFieldKey(i + 1, 'sale')}
-                          onChange={(e) => updateLine(l.key, withSalePrice(l, e.target.value))}
+                          onChange={(e) => updateLine(l.key, withSalePrice(l, e.target.value, tare))}
                         />
                       </label>
                       {typeof c !== 'string' && c.salePrice !== l.product.sale_price_tyiyn && (

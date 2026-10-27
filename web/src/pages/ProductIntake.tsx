@@ -6,7 +6,10 @@ import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money, Notice, PageHeader, toast } from '../components/ui'
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatLiters, formatSom, parseLiters, parseSom, plural } from '../lib/format'
+import { OilCountInput } from '../components/OilCountInput'
+import { stockText } from '../components/ProductPicker'
+import { formatDateTime, formatSom, parseLiters, parseSom, plural } from '../lib/format'
+import { countText, oilCountText, parseKg, parseOil } from '../lib/units'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
@@ -27,7 +30,10 @@ interface Form {
   liters: string
   price: string
   cost: string
+  /** На полке: штуки, у масла — канистры (SPEC-36 §13). */
   count: string
+  /** У масла — «+ л» початой тары. */
+  countL: string
   /** Откуда взяли данные — позиция старого списка. */
   from: Hit | null
 }
@@ -58,8 +64,24 @@ const emptyForm = (barcode: string, categoryId: string): Form => ({
   price: '',
   cost: '',
   count: '',
+  countL: '',
   from: null,
 })
+
+/**
+ * Сколько на полке: штуки целым; масло (`tare` — объём тары в мл) — «кан. + л» → мл; на вес — кг.
+ * Пусто — null (не считали), неверно — 'bad'. Масло без объёма тары посчитать нельзя.
+ */
+function shelfCount(tare: number | null, count: string, liters = '', weight = false): number | null | 'bad' {
+  if (tare !== null) {
+    const v = tare > 0 ? parseOil(count, liters, tare) : count.trim() || liters.trim() ? null : 'empty'
+    return v === 'empty' ? null : v === null ? 'bad' : v
+  }
+  const t = count.trim()
+  if (!t) return null
+  if (weight) return parseKg(t) ?? 'bad'
+  return /^\d+$/.test(t) ? Number(t) : 'bad'
+}
 
 export default function ProductIntake() {
   const owner = useUser().role === 'owner'
@@ -107,7 +129,7 @@ export default function ProductIntake() {
   /** Карточка из позиции старого списка: масло — литры из названия, цена за литр → за канистру. */
   const fromHit = (h: Hit, barcode: string): Form => {
     const p = presetFromHit(h, cats, read(CAT_KEY), barcode)
-    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', from: h }
+    return { barcode: p.barcode, name: p.name, categoryId: p.categoryId, liters: p.liters, price: p.price, cost: p.cost, count: '', countL: '', from: h }
   }
 
   const loadSimilar = (name: string) => {
@@ -217,19 +239,13 @@ export default function ProductIntake() {
     return (await get<{ counted_qty: number | null }>(`/revisions/${id}/lines/${productId}`)).counted_qty
   }
 
-  const countValue = (unit: string, s: string): number | null => {
-    if (!s.trim()) return null
-    return unit === 'ml' ? parseLiters(s) : /^\d+$/.test(s.trim()) ? Number(s.trim()) : null
-  }
-
   const countAttempt = useRef<{ key: string; opId: string } | null>(null)
 
   /**
    * Записывает пересчёт в ревизию. По умолчанию прибавляет: товар на двух полках — 5 и 3 — это 8,
    * а не 3 (ADR-059). «Заменить» — только явным выбором. Возвращает итог строки.
    */
-  const saveCount = async (productId: string, unit: string, s: string, mode: 'add' | 'set' = 'add'): Promise<number | null> => {
-    const qty = countValue(unit, s)
+  const saveCount = async (productId: string, qty: number | null, mode: 'add' | 'set' = 'add'): Promise<number | null> => {
     if (qty === null) return null
     const id = await ensureRevision()
     // Повтор того же ввода после обрыва связи идёт с тем же op_id: сервер не прибавит полку дважды (ADR-062).
@@ -245,9 +261,11 @@ export default function ProductIntake() {
     return r.counted_qty
   }
 
-  const qtyText = (unit: string, q: number) => (unit === 'ml' ? formatLiters(q) : `${q} шт`)
-
   const ml = isOil && form ? parseLiters(form.liters) : null
+  // На полке у новой карточки: штуки или «кан. + л» по таре из формы (SPEC-36 §13); пусто — не считали.
+  const formCount = form ? shelfCount(isOil ? (ml ?? 0) : null, form.count, form.countL) : null
+  const formQty = formCount === 'bad' ? null : formCount
+  const formCountText = formQty === null ? '' : isOil && ml ? oilCountText(formQty, ml) : `${formQty} шт`
   const shownPrice = form ? parseSom(form.price) : null
   const pourShown = ml && shownPrice !== null ? canisterPourPrice(shownPrice, ml) : null
   // Строка Умага, которую продавали мерой (литр, кг, метр): её коды (276…, PLU) товару не переходят,
@@ -262,7 +280,7 @@ export default function ProductIntake() {
         [!isOil || (ml !== null && ml > 0), 'объём тары, л', '#intake-liters'],
         [!form.price.trim() || parseSom(form.price) !== null, 'цену числом', '#intake-price'],
         [!form.cost.trim() || parseSom(form.cost) !== null, 'закупку числом', '#intake-cost'],
-        [!form.count.trim() || countValue(isOil ? 'ml' : 'piece', form.count) !== null, 'количество числом', '#intake-count'],
+        [formCount !== 'bad', 'количество числом', '#intake-count'],
       )
     : []
 
@@ -283,8 +301,8 @@ export default function ProductIntake() {
         // Из старой базы Умаг: товар свяжется со строкой, её коды станут его кодами (SPEC-35).
         ...(form.from && !form.from.product_id ? { old_catalog_id: form.from.id } : {}),
       })
-      if (revision) await saveCount(p.id, p.unit, form.count)
-      setRecent((r) => [{ name: p.name, at: new Date().toISOString(), count: form.count, isNew: true }, ...r].slice(0, 15))
+      if (revision) await saveCount(p.id, formQty)
+      setRecent((r) => [{ name: p.name, at: new Date().toISOString(), count: formCountText, isNew: true }, ...r].slice(0, 15))
       toast(`Заведён: ${p.name}`)
       reset()
     })
@@ -299,19 +317,19 @@ export default function ProductIntake() {
       // Данные из строки Умага — связываем её с этим товаром: остальные её коды тоже станут его (SPEC-35).
       if (form.from && !form.from.product_id) await linkUmag(form.from.id, p.id, newOpId())
       // Карточка уже была — её могли посчитать под другим кодом: прибавляем и показываем итог.
-      const total = revision ? await saveCount(p.id, p.unit, form.count) : null
-      if (total !== null) toast(`В ревизии теперь ${qtyText(p.unit, total)}`)
-      setRecent((r) => [{ name: `${p.name} (+ ${code ? 'код' : 'Умаг'})`, at: new Date().toISOString(), count: form.count, isNew: false }, ...r].slice(0, 15))
+      const total = revision ? await saveCount(p.id, formQty) : null
+      if (total !== null) toast(`В ревизии теперь ${countText(p, total)}`)
+      setRecent((r) => [{ name: `${p.name} (+ ${code ? 'код' : 'Умаг'})`, at: new Date().toISOString(), count: formCountText, isNew: false }, ...r].slice(0, 15))
       toast(code ? `Код привязан к «${p.name}»` : `Строка Умага связана с «${p.name}»`)
       reset()
     })
 
-  const saveFoundCount = (s: string, mode: 'add' | 'set') =>
+  const saveFoundCount = (qty: number, mode: 'add' | 'set') =>
     void act.run(async () => {
       if (!found) return
-      const total = await saveCount(found.id, found.unit, s, mode)
-      setRecent((r) => [{ name: found.name, at: new Date().toISOString(), count: s, isNew: false }, ...r].slice(0, 15))
-      toast(total === null ? 'Записано в ревизию' : `Записано в ревизию: всего ${qtyText(found.unit, total)}`)
+      const total = await saveCount(found.id, qty, mode)
+      setRecent((r) => [{ name: found.name, at: new Date().toISOString(), count: countText(found, qty), isNew: false }, ...r].slice(0, 15))
+      toast(total === null ? 'Записано в ревизию' : `Записано в ревизию: всего ${countText(found, total)}`)
       reset()
     })
 
@@ -458,7 +476,7 @@ export default function ProductIntake() {
               <div>
                 <div className="text-lg font-semibold">{found.name}</div>
                 <div className="text-sm text-slate-600">
-                  Остаток {found.unit === 'ml' ? formatLiters(found.stock_qty) : `${found.stock_qty} шт`} · цена {formatSom(found.sale_price_tyiyn)}
+                  Остаток {stockText(found)} · цена {formatSom(found.sale_price_tyiyn)}
                   {found.barcodes.length > 0 && ` · коды: ${found.barcodes.join(', ')}`}
                 </div>
               </div>
@@ -553,17 +571,31 @@ export default function ProductIntake() {
                     {pourShown !== null ? `на розлив: ${formatSom(pourShown)} за л` : 'на розлив: от цены канистры'}
                   </div>
                 )}
-                {revision && (
-                  <Field label={isOil ? 'На полке, л' : 'На полке, шт'}>
-                    <input
-                      id="intake-count"
-                      inputMode={isOil ? 'decimal' : 'numeric'}
-                      value={form.count}
-                      onChange={(e) => setForm({ ...form, count: e.target.value })}
-                      onKeyDown={(e) => e.key === 'Enter' && formBlockers.length === 0 && saveNew()}
-                    />
-                  </Field>
-                )}
+                {revision &&
+                  (isOil && ml !== null && ml > 0 ? (
+                    <div className="sm:col-span-3">
+                      <Field label="На полке">
+                        <OilCountInput
+                          containerMl={ml}
+                          idPrefix="intake-count"
+                          value={{ cans: form.count, liters: form.countL }}
+                          onChange={(v) => setForm({ ...form, count: v.cans, countL: v.liters })}
+                          onEnter={() => formBlockers.length === 0 && saveNew()}
+                        />
+                      </Field>
+                    </div>
+                  ) : (
+                    <Field label={isOil ? 'На полке — сначала объём тары' : 'На полке, шт'}>
+                      <input
+                        id="intake-count"
+                        inputMode="numeric"
+                        disabled={isOil}
+                        value={form.count}
+                        onChange={(e) => setForm({ ...form, count: e.target.value })}
+                        onKeyDown={(e) => e.key === 'Enter' && formBlockers.length === 0 && saveNew()}
+                      />
+                    </Field>
+                  ))}
               </div>
               <Missing items={formBlockers} />
               <div className="flex flex-wrap justify-end gap-2">
@@ -625,13 +657,19 @@ function FoundCount({
   product: Product
   already: number | null
   busy: boolean
-  onSave: (s: string, mode: 'add' | 'set') => void
+  onSave: (qty: number, mode: 'add' | 'set') => void
   onSkip: () => void
 }) {
   const [s, setS] = useState('')
-  const ok = product.unit === 'ml' ? parseLiters(s) !== null : /^\d+$/.test(s.trim())
-  const ml = product.unit === 'ml'
-  const before = already !== null && already > 0 ? (ml ? formatLiters(already) : `${already} шт`) : null
+  const [liters, setLiters] = useState('')
+  // Масло в таре — «кан. + л», без тары — литры, на вес — кг, штуки — целым (SPEC-36 §13).
+  const tare = product.unit === 'ml' ? (product.container_ml ?? 0) : null
+  const parsed = tare === 0 ? (s.trim() ? (parseLiters(s) ?? 'bad') : null) : shelfCount(tare, s, liters, product.unit === 'g')
+  const qty = typeof parsed === 'number' ? parsed : null
+  const before = already !== null && already > 0 ? countText(product, already) : null
+  const save = (mode: 'add' | 'set') => {
+    if (qty !== null) onSave(qty, mode)
+  }
   return (
     <div className="flex flex-col gap-2">
       {before && (
@@ -640,21 +678,36 @@ function FoundCount({
         </Notice>
       )}
       <div className="flex flex-wrap items-end gap-2">
-        <Field label={ml ? 'На полке, л' : 'На полке, шт'}>
-          <input
-            id="intake-count"
-            className="w-32"
-            inputMode={ml ? 'decimal' : 'numeric'}
-            value={s}
-            onChange={(e) => setS(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && ok && onSave(s, 'add')}
-          />
-        </Field>
-        <Button disabled={busy || !ok} onClick={() => onSave(s, 'add')}>
+        {tare ? (
+          <Field label="На полке">
+            <OilCountInput
+              containerMl={tare}
+              idPrefix="intake-count"
+              value={{ cans: s, liters }}
+              onChange={(v) => {
+                setS(v.cans)
+                setLiters(v.liters)
+              }}
+              onEnter={() => save('add')}
+            />
+          </Field>
+        ) : (
+          <Field label={product.unit === 'ml' ? 'На полке, л' : product.unit === 'g' ? 'На полке, кг' : 'На полке, шт'}>
+            <input
+              id="intake-count"
+              className="w-32"
+              inputMode={product.unit === 'piece' ? 'numeric' : 'decimal'}
+              value={s}
+              onChange={(e) => setS(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && save('add')}
+            />
+          </Field>
+        )}
+        <Button disabled={busy || qty === null} onClick={() => save('add')}>
           {before ? `Прибавить к ${before}` : 'Записать'}
         </Button>
         {before && (
-          <Button variant="secondary" disabled={busy || !ok} onClick={() => onSave(s, 'set')}>
+          <Button variant="secondary" disabled={busy || qty === null} onClick={() => save('set')}>
             Заменить
           </Button>
         )}
