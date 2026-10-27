@@ -342,14 +342,19 @@ pub async fn record_from_sale(
     .collect::<Vec<_>>();
     let mut seen: Vec<&str> = Vec::new();
     for t in targets {
-        if seen.contains(&t.slot.as_str()) {
+        let found = lines.iter().position(|l| l.slot == t.slot);
+        // Цель без услуги — строка книжки товара этого чека: «+ ещё строку» предлагает только
+        // позиции чека (SPEC-34 §2, уточнение 26.10.2026). Такой строки в чеке нет — цель не
+        // пишется: строки, которой не было в чеке, в книжке не появится.
+        if seen.contains(&t.slot.as_str()) || (found.is_none() && t.service_id.is_none()) {
             continue;
         }
         seen.push(&t.slot);
-        let at = match lines.iter().position(|l| l.slot == t.slot) {
+        let at = match found {
             Some(i) => i,
             None => {
-                // Строки в чеке нет: клиент сменил в другом месте, но хочет напоминание.
+                // Услуги в чеке нет (касса до 26.10.2026 предлагала «+ ещё» из справочника услуг,
+                // такой чек может прийти из очереди) — строка с названием услуги.
                 let text = t
                     .service_name
                     .clone()
@@ -422,7 +427,7 @@ struct OwnDays {
 }
 
 /// Следующая замена из чека, как прислала касса (SPEC-34 §2): услуга (по ней — строка книжки)
-/// или строка книжки и пробег в единице пробега чека; пусто — не напоминать.
+/// или строка книжки товара этого чека и пробег в единице пробега чека; пусто — не напоминать.
 #[derive(Deserialize, Clone, Debug)]
 pub struct NextChangeReq {
     #[serde(default)]
@@ -486,7 +491,9 @@ pub async fn resolve_target(
 }
 
 /// Дни до следующей замены строки (SPEC-34 §3): интервал машины, иначе услуги, иначе категории
-/// товара строки, иначе по умолчанию.
+/// товара строки, иначе по умолчанию. Категория — как в книжке (`slot_next`): своя, только если её
+/// строка та же (у общей «Фильтры» строка — масляный фильтр, а воздушный фильтр в ней — по типу),
+/// иначе любая категория с этой строкой.
 async fn interval_days(
     conn: &mut PgConnection,
     own: &[OwnDays],
@@ -505,17 +512,9 @@ async fn interval_days(
     {
         return Ok(Some(d));
     }
-    if let Some(id) = category_id
-        && let Some(Some(d)) = sqlx::query_scalar!(
-            "select book_interval_days from categories where id = $1",
-            id
-        )
-        .fetch_optional(&mut *conn)
-        .await?
-    {
-        return Ok(Some(d));
-    }
-    Ok(slot_default(slot).map(|i| i.1))
+    let categories = category_intervals(conn).await?;
+    let by_category = category_interval(&categories, slot, category_id);
+    Ok(by_category.or_else(|| slot_default(slot)).map(|i| i.1))
 }
 
 /// Масляная книжка в печатном чеке (SPEC-34 §4).
@@ -884,6 +883,25 @@ async fn category_intervals(conn: &mut PgConnection) -> AppResult<Vec<CategoryIn
     .collect())
 }
 
+/// Интервал категории для строки книжки: категории товара, если её строка та же, иначе любой
+/// категории с этой строкой (по названию); у фильтра строку решает тип, и интервал общей категории
+/// «Фильтры» (строка — масляный фильтр) воздушному фильтру не подходит.
+fn category_interval(
+    categories: &[CategoryInterval],
+    slot: &str,
+    category_id: Option<Uuid>,
+) -> Option<(i32, i32)> {
+    category_id
+        .and_then(|id| categories.iter().find(|c| c.id == id && c.slot == slot))
+        .and_then(|c| c.interval)
+        .or_else(|| {
+            categories
+                .iter()
+                .filter(|c| c.slot == slot)
+                .find_map(|c| c.interval)
+        })
+}
+
 /// Интервалы услуг, заданные владельцем (SPEC-34): услуга → (км, дни).
 async fn service_intervals(conn: &mut PgConnection) -> AppResult<HashMap<Uuid, (i32, i32)>> {
     Ok(sqlx::query!(
@@ -920,17 +938,11 @@ fn slot_next(
         .iter()
         .filter(|r| r.lines.iter().any(|l| l.slot == slot))
         .find_map(|r| r.mileage_km);
-    let by_category = last
-        .as_ref()
-        .and_then(|(_, l)| l.category_id)
-        .and_then(|id| categories.iter().find(|c| c.id == id && c.slot == slot))
-        .and_then(|c| c.interval)
-        .or_else(|| {
-            categories
-                .iter()
-                .filter(|c| c.slot == slot)
-                .find_map(|c| c.interval)
-        });
+    let by_category = category_interval(
+        categories,
+        slot,
+        last.as_ref().and_then(|(_, l)| l.category_id),
+    );
     let by_service = last
         .as_ref()
         .and_then(|(_, l)| l.service_id)

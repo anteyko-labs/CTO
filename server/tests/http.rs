@@ -2288,6 +2288,18 @@ async fn favorites_heatmap_and_compare(pool: PgPool) {
     assert_eq!(got.as_array().unwrap().len(), 2);
     assert_eq!(got[0]["product"]["name"], "Totachi 5W-30");
     assert_eq!(got[1]["service"]["name"], "Замена масла");
+    // Услуга плитки — как из «Вида замены» (`GET /services`): строка книжки и интервал для
+    // «Следующей замены», «бесплатно с нашим маслом» для цены (SPEC-34, ADR-096).
+    assert_eq!(got[1]["service"]["book_slot"], "oil");
+    assert_eq!(got[1]["service"]["interval_km"], 8000);
+    assert_eq!(got[1]["service"]["interval_days"], 31);
+    assert_eq!(got[1]["service"]["free_with_oil"], false);
+    assert!(
+        got[1]["service"]
+            .as_object()
+            .unwrap()
+            .contains_key("oil_category_id")
+    );
 
     let (s, _, _) = call(&app, "GET", "/api/v1/reports/heatmap", Some(&admin), None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
@@ -5710,6 +5722,39 @@ async fn book_slot_is_set_on_category_and_overridden_per_vehicle(pool: PgPool) {
         actions(&pool, "category.update").await[0]["book"]["slot"]["new"],
         "cabin_filter"
     );
+    // Снимок кассы без сети: строка книжки и интервал категории, тип фильтра у товара — касса и
+    // без связи предлагает «+ ещё строку» по товарам чека (SPEC-34).
+    let (s, _, item) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр C-110", "attrs": { "filter_type": "воздушный" } })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{item}");
+    let (_, _, snap) = call(&app, "GET", "/api/v1/offline/snapshot", Some(&admin), None).await;
+    let snap_cat = snap["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == cat["id"])
+        .unwrap();
+    assert_eq!(
+        (
+            snap_cat["book_slot"].clone(),
+            snap_cat["book_interval_km"].clone(),
+            snap_cat["book_interval_days"].clone()
+        ),
+        (json!("cabin_filter"), json!(15000), json!(180))
+    );
+    let snap_item = snap["products"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == item["id"])
+        .unwrap();
+    assert_eq!(snap_item["attrs"]["filter_type"], "воздушный");
 
     // Машина: интервал масла и салонного фильтра у машины, сброс — к категории.
     let (_, _, p) = call(

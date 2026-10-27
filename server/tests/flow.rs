@@ -11128,3 +11128,118 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
         .unwrap();
     assert_eq!(bypass, 1);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn next_change_by_product_of_this_sale_goes_to_its_book_line(pool: PgPool) {
+    // SPEC-34, уточнение 26.10.2026: «+ ещё строку» предлагает только позиции этого чека. Строка из
+    // товара уходит без услуги, строкой книжки: цель встаёт на строку замены этого товара — в
+    // печатный чек, в книжку и в бот. Цель по строке, которой в чеке нет, книжка не добавляет.
+    use avtodom_server::api::oil_book::{books, record_lines};
+    let w = seed(&pool).await;
+    // Воздушный фильтр в общей категории «Фильтры»: строка книжки — по типу фильтра.
+    let air = Uuid::now_v7();
+    sqlx::query(
+        "insert into products (id, category_id, name, unit, attrs)
+         select $1, category_id, 'Фильтр воздушный MANN C-110', 'piece', '{\"filter_type\": \"воздушный\"}'::jsonb
+         from products where id = $2",
+    )
+    .bind(air)
+    .bind(w.filter)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into branch_products (branch_id, product_id, sale_price_tyiyn) values ($1, $2, 60000)",
+    )
+    .bind(w.owner.user.branch_id)
+    .bind(air)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // У общей категории «Фильтры» (её строка — масляный фильтр) интервал владельца 9 000 км / 200
+    // дней: воздушному фильтру он не подходит — срок по умолчанию строки, как в книжке (`slot_next`).
+    sqlx::query(
+        "update categories set book_interval_km = 9000, book_interval_days = 200
+         where id = (select category_id from products where id = $1)",
+    )
+    .bind(w.filter)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let client = service_client(&pool, &w).await;
+    let mut req = in_service(
+        &w,
+        client,
+        takeaway(
+            &w,
+            vec![
+                line("container", w.oil, 1, 200_000),
+                line("piece", air, 1, 60_000),
+                kind_line(w.service, 1, 0),
+            ],
+            cash(260_000),
+        ),
+    );
+    req.mileage_km = None;
+    req.mileage = Some(217_000);
+    req.next_changes = vec![
+        next_change(Some(w.service), None, Some(225_000)),
+        next_change(None, Some("air_filter"), Some(232_000)),
+        // Антифриза в чеке нет: такой строки книжка не добавляет.
+        next_change(None, Some("antifreeze"), Some(277_000)),
+    ];
+    let sale = sell(&pool, &w.owner, req).await.unwrap();
+    let day: chrono::NaiveDate =
+        sqlx::query_scalar("select business_date from sales where id = $1")
+            .bind(sale.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let year = day.checked_add_days(chrono::Days::new(365));
+    // Печатный чек: масло — по услуге, воздушный фильтр — строкой книжки, срок — год по умолчанию.
+    let book = sale.book.unwrap();
+    let printed: Vec<(&str, i32)> = book
+        .lines
+        .iter()
+        .map(|l| (l.label.as_str(), l.next_mileage))
+        .collect();
+    assert_eq!(
+        printed,
+        vec![("Замена масла", 225_000), ("Фильтр воздушный", 232_000)]
+    );
+    assert_eq!(book.lines[1].next_date, year);
+    // Книжка: цель — у строки этого товара, без услуги; строки антифриза нет.
+    let mut conn = pool.acquire().await.unwrap();
+    let b = books(&mut conn, Some(client.0), None)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let rec = &b.records[0];
+    let got: Vec<(&str, Option<&str>, Option<i32>)> = rec
+        .lines
+        .iter()
+        .map(|l| (l.slot.as_str(), l.service.as_deref(), l.next_mileage))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("oil", Some("Замена масла"), Some(225_000)),
+            ("air_filter", None, Some(232_000))
+        ]
+    );
+    let air_next = b.slots.iter().find(|n| n.slot == "air_filter").unwrap();
+    assert_eq!(
+        (air_next.next_km, air_next.next_date),
+        (Some(232_000), year)
+    );
+    assert!(b.slots.iter().all(|n| n.slot != "antifreeze"));
+    // Бот клиента: строка замены товара с целью кассира.
+    let lines = record_lines(rec, "");
+    assert!(
+        lines.iter().any(|l| l.starts_with(
+            "Фильтр воздушный: Фильтр воздушный MANN C-110 · 1 шт — следующая замена на 232 000 км"
+        )),
+        "{lines:?}"
+    );
+}

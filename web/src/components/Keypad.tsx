@@ -31,6 +31,15 @@ function padOf(el: unknown): FieldPad {
   return fieldPad(el.tagName, el.getAttribute('type'), el.dataset.keypad, el.disabled || el.readOnly)
 }
 
+/** Поле за открытым окном: ни клавиатуры, ни кнопки «⌨» — они легли бы поверх кнопок окна, и касание
+ *  края кнопки набрало бы знак в поле за окном. Окно закрыли — клавиатура снова у поля. */
+function behindDialog(el: Element | null): boolean {
+  if (!el) return false
+  const all = document.querySelectorAll('[role="dialog"]')
+  const top = all.length > 0 ? all[all.length - 1] : null
+  return top !== null && !top.contains(el)
+}
+
 /** Записать значение в поле так, чтобы React увидел изменение (onChange). */
 function setFieldValue(el: Field, value: string): void {
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
@@ -169,9 +178,18 @@ export function Keypad() {
     }
   }, [open, target, kind])
 
+  // Поле за открытым окном — клавиатура и «⌨» не рисуются (окно открылось в той же отрисовке —
+  // проверяем ещё раз после неё, до показа на экране).
+  const covered = behindDialog(target)
+  const coveredDrawn = useRef(covered)
+  coveredDrawn.current = covered
+  useLayoutEffect(() => {
+    if (behindDialog(target) !== coveredDrawn.current) rerender()
+  }, [target, open, focused])
+
   // Размер клавиатуры — замером после показа (с быстрыми суммами цифровая выше).
   const [padSize, setPadSize] = useState(PAD_SIZE)
-  const shown = open && Boolean(target?.isConnected)
+  const shown = open && Boolean(target?.isConnected) && !covered
   useLayoutEffect(() => {
     const el = padRef.current
     if (!shown || !el) return
@@ -205,7 +223,8 @@ export function Keypad() {
     let frame = 0
     const watch = () => {
       const r = target.getBoundingClientRect()
-      const now = `${r.left},${r.top},${r.width},${r.height},${target.value}`
+      // И за окнами: открылось или закрылось окно — клавиатура прячется или возвращается.
+      const now = `${r.left},${r.top},${r.width},${r.height},${target.value},${behindDialog(target)}`
       // Первый кадр — тоже: значение поля могли сменить в той же отрисовке, что и фокус.
       if (now !== last) {
         rerender()
@@ -289,7 +308,7 @@ export function Keypad() {
 
   // Клавиатура закрыта: у поля в фокусе — маленькая кнопка «⌨», она открывает клавиатуру.
   if (!open) {
-    if (!target || !focused || !target.isConnected) return null
+    if (!target || !focused || !target.isConnected || covered) return null
     const r = target.getBoundingClientRect()
     if (r.width === 0 && r.height === 0) return null
     // Узкое поле (количество) — кнопка над ним, чтобы не закрыть цифры; широкое — у правого края внутри.
@@ -313,6 +332,8 @@ export function Keypad() {
       </button>
     )
   }
+
+  if (target && covered) return null
 
   // Открыта, а поля нет (окно закрыли): узкая полоса, ввод появится, когда выберут поле.
   if (!target || !target.isConnected || !kind) {

@@ -26,13 +26,21 @@ pub struct FavRef {
     pub id: Uuid,
 }
 
+/// Услуга плитки — те же поля, что у `GET /services` для кассы: цена «бесплатно с нашим маслом»
+/// (ADR-096, ADR-104) и строка книжки с интервалом — «Следующая замена» по ней (SPEC-34).
 #[derive(Serialize)]
 struct FavService {
     id: Uuid,
     name: String,
     price_tyiyn: i64,
     master_fee_tyiyn: i64,
+    free_with_oil: bool,
+    oil_category_id: Option<Uuid>,
     active: bool,
+    book_slot: String,
+    /// Интервал для кассы: заданный владельцем или по умолчанию строки книжки.
+    interval_km: Option<i32>,
+    interval_days: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -77,18 +85,35 @@ async fn get_favorites(
                 }
             }
             "service" => {
-                if let Some(s) = sqlx::query_as!(
-                    FavService,
-                    "select id, name, price_tyiyn, master_fee_tyiyn, active from services where id = $1 and active",
+                if let Some(s) = sqlx::query!(
+                    r#"select id, name, price_tyiyn, master_fee_tyiyn, free_with_oil, oil_category_id, active,
+                              book_slot, book_interval_km, book_interval_days
+                       from services where id = $1 and active"#,
                     r.id
                 )
                 .fetch_optional(&mut *conn)
                 .await?
                 {
+                    let (interval_km, interval_days) = crate::api::refs::service_interval(
+                        &s.book_slot,
+                        s.book_interval_km,
+                        s.book_interval_days,
+                    );
                     out.push(FavItem {
                         kind: r.kind,
                         product: None,
-                        service: Some(s),
+                        service: Some(FavService {
+                            id: s.id,
+                            name: s.name,
+                            price_tyiyn: s.price_tyiyn,
+                            master_fee_tyiyn: s.master_fee_tyiyn,
+                            free_with_oil: s.free_with_oil,
+                            oil_category_id: s.oil_category_id,
+                            active: s.active,
+                            book_slot: s.book_slot,
+                            interval_km,
+                            interval_days,
+                        }),
                     });
                 }
             }

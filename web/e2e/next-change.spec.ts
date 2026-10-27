@@ -109,9 +109,13 @@ test.describe('режим кассы 1366×768', () => {
     const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
     await dlg.locator('[data-client-input]').fill(s.last)
     await dlg.getByRole('button', { name: new RegExp(`^${s.last}`) }).first().tap()
+    // Машина встаёт сама, когда загрузится карточка клиента: «Готово» раньше — окно закроется без неё.
+    await expect(dlg.getByLabel('Машина')).toHaveValue(s.vehicle.id)
     await dlg.getByRole('button', { name: 'Готово' }).tap()
     await left.locator('#master-select').selectOption({ label: s.master })
     await left.locator('#mileage').fill('217000')
+    // Раскладку меряем без временной плашки «снимок каталога устарел»: снимок кассы ещё сохраняется.
+    await expect(page.getByText(/снимок каталога устарел/)).toHaveCount(0, { timeout: 30_000 })
 
     const block = left.getByTestId('next-change')
     await expect(block).toBeVisible()
@@ -121,7 +125,7 @@ test.describe('режим кассы 1366×768', () => {
     await expect(antiField).toHaveValue('277000')
     // Цифры — экранной клавиатурой по кнопке (ADR-101): своя клавиатура планшета не открывается.
     await expect(oilField).toHaveAttribute('inputmode', 'none')
-    for (const l of [oilField, antiField, block.getByRole('button', { name: '+ ещё строку' }), left.locator('#mileage')]) {
+    for (const l of [oilField, antiField, left.locator('#mileage')]) {
       expect((await l.boundingBox())!.height).toBeGreaterThanOrEqual(56)
     }
     await expect(block).toBeInViewport({ ratio: 1 })
@@ -144,12 +148,9 @@ test.describe('режим кассы 1366×768', () => {
     // Прочее для проведения может не хватать (оплата, кассир), но не следующей замены.
     await expect(page.getByText(/Не хватает:.*следующая замена/)).toHaveCount(0)
 
-    // «+ ещё строку» — услуга, которой нет в чеке; убирается крестиком.
-    await block.getByRole('button', { name: '+ ещё строку' }).tap()
-    const extra = page.getByTestId('next-extra-choices')
-    await expect(extra).toBeVisible()
-    await expect(extra.getByRole('button', { name: new RegExp(s.oil) })).toHaveCount(0)
-    await page.keyboard.press('Escape')
+    // «+ ещё строку» — только позиции этого чека (уточнение 26.10.2026): обе услуги уже строками,
+    // товаров со строкой книжки нет — предложить нечего, кнопки нет (справочник услуг не предлагается).
+    await expect(block.getByRole('button', { name: '+ ещё строку' })).toHaveCount(0)
 
     await page.getByRole('button', { name: 'Очистить', exact: true }).tap()
     await page.getByRole('button', { name: 'Точно очистить?' }).tap()
@@ -188,10 +189,13 @@ test.describe('режим кассы 1366×768', () => {
     const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
     await dlg.locator('[data-client-input]').fill(s.last)
     await dlg.getByRole('button', { name: new RegExp(`^${s.last}`) }).first().tap()
+    // Машина встаёт сама, когда загрузится карточка клиента: «Готово» раньше — окно закроется без неё.
+    await expect(dlg.getByLabel('Машина')).toHaveValue(s.vehicle.id)
     await dlg.getByRole('button', { name: 'Готово' }).tap()
     await left.locator('#master-select').selectOption({ label: s.master })
     await left.locator('#mileage').fill('217000')
     await expect(left.getByTestId('next-change').getByLabel(`Следующая замена: ${s.anti}`)).toHaveValue('277000')
+    await expect(page.getByText(/снимок каталога устарел/)).toHaveCount(0, { timeout: 30_000 })
 
     const cart = page.getByTestId('cart')
     const rows = cart.locator('li')

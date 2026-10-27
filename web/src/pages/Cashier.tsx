@@ -22,7 +22,7 @@ import { OilHint } from '../components/OilBook'
 import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { hasEngineOil } from '../lib/oilChange'
-import { extraChoices, nextPayload, nextRows, nextTooLow, receiptBook, type OwnIntervals } from '../lib/nextChange'
+import { cartSources, extraChoices, extraSlots, nextPayload, nextRows, nextTooLow, pruneNext, receiptBook, snapshotCategories, type CategoryBook, type OwnIntervals } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
@@ -37,12 +37,12 @@ import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } fr
 import { forServer, removedLine, sendCancelled, unremove, type CancelReason, type RemovedLine } from '../lib/cancelledLines'
 import { useUser } from '../lib/auth'
 import { can } from '../lib/permissions'
-import { enterFullscreen, setCashierMode, useNumField, useTouchMode } from '../lib/cashierMode'
+import { enterFullscreen, setCashierMode, setKeyboardOpen, useNumField, useTouchMode } from '../lib/cashierMode'
 import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { useFocusAfterRender } from '../lib/focus'
-import { useScanToPicker } from '../lib/scanner'
+import { focusScanField, useScanToPicker } from '../lib/scanner'
 import { focusField, missingWithFocus, type Check } from '../lib/forms'
 import { useAction, useLoad, usePolling, useServerOnline } from '../lib/hooks'
 import { pourAmount, pourPricePerL } from '../lib/money'
@@ -144,9 +144,10 @@ interface Parked {
   declined?: string
   /** Строки, удалённые крестиком до того, как чек отложили (SPEC-30 §8). */
   dropped?: RemovedLine[]
-  /** «Следующая замена» (SPEC-34): правки кассира и строки «+ ещё». */
+  /** «Следующая замена» (SPEC-34): правки кассира и строки «+ ещё» — строки книжки товаров чека
+   *  (у чека, отложенного до 26.10.2026, — услуги справочника: не берутся). */
   nextEdits?: Partial<Record<BookSlot, string>>
-  nextExtra?: Service[]
+  nextExtra?: BookSlot[]
 }
 
 function loadParked(): Parked[] {
@@ -182,7 +183,7 @@ interface Draft {
   declined?: string
   dropped?: RemovedLine[]
   nextEdits?: Partial<Record<BookSlot, string>>
-  nextExtra?: Service[]
+  nextExtra?: BookSlot[]
 }
 
 function loadDraft(): Draft | null {
@@ -395,9 +396,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
   const [declined, setDeclined] = useState(draft?.declined ?? '')
   // «Следующая замена» по услугам чека (SPEC-34): правки кассира по строке книжки ('' — не
-  // напоминать) и строки, добавленные «+ ещё строку».
+  // напоминать) и строки книжки товаров чека, добавленные «+ ещё строку».
   const [nextEdits, setNextEdits] = useState<Partial<Record<BookSlot, string>>>(draft?.nextEdits ?? {})
-  const [nextExtra, setNextExtra] = useState<Service[]>(draft?.nextExtra ?? [])
+  const [nextExtra, setNextExtra] = useState<BookSlot[]>(() => extraSlots(draft?.nextExtra))
   const [nextExtraOpen, setNextExtraOpen] = useState(false)
   // «Мастер рекомендовал» у чека «В сервис» в режиме кассы — кнопкой с окном: поле редкое, место — строкам чека.
   const [declinedOpen, setDeclinedOpen] = useState(false)
@@ -409,8 +410,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [priceEdit, setPriceEdit] = useState<string | null>(null)
   // Режим кассы: клиент и машина выбираются в окне, в колонке — короткая строка.
   const [clientOpen, setClientOpen] = useState(false)
-  // Удалённая строка: без вопроса «точно?», но её можно вернуть одним касанием.
-  const [removed, setRemoved] = useState<{ line: CartLine; index: number } | null>(null)
+  // Удалённая строка: без вопроса «точно?», но её можно вернуть одним касанием — вместе со строкой
+  // «Следующей замены» по ней («+ ещё») и правкой кассира (SPEC-34).
+  const [removed, setRemoved] = useState<{ line: CartLine; index: number; next?: { slot: BookSlot; extra: boolean; edit?: string } } | null>(null)
   useEffect(() => {
     if (!removed) return
     const t = setTimeout(() => setRemoved(null), 8000)
@@ -421,10 +423,17 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const lineCount = useRef(lines.length)
   // Список стоит в самом низу — так и остаётся, когда его высота меняется (появилась подпись «ещё N»).
   const cartAtBottom = useRef(true)
+  // Куда список прокрутила сама касса. Событие scroll от такой прокрутки приходит позже, когда список
+  // мог уже сжаться (появилась подпись «ещё N»): это не кассир прокрутил вверх — список остаётся внизу.
+  const cartScrolledTo = useRef<number | null>(null)
+  const cartToBottom = (el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight
+    cartScrolledTo.current = el.scrollTop
+  }
   useEffect(() => {
     const el = cartRef.current
     if (el && lines.length > lineCount.current) {
-      el.scrollTop = el.scrollHeight
+      cartToBottom(el)
       cartAtBottom.current = true
     }
     lineCount.current = lines.length
@@ -435,7 +444,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const measureCart = useCallback(() => {
     const el = cartRef.current
     if (!el) return
-    if (cartAtBottom.current) el.scrollTop = el.scrollHeight
+    if (cartAtBottom.current) cartToBottom(el)
     const box = el.getBoundingClientRect()
     let up = 0
     let down = 0
@@ -814,22 +823,38 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     return null
   })()
 
-  // «Следующая замена» (SPEC-34): по строке на каждую услугу чека со строкой книжки.
+  // «Следующая замена» (SPEC-34): по строке на каждую услугу чека со строкой книжки; «+ ещё строку» —
+  // только позиции этого чека: товары, у категории которых есть строка книжки (уточнение 26.10.2026).
   const ownIntervals: OwnIntervals = Object.fromEntries(
     (book.data?.slots ?? []).filter((n) => n.own_interval).map((n) => [n.slot, { km: n.interval_km, days: n.interval_days }]),
   )
   const nextOn = saleType === 'service' && Boolean(party && vehicleId)
-  const nextList = nextOn
-    ? nextRows({ services: lines.filter((l) => l.kind === 'service').map((l) => l.service), extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals })
-    : []
-  const nextLow = nextTooLow(nextList, mileage)
-  const allServices = useLoad(
+  // Строка книжки товара — по его категории. Категории нужны чеку «В сервис» с машиной, где есть
+  // товары, и читаются заново для каждого такого чека (касса открыта весь день); без связи — из снимка.
+  const hasGoods = lines.some((l) => l.product && !l.gift)
+  const needCategories = nextOn && hasGoods
+  const categories = useLoad(
     () =>
-      nextExtraOpen
-        ? get<Service[]>('/services').catch(async () => (await readSnapshot())?.services ?? [])
+      needCategories
+        ? get<CategoryBook[]>('/categories').catch(async () => snapshotCategories((await readSnapshot())?.categories))
         : Promise.resolve(null),
-    [nextExtraOpen],
+    [needCategories],
   )
+  const nextSources = cartSources(lines, categories.data)
+  const nextList = nextOn ? nextRows({ sources: nextSources, extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals }) : []
+  const nextChoices = nextOn ? extraChoices(nextSources, nextList) : []
+  const nextLow = nextTooLow(nextList, mileage)
+  // Убрали товар или услугу из чека — строка «Следующей замены» по ним и правка кассира уходят (и из
+  // черновика, и из отложенного). Товары в чеке, а категорий нет — их строки не посчитать, ничего не трогаем.
+  const nextSourceKey = nextSources.map((s) => s.slot).join(',')
+  useEffect(() => {
+    if (hasGoods && !categories.data) return
+    const kept = pruneNext(nextExtra, nextEdits, nextSources)
+    if (!kept) return
+    setNextExtra(kept.extra)
+    setNextEdits(kept.edits)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextSourceKey, hasGoods, categories.data])
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
@@ -890,7 +915,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setDelivery(p.delivery ?? null)
     setDeclined(p.declined ?? '')
     setNextEdits(p.nextEdits ?? {})
-    setNextExtra(p.nextExtra ?? [])
+    setNextExtra(extraSlots(p.nextExtra))
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -1177,12 +1202,17 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setLines((ls) => ls.filter((x) => x.key !== l.key))
     const rec = asRemoved(l, 'remove')
     if (rec) setDropped((d) => [...d, rec])
-    if (touch) setRemoved({ line: l, index })
+    // «Вернуть» возвращает и строку «Следующей замены» по этой позиции с правкой кассира.
+    const slot = cartSources([l], categories.data)[0]?.slot
+    if (touch) setRemoved({ line: l, index, next: slot && { slot, extra: nextExtra.includes(slot), edit: nextEdits[slot] } })
   }
   const undoRemove = () => {
     if (!removed) return
     setLines((ls) => [...ls.slice(0, removed.index), removed.line, ...ls.slice(removed.index)])
     setDropped((d) => unremove(d, removed.line.key))
+    const n = removed.next
+    if (n?.extra) setNextExtra((x) => (x.includes(n.slot) ? x : [...x, n.slot]))
+    if (n?.edit !== undefined) setNextEdits((e) => (e[n.slot] !== undefined ? e : { ...e, [n.slot]: n.edit }))
     setRemoved(null)
   }
   // Кнопки режима кассы (ui-rules §9): под палец, с видимым нажатием, без мелких ссылок.
@@ -1216,7 +1246,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         aria-label={`Убрать строку ${r.label}`}
         className={serviceLeft ? `${tbtn} w-14 shrink-0` : 'min-h-9 rounded-md border border-slate-300 px-2 text-sm hover:bg-slate-50'}
         onClick={() => {
-          setNextExtra(nextExtra.filter((x) => x.id !== r.service_id))
+          setNextExtra(nextExtra.filter((x) => x !== r.slot))
           const rest = { ...nextEdits }
           delete rest[r.slot]
           setNextEdits(rest)
@@ -1230,18 +1260,32 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       «{serviceLeft ? slotLabel(nextLow.slot) : nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
     </span>
   )
+  // Блок нужен, когда есть строки или что добавить «+ ещё»; в режиме кассы в нём и «Мастер рекомендовал».
+  const nextShown = nextList.length > 0 || nextChoices.length > 0
+  const openNextExtra = () => {
+    // В окне только кнопки: открытая экранная клавиатура легла бы поверх них, и касание края кнопки
+    // набрало бы цифру в поле за окном. Прячем — снова откроет «⌨» (ADR-101).
+    setKeyboardOpen(false)
+    setNextExtraOpen(true)
+    // Следующий скан — в поиск товара: товар встанет в чек за окном, а не пропадёт (как у плиток).
+    focusScanField()
+  }
   const nextBlock = serviceLeft ? (
     // В режиме кассы — одним рядом во всю ширину левой карточки: подпись группы слева, у каждого
     // поля — строка книжки над ним («Масло двигателя»), «+ ещё» и «Мастер рекомендовал» — кнопками
     // в том же ряду. Так данные замены занимают два ряда и строкам чека остаётся место (ui-rules §9).
     <div className="flex min-w-0 flex-col gap-1 lg:col-span-full" data-testid="next-change">
       <div className="flex flex-wrap items-end gap-2">
-        <span className="flex min-h-[56px] w-[6.5rem] shrink-0 items-center text-sm leading-tight font-medium text-slate-700">
-          Следующая замена, {unitLabel(carUnit)}
-        </span>
+        {nextShown && (
+          <span className="flex min-h-[56px] w-[6.5rem] shrink-0 items-center text-sm leading-tight font-medium text-slate-700">
+            Следующая замена, {unitLabel(carUnit)}
+          </span>
+        )}
         {nextList.map((r) => (
-          <div key={r.slot} className="flex min-w-0 shrink-0 flex-col gap-1">
-            <label htmlFor={`next-${r.slot}`} className="w-[6.25rem] truncate text-sm text-slate-700" title={r.label}>
+          <div key={r.slot} className="flex min-w-0 shrink-0 flex-col gap-1" data-next-row>
+            {/* Подпись — во всю ширину поля и «✕» у строки по товару («Фильтр воздушный» целиком), но
+                шире ряд не делает. */}
+            <label htmlFor={`next-${r.slot}`} className="w-0 min-w-full truncate text-sm text-slate-700" title={r.label}>
               {slotLabel(r.slot)}
             </label>
             <span className="flex gap-1">
@@ -1250,9 +1294,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             </span>
           </div>
         ))}
-        <button type="button" aria-label="+ ещё строку" className={`${tbtn} shrink-0`} onClick={() => setNextExtraOpen(true)}>
-          + ещё
-        </button>
+        {/* Только позиции этого чека, чьей строки ещё нет; предложить нечего — кнопки нет. */}
+        {nextChoices.length > 0 && (
+          <button type="button" aria-label="+ ещё строку" className={`${tbtn} shrink-0`} onClick={openNextExtra}>
+            + ещё
+          </button>
+        )}
         <button
           type="button"
           data-declined
@@ -1271,7 +1318,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       </div>
       {nextLowText}
     </div>
-  ) : (
+  ) : nextShown ? (
     <div className="flex min-w-0 flex-col gap-1" data-testid="next-change">
       <span className="text-sm font-medium text-slate-700">
         Следующая замена, {unitLabel(carUnit)}
@@ -1279,7 +1326,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       </span>
       <div className="grid grid-cols-1 gap-2">
         {nextList.map((r) => (
-          <div key={r.slot} className="flex min-w-0 items-center gap-2">
+          <div key={r.slot} className="flex min-w-0 items-center gap-2" data-next-row>
             <label htmlFor={`next-${r.slot}`} className="min-w-0 flex-1 text-sm leading-tight" title={r.label}>
               {r.label}
               <span className="text-slate-500"> — следующая на пробеге</span>
@@ -1288,13 +1335,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             {nextRemove(r)}
           </div>
         ))}
-        <button type="button" className="min-h-9 self-start rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50" onClick={() => setNextExtraOpen(true)}>
-          + ещё строку
-        </button>
+        {nextChoices.length > 0 && (
+          <button type="button" className="min-h-9 self-start rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50" onClick={openNextExtra}>
+            + ещё строку
+          </button>
+        )}
       </div>
       {nextLowText}
     </div>
-  )
+  ) : null
   const customerFields = (
     <>
       {saleType === 'service' && (
@@ -1858,7 +1907,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               touch
                 ? (e) => {
                     const el = e.currentTarget
-                    cartAtBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 2
+                    const own = cartScrolledTo.current !== null && Math.abs(el.scrollTop - cartScrolledTo.current) <= 1
+                    if (!own) {
+                      cartScrolledTo.current = null
+                      cartAtBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 2
+                    }
                     measureCart()
                   }
                 : undefined
@@ -2764,30 +2817,35 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Modal>
       )}
       {nextExtraOpen && (
-        // «+ ещё строку» (SPEC-34 §2): услуга, которой нет в чеке, — клиент сменил в другом месте.
+        // «+ ещё строку» (SPEC-34 §2, уточнение 26.10.2026): только позиции этого чека, чьей строки
+        // книжки ещё нет в блоке, — справочник услуг не предлагается.
         <Modal title="Следующая замена: ещё строка" onClose={() => setNextExtraOpen(false)}>
           <div className="flex flex-col gap-2" data-testid="next-extra-choices">
-            {allServices.loading && !allServices.data ? (
-              <div className="text-sm text-slate-500">Загружаю услуги…</div>
-            ) : extraChoices(allServices.data ?? [], nextList).length === 0 ? (
-              <div className="text-sm text-slate-500">Все строки книжки уже в списке. Строку книжки услуги задаёт владелец в «Услугах».</div>
+            <div className="text-sm text-slate-500">Только позиции этого чека:</div>
+            {nextChoices.length === 0 ? (
+              <div className="text-sm text-slate-500">Все позиции чека со строкой книжки уже в списке.</div>
             ) : (
-              extraChoices(allServices.data ?? [], nextList).map((sv) => (
+              nextChoices.map((c) => (
                 <button
-                  key={sv.id}
+                  key={c.slot}
                   type="button"
-                  className={touch ? `${tbtn} justify-start!` : 'min-h-9 rounded-md border border-slate-300 px-3 text-left text-sm hover:bg-slate-50'}
+                  className={touch ? `${tbtn} justify-start! text-left!` : 'min-h-9 rounded-md border border-slate-300 px-3 text-left text-sm hover:bg-slate-50'}
                   onClick={() => {
-                    setNextExtra([...nextExtra, sv])
+                    setNextExtra([...nextExtra, c.slot])
                     setNextExtraOpen(false)
+                    // Новая строка может встать за прокруткой карточки замены — показать её: касание сработало.
+                    requestAnimationFrame(() => document.getElementById(`next-${c.slot}`)?.closest('[data-next-row]')?.scrollIntoView({ block: 'nearest' }))
                   }}
                 >
-                  {sv.name}
-                  <span className="text-sm font-normal text-slate-500">· {slotLabel(sv.book_slot ?? 'other')}</span>
+                  {c.label}
                 </button>
               ))
             )}
-            <ErrorBox error={allServices.error} />
+            {touch && (
+              <button type="button" className={tbtn} onClick={() => setNextExtraOpen(false)}>
+                Отмена
+              </button>
+            )}
           </div>
         </Modal>
       )}
