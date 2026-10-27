@@ -1353,6 +1353,119 @@ fn first(items: Vec<String>, n: usize) -> String {
     shown.join("; ")
 }
 
+/// Выплаты смены по сотрудникам и видам (ADR-122): «👥 Выплачено» — заработанное, авансы —
+/// отдельной строкой. Сторно уменьшает свой вид; вид, ушедший в ноль, не показывается. У прежних
+/// выплат без вида — только сумма.
+pub fn payout_lines(rows: &[PayoutRow]) -> Vec<String> {
+    let mut paid: Vec<(&str, Vec<(&str, i64)>)> = Vec::new();
+    let mut advances: Vec<(&str, i64)> = Vec::new();
+    for p in rows {
+        if p.purpose == "advance" {
+            match advances.iter_mut().find(|(n, _)| *n == p.employee_name) {
+                Some(a) => a.1 = a.1.saturating_add(p.amount_tyiyn),
+                None => advances.push((&p.employee_name, p.amount_tyiyn)),
+            }
+            continue;
+        }
+        let kinds = match paid.iter().position(|(n, _)| *n == p.employee_name) {
+            Some(i) => paid.get_mut(i).map(|(_, k)| k),
+            None => {
+                paid.push((&p.employee_name, Vec::new()));
+                paid.last_mut().map(|(_, k)| k)
+            }
+        };
+        if let Some(kinds) = kinds {
+            match kinds.iter_mut().find(|(k, _)| *k == p.purpose) {
+                Some(k) => k.1 = k.1.saturating_add(p.amount_tyiyn),
+                None => kinds.push((&p.purpose, p.amount_tyiyn)),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut total: i64 = 0;
+    let mut people = Vec::new();
+    for (name, kinds) in paid {
+        let kinds: Vec<(&str, i64)> = kinds.into_iter().filter(|(_, v)| *v != 0).collect();
+        total = kinds.iter().fold(total, |a, (_, v)| a.saturating_add(*v));
+        match kinds.as_slice() {
+            [] => {}
+            [("general", v)] => people.push(format!("{name} {}", format_som(*v))),
+            many => people.push(format!(
+                "{name} — {}",
+                many.iter()
+                    .map(|(k, v)| format!(
+                        "{} {}",
+                        crate::api::payroll::purpose_label(k),
+                        format_som(*v)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+    if !people.is_empty() {
+        out.push(format!(
+            "👥 Выплачено {}: {}",
+            format_som(total),
+            first(people, 6)
+        ));
+    }
+    let advances: Vec<(&str, i64)> = advances.into_iter().filter(|(_, v)| *v != 0).collect();
+    if !advances.is_empty() {
+        let sum = advances.iter().fold(0i64, |a, (_, v)| a.saturating_add(*v));
+        out.push(format!(
+            "💸 Авансы {}: {}",
+            format_som(sum),
+            first(
+                advances
+                    .iter()
+                    .map(|(n, v)| format!("{n} {}", format_som(*v)))
+                    .collect(),
+                6
+            )
+        ));
+    }
+    out
+}
+
+/// Долги смены: дано в долг по чекам и снято с долга возвратами (оплаты долга — отдельно).
+pub fn debt_lines(rows: &[DebtRow]) -> Vec<String> {
+    // Возврат долгового чека пишет в журнал долга «debt» с минусом.
+    let pick = |up: bool| -> Vec<String> {
+        rows.iter()
+            .filter(|d| {
+                matches!(d.kind.as_str(), "sale" | "return")
+                    && !d.reversal
+                    && if up {
+                        d.amount_tyiyn > 0
+                    } else {
+                        d.amount_tyiyn < 0
+                    }
+            })
+            .map(|d| {
+                format!(
+                    "{} {}{}",
+                    d.party_name,
+                    format_som(d.amount_tyiyn.saturating_abs()),
+                    d.sale_number
+                        .map(|n| format!(" (чек № {n})"))
+                        .unwrap_or_default()
+                )
+            })
+            .collect()
+    };
+    let mut out = Vec::new();
+    let given = pick(true);
+    if !given.is_empty() {
+        out.push(format!("📒 В долг: {}", first(given, 6)));
+    }
+    let back = pick(false);
+    if !back.is_empty() {
+        out.push(format!("📒 Снято с долга возвратами: {}", first(back, 6)));
+    }
+    out
+}
+
 /// Отчёт смены коротко для бота (SPEC-30 §7): деньги и разница, выручка по способам, кому
 /// выплачено, оплаты долгов, расходы, переводы, отменённые товары; владельцу — валовая.
 /// `extra` — дополнительные блоки перед ссылкой на полный отчёт.
@@ -1487,19 +1600,8 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
     }
     out.push(rev.join("\n"));
 
-    let mut more = Vec::new();
-    let paid: Vec<String> = r
-        .payouts
-        .iter()
-        .map(|p| format!("{} {}", p.employee_name, format_som(p.amount_tyiyn)))
-        .collect();
-    if !paid.is_empty() {
-        more.push(format!(
-            "👥 Выплачено {}: {}",
-            format_som(r.payouts_tyiyn),
-            first(paid, 6)
-        ));
-    }
+    let mut more = payout_lines(&r.payouts);
+    more.extend(debt_lines(&r.debts));
     let repaid: Vec<String> = r
         .debts
         .iter()
@@ -1622,6 +1724,39 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(bank_text(&empty), "безнал «Счёт»: 0 с");
+    }
+
+    #[test]
+    fn payouts_by_kind_and_advances_apart() {
+        let row = |name: &str, purpose: &str, amount: i64| PayoutRow {
+            id: Uuid::nil(),
+            number: 1,
+            created_at: Utc::now(),
+            employee_name: name.into(),
+            amount_tyiyn: amount,
+            purpose: purpose.into(),
+            comment: String::new(),
+            account_name: None,
+            reversal: amount < 0,
+            user_name: String::new(),
+        };
+        let lines = payout_lines(&[
+            row("Нурлан", "percent", 50_000),
+            row("Бек", "general", 15_000),
+            row("Нурлан", "bonus", 100_000),
+            row("Нурлан", "advance", 20_000),
+            // Сторно бонуса Беку — вид ушёл в ноль и не показывается.
+            row("Бек", "bonus", 3_000),
+            row("Бек", "bonus", -3_000),
+        ]);
+        assert_eq!(
+            lines,
+            [
+                "👥 Выплачено 1 650 с: Нурлан — проценты 500 с, бонус 1 000 с; Бек 150 с",
+                "💸 Авансы 200 с: Нурлан 200 с",
+            ]
+        );
+        assert!(payout_lines(&[row("Бек", "advance", 1), row("Бек", "advance", -1)]).is_empty());
     }
 
     #[test]

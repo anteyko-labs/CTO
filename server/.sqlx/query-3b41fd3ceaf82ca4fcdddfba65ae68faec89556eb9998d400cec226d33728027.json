@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.full_name, coalesce(-sum(a.amount_tyiyn), 0)::bigint as \"v!\"\n               from payroll_accruals a join employees e on e.id = a.employee_id\n               where a.doc_type = 'shift' and a.doc_id = $1 and a.kind = 'shortage'\n                 and a.reversal_of is null\n                 and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)\n               group by e.full_name order by e.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "3b41fd3ceaf82ca4fcdddfba65ae68faec89556eb9998d400cec226d33728027"
+}

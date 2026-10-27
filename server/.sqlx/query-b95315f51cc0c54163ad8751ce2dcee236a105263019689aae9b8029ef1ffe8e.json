@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.number, s.total_tyiyn, s.sale_type, s.master_fee_tyiyn, c.full_name as cashier,\n                  m.full_name as \"master?\", p.name as \"party?\", v.plate as \"plate?\",\n                  s.party_id as \"party_id?\", s.created_at, p.due_days as \"due_days?\",\n                  (select count(*) from sale_lines l where l.sale_id = s.id) as \"lines!\",\n                  (select coalesce(sum(x.amount_tyiyn), 0) from sale_payments x\n                   where x.sale_id = s.id and x.method = 'debt')::bigint as \"debt!\"\n           from sales s\n           join employees c on c.id = s.cashier_id\n           left join employees m on m.id = s.master_id\n           left join parties p on p.id = s.party_id\n           left join party_vehicles v on v.id = s.vehicle_id\n           where s.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "sale_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "cashier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "master?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "party?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "plate?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "party_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "due_days?",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "lines!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "debt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "b95315f51cc0c54163ad8751ce2dcee236a105263019689aae9b8029ef1ffe8e"
+}

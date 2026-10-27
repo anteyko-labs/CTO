@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select method, coalesce(-sum(amount_tyiyn), 0)::bigint as \"amount!\"\n           from sale_payments where sale_id = $1 group by method order by 2 desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "053ece5c76f7462413550fe92d7341c50b3f0352983421f3c2679a230aa9bee0"
+}

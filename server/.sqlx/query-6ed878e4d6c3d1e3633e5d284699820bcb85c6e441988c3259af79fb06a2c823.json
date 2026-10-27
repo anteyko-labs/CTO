@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with last as (\n             select distinct on (s.branch_id, s.business_date) s.id, s.branch_id, s.business_date\n             from shifts s\n             where s.business_date >= (now() at time zone 'Asia/Bishkek')::date - 2\n             order by s.branch_id, s.business_date, s.opened_at desc\n           ), closed as (\n             select l.id, l.branch_id, l.business_date, max(c.closed_at) as at\n             from last l join shift_closes c on c.shift_id = l.id\n             where not exists (select 1 from shift_reopens r where r.close_id = c.id)\n             group by l.id, l.branch_id, l.business_date\n           )\n           select l.id, l.branch_id, l.business_date, l.at as \"at!\", b.name as branch_name, t.chat_id\n           from closed l\n           join branches b on b.id = l.branch_id\n           join telegram_links t on true\n           join users o on o.id = t.user_id and o.active and o.role = 'owner'\n           where l.at > greatest($1::timestamptz, now() - interval '1 day', t.linked_at)\n             -- Последняя смена закрыта: закрытие позже действующего переоткрыли — смена открыта.\n             and not exists (\n               select 1 from shift_closes c\n               where c.shift_id = l.id and c.closed_at > l.at)\n             -- Другие смены того же дня (другие кассы) тоже закрыты.\n             and not exists (\n               select 1 from shifts x\n               where x.branch_id = l.branch_id and x.business_date = l.business_date\n                 and not exists (\n                   select 1 from shift_closes c\n                   where c.shift_id = x.id\n                     and not exists (select 1 from shift_reopens r where r.close_id = c.id)))\n             and (exists (select 1 from shifts n\n                          where n.branch_id = l.branch_id and n.business_date > l.business_date)\n                  or (now() at time zone 'Asia/Bishkek')::date > l.business_date\n                  or extract(hour from now() at time zone 'Asia/Bishkek') >= 20)\n             -- Сообщение о закрытии этой смены уже в чате.\n             and exists (\n               select 1 from audit_log a join telegram_sent s\n                 on s.audit_id = a.id and s.chat_id = t.chat_id\n               where a.action = 'shift.close' and a.entity_id = l.id)\n             and not exists (\n               select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = l.id)\n           order by l.at, t.chat_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "branch_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "chat_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "6ed878e4d6c3d1e3633e5d284699820bcb85c6e441988c3259af79fb06a2c823"
+}
