@@ -40,6 +40,8 @@ export interface BankQr {
   /** Сколько секунд QR ещё действует — по часам сервера. */
   seconds_left: number
   paid_at: string | null
+  /** Сколько оплачено по ответу банка (у оплаченного). */
+  paid_tyiyn?: number | null
   sale_id: string | null
   /** PNG в base64 — пока QR ждёт оплаты. */
   qr_base64?: string
@@ -118,9 +120,28 @@ export const QR_STATUS_TEXT: Record<BankQrStatus, string> = {
   cancelled: 'QR отменён',
 }
 
-/** Ссылку на QR получает оплата картой, только если QR оплачен ровно на эту сумму. */
-export function qrForCard(qr: Pick<BankQr, 'id' | 'status' | 'amount_tyiyn'> | null, cardAmount: number): string | undefined {
-  return qr && qr.status === 'paid' && qr.amount_tyiyn === cardAmount && cardAmount > 0 ? qr.id : undefined
+/** Сколько оплачено по QR: по ответу банка, без него — сумма QR. */
+export function qrPaidSum(qr: Pick<BankQr, 'amount_tyiyn' | 'paid_tyiyn'>): number {
+  return qr.paid_tyiyn ?? qr.amount_tyiyn
+}
+
+/** Ссылку на QR получает оплата картой, только если QR оплачен ровно на эту сумму (сервер
+ *  проверяет и сумму QR, и сумму оплаты по банку). */
+export function qrForCard(qr: Pick<BankQr, 'id' | 'status' | 'amount_tyiyn' | 'paid_tyiyn'> | null, cardAmount: number): string | undefined {
+  return qr && qr.status === 'paid' && qr.amount_tyiyn === cardAmount && qrPaidSum(qr) === cardAmount && cardAmount > 0 ? qr.id : undefined
+}
+
+/** Столько неудачных опросов сервера подряд — «Нет связи с сервером», чек не ждёт QR (ADR-130). */
+export const QR_LOST_AFTER = 3
+
+/** Касса спрашивает свои ждущие и оплаченные без чека QR раз в 5 с (ADR-130). */
+export const OPEN_QR_EVERY_MS = 5000
+
+/** QR этой кассы, который не на экране: сначала оплаченный без чека, потом ждущий (после
+ *  перезагрузки страницы или «Отменить» чека) — его предлагают привязать к чеку или показать. */
+export function strayQr(list: readonly BankQr[], activeId: string | undefined): BankQr | null {
+  const other = list.filter((q) => q.id !== activeId && !q.sale_id)
+  return other.find((q) => q.status === 'paid') ?? (activeId ? null : other.find((q) => q.status === 'waiting') ?? null)
 }
 
 /** Расчётный счёт банка — 16 цифр (пробелы не считаются). */

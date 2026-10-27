@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountNumberProblem, countdown, periodDays, qrForCard, secondsLeft } from './optima'
+import { accountNumberProblem, countdown, periodDays, qrForCard, qrPaidSum, secondsLeft, strayQr, type BankQr } from './optima'
 
 describe('QR банка на кассе (SPEC-31)', () => {
   it('отсчёт от ответа сервера', () => {
@@ -17,6 +17,26 @@ describe('QR банка на кассе (SPEC-31)', () => {
     expect(qrForCard(qr, 98_000)).toBeUndefined()
     expect(qrForCard({ ...qr, status: 'waiting' }, 99_000)).toBeUndefined()
     expect(qrForCard(null, 99_000)).toBeUndefined()
+  })
+
+  it('сумма оплаты по банку должна совпасть с оплатой картой (ADR-130)', () => {
+    const qr = { id: 'q', status: 'paid' as const, amount_tyiyn: 99_000, paid_tyiyn: 98_000 }
+    expect(qrPaidSum(qr)).toBe(98_000)
+    expect(qrForCard(qr, 99_000)).toBeUndefined()
+    expect(qrForCard({ ...qr, paid_tyiyn: 99_000 }, 99_000)).toBe('q')
+    expect(qrPaidSum({ amount_tyiyn: 5_000, paid_tyiyn: null })).toBe(5_000)
+  })
+
+  it('QR кассы не на экране: сначала оплаченный без чека, ждущий — только когда окна QR нет', () => {
+    const base: BankQr = { id: 'a', amount_tyiyn: 1_000, status: 'waiting', expires_at: '', seconds_left: 60, paid_at: null, sale_id: null }
+    const waiting = base
+    const paid: BankQr = { ...base, id: 'b', status: 'paid', paid_tyiyn: 1_000 }
+    expect(strayQr([], undefined)).toBeNull()
+    expect(strayQr([waiting, paid], undefined)?.id).toBe('b')
+    expect(strayQr([waiting], undefined)?.id).toBe('a')
+    expect(strayQr([waiting], 'x')).toBeNull()
+    expect(strayQr([paid], 'b')).toBeNull()
+    expect(strayQr([{ ...paid, sale_id: 's' }], undefined)).toBeNull()
   })
 
   it('настройка и период сверки', () => {

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bank_qr set status = 'cancelled'\n           where branch_id = $1 and device_id = $2 and id <> $3 and sale_id is null\n             and status in ('waiting', 'unpaid')\n           returning id, amount_tyiyn",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f01562246a24e2c86fe49844217637ef54e1cf1520cbf2875329e3bfaef4b61d"
+}

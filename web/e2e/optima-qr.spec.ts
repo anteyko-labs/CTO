@@ -1,5 +1,6 @@
 // QR на сумму чека Optima Business (SPEC-31) в режиме кассы: QR крупно во всю правую колонку,
-// обратный отсчёт, «Отменить»; оплата — «Оплачено N с» зелёным, чек проводится со ссылкой на QR.
+// обратный отсчёт, «Отменить»; оплата — «Оплачено N с» зелёным, чек проводится со ссылкой на QR;
+// после перезагрузки страницы оплаченный QR касса предлагает привязать к чеку (ADR-130).
 // Банк — подставной (здесь же, на E2E_OPTIMA_PORT): сервер запускают с OPTIMA_API_KEY и
 // OPTIMA_API_URL=http://127.0.0.1:<порт>. Без них QR выключен — проверка пропускается.
 import http from 'node:http'
@@ -243,6 +244,26 @@ test('QR на сумму чека в режиме кассы: крупно, от
     const after = await api<{ status: string; sale_id: string | null }>(page.request, 'GET', `/bank-qr/${qr.id}`)
     expect(after.status).toBe('paid')
     expect(after.sale_id).toBeTruthy()
+
+    // Оплата по QR не теряется после перезагрузки страницы (ADR-130): касса сама предлагает
+    // привязать её к чеку.
+    await page.getByPlaceholder(PICKER).fill(name)
+    await page.getByRole('button', { name: new RegExp(`^${name}`) }).first().tap()
+    await page.getByRole('button', { name: 'Карта / QR банка' }).tap()
+    await create.tap()
+    await expect(panel.getByRole('img')).toBeVisible()
+    bank.paid.add(`e2e${RUN}tx3`)
+    await expect(paid).toContainText(/Оплачено 500\sс/, { timeout: 15_000 })
+    await page.reload()
+    const stray = page.getByTestId('bank-qr-stray')
+    await expect(stray).toContainText(/Оплачен QR на 500\sс — привязать к чеку/, { timeout: 10_000 })
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/kassa-1366-qr-stray.png` })
+    await stray.tap()
+    await expect(paid).toContainText(/Оплачено 500\sс/)
+    await expect(stray).toHaveCount(0)
+    await page.getByRole('button', { name: 'Провести чек' }).tap()
+    await expect(page.getByText(/Чек № \d+ проведён/)).toBeVisible()
+    expect(bank.generated).toBe(3)
 
     await page.getByRole('button', { name: 'Выйти из режима кассы' }).tap()
     await expect(page.getByTestId('cashier-mode-bar')).toHaveCount(0)
