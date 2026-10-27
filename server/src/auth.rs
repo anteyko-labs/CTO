@@ -97,7 +97,7 @@ const fn perm(
 /// Владельцу права не нужны: он может всё. Правом не выдаются себестоимость, прибыль, маржа
 /// (инвариант 6), «Исправить» документов (ADR-085), цены товаров (ADR-032), отмена перелива,
 /// начисления, бонусы и удержания — это только владелец (ADR-097).
-pub const PERMISSIONS: [PermissionDef; 16] = [
+pub const PERMISSIONS: [PermissionDef; 17] = [
     perm("sale_return", "Возврат по чеку", "Касса", true),
     perm("sale_debt", "Продажа в долг", "Касса", true),
     perm("discount", "Скидка в чеке", "Касса", false),
@@ -110,6 +110,7 @@ pub const PERMISSIONS: [PermissionDef; 16] = [
     ),
     perm("expenses", "Расходы", "Деньги", true),
     perm("payroll_pay", "Выплаты мастерам", "Деньги", true),
+    perm("payroll_advance", "Аванс мастерам", "Деньги", false),
     perm(
         "receipts",
         "Приход товара и оплата поставщику",
@@ -472,7 +473,7 @@ mod tests {
     fn permissions_match_the_screen_list() {
         // Список прав (SPEC-30 §5) — на сервере и на экране; ключ, подпись и «по умолчанию»
         // должны совпадать, иначе «Нет права: …» и флажок назовут право по-разному.
-        assert_eq!(PERMISSIONS.len(), 16);
+        assert_eq!(PERMISSIONS.len(), 17);
         assert_eq!(default_permissions().len(), 14);
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/src/lib/permissions.ts");
         let Ok(ts) = std::fs::read_to_string(path) else {

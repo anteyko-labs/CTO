@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .route("/payroll/entries", routing::get(entries))
         .route("/payroll/accruals", routing::post(post_accrual))
         .route("/payroll/salary", routing::post(post_salary))
+        .route("/payroll/remains", routing::get(remains))
         .route("/payouts", routing::post(post_payout))
         .route("/payouts/{id}/reverse", routing::post(reverse_payout))
         .route(
@@ -172,7 +173,7 @@ pub async fn reverse_payout_tx(
         return Ok(done);
     }
     let p = sqlx::query!(
-        r#"select employee_id, amount_tyiyn, source, account_id, reversal_of
+        r#"select employee_id, amount_tyiyn, source, account_id, reversal_of, purpose
            from payouts where id = $1 and branch_id = $2 for update"#,
         id,
         branch_id
@@ -187,9 +188,10 @@ pub async fn reverse_payout_tx(
     let number = ops::next_counter(&mut *tx, branch_id, "payout").await?;
     let rid = new_id();
     sqlx::query!(
+        // Сторно — того же вида, что и выплата: остаток по виду возвращается (ADR-122).
         r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
-                                account_id, comment, reversal_of, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                                account_id, comment, reversal_of, user_id, device_id, purpose, op_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
         rid,
         branch_id,
         number,
@@ -200,7 +202,9 @@ pub async fn reverse_payout_tx(
         req.comment.trim(),
         id,
         ctx.user.id,
-        ctx.device_id
+        ctx.device_id,
+        p.purpose,
+        req.op_id
     )
     .execute(&mut *tx)
     .await
@@ -241,13 +245,15 @@ pub async fn reverse_payout_tx(
         KIND,
         "employee",
         Some(p.employee_id),
-        json!({ "payout": id, "amount_tyiyn": p.amount_tyiyn, "comment": req.comment.trim() }),
+        json!({ "payout": id, "amount_tyiyn": p.amount_tyiyn, "purpose": p.purpose,
+                "comment": req.comment.trim() }),
     )
     .await?;
     let out = PayoutOut {
         id: rid,
         number,
         balance_tyiyn: balance,
+        lines: Vec::new(),
     };
     ops::finish_op(&mut *tx, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
@@ -281,6 +287,8 @@ struct PayoutRow {
     id: Uuid,
     number: i64,
     amount_tyiyn: i64,
+    /// За что выдано (ADR-122): `general` — прежние выплаты без вида.
+    purpose: String,
     source: String,
     account_name: Option<String>,
     comment: String,
@@ -318,7 +326,7 @@ async fn entries(
     let accruals = accrual_rows(&mut conn, user.branch_id, q.employee_id, q.from, q.to).await?;
     let payouts = sqlx::query_as!(
         PayoutRow,
-        r#"select p.id, p.number, p.amount_tyiyn, p.source, c.name as "account_name?", p.comment,
+        r#"select p.id, p.number, p.amount_tyiyn, p.purpose, p.source, c.name as "account_name?", p.comment,
                   p.reversal_of as "reversal_of?",
                   exists (select 1 from payouts r where r.reversal_of = p.id) as "reversed!",
                   u.full_name as "user_name!", p.created_at
@@ -1605,9 +1613,18 @@ struct DayRow {
     accrued_tyiyn: i64,
     service_fee_tyiyn: i64,
     percent_tyiyn: i64,
+    /// Всё, кроме процента и услуг: оклад, бонус и удержания вместе (прежний «Прочее»).
     other_tyiyn: i64,
+    /// Оклад за месяц и за смену (ADR-122).
+    salary_tyiyn: i64,
+    bonus_tyiyn: i64,
+    /// Удержания и недостача — с минусом.
+    withheld_tyiyn: i64,
     base_tyiyn: Option<i64>,
+    /// Выдано за день, авансы тоже.
     paid_tyiyn: i64,
+    /// В том числе авансом.
+    advance_tyiyn: i64,
     balance_tyiyn: i64,
 }
 
@@ -1645,10 +1662,21 @@ async fn day(
                        where a.employee_id = e.id and a.business_date = $2 and a.kind = 'service_fee'), 0)::bigint as "service_fee!",
              coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as "percent!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.employee_id = e.id and a.business_date = $2
+                         and a.kind in ('monthly_salary', 'shift_fee')), 0)::bigint as "salary!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.employee_id = e.id and a.business_date = $2 and a.kind = 'bonus'), 0)::bigint as "bonus!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.employee_id = e.id and a.business_date = $2
+                         and a.kind in ('penalty', 'shortage')), 0)::bigint as "withheld!",
              coalesce((select sum(a.base_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as "base!",
              coalesce((select sum(p.amount_tyiyn) from payouts p
-                       where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as "paid!"
+                       where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as "paid!",
+             coalesce((select sum(p.amount_tyiyn) from payouts p
+                       where p.employee_id = e.id and p.purpose = 'advance'
+                         and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as "advance!"
            from employees e
            where e.branch_id = $1
            order by e.full_name"#,
@@ -1669,9 +1697,13 @@ async fn day(
             service_fee_tyiyn: r.service_fee,
             percent_tyiyn: r.percent,
             other_tyiyn: r.accrued - r.service_fee - r.percent,
+            salary_tyiyn: r.salary,
+            bonus_tyiyn: r.bonus,
+            withheld_tyiyn: r.withheld,
             // База процента раскрывает себестоимость, поэтому она только владельцу (ADR-036).
             base_tyiyn: owner.then_some(r.base),
             paid_tyiyn: r.paid,
+            advance_tyiyn: r.advance,
             balance_tyiyn: r.opening + r.accrued - r.paid,
         })
         .filter(|r| r.opening_tyiyn != 0 || r.accrued_tyiyn != 0 || r.paid_tyiyn != 0)
@@ -1700,7 +1732,10 @@ pub(crate) struct MonthRow {
     pub(crate) penalty_tyiyn: i64,
     pub(crate) shortage_tyiyn: i64,
     pub(crate) accrued_tyiyn: i64,
+    /// Выдано за месяц, авансы тоже.
     pub(crate) paid_tyiyn: i64,
+    /// В том числе авансом (ADR-122).
+    pub(crate) advance_tyiyn: i64,
     pub(crate) closing_tyiyn: i64,
     /// Оклад за этот месяц уже начислен (повторно — 409).
     pub(crate) salary_done: bool,
@@ -1766,6 +1801,9 @@ pub(crate) async fn month_data(
              coalesce((select sum(p.amount_tyiyn) from payouts p
                        where p.employee_id = e.id
                          and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "paid!",
+             coalesce((select sum(p.amount_tyiyn) from payouts p
+                       where p.employee_id = e.id and p.purpose = 'advance'
+                         and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "advance!",
              exists (select 1 from payroll_accruals s
                      where s.employee_id = e.id and s.kind = 'monthly_salary' and s.reversal_of is null
                        and s.business_date between $2 and $3
@@ -1778,7 +1816,22 @@ pub(crate) async fn month_data(
            left join payroll_accruals a on a.employee_id = e.id and a.business_date between $2 and $3
            where e.branch_id = $1
            group by e.id, e.full_name, e.is_cashier, e.is_master, e.active
+           -- Отключённый сотрудник виден, пока с ним есть расчёт: начисления или выплаты в месяце,
+           -- долг на начало или на конец.
            having e.active or coalesce(sum(a.amount_tyiyn), 0) <> 0
+               or exists (select 1 from payouts p
+                          where p.employee_id = e.id
+                            and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3)
+               or coalesce((select sum(x.amount_tyiyn) from payroll_accruals x
+                            where x.employee_id = e.id and x.business_date <= $3), 0)
+                  <> coalesce((select sum(p.amount_tyiyn) from payouts p
+                               where p.employee_id = e.id
+                                 and (p.created_at at time zone 'Asia/Bishkek')::date <= $3), 0)
+               or coalesce((select sum(x.amount_tyiyn) from payroll_accruals x
+                            where x.employee_id = e.id and x.business_date < $2), 0)
+                  <> coalesce((select sum(p.amount_tyiyn) from payouts p
+                               where p.employee_id = e.id
+                                 and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)
            order by e.full_name"#,
         branch_id,
         b.from,
@@ -1803,6 +1856,7 @@ pub(crate) async fn month_data(
             shortage_tyiyn: r.shortage,
             accrued_tyiyn: r.accrued,
             paid_tyiyn: r.paid,
+            advance_tyiyn: r.advance,
             closing_tyiyn: r.opening.saturating_add(r.accrued).saturating_sub(r.paid),
             salary_done: r.salary_done,
             salary_rule_tyiyn: r.salary_rule,
@@ -2024,49 +2078,404 @@ pub async fn post_salary_tx(
     Ok(out)
 }
 
+// ---------- Выплаты по видам (SPEC-36 §11, ADR-122) ----------
+
+/// Виды выплаты в строках окна «Выплата», в порядке показа. `general` — прежние выплаты без вида
+/// и выплата одной суммой.
+pub const PAYOUT_PURPOSES: [&str; 5] = ["percent", "service_fee", "bonus", "salary", "advance"];
+
+/// Как вид называется в ответах сервера и в боте.
+pub fn purpose_label(purpose: &str) -> &'static str {
+    match purpose {
+        "percent" => "проценты",
+        "service_fee" => "мастеру за услуги",
+        "bonus" => "бонус",
+        "salary" => "оклад",
+        "advance" => "аванс",
+        _ => "выплата",
+    }
+}
+
+/// Начислено и выдано сотруднику по видам — всё, что нужно для остатков.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayTotals {
+    /// Процент с чеков (`revenue_percent`).
+    pub percent: i64,
+    pub service_fee: i64,
+    pub bonus: i64,
+    /// Оклад за месяц и за смену.
+    pub salary: i64,
+    /// Удержания и недостача — с минусом.
+    pub withheld: i64,
+    pub paid_general: i64,
+    pub paid_percent: i64,
+    pub paid_service_fee: i64,
+    pub paid_bonus: i64,
+    pub paid_salary: i64,
+    pub paid_advance: i64,
+}
+
+/// Остаток к выдаче по видам. Сумма всех полей — прежний баланс «начислено − выдано».
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Remains {
+    pub percent_tyiyn: i64,
+    pub service_fee_tyiyn: i64,
+    pub bonus_tyiyn: i64,
+    /// Оклад за месяц и за смену минус авансы — с минусом, пока аванс не закрыт окладом.
+    pub salary_tyiyn: i64,
+    /// Удержание, которое ещё не из чего вычесть (с минусом).
+    pub withheld_tyiyn: i64,
+}
+
+impl Remains {
+    pub fn total(&self) -> i64 {
+        self.percent_tyiyn
+            .saturating_add(self.service_fee_tyiyn)
+            .saturating_add(self.bonus_tyiyn)
+            .saturating_add(self.salary_tyiyn)
+            .saturating_add(self.withheld_tyiyn)
+    }
+
+    /// Остаток вида выплаты; аванс берётся из оклада или, у мастера без оклада, из услуг.
+    pub fn bucket(&mut self, purpose: &str, advance_to_salary: bool) -> Option<&mut i64> {
+        match purpose {
+            "percent" => Some(&mut self.percent_tyiyn),
+            "service_fee" => Some(&mut self.service_fee_tyiyn),
+            "bonus" => Some(&mut self.bonus_tyiyn),
+            "salary" => Some(&mut self.salary_tyiyn),
+            "advance" if advance_to_salary => Some(&mut self.salary_tyiyn),
+            "advance" => Some(&mut self.service_fee_tyiyn),
+            _ => None,
+        }
+    }
+}
+
+/// Остатки по видам (ADR-122):
+/// - вид = начислено по виду − выдано этим видом; аванс уменьшает оклад (у мастера без оклада —
+///   услуги), проценты он не трогает;
+/// - удержания и недостача вычитаются из положительных остатков по порядку
+///   проценты → мастеру → бонусы → оклад; что не из чего вычесть — остаётся «удержано»;
+/// - прежние выплаты без вида гасят положительные остатки в том же порядке, лишнее — из оклада.
+pub fn split_remains(t: &PayTotals, advance_to_salary: bool) -> Remains {
+    let mut b = [
+        t.percent.saturating_sub(t.paid_percent),
+        t.service_fee.saturating_sub(t.paid_service_fee),
+        t.bonus.saturating_sub(t.paid_bonus),
+        t.salary.saturating_sub(t.paid_salary),
+    ];
+    let target = if advance_to_salary { 3 } else { 1 };
+    b[target] = b[target].saturating_sub(t.paid_advance);
+    // Удержание; отменённое сверх удержанного (плюс) — к окладу.
+    let mut withheld = t.withheld;
+    if withheld > 0 {
+        b[3] = b[3].saturating_add(withheld);
+        withheld = 0;
+    }
+    for x in &mut b {
+        if withheld < 0 && *x > 0 {
+            let take = (*x).min(withheld.saturating_neg());
+            *x -= take;
+            withheld += take;
+        }
+    }
+    // Выплаты без вида; отрицательная сумма (сторно сверх выплат) — обратно в оклад.
+    let mut general = t.paid_general;
+    if general < 0 {
+        b[3] = b[3].saturating_sub(general);
+        general = 0;
+    }
+    for x in &mut b {
+        if general > 0 && *x > 0 {
+            let take = (*x).min(general);
+            *x -= take;
+            general -= take;
+        }
+    }
+    b[3] = b[3].saturating_sub(general);
+    Remains {
+        percent_tyiyn: b[0],
+        service_fee_tyiyn: b[1],
+        bonus_tyiyn: b[2],
+        salary_tyiyn: b[3],
+        withheld_tyiyn: withheld,
+    }
+}
+
+/// Остатки сотрудников филиала по видам на конец дня `upto` (без дня — сейчас).
+/// `employee` — только один сотрудник. Третье поле — аванс в счёт оклада (иначе — услуг).
+pub(crate) async fn remains_of(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee: Option<Uuid>,
+    upto: Option<NaiveDate>,
+) -> AppResult<Vec<(Uuid, Remains, bool)>> {
+    let rows = sqlx::query!(
+        r#"select e.id as "employee_id!",
+                  (e.is_cashier or exists (
+                      select 1 from employee_pay_rules r
+                      where r.employee_id = e.id and r.kind = 'monthly_salary'
+                        and (r.active_to is null or r.active_to > (now() at time zone 'Asia/Bishkek')::date)
+                  )) as "to_salary!",
+                  a.percent as "percent!", a.service_fee as "service_fee!", a.bonus as "bonus!",
+                  a.salary as "salary!", a.withheld as "withheld!",
+                  p.general as "paid_general!", p.percent as "paid_percent!",
+                  p.service_fee as "paid_service_fee!", p.bonus as "paid_bonus!",
+                  p.salary as "paid_salary!", p.advance as "paid_advance!"
+           from employees e
+           cross join lateral (
+               select coalesce(sum(amount_tyiyn) filter (where kind = 'revenue_percent'), 0)::bigint as percent,
+                      coalesce(sum(amount_tyiyn) filter (where kind = 'service_fee'), 0)::bigint as service_fee,
+                      coalesce(sum(amount_tyiyn) filter (where kind = 'bonus'), 0)::bigint as bonus,
+                      coalesce(sum(amount_tyiyn) filter (where kind in ('monthly_salary', 'shift_fee')), 0)::bigint as salary,
+                      coalesce(sum(amount_tyiyn) filter (where kind in ('penalty', 'shortage')), 0)::bigint as withheld
+               from payroll_accruals
+               where employee_id = e.id and ($3::date is null or business_date <= $3)
+           ) a
+           cross join lateral (
+               select coalesce(sum(amount_tyiyn) filter (where purpose = 'general'), 0)::bigint as general,
+                      coalesce(sum(amount_tyiyn) filter (where purpose = 'percent'), 0)::bigint as percent,
+                      coalesce(sum(amount_tyiyn) filter (where purpose = 'service_fee'), 0)::bigint as service_fee,
+                      coalesce(sum(amount_tyiyn) filter (where purpose = 'bonus'), 0)::bigint as bonus,
+                      coalesce(sum(amount_tyiyn) filter (where purpose = 'salary'), 0)::bigint as salary,
+                      coalesce(sum(amount_tyiyn) filter (where purpose = 'advance'), 0)::bigint as advance
+               from payouts
+               where employee_id = e.id
+                 and ($3::date is null or (created_at at time zone 'Asia/Bishkek')::date <= $3)
+           ) p
+           where e.branch_id = $1 and ($2::uuid is null or e.id = $2)"#,
+        branch_id,
+        employee,
+        upto
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let t = PayTotals {
+                percent: r.percent,
+                service_fee: r.service_fee,
+                bonus: r.bonus,
+                salary: r.salary,
+                withheld: r.withheld,
+                paid_general: r.paid_general,
+                paid_percent: r.paid_percent,
+                paid_service_fee: r.paid_service_fee,
+                paid_bonus: r.paid_bonus,
+                paid_salary: r.paid_salary,
+                paid_advance: r.paid_advance,
+            };
+            (r.employee_id, split_remains(&t, r.to_salary), r.to_salary)
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct RemainsQuery {
+    employee_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct RemainsOut {
+    employee_id: Uuid,
+    full_name: String,
+    is_cashier: bool,
+    is_master: bool,
+    remains: Remains,
+    /// Сколько должны всего: сумма остатков по видам.
+    balance_tyiyn: i64,
+    /// Аванс в счёт чего: `salary` или `service_fee`.
+    advance_to: &'static str,
+}
+
+/// Остатки сотрудника по видам сейчас — для окна «Выплата» (ADR-122). Администратор видит
+/// только тех, кому может выплатить: мастеров не кассиров (SPEC-30 §6).
+async fn remains(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<RemainsQuery>,
+) -> AppResult<Json<RemainsOut>> {
+    let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "payroll_pay").await?;
+    let e = sqlx::query!(
+        "select full_name, is_cashier, is_master from employees where id = $1 and branch_id = $2",
+        q.employee_id,
+        user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if !user.is_owner() && (e.is_cashier || !e.is_master) {
+        return Err(AppError::ForbiddenWith(
+            "Кассиру выплачивает владелец".into(),
+        ));
+    }
+    let (_, r, to_salary) = remains_of(&mut conn, user.branch_id, Some(q.employee_id), None)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(RemainsOut {
+        employee_id: q.employee_id,
+        full_name: e.full_name,
+        is_cashier: e.is_cashier,
+        is_master: e.is_master,
+        balance_tyiyn: r.total(),
+        remains: r,
+        advance_to: if to_salary { "salary" } else { "service_fee" },
+    }))
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct PayoutReq {
     pub op_id: Uuid,
     pub employee_id: Uuid,
+    /// Одна сумма; при строках по видам не нужна.
+    #[serde(default)]
     pub amount_tyiyn: i64,
     pub source: Option<String>,
     pub account_id: Option<Uuid>,
+    /// Одна сумма без вида — это аванс. С `purpose = general` — владелец выдаёт сверх
+    /// заработанного (исправление прежней выплаты).
     #[serde(default)]
     pub advance: bool,
     #[serde(default)]
     pub comment: String,
 }
 
+/// Строка выплаты: вид и сумма.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct PayoutLine {
+    pub purpose: String,
+    pub amount_tyiyn: i64,
+}
+
+/// Выплата по видам (ADR-122): строки `lines` одной операцией; без строк — одна сумма
+/// `amount_tyiyn` видом `purpose` (по умолчанию `general`, с `advance` — аванс).
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct PayoutsReq {
+    #[serde(flatten)]
+    pub base: PayoutReq,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<PayoutLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
+impl From<PayoutReq> for PayoutsReq {
+    fn from(base: PayoutReq) -> Self {
+        Self {
+            base,
+            lines: Vec::new(),
+            purpose: None,
+        }
+    }
+}
+
+/// Проведённая строка выплаты.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PayoutLineOut {
+    pub id: Uuid,
+    pub number: i64,
+    pub purpose: String,
+    pub amount_tyiyn: i64,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PayoutOut {
+    /// Первая строка выплаты.
     pub id: Uuid,
     pub number: i64,
     pub balance_tyiyn: i64,
+    /// Все строки по видам; у прежних ответов — пусто.
+    #[serde(default)]
+    pub lines: Vec<PayoutLineOut>,
 }
 
 async fn post_payout(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<PayoutReq>,
+    Json(req): Json<PayoutsReq>,
 ) -> AppResult<Json<PayoutOut>> {
     let mut tx = state.pool.begin().await?;
-    let out = post_payout_tx(&mut tx, &ctx, req).await?;
+    let out = post_payouts_tx(&mut tx, &ctx, req).await?;
     tx.commit().await?;
     Ok(Json(out))
 }
 
-/// Выплата или аванс сотруднику.
-/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+/// Выплата одной суммой — закрытие смены (SPEC-27).
 pub async fn post_payout_tx(
     conn: &mut PgConnection,
     ctx: &Ctx,
     req: PayoutReq,
 ) -> AppResult<PayoutOut> {
+    post_payouts_tx(conn, ctx, req.into()).await
+}
+
+/// Строк в одной выплате — не больше, чем видов.
+const MAX_PAYOUT_LINES: usize = PAYOUT_PURPOSES.len();
+
+/// Выплата или аванс сотруднику по видам (ADR-122): по записи на каждый вид, одна операция.
+/// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
+pub async fn post_payouts_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: PayoutsReq,
+) -> AppResult<PayoutOut> {
     const KIND: &str = "payout.post";
-    if req.amount_tyiyn <= 0 {
-        return Err(invalid("сумма больше нуля"));
+    let PayoutsReq {
+        base: req,
+        lines,
+        purpose,
+    } = req;
+    let mut lines = if lines.is_empty() {
+        let purpose =
+            purpose.unwrap_or_else(|| if req.advance { "advance" } else { "general" }.to_string());
+        vec![PayoutLine {
+            purpose,
+            amount_tyiyn: req.amount_tyiyn,
+        }]
+    } else {
+        if purpose.is_some() {
+            return Err(invalid("вид — в каждой строке"));
+        }
+        if lines.len() > MAX_PAYOUT_LINES {
+            return Err(invalid("строк больше, чем видов выплаты"));
+        }
+        lines
+    };
+    let single = lines.len() == 1;
+    let mut seen = std::collections::HashSet::new();
+    for l in &lines {
+        let known = PAYOUT_PURPOSES.contains(&l.purpose.as_str());
+        if !(known || single && l.purpose == "general") {
+            return Err(invalid(
+                "вид выплаты: проценты, мастеру, бонус, оклад или аванс",
+            ));
+        }
+        if !seen.insert(l.purpose.clone()) {
+            return Err(invalid("каждый вид — одной строкой"));
+        }
+        if l.amount_tyiyn <= 0 {
+            return Err(invalid("сумма больше нуля"));
+        }
+        crate::ops::check_amount(l.amount_tyiyn)?;
     }
-    crate::ops::check_amount(req.amount_tyiyn)?;
+    let total = lines
+        .iter()
+        .try_fold(0i64, |a, l| a.checked_add(l.amount_tyiyn))
+        .ok_or_else(crate::error::overflow)?;
+    crate::ops::check_amount(total)?;
+    if !single && req.amount_tyiyn != 0 && req.amount_tyiyn != total {
+        return Err(invalid("сумма не равна сумме строк"));
+    }
+    // Аванс проверяется последним: сначала выдаётся заработанное.
+    lines.sort_by_key(|l| {
+        PAYOUT_PURPOSES
+            .iter()
+            .position(|p| *p == l.purpose)
+            .unwrap_or(0)
+    });
     let source = req.source.unwrap_or_else(|| "account".into());
     if source == "outside" {
         return Err(invalid(crate::api::receipts::NO_OUTSIDE));
@@ -2076,13 +2485,17 @@ pub async fn post_payout_tx(
     }
     let owner = ctx.user.is_owner();
     let branch_id = ctx.user.branch_id;
-    // Выплаты — право администратора `payroll_pay` (ADR-097).
+    // Выплаты — право администратора `payroll_pay`, аванс — ещё и `payroll_advance` (ADR-097, ADR-122).
     crate::auth::require_permission(&mut *conn, &ctx.user, "payroll_pay").await?;
+    if lines.iter().any(|l| l.purpose == "advance") {
+        crate::auth::require_permission(&mut *conn, &ctx.user, "payroll_advance").await?;
+    }
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
     lock_employee(&mut *conn, branch_id, req.employee_id).await?;
-    // Администратор выдаёт деньги только мастерам; кассиру и остальным — владелец (SPEC-30 §6).
+    // Администратор выдаёт деньги только мастерам — за услуги и, с правом, аванс; кассиру
+    // и остальным — владелец (SPEC-30 §6, ADR-122).
     if !owner {
         let e = sqlx::query!(
             "select is_master, is_cashier from employees where id = $1",
@@ -2100,82 +2513,128 @@ pub async fn post_payout_tx(
                 "Выплачивает владелец: администратор выдаёт деньги только мастерам".into(),
             ));
         }
+        if let Some(l) = lines
+            .iter()
+            .find(|l| !matches!(l.purpose.as_str(), "general" | "service_fee" | "advance"))
+        {
+            return Err(AppError::ForbiddenWith(format!(
+                "Выплачивает владелец: {} — администратор выдаёт мастеру только за услуги и аванс",
+                purpose_label(&l.purpose)
+            )));
+        }
     }
-    let balance = sqlx::query_scalar!(
-        r#"select coalesce((select sum(amount_tyiyn) from payroll_accruals where employee_id = $1), 0)::bigint
-                - coalesce((select sum(amount_tyiyn) from payouts where employee_id = $1), 0)::bigint as "b!""#,
-        req.employee_id
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    // Аванс сверх заработанного отмечает только владелец (ответ заказчика).
-    if req.amount_tyiyn > balance && (!req.advance || !owner) {
-        return Err(invalid(format!(
-            "заработано {}: аванс сверх этого отмечает владелец",
-            crate::domain::money::format_som(balance)
-        )));
-    }
-    let mut account_id = None;
-    if source == "account" {
-        let id = match req.account_id {
-            Some(id) => id,
-            None => cash::default_account(&mut *conn, branch_id).await?,
+    let (_, mut left, to_salary) = remains_of(&mut *conn, branch_id, Some(req.employee_id), None)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(AppError::NotFound)?;
+    let balance = left.total();
+    for l in &lines {
+        if l.purpose == "general" {
+            // Одна сумма без вида — в пределах всего долга; сверх — аванс владельца.
+            if l.amount_tyiyn > balance && (!req.advance || !owner) {
+                return Err(invalid(format!(
+                    "заработано {}: аванс сверх этого отмечает владелец",
+                    crate::domain::money::format_som(balance)
+                )));
+            }
+            continue;
+        }
+        let Some(bucket) = left.bucket(&l.purpose, to_salary) else {
+            continue;
         };
-        // Администратор платит только из кассы смены: счета и сейфы — владельцу; архивный
-        // счёт не выбирается (ADR-037, ADR-076).
-        cash::check_pay_account(&mut *conn, &ctx.user, id).await?;
-        account_id = Some(id);
+        // Аванс владельца — сверх заработанного; остальное — не больше остатка своего вида.
+        if l.amount_tyiyn > *bucket && !(owner && l.purpose == "advance") {
+            return Err(invalid(format!(
+                "{}: к выдаче {}, а в строке {}",
+                purpose_label(&l.purpose),
+                crate::domain::money::format_som((*bucket).max(0)),
+                crate::domain::money::format_som(l.amount_tyiyn)
+            )));
+        }
+        *bucket = bucket.saturating_sub(l.amount_tyiyn);
     }
-    let number = ops::next_counter(&mut *conn, branch_id, "payout").await?;
-    let id = new_id();
-    sqlx::query!(
-        r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
-                                account_id, comment, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
-        id,
-        branch_id,
-        number,
-        req.employee_id,
-        req.amount_tyiyn,
-        source,
-        account_id,
-        req.comment.trim(),
-        ctx.user.id,
-        ctx.device_id
-    )
-    .execute(&mut *conn)
-    .await?;
-    if let Some(acc) = account_id {
-        cash::require_open_shift(&mut *conn, branch_id, acc).await?;
+    let id = match req.account_id {
+        Some(id) => id,
+        None => cash::default_account(&mut *conn, branch_id).await?,
+    };
+    // Администратор платит только из кассы смены: счета и сейфы — владельцу; архивный
+    // счёт не выбирается (ADR-037, ADR-076).
+    cash::check_pay_account(&mut *conn, &ctx.user, id).await?;
+    let mut out_lines = Vec::with_capacity(lines.len());
+    for l in &lines {
+        let number = ops::next_counter(&mut *conn, branch_id, "payout").await?;
+        let pid = new_id();
+        sqlx::query!(
+            r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
+                                    account_id, comment, user_id, device_id, purpose, op_id)
+               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+            pid,
+            branch_id,
+            number,
+            req.employee_id,
+            l.amount_tyiyn,
+            source,
+            id,
+            req.comment.trim(),
+            ctx.user.id,
+            ctx.device_id,
+            l.purpose,
+            req.op_id
+        )
+        .execute(&mut *conn)
+        .await?;
+        out_lines.push(PayoutLineOut {
+            id: pid,
+            number,
+            purpose: l.purpose.clone(),
+            amount_tyiyn: l.amount_tyiyn,
+        });
+    }
+    // Из кассы — только в открытую смену (SPEC-07); по движению на каждую строку.
+    cash::require_open_shift(&mut *conn, branch_id, id).await?;
+    for l in &out_lines {
         cash::add_movement(
             &mut *conn,
             ctx,
             CashEntry {
-                account_id: acc,
+                account_id: id,
                 kind: "payout",
-                amount: -req.amount_tyiyn,
+                amount: -l.amount_tyiyn,
                 doc_type: "payout",
-                doc_id: Some(id),
+                doc_id: Some(l.id),
                 comment: req.comment.trim(),
             },
         )
         .await?;
     }
+    let advance = lines
+        .iter()
+        .any(|l| l.purpose == "advance" || l.purpose == "general" && l.amount_tyiyn > balance);
     ops::audit(
         &mut *conn,
         ctx,
         KIND,
         "employee",
         Some(req.employee_id),
-        json!({ "amount_tyiyn": req.amount_tyiyn, "advance": req.amount_tyiyn > balance }),
+        json!({
+            "amount_tyiyn": total,
+            "advance": advance,
+            "account_id": id,
+            "lines": lines,
+        }),
     )
     .await?;
+    let first = out_lines
+        .first()
+        .ok_or_else(|| AppError::Internal("выплата без строк".into()))?;
     let out = PayoutOut {
-        id,
-        number,
+        id: first.id,
+        number: first.number,
         balance_tyiyn: balance
-            .checked_sub(req.amount_tyiyn)
+            .checked_sub(total)
             .ok_or_else(crate::error::overflow)?,
+        lines: out_lines,
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
@@ -2294,4 +2753,72 @@ pub async fn staff_pay_with(
         };
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PayTotals, Remains, split_remains};
+
+    #[test]
+    fn remains_sum_to_the_balance() {
+        // Сумма остатков по видам — прежний баланс «начислено − выдано» (ADR-122).
+        let t = PayTotals {
+            percent: 50_000,
+            service_fee: 3_000,
+            bonus: 100_000,
+            salary: 3_000_000,
+            withheld: -20_000,
+            paid_general: 70_000,
+            paid_percent: 0,
+            paid_service_fee: 0,
+            paid_bonus: 10_000,
+            paid_salary: 0,
+            paid_advance: 1_000_000,
+        };
+        let r = split_remains(&t, true);
+        let accrued = 50_000 + 3_000 + 100_000 + 3_000_000 - 20_000;
+        let paid = 70_000 + 10_000 + 1_000_000;
+        assert_eq!(r.total(), accrued - paid);
+        // Удержание — из процентов; выплата без вида — из остатка процентов, мастеру, бонуса.
+        assert_eq!(
+            r,
+            Remains {
+                percent_tyiyn: 0,
+                service_fee_tyiyn: 0,
+                bonus_tyiyn: 53_000,
+                salary_tyiyn: 2_000_000,
+                withheld_tyiyn: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn advance_of_master_without_salary_counts_against_services() {
+        let t = PayTotals {
+            service_fee: 3_000,
+            paid_advance: 5_000,
+            ..PayTotals::default()
+        };
+        let r = split_remains(&t, false);
+        assert_eq!(r.service_fee_tyiyn, -2_000);
+        assert_eq!(r.salary_tyiyn, 0);
+    }
+
+    #[test]
+    fn general_over_everything_goes_to_salary() {
+        // Прежний аванс сверх заработанного одной суммой — минус в окладе.
+        let t = PayTotals {
+            percent: 1_000,
+            paid_general: 4_000,
+            ..PayTotals::default()
+        };
+        let r = split_remains(&t, true);
+        assert_eq!((r.percent_tyiyn, r.salary_tyiyn), (0, -3_000));
+        // Удержать не из чего — остаётся «удержано».
+        let t = PayTotals {
+            withheld: -500,
+            ..PayTotals::default()
+        };
+        assert_eq!(split_remains(&t, true).withheld_tyiyn, -500);
+    }
 }

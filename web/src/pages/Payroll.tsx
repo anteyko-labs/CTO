@@ -15,7 +15,9 @@ export default function Payroll() {
   const owner = useUser().role === 'owner'
   // Выплаты — право администратора; кассирам выплачивает владелец, сервер отдаёт администратору
   // только мастеров (SPEC-30 §6).
-  const mayPay = useCan()('payroll_pay')
+  const can = useCan()
+  const mayPay = can('payroll_pay')
+  const mayAdvance = can('payroll_advance')
   const [view, setView] = useState<'day' | 'month'>('day')
   const [date, setDate] = useState(todayBishkek())
   const [paying, setPaying] = useState<PayrollRow | null>(null)
@@ -80,7 +82,7 @@ export default function Payroll() {
         ) : (
           // Суммы — по правому краю ровными цифрами, ноль — прочерком.
           <div className="[&_th:not(:first-child)]:text-right">
-            <Table head={['Сотрудник', 'Не выплачено ранее', 'За замены', 'Процент', 'Прочее', 'Выплачено', 'К выплате', '']}>
+            <Table head={['Сотрудник', 'Не выплачено ранее', 'Мастеру за услуги', 'Процент', 'Оклад', 'Бонус', 'Удержано', 'Выплачено', 'Аванс', 'К выплате', '']}>
               {list.map((r) => (
                 <tr key={r.employee_id}>
                   <td className="px-2 py-2 font-medium">{r.full_name}</td>
@@ -96,11 +98,21 @@ export default function Payroll() {
                       <div className="text-xs whitespace-nowrap text-slate-500">с валовой {formatSom(r.base_tyiyn)}</div>
                     )}
                   </td>
+                  {/* Вместо «Прочее» — оклад, бонус и удержания отдельно (ADR-122). */}
                   <td className="px-2 py-2 md:text-right">
-                    <Money value={r.other_tyiyn} tone="negative" zero="—" />
+                    <Money value={r.salary_tyiyn ?? 0} zero="—" />
                   </td>
                   <td className="px-2 py-2 md:text-right">
-                    <Money value={r.paid_tyiyn} zero="—" />
+                    <Money value={r.bonus_tyiyn ?? 0} zero="—" />
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.withheld_tyiyn ?? 0} tone="negative" zero="—" />
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.paid_tyiyn - (r.advance_tyiyn ?? 0)} zero="—" />
+                  </td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={r.advance_tyiyn ?? 0} zero="—" />
                   </td>
                   <td className="px-2 py-2 font-semibold md:text-right">
                     <Money value={r.balance_tyiyn} tone="negative" zero="—" />
@@ -110,7 +122,7 @@ export default function Payroll() {
                       {mayPay && (
                         <Button
                           className="px-3 py-1 text-xs"
-                          disabled={r.balance_tyiyn <= 0 && !owner}
+                          disabled={r.balance_tyiyn <= 0 && !owner && !mayAdvance}
                           onClick={() => setPaying(r)}
                         >
                           Выплатить
@@ -138,7 +150,7 @@ export default function Payroll() {
 
       {paying && (
         <Modal title={`Выплата: ${paying.full_name}`} onClose={close}>
-          <PayoutForm employeeId={paying.employee_id} balance={paying.balance_tyiyn} onCancel={close} onDone={done} />
+          <PayoutForm employeeId={paying.employee_id} onCancel={close} onDone={done} />
         </Modal>
       )}
 

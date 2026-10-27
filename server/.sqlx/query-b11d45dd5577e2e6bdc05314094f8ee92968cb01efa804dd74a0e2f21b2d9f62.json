@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id as \"employee_id!\",\n                  (e.is_cashier or exists (\n                      select 1 from employee_pay_rules r\n                      where r.employee_id = e.id and r.kind = 'monthly_salary'\n                        and (r.active_to is null or r.active_to > (now() at time zone 'Asia/Bishkek')::date)\n                  )) as \"to_salary!\",\n                  a.percent as \"percent!\", a.service_fee as \"service_fee!\", a.bonus as \"bonus!\",\n                  a.salary as \"salary!\", a.withheld as \"withheld!\",\n                  p.general as \"paid_general!\", p.percent as \"paid_percent!\",\n                  p.service_fee as \"paid_service_fee!\", p.bonus as \"paid_bonus!\",\n                  p.salary as \"paid_salary!\", p.advance as \"paid_advance!\"\n           from employees e\n           cross join lateral (\n               select coalesce(sum(amount_tyiyn) filter (where kind = 'revenue_percent'), 0)::bigint as percent,\n                      coalesce(sum(amount_tyiyn) filter (where kind = 'service_fee'), 0)::bigint as service_fee,\n                      coalesce(sum(amount_tyiyn) filter (where kind = 'bonus'), 0)::bigint as bonus,\n                      coalesce(sum(amount_tyiyn) filter (where kind in ('monthly_salary', 'shift_fee')), 0)::bigint as salary,\n                      coalesce(sum(amount_tyiyn) filter (where kind in ('penalty', 'shortage')), 0)::bigint as withheld\n               from payroll_accruals\n               where employee_id = e.id and ($3::date is null or business_date <= $3)\n           ) a\n           cross join lateral (\n               select coalesce(sum(amount_tyiyn) filter (where purpose = 'general'), 0)::bigint as general,\n                      coalesce(sum(amount_tyiyn) filter (where purpose = 'percent'), 0)::bigint as percent,\n                      coalesce(sum(amount_tyiyn) filter (where purpose = 'service_fee'), 0)::bigint as service_fee,\n                      coalesce(sum(amount_tyiyn) filter (where purpose = 'bonus'), 0)::bigint as bonus,\n                      coalesce(sum(amount_tyiyn) filter (where purpose = 'salary'), 0)::bigint as salary,\n                      coalesce(sum(amount_tyiyn) filter (where purpose = 'advance'), 0)::bigint as advance\n               from payouts\n               where employee_id = e.id\n                 and ($3::date is null or (created_at at time zone 'Asia/Bishkek')::date <= $3)\n           ) p\n           where e.branch_id = $1 and ($2::uuid is null or e.id = $2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "to_salary!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "service_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "salary!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "withheld!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "paid_general!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "paid_percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "paid_service_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "paid_bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "paid_salary!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "paid_advance!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b11d45dd5577e2e6bdc05314094f8ee92968cb01efa804dd74a0e2f21b2d9f62"
+}

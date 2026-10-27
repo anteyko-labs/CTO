@@ -413,7 +413,8 @@ async fn load_doc(
         }
         Kind::Payout => {
             let p = sqlx::query!(
-                r#"select p.number, p.employee_id, p.amount_tyiyn, p.account_id, p.comment, e.full_name
+                r#"select p.number, p.employee_id, p.amount_tyiyn, p.account_id, p.comment, p.purpose,
+                          e.full_name
                    from payouts p join employees e on e.id = p.employee_id
                    where p.id = $1 and p.branch_id = $2"#,
                 id,
@@ -425,6 +426,10 @@ async fn load_doc(
             let mut desc = Desc::default();
             desc.field("Сотрудник", p.full_name.clone());
             desc.field("Сумма", format_som(p.amount_tyiyn));
+            desc.field(
+                "За что",
+                crate::api::payroll::purpose_label(&p.purpose).to_string(),
+            );
             desc.field("Откуда", or_none(account_name(conn, p.account_id).await?));
             desc.field("Комментарий", or_none(Some(p.comment.clone())));
             Ok(Doc {
@@ -434,7 +439,9 @@ async fn load_doc(
                     "amount_tyiyn": p.amount_tyiyn,
                     "source": "account",
                     "account_id": p.account_id,
-                    // Исправляет владелец: сверх заработанного ему можно (аванс).
+                    // Вид ставится при проведении и при исправлении сохраняется (ADR-122).
+                    "purpose": p.purpose,
+                    // Исправляет владелец: прежней выплате без вида сверх заработанного ему можно.
                     "advance": true,
                     "comment": p.comment,
                 }),
@@ -1601,7 +1608,7 @@ async fn post_new(
             (out.id.ok_or_else(|| invalid("сумма больше нуля"))?, None)
         }
         Kind::Payout => {
-            let out = crate::api::payroll::post_payout_tx(conn, ctx, req_of(doc)?).await?;
+            let out = crate::api::payroll::post_payouts_tx(conn, ctx, req_of(doc)?).await?;
             (out.id, Some(out.number))
         }
         Kind::StockIn => {
