@@ -58,11 +58,37 @@ pub fn app(state: AppState, web_dir: Option<&Path>) -> Router {
     let router = match web_dir {
         Some(dir) => {
             let index = dir.join("index.html");
-            router.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
+            let web = Router::new()
+                .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
+                .layer(axum::middleware::from_fn(fresh_shell));
+            router.fallback_service(web)
         }
         None => router,
     };
     router.layer(TraceLayer::new_for_http()).with_state(state)
+}
+
+/// Оболочка программы (index.html, sw.js, манифест) отдаётся всегда целиком и с `no-cache`: ответ
+/// 304 по дате изменения оставил бы кассу на прежней версии — после отката на точке файлы
+/// возвращаются со старыми датами, а у двух сборок в одну секунду даты совпадают. Файлы
+/// `/assets/` — с хэшем в имени, им проверка по дате не мешает.
+async fn fresh_shell(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::HeaderValue;
+    use axum::http::header::{CACHE_CONTROL, IF_MODIFIED_SINCE, IF_NONE_MATCH};
+    let shell = !req.uri().path().starts_with("/assets/");
+    if shell {
+        req.headers_mut().remove(IF_MODIFIED_SINCE);
+        req.headers_mut().remove(IF_NONE_MATCH);
+    }
+    let mut res = next.run(req).await;
+    if shell {
+        res.headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    res
 }
 
 /// Отказы разбора запроса (кривой JSON, не те типы, неверный id в пути) axum отдаёт текстом
