@@ -352,7 +352,7 @@ async fn update_category(
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let before = sqlx::query!(
         r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days,
-                  c.kind
+                  c.kind, c.name
            from categories c where c.id = $1 for update"#,
         id
     )
@@ -360,9 +360,11 @@ async fn update_category(
     .await?
     .ok_or(AppError::NotFound)?;
     // Переименованная категория без выбранной строки книжки получает её по названию (ADR-117);
-    // выбранную владельцем строку название не меняет.
+    // выбранную владельцем строку название не меняет. Сохранили с прежним названием — строку по
+    // названию не ставим (ADR-131): «Антифриз и жидкости» не становится целиком «Антифризом».
     let by_name = name
         .as_deref()
+        .filter(|n| *n != before.name)
         .and_then(|n| book_slot_by_name(&before.kind, n));
     let out = sqlx::query_as!(
         CategoryOut,

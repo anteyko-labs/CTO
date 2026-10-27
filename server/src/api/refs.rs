@@ -468,8 +468,10 @@ fn check_service_book(slot: Option<&str>, km: Option<i32>, days: Option<i32>) ->
 }
 
 /// Категория масла по названию услуги (ADR-104), как в миграции 0059: «АКПП», «короб»,
-/// «трансмис» — трансмиссионная, иначе моторная (без такого названия — единственная
-/// нетрансмиссионная категория масла).
+/// «трансмис», а также мост, редуктор и раздатка (ADR-131, как в миграции 0071) —
+/// трансмиссионная (строка книжки «Масло в коробке» или «трансмис» в названии, первая по времени
+/// заведения), иначе моторная (без такого названия — единственная нетрансмиссионная категория
+/// масла).
 pub(crate) async fn guess_oil_category(
     conn: &mut sqlx::PgConnection,
     name: &str,
@@ -477,14 +479,21 @@ pub(crate) async fn guess_oil_category(
     let low = name.to_lowercase();
     let gear = ["акпп", "короб", "трансмис"]
         .iter()
-        .any(|w| low.contains(w));
-    let cats =
-        sqlx::query!("select id, name from categories where kind = 'oil' order by created_at, id")
-            .fetch_all(&mut *conn)
-            .await?;
-    let is_gear = |n: &str| n.to_lowercase().contains("трансмис");
+        .any(|w| low.contains(w))
+        || crate::api::oil_book::axle_or_transfer_by_name(&low);
+    let cats = sqlx::query!(
+        "select id, name, book_slot from categories where kind = 'oil' order by created_at, id"
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let is_gear = |slot: Option<&str>, n: &str| {
+        slot == Some("gear_oil") || n.to_lowercase().contains("трансмис")
+    };
     if gear {
-        return Ok(cats.iter().find(|c| is_gear(&c.name)).map(|c| c.id));
+        return Ok(cats
+            .iter()
+            .find(|c| is_gear(c.book_slot.as_deref(), &c.name))
+            .map(|c| c.id));
     }
     if let Some(c) = cats
         .iter()
@@ -492,7 +501,10 @@ pub(crate) async fn guess_oil_category(
     {
         return Ok(Some(c.id));
     }
-    let other: Vec<_> = cats.iter().filter(|c| !is_gear(&c.name)).collect();
+    let other: Vec<_> = cats
+        .iter()
+        .filter(|c| !is_gear(c.book_slot.as_deref(), &c.name))
+        .collect();
     Ok(match other.as_slice() {
         [one] => Some(one.id),
         _ => None,
