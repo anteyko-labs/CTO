@@ -1,18 +1,22 @@
-//! Машины клиента в Телеграм-боте: список, карточка с историей замен, добавление по госномеру,
-//! удаление и пометки (SPEC-22, ADR-061). Карточка показывает книжку машины целиком, длинная
-//! уходит несколькими сообщениями (SPEC-30 §10, `api::bot_book`). Клиент видит и меняет только
+//! Машины клиента в Телеграм-боте: список, карточка, добавление по госномеру, удаление и пометки
+//! (SPEC-22, ADR-061). Карточка — «Сейчас в машине», история — «📜 Прошлые ТО» по одной дате
+//! (SPEC-36 §6, ADR-119, `api::bot_book`). Клиент видит и меняет только
 //! машины своей карточки: каждая выборка ограничена его `party_id`, номер машины из кнопки сам
 //! по себе ничего не открывает.
 
+use chrono::NaiveDate;
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
-use crate::api::oil_book::{OilRecord, books};
+use crate::api::oil_book::books;
 use crate::api::telegram::{Button, Keys, Reply};
 use crate::domain::plate;
 use crate::error::AppResult;
 use crate::ops::new_id;
+
+/// «📜 Прошлые ТО» — кнопка меню клиента и кнопка под машиной (SPEC-36 §6).
+pub const BTN_PAST: &str = "📜 Прошлые ТО";
 
 /// Сколько активных машин может быть у клиента.
 pub const MAX_CARS: i64 = 10;
@@ -333,10 +337,10 @@ async fn cars(
         })
         .collect();
     let mut text = if c.company {
-        format!("Машины фирмы — нажмите, чтобы открыть историю.\n{COMPANY}")
+        format!("Машины фирмы — нажмите, чтобы открыть книжку машины.\n{COMPANY}")
     } else {
         rows.push(vec![button("➕ Добавить машину", "add")]);
-        "Ваши машины — нажмите, чтобы открыть историю замен и пометки.".to_string()
+        "Ваши машины — нажмите, чтобы открыть: что залито сейчас, прошлые ТО и пометки.".to_string()
     };
     if more > 0 {
         // Длинный список не помещается в сообщение: остальные — по номеру.
@@ -357,8 +361,8 @@ fn cut(s: &str, n: usize) -> String {
     }
 }
 
-/// Карточка машины: следующая замена, вся история замен от новой к старой (SPEC-30 §10),
-/// пометки клиента. Длинная карточка уходит несколькими сообщениями, кнопки — под последним.
+/// Карточка машины: «Сейчас в машине» по строкам книжки (SPEC-36 §6), пометки клиента и
+/// кнопки: «📜 Прошлые ТО», пометка, убрать машину.
 async fn card(
     conn: &mut PgConnection,
     c: &Customer,
@@ -373,9 +377,7 @@ async fn card(
         return Ok(Reply::new(NOT_FOUND, Keys::Customer));
     };
     let name = car_name(&b.plate, &b.brand, &b.model);
-    let records: Vec<&OilRecord> = b.records.iter().collect();
-    let x = crate::api::bot_book::extras(conn, &records).await?;
-    let mut text = crate::api::bot_book::full_book(&b, &x, format!("🚗 {name}"));
+    let mut text = crate::api::bot_book::car_book(&b, format!("🚗 {name}"));
     let notes: Vec<_> = b.client_notes.iter().filter(|n| !n.deleted).collect();
     if !notes.is_empty() {
         text.push_str("\n\n📝 Пометки:");
@@ -394,6 +396,9 @@ async fn card(
     let text = with_header(header, text);
 
     let mut rows = Vec::new();
+    if !b.records.is_empty() {
+        rows.push(vec![button(BTN_PAST, format!("to:{id}"))]);
+    }
     if !c.company {
         rows.push(vec![
             button("📝 Пометка", format!("note:{id}")),
@@ -412,6 +417,78 @@ async fn card(
     }
     rows.push(vec![button("← Назад", "cars")]);
     Ok(Reply::with_buttons(text, rows))
+}
+
+// ---------- Прошлые ТО ----------
+
+/// «📜 Прошлые ТО» из меню: машина одна — сразу её последнее ТО; несколько — выбор машины.
+pub async fn past_for(conn: &mut PgConnection, party_id: Uuid, chat_id: i64) -> AppResult<Reply> {
+    let c = customer(conn, party_id).await?;
+    let list = sqlx::query!(
+        r#"select id, plate, brand, model from party_vehicles
+           where party_id = $1 and active order by plate"#,
+        c.party_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    match list.as_slice() {
+        [] => cars(conn, &c, chat_id, None).await,
+        [one] => past(conn, &c, one.id, None).await,
+        many => {
+            let rows: Vec<Vec<Button>> = many
+                .iter()
+                .take(LIST_CARS)
+                .map(|v| {
+                    vec![button(
+                        car_name(&v.plate, &v.brand, &v.model),
+                        format!("to:{}", v.id),
+                    )]
+                })
+                .collect();
+            let mut text = "Прошлые ТО — выберите машину.".to_string();
+            if many.len() > LIST_CARS {
+                text.push_str("\n\nОстальные машины — в «🚗 Мои машины».");
+            }
+            Ok(Reply::with_buttons(text, rows))
+        }
+    }
+}
+
+/// Одно ТО машины клиента: последнее, а с `before` — последнее строго раньше этой даты. Машина
+/// сверяется с карточкой клиента (ADR-063); каждое нажатие — новым сообщением.
+async fn past(
+    conn: &mut PgConnection,
+    c: &Customer,
+    id: Uuid,
+    before: Option<NaiveDate>,
+) -> AppResult<Reply> {
+    if own_car(conn, c, id).await?.is_none() {
+        return Ok(Reply::new(NOT_FOUND, Keys::Customer));
+    }
+    let Some(b) = books(conn, Some(c.party_id), Some(id)).await?.pop() else {
+        return Ok(Reply::new(NOT_FOUND, Keys::Customer));
+    };
+    let back = vec![button("↩ К машине", format!("car:{id}"))];
+    let Some(date) = crate::api::bot_book::visit_date(&b, before) else {
+        let text = if b.records.is_empty() {
+            format!("📜 {} — замен на точке пока не было.", b.plate)
+        } else {
+            format!("📜 {} — раньше замен на точке нет.", b.plate)
+        };
+        return Ok(Reply::with_buttons(text, vec![back]));
+    };
+    let records = crate::api::bot_book::visit_records(&b, date);
+    let x = crate::api::bot_book::extras(conn, &records).await?;
+    let v = crate::api::bot_book::past_visit(&b, date, &x);
+    let mut rows = Vec::new();
+    if v.earlier {
+        rows.push(vec![button(
+            format!("⬅ Показать до {}", v.date.format("%d.%m.%Y")),
+            format!("to:{id}:{}", v.date.format("%Y%m%d")),
+        )]);
+    }
+    rows.push(back);
+    Ok(Reply::with_buttons(v.text, rows))
 }
 
 // ---------- Кнопки под сообщениями ----------
@@ -436,6 +513,14 @@ pub async fn callback(
     match (verb, id()) {
         // «Ещё» из прежних сообщений (замены по 10) — теперь карточка целиком (SPEC-30 §10).
         ("car" | "more", Some(id)) => card(conn, &c, id, None).await,
+        // «📜 Прошлые ТО»: `to:{машина}` — последнее ТО, `to:{машина}:{ГГГГММДД}` — раньше даты.
+        ("to", Some(id)) => {
+            let before = arg
+                .split(':')
+                .nth(1)
+                .and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok());
+            past(conn, &c, id, before).await
+        }
         ("add", _) => start_add(conn, &c, chat_id).await,
         ("skip", _) => match pending(conn, chat_id).await? {
             Some(p) if p.kind == "brand" => {
@@ -534,7 +619,7 @@ async fn reactivate(
     Ok(None)
 }
 
-const FOUND: &str = "Нашли вашу машину, история замен ниже.";
+const FOUND: &str = "Нашли вашу машину — книжка ниже, прошлые ТО — кнопкой «📜 Прошлые ТО».";
 
 /// Машин клиента всего, вместе с убранными.
 async fn cars_ever(conn: &mut PgConnection, c: &Customer) -> AppResult<i64> {

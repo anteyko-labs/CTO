@@ -790,17 +790,20 @@ pub async fn books_with_removed(
     Ok(out)
 }
 
-/// «на 93 000 км или до 12.01.2027» — следующая замена строки для бота; пусто — срока нет.
+/// Когда следующая замена — только пробег (ADR-115): «на 93 000 км» (у машины в милях — мили);
+/// дата — только у строки без пробега: «по сроку до 12.01.2027». Пусто — срока нет.
+fn when_text(mileage: Option<i32>, unit: &str, date: Option<NaiveDate>) -> String {
+    match (mileage, date) {
+        (Some(v), _) => format!("на {}", crate::domain::mileage::text(v, unit)),
+        (None, Some(d)) => format!("по сроку до {}", d.format("%d.%m.%Y")),
+        (None, None) => String::new(),
+    }
+}
+
+/// «на 93 000 км» — следующая замена строки для бота; без пробега — «по сроку до 12.01.2027»;
+/// пусто — срока нет (ADR-115).
 pub fn next_text(n: &SlotNext) -> String {
-    [
-        n.next_mileage
-            .map(|k| format!("на {}", crate::domain::mileage::text(k, &n.unit))),
-        n.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y"))),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" или ")
+    when_text(n.next_mileage, &n.unit, n.next_date)
 }
 
 /// Следующая замена по строкам книжки для бота: по строке на каждую, у которой есть срок.
@@ -810,6 +813,53 @@ pub fn next_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
         .filter_map(|n| {
             let t = next_text(n);
             (!t.is_empty()).then(|| format!("{indent}{}: {t}", n.label))
+        })
+        .collect()
+}
+
+/// Последняя замена строки (как её выбирает `slot_next`): свежая запись с этой строкой, в ней —
+/// строка с целью кассира, иначе первая.
+fn last_line<'a>(b: &'a VehicleBook, slot: &str) -> Option<(&'a OilRecord, &'a BookLine)> {
+    b.records.iter().find_map(|r| {
+        let mine = || r.lines.iter().filter(|l| l.slot == slot);
+        mine()
+            .find(|l| l.target_set)
+            .or_else(|| mine().next())
+            .map(|l| (r, l))
+    })
+}
+
+/// Масло клиента: в строке масла только услуга, товара-масла в чеке не было (SPEC-16).
+pub fn client_oil(l: &BookLine) -> bool {
+    matches!(l.slot.as_str(), "oil" | "gear_oil") && l.service.as_deref() == Some(l.text.as_str())
+}
+
+/// «Сейчас в машине» для бота (SPEC-36 §6): по каждой строке книжки, где уже была замена, —
+/// что залито или поставлено, дата, пробег и следующая замена (только пробег, ADR-115).
+/// «  Масло двигателя: Масло 5W-30 · 1 кан. × 4 л — 26.10.2026, 250 000 км → следующая на 258 000 км».
+pub fn now_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
+    b.slots
+        .iter()
+        .filter_map(|n| {
+            let date = n.last_date?;
+            let last = last_line(b, &n.slot);
+            let what = match last {
+                Some((_, l)) if client_oil(l) => "масло клиента".to_string(),
+                Some((_, l)) => l.text.clone(),
+                None => n.last_text.clone().unwrap_or_default(),
+            };
+            let mut when = vec![date.format("%d.%m.%Y").to_string()];
+            if let Some((r, _)) = last
+                && let Some(m) = r.mileage
+            {
+                when.push(crate::domain::mileage::text(m, &r.mileage_unit));
+            }
+            let mut line = format!("{indent}{}: {what} — {}", n.label, when.join(", "));
+            let next = next_text(n);
+            if !next.is_empty() {
+                line.push_str(&format!(" → следующая {next}"));
+            }
+            Some(line)
         })
         .collect()
 }
@@ -829,24 +879,17 @@ pub fn record_lines(r: &OilRecord, indent: &str) -> Vec<String> {
         .collect()
 }
 
-/// «следующая замена на 225 000 км или до 26.10.2027» — цель кассира у строки замены
-/// (SPEC-34); без цели — пусто.
+/// «следующая замена на 225 000 км» — цель кассира у строки замены (SPEC-34), только пробег
+/// (ADR-115); без пробега — «по сроку до …»; без цели — пусто.
 pub fn line_next_text(l: &BookLine) -> String {
-    let at = l.next_mileage.map(|v| {
-        format!(
-            "на {}",
-            crate::domain::mileage::text(v, l.next_unit.as_deref().unwrap_or("km"))
-        )
-    });
-    let by = l.next_date.map(|d| format!("до {}", d.format("%d.%m.%Y")));
-    if at.is_none() && by.is_none() {
-        return String::new();
+    let when = when_text(
+        l.next_mileage,
+        l.next_unit.as_deref().unwrap_or("km"),
+        l.next_date,
+    );
+    if when.is_empty() {
+        return when;
     }
-    let when = [at, by]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" или ");
     format!("следующая замена {when}")
 }
 
@@ -1473,12 +1516,16 @@ mod tests {
         l.next_mileage = Some(225_000);
         l.next_unit = Some("km".into());
         l.next_date = NaiveDate::from_ymd_opt(2027, 1, 5);
-        assert_eq!(
-            line_next_text(&l),
-            "следующая замена на 225 000 км или до 05.01.2027"
-        );
+        // Только пробег (ADR-115): дата — только у строки без пробега.
+        assert_eq!(line_next_text(&l), "следующая замена на 225 000 км");
         l.next_unit = Some("mi".into());
         l.next_date = None;
         assert_eq!(line_next_text(&l), "следующая замена на 225 000 миль");
+        l.next_mileage = None;
+        l.next_date = NaiveDate::from_ymd_opt(2027, 1, 5);
+        assert_eq!(
+            line_next_text(&l),
+            "следующая замена по сроку до 05.01.2027"
+        );
     }
 }

@@ -1,21 +1,18 @@
-//! Масляная книжка клиента в боте целиком (SPEC-30 §10): вся история каждой машины, от новой
-//! замены к старой. В записи — дата и пробег (и сумма своего чека, ADR-061), масло (название,
-//! литры или канистры), фильтры и прочие работы по строкам книжки (SPEC-27), услуги чека,
-//! мастер и что он рекомендовал. Записи разделены пустой строкой: длинная книжка уходит
-//! несколькими сообщениями, и запись не рвётся между ними (`telegram::split_message`).
+//! Масляная книжка клиента в боте (SPEC-36 §6, ADR-119). Книжка машины — коротко: «Сейчас в
+//! машине» по строкам книжки — что залито или поставлено, дата, пробег и следующая замена
+//! (только пробег, ADR-115). История — кнопкой «📜 Прошлые ТО»: одно ТО (все записи книжки за
+//! одну дату) за сообщение, от нового к старому, кнопкой «⬅ Показать до …». В ТО — строки
+//! книжки, услуги чека, мастер и что он рекомендовал; себестоимости нет (ADR-061).
 
 use std::collections::HashMap;
 
+use chrono::NaiveDate;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::api::oil_book::{OilRecord, VehicleBook, books, next_lines, record_lines};
-use crate::domain::money::format_som;
+use crate::api::oil_book::{OilRecord, VehicleBook, books, now_lines, slot_label};
 use crate::error::AppResult;
 
-/// Машин, у которых общий ответ клиенту показывает книжку целиком. У кого больше (фирма) —
-/// последняя замена каждой, а вся история — в карточке машины («🚗 Мои машины»).
-pub const FULL_BOOK_CARS: usize = 3;
 /// Машин в общем ответе; остальные — по номеру или кнопкой «🚗 Мои машины» (ADR-063).
 pub const BOOK_CARS: usize = 20;
 
@@ -70,39 +67,6 @@ pub async fn extras(
     Ok(out)
 }
 
-/// Запись книжки: «дата · пробег · сумма чека», строки книжки, услуги чека, мастер, рекомендация
-/// мастера. Отступ — у всех строк после первой.
-pub fn record_text(r: &OilRecord, x: Option<&Extras>) -> String {
-    let mut head = vec![r.change_date.format("%d.%m.%Y").to_string()];
-    if let Some(m) = r.mileage {
-        head.push(crate::domain::mileage::text(m, &r.mileage_unit));
-    }
-    // Запись из тетради — без чека, суммы нет.
-    head.push(r.sale_total_tyiyn.map_or_else(|| "—".into(), format_som));
-    let mut lines = vec![head.join(" · ")];
-    // По строкам книжки: масло (название, литры или канистры), фильтры, прочие работы (SPEC-27).
-    lines.extend(record_lines(r, "  "));
-    if let Some(x) = x {
-        // Услуга замены масла без своего масла уже стоит строкой «Масло двигателя».
-        let services: Vec<&str> = x
-            .services
-            .iter()
-            .map(String::as_str)
-            .filter(|o| !r.lines.iter().any(|l| l.text == *o))
-            .collect();
-        if !services.is_empty() {
-            lines.push(format!("  Услуги: {}", services.join("; ")));
-        }
-        if let Some(m) = &x.master {
-            lines.push(format!("  Мастер: {m}"));
-        }
-    }
-    if !r.declined.is_empty() {
-        lines.push(format!("  Мастер рекомендовал: {}", r.declined));
-    }
-    lines.join("\n")
-}
-
 /// «01KG123ABC (Toyota Camry)».
 fn car_head(b: &VehicleBook) -> String {
     let car = [b.brand.as_str(), b.model.as_str()]
@@ -117,33 +81,101 @@ fn car_head(b: &VehicleBook) -> String {
     }
 }
 
-/// Вся книжка машины: следующая замена и все записи от новой к старой, через пустую строку.
-pub fn full_book(b: &VehicleBook, x: &HashMap<Uuid, Extras>, head: String) -> String {
-    let mut first = vec![head];
-    // Следующая замена по каждой строке книжки (SPEC-27).
-    let next = next_lines(b, "  ");
-    if !next.is_empty() {
-        first.push("Следующая замена — что наступит раньше:".into());
-        first.extend(next);
+/// Книжка машины коротко: заголовок и «Сейчас в машине» по строкам книжки (SPEC-36 §6).
+pub fn car_book(b: &VehicleBook, head: String) -> String {
+    let now = now_lines(b, "  ");
+    if now.is_empty() {
+        return format!("{head}\nЗамен на точке пока не было.");
     }
-    let mut blocks = vec![first.join("\n")];
-    if b.records.is_empty() {
-        blocks.push("Замен на точке пока не было.".into());
-        return blocks.join("\n\n");
-    }
-    for (i, r) in b.records.iter().enumerate() {
-        let text = record_text(r, r.sale_id.and_then(|s| x.get(&s)));
-        blocks.push(if i == 0 {
-            format!("Замены:\n{text}")
-        } else {
-            text
-        });
-    }
-    blocks.join("\n\n")
+    let mut lines = vec![head, "Сейчас в машине:".to_string()];
+    lines.extend(now);
+    lines.join("\n")
 }
 
-/// Книжка клиента — ответ бота по умолчанию: баллы и книжки машин. До трёх машин — каждая
-/// целиком; больше — последняя замена каждой (до 20 машин), вся история — в карточке машины.
+/// Одно ТО машины: все записи книжки за одну дату.
+pub struct PastVisit {
+    pub text: String,
+    /// Дата этого ТО — курсор кнопки «⬅ Показать до».
+    pub date: NaiveDate,
+    /// Есть записи раньше этой даты.
+    pub earlier: bool,
+}
+
+/// Дата ТО, которое показать: последняя, а с `before` — последняя строго раньше неё.
+pub fn visit_date(b: &VehicleBook, before: Option<NaiveDate>) -> Option<NaiveDate> {
+    b.records
+        .iter()
+        .map(|r| r.change_date)
+        .filter(|d| before.is_none_or(|x| *d < x))
+        .max()
+}
+
+/// Записи ТО за дату (свежие сверху, как в книжке).
+pub fn visit_records(b: &VehicleBook, date: NaiveDate) -> Vec<&OilRecord> {
+    b.records.iter().filter(|r| r.change_date == date).collect()
+}
+
+/// ТО за дату: «📜 09KG999ZXZ — ТО 26.10.2026 · 250 000 км», строки (что залили и поставили),
+/// услуги, мастер, «Мастер рекомендовал». Следующей замены у строк нет — она в книжке машины.
+pub fn past_visit(b: &VehicleBook, date: NaiveDate, x: &HashMap<Uuid, Extras>) -> PastVisit {
+    let recs = visit_records(b, date);
+    let mut head = format!("📜 {} — ТО {}", b.plate, date.format("%d.%m.%Y"));
+    if let Some(r) = recs.iter().find(|r| r.mileage.is_some())
+        && let Some(m) = r.mileage
+    {
+        head.push_str(&format!(
+            " · {}",
+            crate::domain::mileage::text(m, &r.mileage_unit)
+        ));
+    }
+    let mut lines = vec![head];
+    let mut services: Vec<String> = Vec::new();
+    let mut masters: Vec<String> = Vec::new();
+    let mut declined: Vec<&str> = Vec::new();
+    for r in &recs {
+        for l in &r.lines {
+            lines.push(format!("  {}: {}", slot_label(&l.slot), l.text));
+        }
+        if let Some(e) = r.sale_id.and_then(|s| x.get(&s)) {
+            // Услуга замены масла без своего масла уже стоит строкой «Масло двигателя».
+            for sv in &e.services {
+                if !r.lines.iter().any(|l| l.text == *sv) && !services.contains(sv) {
+                    services.push(sv.clone());
+                }
+            }
+            if let Some(m) = &e.master
+                && !masters.contains(m)
+            {
+                masters.push(m.clone());
+            }
+        }
+        if !r.declined.is_empty() && !declined.contains(&r.declined.as_str()) {
+            declined.push(&r.declined);
+        }
+    }
+    if !services.is_empty() {
+        lines.push(format!("  Услуги: {}", services.join("; ")));
+    }
+    if !masters.is_empty() {
+        lines.push(format!("  Мастер: {}", masters.join(", ")));
+    }
+    if !declined.is_empty() {
+        lines.push(format!("  Мастер рекомендовал: {}", declined.join("; ")));
+    }
+    let earlier = visit_date(b, Some(date)).is_some();
+    if !earlier {
+        lines.push(String::new());
+        lines.push("Это первая замена на точке.".into());
+    }
+    PastVisit {
+        text: lines.join("\n"),
+        date,
+        earlier,
+    }
+}
+
+/// Книжка клиента — ответ бота по умолчанию: баллы и «Сейчас в машине» по каждой машине
+/// (до 20 машин); история — кнопкой «📜 Прошлые ТО».
 pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
     let bonus = format!(
         "⭐ Баллов: {} — подробнее кнопкой «⭐ Баллы»",
@@ -155,37 +187,10 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
             "{bonus}\n\nМашин у вас пока не записано — назовите госномер кассиру при замене."
         ));
     }
-    let full = list.len() <= FULL_BOOK_CARS;
-    let shown: Vec<&VehicleBook> = list.iter().take(BOOK_CARS).collect();
-    let records: Vec<&OilRecord> = if full {
-        shown.iter().flat_map(|b| b.records.iter()).collect()
-    } else {
-        shown.iter().filter_map(|b| b.records.first()).collect()
-    };
-    let x = extras(conn, &records).await?;
-    let mut parts: Vec<String> = shown
+    let mut parts: Vec<String> = list
         .iter()
-        .map(|b| {
-            if full {
-                return full_book(b, &x, car_head(b));
-            }
-            let Some(last) = b.records.first() else {
-                return format!("{}\nЗамен пока не было.", car_head(b));
-            };
-            let mut lines = vec![
-                car_head(b),
-                format!(
-                    "Последняя замена: {}",
-                    record_text(last, last.sale_id.and_then(|s| x.get(&s)))
-                ),
-            ];
-            let next = next_lines(b, "  ");
-            if !next.is_empty() {
-                lines.push("Следующая замена:".into());
-                lines.extend(next);
-            }
-            lines.join("\n")
-        })
+        .take(BOOK_CARS)
+        .map(|b| car_book(b, car_head(b)))
         .collect();
     if list.len() > BOOK_CARS {
         parts.push(format!(
@@ -193,8 +198,8 @@ pub async fn customer_book(conn: &mut PgConnection, party_id: Uuid) -> AppResult
             list.len() - BOOK_CARS
         ));
     }
-    if !full {
-        parts.push("Вся история машины — «🚗 Мои машины» → машина.".into());
+    if list.iter().any(|b| !b.records.is_empty()) {
+        parts.push("Что делали раньше — кнопка «📜 Прошлые ТО».".into());
     }
     Ok(format!("{bonus}\n\n{}", parts.join("\n\n")))
 }

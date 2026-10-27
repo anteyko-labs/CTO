@@ -229,6 +229,8 @@ const BTN_TODAY: &str = "📊 Сегодня";
 const BTN_SHIFT: &str = "💵 Смена";
 const BTN_DEBTS: &str = "📒 Долги";
 const BTN_CARS: &str = "🚗 Мои машины";
+/// «📜 Прошлые ТО» (SPEC-36 §6).
+const BTN_PAST: &str = crate::api::bot_cars::BTN_PAST;
 const BTN_BONUS: &str = "⭐ Баллы";
 const BTN_LEAVE: &str = "🚪 Отключиться";
 const BTN_LEAVE_YES: &str = "Да, отключиться";
@@ -247,8 +249,9 @@ const ASK_ENDED: &str = "Режим вопросов закрыт. Спроси�
 const ASK_EXPIRED: &str = "Режим вопросов закрыт — нажмите «💬 Спросить»";
 
 /// Кнопки клиента: из чата владельца они не вопрос и не команда.
-const CUSTOMER_BUTTONS: [&str; 7] = [
+const CUSTOMER_BUTTONS: [&str; 8] = [
     BTN_CARS,
+    BTN_PAST,
     BTN_BONUS,
     BTN_DEBT,
     BTN_LEAVE,
@@ -295,8 +298,9 @@ impl Keys {
                 vec![json!(BTN_TODAY), json!(BTN_SHIFT), json!(BTN_DEBTS)],
             ],
             Keys::Customer => vec![
-                vec![json!(BTN_CARS), json!(BTN_BONUS)],
-                vec![json!(BTN_DEBT), json!(BTN_LEAVE)],
+                vec![json!(BTN_CARS), json!(BTN_PAST)],
+                vec![json!(BTN_BONUS), json!(BTN_DEBT)],
+                vec![json!(BTN_LEAVE)],
             ],
             Keys::Employee => vec![
                 vec![json!(bot_staff::BTN_DAY), json!(bot_staff::BTN_MONTH)],
@@ -305,8 +309,9 @@ impl Keys {
             ],
             Keys::Both => vec![
                 vec![json!(bot_staff::BTN_EARNINGS)],
-                vec![json!(BTN_CARS), json!(BTN_BONUS)],
-                vec![json!(BTN_DEBT), json!(BTN_LEAVE)],
+                vec![json!(BTN_CARS), json!(BTN_PAST)],
+                vec![json!(BTN_BONUS), json!(BTN_DEBT)],
+                vec![json!(BTN_LEAVE)],
             ],
             Keys::ConfirmLeave => vec![vec![json!(BTN_LEAVE_YES), json!(BTN_BACK)]],
         };
@@ -705,6 +710,7 @@ fn is_menu(text: &str) -> bool {
     t.starts_with('/')
         || [
             BTN_CARS,
+            BTN_PAST,
             BTN_BONUS,
             BTN_DEBT,
             BTN_LEAVE,
@@ -1060,6 +1066,9 @@ async fn message(
         )),
         "мои" | "машины" | "cars" => {
             crate::api::bot_cars::cars_for(conn, party_id, chat_id).await
+        }
+        "прошлые" | "история" => {
+            crate::api::bot_cars::past_for(conn, party_id, chat_id).await
         }
         _ => Ok(Reply::new(
             customer_book(conn, party_id).await?,
@@ -1642,12 +1651,11 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
                     .map(|n| slot_genitive(&n.slot))
                     .collect::<Vec<_>>()
                     .join(", ");
-                // Пробег — в единице машины, как в книжке бота (ADR-084).
-                let km_part = slots
-                    .iter()
-                    .find_map(|n| n.next_mileage.map(|v| (v, n.unit.clone())))
-                    .map(|(v, unit)| format!(" или на {}", crate::domain::mileage::text(v, &unit)))
-                    .unwrap_or_default();
+                // Только пробег (ADR-115), в единице машины (ADR-084); срок — только без пробега.
+                let next = match slots.iter().find(|n| n.next_mileage.is_some()) {
+                    Some(n) => crate::api::oil_book::next_text(n),
+                    None => format!("{when}, по сроку до {}", due.format("%d.%m.%Y")),
+                };
                 out.push(Reminder {
                     chat_id: l.chat_id,
                     vehicle_id: b.vehicle_id,
@@ -1655,9 +1663,8 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
                     days_before,
                     slots: slots.iter().map(|n| n.slot.clone()).collect(),
                     text: format!(
-                        "Напоминаем: замена {what} для {} — {when}, до {}{km_part}. Ждём вас в Avtodom!",
-                        b.plate,
-                        due.format("%d.%m.%Y")
+                        "Напоминаем: замена {what} для {} — {next}. Ждём вас в Avtodom!",
+                        b.plate
                     ),
                 });
             }
@@ -4146,6 +4153,23 @@ mod tests {
         assert!(!is_question("🚗 Мои машины"));
         assert!(!is_question("Да, отключиться"));
         assert!(!is_question("👍"));
+    }
+
+    #[test]
+    fn past_visits_button_is_in_customer_menu() {
+        // «📜 Прошлые ТО» рядом с «🚗 Мои машины» (SPEC-36 §6): кнопка меню, не вопрос владельца.
+        for keys in [Keys::Customer, Keys::Both] {
+            let rows = keys.markup()["keyboard"].clone();
+            let row = rows
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|r| r.as_array().is_some_and(|r| r.contains(&json!(BTN_CARS))));
+            assert_eq!(row, Some(&json!([BTN_CARS, "📜 Прошлые ТО"])), "{rows}");
+        }
+        assert!(is_menu("📜 Прошлые ТО"));
+        assert!(!is_question("📜 Прошлые ТО"));
+        assert_eq!(command("📜 Прошлые ТО"), "прошлые");
     }
 
     #[test]

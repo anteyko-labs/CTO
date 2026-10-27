@@ -1400,15 +1400,17 @@ pub async fn party(
             }
             let mut lines = vec![format!("Масляная книжка: {}", p.name)];
             for b in books.iter().take(10) {
+                // Только пробег, в единице машины; дата — только без пробега (ADR-115).
+                let oil = b
+                    .slots
+                    .iter()
+                    .find(|n| n.slot == "oil")
+                    .map(crate::api::oil_book::next_text)
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| "—".into());
                 lines.push(format!(
-                    "{} {} {}: следующая замена масла {}{}",
-                    b.plate,
-                    b.brand,
-                    b.model,
-                    b.next_date.map(day).unwrap_or_else(|| "—".into()),
-                    b.next_km
-                        .map(|k| format!(" или на {k} км"))
-                        .unwrap_or_default()
+                    "{} {} {}: следующая замена масла {oil}",
+                    b.plate, b.brand, b.model
                 ));
                 // Остальные строки книжки со своим сроком (SPEC-27).
                 for n in b.slots.iter().filter(|n| n.slot != "oil") {
