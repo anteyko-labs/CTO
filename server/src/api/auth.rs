@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::auth::{
     self, Ctx, CurrentUser, Owner, Role, SESSION_COOKIE, SESSION_DAYS, hash_password, new_token,
-    verify_password,
+    verify_login_password,
 };
 use crate::error::{AppError, AppResult, invalid, is_unique_violation};
 use crate::ops::{self, new_id};
@@ -45,6 +45,118 @@ pub(crate) const MAX_FAILURES: i32 = 5;
 const LOCK_MINUTES: i32 = 15;
 /// Сколько неудач по одному логину со всех адресов за окно — повод сказать владельцу.
 const ALERT_FAILURES_ANY_ADDR: i32 = 20;
+/// Неудачных входов с одного адреса по любым логинам за окно: дальше адрес ждёт окно — подбор
+/// по многим логинам не крутит argon2 и не растит таблицу попыток (ADR-128).
+pub(crate) const MAX_FAILURES_ADDR: i32 = 50;
+/// Блокировок PIN кассира подряд, после которых PIN закрыт до нового (ADR-128).
+pub(crate) const PIN_LOCKS: i32 = 3;
+/// Строки попыток старше суток без действующей блокировки удаляются (ADR-128).
+const ATTEMPTS_KEEP_HOURS: i32 = 24;
+
+/// Ключ счётчика неудач адреса по любым логинам.
+pub(crate) fn addr_key(addr: &str) -> String {
+    format!("*|{addr}")
+}
+
+/// Удаляет старые строки попыток входа (последняя неудача старше суток, блокировки нет).
+pub async fn clean_login_attempts(pool: &sqlx::PgPool) -> AppResult<u64> {
+    Ok(sqlx::query!(
+        r#"delete from login_attempts
+           where last_failed_at < now() - make_interval(hours => $1)
+             and (locked_until is null or locked_until < now())"#,
+        ATTEMPTS_KEEP_HOURS
+    )
+    .execute(pool)
+    .await?
+    .rows_affected())
+}
+
+/// Чистка таблицы попыток раз в час.
+pub fn spawn_cleanup(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            tick.tick().await;
+            if let Err(e) = clean_login_attempts(&pool).await {
+                tracing::warn!(error = %e, "чистка попыток входа не прошла");
+            }
+        }
+    });
+}
+
+/// Состояние PIN кассира перед проверкой.
+pub(crate) enum PinGate {
+    Open,
+    /// Заблокирован на `minutes`; `fresh` — блокировка поставлена этой попыткой.
+    Locked {
+        minutes: i64,
+        fresh: bool,
+    },
+    /// Закрыт до нового PIN от владельца.
+    Closed {
+        fresh: bool,
+    },
+}
+
+/// Попытка PIN кассира (ADR-128). PIN — 4 цифры, поэтому блокировка счёт не обнуляет: каждые
+/// `MAX_FAILURES` неверных — блокировка на `LOCK_MINUTES`, после `PIN_LOCKS` блокировок PIN
+/// закрыт, пока владелец не задаст новый. Счёт снимают верный PIN и новый PIN; сутки без
+/// попыток — счёт заново. Попытка учитывается до проверки одной строкой под блокировкой.
+pub(crate) async fn reserve_pin(state: &AppState, key: &str) -> AppResult<PinGate> {
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query!(
+        r#"insert into login_attempts (login, failures, last_failed_at) values ($1, 1, now())
+           on conflict (login) do update set
+             failures = case when login_attempts.locked_until > now() then login_attempts.failures
+                             when login_attempts.last_failed_at < now() - interval '1 day' then 1
+                             else login_attempts.failures + 1 end,
+             last_failed_at = case when login_attempts.locked_until > now()
+                                   then login_attempts.last_failed_at else now() end,
+             locked_until = case when login_attempts.locked_until > now()
+                                 then login_attempts.locked_until end
+           returning failures,
+                     coalesce(locked_until > now() + interval '1 year', false) as "closed!",
+                     ceil(extract(epoch from locked_until - now()) / 60)::bigint as "left_min?""#,
+        key
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let n = row.failures;
+    let gate = if row.closed {
+        PinGate::Closed { fresh: false }
+    } else if let Some(m) = row.left_min.filter(|m| *m > 0) {
+        PinGate::Locked {
+            minutes: m,
+            fresh: false,
+        }
+    } else if n > MAX_FAILURES && (n - 1) % MAX_FAILURES == 0 {
+        let close = (n - 1) / MAX_FAILURES >= PIN_LOCKS;
+        sqlx::query!(
+            r#"update login_attempts
+               set locked_until = case when $2 then now() + interval '100 years'
+                                       else now() + make_interval(mins => $3) end
+               where login = $1"#,
+            key,
+            close,
+            LOCK_MINUTES
+        )
+        .execute(&mut *tx)
+        .await?;
+        tracing::warn!(key = %key, close, "PIN кассира заблокирован после неверных попыток");
+        if close {
+            PinGate::Closed { fresh: true }
+        } else {
+            PinGate::Locked {
+                minutes: i64::from(LOCK_MINUTES),
+                fresh: true,
+            }
+        }
+    } else {
+        PinGate::Open
+    };
+    tx.commit().await?;
+    Ok(gate)
+}
 
 /// Попытка входа: жёсткий предел — только на «логин + адрес» (ADR-016, ADR-049). Общий счётчик
 /// на логин вход не закрывает: иначе любой мог бы неверными паролями запереть владельца
@@ -54,6 +166,9 @@ pub(crate) async fn reserve_login(
     login: &str,
     addr: &str,
 ) -> AppResult<Option<i64>> {
+    if let Some(m) = reserve_with_limit(state, &addr_key(addr), MAX_FAILURES_ADDR).await? {
+        return Ok(Some(m));
+    }
     reserve_with_limit(state, &format!("{login}|{addr}"), MAX_FAILURES).await
 }
 
@@ -61,8 +176,8 @@ pub(crate) async fn reserve_login(
 /// уведомления, и вход владельца не должен прятать подбор с других адресов.
 pub(crate) async fn clear_login(state: &AppState, login: &str, addr: &str) -> AppResult<()> {
     sqlx::query!(
-        "delete from login_attempts where login = $1",
-        format!("{login}|{addr}")
+        "delete from login_attempts where login = any($1)",
+        &[format!("{login}|{addr}"), addr_key(addr)][..]
     )
     .execute(&state.pool)
     .await?;
@@ -219,7 +334,7 @@ async fn login(
         || state.dummy_hash.as_ref().clone(),
         |r| r.password_hash.clone(),
     );
-    let ok = verify_password(req.password, hash).await;
+    let ok = verify_login_password(req.password, hash).await?;
     let row = match row {
         Some(r) if ok => r,
         r => {

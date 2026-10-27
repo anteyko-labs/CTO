@@ -887,7 +887,7 @@ async fn verify_owner_password(
 /// Проверка — до транзакции: неверная попытка записывается и тогда, когда смену не открыли.
 /// Пять неверных подряд за 15 минут — блокировка на 15 минут (как у входа, ADR-016).
 async fn confirm_opener(state: &AppState, ctx: &Ctx, req: &OpenReq) -> AppResult<&'static str> {
-    use crate::api::auth::{MAX_FAILURES, clear_attempts, reserve_with_limit};
+    use crate::api::auth::{MAX_FAILURES, PIN_LOCKS, PinGate, clear_attempts, reserve_pin};
     if let Some(password) = req.owner_password.as_deref().filter(|p| !p.is_empty()) {
         verify_owner_password(
             state,
@@ -922,13 +922,51 @@ async fn confirm_opener(state: &AppState, ctx: &Ctx, req: &OpenReq) -> AppResult
         return Err(invalid("введите PIN кассира"));
     }
     let key = crate::api::refs::pin_key(req.cashier_employee_id);
-    if let Some(minutes) = reserve_with_limit(state, &key, MAX_FAILURES).await? {
-        return Err(AppError::TooManyRequests(format!(
-            "PIN кассира {} заблокирован после {MAX_FAILURES} неверных попыток: повторите через {minutes} мин или попросите владельца задать новый PIN",
-            emp.full_name
-        )));
+    // PIN — 4 цифры: блокировка счёт не обнуляет, неудачи — в журнал, блокировка — владельцу
+    // в ленту (ADR-128).
+    let pin_event = |action: &'static str, data: serde_json::Value| async move {
+        let mut conn = state.pool.acquire().await?;
+        ops::audit(
+            &mut conn,
+            ctx,
+            action,
+            "employee",
+            Some(req.cashier_employee_id),
+            data,
+        )
+        .await
+    };
+    match reserve_pin(state, &key).await? {
+        PinGate::Open => {}
+        PinGate::Locked { minutes, fresh } => {
+            if fresh {
+                pin_event(
+                    "shift.pin_locked",
+                    json!({ "full_name": emp.full_name, "closed": false, "minutes": minutes }),
+                )
+                .await?;
+            }
+            return Err(AppError::TooManyRequests(format!(
+                "PIN кассира {} заблокирован после {MAX_FAILURES} неверных попыток: повторите через {minutes} мин или попросите владельца задать новый PIN",
+                emp.full_name
+            )));
+        }
+        PinGate::Closed { fresh } => {
+            if fresh {
+                pin_event(
+                    "shift.pin_locked",
+                    json!({ "full_name": emp.full_name, "closed": true }),
+                )
+                .await?;
+            }
+            return Err(AppError::TooManyRequests(format!(
+                "PIN кассира {} закрыт после {PIN_LOCKS} блокировок подряд: владелец задаёт новый PIN в карточке сотрудника",
+                emp.full_name
+            )));
+        }
     }
     if pin.len() > 16 || !crate::auth::verify_password(pin.to_string(), hash).await {
+        pin_event("shift.pin_failed", json!({ "full_name": emp.full_name })).await?;
         return Err(invalid("неверный PIN кассира"));
     }
     clear_attempts(state, &key).await?;

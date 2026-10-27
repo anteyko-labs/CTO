@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (data->>'repayment_id')::uuid as \"id!\", data->>'method' as \"method!\" from audit_log\n           where branch_id = $1 and action = 'debt.repayment'\n             and data->>'repayment_id' = any($2) and data->>'method' in ('transfer', 'invoice')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "method!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "8d65e4b85035457892cf83913af8b0653e5e78127cf98efc089ae5e20cf41d05"
+}

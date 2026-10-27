@@ -1169,6 +1169,9 @@ pub struct ReturnAccrual {
     /// Сколько ставок мастера снимает возврат: доли возвращённых строк услуг (ADR-096), при
     /// возврате целиком — и ставка за чек (ADR-027).
     pub fee_back: i64,
+    /// Сторно внутри «Исправить»: чек уходит целиком, и процент с него снимается весь — в том
+    /// числе начисленный за уже погашенную часть долга; верный чек начислит свой (ADR-128).
+    pub in_correction: bool,
 }
 
 pub async fn reverse_for_return(
@@ -1213,6 +1216,7 @@ pub async fn reverse_for_return(
             // возвращённой строкой услуги (ADR-096), ставка за чек — при возврате целиком (ADR-027).
             "service_fee" if r.full_return => row.net,
             "service_fee" => r.fee_back.clamp(0, row.net),
+            "revenue_percent" if r.in_correction && r.full_return => row.net,
             "revenue_percent" if row.base > 0 && base_back > 0 => div_round(
                 i128::from(row.accrued) * i128::from(base_back),
                 i128::from(row.base),

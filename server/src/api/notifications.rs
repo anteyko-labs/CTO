@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 69] = [
+pub(crate) const WATCHED: [&str; 70] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -89,6 +89,7 @@ pub(crate) const WATCHED: [&str; 69] = [
     "settings.optima",
     "old_catalog.disable",
     "old_catalog.enable",
+    "shift.pin_locked",
 ];
 
 #[derive(Serialize)]
@@ -570,6 +571,24 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .map(|(k, v)| format!("{k}: {v}"))
                     .collect::<Vec<_>>()
                     .join("; "),
+            )
+        }
+        "shift.pin_locked" => {
+            let closed = data.get("closed").and_then(Value::as_bool) == Some(true);
+            (
+                format!(
+                    "PIN кассира {}: {}",
+                    if closed { "закрыт" } else { "заблокирован" },
+                    text("full_name")
+                ),
+                if closed {
+                    "неверный PIN при открытии смены — третья блокировка подряд. PIN закрыт: задайте новый в карточке сотрудника".into()
+                } else {
+                    format!(
+                        "неверный PIN при открытии смены несколько раз подряд — блокировка на {} мин. Если это не кассир — смените PIN",
+                        num("minutes").unwrap_or(15)
+                    )
+                },
             )
         }
         "auth.login_flood" => (
@@ -1109,7 +1128,11 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         // Optima Business (SPEC-31).
         "bank_qr.unclaimed" => (
             format!("QR оплачен, чек не проведён: {}", money(num("amount"))),
-            "покупатель оплатил по QR банка больше 15 минут назад, а чека с этой оплатой нет — проверьте кассу".into(),
+            if data.get("after_cancel").and_then(Value::as_bool) == Some(true) {
+                "покупатель оплатил по QR банка после «Отменить» на кассе, а чека с этой оплатой нет — проверьте кассу, деньги пришли на счёт".into()
+            } else {
+                "покупатель оплатил по QR банка больше 15 минут назад, а чека с этой оплатой нет — проверьте кассу".into()
+            },
         ),
         "bank_recon.mismatch" => crate::api::bank_recon::mismatch_text(data),
         "optima.key" => (

@@ -133,9 +133,15 @@ pub enum BankError {
     NotFound,
     /// Банк отклонил запрос (400, 1004 и т. п.) — с его текстом.
     Rejected(String),
-    /// Нет связи, таймаут, 5xx, непонятный ответ.
+    /// Нет связи, таймаут, 5xx без текста, непонятный ответ.
     Unavailable(String),
+    /// 5xx с текстом банка. Неверный ключ банк возвращает так же (500 «Unknown Error»,
+    /// код 1000; SPEC-31, тест 22.10.2026); `streak` — сколько ошибок 5xx подряд.
+    Failed { text: String, streak: u32 },
 }
+
+/// Столько 5xx подряд — владельцу «проверьте ключ»: изредка банк отвечает так и при верном.
+pub const FAILED_STREAK_ALERT: u32 = 5;
 
 impl BankError {
     /// Текст для кассы и владельца.
@@ -144,7 +150,19 @@ impl BankError {
             Self::Key(_) => "Ключ Optima Business не подходит — владельцу: проверьте ключ".into(),
             Self::NotFound => "банк не нашёл операцию".into(),
             Self::Rejected(m) => format!("Банк отклонил: {m}"),
-            Self::Unavailable(_) => "Банк недоступен — отметьте оплату вручную".into(),
+            Self::Unavailable(_) | Self::Failed { .. } => {
+                "Банк недоступен — отметьте оплату вручную".into()
+            }
+        }
+    }
+
+    /// Текст для владельца в «Проверить связь».
+    pub fn owner_message(&self) -> String {
+        match self {
+            Self::Failed { text, .. } => format!(
+                "Банк ответил ошибкой: {text}. Так банк отвечает и на неверный ключ — проверьте ключ Optima Business"
+            ),
+            e => e.message(),
         }
     }
 }
@@ -161,6 +179,8 @@ pub struct Optima {
     http: reqwest::Client,
     key: SecretKey,
     url: String,
+    /// Ошибок 5xx подряд (успешный ответ обнуляет).
+    failed_streak: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl std::fmt::Debug for Optima {
@@ -446,6 +466,7 @@ impl Optima {
                 .unwrap_or_else(|| DEFAULT_URL.into())
                 .trim_end_matches('/')
                 .to_string(),
+            failed_streak: std::sync::Arc::default(),
         }
     }
 
@@ -482,7 +503,9 @@ impl Optima {
             .await
             .map_err(|_| BankError::Unavailable("ответ оборвался".into()))?
             .to_vec();
+        use std::sync::atomic::Ordering;
         if (200..300).contains(&status) {
+            self.failed_streak.store(0, Ordering::Relaxed);
             return Ok(body);
         }
         let text = error_text(&body);
@@ -491,6 +514,10 @@ impl Optima {
             401 | 403 => BankError::Key(text),
             404 => BankError::NotFound,
             400..=499 => BankError::Rejected(text),
+            _ if text != "без пояснения" => BankError::Failed {
+                text,
+                streak: self.failed_streak.fetch_add(1, Ordering::Relaxed) + 1,
+            },
             _ => BankError::Unavailable(format!("банк ответил {status}")),
         })
     }
@@ -866,7 +893,7 @@ async fn sale_points(
         Ok(points) => Ok(Json(points)),
         Err(e) => {
             key_problem(&state.pool, user.branch_id, &e).await;
-            Err(e.into())
+            Err(AppError::Bank(e.owner_message()))
         }
     }
 }
@@ -893,7 +920,7 @@ async fn check(State(state): State<AppState>, user: CurrentUser) -> AppResult<Js
             key_problem(&state.pool, user.branch_id, &e).await;
             return Ok(Json(CheckOut {
                 ok: false,
-                message: e.message(),
+                message: e.owner_message(),
             }));
         }
     };
@@ -917,9 +944,14 @@ async fn check(State(state): State<AppState>, user: CurrentUser) -> AppResult<Js
 }
 
 /// Ключ банка не подошёл — владельцу «Ключ Optima Business не подходит», не чаще раза в час.
+/// Ошибка 5xx с текстом банка — после FAILED_STREAK_ALERT подряд: так банк отвечает на неверный ключ.
 pub async fn key_problem(pool: &PgPool, branch_id: Uuid, e: &BankError) {
-    let BankError::Key(text) = e else {
-        return;
+    let text = match e {
+        BankError::Key(text) => text.clone(),
+        BankError::Failed { text, streak } if *streak >= FAILED_STREAK_ALERT => format!(
+            "банк {streak} раз подряд ответил ошибкой «{text}», так он отвечает и на неверный ключ"
+        ),
+        _ => return,
     };
     let r = sqlx::query!(
         r#"insert into audit_log (id, branch_id, action, entity, data)
@@ -945,23 +977,37 @@ pub const SERVER_DEVICE: Uuid = Uuid::from_u128(0x0b7e_0a11_0000_4000_8000_0000_
 
 /// Опрос QR каждые 2 с, «QR оплачен, чек не проведён», сверка в 06:00.
 pub fn spawn(pool: PgPool, bank: Optima) {
+    spawn_with_clock(pool, bank, Utc::now);
+}
+
+/// То же с часами для сверки (тесты). Сверка — своей задачей: выписка банка идёт до 90 с,
+/// а опрос QR в это время не останавливается.
+pub fn spawn_with_clock(pool: PgPool, bank: Optima, clock: fn() -> DateTime<Utc>) {
+    let (qr_pool, qr_bank) = (pool.clone(), bank.clone());
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut last_daily: Option<std::time::Instant> = None;
+        let mut last_alert: Option<std::time::Instant> = None;
         loop {
             tick.tick().await;
-            if let Err(e) = crate::api::bank_qr::poll_once(&pool, &bank).await {
+            if let Err(e) = crate::api::bank_qr::poll_once(&qr_pool, &qr_bank).await {
                 tracing::warn!(error = %e, "банк: опрос QR не прошёл");
             }
-            // Раз в минуту: оплаченные QR без чека и сверка дня.
-            if last_daily.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
-                last_daily = Some(std::time::Instant::now());
-                if let Err(e) = crate::api::bank_qr::alert_unclaimed(&pool).await {
+            // Раз в минуту: оплаченные QR без чека.
+            if last_alert.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                last_alert = Some(std::time::Instant::now());
+                if let Err(e) = crate::api::bank_qr::alert_unclaimed(&qr_pool).await {
                     tracing::warn!(error = %e, "банк: проверка QR без чека не прошла");
                 }
-                crate::api::bank_recon::daily(&pool, &bank, Utc::now()).await;
             }
+        }
+    });
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            crate::api::bank_recon::daily(&pool, &bank, clock()).await;
         }
     });
     tracing::info!("Optima Business: опрос QR и сверка включены");

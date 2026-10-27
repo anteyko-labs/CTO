@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from login_attempts where login = any($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a3af45880c2a53a1dae0ae76cb209e4abd7d725c40b408709c835fd5fb950b6d"
+}

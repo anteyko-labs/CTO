@@ -56,8 +56,11 @@ pub const RATE_WINDOW_DAYS: u64 = 730;
 pub const RATE_MIN_SPAN_DAYS: i64 = 7;
 /// Пробег в день по умолчанию (одна запись в книжке), км.
 pub const DEFAULT_KM_PER_DAY: i32 = 50;
-/// Сколько раз пробовать отправить при временной ошибке, потом — «ошибка».
-const MAX_ATTEMPTS: i32 = 30;
+/// Сколько пробовать отправить при временной ошибке (нет связи, пределы Meta), потом —
+/// «ошибка». По времени, а не по числу попыток: точка бывает без интернета часами (ADR-128).
+const RETRY_HOURS: i32 = 48;
+/// Пауза между попытками растёт вдвое до этого предела, секунд.
+const MAX_RETRY_SECS: u64 = 1800;
 /// Сообщений за один проход отправки.
 const SEND_BATCH: i64 = 50;
 /// Чем подменить пустую переменную шаблона: Meta не принимает пустые значения.
@@ -1174,7 +1177,8 @@ async fn firm_message(
     Ok((text, chats, phone, link))
 }
 
-/// Новые чеки фирм (продажа или возврат) — сообщения о закупе (SPEC-32 §4).
+/// Новые чеки фирм (продажа или возврат) — сообщения о закупе (SPEC-32 §4). Сторно и верный
+/// чек «Исправить» не пишутся: фирме уже писали об исходном.
 pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult<usize> {
     let since =
         sqlx::query_scalar!("select value from bot_state where key = 'client_messages_since'")
@@ -1195,6 +1199,12 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
            where p.kind = 'company' and p.role = 'customer' and p.active and not p.no_purchase_messages
              and s.created_at > $1 and s.created_at > now() - interval '2 days'
              and not exists (select 1 from client_message_keys k where k.key = 'purchase:' || s.id::text)
+             -- «Исправить» чека (ADR-085): сторно — не настоящий возврат; верный чек — не второй
+             -- закуп, если о исходном фирме уже писали (ADR-128).
+             and not exists (select 1 from doc_corrections c where c.kind = 'sale' and c.reversal_id = s.id)
+             and not exists (select 1 from doc_corrections c
+                             join client_message_keys k on k.key = 'purchase:' || c.original_id::text
+                             where c.kind = 'sale' and c.new_id = s.id)
            order by s.created_at
            limit 200"#,
         since
@@ -1296,7 +1306,8 @@ async fn deliver(ch: &Channels, m: &Pending) -> Outcome {
     }
 }
 
-/// Записать итог отправки. `Retry` — следующая попытка позже, после 30-й — «ошибка».
+/// Записать итог отправки. `Retry` — следующая попытка позже (пауза растёт вдвое до получаса),
+/// через RETRY_HOURS от создания — «ошибка».
 async fn record(conn: &mut PgConnection, id: Uuid, attempts: i32, out: &Outcome) -> AppResult<()> {
     match out {
         Outcome::Sent(ext) => {
@@ -1320,21 +1331,22 @@ async fn record(conn: &mut PgConnection, id: Uuid, attempts: i32, out: &Outcome)
             .await?;
         }
         Outcome::Retry(after, why) => {
-            let secs = i64::try_from(after.as_secs().max(60)).unwrap_or(60);
-            let status = if attempts + 1 >= MAX_ATTEMPTS {
-                "error"
-            } else {
-                "pending"
-            };
+            let backoff = 60u64
+                .checked_shl(u32::try_from(attempts.clamp(0, 10)).unwrap_or(0))
+                .unwrap_or(MAX_RETRY_SECS)
+                .min(MAX_RETRY_SECS);
+            let secs = i64::try_from(after.as_secs().max(backoff)).unwrap_or(60);
             sqlx::query!(
                 r#"update client_messages
-                   set status = $2, error = $3, attempts = attempts + 1,
-                       next_try_at = now() + $4::bigint * interval '1 second'
+                   set status = case when created_at < now() - make_interval(hours => $4)
+                                     then 'error' else 'pending' end,
+                       error = $2, attempts = attempts + 1,
+                       next_try_at = now() + $3::bigint * interval '1 second'
                    where id = $1"#,
                 id,
-                status,
                 why,
-                secs
+                secs,
+                RETRY_HOURS
             )
             .execute(&mut *conn)
             .await?;

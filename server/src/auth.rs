@@ -254,7 +254,28 @@ impl Ctx {
     }
 }
 
+/// Одновременных проверок argon2: каждая берёт около 19 МБ памяти и ядро процессора. Поток
+/// неверных входов ждёт своей очереди, а не съедает память сервера точки (ADR-128).
+const ARGON_PERMITS: usize = 3;
+/// Ждущих проверки пароля входа больше этого — сразу 429, без хеширования.
+pub const LOGIN_QUEUE: usize = 32;
+static ARGON: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(ARGON_PERMITS);
+static LOGIN_WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Место в очереди проверки пароля входа; уходит вместе с запросом, даже оборванным.
+struct LoginSlot;
+
+impl Drop for LoginSlot {
+    fn drop(&mut self) {
+        LOGIN_WAITING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub async fn hash_password(password: String) -> AppResult<String> {
+    let _permit = ARGON
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
@@ -266,7 +287,23 @@ pub async fn hash_password(password: String) -> AppResult<String> {
     .map_err(|e| AppError::Internal(e.to_string()))?
 }
 
+/// Проверка пароля при входе (сотрудник, кабинет юрлица): очередь длиннее `LOGIN_QUEUE` —
+/// 429 сразу, без хеширования (ADR-128).
+pub async fn verify_login_password(password: String, hash: String) -> AppResult<bool> {
+    if LOGIN_WAITING.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= LOGIN_QUEUE {
+        LOGIN_WAITING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        return Err(AppError::TooManyRequests(
+            "сервер занят проверкой входов — повторите через минуту".into(),
+        ));
+    }
+    let _slot = LoginSlot;
+    Ok(verify_password(password, hash).await)
+}
+
 pub async fn verify_password(password: String, hash: String) -> bool {
+    let Ok(_permit) = ARGON.acquire().await else {
+        return false;
+    };
     tokio::task::spawn_blocking(move || {
         PasswordHash::new(&hash)
             .map(|parsed| {
@@ -312,17 +349,25 @@ pub fn session_token(parts: &Parts) -> Option<&str> {
 /// `tailscale serve` (дописывает адрес в конец цепочки). Поэтому адрес — последний в цепочке:
 /// первые подставляет кто угодно. Пришли напрямую не с локального адреса и не с прокси из
 /// `TRUSTED_PROXIES` (через запятую, например адрес Caddy в Docker) — заголовкам не верим,
-/// берём адрес соединения. Заголовок Cloudflare — только за туннелем (TRUST_CF_HEADER=1).
+/// берём адрес соединения. Заголовок Cloudflare — только за туннелем (TRUST_CF_HEADER=1) и только
+/// если он совпадает с последним адресом X-Forwarded-For или того нет: Caddy кассы и
+/// `tailscale serve` тоже ходят с 127.0.0.1 и чужой CF-Connecting-IP не убирают (ADR-128).
 pub fn client_addr(parts: &Parts) -> String {
     let peer = parts
         .extensions
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|c| c.0.ip());
     let trusted = std::env::var("TRUSTED_PROXIES").unwrap_or_default();
-    client_addr_with(parts, peer, &trusted)
+    let cf = std::env::var("TRUST_CF_HEADER").is_ok_and(|v| v == "1");
+    client_addr_with(parts, peer, &trusted, cf)
 }
 
-fn client_addr_with(parts: &Parts, peer: Option<std::net::IpAddr>, trusted: &str) -> String {
+fn client_addr_with(
+    parts: &Parts,
+    peer: Option<std::net::IpAddr>,
+    trusted: &str,
+    cf: bool,
+) -> String {
     let via_proxy = peer.is_none_or(|ip| {
         ip.is_loopback()
             || trusted
@@ -342,10 +387,11 @@ fn client_addr_with(parts: &Parts, peer: Option<std::net::IpAddr>, trusted: &str
             .filter(|v| v.len() <= 64)
             .map(str::to_string)
     };
-    let cf = std::env::var("TRUST_CF_HEADER").is_ok_and(|v| v == "1");
+    let xff = header("x-forwarded-for");
     cf.then(|| header("cf-connecting-ip"))
         .flatten()
-        .or_else(|| header("x-forwarded-for"))
+        .filter(|c| xff.as_ref().is_none_or(|x| x == c))
+        .or(xff)
         .or_else(|| header("x-real-ip"))
         .or_else(|| peer.map(|ip| ip.to_string()))
         .unwrap_or_else(|| "local".into())
@@ -507,17 +553,17 @@ mod tests {
         let local = Some("127.0.0.1".parse().unwrap());
         // Через tailscale serve: подставленный клиентом адрес первый, настоящий — последний.
         assert_eq!(
-            client_addr_with(&parts(Some("6.6.6.6, 100.64.0.7")), local, ""),
+            client_addr_with(&parts(Some("6.6.6.6, 100.64.0.7")), local, "", false),
             "100.64.0.7"
         );
         assert_eq!(
-            client_addr_with(&parts(Some("192.168.1.20")), local, ""),
+            client_addr_with(&parts(Some("192.168.1.20")), local, "", false),
             "192.168.1.20"
         );
         // Напрямую с чужого адреса — заголовку не верим.
         let lan = Some("192.168.1.30".parse().unwrap());
         assert_eq!(
-            client_addr_with(&parts(Some("6.6.6.6")), lan, ""),
+            client_addr_with(&parts(Some("6.6.6.6")), lan, "", false),
             "192.168.1.30"
         );
         // Прокси из TRUSTED_PROXIES (Caddy в Docker) — адрес из заголовка.
@@ -525,11 +571,47 @@ mod tests {
             client_addr_with(
                 &parts(Some("10.0.0.5")),
                 Some("172.18.0.2".parse().unwrap()),
-                "172.18.0.2"
+                "172.18.0.2",
+                false
             ),
             "10.0.0.5"
         );
-        assert_eq!(client_addr_with(&parts(None), local, ""), "127.0.0.1");
-        assert_eq!(client_addr_with(&parts(None), None, ""), "local");
+        assert_eq!(
+            client_addr_with(&parts(None), local, "", false),
+            "127.0.0.1"
+        );
+        assert_eq!(client_addr_with(&parts(None), None, "", false), "local");
+    }
+
+    fn with_cf(xff: Option<&str>, cf: &str) -> axum::http::request::Parts {
+        let mut p = parts(xff);
+        p.headers.insert("cf-connecting-ip", cf.parse().unwrap());
+        p
+    }
+
+    #[test]
+    fn cf_header_only_from_the_tunnel() {
+        let local = Some("127.0.0.1".parse().unwrap());
+        // Туннель Cloudflare: заголовок и X-Forwarded-For — один адрес.
+        assert_eq!(
+            client_addr_with(&with_cf(Some("5.5.5.5"), "5.5.5.5"), local, "", true),
+            "5.5.5.5"
+        );
+        assert_eq!(
+            client_addr_with(&with_cf(None, "5.5.5.5"), local, "", true),
+            "5.5.5.5"
+        );
+        // Касса через Caddy с подставленным заголовком: верим адресу от Caddy.
+        for fake in ["10.0.2.1", "10.0.2.2", "10.0.2.3"] {
+            assert_eq!(
+                client_addr_with(&with_cf(Some("192.168.1.20"), fake), local, "", true),
+                "192.168.1.20"
+            );
+        }
+        // Без TRUST_CF_HEADER заголовок не читается.
+        assert_eq!(
+            client_addr_with(&with_cf(Some("192.168.1.20"), "5.5.5.5"), local, "", false),
+            "192.168.1.20"
+        );
     }
 }

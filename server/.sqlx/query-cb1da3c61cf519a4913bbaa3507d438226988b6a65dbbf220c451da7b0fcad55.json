@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from login_attempts\n           where last_failed_at < now() - make_interval(hours => $1)\n             and (locked_until is null or locked_until < now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cb1da3c61cf519a4913bbaa3507d438226988b6a65dbbf220c451da7b0fcad55"
+}

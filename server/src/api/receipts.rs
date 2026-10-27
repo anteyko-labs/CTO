@@ -1361,6 +1361,21 @@ async fn review_done(
             "товар продан без цены закупки: сначала укажите цену закупки".into(),
         ));
     }
+    // Остаток без стоимости и без цены закупки: продажи из него шли бы по нулю (ADR-128).
+    let valueless = sqlx::query_scalar!(
+        r#"select exists (select 1 from branch_products
+                          where branch_id = $1 and product_id = $2 and stock_qty > 0
+                            and stock_value_tyiyn <= 0 and last_cost_qty = 0) as "x!""#,
+        ctx.user.branch_id,
+        product_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if valueless {
+        return Err(AppError::Conflict(
+            "у остатка нет стоимости: сначала укажите цену закупки".into(),
+        ));
+    }
     let n = sqlx::query!(
         "update branch_products set needs_review = false where branch_id = $1 and product_id = $2",
         ctx.user.branch_id,
@@ -1458,6 +1473,34 @@ pub async fn purchase_price_tx(
     )
     .execute(&mut *conn)
     .await?;
+    // Остаток без стоимости (излишек ревизии, начальный остаток без закупки) получает цену
+    // владельца: переоценка входит в себестоимость дня, как ADR-044 (ADR-128).
+    let pool = ops::lock_pool(&mut *conn, branch_id, product_id).await?;
+    let revalued = if pool.qty > 0 && pool.value <= 0 {
+        let target = crate::domain::money::div_round(
+            i128::from(pool.qty) * i128::from(req.price_tyiyn),
+            i128::from(per),
+        )
+        .ok_or_else(crate::error::overflow)?;
+        let delta = target
+            .checked_sub(pool.value)
+            .ok_or_else(crate::error::overflow)?;
+        ops::apply_movement(
+            &mut *conn,
+            ops::Movement {
+                branch_id,
+                product_id,
+                qty_delta: 0,
+                value_delta: delta,
+                doc_type: "revaluation",
+                doc_id: req.op_id,
+            },
+        )
+        .await?;
+        delta
+    } else {
+        0
+    };
     let out = crate::api::payroll::resolve_cost_pending(
         &mut *conn,
         ctx,
@@ -1478,6 +1521,7 @@ pub async fn purchase_price_tx(
             "per": per,
             "lines": out.lines,
             "accrued_tyiyn": out.accrued_tyiyn,
+            "revalued_tyiyn": revalued,
         }),
     )
     .await?;

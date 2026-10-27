@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.amount_tyiyn, m.created_at,\n                  coalesce((select -sum(f.amount_tyiyn) from cash_movements f\n                            where f.doc_type = 'repayment' and f.doc_id = m.doc_id\n                              and f.kind = 'bank_fee' and f.account_id = m.account_id), 0)::bigint as \"fee!\"\n           from cash_movements m\n           where m.branch_id = $1 and m.account_id = $2 and m.kind = 'debt_repayment'\n             and m.doc_type = 'repayment' and m.amount_tyiyn > 0\n             and (m.created_at at time zone 'Asia/Bishkek')::date between $3 and $4\n             and not exists (select 1 from audit_log a\n                             where a.branch_id = $1 and a.action = 'debt.repayment'\n                               and a.data->>'repayment_id' = m.doc_id::text\n                               and a.data->>'method' in ('transfer', 'invoice'))\n             and not exists (select 1 from party_ledger l join party_ledger r on r.reversal_of = l.id\n                             where l.doc_type = 'repayment' and l.doc_id = m.doc_id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "34be257a4f4ecc3ecc4090c94de0ca18356fe4cba73cff0819cec7f28020e9de"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update login_attempts\n               set locked_until = case when $2 then now() + interval '100 years'\n                                       else now() + make_interval(mins => $3) end\n               where login = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9de5947e04cc99cbdc9d7cec9927016462a1d4a867c131ab305f0ecc026d3436"
+}
