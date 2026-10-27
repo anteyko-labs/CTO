@@ -95,7 +95,16 @@ pub fn service_slot_by_name(name: &str) -> &'static str {
         }
         return "other";
     }
-    if has(&["антифриз", "охлажд"]) {
+    // Доливка — не замена (ADR-117); масло моста, редуктора и раздатки — не масло двигателя и не
+    // коробка: «прочее» (в «Замене масла мех. моста» есть «масл»).
+    // «Мост» — с начала слова: «самостоятельно» — не мост.
+    let bridge = n
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.starts_with("мост"));
+    if bridge || has(&["долив", "редукт", "раздатк"]) {
+        return "other";
+    }
+    if has(&["антифриз", "тосол", "охлажд"]) {
         "antifreeze"
     } else if has(&["тормоз"]) {
         "brake_fluid"
@@ -106,6 +115,17 @@ pub fn service_slot_by_name(name: &str) -> &'static str {
     } else {
         "other"
     }
+}
+
+/// Жидкости книжки (ADR-117): пишутся заменой, только если в чеке есть услуга той же строки или
+/// цель кассира по ней; иначе это доливка.
+pub fn is_fluid(slot: &str) -> bool {
+    matches!(slot, "oil" | "gear_oil" | "antifreeze" | "brake_fluid")
+}
+
+/// Фильтры, которые меняют вместе с маслом двигателя (ADR-117): в чеке с целью по маслу получают её.
+fn follows_oil(slot: &str) -> bool {
+    matches!(slot, "oil_filter" | "air_filter" | "cabin_filter")
 }
 
 /// Строка книжки товара: по категории, а у фильтров — по типу фильтра товара, если он указан
@@ -310,6 +330,8 @@ pub async fn record_from_sale(
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Строки книжки, по которым в чеке замена: услуга той же строки или цель кассира (ADR-117).
+    let mut changed: Vec<String> = services.iter().map(|s| s.book_slot.clone()).collect();
     for sv in services {
         if let Some(l) = lines.iter_mut().find(|l| l.slot == sv.book_slot) {
             if l.service_id.is_none() {
@@ -350,6 +372,7 @@ pub async fn record_from_sale(
             continue;
         }
         seen.push(&t.slot);
+        changed.push(t.slot.clone());
         let at = match found {
             Some(i) => i,
             None => {
@@ -386,6 +409,24 @@ pub async fn record_from_sale(
             l.next_date = days.and_then(|d| {
                 change_date.checked_add_days(chrono::Days::new(u64::try_from(d).unwrap_or(0)))
             });
+        }
+    }
+    // Жидкость без услуги своей строки и без цели кассира — доливка: в книжку не пишется, срок не
+    // сдвигает (ADR-117).
+    lines.retain(|l| !is_fluid(&l.slot) || changed.contains(&l.slot));
+    // Масляный, воздушный и салонный фильтры с заменой масла — на пробег и дату масла; у масла
+    // «не напоминать» — и у них (ADR-117). Топливный — по своему интервалу.
+    if let Some(oil) = lines
+        .iter()
+        .find(|l| l.slot == "oil" && l.target_set)
+        .cloned()
+    {
+        for l in lines.iter_mut().filter(|l| follows_oil(&l.slot)) {
+            l.target_set = true;
+            l.next_mileage = oil.next_mileage;
+            l.next_unit = oil.next_unit.clone();
+            l.next_km = oil.next_km;
+            l.next_date = oil.next_date;
         }
     }
     if lines.is_empty() {
@@ -517,7 +558,8 @@ async fn interval_days(
     Ok(by_category.or_else(|| slot_default(slot)).map(|i| i.1))
 }
 
-/// Масляная книжка в печатном чеке (SPEC-34 §4).
+/// Масляная книжка в печатном чеке (SPEC-34 §4): «чек книжки» — только этот чек и только жидкости
+/// (ADR-116).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SaleBook {
     pub brand: String,
@@ -526,17 +568,39 @@ pub struct SaleBook {
     /// Пробег сейчас, как вписали, и единица.
     pub mileage: Option<i32>,
     pub mileage_unit: String,
-    /// Следующие замены, заданные кассиром; пустые (без напоминания) не печатаются.
+    /// Следующие замены жидкостей чека; пустые (без напоминания) не печатаются.
     pub lines: Vec<SaleBookLine>,
+    /// «Залито»: жидкости чека — товар с количеством, у масла клиента — «масло клиента» (ADR-116).
+    #[serde(default)]
+    pub filled: Vec<SaleBookFill>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SaleBookLine {
-    /// Услуга, а без неё — строка книжки.
+    /// Строка книжки: «Антифриз».
     pub label: String,
     pub next_mileage: i32,
     pub unit: String,
+    /// Срок в данных остаётся, в тексте — только пробег (ADR-115).
     pub next_date: Option<NaiveDate>,
+    #[serde(default)]
+    pub slot: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SaleBookFill {
+    pub slot: String,
+    pub label: String,
+    /// Товар и количество: «Sintec G12 красный 5 кг · 2 шт».
+    pub product: String,
+}
+
+/// Чем залили строку, когда товара в чеке нет: своё у клиента.
+fn own_fluid(slot: &str) -> &'static str {
+    match slot {
+        "oil" | "gear_oil" => "масло клиента",
+        _ => "жидкость клиента",
+    }
 }
 
 /// Книжка чека для печати: запись замены этого чека; у чека без записи — `None`.
@@ -552,23 +616,44 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
     else {
         return Ok(None);
     };
-    let lines = sqlx::query!(
-        r#"select i.slot, s.name as "service?", i.next_value as "next_value!", i.next_unit, i.next_date
-           from oil_change_items i left join services s on s.id = i.service_id
-           where i.oil_change_id = $1 and i.target_set and i.next_value is not null
+    let items = sqlx::query!(
+        r#"select i.slot, i.text, i.category_id, i.target_set, i.next_value, i.next_unit, i.next_date
+           from oil_change_items i
+           where i.oil_change_id = $1
+             and i.slot in ('oil', 'gear_oil', 'antifreeze', 'brake_fluid')
            order by i.position"#,
         h.id
     )
     .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(|l| SaleBookLine {
-        label: l.service.unwrap_or_else(|| slot_label(&l.slot).to_string()),
-        next_mileage: l.next_value,
-        unit: l.next_unit.unwrap_or_else(|| h.mileage_unit.clone()),
-        next_date: l.next_date,
-    })
-    .collect();
+    .await?;
+    let mut lines: Vec<SaleBookLine> = Vec::new();
+    let mut filled: Vec<SaleBookFill> = Vec::new();
+    for i in items {
+        let label = slot_label(&i.slot).to_string();
+        // Строка товара — «название · количество»; строка услуги без товара — масло клиента. Услуга
+        // при товаре той же строки строки не даёт (товар её подписывает).
+        filled.push(SaleBookFill {
+            slot: i.slot.clone(),
+            label: label.clone(),
+            product: if i.category_id.is_some() {
+                i.text
+            } else {
+                own_fluid(&i.slot).to_string()
+            },
+        });
+        if !i.target_set || lines.iter().any(|l| l.slot == i.slot) {
+            continue;
+        }
+        if let Some(next) = i.next_value {
+            lines.push(SaleBookLine {
+                label,
+                next_mileage: next,
+                unit: i.next_unit.unwrap_or_else(|| h.mileage_unit.clone()),
+                next_date: i.next_date,
+                slot: i.slot,
+            });
+        }
+    }
     Ok(Some(SaleBook {
         brand: h.brand,
         model: h.model,
@@ -576,6 +661,7 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
         mileage: h.mileage_value.or(h.mileage_km),
         mileage_unit: h.mileage_unit,
         lines,
+        filled,
     }))
 }
 
@@ -1501,6 +1587,14 @@ mod tests {
             ("Замена масляного фильтра", "oil_filter"),
             ("Замена фильтра", "other"),
             ("Мойка", "other"),
+            // ADR-117: мост, редуктор, раздатка и доливка — «прочее».
+            ("Замена масла мех. моста", "other"),
+            ("Замена масла в редукторе", "other"),
+            ("Масло в раздатку", "other"),
+            ("Доливка масла в мотор", "other"),
+            ("Доливка антифриза", "other"),
+            ("Замена тосола", "antifreeze"),
+            ("Замена масла самостоятельно", "oil"),
         ] {
             assert_eq!(service_slot_by_name(name), slot, "{name}");
         }

@@ -104,8 +104,20 @@ fn default_book_slot(kind: &str) -> &'static str {
 
 /// Строка книжки новой категории фильтров по её названию: «Воздушные фильтры» — воздушный,
 /// а не масляный (проверка 20.10.2026). Без подсказки в названии — `None` (по виду категории).
+/// Антифриз и тормозная жидкость — по названию у любого вида, кроме фильтров (ADR-117).
 fn book_slot_by_name(kind: &str, name: &str) -> Option<&'static str> {
     let n = name.to_lowercase();
+    if kind != "filter" {
+        if ["антифриз", "тосол", "охлажд"]
+            .iter()
+            .any(|w| n.contains(w))
+        {
+            return Some("antifreeze");
+        }
+        if n.contains("тормозн") {
+            return Some("brake_fluid");
+        }
+    }
     // Трансмиссионное масло — своя строка «Масло в коробке» (SPEC-32).
     if kind == "oil" {
         return ["трансмис", "короб", "акпп"]
@@ -339,17 +351,23 @@ async fn update_category(
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let before = sqlx::query!(
-        r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days
+        r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days,
+                  c.kind
            from categories c where c.id = $1 for update"#,
         id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // Переименованная категория без выбранной строки книжки получает её по названию (ADR-117);
+    // выбранную владельцем строку название не меняет.
+    let by_name = name
+        .as_deref()
+        .and_then(|n| book_slot_by_name(&before.kind, n));
     let out = sqlx::query_as!(
         CategoryOut,
         r#"update categories set name = coalesce($2, name), attributes = coalesce($3, attributes),
-             book_slot = case when $4 then $5 else book_slot end,
+             book_slot = case when $4 then $5 when book_slot is null then coalesce($8, book_slot) else book_slot end,
              book_interval_km = case when $4 then $6 else book_interval_km end,
              book_interval_days = case when $4 then $7 else book_interval_days end
            where id = $1
@@ -362,7 +380,8 @@ async fn update_category(
         req.book.is_some(),
         req.book.as_ref().map_or("none", |b| b.slot.as_str()),
         req.book.as_ref().and_then(|b| b.interval_km),
-        req.book.as_ref().and_then(|b| b.interval_days)
+        req.book.as_ref().and_then(|b| b.interval_days),
+        by_name
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -2169,5 +2188,18 @@ mod book_slot_tests {
         assert_eq!(book_slot_by_name("oil", "Масло АКПП"), Some("gear_oil"));
         assert_eq!(book_slot_by_name("oil", "Моторные масла"), None);
         assert_eq!(default_book_slot("filter"), "oil_filter");
+        // ADR-117: антифриз и тормозная — по названию.
+        assert_eq!(book_slot_by_name("other", "Антифризы"), Some("antifreeze"));
+        assert_eq!(book_slot_by_name("other", "Тосол"), Some("antifreeze"));
+        assert_eq!(
+            book_slot_by_name("other", "Охлаждающие жидкости"),
+            Some("antifreeze")
+        );
+        assert_eq!(
+            book_slot_by_name("other", "Тормозные жидкости"),
+            Some("brake_fluid")
+        );
+        assert_eq!(book_slot_by_name("other", "Прочие жидкости"), None);
+        assert_eq!(book_slot_by_name("filter", "Фильтры охлаждения"), None);
     }
 }

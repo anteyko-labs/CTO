@@ -26,28 +26,34 @@ const book = {
   mileage: 217000,
   mileage_unit: 'km' as const,
   lines: [
-    { label: 'Замена масла в моторе', next_mileage: 225000, unit: 'km' as const, next_date: '2026-11-26' },
-    { label: 'Замена антифриза', next_mileage: 250000, unit: 'km' as const, next_date: null },
+    { label: 'Масло двигателя', slot: 'oil' as const, next_mileage: 225000, unit: 'km' as const, next_date: '2026-11-26' },
+    { label: 'Антифриз', slot: 'antifreeze' as const, next_mileage: 250000, unit: 'km' as const, next_date: null },
+  ],
+  filled: [
+    { slot: 'oil' as const, label: 'Масло двигателя', product: 'масло клиента' },
+    { slot: 'antifreeze' as const, label: 'Антифриз', product: 'Sintec G12 красный 5 кг · 2 шт' },
   ],
 }
 
 const plain = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
-describe('печать чека «В сервис» с масляной книжкой (SPEC-34 §4)', () => {
-  it('машина, пробег и следующие замены', () => {
+describe('печать чека «В сервис» с масляной книжкой (SPEC-34 §4, ADR-115, ADR-116)', () => {
+  it('машина, пробег, что залито и следующая замена — только пробег', () => {
     const t = plain(saleHtml(sale({ book }), null))
     expect(t).toContain('Масляная книжка')
     expect(t).toContain('Машина: Toyota Camry, 01KG123ABC')
     expect(t).toContain('Пробег сейчас: 217 000 км')
-    expect(t).toContain('Замена масла в моторе — следующая замена на пробеге 225 000 км или до 26.11.2026')
-    expect(t).toContain('Замена антифриза — следующая замена на пробеге 250 000 км')
-    expect(t).not.toContain('250 000 км или до')
+    expect(t).toContain('Залито: Масло двигателя: масло клиента Антифриз: Sintec G12 красный 5 кг · 2 шт')
+    expect(t).toContain('Следующая замена: Масло двигателя: на 225 000 км Антифриз: на 250 000 км')
+    expect(t).not.toContain('или до')
+    expect(t).not.toContain('26.11.2026')
   })
 
   it('мили; без книжки, на вынос и в возврате — блока нет', () => {
-    const mi = plain(bookHtml(sale({ book: { ...book, mileage: 60000, mileage_unit: 'mi', lines: [{ label: 'Замена масла', next_mileage: 65001, unit: 'mi', next_date: null }] } })))
+    const mi = plain(bookHtml(sale({ book: { ...book, mileage: 60000, mileage_unit: 'mi', filled: undefined, lines: [{ label: 'Масло двигателя', next_mileage: 65001, unit: 'mi', next_date: null }] } })))
     expect(mi).toContain('Пробег сейчас: 60 000 миль')
-    expect(mi).toContain('на пробеге 65 001 миля')
+    expect(mi).toContain('Масло двигателя: на 65 001 миля')
+    expect(mi).not.toContain('Залито')
     expect(bookHtml(sale({ book: null }))).toBe('')
     expect(bookHtml(sale({ book, sale_type: 'takeaway' }))).toBe('')
     expect(bookHtml(sale({ book, kind: 'return' }))).toBe('')

@@ -149,7 +149,7 @@ test('масляная книжка по каждому фильтру: стро
   const air = await goods(page.request, airCat.id, `Фильтр A1 ${RUN}`, 60_000, 20_000)
   const party = await api<{ id: string }>(page.request, 'POST', '/parties', { name: `Фильтров ${RUN}`, kind: 'person', phone: `0700${RUN.slice(-6)}` })
   // Чек «В сервис» — с видом замены (ADR-096).
-  const kind = await api<{ id: string }>(page.request, 'POST', '/services', { name: `Замена фильтров ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
+  const kind = await api<{ id: string }>(page.request, 'POST', '/services', { name: `Замена масла по строкам ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
   const plate = `01KG${RUN.slice(-3)}FFF`
   const vehicle = await api<{ id: string }>(page.request, 'POST', `/parties/${party.id}/vehicles`, { plate })
   await api(page.request, 'POST', '/sales', {
