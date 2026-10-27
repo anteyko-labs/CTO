@@ -148,7 +148,8 @@ pub async fn noncash_split_for(
 }
 
 /// Безнал чеков одного безналичного счёта (ADR-076): картой, переводом, «По счёту» (ADR-095) и
-/// комиссия банка.
+/// комиссия банка. За смену (ADR-120) — по движениям счёта: продажи по способам, возвраты на
+/// счёт, оплаты долга безналом, комиссия и сколько упало на счёт.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct BankSplit {
     pub account_id: Uuid,
@@ -158,11 +159,22 @@ pub struct BankSplit {
     #[serde(default)]
     pub invoice_tyiyn: i64,
     pub fee_tyiyn: i64,
+    /// За учётные дни — чеки за вычетом возвратов; за смену — ещё и оплаты долга.
     pub total_tyiyn: i64,
+    /// Только за смену: возвращено покупателям с этого счёта (положительное).
+    #[serde(default)]
+    pub returns_tyiyn: i64,
+    /// Только за смену: оплаты долга покупателей на этот счёт (за вычетом их сторно).
+    #[serde(default)]
+    pub debt_tyiyn: i64,
+    /// Только за смену: упало на счёт — итог минус комиссия.
+    #[serde(default)]
+    pub landed_tyiyn: i64,
 }
 
-/// Безнал чеков по счетам: за учётные дни (`days`) — сводка, или за время смены (`since`..`until`)
-/// — закрытие смены. Сумма по счетам равна карте и переводу всего: у каждой такой оплаты есть счёт.
+/// Безнал чеков по счетам: за учётные дни (`days`) — сводка (сумма по счетам равна карте и
+/// переводу всего: у каждой такой оплаты есть счёт), или за время смены (`since`..`until`) — по
+/// движениям счетов, с возвратами, оплатами долга и «упало на счёт» (`shift_split`).
 pub async fn bank_split(
     conn: &mut PgConnection,
     branch_id: Uuid,
@@ -200,32 +212,7 @@ pub async fn bank_split(
         .map(|r| (r.account_id, r.name, r.card, r.transfer, r.invoice, r.fee))
         .collect()
     } else if let Some(since) = since {
-        sqlx::query!(
-            r#"with x as materialized (
-                 select p.account_id,
-                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'card'), 0)::bigint as card,
-                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'transfer'), 0)::bigint as transfer,
-                        coalesce(sum(p.amount_tyiyn) filter (where p.method = 'invoice'), 0)::bigint as invoice,
-                        coalesce(sum(p.fee_tyiyn), 0)::bigint as fee
-                 from sales s
-                 join sale_payments p on p.sale_id = s.id
-                 where p.account_id is not null and s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
-                 and p.method in ('card', 'transfer', 'invoice')
-                 group by p.account_id
-               )
-               select x.account_id as "account_id!", a.name, x.card as "card!",
-                      x.transfer as "transfer!", x.invoice as "invoice!", x.fee as "fee!"
-               from x join cash_accounts a on a.id = x.account_id
-               order by a.default_card desc, a.name"#,
-            branch_id,
-            since,
-            until
-        )
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .map(|r| (r.account_id, r.name, r.card, r.transfer, r.invoice, r.fee))
-        .collect()
+        return shift_split(&mut *conn, branch_id, since, until).await;
     } else {
         sqlx::query!(
             r#"with x as materialized (
@@ -262,8 +249,82 @@ pub async fn bank_split(
                 invoice_tyiyn: invoice,
                 fee_tyiyn: fee,
                 total_tyiyn: card.saturating_add(transfer).saturating_add(invoice),
+                ..BankSplit::default()
             },
         )
+        .collect())
+}
+
+/// Безнал за время смены по движениям безналичных счетов (SPEC-36 §9, ADR-120): продажи по
+/// способам, возвраты, оплаты долга покупателей безналом (и их сторно), комиссия банка с чеков и
+/// погашений. Каждый действующий безналичный счёт — даже без движений (блок виден всегда); архивный
+/// и счёт владельца — если по нему что-то было (пустой счёт владельца администратору не показываем).
+async fn shift_split(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    since: DateTime<Utc>,
+    until: Option<DateTime<Utc>>,
+) -> AppResult<Vec<BankSplit>> {
+    let rows = sqlx::query!(
+        r#"with m as materialized (
+             select m.account_id, m.kind, m.doc_type, m.amount_tyiyn,
+                    case when m.kind = 'sale' then
+                      (select p.method from sale_payments p
+                       where p.sale_id = m.doc_id and p.account_id = m.account_id
+                         and p.method in ('card', 'transfer', 'invoice')
+                       order by (abs(p.amount_tyiyn) = abs(m.amount_tyiyn)) desc limit 1)
+                    end as method,
+                    m.kind = 'reversal' and m.doc_type = 'ledger_reversal'
+                      and exists (select 1 from party_ledger l join parties pt on pt.id = l.party_id
+                                  where l.id = m.doc_id and pt.role = 'customer') as debt_back
+             from cash_movements m
+             join cash_accounts a on a.id = m.account_id
+             where a.branch_id = $1 and a.kind = 'bank'
+               and m.created_at >= $2 and m.created_at <= coalesce($3, now())
+               and m.kind in ('sale', 'sale_return', 'debt_repayment', 'bank_fee', 'reversal')
+           )
+           select a.id as "account_id!", a.name as "name!",
+                  coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'sale' and coalesce(m.method, 'card') = 'card'), 0)::bigint as "card!",
+                  coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'sale' and m.method = 'transfer'), 0)::bigint as "transfer!",
+                  coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'sale' and m.method = 'invoice'), 0)::bigint as "invoice!",
+                  coalesce(-sum(m.amount_tyiyn) filter (where m.kind = 'sale_return'), 0)::bigint as "returns!",
+                  coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'debt_repayment' or m.debt_back), 0)::bigint as "debt!",
+                  coalesce(-sum(m.amount_tyiyn) filter (where m.kind = 'bank_fee' and m.doc_type in ('sale', 'repayment')), 0)::bigint as "fee!",
+                  count(m.kind) filter (where m.kind <> 'reversal' or m.debt_back) as "moves!"
+           from cash_accounts a
+           left join m on m.account_id = a.id
+           where a.branch_id = $1 and a.kind = 'bank'
+           group by a.id, a.name, a.active, a.owner_only, a.default_card
+           having (a.active and not a.owner_only) or count(m.kind) filter (where m.kind <> 'reversal' or m.debt_back) > 0
+           order by a.default_card desc, a.name"#,
+        branch_id,
+        since,
+        until
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let total = r
+                .card
+                .saturating_add(r.transfer)
+                .saturating_add(r.invoice)
+                .saturating_sub(r.returns)
+                .saturating_add(r.debt);
+            BankSplit {
+                account_id: r.account_id,
+                name: r.name,
+                card_tyiyn: r.card,
+                transfer_tyiyn: r.transfer,
+                invoice_tyiyn: r.invoice,
+                fee_tyiyn: r.fee,
+                total_tyiyn: total,
+                returns_tyiyn: r.returns,
+                debt_tyiyn: r.debt,
+                landed_tyiyn: total.saturating_sub(r.fee),
+            }
+        })
         .collect())
 }
 

@@ -2,7 +2,7 @@
 
 use axum::extract::{Query, State};
 use axum::{Json, Router, routing};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -378,39 +378,200 @@ pub async fn totals_for(
     )
     .fetch_one(&mut *conn)
     .await?;
+    Ok(assemble(Parts {
+        goods: lines.goods,
+        services: lines.services,
+        cost: lines.cost,
+        revaluation,
+        payroll,
+        salary: pay.salary,
+        fee,
+        expenses,
+        bonus,
+        cash_diff,
+        defect_writeoff: defects.writeoff,
+        defect_diff: defects.diff,
+        return_diff,
+        count,
+    }))
+}
+
+/// Слагаемые прибыли из базы — за учётные дни или за время смены.
+struct Parts {
+    goods: i64,
+    services: i64,
+    cost: i64,
+    revaluation: i64,
+    payroll: i64,
+    salary: i64,
+    fee: i64,
+    expenses: i64,
+    bonus: i64,
+    cash_diff: i64,
+    defect_writeoff: i64,
+    defect_diff: i64,
+    return_diff: i64,
+    count: i64,
+}
+
+/// Формула прибыли (SPEC-08) — одна для дня и для смены (ADR-120).
+fn assemble(p: Parts) -> Totals {
     // Суммы из базы; насыщение вместо паники на заведомо нереальных значениях.
-    let revenue = lines.goods.saturating_add(lines.services);
-    let cost = lines.cost.saturating_add(revaluation);
+    let revenue = p.goods.saturating_add(p.services);
+    let cost = p.cost.saturating_add(p.revaluation);
     let gross = revenue.saturating_sub(cost);
-    Ok(Totals {
-        goods_tyiyn: lines.goods,
-        services_tyiyn: lines.services,
+    Totals {
+        goods_tyiyn: p.goods,
+        services_tyiyn: p.services,
         cost_tyiyn: cost,
-        revaluation_tyiyn: revaluation,
+        revaluation_tyiyn: p.revaluation,
         gross_tyiyn: gross,
-        payroll_tyiyn: payroll,
-        salary_tyiyn: pay.salary,
-        bank_fee_tyiyn: fee,
-        expenses_tyiyn: expenses,
-        bonus_tyiyn: bonus,
-        cash_diff_tyiyn: cash_diff,
-        defect_writeoff_tyiyn: defects.writeoff,
-        defect_diff_tyiyn: defects.diff,
-        return_diff_tyiyn: return_diff,
+        payroll_tyiyn: p.payroll,
+        salary_tyiyn: p.salary,
+        bank_fee_tyiyn: p.fee,
+        expenses_tyiyn: p.expenses,
+        bonus_tyiyn: p.bonus,
+        cash_diff_tyiyn: p.cash_diff,
+        defect_writeoff_tyiyn: p.defect_writeoff,
+        defect_diff_tyiyn: p.defect_diff,
+        return_diff_tyiyn: p.return_diff,
         net_tyiyn: gross
-            .saturating_sub(payroll)
-            .saturating_sub(fee)
-            .saturating_sub(expenses)
-            .saturating_sub(bonus)
-            .saturating_add(cash_diff)
-            .saturating_sub(defects.writeoff)
-            .saturating_add(defects.diff)
-            .saturating_add(return_diff),
+            .saturating_sub(p.payroll)
+            .saturating_sub(p.fee)
+            .saturating_sub(p.expenses)
+            .saturating_sub(p.bonus)
+            .saturating_add(p.cash_diff)
+            .saturating_sub(p.defect_writeoff)
+            .saturating_add(p.defect_diff)
+            .saturating_add(p.return_diff),
         margin_bp: (revenue != 0)
             .then(|| div_round(i128::from(gross) * 10_000, i128::from(revenue)))
             .flatten(),
-        sales_count: count,
-    })
+        sales_count: p.count,
+    }
+}
+
+/// Прибыль за время смены (SPEC-36 §9, ADR-120): та же формула, что у дня, но всё — по времени
+/// записи от открытия смены до закрытия (у открытой — до сейчас). Оклад за месяц не входит: он
+/// начисляется в конце месяца. Недостача и излишек — пересчёты этой смены. Поправки комиссии по
+/// выписке банка (SPEC-31) — к дню операции, а не к смене: в смену не входят.
+pub async fn totals_between(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    shift_id: Uuid,
+    start: DateTime<Utc>,
+    end: Option<DateTime<Utc>>,
+) -> AppResult<Totals> {
+    let lines = sqlx::query!(
+        r#"select
+             coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as "goods!",
+             coalesce(sum(l.amount_tyiyn) filter (where l.kind = 'service'), 0)::bigint as "services!",
+             coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!",
+             count(distinct s.id) filter (where s.kind = 'sale') as "count!"
+           from sale_lines l join sales s on s.id = l.sale_id
+           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let revaluation = sqlx::query_scalar!(
+        r#"select coalesce(-sum(value_delta_tyiyn), 0)::bigint as "v!" from stock_movements
+           where branch_id = $1 and doc_type in ('revaluation', 'revision')
+             and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let payroll = sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from payroll_accruals
+           where branch_id = $1 and kind <> 'monthly_salary'
+             and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let fee = sqlx::query_scalar!(
+        r#"select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
+                             where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())), 0)
+                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
+                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
+                               and m.created_at >= $2 and m.created_at <= coalesce($3, now())), 0)
+                 )::bigint as "v!""#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let expenses = sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from expenses
+           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let bonus = sqlx::query_scalar!(
+        r#"select coalesce(sum(p.amount_tyiyn), 0)::bigint as "v!" from sale_payments p join sales s on s.id = p.sale_id
+           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+             and p.method = 'bonus'"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let cash_diff = sqlx::query_scalar!(
+        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from cash_movements
+           where branch_id = $1 and kind = 'count_diff' and doc_type = 'shift' and doc_id = $2"#,
+        branch_id,
+        shift_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let defects = sqlx::query!(
+        r#"select coalesce(sum(writeoff_tyiyn), 0)::bigint as "writeoff!",
+                  coalesce(sum(diff_tyiyn), 0)::bigint as "diff!"
+           from defect_resolutions
+           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let return_diff = sqlx::query_scalar!(
+        r#"select coalesce(sum(diff_tyiyn), 0)::bigint as "v!" from supplier_returns
+           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())"#,
+        branch_id,
+        start,
+        end
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(assemble(Parts {
+        goods: lines.goods,
+        services: lines.services,
+        cost: lines.cost,
+        revaluation,
+        payroll,
+        salary: 0,
+        fee,
+        expenses,
+        bonus,
+        cash_diff,
+        defect_writeoff: defects.writeoff,
+        defect_diff: defects.diff,
+        return_diff,
+        count: lines.count,
+    }))
 }
 
 /// Расходы по статьям за период, с личными: для отчёта и для вопросов боту (SPEC-21).

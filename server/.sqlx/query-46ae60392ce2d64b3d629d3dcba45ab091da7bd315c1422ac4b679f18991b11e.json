@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id\n                             where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())), 0)\n                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m\n                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'\n                               and m.created_at >= $2 and m.created_at <= coalesce($3, now())), 0)\n                 )::bigint as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "46ae60392ce2d64b3d629d3dcba45ab091da7bd315c1422ac4b679f18991b11e"
+}

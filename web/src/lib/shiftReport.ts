@@ -1,7 +1,7 @@
 // Отчёт смены, как в Умаге (SPEC-30 §7, §8): типы ответа `GET /shifts/{id}/report` и правила
 // показа. Все суммы считает сервер; здесь — подписи, отбор и высота столбиков.
 import { formatPercentBp } from './format'
-import type { Shift } from './types'
+import type { BankSplit, Shift } from './types'
 
 export interface ReportLine {
   key: string
@@ -44,6 +44,9 @@ export interface Revenue {
   cost_tyiyn?: number
   gross_tyiyn?: number
   cost_unknown_lines?: number
+  /** Только владельцу (ADR-120): чистая прибыль за смену, без оклада, и её слагаемые со знаком. */
+  net_profit_tyiyn?: number
+  profit?: ReportLine[]
 }
 
 export interface Compare {
@@ -275,4 +278,35 @@ export function debtTotals(rows: DebtRow[]): { sold: number; repaid: number; adj
     else adjusted += d.amount_tyiyn
   }
   return { sold, repaid, adjusted }
+}
+
+/** Строка безнала одного счёта за смену: подпись и сумма со знаком (ADR-120). */
+export interface BankPart {
+  key: 'card' | 'transfer' | 'invoice' | 'debt' | 'returns'
+  label: string
+  value: number
+}
+
+/** Из чего сложился безнал счёта за смену: чеки по способам, оплаты долга, возвраты (минусом).
+ *  Нулевые не показываем. */
+export function bankParts(b: BankSplit): BankPart[] {
+  const parts: BankPart[] = [
+    { key: 'card', label: 'Карта / QR банка', value: b.card_tyiyn },
+    { key: 'transfer', label: 'QR владельцу', value: b.transfer_tyiyn },
+    { key: 'invoice', label: 'По счёту', value: b.invoice_tyiyn ?? 0 },
+    { key: 'debt', label: 'Оплаты долга', value: b.debt_tyiyn ?? 0 },
+    { key: 'returns', label: 'Возвраты', value: -(b.returns_tyiyn ?? 0) },
+  ]
+  return parts.filter((p) => p.value !== 0)
+}
+
+/** Весь безнал смены по всем счетам: итог, комиссия, упало на счета. */
+export function bankTotals(list: BankSplit[]): { total: number; fee: number; landed: number } {
+  let total = 0
+  let fee = 0
+  for (const b of list) {
+    total += b.total_tyiyn
+    fee += b.fee_tyiyn
+  }
+  return { total, fee, landed: total - fee }
 }

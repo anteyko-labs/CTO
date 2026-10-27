@@ -19,13 +19,76 @@ use uuid::Uuid;
 
 use crate::api::cancelled_lines::{self, CancelledRow};
 use crate::api::cash::{self, ShiftOut};
-use crate::auth::CurrentUser;
+use crate::auth::{Ctx, CurrentUser};
 use crate::domain::money::{div_round, format_som, format_som_signed};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/shifts/{id}/report", routing::get(get_report))
+    Router::new()
+        .route("/shifts/{id}/report", routing::get(get_report))
+        .route(
+            "/settings/shift",
+            routing::get(get_settings).put(put_settings),
+        )
+}
+
+/// Настройки смены (SPEC-36 §10): печатать ли чек смены сам после сдачи кассы.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct ShiftSettings {
+    #[serde(default = "yes")]
+    pub print_on_close: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for ShiftSettings {
+    fn default() -> Self {
+        Self {
+            print_on_close: true,
+        }
+    }
+}
+
+async fn get_settings(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<ShiftSettings>> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'shift'",
+        user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(Json(
+        v.and_then(|v| serde_json::from_value::<ShiftSettings>(v).ok())
+            .unwrap_or_default(),
+    ))
+}
+
+async fn put_settings(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<ShiftSettings>,
+) -> AppResult<Json<ShiftSettings>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let value = serde_json::json!(req);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, 'shift', $2)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        ctx.user.branch_id,
+        value
+    )
+    .execute(&mut *tx)
+    .await?;
+    crate::ops::audit(&mut tx, &ctx, "settings.shift", "settings", None, value).await?;
+    tx.commit().await?;
+    Ok(Json(req))
 }
 
 /// Строка итогов: вид, подпись и сумма.
@@ -94,6 +157,13 @@ pub struct Revenue {
     /// Строк, проданных без цены закупки (их себестоимость — ноль, ADR-062).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_unknown_lines: Option<i64>,
+    /// Только владельцу (ADR-120): чистая прибыль за смену — формула прибыли дня по времени
+    /// смены, без оклада.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_profit_tyiyn: Option<i64>,
+    /// Только владельцу: из чего она сложилась, со знаком (валовая, начисления, комиссия…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit: Option<Vec<Line>>,
 }
 
 /// Выручка прошлой смены этой кассы и разница с ней.
@@ -663,6 +733,8 @@ async fn sales_part(
         cost_tyiyn: None,
         gross_tyiyn: None,
         cost_unknown_lines: None,
+        net_profit_tyiyn: None,
+        profit: None,
     };
     // Себестоимость и валовая — только владельцу (инвариант 6): администратору их не считаем.
     if owner {
@@ -687,8 +759,58 @@ async fn sales_part(
         revenue.cost_tyiyn = Some(cost);
         revenue.gross_tyiyn = Some(net.checked_sub(cost).ok_or_else(crate::error::overflow)?);
         revenue.cost_unknown_lines = Some(c.unknown);
+        let t = crate::api::reports::totals_between(conn, branch_id, s.id, w.start, w.end).await?;
+        revenue.net_profit_tyiyn = Some(t.net_tyiyn);
+        revenue.profit = Some(profit_lines(&t));
     }
     Ok((rows, revenue, totals, returns))
+}
+
+/// Слагаемые чистой прибыли смены со знаком; нулевые, кроме валовой, не показываем. Сумма строк —
+/// чистая прибыль.
+fn profit_lines(t: &crate::api::reports::Totals) -> Vec<Line> {
+    let gross = t.gross_tyiyn.saturating_add(t.revaluation_tyiyn);
+    let parts: [(&str, &str, i64); 10] = [
+        ("gross", "Валовая прибыль", gross),
+        ("revaluation", "Переоценка и ревизия", -t.revaluation_tyiyn),
+        (
+            "payroll",
+            "Начисления сотрудникам (без оклада)",
+            -t.payroll_tyiyn,
+        ),
+        ("bank_fee", "Комиссия банка", -t.bank_fee_tyiyn),
+        ("expenses", "Расходы", -t.expenses_tyiyn),
+        ("bonus", "Оплачено баллами", -t.bonus_tyiyn),
+        (
+            "cash_diff",
+            "Недостача или излишек кассы",
+            t.cash_diff_tyiyn,
+        ),
+        (
+            "defect_writeoff",
+            "Списанный брак",
+            -t.defect_writeoff_tyiyn,
+        ),
+        (
+            "defect_diff",
+            "Брак: разница возмещения",
+            t.defect_diff_tyiyn,
+        ),
+        (
+            "return_diff",
+            "Возврат поставщику: разница",
+            t.return_diff_tyiyn,
+        ),
+    ];
+    parts
+        .into_iter()
+        .filter(|(k, _, v)| *k == "gross" || *v != 0)
+        .map(|(key, label, amount_tyiyn)| Line {
+            key: key.into(),
+            label: label.into(),
+            amount_tyiyn,
+        })
+        .collect()
 }
 
 /// Конец действующего закрытия смены; открытая — `None`.
@@ -1166,6 +1288,37 @@ fn percent_bp(bp: i64) -> String {
     format!("{sign}{},{:02} %", a / 100, a % 100)
 }
 
+/// Безнал одного счёта за смену строкой: «Счёт»: итог (карта …, долги …, возвраты …), комиссия,
+/// упало на счёт.
+pub fn bank_text(b: &crate::api::income::BankSplit) -> String {
+    let mut parts = Vec::new();
+    for (label, v) in [
+        ("карта / QR банка", b.card_tyiyn),
+        ("QR владельцу", b.transfer_tyiyn),
+        ("по счёту", b.invoice_tyiyn),
+        ("оплаты долга", b.debt_tyiyn),
+    ] {
+        if v != 0 {
+            parts.push(format!("{label} {}", format_som(v)));
+        }
+    }
+    if b.returns_tyiyn != 0 {
+        parts.push(format!("возвраты −{}", format_som(b.returns_tyiyn)));
+    }
+    let mut out = format!("безнал «{}»: {}", b.name, format_som(b.total_tyiyn));
+    if !parts.is_empty() {
+        out.push_str(&format!(" ({})", parts.join(", ")));
+    }
+    if b.fee_tyiyn != 0 {
+        out.push_str(&format!(
+            ", комиссия {}, упало на счёт {}",
+            format_som(b.fee_tyiyn),
+            format_som(b.landed_tyiyn)
+        ));
+    }
+    out
+}
+
 /// Не больше `n` пунктов и «ещё N».
 fn first(items: Vec<String>, n: usize) -> String {
     let total = items.len();
@@ -1272,22 +1425,9 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
                 .join(" · ")
         ));
     }
-    // Несколько безналичных счетов — куда сколько пришло (ADR-076).
-    if s.bank_split.len() > 1 {
-        rev.push(format!(
-            "  безнал по счетам: {}",
-            s.bank_split
-                .iter()
-                .map(|b| format!("«{}» {}", b.name, format_som(b.total_tyiyn)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if v.bank_fee_tyiyn != 0 {
-        rev.push(format!(
-            "  комиссия банка: {}",
-            format_som(v.bank_fee_tyiyn)
-        ));
+    // Безнал по счетам — всегда, даже при одном счёте (ADR-120): итог, комиссия, упало.
+    for b in &s.bank_split {
+        rev.push(format!("  {}", bank_text(b)));
     }
     // Оплачено по QR банка, а чека нет (SPEC-31).
     if !r.qr_unclaimed.is_empty() {
@@ -1302,6 +1442,9 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
     }
     if let Some(g) = v.gross_tyiyn {
         rev.push(format!("  валовая прибыль: {}", format_som(g)));
+    }
+    if let Some(n) = v.net_profit_tyiyn {
+        rev.push(format!("  чистая прибыль: {} (без оклада)", format_som(n)));
     }
     if let Some(cmp) = &r.compare {
         rev.push(format!(
@@ -1430,6 +1573,31 @@ mod tests {
         let m: Vec<String> = sorted_methods(by).into_iter().map(|m| m.method).collect();
         assert_eq!(m, ["cash", "invoice", "debt", "zzz"]);
         assert_eq!(method_label("invoice"), "по счёту");
+    }
+
+    #[test]
+    fn bank_line_shows_landed_after_fee() {
+        let b = crate::api::income::BankSplit {
+            name: "Счёт".into(),
+            card_tyiyn: 50_000,
+            debt_tyiyn: 30_000,
+            returns_tyiyn: 10_000,
+            fee_tyiyn: 400,
+            total_tyiyn: 70_000,
+            landed_tyiyn: 69_600,
+            ..Default::default()
+        };
+        assert_eq!(
+            bank_text(&b),
+            "безнал «Счёт»: 700 с (карта / QR банка 500 с, оплаты долга 300 с, возвраты −100 с), \
+             комиссия 4 с, упало на счёт 696 с"
+        );
+        // Один счёт без движений — строка всё равно есть.
+        let empty = crate::api::income::BankSplit {
+            name: "Счёт".into(),
+            ..Default::default()
+        };
+        assert_eq!(bank_text(&empty), "безнал «Счёт»: 0 с");
     }
 
     #[test]

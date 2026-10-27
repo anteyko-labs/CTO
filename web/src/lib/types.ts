@@ -653,6 +653,18 @@ export interface BankSplit {
   invoice_tyiyn?: number
   fee_tyiyn: number
   total_tyiyn: number
+  /** За смену (ADR-120): возвращено покупателям с этого счёта. */
+  returns_tyiyn?: number
+  /** За смену: оплаты долга безналом на этот счёт. */
+  debt_tyiyn?: number
+  /** За смену: упало на счёт — итог минус комиссия. */
+  landed_tyiyn?: number
+}
+
+/** Настройки смены (SPEC-36 §10). */
+export interface ShiftSettings {
+  /** Печатать чек смены сам после «Сдать кассу» или «Оставить в кассе». */
+  print_on_close: boolean
 }
 
 export interface Shift {
@@ -669,6 +681,8 @@ export interface Shift {
   /** Сколько должно быть в кассе сейчас. */
   expected_tyiyn: number
   closed_at: string | null
+  /** Кто закрыл смену. */
+  closed_by?: string | null
   counted_tyiyn: number | null
   diff_tyiyn: number | null
   breakdown: { kind: string; sum_tyiyn: number }[]

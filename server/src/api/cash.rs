@@ -549,6 +549,9 @@ pub struct ShiftOut {
     /// Открытая смена — сколько должно быть в кассе сейчас; закрытая — сколько ждали при закрытии.
     pub expected_tyiyn: i64,
     pub closed_at: Option<DateTime<Utc>>,
+    /// Кто закрыл смену (действующее закрытие) — для чека смены (SPEC-36 §10).
+    #[serde(default)]
+    pub closed_by: Option<String>,
     pub counted_tyiyn: Option<i64>,
     pub diff_tyiyn: Option<i64>,
     pub breakdown: Value,
@@ -620,7 +623,8 @@ async fn load_shift_with(
     .ok_or(AppError::NotFound)?;
     let close = sqlx::query!(
         r#"select c.closed_at, c.expected_tyiyn, c.counted_tyiyn, c.diff_tyiyn,
-                  h.to_safe_tyiyn as "to_safe?", h.left_tyiyn as "left?"
+                  h.to_safe_tyiyn as "to_safe?", h.left_tyiyn as "left?",
+                  (select u.full_name from users u where u.id = c.user_id) as "closed_by?"
            from shift_closes c
            left join shift_handovers h on h.close_id = c.id
              and (h.transfer_id is null or not exists (select 1 from cash_transfers x where x.reversal_of = h.transfer_id))
@@ -721,6 +725,7 @@ async fn load_shift_with(
         opening_expected_tyiyn: h.opening_expected_tyiyn,
         expected_tyiyn: close.as_ref().map_or(h.balance_tyiyn, |c| c.expected_tyiyn),
         closed_at: close.as_ref().map(|c| c.closed_at),
+        closed_by: close.as_ref().and_then(|c| c.closed_by.clone()),
         counted_tyiyn: close.as_ref().map(|c| c.counted_tyiyn),
         diff_tyiyn: close.as_ref().map(|c| c.diff_tyiyn),
         breakdown: json!(breakdown),
