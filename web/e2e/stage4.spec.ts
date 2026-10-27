@@ -84,14 +84,18 @@ test('расчёт кассира: 2 % за день, выплата, оклад
   })
 
   await page.goto('/payroll')
-  const row = page.getByRole('row', { name: new RegExp(cashier) })
+  // Строку ищем по тексту, а не по доступному имени: в месяце строка на каждого действующего
+  // сотрудника, и на базе с тысячами сотрудников прежних прогонов расчёт имён всех строк
+  // занимает секунды на каждую проверку.
+  const row = page.locator('tr', { hasText: cashier })
   await expect(row).toContainText(/10\sс/)
   await row.getByRole('button', { name: 'Выплатить' }).click()
-  await page.getByRole('button', { name: 'Выплатить', exact: true }).last().click()
+  // Кнопка окна выплаты, а не строки за ним: окно сначала грузит остатки по видам (ADR-122).
+  await page.getByRole('dialog').getByRole('button', { name: 'Выплатить', exact: true }).click()
   await expect(page.getByText('Выплачено из кассы')).toBeVisible()
 
   await page.getByRole('button', { name: 'За месяц' }).click()
-  const month = page.getByRole('row', { name: new RegExp(cashier) })
+  const month = page.locator('tr', { hasText: cashier })
   await expect(month.getByText('не начислен')).toBeVisible()
   await month.getByRole('button', { name: 'Оклад' }).click()
   await expect(page.getByRole('textbox').last()).toHaveValue(/30\s?000/)
