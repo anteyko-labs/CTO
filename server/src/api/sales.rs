@@ -1792,7 +1792,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             }
             Err(e) => return Err(e),
         };
-        // Следующие замены, заданные кассиром (SPEC-34): единица — как у пробега чека.
+        // Следующие замены, заданные кассиром (SPEC-34): единица — как у пробега чека; только по
+        // услугам этого чека (ADR-131).
         if req.next_changes.len() > 20 {
             return Err(invalid("следующих замен в чеке — не больше 20"));
         }
@@ -1801,7 +1802,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             .map_or(car_unit.clone(), |m| m.unit.clone());
         let mut targets = Vec::with_capacity(req.next_changes.len());
         for n in &req.next_changes {
-            match crate::api::oil_book::resolve_target(conn, n, mileage.as_ref(), &target_unit)
+            match crate::api::oil_book::resolve_target(conn, id, n, mileage.as_ref(), &target_unit)
                 .await
             {
                 Ok(Some(t)) => targets.push(t),

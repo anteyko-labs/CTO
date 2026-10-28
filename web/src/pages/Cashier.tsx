@@ -20,10 +20,30 @@ import { BankQrPanel, useBankQr, useOpenQrs } from '../components/BankQrPanel'
 import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
-import { recordLines, recordMileage, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
+import { recordLines, recordMileage, slotKey, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { askOilChange, hasServiceWork, hasTopup } from '../lib/oilChange'
-import { cartGoods, cartSources, extraChoices, extraSlots, filtersNote, goodShort, nextPayload, nextRows, nextTooLow, oilChangeHint, pruneNext, receiptBook, snapshotCategories, type CategoryBook, type OwnIntervals } from '../lib/nextChange'
+import {
+  cartGoods,
+  cartSources,
+  extraChoices,
+  extraServices,
+  filtersNote,
+  goodShort,
+  nextEditsOf,
+  nextPayload,
+  nextRows,
+  nextTooFar,
+  nextTooLow,
+  oilChangeHint,
+  pruneNext,
+  receiptBook,
+  serviceKey,
+  snapshotCategories,
+  type CategoryBook,
+  type NextEdits,
+  type OwnIntervals,
+} from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
 import { printOilBook } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
@@ -185,10 +205,10 @@ interface Parked {
   declined?: string
   /** Строки, удалённые крестиком до того, как чек отложили (SPEC-30 §8). */
   dropped?: RemovedLine[]
-  /** «Следующая замена» (SPEC-34): правки кассира и строки «+ ещё» — строки книжки товаров чека
-   *  (у чека, отложенного до 26.10.2026, — услуги справочника: не берутся). */
-  nextEdits?: Partial<Record<BookSlot, string>>
-  nextExtra?: BookSlot[]
+  /** «Следующая замена» (SPEC-34, ADR-131): правки кассира по строкам и строки «+ ещё» — услуги
+   *  «прочее» чека. Прежнее поле `nextExtra` (строки книжки товаров, до 27.10.2026) не берётся. */
+  nextEdits?: NextEdits
+  nextServices?: string[]
 }
 
 function loadParked(): Parked[] {
@@ -223,8 +243,8 @@ interface Draft {
   delivery?: string | null
   declined?: string
   dropped?: RemovedLine[]
-  nextEdits?: Partial<Record<BookSlot, string>>
-  nextExtra?: BookSlot[]
+  nextEdits?: NextEdits
+  nextServices?: string[]
 }
 
 function loadDraft(): Draft | null {
@@ -253,6 +273,9 @@ function lineUnits(l: CartLine): number {
 }
 
 const NO_OIL: OilEnough = new Set<string>()
+
+/** Поле строки «Следующей замены»: `next-oil`, у услуги «прочее» — `next-svc-<услуга>`. */
+const nextId = (key: string): string => `next-${key.replace(':', '-')}`
 
 /** Категории нашего масла, которого в чеке не меньше канистры (ADR-104). */
 function cartOil(lines: readonly CartLine[]): OilEnough {
@@ -375,6 +398,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           mileage: fix.state.mileage,
           delivery: fix.state.delivery,
           declined: fix.state.declined,
+          // Следующие замены исходного чека — правками и строками «+ ещё» (ADR-131).
+          nextEdits: fix.state.nextEdits,
+          nextServices: fix.state.nextExtra,
         }
       : loadDraft(),
   )
@@ -440,10 +466,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const [delivery, setDelivery] = useState<string | null>(draft?.delivery ?? null)
   // Что мастер советовал, а клиент отказался: попадёт в масляную книжку и подсказку в следующий раз.
   const [declined, setDeclined] = useState(draft?.declined ?? '')
-  // «Следующая замена» по услугам чека (SPEC-34): правки кассира по строке книжки ('' — не
-  // напоминать) и строки книжки товаров чека, добавленные «+ ещё строку».
-  const [nextEdits, setNextEdits] = useState<Partial<Record<BookSlot, string>>>(draft?.nextEdits ?? {})
-  const [nextExtra, setNextExtra] = useState<BookSlot[]>(() => extraSlots(draft?.nextExtra))
+  // «Следующая замена» по услугам чека (SPEC-34): правки кассира по строке ('' — не напоминать) и
+  // услуги «прочее» этого чека, добавленные «+ ещё строку» (ADR-131).
+  const [nextEdits, setNextEdits] = useState<NextEdits>(() => nextEditsOf(draft?.nextEdits))
+  const [nextExtra, setNextExtra] = useState<string[]>(() => extraServices(draft?.nextServices))
   const [nextExtraOpen, setNextExtraOpen] = useState(false)
   // «Мастер рекомендовал» у чека «В сервис» в режиме кассы — кнопкой с окном: поле редкое, место — строкам чека.
   const [declinedOpen, setDeclinedOpen] = useState(false)
@@ -456,8 +482,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Режим кассы: клиент и машина выбираются в окне, в колонке — короткая строка.
   const [clientOpen, setClientOpen] = useState(false)
   // Удалённая строка: без вопроса «точно?», но её можно вернуть одним касанием — вместе со строкой
-  // «Следующей замены» по ней («+ ещё») и правкой кассира (SPEC-34).
-  const [removed, setRemoved] = useState<{ line: CartLine; index: number; next?: { slot: BookSlot; extra: boolean; edit?: string } } | null>(null)
+  // «Следующей замены» по этой услуге («+ ещё» — услуга «прочее») и правкой кассира (SPEC-34).
+  const [removed, setRemoved] = useState<{ line: CartLine; index: number; next?: { key: string; extra?: string; edit?: string } } | null>(null)
   useEffect(() => {
     if (!removed) return
     const t = setTimeout(() => setRemoved(null), 8000)
@@ -539,7 +565,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const masters = employees.data?.filter((e) => e.is_master && (e.active || e.id === fix?.state.masterId)) ?? []
 
   useEffect(() => {
-    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped, nextEdits, nextExtra })
+    if (!fix) saveDraft({ saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped, nextEdits, nextServices: nextExtra })
   }, [fix, saleType, masterId, lines, comment, party, contactId, vehicleId, mileage, delivery, declined, dropped, nextEdits, nextExtra])
 
   // Браузер отказался хранить данные надёжно — неотправленные чеки могут пропасть (ADR-062).
@@ -933,13 +959,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   })()
 
   // «Следующая замена» (SPEC-34): по строке на каждую услугу чека со строкой книжки; «+ ещё строку» —
-  // только позиции этого чека: товары, у категории которых есть строка книжки (уточнение 26.10.2026).
+  // только услуги «прочее» этого чека (ADR-131).
   const ownIntervals: OwnIntervals = Object.fromEntries(
-    (book.data?.slots ?? []).filter((n) => n.own_interval).map((n) => [n.slot, { km: n.interval_km, days: n.interval_days }]),
+    (book.data?.slots ?? []).filter((n) => n.own_interval && !n.service_id).map((n) => [n.slot, { km: n.interval_km, days: n.interval_days }]),
   )
   const nextOn = saleType === 'service' && Boolean(party && vehicleId)
-  // Строка книжки товара — по его категории. Категории нужны чеку «В сервис» с машиной, где есть
-  // товары, и читаются заново для каждого такого чека (касса открыта весь день); без связи — из снимка.
+  // Строка книжки товара — по его категории: что залито и какие фильтры идут с маслом. Категории нужны
+  // чеку «В сервис» с машиной, где есть товары, и читаются заново для каждого такого чека (касса
+  // открыта весь день); без связи — из снимка.
   const hasGoods = lines.some((l) => l.product && !l.gift)
   // На вынос с канистрой масла — тоже: «Это замена масла?» только от моторного (ADR-118).
   const needCategories = (nextOn && hasGoods) || (saleType === 'takeaway' && ourOil.size > 0)
@@ -950,30 +977,31 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         : Promise.resolve(null),
     [needCategories],
   )
-  const nextSources = cartSources(lines, categories.data)
-  const nextList = nextOn ? nextRows({ sources: nextSources, extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals }) : []
-  const nextChoices = nextOn ? extraChoices(nextSources, nextList) : []
-  const nextLow = nextTooLow(nextList, mileage)
+  const nextSources = cartSources(lines)
   // Что залили по строке — под её подписью: «Антифриз — Sintec G12 × 2» (ADR-116); канистра
   // моторного масла без услуги масла — «Это замена?» (ADR-117).
   const nextGoods = nextOn ? cartGoods(lines, categories.data) : []
+  const nextList = nextOn ? nextRows({ sources: nextSources, goods: nextGoods, extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals }) : []
+  const nextChoices = nextOn ? extraChoices(nextSources, nextList) : []
+  const nextLow = nextTooLow(nextList, mileage)
+  // Лишний ноль в следующей замене — подсказка «проверьте», провести можно (ADR-131).
+  const nextFar = nextTooFar(nextList, mileage)
   const goodsOf = (slot: BookSlot) =>
     nextGoods
       .filter((g) => g.slot === slot)
       .map(goodShort)
       .join(', ')
   const oilHint = nextOn && oilChangeHint(lines, categories.data, ourOil)
-  // Убрали товар или услугу из чека — строка «Следующей замены» по ним и правка кассира уходят (и из
-  // черновика, и из отложенного). Товары в чеке, а категорий нет — их строки не посчитать, ничего не трогаем.
-  const nextSourceKey = nextSources.map((s) => s.slot).join(',')
+  // Убрали услугу из чека — строка «Следующей замены» по ней и правка кассира уходят (и из черновика,
+  // и из отложенного).
+  const nextSourceKey = nextSources.map((s) => s.service_id).join(',')
   useEffect(() => {
-    if (hasGoods && !categories.data) return
     const kept = pruneNext(nextExtra, nextEdits, nextSources)
     if (!kept) return
     setNextExtra(kept.extra)
     setNextEdits(kept.edits)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextSourceKey, hasGoods, categories.data])
+  }, [nextSourceKey])
 
   const debtAmount = payments?.filter((p) => p.method === 'debt').reduce((acc, p) => acc + p.amount_tyiyn, 0) ?? 0
   // На сколько долг выходит за лимит: касса продаёт, но просит владельца поднять (SPEC-10).
@@ -1001,7 +1029,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       declined,
       dropped,
       nextEdits,
-      nextExtra,
+      nextServices: nextExtra,
     }
     return [...list.filter((p) => p.id !== id), item]
   }
@@ -1035,8 +1063,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setMileage(p.mileage ?? '')
     setDelivery(p.delivery ?? null)
     setDeclined(p.declined ?? '')
-    setNextEdits(p.nextEdits ?? {})
-    setNextExtra(extraSlots(p.nextExtra))
+    setNextEdits(nextEditsOf(p.nextEdits))
+    setNextExtra(extraServices(p.nextServices))
     setParkedId(p.id)
     setDone(null)
     attempt.current = null
@@ -1106,7 +1134,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [
       !nextLow,
       `следующая замена «${nextLow?.label ?? ''}» — не меньше пробега сейчас`,
-      nextLow ? `#next-${nextLow.slot}` : undefined,
+      nextLow ? `#${nextId(nextLow.key)}` : undefined,
       'следующая замена',
     ],
     [discountLines.length === 0, 'цена ниже каталожной — скидку ставит владелец', undefined, 'цена ниже прайса'],
@@ -1201,6 +1229,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     // Чек для печати — из того, что видит касса: его можно перепечатать из очереди, пока
     // нет связи, и после отправки (SPEC-09).
     const cashierName = (shiftCashier && cashierId === shiftCashier ? shift.data?.cashier_name : cashiers.find((c) => c.id === cashierId)?.full_name) ?? ''
+    // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4); печатать нечего (ни что
+    // залито, ни следующей замены) — блока нет.
+    const bookCar = book.data ?? snapCar.data
+    const queuedBook = nextOn && bookCar ? receiptBook(bookCar, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods) : null
+    const printableBook = queuedBook && (queuedBook.lines.length > 0 || (queuedBook.filled?.length ?? 0) > 0) ? queuedBook : null
     const receipt = (temp_no: string): Sale =>
       ({
         id: '',
@@ -1224,11 +1257,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           list_price_tyiyn: lineList(l),
         })),
         payments,
-        // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4).
-        book:
-          nextOn && (book.data ?? snapCar.data)
-            ? receiptBook(book.data ?? snapCar.data ?? { brand: '', model: '', plate: '' }, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods)
-            : null,
+        book: printableBook,
       }) as unknown as Sale
     // Чек сначала в очередь, потом на сервер: обрыв связи его не теряет (SPEC-09).
     const queued = await enqueueSale(opId, body, { user, receipt })
@@ -1354,17 +1383,20 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     setLines((ls) => ls.filter((x) => x.key !== l.key))
     const rec = asRemoved(l, 'remove')
     if (rec) setDropped((d) => [...d, rec])
-    // «Вернуть» возвращает и строку «Следующей замены» по этой позиции с правкой кассира.
-    const slot = cartSources([l], categories.data)[0]?.slot
-    if (touch) setRemoved({ line: l, index, next: slot && { slot, extra: nextExtra.includes(slot), edit: nextEdits[slot] } })
+    // «Вернуть» возвращает и строку «Следующей замены» по этой услуге с правкой кассира.
+    const src = cartSources([l])[0]
+    const key = src && (src.slot === 'other' ? serviceKey(src.service_id) : src.slot)
+    if (touch) setRemoved({ line: l, index, next: src && key ? { key, extra: nextExtra.includes(src.service_id) ? src.service_id : undefined, edit: nextEdits[key] } : undefined })
   }
   const undoRemove = () => {
     if (!removed) return
     setLines((ls) => [...ls.slice(0, removed.index), removed.line, ...ls.slice(removed.index)])
     setDropped((d) => unremove(d, removed.line.key))
     const n = removed.next
-    if (n?.extra) setNextExtra((x) => (x.includes(n.slot) ? x : [...x, n.slot]))
-    if (n?.edit !== undefined) setNextEdits((e) => (e[n.slot] !== undefined ? e : { ...e, [n.slot]: n.edit }))
+    const extra = n?.extra
+    if (extra) setNextExtra((x) => (x.includes(extra) ? x : [...x, extra]))
+    const edit = n?.edit
+    if (n && edit !== undefined) setNextEdits((e) => (e[n.key] !== undefined ? e : { ...e, [n.key]: edit }))
     setRemoved(null)
   }
   // Кнопки режима кассы (ui-rules §9): под палец, с видимым нажатием, без мелких ссылок.
@@ -1381,14 +1413,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // «Следующая замена» (SPEC-34 §2): под пробегом, по строке на услугу чека со строкой книжки.
   const nextInput = (r: (typeof nextList)[number]) => (
     <input
-      id={`next-${r.slot}`}
+      id={nextId(r.key)}
       aria-label={`Следующая замена: ${r.label}`}
-      className={`${serviceLeft ? 'min-h-[56px] w-[6.25rem] text-lg' : 'w-32'} ${nextLow?.slot === r.slot ? 'border-rose-400!' : ''}`}
+      className={`${serviceLeft ? 'min-h-[56px] w-[6rem] text-lg' : 'w-32'} ${nextLow?.key === r.key ? 'border-rose-400!' : nextFar?.row.key === r.key ? 'border-amber-400!' : ''}`}
       {...num('int')}
       maxLength={7}
       placeholder="не напоминать"
       value={r.value}
-      onChange={(e) => setNextEdits({ ...nextEdits, [r.slot]: e.target.value.replace(/\D/g, '').slice(0, 7) })}
+      onChange={(e) => setNextEdits({ ...nextEdits, [r.key]: e.target.value.replace(/\D/g, '').slice(0, 7) })}
     />
   )
   const nextRemove = (r: (typeof nextList)[number]) =>
@@ -1396,11 +1428,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       <button
         type="button"
         aria-label={`Убрать строку ${r.label}`}
-        className={serviceLeft ? `${tbtn} w-14 shrink-0` : 'min-h-9 rounded-md border border-slate-300 px-2 text-sm hover:bg-slate-50'}
+        className={serviceLeft ? `${tbtn} w-[56px] shrink-0` : 'min-h-9 rounded-md border border-slate-300 px-2 text-sm hover:bg-slate-50'}
         onClick={() => {
-          setNextExtra(nextExtra.filter((x) => x !== r.slot))
+          setNextExtra(nextExtra.filter((x) => x !== r.service_id))
           const rest = { ...nextEdits }
-          delete rest[r.slot]
+          delete rest[r.key]
           setNextEdits(rest)
         }}
       >
@@ -1409,7 +1441,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     )
   const nextLowText = nextLow && (
     <span className="text-xs text-rose-700">
-      «{serviceLeft ? slotLabel(nextLow.slot) : nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
+      «{nextLow.label}»: следующая замена не меньше пробега сейчас ({mileageText(Number(mileage), carUnit)}).
+    </span>
+  )
+  // Следующая дальше пробега сейчас на 200 000 и больше — лишний ноль? Подсказка, не запрет (ADR-131).
+  const nextFarText = nextFar && !nextLow && (
+    <span className="text-xs text-amber-800" data-testid="next-far">
+      «{nextFar.row.label}»: следующая замена через {mileageText(nextFar.by, carUnit)} — проверьте.
     </span>
   )
   // Под строками: фильтры на пробег масла и «Это замена?» (ADR-117).
@@ -1418,12 +1456,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     <>
       {nextFilters && (
         <span className="text-xs text-slate-600" data-testid="next-filters">
-          Масло двигателя: {nextFilters}
+          Масло двигателя — {nextFilters}
         </span>
       )}
       {oilHint && (
         <span className="text-xs text-amber-800" data-testid="oil-change-hint">
-          Это замена? Выберите вид «Замена масла в моторе»
+          Это замена? Добавьте услугу замены масла двигателя
         </span>
       )}
     </>
@@ -1440,34 +1478,47 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   }
   const nextBlock = serviceLeft ? (
     // В режиме кассы — одним рядом во всю ширину левой карточки: подпись группы слева, у каждого
-    // поля — строка книжки над ним («Масло двигателя»), «+ ещё» и «Мастер рекомендовал» — кнопками
-    // в том же ряду. Так данные замены занимают два ряда и строкам чека остаётся место (ui-rules §9).
+    // поля — подпись над ним, «+ ещё» и «Мастер рекомендовал» — кнопками в том же ряду. Так данные
+    // замены занимают два ряда и строкам чека остаётся место (ui-rules §9).
     <div className="flex min-w-0 flex-col gap-1 lg:col-span-full" data-testid="next-change">
       <div className="flex flex-wrap items-end gap-2">
         {nextShown && (
-          <span className="flex min-h-[56px] w-[6.5rem] shrink-0 items-center text-sm leading-tight font-medium text-slate-700">
+          <span className="flex min-h-[56px] w-[6rem] shrink-0 items-center text-sm leading-tight font-medium text-slate-700">
             Следующая замена, {unitLabel(carUnit)}
           </span>
         )}
         {nextList.map((r) => (
-          <div key={r.slot} className="flex min-w-0 shrink-0 flex-col gap-1" data-next-row>
-            {/* Подпись — во всю ширину поля и «✕» у строки по товару («Фильтр воздушный» целиком), но
-                шире ряд не делает. */}
-            <label htmlFor={`next-${r.slot}`} className="w-0 min-w-full truncate text-sm text-slate-700" title={[r.label, goodsOf(r.slot)].filter(Boolean).join(' — ')}>
-              {slotLabel(r.slot)}
-              {goodsOf(r.slot) && (
-                <span className="block truncate text-xs text-slate-500" data-next-goods>
-                  {goodsOf(r.slot)}
+          <div key={r.key} className="flex min-w-0 shrink-0 flex-col gap-1" data-next-row>
+            {/* Подпись — название услуги в две строки (с переносом) во всю ширину поля и «✕», шире ряд
+                не делает; строка книжки и что залито — мелко в углу поля, высоту ряда не прибавляют. У
+                «прочего» — только название услуги. */}
+            <label
+              htmlFor={nextId(r.key)}
+              className="line-clamp-2 w-0 min-w-full text-[0.8rem] leading-[18px] font-medium break-words text-slate-700"
+              title={[r.label, r.extra ? '' : slotLabel(r.slot), goodsOf(r.slot)].filter(Boolean).join(' — ')}
+              data-next-label
+            >
+              {r.label}
+            </label>
+            <span className="relative flex gap-1">
+              {nextInput(r)}
+              {!r.extra && (
+                // Строка книжки видна первой, что залито — в оставшемся месте (целиком — в подсказке).
+                <span className="pointer-events-none absolute top-1 right-1 left-1 flex text-[0.6rem] leading-none text-slate-500">
+                  <span className="max-w-full shrink-0 truncate">{slotLabel(r.slot)}</span>
+                  {goodsOf(r.slot) && (
+                    <span className="min-w-0 truncate" data-next-goods>
+                      {' · '}
+                      {goodsOf(r.slot)}
+                    </span>
+                  )}
                 </span>
               )}
-            </label>
-            <span className="flex gap-1">
-              {nextInput(r)}
               {nextRemove(r)}
             </span>
           </div>
         ))}
-        {/* Только позиции этого чека, чьей строки ещё нет; предложить нечего — кнопки нет. */}
+        {/* Только услуги «прочее» этого чека, у которых строки ещё нет; предложить нечего — кнопки нет. */}
         {nextChoices.length > 0 && (
           <button type="button" aria-label="+ ещё строку" className={`${tbtn} shrink-0`} onClick={openNextExtra}>
             + ещё
@@ -1490,6 +1541,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </button>
       </div>
       {nextLowText}
+      {nextFarText}
       {nextNotes}
     </div>
   ) : nextShown ? (
@@ -1500,11 +1552,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       </span>
       <div className="grid grid-cols-1 gap-2">
         {nextList.map((r) => (
-          <div key={r.slot} className="flex min-w-0 items-center gap-2" data-next-row>
-            <label htmlFor={`next-${r.slot}`} className="min-w-0 flex-1 text-sm leading-tight" title={r.label}>
+          <div key={r.key} className="flex min-w-0 items-center gap-2" data-next-row>
+            <label htmlFor={nextId(r.key)} className="min-w-0 flex-1 text-sm leading-tight" title={r.label}>
               {r.label}
               <span className="text-slate-500"> — следующая на пробеге</span>
-              {goodsOf(r.slot) && (
+              {goodsOf(r.slot) && !r.extra && (
                 <span className="block text-xs text-slate-500" data-next-goods>
                   {slotLabel(r.slot)} — {goodsOf(r.slot)}
                 </span>
@@ -1521,6 +1573,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         )}
       </div>
       {nextLowText}
+      {nextFarText}
       {nextNotes}
     </div>
   ) : null
@@ -2079,7 +2132,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 )}
                 {/* Следующая — по строкам этого чека, не по прошлым заменам машины (ADR-111). */}
                 {slotsOfSale(done.book, done.sale.id).map((n) => (
-                  <div key={n.slot} className="text-slate-700">
+                  <div key={slotKey(n)} className="text-slate-700">
                     Следующая · {n.label}: <b>{slotNextText(n)}</b>
                   </div>
                 ))}
@@ -3087,24 +3140,24 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Modal>
       )}
       {nextExtraOpen && (
-        // «+ ещё строку» (SPEC-34 §2, уточнение 26.10.2026): только позиции этого чека, чьей строки
-        // книжки ещё нет в блоке, — справочник услуг не предлагается.
+        // «+ ещё строку» (ADR-131): только услуги «прочее» этого чека, у которых строки ещё нет, —
+        // ни товары, ни справочник услуг.
         <Modal title="Следующая замена: ещё строка" onClose={() => setNextExtraOpen(false)}>
           <div className="flex flex-col gap-2" data-testid="next-extra-choices">
-            <div className="text-sm text-slate-500">Только позиции этого чека:</div>
+            <div className="text-sm text-slate-500">Только услуги этого чека:</div>
             {nextChoices.length === 0 ? (
-              <div className="text-sm text-slate-500">Все позиции чека со строкой книжки уже в списке.</div>
+              <div className="text-sm text-slate-500">Все услуги чека уже в списке.</div>
             ) : (
               nextChoices.map((c) => (
                 <button
-                  key={c.slot}
+                  key={c.service_id}
                   type="button"
                   className={touch ? `${tbtn} justify-start! text-left!` : 'min-h-9 rounded-md border border-slate-300 px-3 text-left text-sm hover:bg-slate-50'}
                   onClick={() => {
-                    setNextExtra([...nextExtra, c.slot])
+                    setNextExtra([...nextExtra, c.service_id])
                     setNextExtraOpen(false)
                     // Новая строка может встать за прокруткой карточки замены — показать её: касание сработало.
-                    requestAnimationFrame(() => document.getElementById(`next-${c.slot}`)?.closest('[data-next-row]')?.scrollIntoView({ block: 'nearest' }))
+                    requestAnimationFrame(() => document.getElementById(nextId(serviceKey(c.service_id)))?.closest('[data-next-row]')?.scrollIntoView({ block: 'nearest' }))
                   }}
                 >
                   {c.label}

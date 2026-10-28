@@ -391,12 +391,43 @@ pub fn expected_date(last: Visit, target_km: i32, rate: Rate) -> NaiveDate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotDue {
     pub slot: String,
+    /// Услуга «прочее» и её название (ADR-131): у каждой такой услуги своё напоминание.
+    pub service_id: Option<Uuid>,
+    pub service: Option<String>,
     /// Цель в км (ключ повода) и в единице машины (текст).
     pub target_km: i32,
     pub target: i32,
     pub unit: String,
     /// Ожидаемая дата по пробегу или срок по дням — что раньше.
     pub due: NaiveDate,
+}
+
+impl SlotDue {
+    /// Строка в ключе повода: строка книжки, у услуги «прочее» — «other:<услуга>».
+    fn key(&self) -> String {
+        match self.service_id {
+            Some(id) => format!("{}:{id}", self.slot),
+            None => self.slot.clone(),
+        }
+    }
+
+    /// Что менять: «масло», «воздушный фильтр»; у услуги «прочее» — её название со строчной
+    /// буквы: «замена ГУР».
+    fn noun(&self) -> String {
+        match &self.service {
+            Some(name) => lower_first(name),
+            None => slot_noun(&self.slot).to_string(),
+        }
+    }
+}
+
+/// «Замена ГУР» → «замена ГУР»: первая буква строчная, остальное как есть.
+fn lower_first(s: &str) -> String {
+    let mut chars = s.trim().chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// В книжке есть пробег: напоминание считается по нему (SPEC-32 §3), иначе — по дням (ADR-063).
@@ -428,6 +459,8 @@ pub fn slot_dues(b: &VehicleBook, today: NaiveDate, default_km_per_day: i32) -> 
             let due = n.next_date.map_or(by_km, |d| d.min(by_km));
             Some(SlotDue {
                 slot: n.slot.clone(),
+                service_id: n.service_id,
+                service: n.service_id.map(|_| n.label.clone()),
                 target_km,
                 target: n.next_mileage.unwrap_or(target_km),
                 unit: n.unit.clone(),
@@ -437,8 +470,8 @@ pub fn slot_dues(b: &VehicleBook, today: NaiveDate, default_km_per_day: i32) -> 
         .collect()
 }
 
-/// Что напомнить: главная строка (масло двигателя, если его срок подошёл, иначе ближайшая) и
-/// строки, чей срок в те же 14 дней.
+/// Что напомнить: главная строка (масло двигателя, если его срок подошёл, иначе ближайшая; услуга
+/// «прочее» — главной, только если других нет, ADR-131) и строки, чей срок в те же 14 дней.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OilPick {
     pub primary: SlotDue,
@@ -472,6 +505,12 @@ pub fn pick(
     let primary = ready
         .iter()
         .find(|d| d.slot == "oil")
+        .or_else(|| {
+            ready
+                .iter()
+                .filter(|d| d.service_id.is_none())
+                .min_by_key(|d| d.due)
+        })
         .or_else(|| ready.iter().min_by_key(|d| d.due))
         .copied()?
         .clone();
@@ -484,15 +523,16 @@ pub fn pick(
         .unwrap_or(primary.due);
     let extras = open
         .into_iter()
-        .filter(|d| d.slot != primary.slot && d.due <= together && d.due >= late_limit)
+        .filter(|d| d.key() != primary.key() && d.due <= together && d.due >= late_limit)
         .cloned()
         .collect();
     Some(OilPick { primary, extras })
 }
 
-/// Ключ повода «замена»: вид + клиент + машина + строка + цель.
+/// Ключ повода «замена»: вид + клиент + машина + строка (у услуги «прочее» — «other:<услуга>»,
+/// ADR-131) + цель.
 pub fn oil_key(party_id: Uuid, vehicle_id: Uuid, d: &SlotDue) -> String {
-    format!("oil:{party_id}:{vehicle_id}:{}:{}", d.slot, d.target_km)
+    format!("oil:{party_id}:{vehicle_id}:{}:{}", d.key(), d.target_km)
 }
 
 // ---------- Тексты ----------
@@ -557,11 +597,12 @@ pub struct OilText {
 }
 
 impl OilText {
-    fn what(&self) -> &'static str {
-        slot_noun(&self.pick.primary.slot)
+    /// Что менять: «масло»; у услуги «прочее» — её название (ADR-131).
+    fn what(&self) -> String {
+        self.pick.primary.noun()
     }
 
-    /// «201 748 км. А масло в коробке — на 230 748 км».
+    /// «201 748 км. А масло в коробке — на 230 748 км», «… А замена ГУР — на 150 000 км».
     fn tail(&self) -> String {
         let p = &self.pick.primary;
         let mut out = mileage::text(p.target, &p.unit);
@@ -570,13 +611,7 @@ impl OilText {
                 .pick
                 .extras
                 .iter()
-                .map(|e| {
-                    format!(
-                        "{} — на {}",
-                        slot_noun(&e.slot),
-                        mileage::text(e.target, &e.unit)
-                    )
-                })
+                .map(|e| format!("{} — на {}", e.noun(), mileage::text(e.target, &e.unit)))
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push_str(&format!(". А {rest}"));
@@ -584,21 +619,28 @@ impl OilText {
         out
     }
 
-    /// Текст для Телеграма: без ссылки — клиент уже в боте.
+    /// Текст для Телеграма: без ссылки — клиент уже в боте. Главная — услуга «прочее»: «Не
+    /// забудьте: замена ГУР на …» (её название — не то, что «поменять»).
     pub fn telegram(&self) -> String {
+        let todo = if self.pick.primary.service.is_some() {
+            format!("Не забудьте: {}", self.what())
+        } else {
+            format!("Не забудьте поменять {}", self.what())
+        };
         format!(
-            "{}, здравствуйте! Магазин Avtodom. Не забудьте поменять {} на {} на пробеге {}.",
+            "{}, здравствуйте! Магазин Avtodom. {todo} на {} на пробеге {}.",
             self.name,
-            self.what(),
             self.car,
             self.tail()
         )
     }
 
+    /// Переменные шаблона WhatsApp: текст шаблона не меняется, у услуги «прочее» «что менять» —
+    /// её название.
     pub fn params(&self, link: &str) -> Vec<String> {
         vec![
             self.name.clone(),
-            self.what().to_string(),
+            self.what(),
             self.car.clone(),
             self.tail(),
             link.to_string(),
@@ -1652,6 +1694,8 @@ async fn test_send(
                     "Toyota Camry 01KG123ABC".to_string(),
                     SlotDue {
                         slot: "oil".into(),
+                        service_id: None,
+                        service: None,
                         target_km: 201_748,
                         target: 201_748,
                         unit: "km".into(),
@@ -1866,10 +1910,21 @@ mod tests {
     fn due(slot: &str, target: i32, on: &str) -> SlotDue {
         SlotDue {
             slot: slot.into(),
+            service_id: None,
+            service: None,
             target_km: target,
             target,
             unit: "km".into(),
             due: d(on),
+        }
+    }
+
+    /// Срок услуги «прочее» (ADR-131).
+    fn due_service(name: &str, target: i32, on: &str) -> SlotDue {
+        SlotDue {
+            service_id: Some(Uuid::now_v7()),
+            service: Some(name.into()),
+            ..due("other", target, on)
         }
     }
 
@@ -1960,10 +2015,70 @@ mod tests {
     }
 
     #[test]
+    fn other_services_each_by_name() {
+        // ADR-131: у каждой услуги «прочее» своё напоминание, ключ и название; главная — строка
+        // книжки, если её срок тоже подошёл.
+        let today = d("2026-10-24");
+        let gur = due_service("Замена ГУР", 150_000, "2026-10-25");
+        let shaft = due_service("Смазка кардана", 150_000, "2026-10-27");
+        let dues = [
+            gur.clone(),
+            shaft.clone(),
+            due("gear_oil", 151_000, "2026-10-26"),
+        ];
+        let p = pick(&dues, today, |_| false).unwrap_or(OilPick {
+            primary: gur.clone(),
+            extras: vec![],
+        });
+        assert_eq!(p.primary.slot, "gear_oil");
+        assert_eq!(p.extras, vec![gur.clone(), shaft.clone()]);
+        let t = OilText {
+            name: "Азиз".into(),
+            car: car_text("Toyota", "Camry", "01KG123ABC"),
+            pick: p,
+        };
+        assert_eq!(
+            t.telegram(),
+            "Азиз, здравствуйте! Магазин Avtodom. Не забудьте поменять масло в коробке на Toyota Camry 01KG123ABC на пробеге 151 000 км. А замена ГУР — на 150 000 км, смазка кардана — на 150 000 км."
+        );
+        // Две услуги с одной целью — два повода, каждый — один раз.
+        let party = Uuid::now_v7();
+        let car = Uuid::now_v7();
+        assert_ne!(oil_key(party, car, &gur), oil_key(party, car, &shaft));
+        assert_eq!(
+            oil_key(party, car, &due("gear_oil", 151_000, "2026-10-26")),
+            format!("oil:{party}:{car}:gear_oil:151000")
+        );
+        let sent = oil_key(party, car, &gur);
+        let next = pick(&[gur.clone(), shaft.clone()], today, |x| {
+            oil_key(party, car, x) == sent
+        });
+        assert_eq!(next.map(|p| p.primary), Some(shaft.clone()));
+        // Только услуга «прочее» — главной она, со своим названием; в шаблоне WhatsApp — оно же.
+        let only = OilText {
+            name: "Азиз".into(),
+            car: "Toyota Camry 01KG123ABC".into(),
+            pick: OilPick {
+                primary: gur,
+                extras: vec![],
+            },
+        };
+        assert_eq!(
+            only.telegram(),
+            "Азиз, здравствуйте! Магазин Avtodom. Не забудьте: замена ГУР на Toyota Camry 01KG123ABC на пробеге 150 000 км."
+        );
+        let params = only.params("ссылка");
+        assert_eq!(params.len(), OIL_PARAMS.len());
+        assert_eq!(params[1], "замена ГУР");
+    }
+
+    #[test]
     fn miles_in_text() {
         let p = OilPick {
             primary: SlotDue {
                 slot: "oil".into(),
+                service_id: None,
+                service: None,
                 target_km: 96_561,
                 target: 60_000,
                 unit: "mi".into(),

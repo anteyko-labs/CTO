@@ -8,8 +8,9 @@ import { BOOK_SLOT_LABELS, type BookSlot } from './types'
 export interface BookLine {
   slot: BookSlot
   text: string
-  /** Услуга чека по строке (SPEC-34). */
+  /** Услуга чека по строке (SPEC-34); у «прочего» — своя строка у каждой услуги (ADR-131). */
   service?: string | null
+  service_id?: string | null
   /** Следующую замену задал кассир: пробег в единице машины и дата; пустая — не напоминать. */
   target_set?: boolean
   next_mileage?: number | null
@@ -18,9 +19,11 @@ export interface BookLine {
   next_date?: string | null
 }
 
-/** Следующая замена по строке книжки. */
+/** Следующая замена по строке книжки; у «прочего» — по каждой услуге, с её названием (ADR-131). */
 export interface SlotNext {
   slot: BookSlot
+  /** Услуга «прочее», чья это следующая замена; у остальных строк — нет. */
+  service_id?: string | null
   label: string
   interval_km: number | null
   interval_days: number | null
@@ -143,10 +146,13 @@ export function slotsWithNext(b: VehicleBook): SlotNext[] {
   return (b.slots ?? []).filter((n) => slotNextText(n) !== '')
 }
 
+/** Строка следующей замены: строка книжки, у услуги «прочее» — `other:<услуга>` (ADR-131). */
+export const slotKey = (n: { slot: BookSlot; service_id?: string | null }): string => (n.slot === 'other' && n.service_id ? `other:${n.service_id}` : n.slot)
+
 /** Строки книжки, которые меняли в чеке `saleId` (по его записи); записи нет — ни одной. */
 function saleSlots(b: VehicleBook, saleId: string): Set<string> {
   const r = b.records.find((x) => x.sale_id === saleId)
-  return new Set(r ? recordLines(r).map((l) => l.slot) : [])
+  return new Set(r ? recordLines(r).map(slotKey) : [])
 }
 
 /**
@@ -156,7 +162,7 @@ function saleSlots(b: VehicleBook, saleId: string): Set<string> {
  */
 export function slotsOfSale(b: VehicleBook, saleId: string): SlotNext[] {
   const own = saleSlots(b, saleId)
-  return slotsWithNext(b).filter((n) => own.has(n.slot))
+  return slotsWithNext(b).filter((n) => own.has(slotKey(n)))
 }
 
 /** Самый ранний срок по строкам: просрочена ли замена хоть по одной. */

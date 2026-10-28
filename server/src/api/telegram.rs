@@ -1558,9 +1558,31 @@ pub struct Reminder {
     pub vehicle_id: Uuid,
     pub due: NaiveDate,
     pub days_before: i32,
-    /// Строки книжки, срок которых подошёл в этот день (SPEC-27): одним сообщением.
+    /// Строки книжки, срок которых подошёл в этот день (SPEC-27): одним сообщением; услуга
+    /// «прочее» — «other:<услуга>» (ADR-131).
     pub slots: Vec<String>,
     pub text: String,
+}
+
+/// Что менять в напоминании по дням: «замена масла, масляного фильтра»; услуга «прочее» — своим
+/// названием со строчной буквы: «замена масла, смазка кардана» (ADR-131).
+fn reminder_what(slots: &[&crate::api::oil_book::SlotNext]) -> String {
+    let genitives: Vec<&str> = slots
+        .iter()
+        .filter(|n| n.service_id.is_none())
+        .map(|n| slot_genitive(&n.slot))
+        .collect();
+    let mut parts: Vec<String> = Vec::new();
+    if !genitives.is_empty() {
+        parts.push(format!("замена {}", genitives.join(", ")));
+    }
+    for n in slots.iter().filter(|n| n.service_id.is_some()) {
+        let mut chars = n.label.trim().chars();
+        if let Some(c) = chars.next() {
+            parts.push(c.to_lowercase().chain(chars).collect());
+        }
+    }
+    parts.join(", ")
 }
 
 /// «масла», «масляного фильтра» — что менять, в напоминании.
@@ -1623,12 +1645,13 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
                     2..=7 => 7,
                     _ => continue,
                 };
+                // Услуга «прочее» — своя отметка: «other:<услуга>» (ADR-131).
                 let sent = sqlx::query_scalar!(
                     r#"select exists (select 1 from oil_reminders
                                       where vehicle_id = $1 and slot = $2 and due_date = $3
                                         and days_before = $4) as "e!""#,
                     b.vehicle_id,
-                    n.slot,
+                    crate::api::oil_book::slot_key(n),
                     due,
                     days_before
                 )
@@ -1649,11 +1672,7 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
                     1 => "завтра".to_string(),
                     n => format!("через {}", days_word(n)),
                 };
-                let what = slots
-                    .iter()
-                    .map(|n| slot_genitive(&n.slot))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let what = reminder_what(&slots);
                 // Только пробег (ADR-115), в единице машины (ADR-084); срок — только без пробега.
                 let next = match slots.iter().find(|n| n.next_mileage.is_some()) {
                     Some(n) => crate::api::oil_book::next_text(n),
@@ -1664,9 +1683,12 @@ pub async fn due_reminders(conn: &mut PgConnection) -> AppResult<Vec<Reminder>> 
                     vehicle_id: b.vehicle_id,
                     due,
                     days_before,
-                    slots: slots.iter().map(|n| n.slot.clone()).collect(),
+                    slots: slots
+                        .iter()
+                        .map(|n| crate::api::oil_book::slot_key(n))
+                        .collect(),
                     text: format!(
-                        "Напоминаем: замена {what} для {} — {next}. Ждём вас в Avtodom!",
+                        "Напоминаем: {what} для {} — {next}. Ждём вас в Avtodom!",
                         b.plate
                     ),
                 });
@@ -4416,6 +4438,43 @@ mod points_line_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_reminder_names_other_services() {
+        // ADR-131: строки книжки — «замена масла, масляного фильтра», услуга «прочее» — своим
+        // названием со строчной; отметка напоминания у услуги — «other:<услуга>».
+        let slot =
+            |slot: &str, service_id: Option<Uuid>, label: &str| crate::api::oil_book::SlotNext {
+                slot: slot.into(),
+                service_id,
+                label: label.into(),
+                interval_km: None,
+                interval_days: None,
+                own_interval: false,
+                last_date: None,
+                last_km: None,
+                last_text: None,
+                next_km: None,
+                next_date: None,
+                unit: "km".into(),
+                last_mileage: None,
+                next_mileage: None,
+            };
+        let gur = Uuid::now_v7();
+        let oil = slot("oil", None, "Масло двигателя");
+        let filter = slot("oil_filter", None, "Фильтр масляный");
+        let other = slot("other", Some(gur), "Замена ГУР");
+        assert_eq!(
+            reminder_what(&[&oil, &filter, &other]),
+            "замена масла, масляного фильтра, замена ГУР"
+        );
+        assert_eq!(reminder_what(&[&other]), "замена ГУР");
+        assert_eq!(
+            crate::api::oil_book::slot_key(&other),
+            format!("other:{gur}")
+        );
+        assert_eq!(crate::api::oil_book::slot_key(&oil), "oil");
+    }
 
     #[test]
     fn repeated_connection_warning_once_an_hour() {

@@ -58,6 +58,8 @@ describe('печать чека «В сервис» с масляной книж
     expect(bookHtml(sale({ book: null }))).toBe('')
     expect(bookHtml(sale({ book, sale_type: 'takeaway' }))).toBe('')
     expect(bookHtml(sale({ book, kind: 'return' }))).toBe('')
+    // Ни жидкостей, ни следующей замены (только «прочее» или фильтр) — пустого блока нет (ADR-131).
+    expect(bookHtml(sale({ book: { ...book, lines: [], filled: [] } }))).toBe('')
   })
 })
 

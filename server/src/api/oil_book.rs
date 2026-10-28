@@ -205,8 +205,8 @@ pub struct BookLine {
     pub text: String,
     #[serde(skip)]
     pub category_id: Option<Uuid>,
-    /// Услуга чека по этой строке (SPEC-34): её название — в печати чека.
-    #[serde(skip)]
+    /// Услуга чека по этой строке (SPEC-34): её название — в печати чека; у «прочего» — своя
+    /// строка у каждой услуги (ADR-131).
     pub service_id: Option<Uuid>,
     pub service: Option<String>,
     /// Следующую замену задал кассир (SPEC-34): пробег в единице машины, в км и дата по интервалу
@@ -229,8 +229,8 @@ impl BookLine {
     }
 }
 
-/// Следующая замена из чека (SPEC-34 §2): строка книжки, услуга и пробег в единице машины;
-/// без пробега — не напоминать по этой строке.
+/// Следующая замена из чека (SPEC-34 §2): строка книжки, услуга этого чека и пробег в единице
+/// машины; без пробега — не напоминать по этой строке.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NextTarget {
     pub slot: String,
@@ -239,13 +239,17 @@ pub struct NextTarget {
     /// Пробег в единице машины и он же в км.
     pub next: Option<(i32, i32)>,
     pub unit: String,
+    /// Дни интервала, заданные у услуги: дата цели у услуги «прочее» (ADR-131).
+    pub service_days: Option<i32>,
 }
 
 /// Следующая замена по строке книжки: последняя замена и интервал (машины, категории или
-/// по умолчанию).
+/// по умолчанию). У «прочего» — по каждой услуге отдельно, с её названием (ADR-131).
 #[derive(Serialize, Clone)]
 pub struct SlotNext {
     pub slot: String,
+    /// Услуга «прочее», чья это следующая замена; у остальных строк — нет.
+    pub service_id: Option<Uuid>,
     pub label: String,
     pub interval_km: Option<i32>,
     pub interval_days: Option<i32>,
@@ -332,8 +336,8 @@ fn qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
 }
 
 /// Запись из чека «в сервис» с машиной: строки книжки по категориям товаров (SPEC-27), по
-/// услугам со строкой книжки и следующие замены, заданные кассиром (SPEC-34). Вызывается в
-/// транзакции чека.
+/// услугам со строкой книжки и следующие замены, заданные кассиром (SPEC-34); услуга «прочее»
+/// с целью — своей строкой (ADR-131). Вызывается в транзакции чека.
 #[allow(clippy::too_many_arguments)]
 pub async fn record_from_sale(
     conn: &mut PgConnection,
@@ -422,10 +426,40 @@ pub async fn record_from_sale(
     })
     .collect::<Vec<_>>();
     let mut seen: Vec<&str> = Vec::new();
+    let mut seen_services: Vec<Uuid> = Vec::new();
     for t in targets {
-        // Цель — только по строке книжки этого чека (товар или услуга): «+ ещё строку» предлагает
-        // только позиции чека (SPEC-34 §2). Такой строки в чеке нет — цель не пишется, даже с
-        // услугой (запас для кассы до 26.10.2026 снят, ADR-130).
+        // Цель — только по услуге этого чека (ADR-131; `resolve_target` проверил, что услуга в
+        // чеке и не доливка на вынос): без услуги — строка по товару кассы до 27.10.2026 — цели нет.
+        let Some(service_id) = t.service_id else {
+            continue;
+        };
+        if t.slot == "other" {
+            // Услуга «прочее» с целью кассира — своя строка книжки с её названием и своё
+            // напоминание; очищенное поле строки не даёт: по «прочему» и так не напоминают.
+            if seen_services.contains(&service_id) {
+                continue;
+            }
+            seen_services.push(service_id);
+            let Some((value, km)) = t.next else {
+                continue;
+            };
+            let name = t.service_name.clone().unwrap_or_default();
+            let mut l = BookLine::plain("other", name.clone(), None);
+            l.service_id = Some(service_id);
+            l.service = Some(name);
+            l.target_set = true;
+            l.next_mileage = Some(value);
+            l.next_unit = Some(t.unit.clone());
+            l.next_km = Some(km);
+            // Дата — только по дням, заданным у услуги: у «прочего» срока по умолчанию нет.
+            l.next_date = t.service_days.and_then(|d| {
+                change_date.checked_add_days(chrono::Days::new(u64::try_from(d).unwrap_or(0)))
+            });
+            lines.push(l);
+            continue;
+        }
+        // Цель — на строку книжки этого чека (товар или услуга той же строки); такой строки в
+        // чеке нет — цель не пишется (ADR-130).
         let Some(at) = lines.iter().position(|l| l.slot == t.slot) else {
             continue;
         };
@@ -442,10 +476,8 @@ pub async fn record_from_sale(
             }
         };
         if let Some(l) = lines.get_mut(at) {
-            if t.service_id.is_some() {
-                l.service_id = t.service_id;
-                l.service = t.service_name.clone();
-            }
+            l.service_id = Some(service_id);
+            l.service = t.service_name.clone();
             l.target_set = true;
             l.next_mileage = t.next.map(|n| n.0);
             l.next_unit = t.next.map(|_| t.unit.clone());
@@ -511,8 +543,9 @@ struct OwnDays {
     interval_days: i32,
 }
 
-/// Следующая замена из чека, как прислала касса (SPEC-34 §2): услуга (по ней — строка книжки)
-/// или строка книжки товара этого чека и пробег в единице пробега чека; пусто — не напоминать.
+/// Следующая замена из чека, как прислала касса (SPEC-34 §2): услуга этого чека (по ней — строка
+/// книжки) и пробег в единице пробега чека; пусто — не напоминать. `slot` — для справки: строку
+/// решает услуга; строка без услуги (по товару, касса до 27.10.2026) не пишется (ADR-131).
 #[derive(Deserialize, Clone, Debug)]
 pub struct NextChangeReq {
     #[serde(default)]
@@ -523,29 +556,32 @@ pub struct NextChangeReq {
     pub next_mileage: Option<i64>,
 }
 
-/// Проверяет следующую замену из чека: услуга есть, строка книжки не «прочее», пробег не меньше
-/// пробега сейчас. Услуга «прочее» — `None` (по ней не напоминают).
+/// Проверяет следующую замену из чека `sale_id`: услуга — строка этого чека и не доливка на вынос
+/// (иначе цели нет, ADR-131), пробег не меньше пробега сейчас. Услуга «прочее» — своя цель.
 pub async fn resolve_target(
     conn: &mut PgConnection,
+    sale_id: Uuid,
     r: &NextChangeReq,
     now: Option<&Mileage>,
     unit: &str,
 ) -> AppResult<Option<NextTarget>> {
-    let (slot, service_name) = match r.service_id {
-        Some(id) => {
-            let sv = sqlx::query!("select name, book_slot from services where id = $1", id)
-                .fetch_optional(&mut *conn)
-                .await?
-                .ok_or_else(|| invalid("услуга следующей замены не найдена"))?;
-            (sv.book_slot, Some(sv.name))
-        }
-        None => (r.slot.clone().unwrap_or_default(), None),
-    };
-    if !is_slot(&slot) {
-        return Err(invalid("неизвестная строка книжки"));
-    }
-    if slot == "other" {
+    let Some(id) = r.service_id else {
         return Ok(None);
+    };
+    let Some(sv) = sqlx::query!(
+        r#"select s.name, s.book_slot, s.book_interval_days from services s
+           where s.id = $1 and not s.takeaway
+             and exists (select 1 from sale_lines l where l.sale_id = $2 and l.service_id = s.id)"#,
+        id,
+        sale_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Ok(None);
+    };
+    if !is_slot(&sv.book_slot) {
+        return Err(invalid("неизвестная строка книжки"));
     }
     let next = match r.next_mileage {
         None => None,
@@ -559,7 +595,7 @@ pub async fn resolve_target(
             {
                 return Err(invalid(format!(
                     "{}: следующая замена — не меньше пробега сейчас ({})",
-                    service_name.as_deref().unwrap_or(slot_label(&slot)),
+                    sv.name,
                     crate::domain::mileage::text(now.value, &now.unit)
                 )));
             }
@@ -567,12 +603,52 @@ pub async fn resolve_target(
         }
     };
     Ok(Some(NextTarget {
-        slot,
-        service_id: r.service_id,
-        service_name,
+        slot: sv.book_slot,
+        service_id: Some(id),
+        service_name: Some(sv.name),
         next,
         unit: unit.to_string(),
+        service_days: sv.book_interval_days,
     }))
+}
+
+/// Следующая замена чека, как её задал кассир, — для черновика «Исправить» (ADR-131): строка
+/// книжки (у «прочего» — услуга) и пробег; пусто — «не напоминать».
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct NextChangeOut {
+    pub service_id: Option<Uuid>,
+    pub slot: String,
+    pub next_mileage: Option<i32>,
+}
+
+/// Цели кассира в записи книжки чека: по строке одна, у «прочего» — по услуге; фильтры, которые
+/// идут за маслом (ADR-117), своей цели не имеют и не возвращаются.
+pub async fn sale_targets(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Vec<NextChangeOut>> {
+    let items = sqlx::query!(
+        r#"select i.slot, i.service_id, i.next_value from oil_change_items i
+           join oil_changes o on o.id = i.oil_change_id
+           where o.sale_id = $1 and i.target_set
+           order by i.position"#,
+        sale_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let oil = items.iter().any(|i| i.slot == "oil");
+    let mut out: Vec<NextChangeOut> = Vec::new();
+    for i in items {
+        let dup = out
+            .iter()
+            .any(|o| o.slot == i.slot && (i.slot != "other" || o.service_id == i.service_id));
+        if dup || (oil && follows_oil(&i.slot)) {
+            continue;
+        }
+        out.push(NextChangeOut {
+            service_id: i.service_id,
+            slot: i.slot,
+            next_mileage: i.next_value,
+        });
+    }
+    Ok(out)
 }
 
 /// Дни до следующей замены строки (SPEC-34 §3): интервал машины, иначе услуги, иначе категории
@@ -878,11 +954,11 @@ pub async fn books_with_removed(
             .filter(|o| o.vehicle_id == v.id)
             .map(|o| (o.slot.as_str(), (o.interval_km, o.interval_days)))
             .collect();
-        let slots: Vec<SlotNext> = SLOTS
+        let mut slots: Vec<SlotNext> = SLOTS
             .iter()
             .map(|slot| {
                 slot_next(
-                    slot,
+                    (*slot, None),
                     &recs,
                     own.get(slot).copied(),
                     &categories,
@@ -892,12 +968,40 @@ pub async fn books_with_removed(
             })
             .filter(|n| n.slot == "oil" || n.last_date.is_some() || n.own_interval)
             .collect();
+        // «Прочее» по услугам (ADR-131): у каждой услуги — своя следующая замена с её названием,
+        // свежие сверху.
+        let mut other: Vec<Uuid> = Vec::new();
+        for l in recs.iter().flat_map(|r| r.lines.iter()) {
+            if l.slot == "other"
+                && let Some(id) = l.service_id
+                && !other.contains(&id)
+            {
+                other.push(id);
+            }
+        }
+        for id in other {
+            slots.push(slot_next(
+                ("other", Some(id)),
+                &recs,
+                None,
+                &categories,
+                &services,
+                &v.mileage_unit,
+            ));
+        }
         let oil = slots
             .iter()
             .find(|n| n.slot == "oil")
             .cloned()
             .unwrap_or_else(|| {
-                slot_next("oil", &recs, None, &categories, &services, &v.mileage_unit)
+                slot_next(
+                    ("oil", None),
+                    &recs,
+                    None,
+                    &categories,
+                    &services,
+                    &v.mileage_unit,
+                )
             });
         out.push(VehicleBook {
             vehicle_id: v.id,
@@ -947,11 +1051,27 @@ pub fn next_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
         .collect()
 }
 
+/// Строка книжки и услуга «прочее» (ADR-131): у «прочего» следующая замена своя у каждой услуги,
+/// а строки без услуги (из тетради) — общие «Прочие работы».
+pub type SlotKey<'a> = (&'a str, Option<Uuid>);
+
+fn line_of(l: &BookLine, (slot, service): SlotKey) -> bool {
+    l.slot == slot && (slot != "other" || l.service_id == service)
+}
+
+/// Ключ строки в напоминаниях: строка книжки, у услуги «прочее» — «other:<услуга>».
+pub fn slot_key(n: &SlotNext) -> String {
+    match n.service_id {
+        Some(id) => format!("{}:{id}", n.slot),
+        None => n.slot.clone(),
+    }
+}
+
 /// Последняя замена строки (как её выбирает `slot_next`): свежая запись с этой строкой, в ней —
 /// строка с целью кассира, иначе первая.
-fn last_line<'a>(b: &'a VehicleBook, slot: &str) -> Option<(&'a OilRecord, &'a BookLine)> {
+fn last_line<'a>(b: &'a VehicleBook, key: SlotKey) -> Option<(&'a OilRecord, &'a BookLine)> {
     b.records.iter().find_map(|r| {
-        let mine = || r.lines.iter().filter(|l| l.slot == slot);
+        let mine = || r.lines.iter().filter(|l| line_of(l, key));
         mine()
             .find(|l| l.target_set)
             .or_else(|| mine().next())
@@ -966,13 +1086,14 @@ pub fn client_oil(l: &BookLine) -> bool {
 
 /// «Сейчас в машине» для бота (SPEC-36 §6): по каждой строке книжки, где уже была замена, —
 /// что залито или поставлено, дата, пробег и следующая замена (только пробег, ADR-115).
-/// «  Масло двигателя: Масло 5W-30 · 1 кан. × 4 л — 26.10.2026, 250 000 км → следующая на 258 000 км».
+/// «  Масло двигателя: Масло 5W-30 · 1 кан. × 4 л — 26.10.2026, 250 000 км → следующая на 258 000 км»;
+/// услуга «прочее» — своим названием: «  Замена ГУР — 27.10.2026, 217 000 км → следующая на 150 000 км».
 pub fn now_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
     b.slots
         .iter()
         .filter_map(|n| {
             let date = n.last_date?;
-            let last = last_line(b, &n.slot);
+            let last = last_line(b, (&n.slot, n.service_id));
             let what = match last {
                 Some((_, l)) if client_oil(l) => "масло клиента".to_string(),
                 Some((_, l)) => l.text.clone(),
@@ -984,7 +1105,11 @@ pub fn now_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
             {
                 when.push(crate::domain::mileage::text(m, &r.mileage_unit));
             }
-            let mut line = format!("{indent}{}: {what} — {}", n.label, when.join(", "));
+            let mut line = if what == n.label {
+                format!("{indent}{} — {}", n.label, when.join(", "))
+            } else {
+                format!("{indent}{}: {what} — {}", n.label, when.join(", "))
+            };
             let next = next_text(n);
             if !next.is_empty() {
                 line.push_str(&format!(" → следующая {next}"));
@@ -1090,18 +1215,20 @@ async fn service_intervals(conn: &mut PgConnection) -> AppResult<HashMap<Uuid, (
 
 /// Следующая замена строки. Кассир задал цель в последней замене этой строки (SPEC-34) — она;
 /// иначе по интервалу: машины, иначе услуги или категории последней замены этой строки, иначе
-/// любой категории с этой строкой, иначе по умолчанию.
+/// любой категории с этой строкой, иначе по умолчанию. У услуги «прочее» (ADR-131) — только её
+/// замены и её интервал, подпись — её название.
 fn slot_next(
-    slot: &str,
+    key: SlotKey,
     recs: &[OilRecord],
     own: Option<(i32, i32)>,
     categories: &[CategoryInterval],
     services: &HashMap<Uuid, (i32, i32)>,
     unit: &str,
 ) -> SlotNext {
+    let (slot, service) = key;
     // Записи свежие сверху: первая со строкой — последняя замена; в ней строка с целью — первой.
     let last = recs.iter().find_map(|r| {
-        let mine = || r.lines.iter().filter(|l| l.slot == slot);
+        let mine = || r.lines.iter().filter(|l| line_of(l, key));
         mine()
             .find(|l| l.target_set)
             .or_else(|| mine().next())
@@ -1109,21 +1236,29 @@ fn slot_next(
     });
     let last_km = recs
         .iter()
-        .filter(|r| r.lines.iter().any(|l| l.slot == slot))
+        .filter(|r| r.lines.iter().any(|l| line_of(l, key)))
         .find_map(|r| r.mileage_km);
-    let by_category = category_interval(
-        categories,
-        slot,
-        last.as_ref().and_then(|(_, l)| l.category_id),
-    );
     let by_service = last
         .as_ref()
         .and_then(|(_, l)| l.service_id)
         .and_then(|id| services.get(&id).copied());
-    let interval = own
-        .or(by_service)
-        .or(by_category)
-        .or_else(|| slot_default(slot));
+    let interval = match service {
+        Some(_) => by_service,
+        None => own
+            .or(by_service)
+            .or_else(|| {
+                category_interval(
+                    categories,
+                    slot,
+                    last.as_ref().and_then(|(_, l)| l.category_id),
+                )
+            })
+            .or_else(|| slot_default(slot)),
+    };
+    let label = match (service, &last) {
+        (Some(_), Some((_, l))) => l.service.clone().unwrap_or_else(|| l.text.clone()),
+        _ => slot_label(slot).to_string(),
+    };
     let in_unit = |k: Option<i32>| k.and_then(|k| crate::domain::mileage::from_km(k, unit));
     let target = last.as_ref().map(|(_, l)| l).filter(|l| l.target_set);
     let (next_km, next_date, next_mileage) = match target {
@@ -1153,7 +1288,8 @@ fn slot_next(
         last_mileage: in_unit(last_km),
         next_mileage,
         slot: slot.to_string(),
-        label: slot_label(slot).to_string(),
+        service_id: service,
+        label,
         interval_km: interval.map(|i| i.0),
         interval_days: interval.map(|i| i.1),
         own_interval: own.is_some(),

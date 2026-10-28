@@ -613,6 +613,8 @@ async fn load_sale_doc(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) ->
     )
     .fetch_optional(&mut *conn)
     .await?;
+    // Следующие замены, заданные кассиром, и строки «+ ещё» — в черновик (ADR-131).
+    let next_changes = crate::api::oil_book::sale_targets(conn, id).await?;
     let mut desc = Desc::default();
     desc.field("Учётный день", date_text(h.business_date));
     desc.field(
@@ -687,6 +689,7 @@ async fn load_sale_doc(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) ->
         "mileage": book.as_ref().and_then(|b| b.mileage_value),
         "mileage_unit": book.as_ref().map(|b| b.mileage_unit.clone()),
         "declined": book.as_ref().map(|b| b.declined.clone()).unwrap_or_default(),
+        "next_changes": next_changes,
         "lines": s.lines.iter().map(|l| json!({
             "kind": l.kind,
             "gift": l.gift,

@@ -6,7 +6,7 @@ import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNot
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { lineNextText, nextText, overdueSlots, recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, nextText, overdueSlots, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
@@ -37,7 +37,7 @@ export function OilHint({ book: b }: { book: VehicleBook | null }) {
       {next.length > 0 && (
         <ul className="mt-1">
           {next.map((n) => (
-            <li key={n.slot} className={overdue.includes(n) ? 'font-medium' : ''}>
+            <li key={slotKey(n)} className={overdue.includes(n) ? 'font-medium' : ''}>
               {n.label}: следующая {slotNextText(n)}
               {overdue.includes(n) && ' — пора менять'}
             </li>
@@ -98,8 +98,9 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
   const records = usePager(b.records, 'oilbook.records', b.vehicle_id)
   const removed = b.active === false
   const slots = b.slots ?? []
-  // Строки без замен тоже можно настроить: интервал у машины задают заранее.
-  const unused = SLOT_ORDER.filter((s) => !slots.some((n) => n.slot === s))
+  // Строки без замен тоже можно настроить: интервал у машины задают заранее. Услуги «прочее» — со
+  // своим интервалом у услуги (ADR-131), «Прочие работы» из тетради — строкой книжки.
+  const unused = SLOT_ORDER.filter((s) => !slots.some((n) => n.slot === s && !n.service_id))
   const manualLines = manual ? SLOT_ORDER.filter((s) => manual[s].trim()).map((s) => ({ slot: s, text: manual[s].trim() })) : []
   return (
     <Card className={`flex flex-col gap-2 ${removed ? 'opacity-75' : ''}`}>
@@ -151,7 +152,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
             {slots.map((n) => {
               const late = n.next_date !== null && n.next_date < todayBishkek()
               return (
-                <tr key={n.slot}>
+                <tr key={slotKey(n)}>
                   <td className="py-1 pr-2 font-medium">{n.label}</td>
                   <td className={`py-1 pr-2 ${late ? 'font-medium text-amber-800' : ''}`}>
                     {slotNextText(n) || '—'}
@@ -159,7 +160,8 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                   </td>
                   <td className="py-1 pr-2 text-xs text-slate-500">{intervalText(n, unit)}</td>
                   <td className="py-1 text-right">
-                    {editable && !removed && (
+                    {/* У услуги «прочее» интервал — у самой услуги (экран «Услуги»), не у машины. */}
+                    {editable && !removed && !n.service_id && (
                       <Button
                         variant="ghost"
                         className="px-2 py-0.5 text-xs"

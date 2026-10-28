@@ -350,11 +350,22 @@ fn slot<'a>(
         .unwrap_or_else(|| panic!("нет строки {s}: {lines:?}"))
 }
 
+/// Услуга справочника для одной проверки: в `p.services` под ключом `key`.
+async fn point_service(p: &mut Point, key: &'static str, body: Value) -> Value {
+    let mut body = body;
+    body["price_tyiyn"] = json!(20_000);
+    body["master_fee_tyiyn"] = json!(3_000);
+    let s = ok(&p.app, "POST", "/api/v1/services", &p.owner, body).await;
+    p.services.insert(key, s.clone());
+    s
+}
+
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn sale_check_has_only_fluids_and_filters_follow_oil(pool: PgPool) {
     // П. 5, 14, 19: чек с маслом, антифризом и четырьмя фильтрами. Масло — 258 000 по услуге,
-    // антифриз — «+ ещё» по товару чека 280 000.
-    let p = Point::new(pool).await;
+    // антифриз — 280 000 по услуге «Замена антифриза» (товар без услуги — доливка, ADR-131).
+    let mut p = Point::new(pool).await;
+    point_service(&mut p, "anti", json!({ "name": "Замена антифриза" })).await;
     let sale = p
         .sell(
             250_000,
@@ -366,11 +377,12 @@ async fn sale_check_has_only_fluids_and_filters_follow_oil(pool: PgPool) {
                 ("cab_f", "piece", 1),
                 ("fuel_f", "piece", 1),
             ],
-            &["oil"],
+            &["oil", "anti"],
             json!([
                 { "service_id": p.services["oil"]["id"], "next_mileage": 258_000 },
-                { "slot": "antifreeze", "next_mileage": 280_000 },
-                // Касса прежней версии прислала свою цель воздушному: с маслом в чеке её заменяет цель масла.
+                { "service_id": p.services["anti"]["id"], "next_mileage": 280_000 },
+                // Касса прежней версии прислала свою цель воздушному без услуги — её нет (ADR-131),
+                // фильтр с маслом в чеке и так на цели масла.
                 { "slot": "air_filter", "next_mileage": 265_000 },
             ]),
         )
@@ -476,17 +488,89 @@ async fn top_up_is_not_a_change(pool: PgPool) {
         .find(|n| n["slot"] == "gear_oil")
         .unwrap();
     assert_eq!(gear["next_km"], json!(240_000));
-    // Цель кассира через «+ ещё» по товару чека — замена.
-    let by_target = p
+    // Цель по товару без услуги (касса до 27.10.2026) и цель по доливке на вынос — не замена:
+    // цель только по услуге этого чека (ADR-131).
+    assert_eq!(p.services["topup"]["takeaway"], json!(true));
+    for next in [
+        json!([{ "slot": "gear_oil", "next_mileage": 250_000 }]),
+        json!([{ "service_id": p.services["topup"]["id"], "slot": "gear_oil", "next_mileage": 250_000 }]),
+    ] {
+        let by_target = p
+            .sell(212_000, &[("atf", "pour", 1000)], &["topup"], next)
+            .await;
+        assert!(
+            p.record(&by_target).await.is_none(),
+            "доливка записана заменой"
+        );
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn correction_keeps_next_changes(pool: PgPool) {
+    // ADR-131: «Исправить» переносит в черновик следующие замены, заданные кассиром: по строке
+    // книжки (и очищенную — «не напоминать») и строки «+ ещё» по услугам «прочее»; исправленный
+    // чек пишет их в книжку снова.
+    let mut p = Point::new(pool).await;
+    let gur = point_service(&mut p, "gur", json!({ "name": "Замена ГУР" })).await;
+    assert_eq!(gur["book_slot"], "other");
+    let sale = p
         .sell(
-            212_000,
-            &[("atf", "pour", 1000)],
-            &["topup"],
-            json!([{ "slot": "gear_oil", "next_mileage": 250_000 }]),
+            250_000,
+            &[("oil", "container", 1), ("air_f", "piece", 1)],
+            &["oil", "gear", "gur"],
+            json!([
+                { "service_id": p.services["oil"]["id"], "slot": "oil", "next_mileage": 258_000 },
+                { "service_id": p.services["gear"]["id"], "slot": "gear_oil", "next_mileage": null },
+                { "service_id": gur["id"], "slot": "other", "next_mileage": 290_000 },
+            ]),
         )
         .await;
-    let rec = p.record(&by_target).await.unwrap();
-    assert_eq!(slot(&rec, "gear_oil").2, json!(250_000));
+    // Исправление чека за наличные возвращает их в кассу — нужна открытая смена.
+    ok(
+        &p.app,
+        "POST",
+        "/api/v1/shifts/open",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": p.cashier["id"], "cashier_pin": "1234" }),
+    )
+    .await;
+    let (s, draft) = call(
+        &p.app,
+        "GET",
+        &format!(
+            "/api/v1/corrections/draft/sale/{}",
+            sale["id"].as_str().unwrap()
+        ),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{draft}");
+    // Фильтр с маслом своей цели не имеет — в черновике его нет.
+    assert_eq!(
+        draft["doc"]["next_changes"],
+        json!([
+            { "service_id": p.services["oil"]["id"], "slot": "oil", "next_mileage": 258_000 },
+            { "service_id": p.services["gear"]["id"], "slot": "gear_oil", "next_mileage": null },
+            { "service_id": gur["id"], "slot": "other", "next_mileage": 290_000 },
+        ])
+    );
+    let mut doc = draft["doc"].clone();
+    doc["comment"] = json!("исправлен мастер");
+    let fixed = ok(
+        &p.app,
+        "POST",
+        "/api/v1/corrections",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "kind": "sale", "original_id": sale["id"], "comment": "проверка", "doc": doc }),
+    )
+    .await;
+    let rec = p.record(&json!({ "id": fixed["new_id"] })).await.unwrap();
+    assert_eq!(slot(&rec, "oil").2, json!(258_000));
+    let gear = slot(&rec, "gear_oil");
+    assert_eq!((gear.1, &gear.2), (true, &Value::Null));
+    assert_eq!(slot(&rec, "other").2, json!(290_000));
+    assert_eq!(slot(&rec, "air_filter").2, json!(258_000));
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

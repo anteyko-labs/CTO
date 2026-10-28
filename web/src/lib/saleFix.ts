@@ -1,6 +1,7 @@
 // Исправление чека владельцем (SPEC-29 §24): исходный чек с сервера → состояние экрана кассы.
 // Касса та же, что для нового чека; здесь только перевод строк и оплат в её поля.
 import { litersInput, somInput } from './format'
+import { nextFromDraft, type NextEdits } from './nextChange'
 import type { Party, PaymentMethod, Product, SaleLineKind, Service } from './types'
 
 /** Чек в виде запроса проведения — так его отдаёт `GET /corrections/draft/sale/{id}`. */
@@ -17,6 +18,8 @@ export interface SaleDraftDoc {
   mileage: number | null
   mileage_unit: string | null
   declined: string
+  /** Следующие замены, заданные кассиром (ADR-131); у черновика до 27.10.2026 — нет. */
+  next_changes?: { service_id: string | null; slot: string; next_mileage: number | null }[]
   lines: { kind: SaleLineKind; gift: boolean; product_id: string | null; service_id: string | null; qty: number; unit_price_tyiyn: number }[]
   payments: { method: PaymentMethod; amount_tyiyn: number; grams: number | null; price_per_kg_tyiyn: number | null; account_id: string | null }[]
 }
@@ -46,6 +49,9 @@ export interface SaleFixState {
   mileage: string
   delivery: string | null
   declined: string
+  /** «Следующая замена»: правки по строкам и строки «+ ещё» исходного чека (ADR-131). */
+  nextEdits: NextEdits
+  nextExtra: string[]
   payMode: MoneyMethod | 'mixed'
   split: Record<MoneyMethod, string>
   bonusAmount: number
@@ -94,6 +100,7 @@ export function saleFixState(
   if (used.length > 1) for (const m of used) split[m] = somInput(sums[m])
   const bank = (m: 'card' | 'transfer' | 'invoice') => money.find((p) => p.method === m && p.account_id)?.account_id ?? ''
   const battery = doc.payments.find((p) => p.method === 'battery')
+  const next = nextFromDraft(doc.next_changes)
   return {
     saleType: doc.sale_type,
     cashierId: doc.cashier_id,
@@ -106,6 +113,8 @@ export function saleFixState(
     mileage: doc.mileage != null ? String(doc.mileage) : '',
     delivery: doc.delivery_address ? doc.delivery_address : null,
     declined: doc.declined,
+    nextEdits: next.edits,
+    nextExtra: next.extra,
     payMode: used.length > 1 ? 'mixed' : (used[0] ?? 'cash'),
     split,
     bonusAmount: doc.payments.filter((p) => p.method === 'bonus').reduce((acc, p) => acc + p.amount_tyiyn, 0),

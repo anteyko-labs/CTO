@@ -79,6 +79,9 @@ async function setup(request: APIRequestContext) {
   await api(request, '/services', { name: topup, price_tyiyn: 10_000, master_fee_tyiyn: 3_000 })
   const service = `Замена масла в моторе итог ${tag}`
   const svc = await api<{ id: string; price_tyiyn: number }>(request, '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+  // Антифриз — заменой только с услугой «Замена антифриза»: товар без неё — доливка (ADR-131).
+  const antiService = `Замена антифриза итог ${tag}`
+  await api(request, '/services', { name: antiService, price_tyiyn: 30_000, master_fee_tyiyn: 3_000 })
   const master = `Мастер итог ${tag}`
   const mst = await api<{ id: string }>(request, '/employees', { full_name: master, is_master: true })
   const cashier = `Кассир итог ${tag}`
@@ -105,7 +108,7 @@ async function setup(request: APIRequestContext) {
     ],
     payments: [{ method: 'cash', amount_tyiyn: 300_000 + 60_000 + svc.price_tyiyn }],
   })
-  return { oilCode, oilName, airCode, antiCode, antiName, service, topup, master, cashier, last, plate, party, vehicle }
+  return { oilCode, oilName, airCode, antiCode, antiName, service, antiService, topup, master, cashier, last, plate, party, vehicle }
 }
 
 for (const mode of [
@@ -149,7 +152,10 @@ for (const mode of [
         const dlg = page.getByRole('dialog', { name: 'Клиент и машина' })
         await dlg.locator('[data-client-input]').fill(s.plate)
         await hit(dlg.getByRole('button', { name: new RegExp(s.last) }).first())
+        // Машина встаёт сама, когда загрузится карточка клиента: «Готово» раньше — окно закроется без неё.
+        await expect(dlg.getByLabel('Машина')).toHaveValue(s.vehicle.id)
         await hit(dlg.getByRole('button', { name: 'Готово' }))
+        await expect(dlg).toHaveCount(0)
       } else {
         await page.locator('[data-client-input]').fill(s.plate)
         await page.getByRole('button', { name: new RegExp(s.last) }).first().click()
@@ -211,14 +217,16 @@ for (const mode of [
         await page.keyboard.press('Enter')
         await expect(cart).toHaveCount(count)
       }
-      /** Чек «В сервис»: вид замены, товары, кассир, мастер, клиент и пробег. */
-      const fill = async (service: string, codes: string[], mileage: string) => {
+      /** Чек «В сервис»: виды замены, товары, кассир, мастер, клиент и пробег. */
+      const fill = async (services: string[], codes: string[], mileage: string) => {
         await hit(page.getByRole('button', { name: 'В сервис' }))
         const kinds = page.getByRole('dialog', { name: 'Вид замены' })
-        await kinds.getByPlaceholder('Найти услугу').fill(service)
-        await hit(kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }))
+        for (const service of services) {
+          await kinds.getByPlaceholder('Найти услугу').fill(service)
+          await hit(kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }))
+        }
         await hit(kinds.getByRole('button', { name: 'Готово' }))
-        for (const [i, code] of codes.entries()) await scan(code, i + 2)
+        for (const [i, code] of codes.entries()) await scan(code, i + 1 + services.length)
         const select = page.locator('#cashier-select')
         if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
         await pickMaster(page, s.master)
@@ -235,20 +243,15 @@ for (const mode of [
         }
         await page.locator('#mileage').fill(mileage)
       }
-      /** Масло, воздушный фильтр и антифриз; антифриз — «+ ещё» с целью 280 000. */
+      /** Замена масла и антифриза: масло, воздушный фильтр и антифриз; антифриз — с целью 280 000. */
       const fillChange = async (mileage: string) => {
-        await fill(s.service, [s.oilCode, s.airCode, s.antiCode], mileage)
-        // Фильтр своей строки не даёт и в «+ ещё» не предлагается: он — на пробег масла.
-        await expect(page.getByTestId('next-filters')).toContainText('и фильтр: воздушный — на тот же пробег')
-        await expect(block.locator('input[id^="next-"]')).toHaveCount(1)
+        await fill([s.service, s.antiService], [s.oilCode, s.airCode, s.antiCode], mileage)
+        // Фильтр своей строки не даёт: он — на пробег масла; товары в «+ ещё» не предлагаются.
+        await expect(page.getByTestId('next-filters')).toHaveText('Масло двигателя — и фильтр: воздушный на тот же пробег')
+        await expect(block.locator('input[id^="next-"]')).toHaveCount(2)
+        await expect(block.getByRole('button', { name: '+ ещё строку' })).toHaveCount(0)
         await expect(block.locator('[data-next-goods]').first()).toContainText(`${s.oilName} × 1 кан.`)
-        await hit(block.getByRole('button', { name: '+ ещё строку' }))
-        const dlg = page.getByRole('dialog', { name: 'Следующая замена: ещё строка' })
-        const choices = dlg.getByTestId('next-extra-choices').getByRole('button').filter({ hasNotText: 'Отмена' })
-        await expect(choices).toHaveCount(1)
-        await expect(choices.first()).toContainText('Антифриз')
-        await hit(choices.first())
-        await block.getByLabel(/Следующая замена: Антифриз/).fill('280000')
+        await block.getByLabel(`Следующая замена: ${s.antiService}`).fill('280000')
         await expect(block.locator('[data-next-goods]').last()).toContainText(`${s.antiName} × 1`)
         await hit(page.getByRole('button', { name: 'Без сдачи' }))
         await hit(page.getByRole('button', { name: /Провести чек/ }).first())
@@ -283,9 +286,10 @@ for (const mode of [
       const records = (await vehicleBook()).records
       expect(records[0].lines.find((l) => l.slot === 'air_filter')?.next_mileage).toBe(258000)
 
-      // Канистра моторного масла без услуги масла — подсказка «Это замена?»; проведённый чек книжку не пишет.
-      await fill(s.topup, [s.oilCode], '251000')
-      await expect(page.getByTestId('oil-change-hint')).toContainText('Это замена?')
+      // Канистра моторного масла без услуги масла — подсказка «Это замена?» (без названия услуги, её у
+      // точки может не быть); проведённый чек книжку не пишет.
+      await fill([s.topup], [s.oilCode], '251000')
+      await expect(page.getByTestId('oil-change-hint')).toHaveText('Это замена? Добавьте услугу замены масла двигателя')
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()

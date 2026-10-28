@@ -179,6 +179,7 @@ fn next_change_text_is_mileage_only() {
     // ADR-115: только пробег; дата — только у строки без пробега.
     let slot = |mileage: Option<i32>, unit: &str, date: Option<NaiveDate>| SlotNext {
         slot: "oil".into(),
+        service_id: None,
         label: "Масло двигателя".into(),
         interval_km: Some(8000),
         interval_days: Some(31),

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.name, s.book_slot, s.book_interval_days from services s\n           where s.id = $1 and not s.takeaway\n             and exists (select 1 from sale_lines l where l.sale_id = $2 and l.service_id = s.id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "book_slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "book_interval_days",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "a82dfd3b8ba3771e8e948ec6ce3abe9d715b927e21325c88346f3a601577a165"
+}

@@ -70,6 +70,30 @@ describe('исправление чека: исходный чек в кассу
     expect(s.battery).toEqual({ kgText: '12,5', perKgText: '40' })
   })
 
+  it('следующие замены исходного чека — правками по строкам и строками «+ ещё» (ADR-131)', () => {
+    const s = saleFixState(
+      doc({
+        next_changes: [
+          { service_id: 's', slot: 'oil', next_mileage: 258_000 },
+          { service_id: 'g', slot: 'gear_oil', next_mileage: null },
+          { service_id: 'gur', slot: 'other', next_mileage: 290_000 },
+          // Строка по товару из записи до 27.10.2026 — правкой по строке; строки без услуги в чеке нет.
+          { service_id: null, slot: 'fuel_filter', next_mileage: 247_000 },
+          { service_id: null, slot: 'other', next_mileage: 1 },
+        ],
+      }),
+      new Map(),
+      new Map(),
+      null,
+      key,
+    )
+    expect(s.nextEdits).toEqual({ oil: '258000', gear_oil: '', 'svc:gur': '290000', fuel_filter: '247000' })
+    expect(s.nextExtra).toEqual(['gur'])
+    // Черновик до 27.10.2026 — без следующих замен.
+    const old = saleFixState(doc(), new Map(), new Map(), null, key)
+    expect([old.nextEdits, old.nextExtra]).toEqual([{}, []])
+  })
+
   it('количество текстом', () => {
     expect(qtyInput('weight', 1250)).toBe('1,25')
     expect(qtyInput('container', 2)).toBe('2')

@@ -334,9 +334,12 @@ for (const mode of [
       await open(page)
       const g = await goods(page.request)
       const tag = `${RUN}${++seq}`
-      // Замена масла в коробке: с маслом двигателя фильтры своих строк не дают (ADR-117), а здесь нужны.
+      // Замена масла в коробке — строкой сама; ГУР и кардан — «прочее»: только через «+ ещё» (ADR-131).
       const service = `Замена масла в коробке ещё скан ${tag}`
+      const gur = `Замена ГУР скан ${tag}`
+      const shaft = `Смазка кардана скан ${tag}`
       await api(page.request, 'POST', '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+      for (const name of [gur, shaft]) await api(page.request, 'POST', '/services', { name, price_tyiyn: 20_000, master_fee_tyiyn: 3_000, book_slot: 'other' })
       const last = `Скан${tag}`
       const party = await api<{ id: string }>(page.request, 'POST', '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0703${tag.slice(-6)}` })
       const plate = `09KG${tag.slice(-3)}SCN`
@@ -347,8 +350,10 @@ for (const mode of [
       await expect(row(page, g.air.name)).toBeVisible()
       await hit(page.getByRole('button', { name: 'В сервис' }))
       const kinds = page.getByRole('dialog', { name: 'Вид замены' })
-      await kinds.getByPlaceholder('Найти услугу').fill(service)
-      await hit(kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }))
+      for (const name of [service, gur, shaft]) {
+        await kinds.getByPlaceholder('Найти услугу').fill(name)
+        await hit(kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(name) }))
+      }
       await hit(kinds.getByRole('button', { name: 'Готово' }))
       await expect(kinds).toHaveCount(0)
       if (mode.touch) {
@@ -369,7 +374,8 @@ for (const mode of [
       const more = block.getByRole('button', { name: '+ ещё строку' })
       const extra = page.getByRole('dialog', { name: 'Следующая замена: ещё строка' })
 
-      // Окно открыто — скан встаёт в чек за окном; варианты окна — из строк чека, строк не прибавилось.
+      // Окно открыто — скан встаёт в чек за окном; в окне — только услуги «прочее» чека (товар их не
+      // прибавляет), строк не прибавилось.
       await hit(more)
       await expect(extra).toBeVisible()
       // Кнопка «⌨» у поля поиска за окном не ложится поверх окна.
@@ -377,7 +383,7 @@ for (const mode of [
       await scan(page, g.oilFilter.code)
       await expect(row(page, g.oilFilter.name)).toBeVisible()
       await expect(extra).toBeVisible()
-      await expect(extra.getByRole('button', { name: /Фильтр масляный/ })).toBeVisible()
+      await expect(extra.getByTestId('next-extra-choices').getByRole('button').filter({ hasNotText: 'Отмена' })).toHaveText([gur, shaft])
       await expect(fields).toHaveCount(1)
 
       // Окно закрыли без выбора («Отмена» под пальцем, Escape мышью) — скан не теряется и окно не открывает.
@@ -389,9 +395,9 @@ for (const mode of [
       await expect(extra).toHaveCount(0)
       await expect(fields).toHaveCount(1)
 
-      // Выбрали позицию — строка встала; скан добавляет товар, окно не открывается, строк столько же.
+      // Выбрали услугу — строка встала; скан добавляет товар, окно не открывается, строк столько же.
       await hit(more)
-      await hit(extra.getByRole('button', { name: /Фильтр воздушный/ }))
+      await hit(extra.getByRole('button', { name: gur }))
       await expect(extra).toHaveCount(0)
       await expect(fields).toHaveCount(2)
       await scan(page, g.oil2.code)
@@ -400,7 +406,7 @@ for (const mode of [
       await expect(fields).toHaveCount(2)
 
       // «✕» у строки — строка ушла; скан прибавляет отсканированное, «✕» и «+ ещё» не нажимаются.
-      await hit(block.getByRole('button', { name: /^Убрать строку Фильтр воздушный/ }))
+      await hit(block.getByRole('button', { name: `Убрать строку ${gur}` }))
       await expect(fields).toHaveCount(1)
       await scan(page, g.air.code)
       await expect(qty(page, g.air.name)).toHaveValue('2')
