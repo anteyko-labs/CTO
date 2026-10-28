@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { categorySlotText, fluidText, lineNextText, overdueSlots, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
-import { oilBookHtml } from './oilBookPrint'
+import { oilBookHtml, saleCheckOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
   id: '1',
@@ -134,6 +134,16 @@ describe('чек книжки после чека — только этот че
 
   it('после чека без записи книжки — не печатаем, прошлых замен нет (ADR-130)', async () => {
     expect(await oilBookHtml(book, { link: null, saleId: 'другой' })).toBeNull()
+  })
+
+  it('в записи чека только «прочее» — чек книжки не печатается (ADR-131)', async () => {
+    const gur: VehicleBook = {
+      ...book,
+      records: [rec({ id: 'r9', change_date: '2026-10-28', mileage_km: 251_000, sale_id: 's9', sale_number: 9, lines: [{ slot: 'other', text: 'Замена ГУР', service: 'Замена ГУР' }] }), ...book.records],
+    }
+    expect(saleCheckOf(gur, 's9')).toBeNull()
+    expect(await oilBookHtml(gur, { link: null, saleId: 's9' })).toBeNull()
+    expect(saleCheckOf(gur, 's8')?.id).toBe('r8')
   })
 
   it('залито и следующая замена — по жидкостям, с товаром; без фильтров, мастера, рекомендаций и истории', async () => {

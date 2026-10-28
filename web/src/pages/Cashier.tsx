@@ -45,7 +45,7 @@ import {
   type OwnIntervals,
 } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
-import { printOilBook } from '../lib/oilBookPrint'
+import { printOilBook, saleCheckOf } from '../lib/oilBookPrint'
 import { ServicePicker } from '../components/ServicePicker'
 import { PersonPick } from '../components/PersonPick'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -1293,8 +1293,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       const client = party?.name ?? null
       void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
         .then((book) => {
-          // Записи этого чека нет — книжку после чека не показываем и не печатаем (ADR-130).
-          if (!book.records.some((r) => r.sale_id === sale.id)) return
+          // Записи этого чека нет или в ней только «прочее» — книжку после чека не показываем и не
+          // печатаем (ADR-130, ADR-131).
+          if (!saleCheckOf(book, sale.id)) return
           setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
           return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
         })
@@ -2102,7 +2103,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 <Button variant="secondary" onClick={() => printSale(done.sale, done.change)}>
                   Печать чека
                 </Button>
-                {done.book?.records.some((r) => r.sale_id === done.sale.id) && (
+                {done.book && saleCheckOf(done.book, done.sale.id) && (
                   <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id })}>
                     Печать книжки
                   </Button>

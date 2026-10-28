@@ -81,14 +81,22 @@ async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link:
   </body></html>`
 }
 
-/** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); записи этого чека нет —
- *  null, после чека прошлые замены не печатаются (ADR-130). Без `saleId` — выписка. */
+/** Запись этого чека, если в ней есть масла или жидкости, — её печатает «чек книжки» (ADR-116).
+ *  Записи нет (ADR-130) или в ней только «прочее» (ADR-131) — null: на ленте остались бы госномер,
+ *  дата и QR. */
+export function saleCheckOf(b: VehicleBook, saleId: string): OilRecord | null {
+  const own = b.records.find((r) => r.sale_id === saleId)
+  return own && recordLines(own).some((l) => isFluid(l.slot)) ? own : null
+}
+
+/** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); печатать нечего
+ *  (`saleCheckOf`) — null, после чека прошлые замены не печатаются (ADR-130). Без `saleId` — выписка. */
 export async function oilBookHtml(
   b: VehicleBook,
   opts: { client?: string | null; master?: string | null; link: string | null; saleId?: string | null },
 ): Promise<string | null> {
   if (opts.saleId) {
-    const own = b.records.find((r) => r.sale_id === opts.saleId)
+    const own = saleCheckOf(b, opts.saleId)
     return own ? saleCheckHtml(b, own, opts.saleId, opts.link) : null
   }
   const last = b.records[0]
