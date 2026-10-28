@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.kind, l.amount_tyiyn, l.created_at, l.reversal_of is not null as \"reversal!\",\n                  s.number as \"sale_number?\", b.name as branch_name\n           from party_ledger l\n           join branches b on b.id = l.branch_id\n           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id\n           where l.party_id = $1 and l.amount_tyiyn <> 0\n           order by l.created_at desc limit $2",
+  "query": "select l.kind, l.amount_tyiyn, l.created_at, l.reversal_of is not null as \"reversal!\",\n                  s.number as \"sale_number?\", b.name as branch_name, l.doc_type, l.business_date\n           from party_ledger l\n           join branches b on b.id = l.branch_id\n           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id\n           where l.party_id = $1 and l.amount_tyiyn <> 0\n           order by l.created_at desc limit $2",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,16 @@
         "ordinal": 5,
         "name": "branch_name",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "business_date",
+        "type_info": "Date"
       }
     ],
     "parameters": {
@@ -46,8 +56,10 @@
       false,
       null,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "c7982b6b50f3052e9149b51eb290b7760634e31dd8cf3aab25ab1803eccb0ca8"
+  "hash": "ae93e144f7cc465be3e4173bbd0347acbd5cbf0f1ab016d1b31b10f2719604eb"
 }

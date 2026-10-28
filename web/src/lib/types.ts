@@ -21,6 +21,7 @@ export type Permission =
   | 'products'
   | 'clients'
   | 'payroll_advance'
+  | 'old_debts'
 
 /** Филиал (SPEC-33). */
 export interface Branch {
@@ -605,6 +606,9 @@ export interface PartyTimelineItem {
   comment: string
   /** Запись другого филиала (SPEC-33): его название; документ открывается только в нём. */
   branch_name?: string
+  /** Старый долг из тетради (SPEC-38): дата долга и кто занёс. */
+  debt_date?: string
+  user_name?: string
 }
 
 export interface PartyCard {

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.reversal_of, p.role\n           from party_ledger l join parties p on p.id = l.party_id\n           where l.id = $1 and l.branch_id = $2",
+  "query": "select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.reversal_of, p.role,\n                  l.business_date\n           from party_ledger l join parties p on p.id = l.party_id\n           where l.id = $1 and l.branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,11 @@
         "ordinal": 6,
         "name": "role",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "business_date",
+        "type_info": "Date"
       }
     ],
     "parameters": {
@@ -52,8 +57,9 @@
       false,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "06f5d15770d601df374d97b21c64ce88891516ada0ad6b7cc3c83c5dd12f74ed"
+  "hash": "da1a59941641c63b217d8b3dea2bf2a623b03da588835185aea97360022b4ac1"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.id, l.created_at, l.kind, l.amount_tyiyn, l.reversal_of is not null as \"reversal!\",\n                  l.comment, p.id as party_id, p.name as party_name, u.full_name as user_name,\n                  s.id as \"sale_id?\", s.number as \"sale_number?\", s.kind as \"sale_kind?\",\n                  (select a.name from cash_movements m join cash_accounts a on a.id = m.account_id\n                   where m.doc_type = 'repayment' and m.doc_id = l.doc_id and m.kind = 'debt_repayment'\n                   limit 1) as \"account_name?\"\n           from party_ledger l\n           join parties p on p.id = l.party_id\n           join users u on u.id = l.user_id\n           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id\n           where l.branch_id = $1 and p.role = 'customer'\n             and l.created_at >= $2 and l.created_at <= coalesce($3, now())\n           order by l.created_at, l.id",
+  "query": "select l.id, l.created_at, l.kind, l.amount_tyiyn, l.reversal_of is not null as \"reversal!\",\n                  l.comment, p.id as party_id, p.name as party_name, u.full_name as user_name,\n                  s.id as \"sale_id?\", s.number as \"sale_number?\", s.kind as \"sale_kind?\",\n                  (select a.name from cash_movements m join cash_accounts a on a.id = m.account_id\n                   where m.doc_type = 'repayment' and m.doc_id = l.doc_id and m.kind = 'debt_repayment'\n                   limit 1) as \"account_name?\"\n           from party_ledger l\n           join parties p on p.id = l.party_id\n           join users u on u.id = l.user_id\n           left join sales s on l.doc_type = 'sale' and s.id = l.doc_id\n           where l.branch_id = $1 and p.role = 'customer'\n             and l.created_at >= $2 and l.created_at <= coalesce($3, now())\n             -- Старый долг из тетради и его сторно — не продажа смены (SPEC-38).\n             and l.doc_type <> 'old_debt'\n             and not exists (select 1 from party_ledger o\n                             where o.id = l.reversal_of and o.doc_type = 'old_debt')\n           order by l.created_at, l.id",
   "describe": {
     "columns": [
       {
@@ -92,5 +92,5 @@
       null
     ]
   },
-  "hash": "0675f95e6f50dddaca118b9c7dc0842a4645c04bf904c3094d672c512359f259"
+  "hash": "aead3c439bccf3fe8720387adb9018bd0d5f62b0394d79165ce38cb4fbe026ab"
 }

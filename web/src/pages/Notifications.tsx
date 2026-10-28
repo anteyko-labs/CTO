@@ -22,6 +22,7 @@ const KINDS: Record<string, { tone: Tone; group: Group }> = {
   'cash.reverse': { tone: 'amber', group: 'money' },
   'cash.transfer_reverse': { tone: 'amber', group: 'money' },
   'debt.adjust': { tone: 'amber', group: 'money' },
+  'debt.old': { tone: 'amber', group: 'money' },
   'party.limit_request': { tone: 'amber', group: 'money' },
   'sale.return': { tone: 'slate', group: 'money' },
   'sale.price_override': { tone: 'amber', group: 'money' },
@@ -61,7 +62,7 @@ function linkOf(n: NotificationItem): { to: string; label: string } | null {
   if (!n.entity_id) return null
   if (n.action.startsWith('sale.')) return { to: `/sales/${n.entity_id}`, label: 'Открыть чек' }
   if (n.action.startsWith('receipt.')) return { to: `/receipts/${n.entity_id}`, label: 'Открыть приход' }
-  if (n.action === 'party.limit_request' || n.action === 'debt.adjust') return { to: `/clients/${n.entity_id}`, label: 'Карточка' }
+  if (n.action === 'party.limit_request' || n.action === 'debt.adjust' || n.action === 'debt.old') return { to: `/clients/${n.entity_id}`, label: 'Карточка' }
   return null
 }
 

@@ -17,7 +17,9 @@ use uuid::Uuid;
 use crate::api::cash::{MovementReq, TransferReq};
 use crate::api::catalog::{PricesReq, ProductFilter, ProductOut, query_products};
 use crate::api::expenses::ExpenseReq;
-use crate::api::parties::{AdjustReq, ListQuery, PartyOut, RepaymentReq, search_parties};
+use crate::api::parties::{
+    AdjustReq, ListQuery, OldDebtReq, PartyOut, RepaymentReq, search_parties,
+};
 use crate::api::payroll::{AccrualReq, PayoutLine, PayoutReq, PayoutsReq, SalaryReq};
 use crate::api::receipts::{PurchasePriceReq, ReceiptLineReq, ReceiptReq};
 use crate::auth::{Ctx, CurrentUser, Role};
@@ -48,6 +50,8 @@ pub enum DraftOp {
     CashTransfer(TransferReq),
     Repayment(RepaymentReq),
     DebtAdjust(AdjustReq),
+    /// Старый долг клиента из тетради с датой долга (SPEC-38).
+    OldDebt(OldDebtReq),
     Accrual(AccrualReq),
     Payout(PayoutsReq),
     Salary(SalaryReq),
@@ -166,6 +170,18 @@ pub async fn execute(conn: &mut PgConnection, ctx: &Ctx, op: DraftOp) -> AppResu
             Posted {
                 text: format!(
                     "долг перенесён, баланс теперь {}",
+                    balance_words(out.balance_tyiyn)
+                ),
+                number: None,
+            }
+        }
+        DraftOp::OldDebt(req) => {
+            let date = req.date;
+            let out = crate::api::parties::post_old_debt_tx(conn, ctx, req).await?;
+            Posted {
+                text: format!(
+                    "старый долг от {} занесён, баланс теперь {}",
+                    date.format("%d.%m.%Y"),
                     balance_words(out.balance_tyiyn)
                 ),
                 number: None,
@@ -1054,6 +1070,9 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
     let text = comment(input, "comment");
     if operation.contains("тетрад") || operation.contains("перенос") {
         let p = take!(find_party(conn, branch_id, None, &who).await?);
+        if p.role == "customer" {
+            return old_debt(conn, op_id, input, p, sum, text).await;
+        }
         let supplier = p.role == "supplier";
         // Клиент должен нам — плюс; мы должны поставщику — минус (SPEC-10).
         let signed = if supplier { -sum } else { sum };
@@ -1184,6 +1203,69 @@ async fn debt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: &
         } else {
             String::new()
         },
+    }))
+}
+
+/// Старый долг клиента из тетради (SPEC-38): та же запись, что «Занести старый долг», с датой
+/// долга из текста владельца. Без даты черновика нет — бот просит дату. Такой же долг уже
+/// занесён — черновик предупреждает, и «✅ Провести» — второе подтверждение.
+async fn old_debt(
+    conn: &mut PgConnection,
+    op_id: Uuid,
+    input: &Value,
+    p: PartyOut,
+    sum: i64,
+    text: String,
+) -> Step {
+    let Some(date_q) = take!(field(input, "date")) else {
+        return Ok(Err(
+            "для старого долга клиента нужна дата долга из тетради — когда взял (например, «долг с 15.03.2026»): от неё считаются срок оплаты и просрочка. Черновик не создан".into(),
+        ));
+    };
+    let date = take!(
+        NaiveDate::parse_from_str(&date_q, "%Y-%m-%d")
+            .or_else(|_| NaiveDate::parse_from_str(&date_q, "%d.%m.%Y"))
+            .map_err(|_| format!("дату долга «{date_q}» не разобрать: нужна ГГГГ-ММ-ДД"))
+    );
+    let today = today(conn).await?;
+    if let Err(e) = crate::api::parties::check_old_debt_date(date, today) {
+        return Ok(Err(reason(e)?));
+    }
+    let same = crate::api::parties::old_debt_duplicate(conn, p.id, sum, date).await?;
+    let due = p.due_days.map(|d| crate::domain::debt::due_date(date, d));
+    let due_line = match due {
+        Some(d) if d < today => format!(
+            "\nСрок оплаты: {} — просрочен на {} дн.",
+            d.format("%d.%m.%Y"),
+            crate::domain::debt::overdue_days(d, today)
+        ),
+        Some(d) => format!("\nСрок оплаты: {}", d.format("%d.%m.%Y")),
+        None => String::new(),
+    };
+    let summary = format!(
+        "Старый долг из тетради\nКлиент: {} (сейчас {})\nСумма: {}\nДата долга: {}{due_line}\nКомментарий: {}{}",
+        one_line(&p.name),
+        balance_words(p.balance_tyiyn),
+        format_som(sum),
+        date.format("%d.%m.%Y"),
+        quoted(&text),
+        same.as_deref()
+            .map(|s| format!("\n⚠️ {}: «✅ Провести» занесёт его ещё раз.", one_line(s)))
+            .unwrap_or_default()
+    );
+    Ok(Ok(Built {
+        op: DraftOp::OldDebt(OldDebtReq {
+            op_id,
+            party_id: Some(p.id),
+            new_party: None,
+            amount_tyiyn: sum,
+            date,
+            comment: text,
+            confirm_duplicate: same.is_some(),
+        }),
+        kind: "old_debt",
+        summary,
+        hint: String::new(),
     }))
 }
 
@@ -1831,6 +1913,7 @@ async fn stale_refs(
         DraftOp::Salary(r) => (Some(r.employee_id), None, Vec::new()),
         DraftOp::Repayment(r) => (None, Some(r.party_id), Vec::new()),
         DraftOp::DebtAdjust(r) => (None, Some(r.party_id), Vec::new()),
+        DraftOp::OldDebt(r) => (None, r.party_id, Vec::new()),
         DraftOp::Prices { product_id, .. } | DraftOp::PurchasePrice { product_id, .. } => {
             (None, None, vec![*product_id])
         }

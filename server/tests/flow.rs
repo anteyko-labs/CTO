@@ -7089,17 +7089,55 @@ async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
         (1_500_000, 500_000)
     );
 
-    // Долг из тетради, погашение наличными, оплата поставщику.
-    post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
-        serde_json::json!({ "operation": "перенос долга из тетради", "party": "Азамат", "amount": "5 000", "comment": "старая тетрадь" })).await;
+    // Долг из тетради (SPEC-38): без даты черновика нет — бот просит дату; с датой — старый долг
+    // в день долга, та же запись, что «Занести старый долг». Погашение наличными, оплата поставщику.
+    let r = draft_turn(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "перенос долга из тетради", "party": "Азамат", "amount": "5 000" })).await;
+    assert!(r.follow.is_none());
+    assert!(
+        last_tool_result(&fake).contains("нужна дата долга"),
+        "{}",
+        last_tool_result(&fake)
+    );
+    let text = post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "перенос долга из тетради", "party": "Азамат", "amount": "5 000", "date": "2026-03-15", "comment": "старая тетрадь" })).await;
+    assert!(text.contains("старый долг от 15.03.2026 занесён"), "{text}");
     assert_eq!(party_balance(client).await, 500_000);
+    let (doc, day, comment): (String, chrono::NaiveDate, String) = sqlx::query_as(
+        "select doc_type, business_date, comment from party_ledger where party_id = $1",
+    )
+    .bind(client)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (doc.as_str(), day, comment.as_str()),
+        (
+            "old_debt",
+            chrono::NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+            "Старый долг (из тетради): старая тетрадь"
+        )
+    );
+    // Тот же долг ещё раз — черновик предупреждает, «✅ Провести» — второе подтверждение.
+    let r = draft_turn(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "перенос долга из тетради", "party": "Азамат", "amount": "5 000", "date": "15.03.2026" })).await;
+    let summary = r
+        .follow
+        .as_ref()
+        .map(|f| f.text.clone())
+        .unwrap_or_default();
+    assert!(summary.contains("⚠️ Такой долг уже занесён"), "{summary}");
+    let (ok_button, _) = draft_buttons(&r);
+    let pressed = press(&mut conn, chat, &ok_button).await.text;
+    assert!(pressed.starts_with("Проведено: "), "{pressed}");
+    assert_eq!(party_balance(client).await, 1_000_000);
     let text = post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
         serde_json::json!({ "operation": "погашение долга клиентом", "party": "Азамат Осмонов", "amount": "2 000", "method": "наличные" })).await;
     assert_eq!(
         text,
-        "Проведено: оплата 2 000 с учтена, баланс теперь 3 000 с — должны нам."
+        "Проведено: оплата 2 000 с учтена, баланс теперь 8 000 с — должны нам."
     );
-    assert_eq!(party_balance(client).await, 300_000);
+    assert_eq!(party_balance(client).await, 800_000);
     post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
         serde_json::json!({ "operation": "оплата поставщику", "party": "Автоснаб", "amount": "1 000" })).await;
     assert_eq!(party_balance(supplier).await, 100_000);
@@ -7195,7 +7233,7 @@ async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
         journal.iter().map(|(a, _)| a.as_str()).collect();
     for want in [
         "cash.transfer",
-        "debt.adjust",
+        "debt.old",
         "debt.repayment",
         "payroll.accrual",
         "payout.post",
@@ -7216,7 +7254,7 @@ async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
             "select count(*) from bot_drafts where status = 'posted'"
         )
         .await,
-        11
+        12
     );
 }
 

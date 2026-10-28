@@ -847,7 +847,7 @@ async fn load_receipt_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) ->
 async fn load_ledger_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<Doc> {
     let l = sqlx::query!(
         r#"select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.comment,
-                  p.name, p.role
+                  p.name, p.role, l.business_date
            from party_ledger l join parties p on p.id = l.party_id
            where l.id = $1 and l.branch_id = $2"#,
         id,
@@ -858,6 +858,26 @@ async fn load_ledger_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> 
     .ok_or(AppError::NotFound)?;
     let mut desc = Desc::default();
     let supplier = l.role == "supplier";
+    // Старый долг из тетради (SPEC-38): клиент, сумма, дата долга и комментарий.
+    if l.doc_type == crate::api::parties::OLD_DEBT_DOC {
+        let text = crate::api::parties::old_debt_text(&l.comment).to_string();
+        desc.field("Вид", "старый долг из тетради");
+        desc.field("Клиент", l.name.clone());
+        desc.field("Сумма", format_som(l.amount_tyiyn));
+        desc.field("Дата долга", date_text(l.business_date));
+        desc.field("Комментарий", or_none(Some(text.clone())));
+        return Ok(Doc {
+            number: None,
+            draft: json!({
+                "type": "old_debt",
+                "party_id": l.party_id,
+                "amount_tyiyn": l.amount_tyiyn,
+                "date": l.business_date,
+                "comment": text,
+            }),
+            desc,
+        });
+    }
     if l.kind == "adjust" {
         desc.field("Вид", "правка долга");
         desc.field("Контрагент", l.name.clone());
@@ -1182,7 +1202,7 @@ async fn check_kind_rules(
             }
             if !matches!(
                 (l.kind.as_str(), l.doc_type.as_str()),
-                ("repayment", "repayment") | ("adjust", "adjust")
+                ("repayment", "repayment") | ("adjust", "adjust") | ("debt", "old_debt")
             ) {
                 return Err(AppError::Conflict(
                     "эта запись долга исправляется своим документом: чеком, приходом, возвратом или браком".into(),
@@ -1589,6 +1609,15 @@ async fn post_new(
         Kind::CashTransfer => {
             let out = crate::api::cash::post_transfer_tx(conn, ctx, req_of(doc)?).await?;
             (value_id(&out)?, out.get("number").and_then(Value::as_i64))
+        }
+        Kind::Ledger if doc_type(&original.draft) == "old_debt" => {
+            // Верный старый долг — существующему клиенту; исходный уже сторнирован, а
+            // исправление владельца — само подтверждение (SPEC-38).
+            let mut req: crate::api::parties::OldDebtReq = req_of(doc)?;
+            req.new_party = None;
+            req.confirm_duplicate = true;
+            let out = crate::api::parties::post_old_debt_tx(conn, ctx, req).await?;
+            (out.ledger_id, None)
         }
         Kind::Ledger => {
             let out = if doc_type(&original.draft) == "adjust" {

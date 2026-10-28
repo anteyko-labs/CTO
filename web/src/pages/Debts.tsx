@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { OldDebtModal } from '../components/OldDebtModal'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Button, Card, Empty, ErrorBox, Loading, Money, PageHeader } from '../components/ui'
 import { get } from '../lib/api'
@@ -197,6 +198,10 @@ export default function Debts() {
   // «Все филиалы» (SPEC-33 §3): общий долг с разбивкой; иначе — долги этого филиала.
   const [all, setAll] = useAllBranches(user.role === 'owner' && Boolean(user.several_branches))
   const [paying, setPaying] = useState<Party | null>(null)
+  // «Занести старый долг» из тетради (SPEC-38): владелец или администратор с правом; в «Все
+  // филиалы» кнопки нет — долг заносится в филиал (ADR-108).
+  const [oldDebt, setOldDebt] = useState(false)
+  const mayOldDebt = can('old_debts') && !all
   const list = useLoad(() => get<DebtRow[]>(`/debts/list${qs(branchParam(all))}`), [all])
   const { reload } = list
 
@@ -226,6 +231,11 @@ export default function Debts() {
         <Loading />
       ) : (
         <>
+          {mayOldDebt && (
+            <div className="flex justify-end">
+              <Button onClick={() => setOldDebt(true)}>Занести старый долг</Button>
+            </div>
+          )}
           <Side
             title="Должны нам"
             pageKey="debts.to_us"
@@ -250,6 +260,7 @@ export default function Debts() {
           />
         </>
       )}
+      {oldDebt && <OldDebtModal onClose={() => setOldDebt(false)} onSaved={reload} />}
       {paying && (
         <RepaymentModal
           party={paying}

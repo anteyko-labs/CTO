@@ -1209,6 +1209,10 @@ async fn debts(conn: &mut PgConnection, branch_id: Uuid, w: &Window) -> AppResul
            left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
            where l.branch_id = $1 and p.role = 'customer'
              and l.created_at >= $2 and l.created_at <= coalesce($3, now())
+             -- Старый долг из тетради и его сторно — не продажа смены (SPEC-38).
+             and l.doc_type <> 'old_debt'
+             and not exists (select 1 from party_ledger o
+                             where o.id = l.reversal_of and o.doc_type = 'old_debt')
            order by l.created_at, l.id"#,
         branch_id,
         w.start,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of, l.doc_type,\n                  exists (select 1 from party_ledger r where r.reversal_of = l.id) as \"reversed!\",\n                  l.branch_id, b.name as branch_name\n           from party_ledger l join branches b on b.id = l.branch_id\n           where l.party_id = $1 and ($2::uuid is null or l.branch_id = $2)\n             and ($3::date is null or l.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::date is null or l.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by l.created_at desc limit 200",
+  "query": "select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of, l.doc_type,\n                  exists (select 1 from party_ledger r where r.reversal_of = l.id) as \"reversed!\",\n                  l.branch_id, b.name as branch_name, l.business_date, u.full_name as user_name\n           from party_ledger l join branches b on b.id = l.branch_id\n           join users u on u.id = l.user_id\n           where l.party_id = $1 and ($2::uuid is null or l.branch_id = $2)\n             and ($3::date is null or l.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')\n             and ($4::date is null or l.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')\n           order by l.created_at desc limit 200",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,16 @@
         "ordinal": 10,
         "name": "branch_name",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 12,
+        "name": "user_name",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -78,8 +88,10 @@
       false,
       null,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "82e4fc2a866e24509813300553d32211bb2d90be880bc36e917a3e3de1b76c71"
+  "hash": "554c62377bcb32d7af1615ac26546a612731381cf93a6ac61790393dfc3cf95e"
 }

@@ -10854,6 +10854,15 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                 move || json!({ "op_id": op(), "party_id": client, "amount_tyiyn": 10_000, "method": "cash" }),
             )
         }),
+        // Старый долг из тетради (SPEC-38): сумма своя на каждый вызов — повтор не нужен.
+        ("old_debts", "POST", "/api/v1/debts/old".into(), {
+            let client = client.clone();
+            Box::new(move || {
+                let amount = 1_000 + i64::try_from(op().as_u128() % 100_000).unwrap();
+                json!({ "op_id": op(), "party_id": client, "amount_tyiyn": amount,
+                        "date": "2026-01-15", "comment": "стр. 3" })
+            })
+        }),
         (
             "cash_moves",
             "POST",
@@ -10982,7 +10991,12 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
             format!("Нет права: {label}"),
             "{perm} {uri}"
         );
-        set_admin_permissions(&app, &owner, &all).await;
+        // Право, которого нет по умолчанию («Старые долги из тетради»), выдаётся явно.
+        let mut with = all.clone();
+        if !with.contains(perm) {
+            with.push(perm);
+        }
+        set_admin_permissions(&app, &owner, &with).await;
         let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body())).await;
         assert_eq!(s, StatusCode::OK, "{perm} {uri}: {out}");
     }

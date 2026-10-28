@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 70] = [
+pub(crate) const WATCHED: [&str; 71] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -90,6 +90,7 @@ pub(crate) const WATCHED: [&str; 70] = [
     "old_catalog.disable",
     "old_catalog.enable",
     "shift.pin_locked",
+    "debt.old",
 ];
 
 #[derive(Serialize)]
@@ -498,6 +499,20 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 "{} — {}",
                 money(num("amount_tyiyn")),
                 data.get("comment").and_then(Value::as_str).unwrap_or("")
+            ),
+        ),
+        // Старый долг из тетради (SPEC-38): кто занёс — подписью уведомления.
+        "debt.old" => (
+            format!(
+                "Старый долг: {} — {} от {} (из тетради)",
+                text("name"),
+                money(num("amount_tyiyn")),
+                ru_date(&text("date"))
+            ),
+            format!(
+                "Долг клиента — {}{}",
+                money(num("balance_tyiyn")),
+                comment(data)
             ),
         ),
         "user.create" => (
@@ -1425,5 +1440,20 @@ mod tests {
                 "{action} без описания"
             );
         }
+    }
+
+    #[test]
+    fn old_debt_is_described_with_its_date() {
+        // SPEC-38 §5: «Старый долг: Иванов Пётр — 5 000 с от 15.03.2026 (из тетради)».
+        let (title, text) = describe(
+            "debt.old",
+            &json!({ "name": "Иванов Пётр", "amount_tyiyn": 500_000, "date": "2026-03-15",
+                     "balance_tyiyn": 700_000, "comment": "стр. 12" }),
+        );
+        assert_eq!(
+            title,
+            "Старый долг: Иванов Пётр — 5 000 с от 15.03.2026 (из тетради)"
+        );
+        assert_eq!(text, "Долг клиента — 7 000 с — стр. 12");
     }
 }
