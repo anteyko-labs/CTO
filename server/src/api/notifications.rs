@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 70] = [
+pub(crate) const WATCHED: [&str; 72] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -90,6 +90,8 @@ pub(crate) const WATCHED: [&str; 70] = [
     "old_catalog.disable",
     "old_catalog.enable",
     "shift.pin_locked",
+    "shift.cash_to_bank",
+    "shift.cash_to_bank_reverse",
 ];
 
 #[derive(Serialize)]
@@ -291,6 +293,53 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             )
         }
         // «Исправить» владельца (SPEC-29 §24): что исправлено и что поменялось.
+        // «Изменить оплату» (SPEC-37 §6): было → стало, смена и удержание, причина.
+        "correction.post" if data.get("payment").and_then(Value::as_bool) == Some(true) => {
+            let mut details = format!("{} → {}", text("pay_old"), text("pay_new"));
+            if let Some(s) = data.get("shift_text").and_then(Value::as_str) {
+                details.push_str(&format!(". {s}"));
+            }
+            (
+                format!(
+                    "Изменена оплата чека № {} → № {}",
+                    num("original_number").unwrap_or(0),
+                    num("new_number").unwrap_or(0)
+                ),
+                format!("{details}{}", comment(data)),
+            )
+        }
+        "shift.cash_to_bank" | "shift.cash_to_bank_reverse" => {
+            let mut details = format!(
+                "{} → {}, комиссия {}",
+                money(num("amount")),
+                text("account"),
+                money(num("fee"))
+            );
+            if let (Some(b), Some(a)) = (num("diff_before"), num("diff_after")) {
+                details.push_str(&format!(
+                    ". Расхождение {} → {}",
+                    crate::domain::money::format_som_signed(b),
+                    crate::domain::money::format_som_signed(a)
+                ));
+            }
+            match num("withhold") {
+                Some(w) if w > 0 => details.push_str(&format!(", кассиру возвращено {}", money(Some(w)))),
+                Some(w) if w < 0 => details.push_str(&format!(", с кассира удержано {}", money(Some(-w)))),
+                _ => {}
+            }
+            (
+                format!(
+                    "{}: смена № {}",
+                    if action == "shift.cash_to_bank" {
+                        "Из наличных в QR"
+                    } else {
+                        "Отменён перенос из наличных в QR"
+                    },
+                    num("number").unwrap_or(0)
+                ),
+                format!("{details}{}", comment(data)),
+            )
+        }
         "correction.post" => {
             let no = |key: &str| num(key).map(|n| format!(" № {n}")).unwrap_or_default();
             let changes = data

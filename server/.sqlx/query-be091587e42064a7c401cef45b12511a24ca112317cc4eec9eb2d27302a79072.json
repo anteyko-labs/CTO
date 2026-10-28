@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select created_at from sales where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "be091587e42064a7c401cef45b12511a24ca112317cc4eec9eb2d27302a79072"
+}

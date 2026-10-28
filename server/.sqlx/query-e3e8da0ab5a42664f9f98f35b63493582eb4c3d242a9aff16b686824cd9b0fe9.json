@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(m.amount_tyiyn), 0)::bigint as \"v!\"\n               from cash_movements m join shifts s on s.id = m.doc_id\n               where m.kind = 'count_diff' and m.doc_type = 'shift' and m.doc_id = $1\n                 and m.created_at = s.opened_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e3e8da0ab5a42664f9f98f35b63493582eb4c3d242a9aff16b686824cd9b0fe9"
+}

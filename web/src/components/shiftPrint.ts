@@ -115,6 +115,25 @@ export function shiftHtml(r: ShiftReport): string {
       (v.net_profit_tyiyn !== undefined ? row('Чистая прибыль', v.net_profit_tyiyn, { strong: true }) : '')
     : ''
 
+  // После закрытия (SPEC-37 §4): изменения оплаты и переносы, итоги «при закрытии → сейчас».
+  const a = r.after_close
+  const after = a
+    ? a.items
+        .map(
+          (i) =>
+            `<tr class="sub"><td colspan="2">${esc(formatDateTime(i.created_at))} ${esc(
+              i.kind === 'sale' ? `чек № ${i.original_number ?? ''} → № ${i.new_number ?? ''}` : i.reversal ? 'отмена переноса' : 'перенос',
+            )}: ${esc(i.old_text)} → ${esc(i.new_text)}. ${esc(i.comment)}</td></tr>`,
+        )
+        .join('') +
+      row('Наличными по чекам', a.after.cash_sales_tyiyn) +
+      (a.after.cash_to_bank_tyiyn ? row('Из наличных в QR', a.after.cash_to_bank_tyiyn) : '') +
+      row('Расхождение было', a.before.diff_tyiyn, { sign: true }) +
+      row('Расхождение сейчас', a.after.diff_tyiyn, { sign: true, strong: true }) +
+      row('Удержано с кассира', a.after.withheld_tyiyn) +
+      (a.after.net_profit_tyiyn !== undefined ? row('Чистая прибыль сейчас', a.after.net_profit_tyiyn, { strong: true }) : '')
+    : ''
+
   return `<!doctype html><html><head><meta charset="utf-8"><title>Чек смены ${s.number}</title><style>
     @page { size: 80mm auto; margin: 3mm; }
     body { font-family: Arial, sans-serif; font-size: 10pt; margin: 0; width: 72mm; }
@@ -139,6 +158,7 @@ export function shiftHtml(r: ShiftReport): string {
     ${section('Долги покупателей', debts)}
     ${section('Отменённые товары', cancelled)}
     ${section('Прибыль', profit)}
+    ${section(a?.at === 'open' ? 'Поправки пересчёта при открытии' : 'После закрытия', after)}
     ${owner ? '<div class="note">Чистая — без оклада: оклад начисляется в конце месяца. Чеки вне смен в смены не входят.</div>' : ''}
     <div class="center note">Напечатано ${esc(formatDateTime(new Date().toISOString()))}</div>
   </body></html>`

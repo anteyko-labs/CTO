@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with x as (select unnest(array[f.reversal_sale_id, f.new_sale_id]) as sale_id\n                      from pay_fixes f\n                      where f.branch_id = $1 and f.counted_shift_id = $2 and f.kind = 'sale')\n           select\n             (coalesce((select sum(p.fee_tyiyn) from sale_payments p join x on x.sale_id = p.sale_id), 0)\n              + coalesce((select -sum(m.amount_tyiyn) from cash_movements m join pay_fixes f on f.id = m.doc_id\n                          where m.kind = 'bank_fee' and m.doc_type = 'pay_fix'\n                            and f.branch_id = $1 and f.counted_shift_id = $2), 0))::bigint as \"fee!\",\n             coalesce((select sum(p.amount_tyiyn) from sale_payments p join x on x.sale_id = p.sale_id\n                       where p.method = 'bonus'), 0)::bigint as \"bonus!\",\n             coalesce((select sum(m.amount_tyiyn) from cash_movements m join pay_fixes f on f.count_movement_id = m.id\n                       where f.branch_id = $1 and f.counted_shift_id = $2), 0)::bigint as \"cash_diff!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.branch_id = $1 and a.kind <> 'monthly_salary'\n                         and ((a.doc_type in ('sale', 'sale_return') and a.doc_id in (select sale_id from x))\n                              or a.id in (select f.accrual_id from pay_fixes f\n                                          where f.branch_id = $1 and f.counted_shift_id = $2)\n                              or (a.doc_type = 'reversal' and a.doc_id in (\n                                    select f.accrual_id from pay_fixes f\n                                    where f.branch_id = $1 and f.counted_shift_id = $2)))), 0)::bigint as \"payroll!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "cash_diff!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "payroll!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "cc9faa462d9ca5883bbea33fa20f17efca972428eff90d266310cc2395fdb37a"
+}

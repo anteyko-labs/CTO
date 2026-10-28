@@ -439,7 +439,16 @@ export default function Shift() {
                 <td className="px-2 py-2 text-right">{s.counted_tyiyn === null ? '—' : <Money value={s.expected_tyiyn} />}</td>
                 <td className="px-2 py-2 text-right">{s.counted_tyiyn === null ? <Badge tone="green">открыта</Badge> : <Money value={s.counted_tyiyn} />}</td>
                 <td className="whitespace-nowrap px-2 py-2 text-right">
-                  {s.diff_tyiyn ? <Badge tone={s.diff_tyiyn < 0 ? 'rose' : 'amber'}>{formatSom(s.diff_tyiyn)}</Badge> : '—'}
+                  {/* Расхождение с поправками после закрытия (SPEC-37 §4). */}
+                  {(() => {
+                    const d = s.diff_tyiyn === null ? null : s.diff_tyiyn + (s.diff_fix_tyiyn ?? 0)
+                    return (
+                      <>
+                        {d ? <Badge tone={d < 0 ? 'rose' : 'amber'}>{formatSom(d)}</Badge> : '—'}
+                        {s.has_after_close && <div className="text-xs text-slate-500">после закрытия</div>}
+                      </>
+                    )
+                  })()}
                 </td>
                 <td className="whitespace-nowrap px-2 py-2 text-right">
                   {s.handover_pending ? <Badge tone="amber">не сдана</Badge> : s.to_safe_tyiyn === null ? '—' : <Money value={s.to_safe_tyiyn} />}

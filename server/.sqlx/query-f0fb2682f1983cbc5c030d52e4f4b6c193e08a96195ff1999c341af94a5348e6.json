@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(p.amount_tyiyn) filter (where s.kind = 'sale'), 0)::bigint as \"sales!\",\n                  coalesce(-sum(p.amount_tyiyn) filter (where s.kind = 'return'), 0)::bigint as \"returns!\"\n           from sale_payments p join sales s on s.id = p.sale_id\n           where p.method = 'cash' and s.branch_id = $1\n             and ((s.created_at >= $2 and s.created_at <= coalesce($3, now())\n                   and not pay_fix_counted_sale(s.id))\n                  or exists (select 1 from pay_fixes f where f.counted_shift_id = $4\n                               and (f.reversal_sale_id = s.id or f.new_sale_id = s.id)))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sales!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "returns!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f0fb2682f1983cbc5c030d52e4f4b6c193e08a96195ff1999c341af94a5348e6"
+}

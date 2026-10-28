@@ -94,7 +94,8 @@ fn day_of(t: DateTime<Utc>) -> NaiveDate {
 /// Оплата в учёте: картой по чеку (в том числе по QR) или погашение долга картой.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OurItem {
-    /// `card`, `qr` (чек по QR банка) или `repayment` (погашение долга картой).
+    /// `card`, `qr` (чек по QR банка), `repayment` (погашение долга картой) или `transfer`
+    /// (перенос из наличных в QR за смену, SPEC-37 §4).
     pub kind: String,
     pub at: DateTime<Utc>,
     pub amount_tyiyn: i64,
@@ -102,8 +103,14 @@ pub struct OurItem {
     pub fee_tyiyn: i64,
     pub sale_id: Option<Uuid>,
     pub sale_number: Option<i64>,
+    /// Перенос: номер смены.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift_number: Option<i64>,
     #[serde(skip)]
     ids: Vec<String>,
+    /// Перенос: окно смены — QR банка в нём, не сопоставленные с чеками, засчитываются в перенос.
+    #[serde(skip)]
+    window: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
 /// Операция из выписки банка.
@@ -225,7 +232,9 @@ async fn our_items(
                 fee_tyiyn: r.fee,
                 sale_id: Some(r.sale_id),
                 sale_number: Some(r.number),
+                shift_number: None,
                 ids,
+                window: None,
             }
         })
         .collect();
@@ -259,7 +268,39 @@ async fn our_items(
         fee_tyiyn: r.fee,
         sale_id: None,
         sale_number: None,
+        shift_number: None,
         ids: Vec::new(),
+        window: None,
+    }));
+    // Переносы из наличных в QR за смену (SPEC-37 §4), кроме отменённых: одной суммой на день
+    // смены, окно — от открытия до действующего закрытия (у открытой — до сейчас).
+    let transfers = sqlx::query!(
+        r#"select f.amount_tyiyn, f.fee_tyiyn, s.number, s.opened_at,
+                  coalesce((select c.closed_at from shift_closes c
+                            where c.shift_id = s.id
+                              and not exists (select 1 from shift_reopens r where r.close_id = c.id)
+                            order by c.seq desc limit 1), now()) as "until!"
+           from pay_fixes f join shifts s on s.id = f.shift_id
+           where f.branch_id = $1 and f.account_id = $2 and f.kind = 'shift' and f.reversal_of is null
+             and not exists (select 1 from pay_fixes r where r.reversal_of = f.id)
+             and s.business_date between $3 and $4"#,
+        branch_id,
+        account_id,
+        from,
+        to
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    out.extend(transfers.into_iter().map(|r| OurItem {
+        kind: "transfer".into(),
+        at: r.opened_at,
+        amount_tyiyn: r.amount_tyiyn,
+        fee_tyiyn: r.fee_tyiyn,
+        sale_id: None,
+        sale_number: None,
+        shift_number: Some(r.number),
+        ids: Vec::new(),
+        window: Some((r.opened_at, r.until)),
     }));
     out.sort_by_key(|o| o.at);
     Ok(out)
@@ -352,7 +393,11 @@ async fn compute(
     from: NaiveDate,
     to: NaiveDate,
 ) -> AppResult<(Vec<ReconDay>, Vec<OurItem>, Vec<BankItem>)> {
-    let ours = our_items(conn, branch_id, account_id, from, to).await?;
+    let (transfers, ours): (Vec<OurItem>, Vec<OurItem>) =
+        our_items(conn, branch_id, account_id, from, to)
+            .await?
+            .into_iter()
+            .partition(|o| o.kind == "transfer");
     let bank = bank_items(conn, branch_id, account_id, from, to).await?;
     let loaded = loaded_days(conn, branch_id, from, to).await?;
     let adjusted: BTreeMap<NaiveDate, i64> = sqlx::query!(
@@ -424,6 +469,40 @@ async fn compute(
                         ours_unmatched.push(o.clone());
                     }
                 }
+            }
+        }
+    }
+    // Перенос из наличных в QR: QR банка в окне смены, не сопоставленные с чеками, по времени —
+    // пока их сумма не дойдёт до суммы переноса. Сошлась точно — перенос сопоставлен.
+    for t in &transfers {
+        let own = day_of(t.at);
+        if let Some(x) = days.get_mut(&own) {
+            x.ours_count += 1;
+            x.ours_tyiyn = x.ours_tyiyn.saturating_add(t.amount_tyiyn);
+        }
+        let (start, end) = t.window.unwrap_or((t.at, t.at));
+        let mut taken = Vec::new();
+        let mut sum: i64 = 0;
+        for (j, b) in bank.iter().enumerate() {
+            if sum >= t.amount_tyiyn {
+                break;
+            }
+            if !bank_matched[j] && b.kind == "qr" && b.at >= start && b.at <= end {
+                sum = sum.saturating_add(b.amount_tyiyn);
+                taken.push(j);
+            }
+        }
+        if sum == t.amount_tyiyn && !taken.is_empty() {
+            for j in taken {
+                bank_matched[j] = true;
+            }
+            if let Some(x) = days.get_mut(&own) {
+                x.our_fee_tyiyn = x.our_fee_tyiyn.saturating_add(t.fee_tyiyn);
+            }
+        } else if let Some(x) = days.get_mut(&own) {
+            x.unmatched += 1;
+            if x.loaded {
+                ours_unmatched.push(t.clone());
             }
         }
     }

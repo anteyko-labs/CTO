@@ -157,9 +157,29 @@ pub struct SaleReq {
 }
 
 /// Как проводится исправленный чек (SPEC-29 §24, ADR-085).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SaleCorrection {
     pub business_date: NaiveDate,
+    /// «Изменить оплату» (SPEC-37 §2): новый чек повторяет исходный.
+    pub replay: Option<Replay>,
+}
+
+/// Новый чек «Изменить оплату» повторяет исходный (SPEC-37 §2): справочник с тех пор мог
+/// поменяться (товар в архиве, сотрудник или клиент отключены, правило подарка снято, цена другая) —
+/// чек всё равно проводится, без уведомлений о цене: по исходному они уже были. Себестоимость строк
+/// и ставки мастеру — исходного чека: товар на полку не возвращался. Аккумулятор в оплату — как был:
+/// лом не двигается ни сторно, ни новым чеком.
+#[derive(Clone, Debug, Default)]
+pub struct Replay {
+    /// Себестоимость строки по номеру. Строк без цены закупки (ADR-062) здесь нет — они берут
+    /// себестоимость по средней, как при «Исправить».
+    pub costs: HashMap<i32, i64>,
+    /// Ставка мастеру по номеру строки.
+    pub fees: HashMap<i32, i64>,
+    /// Ставка за чек у прежних чеков без вида замены (ADR-027).
+    pub check_fee: i64,
+    /// Клиент исходного чека: его уже проверили при продаже.
+    pub party_id: Option<Uuid>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -192,7 +212,7 @@ pub struct SaleLineOut {
     pub withhold_price_tyiyn: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PaymentOut {
     pub method: String,
     pub amount_tyiyn: i64,
@@ -988,8 +1008,37 @@ impl FeeBack {
     }
 }
 
+/// Деньги чека: сразу или списком в конце операции «Изменить оплату» (SPEC-37 §1).
+async fn pay_move(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    defer: &mut Option<&mut Vec<cash::CashMove>>,
+    e: CashEntry<'_>,
+) -> AppResult<()> {
+    match defer {
+        Some(list) => {
+            let kind = match e.kind {
+                "sale" => "sale",
+                "sale_return" => "sale_return",
+                _ => "bank_fee",
+            };
+            list.push(cash::CashMove {
+                account_id: e.account_id,
+                kind,
+                amount: e.amount,
+                doc_type: "sale",
+                doc_id: e.doc_id,
+                comment: e.comment.to_string(),
+            });
+            Ok(())
+        }
+        None => cash::add_movement(conn, ctx, e).await.map(|_| ()),
+    }
+}
+
 /// Платежи чека: деньги попадают в кассу и на счёт, комиссия банка фиксируется в платеже
 /// и уходит со счёта (ADR-022, ADR-024). Долг кассу не трогает.
+#[allow(clippy::too_many_arguments)]
 async fn insert_payments(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -1000,6 +1049,9 @@ async fn insert_payments(
     mut back: Option<HashMap<Uuid, FeeBack>>,
     // Учётный день чека: ставка банка берётся действовавшая в него.
     on: NaiveDate,
+    // «Изменить оплату» (SPEC-37): деньги — списком в конце операции, лом аккумулятора не двигается.
+    mut defer: Option<&mut Vec<cash::CashMove>>,
+    keep_scrap: bool,
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let register = cash::default_account(conn, branch_id).await?;
@@ -1026,9 +1078,10 @@ async fn insert_payments(
         };
         match p.method.as_str() {
             "cash" => {
-                cash::add_movement(
+                pay_move(
                     conn,
                     ctx,
+                    &mut defer,
                     CashEntry {
                         account_id: register,
                         kind: movement_kind,
@@ -1062,16 +1115,19 @@ async fn insert_payments(
                     // Возврат: сначала возвращается комиссия, потом уходят деньги — со счёта
                     // уходит ровно то, что он получил за эту часть чека.
                     if sign < 0 && fee != 0 {
-                        cash::add_movement(conn, ctx, fee_entry).await?;
-                        cash::add_movement(conn, ctx, money).await?;
+                        pay_move(conn, ctx, &mut defer, fee_entry).await?;
+                        pay_move(conn, ctx, &mut defer, money).await?;
                     } else {
-                        cash::add_movement(conn, ctx, money).await?;
+                        pay_move(conn, ctx, &mut defer, money).await?;
                         if fee != 0 {
-                            cash::add_movement(conn, ctx, fee_entry).await?;
+                            pay_move(conn, ctx, &mut defer, fee_entry).await?;
                         }
                     }
                 }
             }
+            // «Изменить оплату»: аккумулятор той же оплатой в сторно и новом чеке — лом на складе
+            // не двигается (иначе проданный лом ушёл бы в минус посреди операции).
+            "battery" if keep_scrap => {}
             // Аккумулятор в оплату: денег нет, на складе — лом по весу этой стоимостью (SPEC-27).
             "battery" => {
                 let grams = p
@@ -1110,6 +1166,17 @@ async fn insert_payments(
 }
 
 pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> AppResult<SaleOut> {
+    post_sale_core(conn, ctx, req, None).await
+}
+
+/// Проведение чека. `defer` — «Изменить оплату» (SPEC-37 §1): деньги чека не пишутся сразу, а
+/// добавляются в список — их пишет операция изменения в нужном порядке.
+pub async fn post_sale_core(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: SaleReq,
+    defer: Option<&mut Vec<cash::CashMove>>,
+) -> AppResult<SaleOut> {
     const KIND: &str = "sale.post";
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
@@ -1122,9 +1189,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.lines.len() > 300 || req.payments.len() > 20 {
         return Err(invalid("в чеке — не больше 300 строк и 20 оплат"));
     }
-    // Аккумулятор в оплату: сумму по весу считает сервер (SPEC-27).
+    // «Изменить оплату»: чек повторяет исходный — проверки справочника не отклоняют его, как чек
+    // без сети, но владельцу ничего не уходит: по исходному чеку уже уходило (SPEC-37 §2).
+    let replay = req.correction.as_ref().and_then(|c| c.replay.clone());
+    // Аккумулятор в оплату: сумму по весу считает сервер (SPEC-27); у повтора — как в исходном.
     let mut req = req;
-    req.payments = price_battery(conn, ctx, &req.payments).await?;
+    if replay.is_none() {
+        req.payments = price_battery(conn, ctx, &req.payments).await?;
+    }
     let battery_scrap = if req.payments.iter().any(|p| p.method == "battery") {
         Some(crate::api::batteries::scrap_product(conn).await?)
     } else {
@@ -1141,7 +1213,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     // давность не проверяется. Признак только смягчает проверки, а не даёт прав: всё, что
     // онлайн-продажа отклонила бы, уходит владельцу (`sale.offline_bypass`), права на счета и
     // скрытые от администратора данные проверяются так же, как онлайн.
-    let offline = req.offline && req.client_time.is_some();
+    let offline = req.offline && req.client_time.is_some() && replay.is_none();
+    // Проверки справочника не отклоняют чек: он без сети или повторяет исходный.
+    let lenient = offline || replay.is_some();
     // Что чек без сети обошёл из проверок онлайн-продажи — владельцу одним уведомлением (ADR-062).
     let mut bypass: Vec<String> = Vec::new();
     // Время устройства впереди сервера: чек из очереди ушёл почти сразу, а часы кассы спешат.
@@ -1205,14 +1279,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
         "takeaway" => {
             if let Some(master) = req.master_id {
-                check_employee(conn, branch_id, master, true, offline, &mut bypass).await?;
+                check_employee(conn, branch_id, master, true, lenient, &mut bypass).await?;
             }
         }
         "service" => {
             let master = req
                 .master_id
                 .ok_or_else(|| invalid("в сервисе нужен мастер"))?;
-            check_employee(conn, branch_id, master, true, offline, &mut bypass).await?;
+            check_employee(conn, branch_id, master, true, lenient, &mut bypass).await?;
         }
         _ => return Err(invalid("тип продажи: takeaway или service")),
     }
@@ -1262,6 +1336,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         bypass.push("продажа в долг без права".into());
     }
     match req.party_id {
+        // Клиент исходного чека при «Изменить оплату» уже проверен при продаже: отключённый клиент
+        // или убранная машина чек не останавливают и не возвращаются в список (SPEC-37 §2).
+        Some(pid) if replay.as_ref().is_some_and(|r| r.party_id == Some(pid)) => {}
         Some(pid) => {
             let reasons = parties::check_sale_party(
                 conn,
@@ -1308,7 +1385,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     let mut prepared = Vec::with_capacity(req.lines.len());
     let mut total: i64 = 0;
     for l in &req.lines {
-        let p = prepare_line(conn, branch_id, l, offline, &mut bypass).await?;
+        let p = prepare_line(conn, branch_id, l, lenient, &mut bypass).await?;
         total = total.checked_add(p.amount).ok_or_else(overflow)?;
         prepared.push(p);
     }
@@ -1317,7 +1394,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     if req.sale_type == "takeaway" {
         let names = takeaway_rejects(conn, &prepared).await?;
         if !names.is_empty() {
-            if !offline {
+            if !lenient {
                 return Err(invalid(format!(
                     "На вынос продаётся только доливка; «{}» — только в продаже «в сервис»",
                     names.join("», «")
@@ -1332,6 +1409,13 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             p.master_fee = 0;
         }
     }
+    // «Изменить оплату»: ставки мастеру — исходного чека, даже если справочник с тех пор поменялся.
+    if let Some(r) = &replay {
+        for (i, p) in prepared.iter_mut().enumerate() {
+            let line_no = i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?;
+            p.master_fee = r.fees.get(&line_no).copied().unwrap_or(0);
+        }
+    }
     with_our_oil(conn, &mut prepared).await?;
     // Чек «в сервис» — с видом замены из справочника (ADR-096) и с данными клиента (ADR-100).
     // Чек без сети уже состоялся: проводится, а владелец получает причину.
@@ -1344,14 +1428,14 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             .any(|p| p.service_id.is_some() && p.free_with_oil && p.oil_category.is_some());
     if req.sale_type == "service" {
         if !service_kinds {
-            if !offline {
+            if !lenient {
                 return Err(invalid("Выберите вид замены"));
             }
             bypass.push("чек «в сервис» без вида замены".into());
         }
         let missing = service_client_missing(conn, &req).await?;
         if !missing.is_empty() {
-            if !offline {
+            if !lenient {
                 return Err(invalid(format!(
                     "Чек «в сервис» — нужны данные клиента: {}",
                     missing.join(", ")
@@ -1377,10 +1461,11 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         .filter(|p| p.gift)
         .filter_map(|p| p.product_id)
         .collect();
-    if !gifts.is_empty() {
-        if prepared.iter().any(|p| p.gift && p.amount != 0) {
-            return Err(invalid("подарок идёт с нулевой ценой"));
-        }
+    if !gifts.is_empty() && prepared.iter().any(|p| p.gift && p.amount != 0) {
+        return Err(invalid("подарок идёт с нулевой ценой"));
+    }
+    // Правило подарка проверено при продаже исходного чека; его могли снять с тех пор (SPEC-37 §2).
+    if !gifts.is_empty() && replay.is_none() {
         // Сколько каждого товара-условия в чеке, в его единицах учёта (мл или штуки).
         let mut bought: std::collections::HashMap<Uuid, i64> = std::collections::HashMap::new();
         for p in prepared.iter().filter(|p| !p.gift) {
@@ -1465,7 +1550,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     // со старого устройства «в сервис» без вида замены, с товаром (одни услуги её не давали,
     // ADR-043).
     let has_goods = prepared.iter().any(|p| p.product_id.is_some() && !p.gift);
-    let check_fee = if req.sale_type == "service" && !service_kinds && has_goods {
+    let check_fee = if let Some(r) = &replay {
+        r.check_fee
+    } else if req.sale_type == "service" && !service_kinds && has_goods {
         oil_change_fee(conn, branch_id).await?
     } else {
         0
@@ -1530,7 +1617,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         // числом в закрытый день не проводится (SPEC-08).
         if offline { req.client_time } else { None },
         req.delivery_address.trim(),
-        req.correction.map(|c| c.business_date)
+        req.correction.as_ref().map(|c| c.business_date)
     )
     .execute(&mut *conn)
     .await?;
@@ -1550,8 +1637,15 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         let mut unknown_units = 0;
         if let Some(pid) = p.product_id {
             let pool = ops::lock_pool(conn, branch_id, pid).await?;
-            cost = cost_of(p.units, &pool).ok_or_else(overflow)?;
-            unknown_units = crate::domain::costing::unknown_units(p.units, &pool);
+            // «Изменить оплату»: себестоимость строки — исходного чека, а не средняя сейчас: товар
+            // на полку не возвращался, сторно вернуло его той же стоимостью (SPEC-37 §2).
+            match replay.as_ref().and_then(|r| r.costs.get(&line_no)) {
+                Some(c) => cost = *c,
+                None => {
+                    cost = cost_of(p.units, &pool).ok_or_else(overflow)?;
+                    unknown_units = crate::domain::costing::unknown_units(p.units, &pool);
+                }
+            }
             ops::apply_movement(
                 conn,
                 Movement {
@@ -1567,7 +1661,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         }
         // Дешевле закупки не продаём, кроме подарка (ADR-042). Сравнение со своей
         // себестоимостью строки: у розлива она за миллилитры, у канистры — за штуки.
-        if p.product_id.is_some() && !p.gift && p.amount < cost {
+        if p.product_id.is_some() && !p.gift && p.amount < cost && replay.is_none() {
             if !offline {
                 return Err(invalid(if ctx.user.is_owner() {
                     format!(
@@ -1607,7 +1701,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
         // Цену меняли на кассе — если она отличается от прайса, который видела касса; прайс
         // мог смениться, пока чек лежал без сети: это не правка кассира, а старая цена (SPEC-09).
         let seen = p.seen_list.unwrap_or(p.list_price);
-        if p.unit_price != seen && !p.gift {
+        if p.unit_price != seen && !p.gift && replay.is_none() {
             overrides.push(json!({ "line_no": line_no, "list": seen, "price": p.unit_price }));
         }
         if offline && seen != p.list_price && !p.gift {
@@ -1621,7 +1715,18 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
     )
     .fetch_one(&mut *conn)
     .await?;
-    insert_payments(conn, ctx, id, &req.payments, 1, None, business_date).await?;
+    insert_payments(
+        conn,
+        ctx,
+        id,
+        &req.payments,
+        1,
+        None,
+        business_date,
+        defer,
+        replay.is_some(),
+    )
+    .await?;
     crate::api::bank_qr::link_sale(conn, id, &bank_qrs).await?;
     // Баллы: списание оплатой «bonus» (в любом чеке) и начисление с денег — только за замену
     // масла (SPEC-19, ADR-124).
@@ -1726,7 +1831,8 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             .await?;
         }
     }
-    if !unknown.is_empty() {
+    // Строки без цены закупки — владельцу; у «Изменить оплату» о них уже сообщал исходный чек.
+    if !unknown.is_empty() && replay.is_none() {
         let ids: Vec<Uuid> = unknown.iter().map(|u| u.product_id).collect();
         let names = sqlx::query_scalar!(
             "select name from products where id = any($1) order by name",
@@ -1776,6 +1882,9 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             &car_unit,
         ) {
             Ok(m) => m,
+            // «Изменить оплату» повторяет записанное в исходном чеке: правило пробега с тех пор
+            // могло поменяться — замена записывается без пробега (SPEC-37 §2).
+            Err(AppError::Validation(_)) if replay.is_some() => None,
             // Чек без сети уже пробит: опечатка в пробеге не отменяет продажу (инвариант 10) —
             // замена записывается без пробега, владелец видит причину (ADR-090).
             Err(AppError::Validation(why)) if offline => {
@@ -1807,6 +1916,7 @@ pub async fn post_sale_tx(conn: &mut PgConnection, ctx: &Ctx, req: SaleReq) -> A
             {
                 Ok(Some(t)) => targets.push(t),
                 Ok(None) => {}
+                Err(AppError::Validation(_)) if replay.is_some() => {}
                 // Без сети — как пробег: чек проводится, срок строки — по интервалу.
                 Err(AppError::Validation(why)) if offline => {
                     ops::audit(
@@ -2217,6 +2327,26 @@ pub async fn return_sale_tx(
     id: Uuid,
     req: ReturnReq,
 ) -> AppResult<SaleOut> {
+    return_sale_core(conn, ctx, id, req, ReturnMode::default()).await
+}
+
+/// Как проводится возврат: обычный или сторно «Изменить оплату» (SPEC-37 §2).
+#[derive(Default)]
+pub struct ReturnMode<'a> {
+    /// Сторно «Изменить оплату»: наличные не выдаются — открытая смена не нужна (правило ADR-065
+    /// здесь не действует); аккумулятор новый чек принимает той же оплатой — лом не двигается.
+    pub pay_change: bool,
+    /// Деньги сторно — списком в конце операции изменения (SPEC-37 §1).
+    pub defer: Option<&'a mut Vec<cash::CashMove>>,
+}
+
+pub async fn return_sale_core(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    req: ReturnReq,
+    mode: ReturnMode<'_>,
+) -> AppResult<SaleOut> {
     const KIND: &str = "sale.return";
     crate::auth::require_permission(conn, &ctx.user, "sale_return").await?;
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
@@ -2516,10 +2646,11 @@ pub async fn return_sale_tx(
     }
     // Наличные из «Кассы» выдаются только в открытую смену (ADR-065): иначе деньги уйдут мимо
     // пересчёта. Возврат на карту и списанием долга смены не требует, продажа без смены — тоже.
-    if req
-        .payments
-        .iter()
-        .any(|p| p.method == "cash" && p.amount_tyiyn > 0)
+    if !mode.pay_change
+        && req
+            .payments
+            .iter()
+            .any(|p| p.method == "cash" && p.amount_tyiyn > 0)
     {
         let till = cash::default_account(conn, branch_id).await?;
         if cash::open_shift_id(conn, branch_id, till).await?.is_none() {
@@ -2578,7 +2709,8 @@ pub async fn return_sale_tx(
     lock_products(conn, branch_id, products.into_iter().chain(scrap)).await?;
     ops::ensure_not_merged(conn, &ids).await?;
     // Лом, принятый в оплату, уже продали — вес не вернуть: эту часть деньгами отдаёт владелец.
-    if let Some(scrap) = scrap {
+    // У сторно «Изменить оплату» лом не двигается: новый чек принимает его той же оплатой.
+    if let Some(scrap) = scrap.filter(|_| !mode.pay_change) {
         let pool = ops::lock_pool(conn, branch_id, scrap).await?;
         // Возвращаемые строки чека могут сами быть ломом на вес: они вернутся на склад раньше.
         let coming: i64 = planned
@@ -2734,6 +2866,8 @@ pub async fn return_sale_tx(
         -1,
         Some(back),
         orig.business_date,
+        mode.defer,
+        mode.pay_change,
     )
     .await?;
     crate::api::loyalty::on_return(conn, ctx, id, rid, orig.party_id, &req.payments).await?;
@@ -3111,6 +3245,8 @@ pub async fn no_receipt_return_tx(
         -1,
         Some(HashMap::new()),
         business_date,
+        None,
+        false,
     )
     .await?;
     ops::audit(

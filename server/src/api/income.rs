@@ -170,6 +170,9 @@ pub struct BankSplit {
     /// Только за смену: упало на счёт — итог минус комиссия.
     #[serde(default)]
     pub landed_tyiyn: i64,
+    /// Только за смену: перенесено из наличных на этот счёт (SPEC-37 §3), за вычетом отмен.
+    #[serde(default)]
+    pub cash_to_bank_tyiyn: i64,
 }
 
 /// Безнал чеков по счетам: за учётные дни (`days`) — сводка (сумма по счетам равна карте и
@@ -281,7 +284,9 @@ async fn shift_split(
              join cash_accounts a on a.id = m.account_id
              where a.branch_id = $1 and a.kind = 'bank'
                and m.created_at >= $2 and m.created_at <= coalesce($3, now())
-               and m.kind in ('sale', 'sale_return', 'debt_repayment', 'bank_fee', 'reversal')
+               and m.kind in ('sale', 'sale_return', 'debt_repayment', 'bank_fee', 'reversal', 'cash_to_bank')
+               -- Изменение для уже пересчитанных наличных — в отчёте той смены (SPEC-37 §4).
+               and not public.pay_fix_counted_move(m.id, m.doc_type, m.doc_id)
            )
            select a.id as "account_id!", a.name as "name!",
                   coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'sale' and coalesce(m.method, 'card') = 'card'), 0)::bigint as "card!",
@@ -289,7 +294,9 @@ async fn shift_split(
                   coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'sale' and m.method = 'invoice'), 0)::bigint as "invoice!",
                   coalesce(-sum(m.amount_tyiyn) filter (where m.kind = 'sale_return'), 0)::bigint as "returns!",
                   coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'debt_repayment' or m.debt_back), 0)::bigint as "debt!",
-                  coalesce(-sum(m.amount_tyiyn) filter (where m.kind = 'bank_fee' and m.doc_type in ('sale', 'repayment')), 0)::bigint as "fee!",
+                  coalesce(-sum(m.amount_tyiyn) filter (where m.kind = 'bank_fee' and m.doc_type in ('sale', 'repayment', 'pay_fix')), 0)::bigint as "fee!",
+                  coalesce(sum(m.amount_tyiyn) filter (where m.kind = 'cash_to_bank'
+                                                         or (m.kind = 'reversal' and m.doc_type = 'pay_fix')), 0)::bigint as "to_bank!",
                   count(m.kind) filter (where m.kind <> 'reversal' or m.debt_back) as "moves!"
            from cash_accounts a
            left join m on m.account_id = a.id
@@ -311,7 +318,8 @@ async fn shift_split(
                 .saturating_add(r.transfer)
                 .saturating_add(r.invoice)
                 .saturating_sub(r.returns)
-                .saturating_add(r.debt);
+                .saturating_add(r.debt)
+                .saturating_add(r.to_bank);
             BankSplit {
                 account_id: r.account_id,
                 name: r.name,
@@ -323,6 +331,7 @@ async fn shift_split(
                 returns_tyiyn: r.returns,
                 debt_tyiyn: r.debt,
                 landed_tyiyn: total.saturating_sub(r.fee),
+                cash_to_bank_tyiyn: r.to_bank,
             }
         })
         .collect())

@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n             coalesce((select sum(l.amount_tyiyn) - sum(l.cost_tyiyn) from sale_lines l\n                       where l.sale_id in ($1, $2)), 0)::bigint as \"gross!\",\n             coalesce((select sum(p.fee_tyiyn) from sale_payments p where p.sale_id in ($1, $2)), 0)::bigint as \"fee!\",\n             coalesce((select sum(p.amount_tyiyn) from sale_payments p\n                       where p.sale_id in ($1, $2) and p.method = 'bonus'), 0)::bigint as \"bonus!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where (a.doc_type = 'sale' and a.doc_id = $2)\n                          or (a.doc_type = 'sale_return' and a.doc_id = $1)\n                          or a.id = $3), 0)::bigint as \"payroll!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.kind = 'revenue_percent'\n                         and ((a.doc_type = 'sale' and a.doc_id = $2)\n                              or (a.doc_type = 'sale_return' and a.doc_id = $1))), 0)::bigint as \"percent!\",\n             exists (select 1 from payroll_pending x\n                     where x.sale_id = $2 and x.debt_remaining_tyiyn > 0) as \"pending!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "gross!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "payroll!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "pending!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "6e88c19672540c0ff4d038d04269307311ea9b99fe87abb20fc8fc95572dbbed"
+}

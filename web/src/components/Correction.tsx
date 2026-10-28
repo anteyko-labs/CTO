@@ -64,11 +64,11 @@ export function CorrectionNote({ c, side, hrefOf }: { c: Correction; side: 'orig
         <div>
           {side === 'original' ? (
             <>
-              Исправлен → <Ref id={c.new_id} number={c.new_number} hrefOf={hrefOf} fallback="новый документ" />
+              {c.payment ? 'Изменена оплата' : 'Исправлен'} → <Ref id={c.new_id} number={c.new_number} hrefOf={hrefOf} fallback="новый документ" />
             </>
           ) : (
             <>
-              Исправление <Ref id={c.original_id} number={c.original_number} hrefOf={hrefOf} fallback="документа" />
+              {c.payment ? 'Изменение оплаты' : 'Исправление'} <Ref id={c.original_id} number={c.original_number} hrefOf={hrefOf} fallback="документа" />
             </>
           )}
           <span className="text-slate-600">

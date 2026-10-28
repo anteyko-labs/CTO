@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n             coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as \"goods!\",\n             coalesce(sum(l.amount_tyiyn) filter (where l.kind = 'service'), 0)::bigint as \"services!\",\n             coalesce(sum(l.cost_tyiyn), 0)::bigint as \"cost!\",\n             count(distinct s.id) filter (where s.kind = 'sale') as \"count!\"\n           from sale_lines l join sales s on s.id = l.sale_id\n           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())\n             and not public.pay_fix_counted_sale(s.id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "goods!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "services!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "cost!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3002e55068865072c541e37f7c26845205cedc37e1a6babed31423b77377e664"
+}

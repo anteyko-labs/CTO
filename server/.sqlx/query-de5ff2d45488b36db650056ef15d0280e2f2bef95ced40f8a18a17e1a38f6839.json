@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, p.kind, p.inn, p.role,\n                  coalesce((select b.balance_tyiyn from party_balances b\n                            where b.party_id = p.id and b.branch_id = $2), 0)::bigint as \"balance!\"\n           from parties p where p.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "inn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "balance!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "de5ff2d45488b36db650056ef15d0280e2f2bef95ced40f8a18a17e1a38f6839"
+}

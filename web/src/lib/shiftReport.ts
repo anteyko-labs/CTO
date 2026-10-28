@@ -1,6 +1,7 @@
 // Отчёт смены, как в Умаге (SPEC-30 §7, §8): типы ответа `GET /shifts/{id}/report` и правила
 // показа. Все суммы считает сервер; здесь — подписи, отбор и высота столбиков.
 import { formatPercentBp } from './format'
+import type { AfterClose, TransferRow } from './payChange'
 import type { BankSplit, Shift } from './types'
 
 export interface ReportLine {
@@ -180,6 +181,10 @@ export interface ShiftReport {
   cancelled_tyiyn: number
   /** Оплачено по QR банка за смену, а чека с этой оплатой нет (SPEC-31). */
   qr_unclaimed?: { id: string; amount_tyiyn: number; paid_at: string | null; user_name: string }[]
+  /** Переносы «из наличных в QR» смены (SPEC-37 §3). */
+  transfers?: TransferRow[]
+  /** Изменения после пересчёта наличных смены: блок «После закрытия» (SPEC-37 §4). */
+  after_close?: AfterClose | null
 }
 
 /** Вкладки отчёта в порядке Умага. */
@@ -284,7 +289,7 @@ export function debtTotals(rows: DebtRow[]): { sold: number; repaid: number; adj
 
 /** Строка безнала одного счёта за смену: подпись и сумма со знаком (ADR-120). */
 export interface BankPart {
-  key: 'card' | 'transfer' | 'invoice' | 'debt' | 'returns'
+  key: 'card' | 'transfer' | 'invoice' | 'debt' | 'cash_to_bank' | 'returns'
   label: string
   value: number
 }
@@ -297,6 +302,7 @@ export function bankParts(b: BankSplit): BankPart[] {
     { key: 'transfer', label: 'QR владельцу', value: b.transfer_tyiyn },
     { key: 'invoice', label: 'По счёту', value: b.invoice_tyiyn ?? 0 },
     { key: 'debt', label: 'Оплаты долга', value: b.debt_tyiyn ?? 0 },
+    { key: 'cash_to_bank', label: 'Из наличных в QR', value: b.cash_to_bank_tyiyn ?? 0 },
     { key: 'returns', label: 'Возвраты', value: -(b.returns_tyiyn ?? 0) },
   ]
   return parts.filter((p) => p.value !== 0)

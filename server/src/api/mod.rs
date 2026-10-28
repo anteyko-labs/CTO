@@ -36,6 +36,7 @@ pub mod old_catalog;
 pub mod optima;
 pub mod paging;
 pub mod parties;
+pub mod pay_fix;
 pub mod payroll;
 pub mod receipt_drafts;
 pub mod receipt_files;
@@ -84,6 +85,7 @@ pub fn routes() -> Router<AppState> {
         .merge(old_catalog::routes())
         .merge(optima::routes())
         .merge(parties::routes())
+        .merge(pay_fix::routes())
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce((select balance_tyiyn from party_balances\n                                where party_id = $1 and branch_id = $2), 0)::bigint as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "73c3038d22f60d902ecaca98b120b6b0e665bc3ed428abcdd7f8dc01f06a9959"
+}

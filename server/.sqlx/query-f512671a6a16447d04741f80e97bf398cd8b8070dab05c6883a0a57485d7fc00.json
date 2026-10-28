@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(m.amount_tyiyn), 0)::bigint as \"v!\" from cash_movements m\n           where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift' and m.doc_id = $2\n             and not exists (select 1 from pay_fixes f where f.count_movement_id = m.id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f512671a6a16447d04741f80e97bf398cd8b8070dab05c6883a0a57485d7fc00"
+}

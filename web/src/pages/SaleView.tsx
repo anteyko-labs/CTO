@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { CorrectionLinks, FixButton } from '../components/Correction'
+import { PayChangeButton, PayChangeModal } from '../components/PayChange'
 import { lineQtyText, printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
@@ -283,6 +284,7 @@ export default function SaleView() {
   const owner = user.role === 'owner'
   const { data: sale, error, loading } = useLoad(() => get<Sale>(`/sales/${id}`), [id])
   const [returning, setReturning] = useState(false)
+  const [payChange, setPayChange] = useState(false)
   const docAct = useAction()
 
   if (loading && !sale) return <Loading />
@@ -329,6 +331,10 @@ export default function SaleView() {
               // Исправить чек целиком: сторно и верный чек одним действием (SPEC-29 §24).
               <FixButton onClick={() => navigate(`/sales/${sale.id}/correct`)} />
             )}
+            {sale.kind === 'sale' && sale.returns.length === 0 && (
+              // Изменить только оплату: сторно и новый чек, пересчитанные наличные не трогаем (SPEC-37).
+              <PayChangeButton onClick={() => setPayChange(true)} />
+            )}
             {/* Возврат — право администратора (ADR-097). */}
             {sale.kind === 'sale' && !fullyReturned && can(user, 'sale_return') && (
               <Button variant="danger-outline" onClick={() => setReturning(true)}>
@@ -339,6 +345,16 @@ export default function SaleView() {
         }
       />
       <CorrectionLinks id={sale.id} hrefOf={(doc) => `/sales/${doc}`} />
+      {payChange && (
+        <PayChangeModal
+          saleId={sale.id}
+          onClose={() => setPayChange(false)}
+          onSaved={(newId) => {
+            setPayChange(false)
+            navigate(`/sales/${newId}`)
+          }}
+        />
+      )}
       <Card className="grid gap-2 text-sm sm:grid-cols-2">
         <div>Дата: {formatDateTime(sale.created_at)}</div>
         <div>Тип: {sale.sale_type === 'service' ? 'В сервис' : 'На вынос'}</div>

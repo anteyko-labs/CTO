@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into pay_fixes (id, branch_id, op_id, kind, shift_id, account_id, amount_tyiyn,\n                                  fee_tyiyn, counted_shift_id, counted_at, cash_delta_tyiyn,\n                                  diff_before_tyiyn, diff_after_tyiyn, count_movement_id,\n                                  withhold_tyiyn, accrual_id, comment, reversal_of, user_id, device_id)\n           values ($1, $2, $3, 'shift', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,\n                   $17, $18, $19)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85830f8f85951d90e239af53c4a4ab312b02a04b2ffcf568bc02cbfb79e940cb"
+}

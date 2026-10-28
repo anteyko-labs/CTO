@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select employee_id, business_date, kind, amount_tyiyn from payroll_accruals where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c88229ba170c44a5eb56b11fdd0d44107ce5c1f7bc944ecb22378a5fc4a7f779"
+}

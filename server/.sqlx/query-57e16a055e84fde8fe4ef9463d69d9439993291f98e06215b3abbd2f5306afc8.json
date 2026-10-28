@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id, coalesce(paid_tyiyn, amount_tyiyn) as \"amount_tyiyn!\", paid_at\n           from bank_qr\n           where branch_id = $1 and status = 'paid' and sale_id is null\n             and (paid_at at time zone 'Asia/Bishkek')::date = $2\n           order by paid_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "paid_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "57e16a055e84fde8fe4ef9463d69d9439993291f98e06215b3abbd2f5306afc8"
+}
