@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into receipt_acceptances (id, branch_id, draft_id, supplier_id, supplier_doc, comment,\n                                            sent_by, sent_device_id, sent_chat_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "39d699d54fe0ab5fc88041a32890dd8357bdf65257d7cace45ef879e21010b86"
+}

@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id as audit_id, s.name as supplier, x.supplier_doc, te.chat_id, te.phone as link_phone,\n                  e.phone, (select count(*) from receipt_acceptance_lines l where l.acceptance_id = x.id) as \"lines!\"\n           from audit_log a\n           join receipt_acceptances x on x.id = a.entity_id and x.status = 'waiting'\n           join suppliers s on s.id = x.supplier_id\n           join shifts sh on sh.branch_id = x.branch_id\n                         and not exists (select 1 from shift_closes c\n                                         where c.shift_id = sh.id\n                                           and not exists (select 1 from shift_reopens r where r.close_id = c.id))\n           join employees e on e.id = sh.cashier_employee_id and e.active\n           join telegram_employees te on te.employee_id = e.id\n           where a.action = 'acceptance.send' and a.created_at > now() - interval '1 day'\n             and not exists (select 1 from telegram_sent t where t.chat_id = te.chat_id and t.audit_id = a.id)\n           order by a.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audit_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "link_phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "lines!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "05bbbb55378ed976d2d20b977d90bfb5b5966daa5f5836ce8e4b6dda02eca8e1"
+}

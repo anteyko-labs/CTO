@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, s.name as supplier_name, a.supplier_doc, u.full_name as sent_by_name,\n                  a.sent_at, a.sent_chat_id, d.content_type as \"photo_type?\",\n                  (select count(*) from receipt_acceptance_lines l where l.acceptance_id = a.id) as \"lines!\",\n                  (select coalesce(sum(l.line_cost_tyiyn), 0)::bigint from receipt_acceptance_lines l\n                   where l.acceptance_id = a.id) as \"total!\"\n           from receipt_acceptances a\n           join suppliers s on s.id = a.supplier_id\n           join users u on u.id = a.sent_by\n           left join receipt_drafts d on d.id = a.draft_id\n           where a.branch_id = $1 and a.status = 'waiting'\n           order by a.sent_at desc, a.id desc\n           limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sent_by_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "sent_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "sent_chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "photo_type?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "lines!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "total!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "4fd108d1aac5dbdc8a23936eba5cc890ec0746ee44cb35c2d2996143a6602394"
+}

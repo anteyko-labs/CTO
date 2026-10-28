@@ -2,6 +2,7 @@
 // платежей (SPEC-27); фото накладной (SPEC-29 §3).
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ReceiptAcceptance } from '../components/Acceptances'
 import { CorrectionLinks, FixButton } from '../components/Correction'
 import { printLabels } from '../components/labels'
 import { ReceiptPhotos } from '../components/ReceiptPhotos'
@@ -184,6 +185,7 @@ export default function ReceiptView() {
           <InvoicePayments payments={r.debt.payments} />
         </Card>
       )}
+      {can('receipts') && <ReceiptAcceptance receiptId={r.id} />}
       <Card>
         {/* Как в старой программе: цена по накладной, наценка, цена продажи, сумма (SPEC-28 §1). */}
         <Table head={['№', 'Товар', 'Количество', 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма']}>

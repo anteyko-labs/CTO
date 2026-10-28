@@ -10578,7 +10578,7 @@ async fn migration_gives_existing_admins_default_permissions(pool: PgPool) {
         .map(String::from)
         .collect();
     defaults.sort();
-    assert_eq!(defaults.len(), 14);
+    assert_eq!(defaults.len(), 15);
     assert!(
         !defaults
             .iter()
@@ -10636,7 +10636,7 @@ async fn owner_sets_admin_permissions_with_journal(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{u}");
     let got: Vec<String> = serde_json::from_value(u["permissions"].clone()).unwrap();
     assert!(got.contains(&"discount".to_string()) && !got.contains(&"expenses".to_string()));
-    assert_eq!(got.len(), 13);
+    assert_eq!(got.len(), 14);
     // Повтор того же запроса — тот же ответ, вторая запись в журнал не пишется.
     let (s, _, again) = call(&app, "PUT", &uri, Some(&owner), Some(body)).await;
     assert_eq!((s, &again), (StatusCode::OK, &u));
@@ -11000,10 +11000,14 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body())).await;
         assert_eq!(s, StatusCode::OK, "{perm} {uri}: {out}");
     }
-    // Каждое право, кроме скидки (её проверяет чек), перелива и аванса (свои проверки, аванс —
-    // в tests/payouts.rs), закрывает хотя бы одно действие из списка.
+    // Каждое право, кроме скидки (её проверяет чек), перелива, аванса и приёмки (свои проверки:
+    // аванс — в tests/payouts.rs, приёмка — в tests/acceptance.rs), закрывает хотя бы одно
+    // действие из списка.
     for p in avtodom_server::auth::PERMISSIONS {
-        if !matches!(p.key, "discount" | "oil_transfer" | "payroll_advance") {
+        if !matches!(
+            p.key,
+            "discount" | "oil_transfer" | "payroll_advance" | "acceptance"
+        ) {
             assert!(cases.iter().any(|c| c.0 == p.key), "{} без проверки", p.key);
         }
     }

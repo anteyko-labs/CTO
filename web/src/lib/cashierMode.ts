@@ -39,11 +39,44 @@ export function useCashierMode(): boolean {
   return useSyncExternalStore(subscribe, () => on, () => false)
 }
 
-/** Режим действует: выбран и открыт экран «Касса». На остальных экранах — обычный вид с меню. */
+// Режим приёмки на планшете (SPEC-39 §3): экран «Приёмка» во весь экран, как режим кассы;
+// «Касса» на таком устройстве открывает приёмку. Выбор помнит устройство.
+const ACCEPTANCE_KEY = 'avtodom.acceptance_mode'
+
+function readAcceptance(): boolean {
+  try {
+    return localStorage.getItem(ACCEPTANCE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+let acceptanceOn = readAcceptance()
+
+/** Включить или выключить режим приёмки на этом устройстве. */
+export function setAcceptanceMode(value: boolean): void {
+  acceptanceOn = value
+  try {
+    if (value) localStorage.setItem(ACCEPTANCE_KEY, '1')
+    else localStorage.removeItem(ACCEPTANCE_KEY)
+  } catch {
+    // Без хранилища режим живёт до перезагрузки.
+  }
+  listeners.forEach((fn) => fn())
+}
+
+/** Выбран ли режим приёмки на устройстве. */
+export function useAcceptanceMode(): boolean {
+  return useSyncExternalStore(subscribe, () => acceptanceOn, () => false)
+}
+
+/** Режим действует: выбран и открыт экран «Касса» (или «Приёмка» в режиме приёмки). На остальных
+ *  экранах — обычный вид с меню. */
 export function useTouchMode(): boolean {
   const mode = useCashierMode()
+  const acceptance = useAcceptanceMode()
   const { pathname } = useLocation()
-  return mode && pathname === '/'
+  return (mode && pathname === '/') || (acceptance && pathname.startsWith('/acceptance'))
 }
 
 // Экранная клавиатура режима кассы (ADR-101): сама не появляется — её открывают кнопкой «⌨

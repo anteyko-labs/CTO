@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select signature_png from receipt_acceptances where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "signature_png",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "51e157da78915ffe6b15e59adf8c8ab626773dace30cc495769b769d0fa84d2d"
+}

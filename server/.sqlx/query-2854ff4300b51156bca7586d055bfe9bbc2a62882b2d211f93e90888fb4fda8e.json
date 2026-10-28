@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id as audit_id, x.supplier_doc, s.name as supplier, r.number, e.full_name as cashier, t.chat_id\n           from audit_log a\n           join receipt_acceptances x on x.receipt_id = a.entity_id\n           join suppliers s on s.id = x.supplier_id\n           join receipts r on r.id = x.receipt_id\n           join employees e on e.id = x.employee_id\n           join users u on u.id = x.sent_by and u.active and u.role = 'admin'\n           join telegram_links t on t.user_id = u.id\n           where a.action = 'receipt.accept' and a.created_at > now() - interval '1 day'\n             and a.created_at >= t.linked_at\n             and not exists (select 1 from telegram_sent z where z.chat_id = t.chat_id and z.audit_id = a.id)\n           order by a.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audit_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "cashier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "chat_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2854ff4300b51156bca7586d055bfe9bbc2a62882b2d211f93e90888fb4fda8e"
+}

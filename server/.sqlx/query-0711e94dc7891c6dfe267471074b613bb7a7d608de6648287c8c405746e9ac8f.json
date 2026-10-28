@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.id, a.action, a.data, a.created_at, a.entity_id, a.branch_id,\n                  w.full_name as \"who?\", t.chat_id,\n                  e.full_name as \"employee?\", b.name as branch_name\n           from audit_log a\n           join branches b on b.id = a.branch_id\n           -- Владелец получает ленту всех филиалов (SPEC-33 §3).\n           join telegram_links t on true\n           join users o on o.id = t.user_id and o.active and o.role = 'owner'\n           left join users w on w.id = a.user_id\n           left join employees e on e.id = a.entity_id\n           where a.created_at > greatest($1::timestamptz - interval '15 minutes', $2::timestamptz,\n                                         now() - interval '1 day')\n             and a.created_at >= t.linked_at\n             and a.action = any($3)\n             -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.\n             and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')\n             -- Приход по приёмке на планшете — одним сообщением «Приход № N принял …» (SPEC-39 §9).\n             and not (a.action = 'receipt.post'\n                      and exists (select 1 from receipt_acceptances x where x.receipt_id = a.entity_id))\n             and not exists (select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = a.id)\n           order by a.created_at, a.id, t.chat_id\n           limit $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "entity_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "who?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "chat_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "employee?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "branch_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz",
+        "TextArray",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0711e94dc7891c6dfe267471074b613bb7a7d608de6648287c8c405746e9ac8f"
+}

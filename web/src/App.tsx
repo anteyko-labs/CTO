@@ -6,7 +6,7 @@ import { AuthProvider, useAuth } from './lib/auth'
 import { can } from './lib/permissions'
 import type { Permission } from './lib/types'
 import { logoutWarning, outboxItems, startOfflineLoop } from './lib/offline'
-import { useTouchMode } from './lib/cashierMode'
+import { useAcceptanceMode, useTouchMode } from './lib/cashierMode'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
 import { BranchSwitch } from './components/BranchSwitch'
@@ -47,6 +47,7 @@ const ReceiptCorrect = lazyPage(() => import('./pages/ReceiptCorrect'))
 const ReceiptNew = lazyPage(() => import('./pages/ReceiptNew'))
 const ReceiptView = lazyPage(() => import('./pages/ReceiptView'))
 const Receipts = lazyPage(() => import('./pages/Receipts'))
+const Acceptance = lazyPage(() => import('./pages/Acceptance'))
 const SaleCorrect = lazyPage(() => import('./pages/SaleCorrect'))
 const SaleView = lazyPage(() => import('./pages/SaleView'))
 const SalesDay = lazyPage(() => import('./pages/SalesDay'))
@@ -106,6 +107,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     title: 'Склад',
     items: [
       { to: '/receipts', label: 'Приход', icon: 'incoming', permission: ['receipts', 'stock_in'] },
+      // Планшет приёмки (SPEC-39 §3): сверка накладной, PIN и подпись кассира.
+      { to: '/acceptance', label: 'Приёмка', icon: 'incoming', permission: 'acceptance' },
       { to: '/suppliers', label: 'Поставщики', icon: 'truck' },
       { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return', permission: 'supplier_returns' },
       { to: '/products', label: 'Товары', icon: 'products' },
@@ -215,6 +218,7 @@ function Shell() {
   }
   // Режим кассы (SPEC-29): на экране «Касса» — без меню, всё крупнее, цифры экранной клавиатурой.
   const touch = useTouchMode()
+  const acceptanceMode = useAcceptanceMode()
   const { pathname } = useLocation()
   useEffect(() => {
     document.documentElement.classList.toggle('cashier-mode', touch)
@@ -331,7 +335,9 @@ function Shell() {
         <PageBoundary resetKey={pathname}>
         <Suspense fallback={<Loading />}>
         <Routes>
-          <Route path="/" element={<Cashier />} />
+          <Route path="/" element={acceptanceMode && can(user, 'acceptance') ? <Navigate to="/acceptance" replace /> : <Cashier />} />
+          {can(user, 'acceptance') && <Route path="/acceptance" element={<Acceptance />} />}
+          {can(user, 'acceptance') && <Route path="/acceptance/:id" element={<ByParam><Acceptance /></ByParam>} />}
           <Route path="/sales" element={<SalesDay />} />
           <Route path="/sales/:id" element={<ByParam><SaleView /></ByParam>} />
           {owner && <Route path="/sales/:id/correct" element={<ByParam><SaleCorrect /></ByParam>} />}

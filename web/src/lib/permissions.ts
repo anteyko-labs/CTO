@@ -40,6 +40,7 @@ export const PERMISSIONS: readonly PermissionDef[] = [
     default: false,
   },
   { key: 'battery_intake', label: 'Приём аккумуляторов', group: 'Склад', default: true },
+  { key: 'acceptance', label: 'Приёмка товара (планшет)', group: 'Склад', default: true },
   { key: 'products', label: 'Товары и штрихкоды', hint: 'Заводить и править карточки; цены меняет владелец', group: 'Справочники', default: true },
   { key: 'clients', label: 'Клиенты и машины', hint: 'Заводить и править клиентов, их работников и машины', group: 'Справочники', default: true },
 ]

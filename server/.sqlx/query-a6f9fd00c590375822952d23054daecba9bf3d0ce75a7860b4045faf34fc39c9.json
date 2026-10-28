@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select exists (select 1 from telegram_customers where chat_id = $1) as \"c!\",\n                      exists (select 1 from telegram_employees where chat_id = $1) as \"e!\"",
+  "query": "select exists (select 1 from telegram_customers where chat_id = $1) as \"c!\",\n                          exists (select 1 from telegram_employees where chat_id = $1) as \"e!\"",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       null
     ]
   },
-  "hash": "7db2acd81e274f33907732486a41c1608fa8ae9f75b399a74204cc4be64b64f3"
+  "hash": "a6f9fd00c590375822952d23054daecba9bf3d0ce75a7860b4045faf34fc39c9"
 }

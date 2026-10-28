@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id as \"receipt!\", a.id as \"acceptance?\"\n           from receipts r left join receipt_acceptances a on a.receipt_id = r.id\n           where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "receipt!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "acceptance?",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1c7de2ba21bbb40470b60cb196f87a8f299e5540fc2aa16afa7eb93cb8197d45"
+}

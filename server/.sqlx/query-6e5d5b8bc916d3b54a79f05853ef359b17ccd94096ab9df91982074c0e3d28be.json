@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.signature_png, e.full_name as \"cashier?\"\n           from receipt_acceptances a left join employees e on e.id = a.employee_id\n           where a.receipt_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "signature_png",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "cashier?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "6e5d5b8bc916d3b54a79f05853ef359b17ccd94096ab9df91982074c0e3d28be"
+}

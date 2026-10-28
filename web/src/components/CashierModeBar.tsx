@@ -6,6 +6,9 @@ import { enterFullscreen, exitFullscreen, setCashierMode, setKeyboardOpen, useKe
 import { isOwnItem, pendingCount, watchOutbox } from '../lib/offline'
 import { useUser } from '../lib/auth'
 import { useServerOnline } from '../lib/hooks'
+import { useNavigate } from 'react-router-dom'
+import { get } from '../lib/api'
+import { useCan } from '../lib/permissions'
 import { useAction } from '../lib/hooks'
 import { useShiftClose } from './ShiftClose'
 import { printShift } from './shiftPrint'
@@ -37,6 +40,20 @@ export function CashierModeBar({
     }
   }, [me])
   const canFull = typeof document.documentElement.requestFullscreen === 'function'
+  // «Приёмка: N» (SPEC-39 §1): касса с правом «Приёмка товара» видит, что товар ждёт приёмки.
+  const navigate = useNavigate()
+  const mayAccept = useCan()('acceptance')
+  const [toAccept, setToAccept] = useState(0)
+  useEffect(() => {
+    if (!mayAccept) return
+    const load = () =>
+      void get<{ items: unknown[] }>('/acceptances?status=waiting')
+        .then((r) => setToAccept(r.items.length))
+        .catch(() => undefined)
+    load()
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 30_000)
+    return () => clearInterval(t)
+  }, [mayAccept])
   const keyboard = useKeyboardOpen()
   const closer = useShiftClose(() => onShiftChanged?.())
   const printing = useAction()
@@ -93,6 +110,16 @@ export function CashierModeBar({
           {waiting > 0 && <span className="text-amber-300"> · не отправлено: {waiting}</span>}
         </span>
         <span className="ml-auto flex shrink-0 flex-wrap gap-2 lg:flex-nowrap">
+          {toAccept > 0 && (
+            <button
+              type="button"
+              data-testid="mode-acceptance"
+              className="rounded-lg bg-amber-500 px-4 text-base font-semibold text-slate-900 active:bg-amber-400"
+              onClick={() => navigate('/acceptance')}
+            >
+              Приёмка: {toAccept}
+            </button>
+          )}
           <button
             type="button"
             aria-pressed={keyboard}

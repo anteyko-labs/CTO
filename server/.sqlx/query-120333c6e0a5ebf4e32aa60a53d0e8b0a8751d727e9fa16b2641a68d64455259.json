@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into receipt_acceptance_extras (acceptance_id, no, name, barcode, product_id, qty)\n               values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "120333c6e0a5ebf4e32aa60a53d0e8b0a8751d727e9fa16b2641a68d64455259"
+}

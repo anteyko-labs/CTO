@@ -18,6 +18,7 @@ export type Permission =
   | 'revision'
   | 'oil_transfer'
   | 'battery_intake'
+  | 'acceptance'
   | 'products'
   | 'clients'
   | 'payroll_advance'
@@ -56,6 +57,8 @@ export interface UserRow {
   role: Role
   active: boolean
   permissions?: Permission[]
+  /** Когда привязан чат в Телеграме (ADR-063, ADR-135); пусто — не привязан. */
+  telegram_linked_at?: string | null
 }
 
 export type CategoryKind = 'oil' | 'filter' | 'battery' | 'other'

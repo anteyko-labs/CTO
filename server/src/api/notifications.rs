@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 71] = [
+pub(crate) const WATCHED: [&str; 74] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -91,6 +91,10 @@ pub(crate) const WATCHED: [&str; 71] = [
     "old_catalog.enable",
     "shift.pin_locked",
     "debt.old",
+    // Приёмка товара на планшете и чат администратора в боте (SPEC-39 §9).
+    "receipt.accept",
+    "acceptance.refuse",
+    "telegram.admin_link",
 ];
 
 #[derive(Serialize)]
@@ -590,6 +594,12 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
         }
         "shift.pin_locked" => {
             let closed = data.get("closed").and_then(Value::as_bool) == Some(true);
+            // PIN вводят и при приёмке товара на планшете (SPEC-39 §9) — счётчик общий.
+            let when = if text("for") == "acceptance" {
+                "при приёмке товара"
+            } else {
+                "при открытии смены"
+            };
             (
                 format!(
                     "PIN кассира {}: {}",
@@ -597,15 +607,37 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     text("full_name")
                 ),
                 if closed {
-                    "неверный PIN при открытии смены — третья блокировка подряд. PIN закрыт: задайте новый в карточке сотрудника".into()
+                    format!(
+                        "неверный PIN {when} — третья блокировка подряд. PIN закрыт: задайте новый в карточке сотрудника"
+                    )
                 } else {
                     format!(
-                        "неверный PIN при открытии смены несколько раз подряд — блокировка на {} мин. Если это не кассир — смените PIN",
+                        "неверный PIN {when} несколько раз подряд — блокировка на {} мин. Если это не кассир — смените PIN",
                         num("minutes").unwrap_or(15)
                     )
                 },
             )
         }
+        "receipt.accept" => crate::api::acceptances::accept_text(data),
+        "acceptance.refuse" => {
+            let doc = text("doc");
+            (
+                format!("Отказ от приёмки: {}", text("supplier")),
+                format!(
+                    "{}{} — {}: «{}»",
+                    if doc.is_empty() { "накладная" } else { "накладная № " },
+                    doc,
+                    Some(text("cashier"))
+                        .filter(|c| !c.is_empty())
+                        .unwrap_or_else(|| "кассир".into()),
+                    text("reason")
+                ),
+            )
+        }
+        "telegram.admin_link" => (
+            format!("Телеграм привязан: администратор {}", text("full_name")),
+            "его чат принимает только фото накладных".into(),
+        ),
         "auth.login_flood" => (
             format!("Подбирают пароль: {}", text("login")),
             format!(

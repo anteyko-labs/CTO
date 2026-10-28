@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.status, a.draft_id, a.supplier_id, s.name as supplier, a.supplier_doc, a.sent_by,\n                  u.full_name as sent_by_name, r.number as \"number?\"\n           from receipt_acceptances a\n           join suppliers s on s.id = a.supplier_id\n           join users u on u.id = a.sent_by\n           left join receipts r on r.id = a.receipt_id\n           where a.id = $1 and a.branch_id = $2\n           for update of a",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "draft_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "sent_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "sent_by_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "028c267a3eb1b5609153e70e9fc6c7867fb2bacddf221ff514d5ab7ac363c8a9"
+}

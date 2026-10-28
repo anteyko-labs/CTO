@@ -228,6 +228,16 @@ async fn fill_branch(w: &World, branch: Uuid, admin: &str, tag: &str) -> String 
                 "lines": [{ "product_id": w.item, "qty": 50, "cost_tyiyn": 500_000 }] }),
     )
     .await;
+    // Накладная ждёт приёмки на планшете (SPEC-39): обход стучится и в неё.
+    api.ok(
+        "POST",
+        "/api/v1/acceptances",
+        owner,
+        at,
+        json!({ "op_id": op(), "supplier_id": sup, "supplier_doc": format!("П-{}", tag.len()),
+                "lines": [{ "product_id": w.item, "qty": 5, "cost_tyiyn": 50_000 }] }),
+    )
+    .await;
     let cashier = id(&api
         .ok(
             "POST",
