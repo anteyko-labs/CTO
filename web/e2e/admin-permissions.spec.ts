@@ -45,8 +45,8 @@ test('владелец выбирает, что можно администра�
   await page.getByRole('link', { name: 'Настройки' }).click()
   await page.getByRole('link', { name: /Пользователи/ }).click()
   const row = page.getByRole('row', { name: new RegExp(admin) })
-  await expect(row.getByRole('button', { name: '14 из 17' })).toBeVisible()
-  await row.getByRole('button', { name: '14 из 17' }).click()
+  await expect(row.getByRole('button', { name: '15 из 18' })).toBeVisible()
+  await row.getByRole('button', { name: '15 из 18' }).click()
   const box = page.getByTestId('permissions')
   for (const group of ['Касса', 'Деньги', 'Склад', 'Справочники']) await expect(box.getByRole('group', { name: group })).toBeVisible()
   await expect(box.getByLabel('Скидка в чеке')).not.toBeChecked()
@@ -56,7 +56,7 @@ test('владелец выбирает, что можно администра�
   await box.getByLabel('Скидка в чеке').check()
   await page.getByRole('button', { name: 'Сохранить' }).click()
   await expect(page.getByText('Права сохранены')).toBeVisible()
-  await expect(row.getByRole('button', { name: '13 из 17' })).toBeVisible()
+  await expect(row.getByRole('button', { name: '14 из 18' })).toBeVisible()
 
   // Администратор без права: пунктов меню нет, сервер отвечает «Нет права: Расходы».
   const { ctx, page: a } = await adminPage(browser, admin, password)

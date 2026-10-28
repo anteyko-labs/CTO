@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select t.tg_user_id, u.role, u.id, u.branch_id, u.login, u.full_name\n           from telegram_links t join users u on u.id = t.user_id\n           where t.chat_id = $1 and u.active",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tg_user_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "login",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3d62dfd202a1148a1d4c33ed45bd5c48ce19fbb4c59106d21d8dc730e95cb98b"
+}

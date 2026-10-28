@@ -37,6 +37,8 @@ pub fn routes() -> Router<AppState> {
             routing::get(questions_usage),
         )
         .route("/telegram/bot", routing::get(bot_info))
+        .route("/users/{id}/telegram/code", routing::post(user_code))
+        .route("/users/{id}/telegram", routing::delete(user_unlink))
 }
 
 #[derive(Serialize)]
@@ -188,6 +190,111 @@ async fn unlink(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Value
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Администратор филиала владельца, которому дают или у которого снимают привязку (ADR-135).
+async fn branch_admin(conn: &mut PgConnection, ctx: &Ctx, id: Uuid) -> AppResult<String> {
+    let u = sqlx::query!(
+        "select role, active, full_name from users where id = $1 and branch_id = $2",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if u.role != "admin" {
+        return Err(crate::error::invalid(
+            "владелец привязывает свой чат в «Настройки → Телеграм»",
+        ));
+    }
+    if !u.active {
+        return Err(crate::error::invalid(
+            "вход администратора отключён — сначала включите его",
+        ));
+    }
+    Ok(u.full_name)
+}
+
+/// Код привязки чата администратора (ADR-135): только владелец, 15 минут, одноразовый — как у
+/// владельца. Чат администратора принимает только фото накладных.
+async fn user_code(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> AppResult<Json<CodeOut>> {
+    ctx.user.require_owner()?;
+    let code = format!("{:06}", rand::random_range(0..1_000_000u32));
+    let mut tx = state.pool.begin().await?;
+    let name = branch_admin(&mut tx, &ctx, id).await?;
+    sqlx::query!(
+        "delete from telegram_codes where user_id = $1 or expires_at < now()",
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let expires_at = sqlx::query_scalar!(
+        r#"insert into telegram_codes (code, user_id, expires_at) values ($1, $2, now() + interval '15 minutes')
+           on conflict (code) do update set user_id = excluded.user_id, expires_at = excluded.expires_at
+           returning expires_at"#,
+        code,
+        id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "telegram.admin_code",
+        "user",
+        Some(id),
+        json!({ "full_name": name }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(CodeOut { code, expires_at }))
+}
+
+/// «Отвязать» чат администратора (ADR-135): только владелец.
+async fn user_unlink(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> AppResult<Json<Value>> {
+    ctx.user.require_owner()?;
+    let mut tx = state.pool.begin().await?;
+    let u = sqlx::query!(
+        "select role, full_name from users where id = $1 and branch_id = $2",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if u.role != "admin" {
+        return Err(crate::error::invalid(
+            "владелец отвязывает свой чат в «Настройки → Телеграм»",
+        ));
+    }
+    sqlx::query!("delete from telegram_codes where user_id = $1", id)
+        .execute(&mut *tx)
+        .await?;
+    let gone = sqlx::query!("delete from telegram_links where user_id = $1", id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if gone > 0 {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "telegram.unlink",
+            "user",
+            Some(id),
+            json!({ "full_name": u.full_name, "reason": "отвязал владелец" }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Пользователь отключён или больше не владелец: его чат перестаёт получать события и команды
 /// (ADR-063). Вызывается в транзакции правки пользователя.
 pub(crate) async fn drop_owner_link(
@@ -213,7 +320,7 @@ pub(crate) async fn drop_owner_link(
             "telegram.unlink",
             "user",
             Some(user_id),
-            json!({ "reason": "пользователь отключён или больше не владелец" }),
+            json!({ "reason": "пользователь отключён или сменилась роль" }),
         )
         .await?;
     }
@@ -280,6 +387,8 @@ pub enum Keys {
     /// Номер и у работника, и у клиента: «Мой заработок» и кнопки клиента.
     Both,
     ConfirmLeave,
+    /// Чат администратора (ADR-135): только фото накладных — кнопок внизу нет.
+    Admin,
 }
 
 impl Keys {
@@ -314,6 +423,7 @@ impl Keys {
                 vec![json!(BTN_LEAVE)],
             ],
             Keys::ConfirmLeave => vec![vec![json!(BTN_LEAVE_YES), json!(BTN_BACK)]],
+            Keys::Admin => return json!({ "remove_keyboard": true }),
         };
         json!({ "keyboard": rows, "resize_keyboard": true, "is_persistent": true })
     }
@@ -886,6 +996,33 @@ pub async fn handle_message(
     handle_message_with(conn, None, chat_id, from_id, text, contact).await
 }
 
+/// Подсказка в чате администратора: бот принимает от него только фото накладных (ADR-135).
+pub const ADMIN_HELP: &str = "Пришлите фото накладной. Остальное — в программе.";
+
+/// Чат привязан к активному администратору (ADR-135).
+async fn chat_admin(conn: &mut PgConnection, chat_id: i64) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists (select 1 from telegram_links t join users u on u.id = t.user_id
+                          where t.chat_id = $1 and u.active and u.role = 'admin') as "e!""#,
+        chat_id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Кнопки не владельцу: разделы клиента и работника, а чату одного администратора — никаких.
+async fn other_keys(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    customer: bool,
+    employee: bool,
+) -> AppResult<Keys> {
+    if !customer && !employee && chat_admin(conn, chat_id).await? {
+        return Ok(Keys::Admin);
+    }
+    Ok(section_keys(customer, employee))
+}
+
 /// Кнопки внизу чата по тому, кем подключён чат.
 fn section_keys(customer: bool, employee: bool) -> Keys {
     match (customer, employee) {
@@ -999,11 +1136,15 @@ async fn message(
         let keys = if chat_owner(conn, chat_id).await?.is_some() {
             owner_keys(conn, assistant, chat_id).await?
         } else {
-            section_keys(customer.is_some(), employee.is_some())
+            other_keys(conn, chat_id, customer.is_some(), employee.is_some()).await?
         };
         let mut reply = Reply::new(r, keys);
         reply.follow = draft.as_ref().map(Follow::draft);
         return Ok(reply);
+    }
+    // Чат администратора (ADR-135): только фото накладных и кнопки под ответами на них.
+    if !linked && chat_admin(conn, chat_id).await? {
+        return Ok(Reply::new(ADMIN_HELP, Keys::Admin));
     }
     // Отключение — только кнопкой подтверждения или ровно «/стоп»: фраза, начатая со «стоп»
     // или «да», — обычный текст (ADR-063). Отключается всё, к чему подключён чат.
@@ -1120,6 +1261,24 @@ async fn callback(
     from_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
+    // «📦 На приёмку» под ответом на фото накладной (SPEC-39 §2): владелец или администратор,
+    // привязавший чат; право и черновик сервер проверяет заново.
+    if data.starts_with("a:") {
+        let text = crate::api::acceptances::press_bot(conn, chat_id, from_id, data).await?;
+        let keys = if chat_owner(conn, chat_id).await?.is_some() {
+            owner_keys(conn, assistant, chat_id).await?
+        } else {
+            let r = sqlx::query!(
+                r#"select exists (select 1 from telegram_customers where chat_id = $1) as "c!",
+                          exists (select 1 from telegram_employees where chat_id = $1) as "e!""#,
+                chat_id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            other_keys(conn, chat_id, r.c, r.e).await?
+        };
+        return Ok(Reply::new(text, keys));
+    }
     if let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? {
         // Нажатие в открытом режиме вопросов — тоже сообщение владельца: режим продлевается.
         if assistant.is_some() && ask_mode(conn, chat_id, user_id, branch_id).await? == AskMode::On
@@ -1888,9 +2047,12 @@ async fn link(
                 .into(),
         );
     }
+    // Код владельца или администратора: администратору код даёт владелец в «Пользователях»
+    // (ADR-135).
     let owner = sqlx::query!(
-        r#"select u.id, u.branch_id, u.full_name from telegram_codes c join users u on u.id = c.user_id
-           where c.code = $1 and c.expires_at > now() and u.active and u.role = 'owner'"#,
+        r#"select u.id, u.branch_id, u.full_name, u.login, u.role from telegram_codes c
+           join users u on u.id = c.user_id
+           where c.code = $1 and c.expires_at > now() and u.active and u.role in ('owner', 'admin')"#,
         code
     )
     .fetch_optional(&mut *tx)
@@ -1931,17 +2093,31 @@ async fn link(
     )
     .execute(&mut *tx)
     .await?;
+    // Привязка администратора — владельцу в «Уведомления» (SPEC-39 §9).
+    let admin = o.role == "admin";
     sqlx::query!(
         r#"insert into audit_log (id, branch_id, user_id, action, entity, entity_id, data)
-           values ($1, $2, $3, 'telegram.link', 'user', $3, $4)"#,
+           values ($1, $2, $3, $4, 'user', $3, $5)"#,
         ops::new_id(),
         o.branch_id,
         o.id,
-        json!({ "chat": chat_id })
+        if admin {
+            "telegram.admin_link"
+        } else {
+            "telegram.link"
+        },
+        json!({ "chat": chat_id, "full_name": o.full_name, "login": o.login })
     )
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    if admin {
+        return Ok(format!(
+            "Готово, {}: присылайте сюда фото накладных. Распознанную точно — кнопкой «{}» отправите на приёмку, кассир примет товар на планшете. Остальное — в программе.",
+            o.full_name,
+            crate::api::receipt_drafts::BTN_ACCEPTANCE
+        ));
+    }
     Ok(format!(
         "Готово, {}: важные события точки будут приходить сюда.\n\n{HELP}",
         o.full_name
@@ -2277,6 +2453,8 @@ pub struct Outgoing {
     pub at: DateTime<Utc>,
     pub chat_id: i64,
     pub text: String,
+    /// Приход по приёмке на планшете (`receipt.accept`): следом — фото подписи кассира (SPEC-39 §9).
+    pub signature_of: Option<Uuid>,
 }
 
 /// Событий за один проход.
@@ -2362,6 +2540,9 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
              and a.action = any($3)
              -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.
              and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')
+             -- Приход по приёмке на планшете — одним сообщением «Приход № N принял …» (SPEC-39 §9).
+             and not (a.action = 'receipt.post'
+                      and exists (select 1 from receipt_acceptances x where x.receipt_id = a.entity_id))
              and not exists (select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = a.id)
            order by a.created_at, a.id, t.chat_id
            limit $4"#,
@@ -2404,6 +2585,11 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
             at: r.created_at,
             chat_id: r.chat_id,
             text,
+            signature_of: if r.action == "receipt.accept" {
+                r.entity_id
+            } else {
+                None
+            },
         });
     }
     out.extend(day_reports(conn, since, several).await?);
@@ -2483,6 +2669,7 @@ async fn day_reports(
             at: r.at,
             chat_id: r.chat_id,
             text,
+            signature_of: None,
         });
     }
     Ok(out)
@@ -2518,6 +2705,9 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
              and a.action = any($3)
              -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.
              and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')
+             -- Приход по приёмке на планшете — одним сообщением «Приход № N принял …» (SPEC-39 §9).
+             and not (a.action = 'receipt.post'
+                      and exists (select 1 from receipt_acceptances x where x.receipt_id = a.entity_id))
              and not exists (select 1 from telegram_sent s where s.chat_id = t.chat_id and s.audit_id = a.id)"#,
         cursor,
         since,
@@ -3511,30 +3701,45 @@ pub async fn file_reply(
     file: &IncomingFile,
 ) -> AppResult<(Reply, bool)> {
     use crate::api::receipt_drafts as drafts;
-    let owner = sqlx::query_scalar!(
-        r#"select t.tg_user_id from telegram_links t join users u on u.id = t.user_id
-           where t.chat_id = $1 and u.active and u.role = 'owner'"#,
+    // Владелец или администратор (ADR-135), привязавший чат.
+    let sender = sqlx::query!(
+        r#"select t.tg_user_id, u.role, u.id, u.branch_id, u.login, u.full_name
+           from telegram_links t join users u on u.id = t.user_id
+           where t.chat_id = $1 and u.active"#,
         chat_id
     )
     .fetch_optional(&mut *conn)
     .await?;
+    let owner = sender.as_ref().is_some_and(|s| s.role == "owner");
+    let r = sqlx::query!(
+        r#"select exists (select 1 from telegram_customers where chat_id = $1) as "c!",
+                  exists (select 1 from telegram_employees where chat_id = $1) as "e!""#,
+        chat_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let keys = if owner {
+        owner_keys(conn, assistant, chat_id).await?
+    } else {
+        other_keys(conn, chat_id, r.c, r.e).await?
+    };
     // Чат привязал один человек — фото принимаются только от него (ADR-070).
-    if !owner.is_some_and(|t| t.is_none_or(|t| t == from_id)) {
-        let r = sqlx::query!(
-            r#"select exists (select 1 from telegram_customers where chat_id = $1) as "c!",
-                      exists (select 1 from telegram_employees where chat_id = $1) as "e!""#,
-            chat_id
-        )
-        .fetch_one(&mut *conn)
-        .await?;
-        let keys = if owner.is_some() {
-            owner_keys(conn, assistant, chat_id).await?
-        } else {
-            section_keys(r.c, r.e)
-        };
+    let Some(s) = sender.filter(|s| s.tg_user_id.is_none_or(|t| t == from_id)) else {
         return Ok((Reply::new(drafts::NOT_OWNER, keys), false));
+    };
+    // Администратор — с правом «Приход товара» на момент фото (SPEC-39 §7).
+    if s.role != "owner" {
+        let user = crate::auth::CurrentUser {
+            id: s.id,
+            branch_id: s.branch_id,
+            login: s.login,
+            full_name: s.full_name,
+            role: crate::auth::Role::Admin,
+        };
+        if !crate::auth::has_permission(conn, &user, "receipts").await? {
+            return Ok((Reply::new(drafts::NO_RIGHT, keys), false));
+        }
     }
-    let keys = owner_keys(conn, assistant, chat_id).await?;
     let limit = i64::try_from(crate::api::receipt_files::MAX_FILE_BYTES).unwrap_or(i64::MAX);
     if file.size.is_some_and(|s| s > limit) {
         return Ok((Reply::new(drafts::TOO_BIG_BOT, keys), false));
@@ -3580,22 +3785,73 @@ async fn file_task(
     if !accepted {
         return;
     }
-    let text = match api.download(&file.file_id, MAX_DOWNLOAD).await {
+    let (text, draft) = match api.download(&file.file_id, MAX_DOWNLOAD).await {
         Ok(data) => {
             let f = crate::api::receipt_drafts::BotFile {
                 data,
                 name: file.name.clone(),
             };
-            crate::api::receipt_drafts::from_bot(&pool, assistant.as_ref(), chat_id, from_id, f)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "телеграм: накладная по фото не сохранена");
-                    "Не получилось сохранить фото, попробуйте позже.".into()
-                })
+            crate::api::receipt_drafts::from_bot_reply(
+                &pool,
+                assistant.as_ref(),
+                chat_id,
+                from_id,
+                f,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "телеграм: накладная по фото не сохранена");
+                (
+                    "Не получилось сохранить фото, попробуйте позже.".into(),
+                    None,
+                )
+            })
         }
-        Err(why) => why.into(),
+        Err(why) => (why.into(), None),
     };
-    api.send(chat_id, &text).await;
+    // Распознано точно — кнопка «📦 На приёмку» под ответом (SPEC-39 §2).
+    let markup = draft.map(|id| {
+        inline_markup(&[vec![Button {
+            text: crate::api::receipt_drafts::BTN_ACCEPTANCE.into(),
+            data: crate::api::acceptances::button_data(id),
+        }]])
+    });
+    api.send_with(chat_id, &text, markup).await;
+}
+
+/// Тело `sendPhoto` (multipart/form-data) вручную: чат, подпись и PNG. Граница — случайная и
+/// такая, какой нет внутри картинки. Ответ — заголовок `Content-Type` и тело.
+pub fn multipart_photo(chat_id: i64, png: &[u8], caption: &str) -> (String, Vec<u8>) {
+    let mut boundary = format!("avtodom-{:032x}", rand::random::<u128>());
+    while png
+        .windows(boundary.len())
+        .any(|w| w == boundary.as_bytes())
+    {
+        boundary = format!("avtodom-{:032x}", rand::random::<u128>());
+    }
+    let caption: String = caption
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(1000)
+        .collect();
+    let mut body = Vec::with_capacity(png.len() + 512);
+    for (name, value) in [("chat_id", chat_id.to_string()), ("caption", caption)] {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"signature.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(png);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 /// Предел одного сообщения в единицах UTF-16, как считает Телеграм (у него 4096, с запасом).
@@ -3907,6 +4163,39 @@ impl Api {
             }
         }
         Delivery::Sent
+    }
+
+    /// Фото в чат (подпись кассира при приёмке, SPEC-39 §9): `sendPhoto` с телом multipart,
+    /// собранным вручную, — без новой библиотеки. Как рассылка: в один чат не чаще раза в секунду.
+    pub async fn send_photo(&self, chat_id: i64, png: &[u8], caption: &str) -> Delivery {
+        self.wait_turn(chat_id, true).await;
+        let (content_type, body) = multipart_photo(chat_id, png, caption);
+        let r = self
+            .http
+            .post(format!("{}/sendPhoto", self.base))
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await;
+        match r {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let v = resp.json::<Value>().await.unwrap_or(Value::Null);
+                let d = classify(status, &v);
+                if d != Delivery::Sent {
+                    tracing::warn!(status, chat_id, "телеграм: фото не принято");
+                }
+                d
+            }
+            Err(e) => {
+                tracing::warn!(error = %e.without_url(), "телеграм: фото не отправлено");
+                Delivery::Retry {
+                    after: Duration::from_secs(10),
+                    all: true,
+                }
+            }
+        }
     }
 
     /// Снять «часики» с нажатой кнопки; ответ идёт отдельным сообщением.
@@ -4261,7 +4550,14 @@ pub async fn feed_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOutc
             continue;
         }
         match api.push(m.chat_id, &m.text).await {
-            Delivery::Sent | Delivery::Skip => mark_sent(conn, &m).await?,
+            Delivery::Sent => {
+                // «Приход № N принял …» — следом фото подписи кассира (SPEC-39 §9).
+                if let Some(receipt) = m.signature_of {
+                    crate::api::acceptances::send_signature(conn, api, m.chat_id, receipt).await?;
+                }
+                mark_sent(conn, &m).await?
+            }
+            Delivery::Skip => mark_sent(conn, &m).await?,
             Delivery::Retry { after, all } => {
                 out.retry(after, all);
                 if all {
@@ -4370,9 +4666,39 @@ pub async fn notify_pass(
         }
         out.pause = out.pause.max(b.pause);
     }
+    let a = acceptance_pass(conn, api).await?;
+    if a.stopped {
+        return Ok(a);
+    }
+    out.pause = out.pause.max(a.pause);
     let f = feed_pass(conn, api).await?;
     out.pause = out.pause.max(f.pause);
     out.stopped = f.stopped;
+    Ok(out)
+}
+
+/// Приёмка на планшете (SPEC-39 §1, §7): кассиру открытой смены — «Примите товар», администратору,
+/// приславшему накладную, — итог. Что ушло — отмечено по чату.
+pub async fn acceptance_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOutcome> {
+    let mut out = PassOutcome::default();
+    let mut blocked: HashSet<i64> = HashSet::new();
+    for n in crate::api::acceptances::notices(conn).await? {
+        if blocked.contains(&n.chat_id) {
+            continue;
+        }
+        match api.push(n.chat_id, &n.text).await {
+            Delivery::Sent | Delivery::Skip => {
+                crate::api::acceptances::mark_notice(conn, &n).await?
+            }
+            Delivery::Retry { after, all } => {
+                out.retry(after, all);
+                if all {
+                    break;
+                }
+                blocked.insert(n.chat_id);
+            }
+        }
+    }
     Ok(out)
 }
 
@@ -4537,6 +4863,27 @@ mod tests {
             );
         }
         assert_eq!(parts.join("\n\n"), text);
+    }
+
+    #[test]
+    fn photo_body_is_multipart_by_hand() {
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+        let (ct, body) = multipart_photo(42, &png, "Подпись: Айбек\n");
+        let boundary = ct
+            .strip_prefix("multipart/form-data; boundary=")
+            .unwrap_or_default()
+            .to_string();
+        assert!(boundary.starts_with("avtodom-"), "{ct}");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.starts_with(&format!("--{boundary}\r\n")), "{text}");
+        assert!(text.contains("name=\"chat_id\"\r\n\r\n42\r\n"), "{text}");
+        assert!(
+            text.contains("name=\"caption\"\r\n\r\nПодпись: Айбек\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("filename=\"signature.png\"\r\nContent-Type: image/png\r\n\r\n"));
+        assert!(body.windows(png.len()).any(|w| w == png));
+        assert!(text.ends_with(&format!("\r\n--{boundary}--\r\n")), "{text}");
     }
 
     #[test]

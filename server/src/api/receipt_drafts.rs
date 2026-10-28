@@ -953,6 +953,7 @@ async fn remove(
                 d.number.unwrap_or_default()
             )));
         }
+        "acceptance" => return Err(AppError::Conflict(WAITS.into())),
         // Повтор после потерянного ответа — тот же результат.
         "removed" => {}
         _ => {
@@ -980,14 +981,38 @@ async fn remove(
     Ok(Json(out))
 }
 
+/// Черновик ждёт приёмки на планшете (SPEC-39 §2): из «Накладных по фото» его не провести и не
+/// убрать.
+const WAITS: &str = "накладная ждёт приёмки на планшете — провести её здесь можно, только убрав с приёмки («Приход» → «Ждут приёмки»)";
+
 /// Приход проведён по черновику: фото — к накладной (как загруженное к ней, ADR-080), черновик —
 /// «использован». В транзакции прихода: не прикрепилось — приход не проведён. Повтор с тем же
-/// приходом ничего не меняет.
+/// приходом ничего не меняет. Черновик на приёмке — 409: его проводит приёмка.
 pub async fn attach(
     conn: &mut PgConnection,
     ctx: &Ctx,
     draft_id: Uuid,
     receipt_id: Uuid,
+) -> AppResult<()> {
+    attach_inner(conn, ctx, draft_id, receipt_id, false).await
+}
+
+/// Приход по приёмке на планшете (SPEC-39 §4): фото черновика «на приёмке» — к накладной.
+pub(crate) async fn attach_accepted(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    draft_id: Uuid,
+    receipt_id: Uuid,
+) -> AppResult<()> {
+    attach_inner(conn, ctx, draft_id, receipt_id, true).await
+}
+
+async fn attach_inner(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    draft_id: Uuid,
+    receipt_id: Uuid,
+    accepted: bool,
 ) -> AppResult<()> {
     may_use(conn, &ctx.user).await?;
     let branch_id = ctx.user.branch_id;
@@ -1015,6 +1040,7 @@ pub async fn attach(
                 "накладную по фото убрали — проведите приход без неё".into(),
             ));
         }
+        "acceptance" if !accepted => return Err(AppError::Conflict(WAITS.into())),
         _ => {}
     }
     let data = d
@@ -1089,11 +1115,162 @@ pub async fn attach(
     Ok(())
 }
 
+// ---------- Приёмка на планшете (SPEC-39) ----------
+
+/// «На приёмку»: черновик фото — «на приёмке» (SPEC-39 §2). Второй раз, использованный или
+/// убранный — 409. В транзакции отправки на приёмку.
+pub(crate) async fn to_acceptance(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    draft_id: Uuid,
+) -> AppResult<()> {
+    may_use(conn, &ctx.user).await?;
+    let d = sqlx::query!(
+        r#"select d.status, r.number as "number?" from receipt_drafts d
+           left join receipts r on r.id = d.receipt_id
+           where d.id = $1 and d.branch_id = $2 for update of d"#,
+        draft_id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("накладная по фото не найдена"))?;
+    match d.status.as_str() {
+        "new" => {}
+        "acceptance" => {
+            return Err(AppError::Conflict(
+                "эта накладная по фото уже ждёт приёмки".into(),
+            ));
+        }
+        "used" => {
+            return Err(AppError::Conflict(format!(
+                "по этой накладной по фото уже проведён приход № {}",
+                d.number.unwrap_or_default()
+            )));
+        }
+        _ => {
+            return Err(AppError::Conflict(
+                "накладную по фото убрали — отправьте на приёмку без неё".into(),
+            ));
+        }
+    }
+    sqlx::query!(
+        "update receipt_drafts set status = 'acceptance' where id = $1",
+        draft_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Приёмку убрали или от неё отказались: черновик снова «новый» — его можно провести в
+/// «Новом приходе» или отправить на приёмку заново.
+pub(crate) async fn from_acceptance(conn: &mut PgConnection, draft_id: Uuid) -> AppResult<()> {
+    sqlx::query!(
+        "update receipt_drafts set status = 'new' where id = $1 and status = 'acceptance'",
+        draft_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// «Номер документа поставщика» из накладной: «15 от 20.10.2026» — как в «Новом приходе».
+pub fn doc_text(inv: &Invoice) -> String {
+    let date = chrono::NaiveDate::parse_from_str(inv.doc_date.trim(), "%Y-%m-%d")
+        .ok()
+        .map(|d| format!("от {}", d.format("%d.%m.%Y")));
+    [
+        Some(inv.doc_number.trim().to_string()).filter(|s| !s.is_empty()),
+        date,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// Накладная по фото, распознанная точно (SPEC-39 §2): готовые строки прихода.
+pub struct ExactInvoice {
+    pub supplier_id: Uuid,
+    pub supplier_name: String,
+    pub supplier_doc: String,
+    pub lines: Vec<crate::api::receipts::ReceiptLineReq>,
+}
+
+/// Всё ли распознано точно: поставщик по ИНН или точному названию, у каждой строки товар по
+/// штрихкоду или артикулу, количество целыми штуками, канистрами или килограммами и цена; сумма
+/// строки, если она есть, сходится с ценой. Хоть что-то «похоже» или не найдено — `None`:
+/// кнопки «📦 На приёмку» нет, накладную проверяют в программе.
+pub fn exact_from(d: &DraftOut) -> Option<ExactInvoice> {
+    if d.status != "new" {
+        return None;
+    }
+    let inv = d.invoice.as_ref().filter(|i| i.readable)?;
+    let s = d.supplier.as_ref()?;
+    let same = |n: &str| {
+        let n = n.trim().to_lowercase();
+        !n.is_empty() && n == s.name.trim().to_lowercase()
+    };
+    if s.by != "inn" && !same(&inv.supplier_name) && !same(&supplier_core(&inv.supplier_name)) {
+        return None;
+    }
+    if d.lines.is_empty() || d.lines.len() > 500 {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(d.lines.len());
+    for l in &d.lines {
+        if l.matched != "exact" {
+            return None;
+        }
+        let p = l.product.as_ref()?;
+        let n = l.count.filter(|n| *n > 0)?;
+        let each = l.each_tyiyn.filter(|e| *e >= 0)?;
+        let per = match (p.unit.as_str(), p.container_ml) {
+            ("ml", Some(c)) if c > 0 => c,
+            ("g", _) => 1000,
+            ("piece", _) => 1,
+            _ => return None,
+        };
+        let qty = n.checked_mul(per)?;
+        let cost = n.checked_mul(each)?;
+        if l.sum_tyiyn.is_some_and(|sum| sum != cost) {
+            return None;
+        }
+        lines.push(crate::api::receipts::ReceiptLineReq {
+            product_id: p.id,
+            qty,
+            cost_tyiyn: cost,
+            sale_price_tyiyn: None,
+        });
+    }
+    Some(ExactInvoice {
+        supplier_id: s.id,
+        supplier_name: s.name.clone(),
+        supplier_doc: doc_text(inv),
+        lines,
+    })
+}
+
+/// Черновик филиала пользователя, распознанный точно; не найден — 404.
+pub(crate) async fn exact_invoice(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    id: Uuid,
+) -> AppResult<Option<ExactInvoice>> {
+    let d = draft_out(conn, user, id).await?;
+    Ok(exact_from(&d))
+}
+
 // ---------- Бот ----------
 
-/// Фото не из чата владельца: бот вежливо отказывает (SPEC-30 §9).
+/// Фото не из чата владельца или администратора: бот вежливо отказывает (SPEC-30 §9).
 pub const NOT_OWNER: &str =
     "Фото здесь не принимаются: накладные по фото присылает владелец точки. Нажмите кнопку внизу.";
+/// Администратор без права «Приход товара» на момент фото (SPEC-39 §7).
+pub const NO_RIGHT: &str = "Нет права «Приход товара» — фото не принято.";
+/// Кнопка под ответом на точно распознанную накладную (SPEC-39 §2).
+pub const BTN_ACCEPTANCE: &str = "📦 На приёмку";
 pub const ACCEPTED: &str = "Принял, распознаю…";
 pub const TOO_BIG_BOT: &str =
     "Файл больше 5 МБ — пришлите накладную как фото (не файлом): Телеграм сам его уменьшит.";
@@ -1105,32 +1282,39 @@ pub struct BotFile {
     pub name: String,
 }
 
-/// Владелец, привязавший чат, — только активный владелец (ADR-063, ADR-070).
-async fn chat_owner(
+/// Кто привязал чат: активный владелец или администратор (ADR-063, ADR-070, ADR-135) и кто в
+/// Телеграме привязывал.
+pub(crate) async fn chat_sender(
     conn: &mut PgConnection,
     chat_id: i64,
 ) -> AppResult<Option<(CurrentUser, Option<i64>)>> {
-    Ok(sqlx::query!(
-        // Филиал — выбранный в чате (SPEC-33 §3), а не свой филиал владельца.
-        r#"select u.id, t.branch_id, u.login, u.full_name, t.tg_user_id
+    let Some(r) = sqlx::query!(
+        r#"select u.id, t.branch_id, u.branch_id as home, u.login, u.full_name, u.role, t.tg_user_id
            from telegram_links t join users u on u.id = t.user_id
-           where t.chat_id = $1 and u.active and u.role = 'owner'"#,
+           where t.chat_id = $1 and u.active"#,
         chat_id
     )
     .fetch_optional(&mut *conn)
     .await?
-    .map(|r| {
-        (
-            CurrentUser {
-                id: r.id,
-                branch_id: r.branch_id,
-                login: r.login,
-                full_name: r.full_name,
-                role: Role::Owner,
+    else {
+        return Ok(None);
+    };
+    let role = Role::parse(&r.role)?;
+    Ok(Some((
+        CurrentUser {
+            id: r.id,
+            // Владелец — филиал, выбранный в чате (SPEC-33 §3); администратор — свой филиал.
+            branch_id: if role == Role::Owner {
+                r.branch_id
+            } else {
+                r.home
             },
-            r.tg_user_id,
-        )
-    }))
+            login: r.login,
+            full_name: r.full_name,
+            role,
+        },
+        r.tg_user_id,
+    )))
 }
 
 fn lines_word(n: usize) -> String {
@@ -1141,27 +1325,42 @@ fn lines_word(n: usize) -> String {
     )
 }
 
-/// Ответ владельцу по распознанному черновику.
+/// Ответ по распознанному черновику. Распознано — проверить в программе (SPEC-39 §2: что-то
+/// «похоже» или не найдено).
 pub fn summary(inv: Option<&Invoice>) -> String {
     match inv {
-        Some(i) if i.readable => {
-            let supplier = if i.supplier_name.is_empty() {
-                "поставщик не указан".to_string()
-            } else {
-                i.supplier_name.clone()
-            };
-            let total = invoice_total(i).map_or_else(|| "не указано".into(), format_som);
-            format!(
-                "Накладная распознана: {supplier}, {}, итого {total}. {WHERE}",
-                lines_word(i.lines.len())
-            )
-        }
+        Some(i) if i.readable => format!(
+            "{} Проверьте накладную в программе: «Приход» → «Накладные по фото».",
+            recognized_head(i)
+        ),
         _ => format!("{FAILED}: {WHERE}"),
     }
 }
 
-/// Фото накладной из чата владельца: сохранить черновиком, распознать и вернуть ответ для чата.
-/// Не владелец — отказ; без ключа — фото сохраняется без распознавания.
+/// «Накладная распознана: Автоснаб, 4 строки, итого 11 200 с.»
+fn recognized_head(i: &Invoice) -> String {
+    let supplier = if i.supplier_name.is_empty() {
+        "поставщик не указан".to_string()
+    } else {
+        i.supplier_name.clone()
+    };
+    let total = invoice_total(i).map_or_else(|| "не указано".into(), format_som);
+    format!(
+        "Накладная распознана: {supplier}, {}, итого {total}.",
+        lines_word(i.lines.len())
+    )
+}
+
+/// Ответ на точно распознанную накладную: кнопка «📦 На приёмку» под ним (SPEC-39 §2).
+pub fn summary_exact(inv: &Invoice) -> String {
+    format!(
+        "{} Всё найдено точно: «{BTN_ACCEPTANCE}» — и кассир примет товар на планшете. Проверить или поправить — в программе: «Приход» → «Накладные по фото».",
+        recognized_head(inv)
+    )
+}
+
+/// Фото накладной из чата владельца или администратора: сохранить черновиком, распознать и
+/// вернуть ответ для чата (без кнопки; с кнопкой — [`from_bot_reply`]).
 pub async fn from_bot(
     pool: &PgPool,
     a: Option<&Assistant>,
@@ -1169,19 +1368,39 @@ pub async fn from_bot(
     from_id: i64,
     file: BotFile,
 ) -> AppResult<String> {
-    let owner = {
+    Ok(from_bot_reply(pool, a, chat_id, from_id, file).await?.0)
+}
+
+/// Фото накладной из бота: ответ и черновик для кнопки «📦 На приёмку» — она есть, только если
+/// всё распознано точно (SPEC-39 §2). Не владелец и не администратор с правом «Приход товара» —
+/// отказ; без ключа — фото сохраняется без распознавания.
+pub async fn from_bot_reply(
+    pool: &PgPool,
+    a: Option<&Assistant>,
+    chat_id: i64,
+    from_id: i64,
+    file: BotFile,
+) -> AppResult<(String, Option<Uuid>)> {
+    let sender = {
         let mut conn = pool.acquire().await?;
-        chat_owner(&mut conn, chat_id).await?
+        chat_sender(&mut conn, chat_id).await?
     };
     // Чат привязал один человек — фото принимаются только от него (ADR-070).
-    let Some((user, _)) = owner.filter(|(_, t)| t.is_none_or(|t| t == from_id)) else {
-        return Ok(NOT_OWNER.into());
+    let Some((user, _)) = sender.filter(|(_, t)| t.is_none_or(|t| t == from_id)) else {
+        return Ok((NOT_OWNER.into(), None));
     };
+    // Администратор — с правом «Приход товара» на момент фото (SPEC-39 §7).
+    {
+        let mut conn = pool.acquire().await?;
+        if !crate::auth::has_permission(&mut conn, &user, "receipts").await? {
+            return Ok((NO_RIGHT.into(), None));
+        }
+    }
     if file.data.len() > MAX_FILE_BYTES {
-        return Ok(TOO_BIG_BOT.into());
+        return Ok((TOO_BIG_BOT.into(), None));
     }
     let Some(kind) = sniff(&file.data) else {
-        return Ok(BAD_KIND_BOT.into());
+        return Ok((BAD_KIND_BOT.into(), None));
     };
     let ctx = Ctx::bot(user, chat_id);
     let started = start(
@@ -1200,24 +1419,27 @@ pub async fn from_bot(
     )
     .await?;
     let Start::New { id, recognition } = started else {
-        return Ok(format!("{FAILED}: {WHERE}"));
+        return Ok((format!("{FAILED}: {WHERE}"), None));
     };
     match (recognition, a) {
         ("pending", Some(a)) => {
             recognize(pool, a, &ctx, id, &file.data, kind).await?;
-            let recognized =
-                sqlx::query_scalar!("select recognized from receipt_drafts where id = $1", id)
-                    .fetch_one(pool)
-                    .await?;
-            Ok(summary(
-                recognized.as_ref().and_then(parse_invoice).as_ref(),
-            ))
+            let mut conn = pool.acquire().await?;
+            let d = draft_out(&mut conn, &ctx.user, id).await?;
+            match (exact_from(&d), d.invoice.as_ref()) {
+                (Some(_), Some(inv)) => Ok((summary_exact(inv), Some(id))),
+                (_, inv) => Ok((summary(inv), None)),
+            }
         }
-        ("limit", _) => Ok(format!(
-            "Лимит распознаваний на этот час исчерпан. Фото сохранено — заполните приход вручную или пришлите фото позже. {WHERE}"
+        ("limit", _) => Ok((
+            format!(
+                "Лимит распознаваний на этот час исчерпан. Фото сохранено — заполните приход вручную или пришлите фото позже. {WHERE}"
+            ),
+            None,
         )),
-        _ => Ok(format!(
-            "{NOT_CONFIGURED}. Фото сохранено — заполните приход вручную. {WHERE}"
+        _ => Ok((
+            format!("{NOT_CONFIGURED}. Фото сохранено — заполните приход вручную. {WHERE}"),
+            None,
         )),
     }
 }

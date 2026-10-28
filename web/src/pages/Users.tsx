@@ -3,7 +3,9 @@
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { get, newOpId, patch, post, put } from '../lib/api'
+import { BotStartLink, startLink } from '../components/BotStartLink'
+import { del, get, newOpId, patch, post, put } from '../lib/api'
+import { formatDateTime } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { PERMISSION_GROUPS, PERMISSIONS } from '../lib/permissions'
@@ -153,6 +155,7 @@ export default function Users() {
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<UserRow | null>(null)
   const [rights, setRights] = useState<UserRow | null>(null)
+  const [telegram, setTelegram] = useState<UserRow | null>(null)
   const { busy, error, run } = useAction()
   const toggle = useAction()
 
@@ -199,7 +202,7 @@ export default function Users() {
         ) : !list.data?.length ? (
           <Empty>Пользователей нет</Empty>
         ) : (
-          <Table head={['Логин', 'Имя', 'Роль', 'Что можно', 'Статус', '']}>
+          <Table head={['Логин', 'Имя', 'Роль', 'Что можно', 'Телеграм', 'Статус', '']}>
             {list.data.map((u) => (
               <tr
                 key={u.id}
@@ -220,12 +223,17 @@ export default function Users() {
                     <span className="text-slate-500">{rightsText(u)}</span>
                   )}
                 </td>
+                <td className="px-2 py-2" data-testid="user-telegram">
+                  {u.telegram_linked_at ? <Badge tone="green">привязан</Badge> : <span className="text-slate-400">—</span>}
+                </td>
                 <td className="px-2 py-2">{u.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
                 <td className="overflow-visible! px-2 py-1 text-right" onClick={(ev) => ev.stopPropagation()}>
                   <RowMenu
                     items={[
                       { label: 'Изменить или сменить пароль', onClick: () => setEditing(u) },
                       ...(u.role === 'admin' ? [{ label: 'Что можно', onClick: () => setRights(u) }] : []),
+                      // Фото накладных в бот от администратора (ADR-135): код даёт только владелец.
+                      ...(u.role === 'admin' && u.active ? [{ label: 'Телеграм', onClick: () => setTelegram(u) }] : []),
                       u.active
                         ? { label: 'Отключить вход', danger: true, onClick: () => setActive(u, false) }
                         : { label: 'Включить вход', onClick: () => setActive(u, true) },
@@ -238,6 +246,16 @@ export default function Users() {
         )}
       </Card>
 
+      {telegram && (
+        <TelegramModal
+          user={telegram}
+          onClose={() => setTelegram(null)}
+          onChanged={() => {
+            setTelegram(null)
+            list.reload()
+          }}
+        />
+      )}
       {adding && (
         <Modal title="Новый пользователь" onClose={() => setAdding(false)}>
           {/* Чего не хватает для создания — рядом с кнопкой (docs/tier-3/ui-rules.md). */}
@@ -296,5 +314,66 @@ export default function Users() {
         />
       )}
     </div>
+  )
+}
+
+/** Телеграм администратора (ADR-135): код на 15 минут, ссылка и QR; «Отвязать». Его чат
+ *  принимает только фото накладных. */
+function TelegramModal({ user, onClose, onChanged }: { user: UserRow; onClose: () => void; onChanged: () => void }) {
+  const act = useAction()
+  const bot = useLoad(() => get<{ username: string | null }>('/telegram/bot'), [])
+  const [code, setCode] = useState<{ code: string; expires_at: string } | null>(null)
+  return (
+    <Modal title={`Телеграм: ${user.full_name}`} onClose={onClose}>
+      <div className="flex flex-col gap-3 text-sm" data-testid="user-telegram-modal">
+        <div className="text-slate-600">
+          Администратор с правом «Приход товара» присылает в бот фото накладных — они становятся черновиками прихода. Остального в его чате нет.
+        </div>
+        {user.telegram_linked_at && <div>Привязан {formatDateTime(user.telegram_linked_at)}</div>}
+        {code ? (
+          <div className="flex flex-col gap-2">
+            <div className="text-3xl font-bold tracking-widest" data-testid="user-telegram-code">
+              {code.code}
+            </div>
+            <div className="text-slate-600">
+              Администратор открывает бота и отправляет: <code className="rounded bg-slate-100 px-1">/start {code.code}</code> — код действует до{' '}
+              {formatDateTime(code.expires_at)}.
+            </div>
+            {bot.data?.username && <BotStartLink link={startLink(bot.data.username, code.code)} />}
+          </div>
+        ) : (
+          <Button
+            disabled={act.busy}
+            data-testid="user-telegram-code-btn"
+            onClick={() => void act.run(async () => setCode(await post<{ code: string; expires_at: string }>(`/users/${user.id}/telegram/code`, {})))}
+          >
+            {user.telegram_linked_at ? 'Привязать заново: код' : 'Код привязки'}
+          </Button>
+        )}
+        <ErrorBox error={act.error} />
+        <div className="flex justify-between gap-2">
+          {user.telegram_linked_at ? (
+            <Button
+              variant="danger"
+              disabled={act.busy}
+              onClick={() =>
+                void act.run(async () => {
+                  await del(`/users/${user.id}/telegram`)
+                  toast('Телеграм отвязан')
+                  onChanged()
+                })
+              }
+            >
+              Отвязать
+            </Button>
+          ) : (
+            <span />
+          )}
+          <Button variant="secondary" onClick={onClose}>
+            Закрыть
+          </Button>
+        </div>
+      </div>
+    </Modal>
   )
 }

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update receipt_acceptances\n           set status = 'cancelled', closed_at = now(), closed_by = $2, closed_device_id = $3, reason = $4\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8e5265c005c486e2ea661a13685b430a0051098522b0f7827b572dd5c7445f4e"
+}

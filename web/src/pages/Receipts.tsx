@@ -6,6 +6,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
 import { CorrectionBadges } from '../components/Correction'
 import { ReceiptDraftsBlock } from '../components/ReceiptDrafts'
+import { AcceptancesWaitingBlock } from '../components/Acceptances'
+import type { AcceptanceList } from '../lib/acceptances'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
 import type { DraftList } from '../lib/receiptDrafts'
@@ -47,6 +49,8 @@ export default function Receipts() {
   const newReceipt = () => navigate(kind === 'stock_in' || !can('receipts') ? '/receipts/new?kind=stock_in' : '/receipts/new')
   // Накладные по фото — с правом «Приход» (ADR-097, ADR-098).
   const drafts = useLoad(() => (can('receipts') ? get<DraftList>('/receipt-drafts') : Promise.resolve(null)), [])
+  // «Ждут приёмки» на планшете — с суммами, право «Приход» (SPEC-39 §2).
+  const acceptances = useLoad(() => (can('receipts') ? get<AcceptanceList>('/acceptances?status=waiting') : Promise.resolve(null)), [])
   /** Отметки строки: вид, сторно, оплата накладной, исправления. */
   const badges = (r: ReceiptListItem) => (
     <>
@@ -85,7 +89,14 @@ export default function Receipts() {
     <div>
       <PageHeader title="Приход" actions={mayAdd && <Button onClick={newReceipt}>Новый приход</Button>} />
       <div className="mb-4 flex flex-col gap-2">
-        <ErrorBox error={drafts.error} />
+        <ErrorBox error={drafts.error ?? acceptances.error} />
+        <AcceptancesWaitingBlock
+          list={acceptances.data}
+          onChanged={() => {
+            acceptances.reload()
+            drafts.reload()
+          }}
+        />
         <ReceiptDraftsBlock
           items={drafts.data?.items ?? []}
           onOpen={(id) => navigate(`/receipts/new?draft=${id}`)}

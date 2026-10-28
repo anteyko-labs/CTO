@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from receipt_acceptances\n                              where branch_id = $1 and supplier_id = $2 and status = 'waiting'\n                                and lower(supplier_doc) = lower($3)) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "09f394b26bb4909e4e972f8e3f2a0a5d9fbde9e3039e941124095020b12de719"
+}

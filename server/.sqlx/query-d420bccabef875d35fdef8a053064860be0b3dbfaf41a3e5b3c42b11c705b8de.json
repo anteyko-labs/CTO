@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update receipt_drafts set status = 'new' where id = $1 and status = 'acceptance'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d420bccabef875d35fdef8a053064860be0b3dbfaf41a3e5b3c42b11c705b8de"
+}

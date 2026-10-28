@@ -368,10 +368,11 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       setPhotos((p) => [...p, ...ready])
     })
 
-  const submit = () => {
+  /** Строки прихода для сервера; ошибка — в окно ошибки и `null`. */
+  const receiptLines = () => {
     if (lines.length === 0) {
       save.setError('Добавьте хотя бы один товар')
-      return
+      return null
     }
     const body: { product_id: string; qty: number; cost_tyiyn: number; sale_price_tyiyn?: number }[] = []
     const copies: { product: Product; copies: number }[] = []
@@ -379,7 +380,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       const c = calcs[i]
       if (typeof c === 'string') {
         save.setError(`Строка ${i + 1} (${lines[i].product.name}): ${c}`)
-        return
+        return null
       }
       // Новая цена продажи уходит, только если её поменяли: товар получит её при проведении.
       const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
@@ -388,8 +389,41 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     }
     if (total === null) {
       save.setError('Слишком большая сумма документа')
-      return
+      return null
     }
+    return { body, copies }
+  }
+
+  // «На приёмку» (SPEC-39 §2): накладная ждёт кассира на планшете; склад, долг и цены не
+  // меняются, расчёт с поставщиком — «в долг» при приёмке.
+  const [acceptOpId] = useState(newOpId)
+  const toAcceptanceMissing = missingWithFocus(
+    [lines.length > 0, 'товары — отсканируйте штрихкод', '[data-picker]'],
+    [Boolean(supplierId), 'поставщика накладной', '#receipt-supplier'],
+    [badLine < 0, `количество и цены в строке ${badLine + 1}`, `#line-${badLine + 1}-count`],
+    [unmatched.length === 0, 'строки накладной без товара — выберите товар или уберите строку', '#draft-unmatched'],
+  )
+  const sendToAcceptance = () => {
+    const built = receiptLines()
+    if (!built) return
+    void save.run(async () => {
+      await post('/acceptances', {
+        op_id: acceptOpId,
+        supplier_id: supplierId,
+        supplier_doc: supplierDoc.trim(),
+        comment: comment.trim(),
+        lines: built.body,
+        ...(draft ? { draft_id: draft.id } : {}),
+      })
+      toast('Отправлено на приёмку: кассир примет товар на планшете')
+      navigate('/receipts')
+    })
+  }
+
+  const submit = () => {
+    const built = receiptLines()
+    if (!built) return
+    const { body, copies } = built
     if (stockIn) {
       submitStockIn(copies)
       return
@@ -964,7 +998,18 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                     )
                   )}
                 </div>
-                <div className="hidden md:block">
+                <div className="hidden gap-2 md:flex">
+                  {!fix && !stockIn && (
+                    <Button
+                      variant="secondary"
+                      data-testid="receipt-to-acceptance"
+                      title={toAcceptanceMissing.length ? `Не хватает: ${toAcceptanceMissing.map((m) => m.label).join('; ')}` : 'Кассир примет товар на планшете, приход проведётся по принятому'}
+                      disabled={save.busy || toAcceptanceMissing.length > 0}
+                      onClick={sendToAcceptance}
+                    >
+                      На приёмку
+                    </Button>
+                  )}
                   <Button disabled={save.busy || missing.length > 0} onClick={submit}>
                     {submitText}
                   </Button>
@@ -1004,6 +1049,11 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             </div>
             <div className="truncate text-xl font-bold tabular-nums">{total === null ? '—' : formatSom(total)}</div>
           </div>
+          {!fix && !stockIn && (
+            <Button variant="secondary" className="shrink-0 px-3 py-3 text-base" disabled={save.busy || toAcceptanceMissing.length > 0} onClick={sendToAcceptance}>
+              На приёмку
+            </Button>
+          )}
           <Button className="shrink-0 px-6 py-3 text-base" disabled={save.busy || missing.length > 0} onClick={submit}>
             {fix ? 'Сохранить' : stockIn ? 'Провести' : 'Провести приход'}
           </Button>

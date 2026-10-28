@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from telegram_links t join users u on u.id = t.user_id\n                          where t.chat_id = $1 and u.active and u.role = 'admin') as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e47a91f0919e656844aa06802c8ec4e4fa76153e0abc865abf950583042887b1"
+}

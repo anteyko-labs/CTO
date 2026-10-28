@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, barcode, qty from receipt_acceptance_extras where acceptance_id = $1 order by no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "barcode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "qty",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c42a4806fb134e28a5e7d66624dce3f958435b17564d5eefa2028b70c5c4d25c"
+}

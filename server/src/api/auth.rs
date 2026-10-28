@@ -6,7 +6,7 @@ use axum::http::request::Parts;
 use axum::response::{AppendHeaders, IntoResponse};
 use axum::{Json, Router, routing};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{
@@ -156,6 +156,99 @@ pub(crate) async fn reserve_pin(state: &AppState, key: &str) -> AppResult<PinGat
     };
     tx.commit().await?;
     Ok(gate)
+}
+
+/// PIN кассира для операции: кто, что ввели и для чего.
+pub(crate) struct CashierPin<'a> {
+    pub employee_id: Uuid,
+    pub pin: &'a str,
+    /// Дописать к «у кассира нет PIN …»: владельцу при открытии смены — «или своим паролем».
+    pub no_pin_hint: &'a str,
+    /// Приёмка товара на планшете (SPEC-39 §4): события неверного PIN — с пометкой «приёмка».
+    pub acceptance: bool,
+}
+
+/// Проверка PIN кассира — одна для открытия смены (ADR-081) и приёмки товара (SPEC-39 §4): те же
+/// пределы и общий счётчик неверных попыток (ADR-128), неудачи — в журнал, блокировка —
+/// владельцу. Проверка — до транзакции операции: неверная попытка записывается и тогда, когда
+/// операция не прошла. Ответ — имя кассира.
+pub(crate) async fn check_cashier_pin(
+    state: &AppState,
+    ctx: &Ctx,
+    p: CashierPin<'_>,
+) -> AppResult<String> {
+    let emp = sqlx::query!(
+        "select full_name, pin_hash from employees where id = $1 and branch_id = $2",
+        p.employee_id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| invalid("кассир не найден"))?;
+    let Some(hash) = emp.pin_hash else {
+        return Err(invalid(format!(
+            "у кассира {} нет PIN: владелец задаёт его в карточке сотрудника{}",
+            emp.full_name, p.no_pin_hint
+        )));
+    };
+    let pin = p.pin.trim();
+    if pin.is_empty() {
+        return Err(invalid("введите PIN кассира"));
+    }
+    let key = crate::api::refs::pin_key(p.employee_id);
+    // PIN — 4 цифры: блокировка счёт не обнуляет, неудачи — в журнал, блокировка — владельцу
+    // в ленту (ADR-128).
+    let full_name = emp.full_name.clone();
+    let pin_event = |action: &'static str, mut data: Value| async move {
+        if p.acceptance
+            && let Some(obj) = data.as_object_mut()
+        {
+            obj.insert("for".into(), Value::from("acceptance"));
+        }
+        let mut conn = state.pool.acquire().await?;
+        ops::audit(
+            &mut conn,
+            ctx,
+            action,
+            "employee",
+            Some(p.employee_id),
+            data,
+        )
+        .await
+    };
+    match reserve_pin(state, &key).await? {
+        PinGate::Open => {}
+        PinGate::Locked { minutes, fresh } => {
+            if fresh {
+                pin_event(
+                    "shift.pin_locked",
+                    json!({ "full_name": full_name, "closed": false, "minutes": minutes }),
+                )
+                .await?;
+            }
+            return Err(AppError::TooManyRequests(format!(
+                "PIN кассира {full_name} заблокирован после {MAX_FAILURES} неверных попыток: повторите через {minutes} мин или попросите владельца задать новый PIN"
+            )));
+        }
+        PinGate::Closed { fresh } => {
+            if fresh {
+                pin_event(
+                    "shift.pin_locked",
+                    json!({ "full_name": full_name, "closed": true }),
+                )
+                .await?;
+            }
+            return Err(AppError::TooManyRequests(format!(
+                "PIN кассира {full_name} закрыт после {PIN_LOCKS} блокировок подряд: владелец задаёт новый PIN в карточке сотрудника"
+            )));
+        }
+    }
+    if pin.len() > 16 || !crate::auth::verify_password(pin.to_string(), hash).await {
+        pin_event("shift.pin_failed", json!({ "full_name": full_name })).await?;
+        return Err(invalid("неверный PIN кассира"));
+    }
+    clear_attempts(state, &key).await?;
+    Ok(emp.full_name)
 }
 
 /// Попытка входа: жёсткий предел — только на «логин + адрес» (ADR-016, ADR-049). Общий счётчик
@@ -456,6 +549,9 @@ struct UserOut {
     active: bool,
     /// Права администратора, выданные владельцем (ADR-082, ADR-097).
     permissions: Vec<String>,
+    /// Когда привязан чат в Телеграме (ADR-063, ADR-135); пусто — не привязан. Только в списке.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    telegram_linked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 async fn list_users(
@@ -466,7 +562,8 @@ async fn list_users(
         UserOut,
         r#"select u.id, u.login, u.full_name, u.role, u.active,
                   array(select p.permission from user_permissions p
-                        where p.user_id = u.id order by p.permission) as "permissions!"
+                        where p.user_id = u.id order by p.permission) as "permissions!",
+                  (select t.linked_at from telegram_links t where t.user_id = u.id) as telegram_linked_at
            from users u where u.branch_id = $1 or u.role = 'owner'
            order by u.role = 'owner' desc, u.full_name"#,
         user.branch_id
@@ -542,6 +639,7 @@ async fn create_user(
         role: role.as_str().into(),
         active: true,
         permissions,
+        telegram_linked_at: None,
     }))
 }
 
@@ -630,6 +728,7 @@ async fn update_user(
         role: row.role,
         active: row.active,
         permissions: auth::permissions(&mut tx, id).await?,
+        telegram_linked_at: None,
     };
     let still_owner = out.active && out.role == "owner";
     if owners.len() == 1 && owners.contains(&id) && !still_owner {
@@ -642,8 +741,9 @@ async fn update_user(
             .execute(&mut *tx)
             .await?;
     }
-    // Отключённый или больше не владелец — его чат в Телеграме отвязывается (ADR-063).
-    if !still_owner {
+    // Отключённый или сменивший роль — его чат в Телеграме отвязывается (ADR-063); чат
+    // администратора — так же (ADR-135).
+    if !out.active || out.role != before_role {
         crate::api::telegram::drop_owner_link(&mut tx, &ctx, id).await?;
     }
     ops::audit(
@@ -776,6 +876,7 @@ async fn put_permissions(
         role: row.role,
         active: row.active,
         permissions: after,
+        telegram_linked_at: None,
     };
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role, full_name from users where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "789b2fff1e60a3cce2acdea02a9fb3faa6a3b1aa964694a5c98794e000991e25"
+}

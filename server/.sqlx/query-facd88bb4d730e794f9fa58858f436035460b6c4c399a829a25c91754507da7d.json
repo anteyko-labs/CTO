@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(d.data, f.data) as \"data?\", d.content_type, f.hidden_at as \"hidden_at?\"\n           from receipt_acceptances a\n           join receipt_drafts d on d.id = a.draft_id\n           left join receipt_files f on f.id = d.file_id\n           where a.id = $1 and a.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data?",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "hidden_at?",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      true
+    ]
+  },
+  "hash": "facd88bb4d730e794f9fa58858f436035460b6c4c399a829a25c91754507da7d"
+}
