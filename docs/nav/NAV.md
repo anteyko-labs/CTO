@@ -2,7 +2,7 @@
 type: doc
 status: ready
 tier: 3
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 
 # Навигатор по проекту
@@ -60,17 +60,17 @@ jq -r '.adr[]|select(.spec|index("SPEC-33"))|"\(.id) \(.title)"' $R
 - Тесты: `web/src/components/salePrint.test.ts`.
 
 ### Смена и отчёт смены
-- SPEC-05, SPEC-30 §7–8. ADR-020/064 (недостача с кассира), ADR-071, ADR-081 (PIN кассира, сдача кассы), ADR-120 (чистая прибыль, безнал по счетам), ADR-121 (отчёт смены в ленту).
+- SPEC-05, SPEC-30 §7–8. ADR-020/064 (недостача с кассира), ADR-071, ADR-081 (PIN кассира, сдача кассы), ADR-120 (чистая прибыль, безнал по счетам), ADR-121 (отчёт смены в ленту). Черновик SPEC-37, ADR-132 — «Изменить оплату» чека и «из наличных в QR» за смену, поправка закрытой смены и удержания.
 - `server/src/api/cash.rs` (`close_shift`), `server/src/api/shift_report.rs`, `web/src/pages/Shift.tsx`, `web/src/pages/ShiftReport.tsx`, `web/src/components/ShiftOpen.tsx`, `web/src/lib/shiftReport.ts`.
 - Таблицы: `shifts`, `shift_closes`, `shift_reopens`, `shift_handovers`. Тесты: `server/tests/shift_report.rs`, e2e `shift-report`.
 
 ### Деньги, кассы, счета, банк и QR
-- SPEC-05, SPEC-08, SPEC-27 §6, SPEC-28 §5, SPEC-31. ADR-018/037 (кассы, сейфы), ADR-022/046/077 (комиссия у счёта), ADR-076 (свои счета), ADR-088 (точные сторно), ADR-106 (Optima: QR и сверка).
+- SPEC-05, SPEC-08, SPEC-27 §6, SPEC-28 §5, SPEC-31. ADR-018/037 (кассы, сейфы), ADR-022/046/077 (комиссия у счёта), ADR-076 (свои счета), ADR-088 (точные сторно), ADR-106 (Optima: QR и сверка). Черновик SPEC-37 (изменение оплаты, перенос в банк).
 - `server/src/api/cash.rs`, `income.rs`, `fees.rs`, `reports.rs` (прибыль), `optima.rs`, `bank_qr.rs`, `bank_recon.rs`; клиент `web/src/pages/Accounts.tsx`, `Bank.tsx`, `BankRecon.tsx`, `web/src/lib/accounts.ts`, `web/src/components/BankQrPanel.tsx`.
 - Таблицы: `cash_accounts`, `cash_movements`, `cash_transfers`, `cash_account_fees`, `bank_qr`, `bank_operations`, `bank_fee_adjustments`, `expenses`. Тесты: `server/tests/optima.rs`, e2e `accounts`, `optima-qr`.
 
 ### Долги и юрлица
-- SPEC-10, SPEC-12, SPEC-27 §5–7. ADR-030 (юрлицо), ADR-035 (процент по мере погашения), ADR-049 (кабинет по ИНН), ADR-073 (оплата по частям), ADR-095 («По счёту»).
+- SPEC-10, SPEC-12, SPEC-27 §5–7. ADR-030 (юрлицо), ADR-035 (процент по мере погашения), ADR-049 (кабинет по ИНН), ADR-073 (оплата по частям), ADR-095 («По счёту»). Черновик SPEC-38, ADR-133 — старый долг из тетради с датой долга.
 - `server/src/api/parties.rs`, `supplier_debts.rs`, `cabinet.rs`, `bot_debt.rs`, `server/src/domain/debt.rs`; клиент `pages/ClientCard.tsx`, `Debts.tsx`, `SupplierCard.tsx`, `components/RepaymentModal.tsx`, `lib/debtDocs.ts`, `pages/cabinet/CabinetApp.tsx`.
 - Таблицы: `parties`, `party_ledger`, `party_balances`, `party_accounts`, `supplier_allocations`, `debt_reminders`. Тесты: `server/tests/invoice.rs`, `flow.rs`.
 
@@ -80,7 +80,7 @@ jq -r '.adr[]|select(.spec|index("SPEC-33"))|"\(.id) \(.title)"' $R
 - Таблицы: `payroll_accruals`, `payouts`, `employee_pay_rules`, `payroll_pending`, `payroll_cost_pending`.
 
 ### Склад: приход, ревизия, перелив, брак
-- SPEC-03, SPEC-14, SPEC-15, SPEC-20, SPEC-25, SPEC-26, SPEC-29 §8–9, SPEC-30 §9, §11. ADR-011/044/087 (пул стоимости, сторно), ADR-069 (брак), ADR-074/075 (цена масла, цена в приходе), ADR-086 (оприходование), ADR-098 (накладная по фото), ADR-123 (канистры и литры), ADR-125 («Склад → Остатки»).
+- SPEC-03, SPEC-14, SPEC-15, SPEC-20, SPEC-25, SPEC-26, SPEC-29 §8–9, SPEC-30 §9, §11. ADR-011/044/087 (пул стоимости, сторно), ADR-069 (брак), ADR-074/075 (цена масла, цена в приходе), ADR-086 (оприходование), ADR-098 (накладная по фото), ADR-123 (канистры и литры), ADR-125 («Склад → Остатки»). Черновик SPEC-39, ADR-134 — приёмка на планшете с PIN и подписью кассира.
 - `server/src/ops.rs` (`apply_movement` — единственный путь движения), `server/src/domain/costing.rs`, `server/src/api/receipts.rs`, `stock_in.rs`, `revisions.rs`, `oil.rs`, `defects.rs`, `supplier_returns.rs`, `receipt_drafts.rs`; клиент `pages/ReceiptNew.tsx`, `Revision.tsx`, `OilTransfer.tsx`, `Products.tsx`, `lib/units.ts`.
 - Таблицы: `stock_movements`, `branch_products`, `receipts`, `receipt_lines`, `stock_ins`, `revisions`, `oil_transfers`, `defects`, `supplier_returns`. Тесты: `flow.rs`, e2e `stock-in`, `receipt-price`, `receipt-photo`.
 
@@ -90,7 +90,7 @@ jq -r '.adr[]|select(.spec|index("SPEC-33"))|"\(.id) \(.title)"' $R
 - Таблицы: `old_catalog`, `old_catalog_link_rejects`, `product_barcodes`. Тесты: `server/tests/umag.rs`, e2e `umag-codes`.
 
 ### Бот: клиенты, работники, владелец
-- SPEC-18, SPEC-19, SPEC-21…24, SPEC-30 §10. ADR-050, ADR-053/124 (баллы только за замену), ADR-060/067 (вопросы в режиме «Спросить»), ADR-063 (доставка по чатам), ADR-066 (кабинет работника), ADR-068 (черновик → «Провести»), ADR-119 («Сейчас в машине», «Прошлые ТО»), ADR-121 (лента).
+- SPEC-18, SPEC-19, SPEC-21…24, SPEC-30 §10. ADR-050, ADR-053/124 (баллы только за замену), ADR-060/067 (вопросы в режиме «Спросить»), ADR-063 (доставка по чатам), ADR-066 (кабинет работника), ADR-068 (черновик → «Провести»), ADR-119 («Сейчас в машине», «Прошлые ТО»), ADR-121 (лента). Черновик SPEC-39 §7, ADR-135 — накладные в бот от администратора.
 - `server/src/api/telegram.rs` (4100 строк: команды, лента), `bot_cars.rs`, `bot_book.rs`, `bot_staff.rs`, `bot_drafts.rs`, `bot_reports.rs`, `loyalty.rs`, `notifications.rs`, вопросы — `assistant.rs`.
 - Таблицы: `telegram_links`, `telegram_customers`, `telegram_employees`, `telegram_sent`, `bot_state`, `bot_input`, `bot_drafts`, `loyalty_ledger`. Тесты: `server/tests/bot_book.rs`, `flow.rs`.
 
