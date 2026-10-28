@@ -20,7 +20,7 @@ export interface NextRow {
   /** Одна строка «Следующей замены» на строку книжки; у «прочего» — на услугу. */
   key: NextKey
   slot: BookSlot
-  /** Услуга чека по этой строке — с ней строка уходит с чеком. */
+  /** Услуга чека по этой строке — с ней строка уходит с чеком; пусто — по проданному маслу (ADR-136). */
   service_id: string
   /** Название услуги. */
   label: string
@@ -164,6 +164,49 @@ export function cartSources(lines: readonly CartPosition[]): NextSource[] {
   return out
 }
 
+/** Интервал строки по умолчанию — как `oil_book::slot_default` (масло двигателя и коробки). */
+const SOLD_DEFAULT: Partial<Record<BookSlot, [number, number]>> = { oil: [8000, 31], gear_oil: [40_000, 730] }
+
+/** Услуга-доливка (ADR-118) — как `oil_book::is_topup`: флажок «на вынос» или «долив» в названии. */
+const isTopup = (s: Service): boolean => !!s.takeaway || s.name.toLowerCase().includes('долив')
+
+/** Строка масла, которую гасит доливка, — как `oil_book::topup_slot`. */
+function topupSlot(s: Service): BookSlot {
+  if (s.book_slot === 'gear_oil') return 'gear_oil'
+  const n = s.name.toLowerCase()
+  return ['кпп', 'коробк', 'трансмис', 'atf'].some((w) => n.includes(w)) ? 'gear_oil' : 'oil'
+}
+
+/** ГУР, мост, редуктор, раздатка — как `oil_book::steering_or_axle_by_name`: ATF — не коробка. */
+const STEERING_OR_AXLE = /(?:^|[^\p{Alphabetic}\p{N}])(?:гур|мост)|редукт|раздатк/u
+
+/**
+ * Проданное масло двигателя или коробки без услуги своей строки — тоже замена (ADR-136): строка
+ * «Следующей замены» без услуги (`service_id` пустой), интервал — категории, иначе по умолчанию.
+ * Доливка этой строки в чеке — не замена; ATF при ГУР, мосте, редукторе, раздатке — не коробка.
+ * Объём не важен. Категории не загружены — строк нет (сервер всё равно запишет по интервалу).
+ */
+export function soldSources(lines: readonly CartPosition[], categories: readonly CategoryBook[] | null): NextSource[] {
+  const services = lines.flatMap((l) => (l.service ? [l.service] : []))
+  const blocked = new Set<BookSlot>()
+  for (const s of services) {
+    if (isTopup(s)) blocked.add(topupSlot(s))
+    else if (s.book_slot === 'other' && STEERING_OR_AXLE.test(s.name.toLowerCase())) blocked.add('gear_oil')
+    else if (s.book_slot && s.book_slot !== 'other') blocked.add(s.book_slot)
+  }
+  const out: NextSource[] = []
+  for (const l of lines) {
+    const p = l.product
+    if (!p || l.gift) continue
+    const category = categories?.find((c) => c.id === p.category_id)
+    const slot = goodSlot(category, p)
+    if (!slot || !SOLD_DEFAULT[slot] || blocked.has(slot) || out.some((x) => x.slot === slot)) continue
+    const [km, days] = category?.book_interval_km && category.book_interval_days ? [category.book_interval_km, category.book_interval_days] : (SOLD_DEFAULT[slot] ?? [null, null])
+    out.push({ slot, service_id: '', label: BOOK_SLOT_LABELS[slot], interval_km: km, interval_days: days })
+  }
+  return out
+}
+
 /** Товары чека со строкой книжки (не «прочее») по порядку строк; подарок книжка не пишет. */
 export function cartGoods(lines: readonly CartPosition[], categories: readonly CategoryBook[] | null): CartGood[] {
   const out: CartGood[] = []
@@ -265,16 +308,18 @@ export function nextTooFar(rows: readonly NextRow[], mileage: string): { row: Ne
   return null
 }
 
-/** Следующая замена в теле чека — по услуге этого чека (ADR-131). */
-export type NextChange = { service_id: string; slot: BookSlot; next_mileage: number | null }
+/** Следующая замена в теле чека — по услуге этого чека (ADR-131) или по проданному маслу без услуги
+ *  (`service_id` — null, ADR-136). */
+export type NextChange = { service_id: string | null; slot: BookSlot; next_mileage: number | null }
 
 /** Что уходит с чеком: пробег в единице чека. Поле очистил кассир — null, «не напоминать»; пусто,
  *  потому что пробег не вписан (касса без сети), или пустая строка «+ ещё» — строки нет: цели нет,
  *  книжка считает срок по интервалу. */
 export function nextPayload(rows: readonly NextRow[]): NextChange[] {
   return rows.flatMap((r): NextChange[] => {
-    if (r.value !== '') return [{ service_id: r.service_id, slot: r.slot, next_mileage: Number(r.value) }]
-    return r.edited && !r.extra ? [{ service_id: r.service_id, slot: r.slot, next_mileage: null }] : []
+    const service_id = r.service_id || null
+    if (r.value !== '') return [{ service_id, slot: r.slot, next_mileage: Number(r.value) }]
+    return r.edited && !r.extra ? [{ service_id, slot: r.slot, next_mileage: null }] : []
   })
 }
 

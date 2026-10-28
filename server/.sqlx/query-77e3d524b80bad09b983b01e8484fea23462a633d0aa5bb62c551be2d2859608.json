@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.name, s.book_slot, s.takeaway from sale_lines l join services s on s.id = l.service_id\n           where l.sale_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "book_slot",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "takeaway",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "77e3d524b80bad09b983b01e8484fea23462a633d0aa5bb62c551be2d2859608"
+}

@@ -475,11 +475,17 @@ async fn top_up_is_not_a_change(pool: PgPool) {
         .sell(210_000, &[("atf", "pour", 1000)], &["topup"], json!([]))
         .await;
     assert!(p.record(&topup).await.is_none(), "доливка записана заменой");
-    // Канистра моторного масла без услуги масла и без цели — тоже не замена.
+    // Канистра моторного масла с «Доливкой КПП» — доливка коробки, а масло двигателя — замена
+    // (ADR-136).
     let no_service = p
         .sell(211_000, &[("oil", "container", 1)], &["topup"], json!([]))
         .await;
-    assert!(p.record(&no_service).await.is_none());
+    let lines = p
+        .record(&no_service)
+        .await
+        .expect("масло двигателя — замена");
+    assert!(lines.iter().all(|l| l.0 != "gear_oil"), "{lines:?}");
+    assert!(!slot(&lines, "oil").1);
     let b = p.book().await;
     let gear = b["slots"]
         .as_array()
@@ -502,6 +508,76 @@ async fn top_up_is_not_a_change(pool: PgPool) {
             p.record(&by_target).await.is_none(),
             "доливка записана заменой"
         );
+    }
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn sold_oil_is_change(pool: PgPool) {
+    // ADR-136: проданное масло двигателя или коробки в чеке «В сервис» — замена и без услуги своей
+    // строки, сколько бы литров ни было; доливку решает только услуга-доливка.
+    let mut p = Point::new(pool).await;
+    // Чек № 17: ATF и «Замена со своим маслом» (масло двигателя) — строка коробки по интервалу.
+    let own = point_service(&mut p, "own", json!({ "name": "Замена со своим маслом" })).await;
+    assert_eq!(own["book_slot"], "oil");
+    let sale = p
+        .sell(130_000, &[("atf", "container", 1)], &["own"], json!([]))
+        .await;
+    let lines = p.record(&sale).await.expect("запись книжки");
+    assert!(!slot(&lines, "gear_oil").1, "{lines:?}");
+    assert!(lines.iter().any(|l| l.0 == "oil"), "{lines:?}");
+    let b = p.book().await;
+    let gear = b["slots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["slot"] == "gear_oil")
+        .cloned()
+        .unwrap();
+    assert_eq!(gear["next_km"], json!(170_000), "{gear}");
+    // Чек «В сервис» — с видом работ: мойка (строка «прочее»).
+    point_service(&mut p, "wash", json!({ "name": "Мойка двигателя" })).await;
+    // Моторное масло без услуги замены с целью кассира по строке — цель масла и у фильтров (ADR-117).
+    let sale = p
+        .sell(
+            140_000,
+            &[("oil", "container", 1), ("air_f", "piece", 1)],
+            &["wash"],
+            json!([{ "slot": "oil", "next_mileage": 147_000 }]),
+        )
+        .await;
+    let lines = p.record(&sale).await.expect("запись книжки");
+    assert_eq!(slot(&lines, "oil").2, json!(147_000));
+    assert_eq!(slot(&lines, "air_filter").2, json!(147_000));
+    // Розлив 0,5 л ATF без доливки — тоже замена: объём не важен.
+    let sale = p
+        .sell(141_000, &[("atf", "pour", 500)], &["wash"], json!([]))
+        .await;
+    assert!(slot(&p.record(&sale).await.expect("запись"), "gear_oil").0 == "gear_oil");
+    // Цель по строке без такого масла в чеке и по антифризу без услуги — не пишется.
+    let sale = p
+        .sell(
+            142_000,
+            &[("oil", "container", 1), ("anti", "piece", 1)],
+            &["wash"],
+            json!([
+                { "slot": "gear_oil", "next_mileage": 182_000 },
+                { "slot": "antifreeze", "next_mileage": 200_000 },
+            ]),
+        )
+        .await;
+    let lines = p.record(&sale).await.expect("запись книжки");
+    assert!(
+        lines.iter().all(|l| l.0 == "oil"),
+        "лишние строки: {lines:?}"
+    );
+    // ATF при «Замене ГУР» и при «Замене масла мех. моста» — не замена коробки (ADR-131).
+    point_service(&mut p, "gur", json!({ "name": "Замена ГУР" })).await;
+    for svc in ["gur", "bridge"] {
+        let sale = p
+            .sell(143_000, &[("atf", "container", 1)], &[svc], json!([]))
+            .await;
+        let lines = p.record(&sale).await.unwrap_or_default();
+        assert!(lines.iter().all(|l| l.0 != "gear_oil"), "{svc}: {lines:?}");
     }
 }
 

@@ -287,13 +287,16 @@ for (const mode of [
       expect(records[0].lines.find((l) => l.slot === 'air_filter')?.next_mileage).toBe(258000)
 
       // Канистра моторного масла без услуги масла — подсказка «Это замена?» (без названия услуги, её у
-      // точки может не быть); проведённый чек книжку не пишет.
+      // точки может не быть) и строка «Масло двигателя» по товару; проведённый чек пишет замену
+      // масла с этой целью (ADR-136).
       await fill([s.topup], [s.oilCode], '251000')
       await expect(page.getByTestId('oil-change-hint')).toHaveText('Это замена? Добавьте услугу замены масла двигателя')
+      await expect(page.getByLabel('Следующая замена: Масло двигателя')).toHaveValue('259000')
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
-      expect((await vehicleBook()).records.length).toBe(records.length)
+      await expect.poll(async () => (await vehicleBook()).records.length).toBe(records.length + 1)
+      expect((await vehicleBook()).records[0].lines.find((l) => l.slot === 'oil')?.next_mileage).toBe(259000)
 
       // Без сети: чек в очереди, в товарном чеке — то же.
       await page.route('**/api/v1/sales', (r) => (r.request().method() === 'POST' ? r.abort() : r.continue()))
@@ -302,7 +305,7 @@ for (const mode of [
       await expect.poll(async () => (await lastPrint('Товарный чек')).includes('Пробег сейчас: 252 000 км')).toBe(true)
       receiptBlock(await lastPrint('Товарный чек'))
       await page.unroute('**/api/v1/sales')
-      await expect.poll(async () => (await vehicleBook()).records.length, { timeout: 60_000, intervals: [1000] }).toBe(records.length + 1)
+      await expect.poll(async () => (await vehicleBook()).records.length, { timeout: 60_000, intervals: [1000] }).toBe(records.length + 2)
       if (mode.touch) await hit(page.getByRole('button', { name: 'Выйти из режима кассы' }))
     })
   })

@@ -20,6 +20,7 @@ import {
   receiptBook,
   serviceKey,
   snapshotCategories,
+  soldSources,
   type CategoryBook,
   type NextEdits,
 } from './nextChange'
@@ -309,5 +310,39 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     const rows = nextRows({ sources: cartSources(lines), extra: [], edits: {}, mileage: '120000', unit: 'km', own: {} })
     const b = receiptBook({ brand: '', model: '', plate: '1' }, '120000', 'km', rows, '2026-10-27', goods)
     expect(b.filled).toEqual([{ slot: 'antifreeze', label: 'Антифриз', product: 'Антифриз Sintec G12 красный 5 кг · 1 шт' }])
+  })
+
+  it('проданное масло без услуги своей строки — замена; доливка этой строки, ГУР и мост — нет (ADR-136)', () => {
+    const sold = (lines: Parameters<typeof cartSources>[0]) => soldSources(lines, categories)
+    const rows = (lines: Parameters<typeof cartSources>[0], edits: NextEdits = {}) =>
+      nextRows({ sources: [...cartSources(lines), ...sold(lines)], extra: [], edits, mileage: '130000', unit: 'km', own: {} })
+    // Чек № 17: ATF и «Замена со своим маслом» — строка коробки по интервалу по умолчанию.
+    const r17 = rows([{ product: atf }, { service: ownOil }])
+    expect(r17.map((r) => [r.key, r.service_id, r.value])).toEqual([
+      ['oil', 's5', '138000'],
+      ['gear_oil', '', '170000'],
+    ])
+    expect(r17[1].label).toBe('Масло в коробке')
+    // Цель по строке без услуги — `service_id: null`; очищенная — «не напоминать».
+    expect(nextPayload(rows([{ product: atf }, { service: wash }], { gear_oil: '' }))).toEqual([{ service_id: null, slot: 'gear_oil', next_mileage: null }])
+    expect(nextPayload(rows([{ product: motorOil }, { service: wash }]))).toEqual([{ service_id: null, slot: 'oil', next_mileage: 138000 }])
+    // Объём не важен; подарок — не замена; антифриз без услуги — доливка (ADR-117).
+    expect(sold([{ product: atf, kind: 'pour', qtyText: '0.5' }]).map((x) => x.slot)).toEqual(['gear_oil'])
+    expect(sold([{ product: atf, gift: true }, { product: antifreeze }])).toEqual([])
+    // Доливка коробки гасит ATF, но не масло двигателя; доливка масла — масло двигателя.
+    const kpp = { ...svc('s9', 'Доливка КПП снизу', 'other', null), takeaway: true }
+    expect(sold([{ product: atf }, { product: motorOil }, { service: kpp }]).map((x) => x.slot)).toEqual(['oil'])
+    expect(sold([{ product: motorOil }, { service: topup }])).toEqual([])
+    // ATF при ГУР и при мосте — не замена коробки (ADR-131).
+    const bridge = svc('s10', 'Замена масла мех. моста', 'other', null)
+    expect(sold([{ product: atf }, { service: gur }])).toEqual([])
+    expect(sold([{ product: atf }, { service: bridge }])).toEqual([])
+    // Услуга своей строки уже даёт строку — по товару второй нет.
+    expect(sold([{ product: atf }, { service: gear }])).toEqual([])
+    // Правка строки по товару переживает изменение услуг: строка есть в источниках.
+    const sources = [...cartSources([{ product: atf }, { service: wash }]), ...sold([{ product: atf }, { service: wash }])]
+    expect(pruneNext([], { gear_oil: '175000' }, sources)).toBeNull()
+    // «Исправить»: цель по товару (без услуги) возвращается правкой строки.
+    expect(nextFromDraft([{ service_id: null, slot: 'gear_oil', next_mileage: 175000 }]).edits).toEqual({ gear_oil: '175000' })
   })
 })

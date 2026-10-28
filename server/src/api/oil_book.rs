@@ -134,6 +134,43 @@ pub fn is_fluid(slot: &str) -> bool {
     matches!(slot, "oil" | "gear_oil" | "antifreeze" | "brake_fluid")
 }
 
+/// Масла, проданные в чеке «В сервис», — замена и без услуги своей строки (ADR-136): моторное и
+/// трансмиссионное. Антифриз и тормозная жидкость — только с услугой или целью (ADR-117).
+pub fn sold_is_change(slot: &str) -> bool {
+    matches!(slot, "oil" | "gear_oil")
+}
+
+/// Строка масла, которую гасит услуга-доливка (ADR-136): своя строка книжки услуги, если владелец
+/// дал ей масло, иначе по названию — коробка («кпп», «коробк», «трансмис», «atf»), иначе двигатель.
+pub fn topup_slot(name: &str, book_slot: &str) -> &'static str {
+    if book_slot == "gear_oil" {
+        return "gear_oil";
+    }
+    let n = name.to_lowercase();
+    if ["кпп", "коробк", "трансмис", "atf"]
+        .iter()
+        .any(|w| n.contains(w))
+    {
+        "gear_oil"
+    } else {
+        "oil"
+    }
+}
+
+/// Услуга-доливка (ADR-118): флажок «Доливка — на вынос» или слово «долив» в названии.
+pub fn is_topup(name: &str, takeaway: bool) -> bool {
+    takeaway || name.to_lowercase().contains("долив")
+}
+
+/// ГУР, мост, редуктор или раздатка в названии услуги (ADR-131, ADR-136): ATF в таком чеке — не
+/// замена масла коробки. «гур» — с начала слова.
+pub fn steering_or_axle_by_name(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.starts_with("гур"))
+        || axle_or_transfer_by_name(&n)
+}
+
 /// Фильтры, которые меняют вместе с маслом двигателя (ADR-117): в чеке с целью по маслу получают её.
 fn follows_oil(slot: &str) -> bool {
     matches!(slot, "oil_filter" | "air_filter" | "cabin_filter")
@@ -393,8 +430,36 @@ pub async fn record_from_sale(
     )
     .fetch_all(&mut *conn)
     .await?;
-    // Строки книжки, по которым в чеке замена: услуга той же строки или цель кассира (ADR-117).
+    // Строки книжки, по которым в чеке замена: услуга той же строки или цель кассира (ADR-117),
+    // проданное масло двигателя или коробки (ADR-136).
     let mut changed: Vec<String> = services.iter().map(|s| s.book_slot.clone()).collect();
+    // Масло по товару — замена, если в чеке нет доливки этой строки; ATF при ГУР, мосте,
+    // редукторе, раздатке — не замена коробки (ADR-131, ADR-136). Объём не важен.
+    let all_services = sqlx::query!(
+        r#"select s.name, s.book_slot, s.takeaway from sale_lines l join services s on s.id = l.service_id
+           where l.sale_id = $1"#,
+        sale_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let blocked: Vec<&str> = all_services
+        .iter()
+        .filter_map(|s| {
+            if is_topup(&s.name, s.takeaway) {
+                Some(topup_slot(&s.name, &s.book_slot))
+            } else if s.book_slot == "other" && steering_or_axle_by_name(&s.name) {
+                Some("gear_oil")
+            } else {
+                None
+            }
+        })
+        .collect();
+    let sold: Vec<String> = lines
+        .iter()
+        .map(|l| l.slot.clone())
+        .filter(|slot| sold_is_change(slot) && !blocked.contains(&slot.as_str()))
+        .collect();
+    changed.extend(sold.iter().cloned());
     for sv in services {
         if let Some(l) = lines.iter_mut().find(|l| l.slot == sv.book_slot) {
             if l.service_id.is_none() {
@@ -428,12 +493,15 @@ pub async fn record_from_sale(
     let mut seen: Vec<&str> = Vec::new();
     let mut seen_services: Vec<Uuid> = Vec::new();
     for t in targets {
-        // Цель — только по услуге этого чека (ADR-131; `resolve_target` проверил, что услуга в
-        // чеке и не доливка на вынос): без услуги — строка по товару кассы до 27.10.2026 — цели нет.
-        let Some(service_id) = t.service_id else {
+        // Цель — по услуге этого чека (ADR-131; `resolve_target` проверил, что услуга в чеке и не
+        // доливка на вынос) или по проданному маслу без доливки этой строки (ADR-136).
+        if t.service_id.is_none() && !sold.contains(&t.slot) {
             continue;
-        };
+        }
         if t.slot == "other" {
+            let Some(service_id) = t.service_id else {
+                continue;
+            };
             // Услуга «прочее» с целью кассира — своя строка книжки с её названием и своё
             // напоминание; очищенное поле строки не даёт: по «прочему» и так не напоминают.
             if seen_services.contains(&service_id) {
@@ -476,8 +544,10 @@ pub async fn record_from_sale(
             }
         };
         if let Some(l) = lines.get_mut(at) {
-            l.service_id = Some(service_id);
-            l.service = t.service_name.clone();
+            if t.service_id.is_some() {
+                l.service_id = t.service_id;
+                l.service = t.service_name.clone();
+            }
             l.target_set = true;
             l.next_mileage = t.next.map(|n| n.0);
             l.next_unit = t.next.map(|_| t.unit.clone());
@@ -566,7 +636,7 @@ pub async fn resolve_target(
     unit: &str,
 ) -> AppResult<Option<NextTarget>> {
     let Some(id) = r.service_id else {
-        return Ok(None);
+        return sold_target(r, now, unit);
     };
     let Some(sv) = sqlx::query!(
         r#"select s.name, s.book_slot, s.book_interval_days from services s
@@ -609,6 +679,45 @@ pub async fn resolve_target(
         next,
         unit: unit.to_string(),
         service_days: sv.book_interval_days,
+    }))
+}
+
+/// Цель по проданному маслу без услуги своей строки (ADR-136): строка `oil` или `gear_oil`;
+/// пишется, только если такое масло в чеке и доливки этой строки нет (`record_from_sale`).
+fn sold_target(
+    r: &NextChangeReq,
+    now: Option<&Mileage>,
+    unit: &str,
+) -> AppResult<Option<NextTarget>> {
+    let Some(slot) = r.slot.as_deref().filter(|s| sold_is_change(s)) else {
+        return Ok(None);
+    };
+    let next = match r.next_mileage {
+        None => None,
+        Some(v) => {
+            let Some(m) = resolve_mileage(Some(v), Some(unit), None, unit)? else {
+                return Ok(None);
+            };
+            if let Some(now) = now
+                && now.unit == m.unit
+                && m.value < now.value
+            {
+                return Err(invalid(format!(
+                    "{}: следующая замена — не меньше пробега сейчас ({})",
+                    slot_label(slot),
+                    crate::domain::mileage::text(now.value, &now.unit)
+                )));
+            }
+            Some((m.value, m.km))
+        }
+    };
+    Ok(Some(NextTarget {
+        slot: slot.to_string(),
+        service_id: None,
+        service_name: None,
+        next,
+        unit: unit.to_string(),
+        service_days: None,
     }))
 }
 

@@ -40,6 +40,7 @@ import {
   receiptBook,
   serviceKey,
   snapshotCategories,
+  soldSources,
   type CategoryBook,
   type NextEdits,
   type OwnIntervals,
@@ -977,7 +978,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         : Promise.resolve(null),
     [needCategories],
   )
-  const nextSources = cartSources(lines)
+  // Услуги чека со строкой книжки и проданное масло без услуги своей строки (ADR-136).
+  const nextSources = [...cartSources(lines), ...(nextOn ? soldSources(lines, categories.data) : [])]
   // Что залили по строке — под её подписью: «Антифриз — Sintec G12 × 2» (ADR-116); канистра
   // моторного масла без услуги масла — «Это замена?» (ADR-117).
   const nextGoods = nextOn ? cartGoods(lines, categories.data) : []
@@ -994,8 +996,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const oilHint = nextOn && oilChangeHint(lines, categories.data, ourOil)
   // Убрали услугу из чека — строка «Следующей замены» по ней и правка кассира уходят (и из черновика,
   // и из отложенного).
-  const nextSourceKey = nextSources.map((s) => s.service_id).join(',')
+  const nextSourceKey = nextSources.map((s) => s.service_id || s.slot).join(',')
   useEffect(() => {
+    // Строки по проданному маслу известны после категорий: до них правки не трогаем (ADR-136).
+    if (needCategories && !categories.data) return
     const kept = pruneNext(nextExtra, nextEdits, nextSources)
     if (!kept) return
     setNextExtra(kept.extra)
@@ -1385,7 +1389,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     const rec = asRemoved(l, 'remove')
     if (rec) setDropped((d) => [...d, rec])
     // «Вернуть» возвращает и строку «Следующей замены» по этой услуге с правкой кассира.
-    const src = cartSources([l])[0]
+    const src = cartSources([l])[0] ?? soldSources([l], categories.data)[0]
     const key = src && (src.slot === 'other' ? serviceKey(src.service_id) : src.slot)
     if (touch) setRemoved({ line: l, index, next: src && key ? { key, extra: nextExtra.includes(src.service_id) ? src.service_id : undefined, edit: nextEdits[key] } : undefined })
   }
