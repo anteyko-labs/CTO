@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.amount_tyiyn, f.fee_tyiyn, s.number, s.opened_at,\n                  coalesce((select c.closed_at from shift_closes c\n                            where c.shift_id = s.id\n                              and not exists (select 1 from shift_reopens r where r.close_id = c.id)\n                            order by c.seq desc limit 1), now()) as \"until!\"\n           from pay_fixes f join shifts s on s.id = f.shift_id\n           where f.branch_id = $1 and f.account_id = $2 and f.kind = 'shift' and f.reversal_of is null\n             and not exists (select 1 from pay_fixes r where r.reversal_of = f.id)\n             and s.business_date between $3 and $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "opened_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "until!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "440b84d8f1cae75b93bf58bf6adb60084f6e7b7bbf3401cf965bac73df77fbe6"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id\n                             where s.branch_id = $1 and s.business_date between $2 and $3), 0)\n                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m\n                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'\n                               and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)\n                 + coalesce((select sum(a.amount_tyiyn) from bank_fee_adjustments a\n                             where a.branch_id = $1 and a.op_day between $2 and $3), 0)\n                 -- Комиссия переноса из наличных в QR — учётным днём смены (SPEC-37 §4).\n                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m\n                             join pay_fixes f on f.id = m.doc_id join shifts sh on sh.id = f.shift_id\n                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'pay_fix'\n                               and sh.business_date between $2 and $3), 0)\n                 )::bigint as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d4581f44c8c27f1116b0fa32b59531d160a307e9d60b40889eb2a72408eeea8e"
+}

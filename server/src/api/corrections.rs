@@ -1586,6 +1586,7 @@ async fn post_new(
             req.client_time = None;
             req.correction = Some(crate::api::sales::SaleCorrection {
                 business_date: date,
+                replay: None,
             });
             let out = crate::api::sales::post_sale_tx(conn, ctx, req).await?;
             (out.id, Some(out.number))
@@ -1687,6 +1688,9 @@ pub struct CorrectionOut {
     pub diff: Vec<DiffItem>,
     pub user_name: String,
     pub created_at: DateTime<Utc>,
+    /// «Изменить оплату» (SPEC-37): поменялась только оплата чека.
+    #[serde(default)]
+    pub payment: bool,
 }
 
 async fn post(
@@ -1784,6 +1788,137 @@ pub async fn correct_tx(
             .await?;
         }
     }
+    // «Исправить» чека, где поменялась только оплата, а наличные уже пересчитаны: деньги легли
+    // бы в текущую смену — для этого «Изменить оплату» (SPEC-37 §2, ADR-132).
+    if kind == Kind::Sale {
+        let after = load_doc(&mut *conn, &ctx.user, kind, new_doc_id).await?;
+        let changes = diff(&before.desc, &after.desc);
+        if !changes.is_empty()
+            && changes.iter().all(|d| d.what.starts_with("Оплата"))
+            && crate::api::pay_fix::counted_cash_changes(
+                &mut *conn,
+                branch_id,
+                req.original_id,
+                new_doc_id,
+            )
+            .await?
+        {
+            return Err(AppError::Conflict(
+                "Меняется только оплата — кнопка «Изменить оплату»".into(),
+            ));
+        }
+    }
+    let out = link(
+        &mut *conn,
+        ctx,
+        Link {
+            op_id: req.op_id,
+            kind,
+            original_id: req.original_id,
+            before: &before,
+            reversal_id,
+            new_id: new_doc_id,
+            new_number,
+            comment: &comment,
+            extra: json!({}),
+        },
+    )
+    .await?;
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
+}
+
+/// Исходный чек для сравнения «было — стало» и запрос его проведения (черновик формы) — то, что
+/// «Изменить оплату» берёт у «Исправить» (SPEC-37 §2).
+pub(crate) struct SaleSnapshot(Doc);
+
+impl SaleSnapshot {
+    pub(crate) fn draft(&self) -> &Value {
+        &self.0.draft
+    }
+}
+
+pub(crate) async fn sale_snapshot(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    id: Uuid,
+) -> AppResult<SaleSnapshot> {
+    Ok(SaleSnapshot(load_sale_doc(conn, user, id).await?))
+}
+
+/// Можно ли менять чек: проведён, не возврат, без возвратов, не исправлен (те же запреты, что у
+/// «Исправить»). Чужой филиал или нет такого — 404.
+pub(crate) async fn check_sale_correctable(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+) -> AppResult<()> {
+    check_correctable(conn, branch_id, Kind::Sale, id).await
+}
+
+/// Связь «исправлен → новый» для «Изменить оплату»: исходный чек снят снимком до сторно.
+pub(crate) struct SaleLink<'a> {
+    pub(crate) op_id: Uuid,
+    pub(crate) original_id: Uuid,
+    pub(crate) before: &'a SaleSnapshot,
+    pub(crate) reversal_id: Uuid,
+    pub(crate) new_id: Uuid,
+    pub(crate) new_number: Option<i64>,
+    pub(crate) comment: &'a str,
+    /// Что добавить в запись журнала `correction.post` (пометка «оплата», смена, удержание).
+    pub(crate) extra: Value,
+}
+
+pub(crate) async fn link_sale(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    l: SaleLink<'_>,
+) -> AppResult<CorrectionOut> {
+    link(
+        conn,
+        ctx,
+        Link {
+            op_id: l.op_id,
+            kind: Kind::Sale,
+            original_id: l.original_id,
+            before: &l.before.0,
+            reversal_id: l.reversal_id,
+            new_id: l.new_id,
+            new_number: l.new_number,
+            comment: l.comment,
+            extra: l.extra,
+        },
+    )
+    .await
+}
+
+struct Link<'a> {
+    op_id: Uuid,
+    kind: Kind,
+    original_id: Uuid,
+    before: &'a Doc,
+    reversal_id: Uuid,
+    new_id: Uuid,
+    new_number: Option<i64>,
+    comment: &'a str,
+    extra: Value,
+}
+
+/// Конец исправления: что поменялось, запись `doc_corrections` и журнал `correction.post`.
+async fn link(conn: &mut PgConnection, ctx: &Ctx, l: Link<'_>) -> AppResult<CorrectionOut> {
+    const KIND: &str = "correction.post";
+    let Link {
+        op_id,
+        kind,
+        original_id,
+        before,
+        reversal_id,
+        new_id: new_doc_id,
+        new_number,
+        comment,
+        extra,
+    } = l;
+    let branch_id = ctx.user.branch_id;
     let after = load_doc(&mut *conn, &ctx.user, kind, new_doc_id).await?;
     let changes = diff(&before.desc, &after.desc);
     let id = new_id();
@@ -1793,9 +1928,9 @@ pub async fn correct_tx(
            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
         id,
         branch_id,
-        req.op_id,
+        op_id,
         kind.as_str(),
-        req.original_id,
+        original_id,
         before.number,
         reversal_id,
         new_doc_id,
@@ -1814,28 +1949,24 @@ pub async fn correct_tx(
             AppError::from(e)
         }
     })?;
-    ops::audit(
-        &mut *conn,
-        ctx,
-        KIND,
-        kind.as_str(),
-        Some(new_doc_id),
-        json!({
-            "kind": kind.as_str(),
-            "label": kind.label(),
-            "original_id": req.original_id,
-            "original_number": before.number,
-            "new_number": new_number,
-            "comment": comment,
-            "diff": changes,
-        }),
-    )
-    .await?;
-    let out = load_correction(&mut *conn, &ctx.user, Some(id), None, None)
+    let mut data = json!({
+        "kind": kind.as_str(),
+        "label": kind.label(),
+        "original_id": original_id,
+        "original_number": before.number,
+        "new_number": new_number,
+        "comment": comment,
+        "diff": changes,
+    });
+    if let (Some(d), Some(x)) = (data.as_object_mut(), extra.as_object()) {
+        for (k, v) in x {
+            d.insert(k.clone(), v.clone());
+        }
+    }
+    ops::audit(&mut *conn, ctx, KIND, kind.as_str(), Some(new_doc_id), data).await?;
+    load_correction(&mut *conn, &ctx.user, Some(id), None, None)
         .await?
-        .ok_or_else(|| AppError::Internal("исправление не найдено".into()))?;
-    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
-    Ok(out)
+        .ok_or_else(|| AppError::Internal("исправление не найдено".into()))
 }
 
 /// Исправление по id, по исходному или по новому документу. Администратору — без сравнения:
@@ -1868,7 +1999,8 @@ async fn load_corrections(
 ) -> AppResult<Vec<CorrectionOut>> {
     let rows = sqlx::query!(
         r#"select c.id, c.kind, c.original_id, c.original_number, c.reversal_id, c.new_id, c.new_number,
-                  c.comment, c.diff, u.full_name as user_name, c.created_at
+                  c.comment, c.diff, u.full_name as user_name, c.created_at,
+                  exists (select 1 from pay_fixes f where f.correction_id = c.id) as "payment!"
            from (select * from doc_corrections d
                  where d.branch_id = $1
                    and ($2::uuid is null or d.id = $2)
@@ -1915,6 +2047,7 @@ async fn load_corrections(
             diff,
             user_name: r.user_name,
             created_at: r.created_at,
+            payment: r.payment,
         });
     }
     Ok(out)

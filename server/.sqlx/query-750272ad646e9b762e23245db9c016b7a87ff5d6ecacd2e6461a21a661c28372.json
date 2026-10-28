@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.kind, m.doc_type, m.doc_id, m.amount_tyiyn, m.created_at,\n                  (select o.kind from cash_movements o\n                   where m.doc_type = 'cash_movement' and o.id = m.doc_id) as \"orig_kind?\",\n                  (select p.purpose from payouts p\n                   where m.doc_type = 'payout' and p.id = m.doc_id) as \"payout_purpose?\",\n                  (m.doc_type = 'sale' and exists (\n                     select 1 from pay_fixes f\n                     where f.counted_shift_id is null\n                       and (f.reversal_sale_id = m.doc_id or f.new_sale_id = m.doc_id))) as \"pay_fix!\"\n           from cash_movements m\n           where m.account_id = $1 and m.created_at >= $2\n             and (m.created_at < coalesce($3, 'infinity'::timestamptz)\n                  or (m.created_at = $3 and m.kind <> 'count_diff'))\n             and not public.pay_fix_counted_move(m.id, m.doc_type, m.doc_id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "orig_kind?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "payout_purpose?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "pay_fix!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "750272ad646e9b762e23245db9c016b7a87ff5d6ecacd2e6461a21a661c28372"
+}

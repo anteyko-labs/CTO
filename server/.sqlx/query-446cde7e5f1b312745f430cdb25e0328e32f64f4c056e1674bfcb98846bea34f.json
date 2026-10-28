@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.kind, f.shift_id as \"shift_id!\", f.account_id as \"account_id!\", f.amount_tyiyn,\n                  f.fee_tyiyn, f.counted_shift_id, f.counted_at, f.accrual_id, f.reversal_of,\n                  f.created_at\n           from pay_fixes f where f.id = $1 and f.branch_id = $2 and f.kind = 'shift'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "shift_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "counted_shift_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "counted_at",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "accrual_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "446cde7e5f1b312745f430cdb25e0328e32f64f4c056e1674bfcb98846bea34f"
+}

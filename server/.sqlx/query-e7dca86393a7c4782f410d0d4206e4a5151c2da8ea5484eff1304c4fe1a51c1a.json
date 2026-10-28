@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.doc_id, d.amount as \"amount!\" from (\n             select l.doc_id, l.business_date, l.created_at, (l.amount_tyiyn\n                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x join sales r on r.id = x.doc_id\n                              where l.doc_type = 'sale' and x.doc_type = 'sale_return'\n                                and r.reversal_of = l.doc_id and x.party_id = l.party_id), 0)\n                  - coalesce((select sum(-x.amount_tyiyn) from party_ledger x where x.reversal_of = l.id), 0))::bigint as amount\n             from party_ledger l\n             where l.party_id = $1 and l.branch_id = $2 and l.kind in ('debt', 'adjust') and l.amount_tyiyn > 0\n           ) d where d.amount > 0\n           order by d.business_date desc, d.created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "doc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "e7dca86393a7c4782f410d0d4206e4a5151c2da8ea5484eff1304c4fe1a51c1a"
+}

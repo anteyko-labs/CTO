@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select line_no, qty, cost_tyiyn, cost_unknown, master_fee_tyiyn, product_id from sale_lines where sale_id = $1 order by line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "cost_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "cost_unknown",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "master_fee_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "product_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "49c2c639e4fb1a6deb4162b0a23b211cb9e0408f3bc8ff9e34ef624afd97bbbb"
+}

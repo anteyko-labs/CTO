@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.number, s.business_date, s.account_id, s.cashier_employee_id, e.full_name\n           from shifts s join employees e on e.id = s.cashier_employee_id\n           where s.id = $1 and s.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "cashier_employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fac6a22d9c45e4251aa34605c8f0d270b8f95c8b8986ace2d0dd70730c888d13"
+}

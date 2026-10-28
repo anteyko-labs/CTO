@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(l.cost_tyiyn) filter (where s.kind = 'sale'), 0)::bigint as \"sold!\",\n                      coalesce(-sum(l.cost_tyiyn) filter (where s.kind = 'return'), 0)::bigint as \"returned!\",\n                      count(*) filter (where s.kind = 'sale' and l.cost_unknown) as \"unknown!\"\n               from sale_lines l join sales s on s.id = l.sale_id\n               where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())\n                 and not public.pay_fix_counted_sale(s.id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sold!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "returned!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "unknown!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "13a1eb8310590035b040703ba35418a3a0a817dc9db47a9f668a4a3169e92480"
+}

@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.id, s.number, s.kind, s.sale_type, s.created_at, c.full_name as cashier_name,\n                  u.full_name as user_name, pt.name as \"party_name?\", s.total_tyiyn, s.reversal_of,\n                  o.number as \"reversal_of_number?\"\n           from sales s\n           join employees c on c.id = s.cashier_id\n           join users u on u.id = s.user_id\n           left join parties pt on pt.id = s.party_id\n           left join sales o on o.id = s.reversal_of\n           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())\n             and not public.pay_fix_counted_sale(s.id)\n           order by s.created_at desc, s.number desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sale_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "cashier_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "party_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversal_of_number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "aaeb5d7ff1626f9d4e1d8ffb786711fc59b10ad9c9b3e768cfff9b69ed54840e"
+}

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind as \"kind!\", sum(amount_tyiyn)::bigint as \"sum!\"\n           from cash_movements\n           where account_id = $1 and created_at >= $2\n             and (created_at < coalesce($3, 'infinity'::timestamptz)\n                  or (created_at = $3 and kind <> 'count_diff'))\n             and not public.pay_fix_counted_move(id, doc_type, doc_id)\n           group by kind order by kind",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "5d45e272cd6fb233fea3a97568a30a0c739ce6f8ed6e5452cb825ffa0d2ab2d7"
+}

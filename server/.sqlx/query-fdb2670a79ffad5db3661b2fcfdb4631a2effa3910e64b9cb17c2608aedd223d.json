@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select x.shift_id as \"shift_id!\", x.at as \"at!\" from (\n             select c.shift_id, 'close'::text as at, c.closed_at as t\n             from shift_closes c join shifts s on s.id = c.shift_id\n             where s.branch_id = $1 and s.account_id = $2 and c.closed_at > $3\n             union all\n             select s.id, 'open'::text, s.opened_at\n             from shifts s\n             where s.branch_id = $1 and s.account_id = $2 and s.opened_at > $3\n               and s.opening_counted_tyiyn is not null\n           ) x order by x.t limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "shift_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "at!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "fdb2670a79ffad5db3661b2fcfdb4631a2effa3910e64b9cb17c2608aedd223d"
+}

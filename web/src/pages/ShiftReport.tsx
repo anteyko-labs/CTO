@@ -4,6 +4,7 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { AfterCloseBlock, CashToBankButton, CashToBankModal, TransfersList } from '../components/PayChange'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get } from '../lib/api'
 import { formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
@@ -81,6 +82,7 @@ export default function ShiftReport() {
   const setTab = (t: TabKey) => setParams(t === 'overview' ? {} : { tab: t }, { replace: true })
   const r = useLoad(() => get<Report>(`/shifts/${id}/report`), [id])
   const printing = useAction()
+  const [toBank, setToBank] = useState(false)
   const data = r.data
 
   if (r.loading && !data) return <Loading />
@@ -129,6 +131,8 @@ export default function ShiftReport() {
             <Button variant="secondary" disabled={printing.busy} onClick={() => void printing.run(() => printShift(s.id))}>
               Печать чека смены
             </Button>
+            {/* Из наличных в QR одной суммой за смену (SPEC-37 §3). */}
+            <CashToBankButton onClick={() => setToBank(true)} />
           </span>
         }
       />
@@ -153,6 +157,18 @@ export default function ShiftReport() {
         ))}
       </div>
       <ErrorBox error={printing.error} />
+      {toBank && (
+        <CashToBankModal
+          shiftId={s.id}
+          onClose={() => setToBank(false)}
+          onDone={() => {
+            setToBank(false)
+            r.reload()
+          }}
+        />
+      )}
+      {data.after_close && <AfterCloseBlock a={data.after_close} />}
+      <TransfersList items={data.transfers ?? []} onChanged={r.reload} />
 
       {tab === 'overview' && <Overview data={data} />}
       {tab === 'sales' && <SalesTab data={data} />}

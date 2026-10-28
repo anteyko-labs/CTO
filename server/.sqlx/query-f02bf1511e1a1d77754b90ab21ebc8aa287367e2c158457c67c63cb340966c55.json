@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\",\n                  coalesce(sum(m.amount_tyiyn) filter (where f.counted_at = 'close'), 0)::bigint as \"diff!\"\n           from pay_fixes f left join cash_movements m on m.id = f.count_movement_id\n           where f.counted_shift_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "diff!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f02bf1511e1a1d77754b90ab21ebc8aa287367e2c158457c67c63cb340966c55"
+}

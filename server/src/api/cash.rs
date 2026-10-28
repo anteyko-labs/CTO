@@ -287,6 +287,32 @@ pub struct CashEntry<'a> {
     pub comment: &'a str,
 }
 
+/// Движение денег, записанное не сразу: «Изменить оплату» (SPEC-37 §1) пишет деньги сторно и
+/// нового чека в конце операции — сначала с плюсом, потом с минусом, чтобы касса не уходила в минус
+/// даже на миг.
+#[derive(Clone, Debug)]
+pub struct CashMove {
+    pub account_id: Uuid,
+    pub kind: &'static str,
+    pub amount: i64,
+    pub doc_type: &'static str,
+    pub doc_id: Option<Uuid>,
+    pub comment: String,
+}
+
+impl CashMove {
+    pub fn entry(&self) -> CashEntry<'_> {
+        CashEntry {
+            account_id: self.account_id,
+            kind: self.kind,
+            amount: self.amount,
+            doc_type: self.doc_type,
+            doc_id: self.doc_id,
+            comment: &self.comment,
+        }
+    }
+}
+
 /// Записывает движение денег и пересчитывает остаток кассы (инвариант 6).
 /// Смена подставляется сама: открытая на этой кассе в момент проведения.
 pub async fn add_movement(conn: &mut PgConnection, ctx: &Ctx, e: CashEntry<'_>) -> AppResult<i64> {
@@ -299,6 +325,26 @@ pub async fn add_movement_id(
     conn: &mut PgConnection,
     ctx: &Ctx,
     e: CashEntry<'_>,
+) -> AppResult<(Uuid, i64)> {
+    write_movement(conn, ctx, e, None).await
+}
+
+/// То же, что [`add_movement_id`], но смена движения — заданная, а не открытая сейчас: деньги
+/// изменения оплаты для уже пересчитанных наличных относятся к смене пересчёта (SPEC-37 §4).
+pub async fn add_movement_in_shift(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    e: CashEntry<'_>,
+    shift_id: Uuid,
+) -> AppResult<(Uuid, i64)> {
+    write_movement(conn, ctx, e, Some(shift_id)).await
+}
+
+async fn write_movement(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    e: CashEntry<'_>,
+    shift: Option<Uuid>,
 ) -> AppResult<(Uuid, i64)> {
     // Сумма каждой операции проверена на её входе; здесь — предел остатка кассы.
     ops::check_balance(e.amount)?;
@@ -353,7 +399,10 @@ pub async fn add_movement_id(
         )
         .await?;
     }
-    let shift_id = open_shift_id(conn, ctx.user.branch_id, e.account_id).await?;
+    let shift_id = match shift {
+        Some(s) => Some(s),
+        None => open_shift_id(conn, ctx.user.branch_id, e.account_id).await?,
+    };
     let movement_id = new_id();
     sqlx::query!(
         r#"insert into cash_movements (id, branch_id, account_id, shift_id, kind, amount_tyiyn,
@@ -412,6 +461,7 @@ async fn doc_label(
     let word = match (doc_type, kind) {
         (_, "bank_fee") => "комиссия банка",
         (_, "reversal") => "сторно",
+        ("pay_fix", _) | (_, "cash_to_bank") => "перенос из наличных в QR",
         ("expense", _) => "расход",
         ("sale", "sale_return") => "возврат по чеку",
         ("sale", _) => "чек",
@@ -554,6 +604,12 @@ pub struct ShiftOut {
     pub closed_by: Option<String>,
     pub counted_tyiyn: Option<i64>,
     pub diff_tyiyn: Option<i64>,
+    /// Поправки расхождения закрытия после закрытия (SPEC-37 §4): изменения оплаты и переносы.
+    /// Расхождение сейчас — `diff_tyiyn` плюс это; ноль — поправок не было.
+    #[serde(default)]
+    pub diff_fix_tyiyn: i64,
+    #[serde(default)]
+    pub has_after_close: bool,
     pub breakdown: Value,
     pub cash_sales_tyiyn: i64,
     pub card_tyiyn: i64,
@@ -646,6 +702,7 @@ async fn load_shift_with(
            where account_id = $1 and created_at >= $2
              and (created_at < coalesce($3, 'infinity'::timestamptz)
                   or (created_at = $3 and kind <> 'count_diff'))
+             and not public.pay_fix_counted_move(id, doc_type, doc_id)
            group by kind order by kind"#,
         h.account_id,
         h.opened_at,
@@ -673,7 +730,8 @@ async fn load_shift_with(
              coalesce(sum(p.fee_tyiyn), 0)::bigint as "fee!"
            from sale_payments p
            join sales s on s.id = p.sale_id
-           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())"#,
+           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_sale(s.id)"#,
         branch_id,
         h.opened_at,
         close.as_ref().map(|c| c.closed_at)
@@ -685,7 +743,8 @@ async fn load_shift_with(
                   coalesce(sum(total_tyiyn) filter (where kind = 'sale'), 0)::bigint as "total!",
                   coalesce(-sum(total_tyiyn) filter (where kind = 'return'), 0)::bigint as "returns!"
            from sales
-           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())"#,
+           where branch_id = $1 and created_at >= $2 and created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_sale(id)"#,
         branch_id,
         h.opened_at,
         close.as_ref().map(|c| c.closed_at)
@@ -699,6 +758,15 @@ async fn load_shift_with(
         Some(h.opened_at),
         close.as_ref().map(|c| c.closed_at),
     )
+    .await?;
+    let fix = sqlx::query!(
+        r#"select count(*) as "n!",
+                  coalesce(sum(m.amount_tyiyn) filter (where f.counted_at = 'close'), 0)::bigint as "diff!"
+           from pay_fixes f left join cash_movements m on m.id = f.count_movement_id
+           where f.counted_shift_id = $1"#,
+        id
+    )
+    .fetch_one(&mut *conn)
     .await?;
     let pay = crate::api::payroll::staff_pay_with(
         conn,
@@ -728,6 +796,8 @@ async fn load_shift_with(
         closed_by: close.as_ref().and_then(|c| c.closed_by.clone()),
         counted_tyiyn: close.as_ref().map(|c| c.counted_tyiyn),
         diff_tyiyn: close.as_ref().map(|c| c.diff_tyiyn),
+        diff_fix_tyiyn: fix.diff,
+        has_after_close: fix.n > 0,
         breakdown: json!(breakdown),
         cash_sales_tyiyn: pays.cash,
         card_tyiyn: pays.card,

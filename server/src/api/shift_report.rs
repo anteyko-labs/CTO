@@ -332,11 +332,18 @@ pub struct ShiftReport {
     /// Оплачено по QR банка за смену, а чека с этой оплатой нет (SPEC-31).
     #[serde(default)]
     pub qr_unclaimed: Vec<crate::api::bank_qr::UnclaimedQr>,
+    /// Переносы «из наличных в QR» этой смены и их отмены (SPEC-37 §3).
+    #[serde(default)]
+    pub transfers: Vec<crate::api::pay_fix::TransferRow>,
+    /// Изменения после пересчёта наличных этой смены (SPEC-37 §4): блок «После закрытия».
+    #[serde(default)]
+    pub after_close: Option<crate::api::pay_fix::AfterClose>,
 }
 
 /// Вид движения наличных и сторона: приход (`true`) или расход.
-const FLOW: [(&str, &str, bool); 18] = [
+const FLOW: [(&str, &str, bool); 21] = [
     ("cash_sales", "Продажи наличными", true),
+    ("pay_fix_in", "Изменение оплаты чеков", true),
     ("debt_repayments", "Оплаты долга покупателей", true),
     ("cash_in", "Внесения", true),
     ("transfers_in", "Переводы в кассу", true),
@@ -352,6 +359,8 @@ const FLOW: [(&str, &str, bool); 18] = [
     ("transfers_out", "Переводы из кассы", false),
     ("battery_intake", "Приём аккумуляторов", false),
     ("count_minus", "Недостача при прошлом пересчёте", false),
+    ("pay_fix_out", "Изменение оплаты чеков", false),
+    ("cash_to_bank", "Из наличных в QR", false),
     ("other_out", "Прочие списания", false),
     ("transfers", "Переводы между счетами", false),
 ];
@@ -387,6 +396,7 @@ fn flow_key(kind: &str, doc_type: &str, orig_kind: Option<&str>, amount: i64) ->
         "expense" => "expenses",
         "payout" => "payouts",
         "battery_intake" => "battery_intake",
+        "cash_to_bank" => "cash_to_bank",
         "count_diff" => by_sign("count_plus", "count_minus"),
         "reversal" => match doc_type {
             "cash_movement" => match orig_kind {
@@ -509,6 +519,16 @@ pub async fn load(
     let qr_unclaimed =
         crate::api::bank_qr::unclaimed_between(conn, branch_id, w.start, w.end).await?;
     let cancelled_tyiyn = sum(cancelled.iter().map(|c| &c.amount_tyiyn))?;
+    let transfers = crate::api::pay_fix::transfers_of(conn, id).await?;
+    let after_close = crate::api::pay_fix::after_close(
+        conn,
+        branch_id,
+        owner,
+        &shift,
+        shift.cash_sales_tyiyn,
+        revenue.net_profit_tyiyn,
+    )
+    .await?;
     Ok(ShiftReport {
         shift,
         owner_view: owner,
@@ -528,6 +548,8 @@ pub async fn load(
         cancelled,
         cancelled_tyiyn,
         qr_unclaimed,
+        transfers,
+        after_close,
     })
 }
 
@@ -538,11 +560,16 @@ async fn cash_flow(conn: &mut PgConnection, s: &ShiftOut, w: &Window) -> AppResu
                   (select o.kind from cash_movements o
                    where m.doc_type = 'cash_movement' and o.id = m.doc_id) as "orig_kind?",
                   (select p.purpose from payouts p
-                   where m.doc_type = 'payout' and p.id = m.doc_id) as "payout_purpose?"
+                   where m.doc_type = 'payout' and p.id = m.doc_id) as "payout_purpose?",
+                  (m.doc_type = 'sale' and exists (
+                     select 1 from pay_fixes f
+                     where f.counted_shift_id is null
+                       and (f.reversal_sale_id = m.doc_id or f.new_sale_id = m.doc_id))) as "pay_fix!"
            from cash_movements m
            where m.account_id = $1 and m.created_at >= $2
              and (m.created_at < coalesce($3, 'infinity'::timestamptz)
-                  or (m.created_at = $3 and m.kind <> 'count_diff'))"#,
+                  or (m.created_at = $3 and m.kind <> 'count_diff'))
+             and not public.pay_fix_counted_move(m.id, m.doc_type, m.doc_id)"#,
         s.account_id,
         w.start,
         w.end
@@ -563,10 +590,20 @@ async fn cash_flow(conn: &mut PgConnection, s: &ShiftOut, w: &Window) -> AppResu
                 .ok_or_else(crate::error::overflow)?;
             continue;
         }
-        let key = advance_key(
-            flow_key(&r.kind, &r.doc_type, r.orig_kind.as_deref(), r.amount_tyiyn),
-            r.payout_purpose.as_deref(),
-        );
+        // Изменение оплаты чека, чьи наличные ещё не пересчитаны, — своей строкой, а не
+        // продажами и возвратами (SPEC-37 §4).
+        let key = if r.pay_fix {
+            if r.amount_tyiyn >= 0 {
+                "pay_fix_in"
+            } else {
+                "pay_fix_out"
+            }
+        } else {
+            advance_key(
+                flow_key(&r.kind, &r.doc_type, r.orig_kind.as_deref(), r.amount_tyiyn),
+                r.payout_purpose.as_deref(),
+            )
+        };
         add(&mut by, key, r.amount_tyiyn)?;
     }
     // «Должно быть» — то же, что на экране «Смена»; если движения разошлись с ним (гонка при
@@ -652,6 +689,7 @@ async fn sales_part(
            left join parties pt on pt.id = s.party_id
            left join sales o on o.id = s.reversal_of
            where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_sale(s.id)
            order by s.created_at desc, s.number desc"#,
         branch_id,
         w.start,
@@ -665,6 +703,7 @@ async fn sales_part(
            join sales s on s.id = p.sale_id
            left join cash_accounts a on a.id = p.account_id
            where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_sale(s.id)
            order by p.method, a.name"#,
         branch_id,
         w.start,
@@ -760,7 +799,8 @@ async fn sales_part(
                       coalesce(-sum(l.cost_tyiyn) filter (where s.kind = 'return'), 0)::bigint as "returned!",
                       count(*) filter (where s.kind = 'sale' and l.cost_unknown) as "unknown!"
                from sale_lines l join sales s on s.id = l.sale_id
-               where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())"#,
+               where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+                 and not public.pay_fix_counted_sale(s.id)"#,
             branch_id,
             w.start,
             w.end
@@ -910,6 +950,7 @@ async fn hours(conn: &mut PgConnection, branch_id: Uuid, w: &Window) -> AppResul
                   count(*) filter (where s.kind = 'sale') as "count!"
            from sales s
            where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_sale(s.id)
            group by 1 order by 1"#,
         branch_id,
         w.start,
@@ -1025,8 +1066,9 @@ async fn money(
            left join expenses e on m.doc_type = 'expense' and e.id = m.doc_id
            left join expense_articles ea on ea.id = e.article_id
            where m.branch_id = $1 and m.created_at >= $2 and m.created_at <= coalesce($3, now())
-             and m.kind not in ('sale', 'sale_return', 'bank_fee', 'count_diff', 'transfer_in', 'transfer_out')
-             and m.doc_type <> 'transfer'
+             and m.kind not in ('sale', 'sale_return', 'bank_fee', 'count_diff', 'transfer_in', 'transfer_out',
+                                'cash_to_bank')
+             and m.doc_type not in ('transfer', 'pay_fix')
              and (not a.owner_only or $4)
            order by m.created_at, m.id"#,
         branch_id,
@@ -1213,6 +1255,7 @@ async fn debts(conn: &mut PgConnection, branch_id: Uuid, w: &Window) -> AppResul
              and l.doc_type <> 'old_debt'
              and not exists (select 1 from party_ledger o
                              where o.id = l.reversal_of and o.doc_type = 'old_debt')
+             and not (l.doc_type = 'sale' and public.pay_fix_counted_sale(l.doc_id))
            order by l.created_at, l.id"#,
         branch_id,
         w.start,
@@ -1603,6 +1646,9 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
         ));
     }
     out.push(rev.join("\n"));
+    if let Some(a) = &r.after_close {
+        out.push(crate::api::pay_fix::after_close_lines(a).join("\n"));
+    }
 
     let mut more = payout_lines(&r.payouts);
     more.extend(debt_lines(&r.debts));

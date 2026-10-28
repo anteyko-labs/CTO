@@ -697,6 +697,8 @@ export interface BankSplit {
   debt_tyiyn?: number
   /** За смену: упало на счёт — итог минус комиссия. */
   landed_tyiyn?: number
+  /** За смену: перенесено из наличных на этот счёт (SPEC-37 §3). */
+  cash_to_bank_tyiyn?: number
 }
 
 /** Настройки смены (SPEC-36 §10). */
@@ -723,6 +725,10 @@ export interface Shift {
   closed_by?: string | null
   counted_tyiyn: number | null
   diff_tyiyn: number | null
+  /** Поправки расхождения после закрытия (SPEC-37 §4): расхождение сейчас — `diff_tyiyn` + это. */
+  diff_fix_tyiyn?: number
+  /** Есть изменения после пересчёта: блок «После закрытия» в отчёте. */
+  has_after_close?: boolean
   breakdown: { kind: string; sum_tyiyn: number }[]
   cash_sales_tyiyn: number
   card_tyiyn: number

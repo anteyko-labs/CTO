@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.name from sale_payments p join cash_accounts a on a.id = p.account_id\n           where p.sale_id = $1 and not a.active limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9ad802cbfcd0ddaa52823070dff4e15fe67223e79fa19316fa0614b675cd025b"
+}

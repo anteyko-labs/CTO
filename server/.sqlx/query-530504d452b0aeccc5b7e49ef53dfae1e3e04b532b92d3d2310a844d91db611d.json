@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select counted_shift_id as \"shift_id!\", counted_at as \"at!\" from pay_fixes\n           where new_sale_id = $1 and counted_shift_id is not null limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "shift_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "at!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "530504d452b0aeccc5b7e49ef53dfae1e3e04b532b92d3d2310a844d91db611d"
+}

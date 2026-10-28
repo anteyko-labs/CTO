@@ -38,6 +38,8 @@ export interface Correction {
   diff: DiffItem[]
   user_name: string
   created_at: string
+  /** «Изменить оплату» (SPEC-37): поменялась только оплата чека. */
+  payment?: boolean
 }
 
 /** Исходный документ для формы исправления — в виде запроса его проведения. */

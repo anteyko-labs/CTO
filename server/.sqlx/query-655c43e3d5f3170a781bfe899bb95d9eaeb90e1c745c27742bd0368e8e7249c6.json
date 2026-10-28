@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties set inn = $2 where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "655c43e3d5f3170a781bfe899bb95d9eaeb90e1c745c27742bd0368e8e7249c6"
+}

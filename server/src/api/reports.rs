@@ -317,6 +317,11 @@ pub async fn totals_for(
                                and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)
                  + coalesce((select sum(a.amount_tyiyn) from bank_fee_adjustments a
                              where a.branch_id = $1 and a.op_day between $2 and $3), 0)
+                 -- Комиссия переноса из наличных в QR — учётным днём смены (SPEC-37 §4).
+                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
+                             join pay_fixes f on f.id = m.doc_id join shifts sh on sh.id = f.shift_id
+                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'pay_fix'
+                               and sh.business_date between $2 and $3), 0)
                  )::bigint as "v!""#,
         branch_id,
         from,
@@ -469,7 +474,8 @@ pub async fn totals_between(
              coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!",
              count(distinct s.id) filter (where s.kind = 'sale') as "count!"
            from sale_lines l join sales s on s.id = l.sale_id
-           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())"#,
+           where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_sale(s.id)"#,
         branch_id,
         start,
         end
@@ -489,7 +495,8 @@ pub async fn totals_between(
     let payroll = sqlx::query_scalar!(
         r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from payroll_accruals
            where branch_id = $1 and kind <> 'monthly_salary'
-             and created_at >= $2 and created_at <= coalesce($3, now())"#,
+             and created_at >= $2 and created_at <= coalesce($3, now())
+             and not public.pay_fix_counted_accrual(id, doc_type, doc_id)"#,
         branch_id,
         start,
         end
@@ -498,14 +505,21 @@ pub async fn totals_between(
     .await?;
     let fee = sqlx::query_scalar!(
         r#"select (coalesce((select sum(p.fee_tyiyn) from sale_payments p join sales s on s.id = p.sale_id
-                             where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())), 0)
+                             where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
+                               and not public.pay_fix_counted_sale(s.id)), 0)
                  + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
                              where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'repayment'
                                and m.created_at >= $2 and m.created_at <= coalesce($3, now())), 0)
+                 -- Комиссия переноса из наличных в QR, пока смена была открыта (SPEC-37 §3).
+                 + coalesce((select -sum(m.amount_tyiyn) from cash_movements m
+                             join pay_fixes f on f.id = m.doc_id
+                             where m.branch_id = $1 and m.kind = 'bank_fee' and m.doc_type = 'pay_fix'
+                               and f.shift_id = $4 and f.counted_shift_id is null), 0)
                  )::bigint as "v!""#,
         branch_id,
         start,
-        end
+        end,
+        shift_id
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -521,7 +535,7 @@ pub async fn totals_between(
     let bonus = sqlx::query_scalar!(
         r#"select coalesce(sum(p.amount_tyiyn), 0)::bigint as "v!" from sale_payments p join sales s on s.id = p.sale_id
            where s.branch_id = $1 and s.created_at >= $2 and s.created_at <= coalesce($3, now())
-             and p.method = 'bonus'"#,
+             and p.method = 'bonus' and not public.pay_fix_counted_sale(s.id)"#,
         branch_id,
         start,
         end
@@ -529,8 +543,9 @@ pub async fn totals_between(
     .fetch_one(&mut *conn)
     .await?;
     let cash_diff = sqlx::query_scalar!(
-        r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from cash_movements
-           where branch_id = $1 and kind = 'count_diff' and doc_type = 'shift' and doc_id = $2"#,
+        r#"select coalesce(sum(m.amount_tyiyn), 0)::bigint as "v!" from cash_movements m
+           where m.branch_id = $1 and m.kind = 'count_diff' and m.doc_type = 'shift' and m.doc_id = $2
+             and not exists (select 1 from pay_fixes f where f.count_movement_id = m.id)"#,
         branch_id,
         shift_id
     )
@@ -571,6 +586,73 @@ pub async fn totals_between(
         defect_diff: defects.diff,
         return_diff,
         count: lines.count,
+    }))
+}
+
+/// Прибыль изменений после пересчёта смены (SPEC-37 §4): изменения оплаты и переносы, поправившие
+/// пересчёт этой смены. Их документы в прибыль смены по времени не входят (там — как при
+/// пересчёте); здесь — их сумма: валовая сторно и нового чека (ноль — себестоимость та же),
+/// начисления, комиссия, баллы, поправки пересчёта и удержания.
+pub async fn fixes_totals(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    shift_id: Uuid,
+) -> AppResult<Totals> {
+    let lines = sqlx::query!(
+        r#"with x as (select unnest(array[f.reversal_sale_id, f.new_sale_id]) as sale_id
+                      from pay_fixes f
+                      where f.branch_id = $1 and f.counted_shift_id = $2 and f.kind = 'sale')
+           select
+             coalesce(sum(l.amount_tyiyn) filter (where l.kind <> 'service'), 0)::bigint as "goods!",
+             coalesce(sum(l.amount_tyiyn) filter (where l.kind = 'service'), 0)::bigint as "services!",
+             coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!"
+           from sale_lines l join x on x.sale_id = l.sale_id"#,
+        branch_id,
+        shift_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let money = sqlx::query!(
+        r#"with x as (select unnest(array[f.reversal_sale_id, f.new_sale_id]) as sale_id
+                      from pay_fixes f
+                      where f.branch_id = $1 and f.counted_shift_id = $2 and f.kind = 'sale')
+           select
+             (coalesce((select sum(p.fee_tyiyn) from sale_payments p join x on x.sale_id = p.sale_id), 0)
+              + coalesce((select -sum(m.amount_tyiyn) from cash_movements m join pay_fixes f on f.id = m.doc_id
+                          where m.kind = 'bank_fee' and m.doc_type = 'pay_fix'
+                            and f.branch_id = $1 and f.counted_shift_id = $2), 0))::bigint as "fee!",
+             coalesce((select sum(p.amount_tyiyn) from sale_payments p join x on x.sale_id = p.sale_id
+                       where p.method = 'bonus'), 0)::bigint as "bonus!",
+             coalesce((select sum(m.amount_tyiyn) from cash_movements m join pay_fixes f on f.count_movement_id = m.id
+                       where f.branch_id = $1 and f.counted_shift_id = $2), 0)::bigint as "cash_diff!",
+             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
+                       where a.branch_id = $1 and a.kind <> 'monthly_salary'
+                         and ((a.doc_type in ('sale', 'sale_return') and a.doc_id in (select sale_id from x))
+                              or a.id in (select f.accrual_id from pay_fixes f
+                                          where f.branch_id = $1 and f.counted_shift_id = $2)
+                              or (a.doc_type = 'reversal' and a.doc_id in (
+                                    select f.accrual_id from pay_fixes f
+                                    where f.branch_id = $1 and f.counted_shift_id = $2)))), 0)::bigint as "payroll!""#,
+        branch_id,
+        shift_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(assemble(Parts {
+        goods: lines.goods,
+        services: lines.services,
+        cost: lines.cost,
+        revaluation: 0,
+        payroll: money.payroll,
+        salary: 0,
+        fee: money.fee,
+        expenses: 0,
+        bonus: money.bonus,
+        cash_diff: money.cash_diff,
+        defect_writeoff: 0,
+        defect_diff: 0,
+        return_diff: 0,
+        count: 0,
     }))
 }
 

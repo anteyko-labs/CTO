@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select method, account_id, sum(amount_tyiyn)::bigint as \"amount!\" from sale_payments\n           where sale_id = $1 group by method, account_id order by method, account_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "47ecf065daf67e1677e590988f568af5db04f08af742c432812351118ffc3352"
+}

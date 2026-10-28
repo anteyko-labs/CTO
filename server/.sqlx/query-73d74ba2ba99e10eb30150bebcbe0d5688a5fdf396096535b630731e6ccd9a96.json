@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(-sum(a.amount_tyiyn), 0)::bigint as \"v!\" from payroll_accruals a\n           where a.kind = 'shortage'\n             and ((a.doc_type = 'shift' and a.doc_id = $1)\n                  or (a.doc_type = 'reversal' and exists (\n                        select 1 from payroll_accruals o\n                        where o.id = a.doc_id and o.doc_type = 'shift' and o.doc_id = $1)))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "73d74ba2ba99e10eb30150bebcbe0d5688a5fdf396096535b630731e6ccd9a96"
+}
