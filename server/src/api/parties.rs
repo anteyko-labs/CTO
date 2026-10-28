@@ -38,6 +38,7 @@ pub fn routes() -> Router<AppState> {
         .route("/parties/{id}/limit-request", routing::post(limit_request))
         .route("/debts/repayments", routing::post(post_repayment))
         .route("/debts/adjust", routing::post(post_adjust))
+        .route("/debts/old", routing::post(post_old_debt))
         .route("/debts/list", routing::get(debts_list))
         .route("/parties/{id}/open-debts", routing::get(open_debts))
 }
@@ -261,6 +262,16 @@ async fn create_party(
     ctx: Ctx,
     Json(req): Json<PartyReq>,
 ) -> AppResult<Json<PartyOut>> {
+    let mut tx = state.pool.begin().await?;
+    let id = create_party_tx(&mut tx, &ctx, req).await?;
+    let out = load_party(&mut tx, ctx.user.branch_id, id).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Новая карточка контрагента в транзакции вызывающего: экран «Клиенты» и окно старого долга
+/// (SPEC-38) заводят клиента по одним правилам (SPEC-10, ADR-083).
+async fn create_party_tx(conn: &mut PgConnection, ctx: &Ctx, req: PartyReq) -> AppResult<Uuid> {
     let role = req.role.unwrap_or_else(|| "customer".into());
     let kind = req.kind.unwrap_or_else(|| "person".into());
     let person = person_name(&kind, req.first_name.as_deref(), req.last_name.as_deref())?;
@@ -293,11 +304,10 @@ async fn create_party(
         .due_days
         .or_else(|| (kind == "company" && role == "customer").then_some(14));
     let id = new_id();
-    let mut tx = state.pool.begin().await?;
-    require_party_right(&mut tx, &ctx.user, &role).await?;
+    require_party_right(&mut *conn, &ctx.user, &role).await?;
     // Нового поставщика заводят при приходе — право «Приход товара», как `POST /suppliers`.
     if role == "supplier" {
-        crate::auth::require_permission(&mut tx, &ctx.user, "receipts").await?;
+        crate::auth::require_permission(&mut *conn, &ctx.user, "receipts").await?;
     }
     sqlx::query!(
         r#"insert into parties (id, branch_id, role, kind, name, phone, inn, comment,
@@ -316,20 +326,18 @@ async fn create_party(
         first_name,
         last_name
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     ops::audit(
-        &mut tx,
-        &ctx,
+        &mut *conn,
+        ctx,
         "party.create",
         "party",
         Some(id),
         json!({ "name": name, "role": role, "kind": kind }),
     )
     .await?;
-    let out = load_party(&mut tx, ctx.user.branch_id, id).await?;
-    tx.commit().await?;
-    Ok(Json(out))
+    Ok(id)
 }
 
 /// Полное имя человека — «Фамилия Имя» (ADR-083): так его ищут и видят в списках, чеках и
@@ -993,6 +1001,18 @@ pub async fn add_ledger_to(
     e: LedgerEntry<'_>,
     target: Option<(Uuid, i64)>,
 ) -> AppResult<(i64, Uuid)> {
+    add_ledger_at(conn, ctx, e, target, None).await
+}
+
+/// То же, что [`add_ledger_to`], с учётным днём записи: `day` — старый долг из тетради ложится в
+/// день долга (SPEC-38); без него — день чека или сегодня.
+async fn add_ledger_at(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    e: LedgerEntry<'_>,
+    target: Option<(Uuid, i64)>,
+    day: Option<NaiveDate>,
+) -> AppResult<(i64, Uuid)> {
     let LedgerEntry {
         party_id,
         kind,
@@ -1019,7 +1039,8 @@ pub async fn add_ledger_to(
                                      doc_type, doc_id, comment, user_id, device_id)
            values ($1, $2, $3, $4, $5,
                    -- Долг по чеку — в учётный день чека: офлайн-чек вчерашнего дня в акте сверки вчера.
-                   coalesce((select s.business_date from sales s
+                   coalesce($11::date,
+                            (select s.business_date from sales s
                              where s.id = $7 and $6 in ('sale', 'sale_return')),
                             (now() at time zone 'Asia/Bishkek')::date),
                    $6, $7, $8, $9, $10)"#,
@@ -1032,7 +1053,8 @@ pub async fn add_ledger_to(
         doc_id,
         comment,
         ctx.user.id,
-        ctx.device_id
+        ctx.device_id,
+        day
     )
     .execute(&mut *conn)
     .await?;
@@ -1239,7 +1261,8 @@ pub(crate) async fn reconciliation_data(
                   (select a.kind from cash_movements m join cash_accounts a on a.id = m.account_id
                     where m.doc_type = 'repayment' and m.doc_id = l.doc_id
                       and m.kind in ('debt_repayment', 'supplier_payment') limit 1) as "paid_via?",
-                  b.name as branch_name
+                  b.name as branch_name,
+                  (select o.doc_type from party_ledger o where o.id = l.reversal_of) as "reversed_doc?"
            from party_ledger l
            join branches b on b.id = l.branch_id
            left join sales s on s.id = l.doc_id and l.doc_type in ('sale', 'sale_return')
@@ -1277,6 +1300,11 @@ pub(crate) async fn reconciliation_data(
             ("supplier_return", _) => "Возврат товара поставщику".to_string(),
             ("supplier_return_reversal", _) => "Сторно возврата поставщику".to_string(),
             ("defect_reversal", _) => "Отмена возврата брака".to_string(),
+            // Старый долг — в день долга из тетради, с текстом владельца (SPEC-38).
+            (OLD_DEBT_DOC, _) => OLD_DEBT_TITLE.to_string(),
+            ("reversal", _) if r.reversed_doc.as_deref() == Some(OLD_DEBT_DOC) => {
+                "Сторно старого долга (из тетради)".to_string()
+            }
             (_, "repayment") => match r.paid_via.as_deref() {
                 Some("register") => "Оплата наличными".to_string(),
                 Some("bank") => "Оплата безналичная".to_string(),
@@ -1297,6 +1325,11 @@ pub(crate) async fn reconciliation_data(
         };
         debit = debit.saturating_add(d);
         credit = credit.saturating_add(c);
+        let comment = if r.doc_type == OLD_DEBT_DOC {
+            old_debt_text(&r.comment).to_string()
+        } else {
+            r.comment
+        };
         rows.push(ReconRow {
             date: r.business_date,
             document,
@@ -1304,7 +1337,7 @@ pub(crate) async fn reconciliation_data(
             doc_id: r.doc_id,
             debit_tyiyn: d,
             credit_tyiyn: c,
-            comment: r.comment,
+            comment,
         });
     }
     Ok(ReconOut {
@@ -1741,7 +1774,8 @@ pub struct AdjustReq {
     pub comment: String,
 }
 
-/// Правка баланса владельцем: прощение долга или перенос старого долга из тетради.
+/// Правка баланса владельцем: прощение долга и исправление ошибок. Старый долг клиента из
+/// тетради — `POST /debts/old` с датой долга (SPEC-38); долг поставщику из тетради — здесь.
 async fn post_adjust(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -1816,6 +1850,256 @@ pub async fn post_adjust_tx(
     Ok(out)
 }
 
+// ---------- Старый долг из тетради (SPEC-38, ADR-133) ----------
+
+/// Документ старого долга в журнале долга: вид записи — «долг», учётный день — дата долга.
+pub const OLD_DEBT_DOC: &str = "old_debt";
+/// Старый долг словами — в журнале долга, карточке, акте сверки, боте и кабинете.
+pub const OLD_DEBT_TITLE: &str = "Старый долг (из тетради)";
+/// Начало ответа 409 на повтор: по нему экран спрашивает «Занести ещё раз?».
+pub const OLD_DEBT_DUPLICATE: &str = "Такой долг уже занесён";
+/// Дата долга — не раньше чем 10 лет назад.
+const OLD_DEBT_YEARS: u32 = 10;
+
+/// Новый клиент из окна старого долга: те же поля, что «Новый клиент» (SPEC-10, ADR-083).
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct NewPartyReq {
+    /// `person` — физлицо (имя и фамилия), `company` — фирма (название).
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub phone: String,
+    /// ПИН/ИНН не обязателен: в тетради его обычно нет.
+    #[serde(default)]
+    pub inn: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct OldDebtReq {
+    pub op_id: Uuid,
+    /// Клиент из списка — или новый `new_party`, ровно одно из двух.
+    #[serde(default)]
+    pub party_id: Option<Uuid>,
+    #[serde(default)]
+    pub new_party: Option<NewPartyReq>,
+    pub amount_tyiyn: i64,
+    /// Когда взял в долг: от этой даты считаются срок оплаты и просрочка.
+    pub date: NaiveDate,
+    /// Что брал, страница тетради.
+    #[serde(default)]
+    pub comment: String,
+    /// У клиента уже есть такой старый долг (сумма и дата) — занести ещё раз.
+    #[serde(default)]
+    pub confirm_duplicate: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OldDebtOut {
+    pub party_id: Uuid,
+    pub ledger_id: Uuid,
+    pub balance_tyiyn: i64,
+    pub due_date: Option<NaiveDate>,
+    pub overdue_days: i64,
+}
+
+/// Комментарий записи старого долга: подпись и текст владельца.
+fn old_debt_comment(text: &str) -> String {
+    if text.is_empty() {
+        OLD_DEBT_TITLE.to_string()
+    } else {
+        format!("{OLD_DEBT_TITLE}: {text}")
+    }
+}
+
+/// Текст владельца из комментария записи старого долга — без подписи.
+pub(crate) fn old_debt_text(comment: &str) -> &str {
+    comment
+        .strip_prefix(OLD_DEBT_TITLE)
+        .map_or(comment, |rest| rest.trim_start_matches(':').trim_start())
+}
+
+/// Дата долга из тетради: не позже сегодня и не раньше чем 10 лет назад (SPEC-38 §2).
+pub(crate) fn check_old_debt_date(date: NaiveDate, today: NaiveDate) -> AppResult<()> {
+    if date > today {
+        return Err(invalid("дата долга — не позже сегодняшнего дня"));
+    }
+    let earliest = today
+        .checked_sub_months(chrono::Months::new(OLD_DEBT_YEARS * 12))
+        .unwrap_or(NaiveDate::MIN);
+    if date < earliest {
+        return Err(invalid("дата долга — не раньше чем 10 лет назад"));
+    }
+    Ok(())
+}
+
+/// Не сторнированный старый долг клиента на ту же сумму с той же датой: «Такой долг уже занесён
+/// 28.10 (Эрбол)» — для второго подтверждения; нет такого — `None`.
+pub(crate) async fn old_debt_duplicate(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    amount: i64,
+    date: NaiveDate,
+) -> AppResult<Option<String>> {
+    let same = sqlx::query!(
+        r#"select to_char(l.created_at at time zone 'Asia/Bishkek', 'DD.MM') as "day!",
+                  u.full_name
+           from party_ledger l join users u on u.id = l.user_id
+           where l.party_id = $1 and l.kind = 'debt' and l.doc_type = $4
+             and l.amount_tyiyn = $2 and l.business_date = $3 and l.reversal_of is null
+             and not exists (select 1 from party_ledger r where r.reversal_of = l.id)
+           order by l.created_at desc limit 1"#,
+        party_id,
+        amount,
+        date,
+        OLD_DEBT_DOC
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(same.map(|s| format!("{OLD_DEBT_DUPLICATE} {} ({})", s.day, s.full_name)))
+}
+
+async fn post_old_debt(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<OldDebtReq>,
+) -> AppResult<Json<OldDebtOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_old_debt_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Старый долг из тетради: запись «долг» с учётным днём — датой долга; новый клиент — той же
+/// транзакцией. Склад, деньги, выручка, прибыль и процент кассира не меняются: товар отдан до
+/// программы. Лимит долга не проверяется — долг уже есть. Экран, «Исправить» и бот владельца
+/// (SPEC-24) проводят одной функцией.
+pub async fn post_old_debt_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: OldDebtReq,
+) -> AppResult<OldDebtOut> {
+    const KIND: &str = "debt.old";
+    if req.amount_tyiyn <= 0 {
+        return Err(invalid("сумма долга больше нуля"));
+    }
+    ops::check_amount(req.amount_tyiyn)?;
+    let text = req.comment.trim();
+    if text.chars().count() > 500 {
+        return Err(invalid("комментарий — не длиннее 500 знаков"));
+    }
+    let today = crate::api::fees::today(&mut *conn).await?;
+    check_old_debt_date(req.date, today)?;
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
+    }
+    crate::auth::require_permission(&mut *conn, &ctx.user, "old_debts").await?;
+    let (party_id, created) = match (req.party_id, req.new_party) {
+        (Some(id), None) => (id, false),
+        (None, Some(np)) => {
+            let person = np.kind == "person";
+            // Правила карточки — те же, что «Новый клиент»: право «Клиенты и машины», имя и
+            // фамилия у физлица, срок оплаты 14 дней у фирмы.
+            let id = create_party_tx(
+                &mut *conn,
+                ctx,
+                PartyReq {
+                    role: Some("customer".into()),
+                    kind: Some(np.kind.clone()),
+                    name: if person { String::new() } else { np.name },
+                    first_name: person.then_some(np.first_name),
+                    last_name: person.then_some(np.last_name),
+                    phone: np.phone,
+                    inn: np.inn,
+                    comment: String::new(),
+                    credit_limit_tyiyn: None,
+                    due_days: None,
+                },
+            )
+            .await?;
+            (id, true)
+        }
+        _ => {
+            return Err(invalid(
+                "укажите клиента: выберите из списка или заведите нового",
+            ));
+        }
+    };
+    let p = sqlx::query!(
+        r#"select name, role, active, due_days as "due_days?" from parties where id = $1 for update"#,
+        party_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("клиент не найден"))?;
+    if p.role != "customer" {
+        return Err(invalid(
+            "старый долг заносится клиенту; долг поставщику — «Правкой баланса» в его карточке",
+        ));
+    }
+    if !p.active {
+        return Err(invalid("клиент отключён — включите его в карточке"));
+    }
+    // Тот же долг, занесённый раньше, — второй раз только со вторым подтверждением.
+    if !created
+        && !req.confirm_duplicate
+        && let Some(same) =
+            old_debt_duplicate(&mut *conn, party_id, req.amount_tyiyn, req.date).await?
+    {
+        return Err(AppError::Conflict(format!("{same}. Занести ещё раз?")));
+    }
+    let (balance, ledger_id) = add_ledger_at(
+        &mut *conn,
+        ctx,
+        LedgerEntry {
+            party_id,
+            kind: "debt",
+            amount: req.amount_tyiyn,
+            doc_type: OLD_DEBT_DOC,
+            doc_id: None,
+            comment: &old_debt_comment(text),
+        },
+        None,
+        Some(req.date),
+    )
+    .await?;
+    let due = debt_dues(&mut *conn, &[(party_id, balance, p.due_days)])
+        .await?
+        .remove(&party_id)
+        .unwrap_or_default();
+    ops::audit(
+        &mut *conn,
+        ctx,
+        KIND,
+        "party",
+        Some(party_id),
+        json!({
+            "name": p.name,
+            "amount_tyiyn": req.amount_tyiyn,
+            "date": req.date,
+            "comment": text,
+            "balance_tyiyn": balance,
+            "ledger_id": ledger_id,
+            "new_party": created,
+        }),
+    )
+    .await?;
+    let out = OldDebtOut {
+        party_id,
+        ledger_id,
+        balance_tyiyn: balance,
+        due_date: due.due_date,
+        overdue_days: due.overdue_days,
+    };
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
+}
+
 // ---------- Карточка ----------
 
 #[derive(Serialize)]
@@ -1833,6 +2117,11 @@ pub(crate) struct TimelineItem {
     /// Запись другого филиала (SPEC-33): его название; документ открывается только в нём.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) branch_name: Option<String>,
+    /// Старый долг из тетради (SPEC-38): дата долга и кто занёс.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) debt_date: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) user_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1918,8 +2207,9 @@ pub(crate) async fn party_card_data(
     let ledger = sqlx::query!(
         r#"select l.id, l.kind, l.amount_tyiyn, l.created_at, l.comment, l.doc_id, l.reversal_of, l.doc_type,
                   exists (select 1 from party_ledger r where r.reversal_of = l.id) as "reversed!",
-                  l.branch_id, b.name as branch_name
+                  l.branch_id, b.name as branch_name, l.business_date, u.full_name as user_name
            from party_ledger l join branches b on b.id = l.branch_id
+           join users u on u.id = l.user_id
            where l.party_id = $1 and ($2::uuid is null or l.branch_id = $2)
              and ($3::date is null or l.created_at >= ($3::date)::timestamp at time zone 'Asia/Bishkek')
              and ($4::date is null or l.created_at < ($4::date + 1)::timestamp at time zone 'Asia/Bishkek')
@@ -2005,14 +2295,19 @@ pub(crate) async fn party_card_data(
                     .collect::<Vec<_>>()
                     .join(" · ")
             },
+            debt_date: None,
+            user_name: None,
         });
     }
     for l in &ledger {
+        // Старый долг из тетради (SPEC-38): своя подпись, дата долга и кто занёс; снимает его
+        // владелец «Сторно» или «Исправить», как правку.
+        let old_debt = l.kind == "debt" && l.doc_type == OLD_DEBT_DOC;
         timeline.push(TimelineItem {
             at: l.created_at,
             ledger_id: Some(l.id),
             // Сторно — в филиале записи (SPEC-33): чужую запись владелец снимает, выбрав её филиал.
-            reversible: l.kind != "debt"
+            reversible: (l.kind != "debt" || old_debt)
                 && l.reversal_of.is_none()
                 && !l.reversed
                 && l.branch_id == user.branch_id,
@@ -2021,13 +2316,20 @@ pub(crate) async fn party_card_data(
                 // Возмещение за брак: поставщик должен нам (SPEC-25).
                 "defect" => "Возврат брака: скидка на приход".into(),
                 "defect_reversal" => "Отмена возврата брака".into(),
+                _ if old_debt => OLD_DEBT_TITLE.into(),
                 _ => ledger_title(&l.kind, l.amount_tyiyn, l.reversal_of.is_some()).into(),
             },
             amount_tyiyn: l.amount_tyiyn,
             number: None,
             doc_id: l.doc_id,
-            comment: l.comment.clone(),
+            comment: if old_debt {
+                old_debt_text(&l.comment).to_string()
+            } else {
+                l.comment.clone()
+            },
             branch_name: (l.branch_id != user.branch_id).then(|| l.branch_name.clone()),
+            debt_date: old_debt.then_some(l.business_date),
+            user_name: old_debt.then(|| l.user_name.clone()),
         });
     }
     timeline.sort_by_key(|t| std::cmp::Reverse(t.at));
@@ -2099,7 +2401,8 @@ pub async fn reverse_ledger_tx(
         return Ok(done);
     }
     let l = sqlx::query!(
-        r#"select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.reversal_of, p.role
+        r#"select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.reversal_of, p.role,
+                  l.business_date
            from party_ledger l join parties p on p.id = l.party_id
            where l.id = $1 and l.branch_id = $2"#,
         id,
@@ -2116,7 +2419,9 @@ pub async fn reverse_ledger_tx(
             "возврат брака отменяется на экране «Остатки → Брак»".into(),
         ));
     }
-    if l.kind == "debt" {
+    // Старый долг из тетради снимается здесь (SPEC-38): у него нет своего документа.
+    let old_debt = l.kind == "debt" && l.doc_type == OLD_DEBT_DOC;
+    if l.kind == "debt" && !old_debt {
         return Err(AppError::Conflict(
             "долг по чеку снимается возвратом, по накладной — сторно накладной".into(),
         ));
@@ -2217,9 +2522,11 @@ pub async fn reverse_ledger_tx(
             rid = reversal_id;
         }
         sqlx::query!(
+            // Сторно старого долга — в день долга (SPEC-38): ошибочная запись и её сторно в акте
+            // сверки — одним днём, сальдо прошлых периодов не искажается.
             r#"insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,
                                          doc_type, doc_id, comment, reversal_of, user_id, device_id)
-               values ($1, $2, $3, $4, $5, (now() at time zone 'Asia/Bishkek')::date,
+               values ($1, $2, $3, $4, $5, coalesce($10::date, (now() at time zone 'Asia/Bishkek')::date),
                        'reversal', $6, $7, $6, $8, $9)"#,
             reversal_id,
             part_branch,
@@ -2229,7 +2536,8 @@ pub async fn reverse_ledger_tx(
             part_id,
             req.comment.trim(),
             ctx.user.id,
-            ctx.device_id
+            ctx.device_id,
+            old_debt.then_some(l.business_date)
         )
         .execute(&mut *tx)
         .await

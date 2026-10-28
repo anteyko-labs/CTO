@@ -51,7 +51,7 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
     let several = crate::api::branches::several(&mut *conn).await?;
     let entries = sqlx::query!(
         r#"select l.kind, l.amount_tyiyn, l.created_at, l.reversal_of is not null as "reversal!",
-                  s.number as "sale_number?", b.name as branch_name
+                  s.number as "sale_number?", b.name as branch_name, l.doc_type, l.business_date
            from party_ledger l
            join branches b on b.id = l.branch_id
            left join sales s on l.doc_type = 'sale' and s.id = l.doc_id
@@ -127,10 +127,20 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
             } else {
                 check
             };
+            // Старый долг из тетради — датой долга, а не днём, когда его занесли (SPEC-38).
+            let old = e.kind == "debt" && e.doc_type == crate::api::parties::OLD_DEBT_DOC;
             lines.push(format!(
                 "{} — {} {}{check}",
-                local_day(e.created_at),
-                entry_title(&e.kind, e.amount_tyiyn, e.reversal),
+                if old {
+                    day(e.business_date)
+                } else {
+                    local_day(e.created_at)
+                },
+                if old {
+                    "старый долг (из тетради)"
+                } else {
+                    entry_title(&e.kind, e.amount_tyiyn, e.reversal)
+                },
                 format_som(e.amount_tyiyn.abs())
             ));
         }

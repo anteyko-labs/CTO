@@ -7,12 +7,13 @@ import { Pager, usePager } from '../components/Pager'
 import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
 import { stockText } from '../components/ProductPicker'
 import { VehicleFormModal } from '../components/VehicleFormModal'
+import { OldDebtModal } from '../components/OldDebtModal'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast, type MenuItem } from '../components/ui'
 import { get, newOpId, patch, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
+import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
@@ -265,6 +266,9 @@ function AdjustModal({
             </button>
           ))}
         </div>
+        {sign === 1 && !fixId && (
+          <div className="text-xs text-slate-500">Старый долг из тетради — кнопкой «Занести старый долг»: там дата долга</div>
+        )}
         <Field label="Сумма, с" required>
           <input autoFocus inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
         </Field>
@@ -325,10 +329,10 @@ export default function ClientCard() {
   // Править клиента и машины и принимать оплату долга — права администратора (ADR-097).
   const can = useCan()
   const mayEdit = can('clients')
-  const [money, setMoney] = useState<null | 'repay' | 'adjust'>(null)
+  const [money, setMoney] = useState<null | 'repay' | 'adjust' | 'old'>(null)
   const [reversing, setReversing] = useState<{ item: PartyTimelineItem; comment: string; opId: string } | null>(null)
   // «Исправить» оплату долга или правку баланса — той же формой, что их записывает (SPEC-29 §24).
-  const [fixing, setFixing] = useState<{ kind: 'repayment' | 'adjust'; ledgerId: string } | null>(null)
+  const [fixing, setFixing] = useState<{ kind: 'repayment' | 'adjust' | 'old_debt'; ledgerId: string } | null>(null)
   const revAct = useAction()
   const [adding, setAdding] = useState<'vehicle' | null>(null)
   // Человек фирмы: новый или правка — имя, телефон, должность, руководитель (SPEC-32).
@@ -405,6 +409,8 @@ export default function ClientCard() {
       toast(party.active ? 'Клиент отключён' : 'Клиент включён')
     })
 
+  // Старый долг из тетради (SPEC-38): владелец или администратор с правом, только клиенту.
+  const mayOldDebt = can('old_debts') && party.role === 'customer'
   // На телефоне в шапке остаётся «Погасить», остальное — в меню «⋯».
   const toggleItem: MenuItem = party.active
     ? { label: 'Отключить клиента', danger: true, onClick: toggleActive, disabled: row.busy }
@@ -412,6 +418,7 @@ export default function ClientCard() {
   const phoneItems: MenuItem[] = [
     { label: 'Акт сверки', onClick: () => setReconciling(true) },
     { label: 'Правка баланса', onClick: () => setMoney('adjust'), disabled: !owner },
+    ...(mayOldDebt ? [{ label: 'Занести старый долг', onClick: () => setMoney('old') }] : []),
     ...(mayEdit ? [toggleItem] : []),
   ]
 
@@ -432,6 +439,11 @@ export default function ClientCard() {
               {owner && (
                 <Button variant="secondary" onClick={() => setMoney('adjust')}>
                   Правка баланса
+                </Button>
+              )}
+              {mayOldDebt && (
+                <Button variant="secondary" onClick={() => setMoney('old')}>
+                  Занести старый долг
                 </Button>
               )}
             </span>
@@ -683,15 +695,30 @@ export default function ClientCard() {
                 <td className="px-2 py-2 md:text-right">
                   <Money value={t.amount_tyiyn} />
                 </td>
-                <td className="px-2 py-2 text-slate-600">{t.comment || '—'}</td>
+                <td className="px-2 py-2 text-slate-600">
+                  {t.comment || (t.debt_date ? '' : '—')}
+                  {/* Старый долг из тетради (SPEC-38): дата долга и кто занёс. */}
+                  {t.debt_date && (
+                    <div className="text-xs text-slate-500" data-testid="old-debt-date">
+                      долг от {formatDate(t.debt_date)}
+                      {t.user_name && ` · занёс ${t.user_name}`}
+                    </div>
+                  )}
+                </td>
                 <td className="px-2 py-2 text-right">
                   {(t.kind === 'sale' || t.kind === 'sale_return') && t.doc_id && !t.branch_name && (
                     <Link className="text-sky-700 underline" to={`/sales/${t.doc_id}`}>
                       Чек
                     </Link>
                   )}
-                  {owner && t.reversible && t.ledger_id && (t.kind === 'repayment' || t.kind === 'adjust') && (
-                    <FixButton small className="ml-2" onClick={() => setFixing({ kind: t.kind === 'adjust' ? 'adjust' : 'repayment', ledgerId: t.ledger_id ?? '' })} />
+                  {owner && t.reversible && t.ledger_id && (t.kind === 'repayment' || t.kind === 'adjust' || t.debt_date) && (
+                    <FixButton
+                      small
+                      className="ml-2"
+                      onClick={() =>
+                        setFixing({ kind: t.debt_date ? 'old_debt' : t.kind === 'adjust' ? 'adjust' : 'repayment', ledgerId: t.ledger_id ?? '' })
+                      }
+                    />
                   )}
                   {owner && t.reversible && (
                     <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ item: t, comment: '', opId: newOpId() })}>
@@ -771,6 +798,19 @@ export default function ClientCard() {
           onClose={() => setFixing(null)}
           onDone={() => {
             setFixing(null)
+            card.reload()
+            corrections.reload()
+          }}
+        />
+      )}
+      {money === 'old' && <OldDebtModal party={party} onClose={() => setMoney(null)} onSaved={card.reload} />}
+      {fixing?.kind === 'old_debt' && (
+        <OldDebtModal
+          key={fixing.ledgerId}
+          party={party}
+          fixId={fixing.ledgerId}
+          onClose={() => setFixing(null)}
+          onSaved={() => {
             card.reload()
             corrections.reload()
           }}

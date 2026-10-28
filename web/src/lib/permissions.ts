@@ -26,6 +26,7 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'expenses', label: 'Расходы', group: 'Деньги', default: true },
   { key: 'payroll_pay', label: 'Выплаты мастерам', hint: 'Кассирам выплачивает владелец', group: 'Деньги', default: true },
   { key: 'payroll_advance', label: 'Аванс мастерам', hint: 'Не больше заработанного за услуги; сверх — только вы', group: 'Деньги', default: false },
+  { key: 'old_debts', label: 'Старые долги из тетради', hint: 'Занести долг клиента с датой из тетради; снимает его только владелец', group: 'Деньги', default: false },
   { key: 'receipts', label: 'Приход товара и оплата поставщику', hint: 'И накладные по фото', group: 'Склад', default: true },
   { key: 'stock_in', label: 'Оприходование', hint: 'Товар без накладной', group: 'Склад', default: true },
   { key: 'supplier_returns', label: 'Возврат поставщику', group: 'Склад', default: true },
