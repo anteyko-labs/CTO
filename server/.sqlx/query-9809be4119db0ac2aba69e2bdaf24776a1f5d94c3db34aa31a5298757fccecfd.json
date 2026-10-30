@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.product_id from supplier_line_map m join products p on p.id = m.product_id\n               where m.branch_id = $1 and m.supplier_id = $2 and m.name_key = $3 and not p.archived",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9809be4119db0ac2aba69e2bdaf24776a1f5d94c3db34aa31a5298757fccecfd"
+}

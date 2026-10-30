@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(d.parent_id, d.id) as \"root!\", r.status\n           from receipt_drafts d join receipt_drafts r on r.id = coalesce(d.parent_id, d.id)\n           where d.id = $1 and d.branch_id = $2\n           for update of r",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "root!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "a5a57802b6e3e752eecd33f5a088305ae3388ece4eabe54ae592b37d64913a9d"
+}

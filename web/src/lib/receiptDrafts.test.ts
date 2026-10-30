@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { docText, recognitionText, splitLines, suggestFor, totalMismatch, type DraftLine } from './receiptDrafts'
+import {
+  addCounts,
+  candidateText,
+  docText,
+  duplicateOf,
+  newLines,
+  recognitionText,
+  splitLines,
+  suggestFor,
+  totalMismatch,
+  type DraftLine,
+} from './receiptDrafts'
 
 const nb = (s: string | null) => (s ?? '').replace(/ /g, ' ')
 
@@ -21,6 +32,9 @@ const line = (p: Partial<DraftLine>): DraftLine => ({
   count: null,
   each_tyiyn: null,
   note: null,
+  remembered: false,
+  candidates: [],
+  photo: 1,
   ...p,
 })
 
@@ -86,5 +100,43 @@ describe('накладная по фото', () => {
     expect(recognitionText({ recognition: 'done', lines: 3 })).toBeNull()
     expect(recognitionText({ recognition: 'done', lines: 0 })).toBe('не удалось распознать')
     expect(recognitionText({ recognition: 'off', lines: 0 })).toContain('не настроено')
+  })
+})
+
+describe('задача 002: ещё фото и варианты товара', () => {
+  it('несколько точных совпадений — в строки без товара, на выбор', () => {
+    const { found, missing } = splitLines({ lines: [line({ match: 'several', candidates: [] })] })
+    expect(found.length).toBe(0)
+    expect(missing.length).toBe(1)
+  })
+
+  it('«Ещё фото» добавляет только строки нового фото', () => {
+    const lines = [line({ no: 1, photo: 1 }), line({ no: 2, photo: 2 }), line({ no: 3, photo: 2 })]
+    expect(newLines({ lines, added_photo: null }).map((l) => l.no)).toEqual([1, 2, 3])
+    expect(newLines({ lines, added_photo: 2 }).map((l) => l.no)).toEqual([2, 3])
+  })
+
+  it('тот же товар уже есть в приходе', () => {
+    const rows = [
+      { key: 'a', product: { id: 'p1' } },
+      { key: 'b', product: { id: 'p2' } },
+    ]
+    expect(duplicateOf(rows, 'p2')?.key).toBe('b')
+    expect(duplicateOf(rows, 'p2', 'b')).toBeNull()
+    expect(duplicateOf(rows, 'p3')).toBeNull()
+  })
+
+  it('сложить количество: целые и тысячные, без дробных чисел', () => {
+    expect(addCounts('2', '3', 'whole')).toBe('5')
+    expect(addCounts('2', '1,5', 'whole')).toBeNull()
+    expect(addCounts('', '1', 'whole')).toBeNull()
+    expect(addCounts('2,5', '0,75', 'milli')).toBe('3,25')
+    expect(addCounts('0,1', '0,2', 'milli')).toBe('0,3')
+    expect(addCounts('1', 'abc', 'milli')).toBeNull()
+  })
+
+  it('вариант товара: артикул, остаток, прошлый приход', () => {
+    expect(nb(candidateText({ article: 'BKR6E', last_purchase_price_tyiyn: 25_000 }, '4 шт'))).toBe('BKR6E · остаток 4 шт · прошлый приход 250 с')
+    expect(candidateText({ article: '', last_purchase_price_tyiyn: null }, '0 шт')).toBe('остаток 0 шт')
   })
 })

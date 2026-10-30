@@ -977,3 +977,505 @@ async fn bot_photo_from_owner_is_accepted_others_refused(pool: PgPool) {
     assert_eq!(api.download("big", 1024).await.unwrap(), JPEG.to_vec());
     assert!(api.download("big", 5).await.is_err());
 }
+
+// ---------- Задача 002: «Ещё фото», варианты товара, запомненный выбор, поиск приходов ----------
+
+/// «Ещё фото» в открытый черновик: загрузка с `parent_id`.
+async fn upload_more(
+    app: &Router,
+    cookie: &str,
+    op_id: Uuid,
+    parent: &str,
+    data: &[u8],
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/receipt-drafts?op_id={op_id}&name=page2.jpg&parent_id={parent}"
+        ))
+        .header("x-device-id", Uuid::now_v7().to_string())
+        .header(header::COOKIE, cookie)
+        .header(header::CONTENT_TYPE, "image/jpeg")
+        .body(Body::from(data.to_vec()))
+        .unwrap();
+    let (status, _, bytes) = send(app, req).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Вторая страница: другой поставщик и номер, фильтр ещё раз и свеча.
+fn invoice_page2() -> Value {
+    json!({
+        "readable": true,
+        "supplier_name": "ОсОО \"Запчасти Плюс\"",
+        "supplier_inn": "",
+        "doc_number": "16",
+        "doc_date": "2026-10-20",
+        "lines": [
+            { "name": "Фильтр масляный W712/75", "code": "", "barcode": "4011558738001",
+              "quantity": "1", "unit": "шт", "price": "350", "sum": "350" },
+            { "name": "Свеча зажигания NGK BKR6E", "code": "", "barcode": "",
+              "quantity": "2", "unit": "шт", "price": "250", "sum": "500" }
+        ],
+        "total": "850"
+    })
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn more_photo_appends_same_draft_and_all_photos_go_to_receipt(pool: PgPool) {
+    let (url, fake) = fake_service().await;
+    let w = setup(pool, Some(assistant(url))).await;
+    let supplier_id = supplier(&w, "Автоснаб", "01234567890123").await;
+    fake.push(200, answer(&invoice()));
+    fake.push(200, answer(&invoice_page2()));
+
+    let (s, d) = upload(&w.app, &w.admin, Uuid::now_v7(), &JPEG).await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    let id = d["id"].as_str().unwrap().to_string();
+    assert_eq!(d["photos"].as_array().unwrap().len(), 1);
+    assert!(d["added_photo"].is_null());
+    assert_eq!(d["warnings"], json!([]));
+
+    // «Ещё фото»: тот же черновик, строки второго фото дописаны после первых.
+    let op = Uuid::now_v7();
+    let (s, more) = upload_more(&w.app, &w.admin, op, &id, &JPEG).await;
+    assert_eq!(s, StatusCode::OK, "{more}");
+    assert_eq!(more["id"], id.as_str());
+    assert_eq!(more["added_photo"], 2);
+    assert_eq!(more["photos"].as_array().unwrap().len(), 2);
+    let lines = more["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), 6);
+    assert_eq!(lines[3]["photo"], 1);
+    assert_eq!(
+        (lines[4]["photo"].as_i64(), lines[4]["no"].as_i64()),
+        (Some(2), Some(5))
+    );
+    assert_eq!(lines[4]["product"]["id"], w.filter.to_string());
+    // Поставщик — по первому фото; другой поставщик и номер — предупреждение, не отказ.
+    assert_eq!(more["supplier"]["id"], supplier_id.as_str());
+    let warnings = more["warnings"].to_string();
+    assert!(warnings.contains("другой поставщик"), "{warnings}");
+    assert!(warnings.contains("другой № накладной — 16"), "{warnings}");
+    // Разные накладные — итоги складываются: 11 200 + 850.
+    assert_eq!(more["total_tyiyn"], 1_205_000);
+    assert_eq!(more["lines_sum_tyiyn"], 1_205_000);
+
+    // Повтор того же «Ещё фото» — без дубля и без второго распознавания.
+    let (s, again) = upload_more(&w.app, &w.admin, op, &id, &JPEG).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["lines"].as_array().unwrap().len(), 6);
+    assert_eq!(again["added_photo"], 2);
+    assert_eq!(fake.requests().len(), 2);
+    let photos: i64 = sqlx::query_scalar("select count(*) from receipt_drafts")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(photos, 2);
+
+    // В «Накладных по фото» — одна накладная с двумя фото; открыть — те же 6 строк.
+    let (_, list) = call(
+        &w.app,
+        "GET",
+        "/api/v1/receipt-drafts",
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{list}");
+    assert_eq!(items[0]["photos"], 2);
+    let (_, opened) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/receipt-drafts/{id}"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(opened["lines"].as_array().unwrap().len(), 6);
+    // Дописанное фото само по себе не проводится и не убирается.
+    let child = more["photos"][1]["id"].as_str().unwrap().to_string();
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/receipt-drafts/{child}/remove"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Проведение: оба фото — к накладной, оба черновика — «использованы».
+    let (s, receipt) = call(
+        &w.app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&w.admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(),
+            "supplier_id": supplier_id,
+            "payment": "debt",
+            "lines": [{ "product_id": w.filter, "qty": 3, "cost_tyiyn": 105_000 }],
+            "draft_id": id,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{receipt}");
+    let rid = receipt["id"].as_str().unwrap();
+    let (_, files) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/receipts/{rid}/files"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    let names: Vec<&str> = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["nakladnaya.jpg", "page2.jpg"]);
+    let used: i64 = sqlx::query_scalar(
+        "select count(*) from receipt_drafts where status = 'used' and receipt_id = $1",
+    )
+    .bind(Uuid::parse_str(rid).unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(used, 2);
+    // В проведённую накладную по фото «Ещё фото» уже не дописать.
+    let (s, err) = upload_more(&w.app, &w.admin, Uuid::now_v7(), &id, &JPEG).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn several_exact_similar_candidates_and_remembered_choice(pool: PgPool) {
+    let (url, fake) = fake_service().await;
+    let w = setup(pool, Some(assistant(url))).await;
+    let supplier_id = supplier(&w, "Автоснаб", "01234567890123").await;
+    // Ещё один товар с тем же артикулом и ещё одна свеча — варианты на выбор.
+    let (twin, plug2) = (Uuid::now_v7(), Uuid::now_v7());
+    let cat: Uuid = sqlx::query_scalar("select category_id from products where id = $1")
+        .bind(w.plug)
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into products (id, category_id, name, brand, article, unit) values
+                 ($1, $3, 'Фильтр масляный Mann W712/75 (старый)', 'Mann', 'W 712-75', 'piece'),
+                 ($2, $3, 'Свеча NGK BKR6E-11', 'NGK', '', 'piece')",
+    )
+    .bind(twin)
+    .bind(plug2)
+    .bind(cat)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    sqlx::query("update products set article = 'W712/75' where id = $1")
+        .bind(w.filter)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let inv = json!({
+        "readable": true, "supplier_name": "Автоснаб", "supplier_inn": "01234567890123",
+        "doc_number": "20", "doc_date": "", "total": "",
+        "lines": [
+            { "name": "Фильтр W712/75", "code": "W712/75", "barcode": "",
+              "quantity": "1", "unit": "шт", "price": "350", "sum": "350" },
+            { "name": "Свеча зажигания NGK BKR6E", "code": "", "barcode": "",
+              "quantity": "4", "unit": "шт", "price": "250", "sum": "1000" },
+            { "name": "Жидкость тормозная DOT-4", "code": "", "barcode": "",
+              "quantity": "1", "unit": "шт", "price": "500", "sum": "500" }
+        ]
+    });
+    fake.push(200, answer(&inv));
+    let (s, d) = upload(&w.app, &w.admin, Uuid::now_v7(), &JPEG).await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    let lines = d["lines"].as_array().unwrap();
+    // Два точных совпадения по артикулу — оба на выбор, а не «без товара».
+    assert_eq!(lines[0]["match"], "several", "{}", lines[0]);
+    assert!(lines[0]["product"].is_null());
+    let ids: Vec<&str> = lines[0]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        ids.contains(&w.filter.to_string().as_str()) && ids.contains(&twin.to_string().as_str())
+    );
+    // «Похож» — выбранный и другие похожие с остатком и ценой последнего прихода.
+    assert_eq!(lines[1]["match"], "similar");
+    let more = lines[1]["candidates"].as_array().unwrap();
+    assert!(!more.is_empty() && more.len() <= 3, "{more:?}");
+    let mut seen: Vec<&str> = more.iter().map(|p| p["id"].as_str().unwrap()).collect();
+    seen.push(lines[1]["product"]["id"].as_str().unwrap());
+    assert!(
+        seen.contains(&w.plug.to_string().as_str()) && seen.contains(&plug2.to_string().as_str())
+    );
+    assert!(more[0].get("stock_qty").is_some());
+    assert!(more[0].get("last_purchase_price_tyiyn").is_some());
+    assert_eq!(lines[2]["match"], "none");
+
+    // Выбор запоминается: «Жидкость тормозная DOT-4» у Автоснаба → свеча (для проверки).
+    let op = Uuid::now_v7();
+    let body = json!({ "op_id": op, "supplier_id": supplier_id,
+                       "name": "  Жидкость   тормозная DOT-4 ", "product_id": w.plug });
+    let (s, m) = call(
+        &w.app,
+        "POST",
+        "/api/v1/supplier-line-map",
+        Some(&w.admin),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert_eq!(m["name"], "Жидкость   тормозная DOT-4");
+    let (s, again) = call(
+        &w.app,
+        "POST",
+        "/api/v1/supplier-line-map",
+        Some(&w.admin),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again["id"], m["id"]);
+    // Тот же артикул — тоже выбор: двойное совпадение запоминается.
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        "/api/v1/supplier-line-map",
+        Some(&w.admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "supplier_id": supplier_id,
+                     "name": "Фильтр W712/75", "product_id": twin })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(audit_count(&w.pool, "supplier_line_map.set").await, 2);
+    let rows: i64 = sqlx::query_scalar("select count(*) from supplier_line_map")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 2);
+
+    // Следующая накладная этого поставщика: запомненные строки совпадают точно.
+    fake.push(200, answer(&inv));
+    let (s, d2) = upload(&w.app, &w.admin, Uuid::now_v7(), &JPEG).await;
+    assert_eq!(s, StatusCode::OK, "{d2}");
+    let l2 = d2["lines"].as_array().unwrap();
+    assert_eq!(l2[0]["match"], "exact");
+    assert_eq!(l2[0]["remembered"], true);
+    assert_eq!(l2[0]["product"]["id"], twin.to_string());
+    assert_eq!(l2[2]["match"], "exact");
+    assert_eq!(l2[2]["product"]["id"], w.plug.to_string());
+    assert_eq!(l2[1]["remembered"], false);
+
+    // Список в карточке поставщика и удаление (право «Товары»).
+    let (s, list) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/line-map"),
+        Some(&w.admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 2, "{list}");
+    let mid = m["id"].as_str().unwrap();
+    let rm = json!({ "op_id": Uuid::now_v7() });
+    let uri = format!("/api/v1/supplier-line-map/{mid}/remove");
+    let (s, r) = call(&w.app, "POST", &uri, Some(&w.admin), Some(rm.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    // Повтор с тем же op_id — тот же ответ.
+    let (s, _) = call(&w.app, "POST", &uri, Some(&w.admin), Some(rm)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(audit_count(&w.pool, "supplier_line_map.remove").await, 1);
+    let (_, list) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/line-map"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    // Другой филиал запомненного не видит и не удаляет (инвариант 16).
+    let other = Uuid::now_v7();
+    sqlx::query("insert into branches (id, name) values ($1, 'Вторая точка')")
+        .bind(other)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let hash = hash_password("admin2-pass-1".into()).await.unwrap();
+    sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'admin2', $3, 'admin', 'Админ 2')")
+        .bind(Uuid::now_v7())
+        .bind(other)
+        .bind(hash)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into user_permissions (user_id, branch_id, permission) select id, $1, 'products' from users where login = 'admin2'")
+        .bind(other)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let admin2 = login(&w.app, "admin2", "admin2-pass-1").await;
+    let (_, list) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/line-map"),
+        Some(&admin2),
+        None,
+    )
+    .await;
+    assert_eq!(list, json!([]));
+    let left = list_first_id(&w, &supplier_id).await;
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/supplier-line-map/{left}/remove"),
+        Some(&admin2),
+        Some(json!({ "op_id": Uuid::now_v7() })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+async fn list_first_id(w: &World, supplier_id: &str) -> String {
+    let (_, list) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/line-map"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    list[0]["id"].as_str().unwrap().to_string()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipts_search_by_doc_goods_amount_and_photo(pool: PgPool) {
+    let w = setup(pool, None).await;
+    let supplier_id = supplier(&w, "Автоснаб", "").await;
+    let oil_trade = supplier(&w, "Ойл Трейд", "").await;
+    let post = |lines: Value, doc: &str, supplier: Option<&str>| {
+        let body = json!({
+            "op_id": Uuid::now_v7(), "supplier_id": supplier, "payment": "debt",
+            "supplier_doc": doc, "lines": lines,
+        });
+        let app = w.app.clone();
+        let cookie = w.owner.clone();
+        async move {
+            let (s, r) = call(&app, "POST", "/api/v1/receipts", Some(&cookie), Some(body)).await;
+            assert_eq!(s, StatusCode::OK, "{r}");
+            r["id"].as_str().unwrap().to_string()
+        }
+    };
+    // № НК-777 от Автоснаба: фильтр на 700 с; второй — масло на 1 234,50 с от Ойл Трейда.
+    let r1 = post(
+        json!([{ "product_id": w.filter, "qty": 2, "cost_tyiyn": 70_000 }]),
+        "НК-777 от 20.10.2026",
+        Some(&supplier_id),
+    )
+    .await;
+    let r2 = post(
+        json!([{ "product_id": w.oil, "qty": 4000, "cost_tyiyn": 123_450 }]),
+        "",
+        Some(&oil_trade),
+    )
+    .await;
+    // Фото — только у первой.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/receipts/{r1}/files?op_id={}&name=p.jpg",
+            Uuid::now_v7()
+        ))
+        .header("x-device-id", Uuid::now_v7().to_string())
+        .header(header::COOKIE, &w.owner)
+        .header(header::CONTENT_TYPE, "image/jpeg")
+        .body(Body::from(JPEG.to_vec()))
+        .unwrap();
+    assert_eq!(send(&w.app, req).await.0, StatusCode::OK);
+
+    let find = |q: &str| {
+        let app = w.app.clone();
+        let cookie = w.admin.clone();
+        let uri = format!("/api/v1/receipts?kind=all&q={}", urlencode(q));
+        async move {
+            let (s, v) = call(&app, "GET", &uri, Some(&cookie), None).await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(find("нк-777").await, std::slice::from_ref(&r1));
+    assert_eq!(find("автоснаб").await, std::slice::from_ref(&r1));
+    assert_eq!(find("масляный").await, std::slice::from_ref(&r1));
+    assert_eq!(find("Mobil").await, std::slice::from_ref(&r2));
+    // Сумма в сомах — сравнение в тыйынах.
+    assert_eq!(find("700").await, std::slice::from_ref(&r1));
+    assert_eq!(find("1 234,50").await, std::slice::from_ref(&r2));
+    assert_eq!(find("1234.5").await, std::slice::from_ref(&r2));
+    assert!(find("100%").await.is_empty());
+    // Без поиска — обе; «с фото» — только первая, со значком фото.
+    assert_eq!(find("").await.len(), 2);
+    let (_, v) = call(
+        &w.app,
+        "GET",
+        "/api/v1/receipts?kind=all&photo=true",
+        Some(&w.admin),
+        None,
+    )
+    .await;
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{v}");
+    assert_eq!(rows[0]["id"], r1.as_str());
+    assert_eq!(rows[0]["files"], 1);
+
+    // Приход другого филиала не находится (инвариант 16).
+    let other = Uuid::now_v7();
+    sqlx::query("insert into branches (id, name) values ($1, 'Вторая точка')")
+        .bind(other)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let hash = hash_password("admin2-pass-1".into()).await.unwrap();
+    sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'admin2', $3, 'admin', 'Админ 2')")
+        .bind(Uuid::now_v7())
+        .bind(other)
+        .bind(hash)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let admin2 = login(&w.app, "admin2", "admin2-pass-1").await;
+    let (_, v) = call(
+        &w.app,
+        "GET",
+        "/api/v1/receipts?kind=all&q=777",
+        Some(&admin2),
+        None,
+    )
+    .await;
+    assert_eq!(v, json!([]));
+}
+
+/// Текст в адрес запроса.
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}

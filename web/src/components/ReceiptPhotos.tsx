@@ -1,6 +1,6 @@
 // Фото накладной (SPEC-29 §3, ADR-080): с телефона камерой или файлом; снимок сжимается перед
 // загрузкой. В приходе — до проведения копятся на экране, после — уходят на сервер; в накладной —
-// просмотр, догрузка и скрытие владельцем с причиной.
+// просмотр на весь экран, догрузка и скрытие владельцем с причиной.
 import { useRef, useState, type ChangeEvent } from 'react'
 import { get, post } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -8,6 +8,7 @@ import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUpload'
 import type { ReceiptFile } from '../lib/types'
+import { PhotoViewer } from './PhotoViewer'
 import { Badge, Button, ErrorBox, Field, Modal, toast } from './ui'
 
 /** Кнопки «Сфотографировать» и «Файл»: камера телефона или выбор файла. */
@@ -66,8 +67,9 @@ export function PendingPhotos({ photos, onRemove }: { photos: PendingPhoto[]; on
   )
 }
 
-/** Фото проведённой накладной: просмотр, догрузка, скрытие владельцем. */
-export function ReceiptPhotos({ receiptId, canAdd }: { receiptId: string; canAdd: boolean }) {
+/** Фото проведённой накладной: просмотр на весь экран, догрузка, скрытие владельцем. `openFirst` —
+ *  сразу открыть первое фото (значок фото в списке приходов, задача 002, П6). */
+export function ReceiptPhotos({ receiptId, canAdd, openFirst = false }: { receiptId: string; canAdd: boolean; openFirst?: boolean }) {
   const owner = useUser().role === 'owner'
   const files = useLoad(() => get<ReceiptFile[]>(`/receipts/${receiptId}/files`), [receiptId])
   const act = useAction()
@@ -75,6 +77,11 @@ export function ReceiptPhotos({ receiptId, canAdd }: { receiptId: string; canAdd
   const list = files.data ?? []
   const shown = list.filter((f) => !f.hidden_at)
   const hidden = list.filter((f) => f.hidden_at)
+  // Снимки — на весь экран; PDF открывается отдельной вкладкой.
+  const images = shown.filter((f) => f.content_type !== 'application/pdf')
+  // `first` — открыть первое фото, как только список загрузится.
+  const [view, setViewing] = useState<number | null | 'first'>(openFirst ? 'first' : null)
+  const viewing = view === 'first' ? (images.length > 0 ? 0 : null) : view
 
   const add = (picked: FileList) =>
     void act.run(async () => {
@@ -99,13 +106,20 @@ export function ReceiptPhotos({ receiptId, canAdd }: { receiptId: string; canAdd
         <ul className="flex flex-wrap gap-3">
           {shown.map((f) => (
             <li key={f.id} className="flex w-32 flex-col gap-1 text-xs">
-              <a href={`/api/v1/receipt-files/${f.id}`} target="_blank" rel="noreferrer" title="Открыть">
-                {f.content_type === 'application/pdf' ? (
+              {f.content_type === 'application/pdf' ? (
+                <a href={`/api/v1/receipt-files/${f.id}`} target="_blank" rel="noreferrer" title="Открыть">
                   <div className="flex h-32 w-32 items-center justify-center rounded border border-slate-300 bg-slate-50">PDF</div>
-                ) : (
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  title="Открыть на весь экран"
+                  data-testid="receipt-photo-open"
+                  onClick={() => setViewing(images.findIndex((x) => x.id === f.id))}
+                >
                   <img src={`/api/v1/receipt-files/${f.id}`} alt={f.name || 'фото накладной'} className="h-32 w-32 rounded border border-slate-300 object-cover" />
-                )}
-              </a>
+                </button>
+              )}
               <span className="truncate text-slate-600" title={f.name}>
                 {f.name || 'фото'}
               </span>
@@ -141,6 +155,14 @@ export function ReceiptPhotos({ receiptId, canAdd }: { receiptId: string; canAdd
             ))}
           </ul>
         </details>
+      )}
+      {viewing !== null && images.length > 0 && (
+        <PhotoViewer
+          photos={images.map((f) => ({ url: `/api/v1/receipt-files/${f.id}`, name: f.name }))}
+          index={viewing}
+          onIndex={setViewing}
+          onClose={() => setViewing(null)}
+        />
       )}
       {hiding && (
         <Modal title="Скрыть фото накладной" onClose={() => setHiding(null)}>

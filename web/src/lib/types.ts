@@ -379,6 +379,8 @@ export interface ReceiptListItem {
   comment?: string
   /** Товары оприходования словами; у прихода — пусто. */
   goods?: string
+  /** Фото накладной (задача 002, П6); у оприходования — 0. */
+  files: number
 }
 
 export interface StockMismatch {

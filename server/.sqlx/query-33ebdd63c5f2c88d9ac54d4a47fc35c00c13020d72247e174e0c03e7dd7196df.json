@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select id from receipt_drafts where parent_id = $1 and status = 'new'\n           order by created_at, id for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "33ebdd63c5f2c88d9ac54d4a47fc35c00c13020d72247e174e0c03e7dd7196df"
+}

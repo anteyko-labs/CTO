@@ -81,8 +81,8 @@ jq -r '.adr[]|select(.spec|index("SPEC-33"))|"\(.id) \(.title)"' $R
 
 ### Склад: приход, ревизия, перелив, брак
 - SPEC-03, SPEC-14, SPEC-15, SPEC-20, SPEC-25, SPEC-26, SPEC-29 §8–9, SPEC-30 §9, §11. ADR-011/044/087 (пул стоимости, сторно), ADR-069 (брак), ADR-074/075 (цена масла, цена в приходе), ADR-086 (оприходование), ADR-098 (накладная по фото), ADR-123 (канистры и литры), ADR-125 («Склад → Остатки»). Черновик SPEC-39, ADR-134 — приёмка на планшете с PIN и подписью кассира.
-- `server/src/ops.rs` (`apply_movement` — единственный путь движения), `server/src/domain/costing.rs`, `server/src/api/receipts.rs`, `stock_in.rs`, `revisions.rs`, `oil.rs`, `defects.rs`, `supplier_returns.rs`, `receipt_drafts.rs`; клиент `pages/ReceiptNew.tsx`, `Revision.tsx`, `OilTransfer.tsx`, `Products.tsx`, `lib/units.ts`.
-- Таблицы: `stock_movements`, `branch_products`, `receipts`, `receipt_lines`, `stock_ins`, `revisions`, `oil_transfers`, `defects`, `supplier_returns`. Тесты: `flow.rs`, e2e `stock-in`, `receipt-price`, `receipt-photo`.
+- `server/src/ops.rs` (`apply_movement` — единственный путь движения), `server/src/domain/costing.rs`, `server/src/api/receipts.rs`, `stock_in.rs`, `revisions.rs`, `oil.rs`, `defects.rs`, `supplier_returns.rs`, `receipt_drafts.rs`, `supplier_line_map.rs` (запомненные строки накладных); клиент `pages/ReceiptNew.tsx`, `Receipts.tsx` (поиск), `components/SupplierLineMap.tsx`, `lib/receiptDrafts.ts`, `lib/receiptSearch.ts`, `Revision.tsx`, `OilTransfer.tsx`, `Products.tsx`, `lib/units.ts`.
+- Таблицы: `stock_movements`, `branch_products`, `receipts`, `receipt_lines`, `stock_ins`, `revisions`, `oil_transfers`, `defects`, `supplier_returns`, `receipt_drafts`, `supplier_line_map`. Тесты: `flow.rs`, `invoice.rs`, e2e `stock-in`, `receipt-price`, `receipt-photo`.
 
 ### Умаг (старая база)
 - SPEC-20, SPEC-35. ADR-056, ADR-110 (коды Умага — коды товара), ADR-113 (правило кодов), ADR-114, ADR-126 (выключатель).

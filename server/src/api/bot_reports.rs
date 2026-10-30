@@ -976,6 +976,7 @@ pub async fn stock(
                     from: Some(from),
                     to: Some(to),
                     supplier_id: None,
+                    ..Default::default()
                 },
             )
             .await?;

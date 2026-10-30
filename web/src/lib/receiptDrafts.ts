@@ -1,7 +1,7 @@
 // Накладная по фото (SPEC-30 §9, ADR-098): черновик прихода из фото в боте или с экрана,
 // распознанный сервером. Здесь — вид черновика и перевод его строк в строки «Нового прихода».
 // Только целые тыйыны и тысячные доли: литры масла в канистры — делением без остатка.
-import { formatLiters, formatSom } from './format'
+import { formatLiters, formatSom, litersInput, parseLiters } from './format'
 import { divRound } from './money'
 import type { Product } from './types'
 
@@ -20,6 +20,8 @@ export interface DraftItem {
   doc_number: string
   lines: number
   total_tyiyn: number | null
+  /** Фото в накладной: первое и дописанные «Ещё фото». */
+  photos: number
 }
 
 export interface DraftList {
@@ -45,9 +47,16 @@ export interface DraftLine {
   /** Цена за единицу накладной и сумма строки. */
   price_tyiyn: number | null
   sum_tyiyn: number | null
-  /** exact — штрихкод или артикул, similar — похожее название (проверьте), none — не найден. */
-  match: 'exact' | 'similar' | 'none'
+  /** exact — штрихкод, артикул или запомненный выбор; similar — похожее название (проверьте);
+   *  several — по коду несколько товаров (выберите из `candidates`); none — не найден. */
+  match: 'exact' | 'similar' | 'several' | 'none'
   product: Product | null
+  /** Товар — по запомненному «название у поставщика → товар» (задача 002, П3). */
+  remembered: boolean
+  /** Другие товары на выбор: похожие (до 3) или все точные совпадения по коду. */
+  candidates: Product[]
+  /** С какого фото строка: 1 — первое, дальше — «Ещё фото». */
+  photo: number
   /** Для найденного товара: штук или канистр и цена за штуку или канистру. */
   count: number | null
   each_tyiyn: number | null
@@ -79,6 +88,51 @@ export interface Draft {
   total_tyiyn: number | null
   lines_sum_tyiyn: number | null
   message: string | null
+  /** Фото по порядку: первое и дописанные «Ещё фото» (задача 002, П2). */
+  photos: DraftPhoto[]
+  /** Фото не подходит к первому — другой поставщик или № накладной: предупреждение. */
+  warnings: string[]
+  /** Ответ на «Ещё фото»: номер добавленного фото — его строки дописываются в приход. */
+  added_photo: number | null
+}
+
+export interface DraftPhoto {
+  id: string
+  no: number
+  name: string
+  content_type: string
+  recognition: DraftItem['recognition']
+  supplier_name: string
+  doc_number: string
+  lines: number
+}
+
+/** Строки, которые добавляет ответ: после «Ещё фото» — только нового фото, иначе — все. */
+export function newLines(d: Pick<Draft, 'lines' | 'added_photo'>): DraftLine[] {
+  return d.added_photo === null ? d.lines : d.lines.filter((l) => l.photo === d.added_photo)
+}
+
+/** Строка прихода с тем же товаром, что и новая, — «уже есть в приходе — сложить?». */
+export function duplicateOf<L extends { key: string; product: Pick<Product, 'id'> }>(lines: L[], productId: string, key?: string): L | null {
+  return lines.find((l) => l.product.id === productId && l.key !== key) ?? null
+}
+
+/**
+ * Сложить количество двух строк одного товара. Штуки и канистры — целые, литры и килограммы — до
+ * тысячных (как вводятся). `null` — не сложить: разные единицы строки или неверный ввод.
+ */
+export function addCounts(a: string, b: string, measure: 'whole' | 'milli'): string | null {
+  if (measure === 'whole') {
+    const [x, y] = [a, b].map((s) => (/^\d+$/.test(s.trim()) ? Number(s.trim()) : null))
+    if (x === null || y === null) return null
+    const sum = x + y
+    return Number.isSafeInteger(sum) ? String(sum) : null
+  }
+  const x = parseLiters(a)
+  const y = parseLiters(b)
+  if (x === null || y === null) return null
+  const sum = x + y
+  return Number.isSafeInteger(sum) ? litersInput(sum) : null
 }
 
 export const draftFileUrl = (id: string): string => `/api/v1/receipt-drafts/${id}/file`
@@ -126,9 +180,16 @@ export function suggestFor(
 /** Строки, которые сразу становятся строками прихода, и строки без товара. */
 export function splitLines(d: Pick<Draft, 'lines'>): { found: DraftLine[]; missing: DraftLine[] } {
   return {
-    found: d.lines.filter((l) => l.product !== null && l.match !== 'none'),
-    missing: d.lines.filter((l) => l.product === null || l.match === 'none'),
+    found: d.lines.filter((l) => l.product !== null && (l.match === 'exact' || l.match === 'similar')),
+    missing: d.lines.filter((l) => l.product === null || l.match === 'none' || l.match === 'several'),
   }
+}
+
+/** Вариант товара одной строкой: артикул, остаток, последняя цена прихода. */
+export function candidateText(p: Pick<Product, 'article' | 'last_purchase_price_tyiyn'>, stock: string): string {
+  return [p.article, `остаток ${stock}`, p.last_purchase_price_tyiyn !== null ? `прошлый приход ${formatSom(p.last_purchase_price_tyiyn)}` : null]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 /** Сверка итога накладной с суммой строк прихода; `null` — сходится или сверять нечего. */

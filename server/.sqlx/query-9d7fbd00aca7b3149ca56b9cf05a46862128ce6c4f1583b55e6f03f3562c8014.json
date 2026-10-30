@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update supplier_line_map\n                   set name = $2, product_id = $3, op_id = $4, user_id = $5, updated_at = now()\n                   where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d7fbd00aca7b3149ca56b9cf05a46862128ce6c4f1583b55e6f03f3562c8014"
+}

@@ -10826,6 +10826,20 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         .as_str()
         .unwrap()
         .to_string();
+    // Запомненная строка накладной (задача 002, П3): удаляют с правом «Товары».
+    let (s, _, mapped) = call(
+        &app,
+        "POST",
+        "/api/v1/supplier-line-map",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "supplier_id": sup, "name": "Масло 5W-30 канистра",
+                     "product_id": item }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{mapped}");
+    let mapped = mapped["id"].as_str().unwrap().to_string();
 
     // Право, метод, адрес и тело запроса (каждый раз со своим `op_id`).
     type Case = (&'static str, &'static str, String, Box<dyn Fn() -> Value>);
@@ -10900,6 +10914,20 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                 move || json!({ "op_id": op(), "party_id": sup, "amount_tyiyn": 1_000, "method": "cash" }),
             )
         }),
+        // Запомнить выбор товара для строки накладной — как приход (задача 002, П3).
+        ("receipts", "POST", "/api/v1/supplier-line-map".into(), {
+            let (item, sup) = (item.clone(), sup.clone());
+            Box::new(move || {
+                json!({ "op_id": op(), "supplier_id": sup, "name": format!("Строка {}", op()),
+                        "product_id": item })
+            })
+        }),
+        (
+            "products",
+            "POST",
+            format!("/api/v1/supplier-line-map/{mapped}/remove"),
+            Box::new(move || json!({ "op_id": op() })),
+        ),
         ("stock_in", "POST", "/api/v1/stock-ins".into(), {
             let item = item.clone();
             Box::new(move || {

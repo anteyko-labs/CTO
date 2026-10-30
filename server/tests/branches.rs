@@ -228,6 +228,16 @@ async fn fill_branch(w: &World, branch: Uuid, admin: &str, tag: &str) -> String 
                 "lines": [{ "product_id": w.item, "qty": 50, "cost_tyiyn": 500_000 }] }),
     )
     .await;
+    // Запомненный выбор «строка накладной → товар» — свой у филиала (задача 002, П3).
+    api.ok(
+        "POST",
+        "/api/v1/supplier-line-map",
+        owner,
+        at,
+        json!({ "op_id": op(), "supplier_id": sup, "name": format!("Строка {tag}"),
+                "product_id": w.item }),
+    )
+    .await;
     // Накладная ждёт приёмки на планшете (SPEC-39): обход стучится и в неё.
     api.ok(
         "POST",
@@ -660,6 +670,7 @@ async fn admin_of_branch_b_sees_and_changes_nothing_of_branch_a(pool: PgPool) {
         "expense_articles",
         "party_ledger",
         "old_catalog",
+        "supplier_line_map",
     ] {
         assert!(
             ids.contains_key(t),

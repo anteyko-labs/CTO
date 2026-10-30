@@ -7,7 +7,9 @@
 // те же строки, но без поставщика и оплаты, с обязательным комментарием; количество — как на складе.
 // Накладная по фото (SPEC-30 §9): черновик из бота или «Заполнить по фото» заполняет приход —
 // поставщик, номер, строки (найденные товары, «проверьте», не найденные); итог накладной сверяется
-// с суммой строк; при проведении фото прикрепляется к накладной.
+// с суммой строк; при проведении фото прикрепляется к накладной. «Ещё фото» дописывает строки в тот же
+// приход (тот же товар — «сложить?»), у строки «похож» и при нескольких точных совпадениях — варианты
+// товара на выбор; выбор запоминается для поставщика (задача 002, П2–П3).
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
@@ -18,7 +20,19 @@ import { ProductPicker, stockText, type PickHow } from '../components/ProductPic
 import { PendingPhotos, PhotoButtons } from '../components/ReceiptPhotos'
 import { DraftThumb, FillFromPhoto, ReceiptDraftsBlock } from '../components/ReceiptDrafts'
 import { preparePhotos, uploadPhotos, type PendingPhoto } from '../lib/photoUpload'
-import { docText, splitLines, suggestFor, totalMismatch, type Draft, type DraftLine, type DraftList } from '../lib/receiptDrafts'
+import {
+  addCounts,
+  candidateText,
+  docText,
+  duplicateOf,
+  newLines,
+  splitLines,
+  suggestFor,
+  totalMismatch,
+  type Draft,
+  type DraftLine,
+  type DraftList,
+} from '../lib/receiptDrafts'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Missing, Notice, PageHeader, Table, toast } from '../components/ui'
 import { accountLabel } from '../lib/accounts'
 import { get, newOpId, post, randomId } from '../lib/api'
@@ -73,7 +87,19 @@ interface Line {
   /** Прошлая закупка: undefined — ещё грузится, null — закупок не было. */
   last?: LastReceipt | null
   /** Строка из накладной по фото: как в накладной, «проверьте» у похожего названия, пояснение. */
-  hint?: { invoice: string; check: boolean; note: string | null }
+  hint?: {
+    invoice: string
+    check: boolean
+    note: string | null
+    /** Строка накладной — пересчитать количество и цену, если выбрали другой товар. */
+    src?: DraftLine
+    /** Другие похожие товары — выбор одним нажатием (задача 002, П3). */
+    candidates?: Product[]
+    /** Товар — по запомненному выбору у этого поставщика. */
+    remembered?: boolean
+    /** Тот же товар уже есть в приходе: «сложить?» (задача 002, П2). */
+    dup?: boolean
+  }
 }
 
 /** Исправление прихода владельцем (SPEC-29 §24): тот же экран, заполненный исходной накладной. */
@@ -179,7 +205,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     return { key: randomId(), product: p, count: text, ...(mode ? { mode } : {}), ...priced, hint }
   }
 
-  /** Открыть черновик накладной по фото: поставщик, номер, строки (SPEC-30 §9). */
+  /** Открыть черновик накладной по фото: поставщик, номер, строки (SPEC-30 §9). Ответ «Ещё фото»
+   *  (`added_photo`) дописывает строки нового фото; тот же товар — «сложить?» (задача 002, П2). */
   const applyDraft = (d: Draft) => {
     if (d.status !== 'new') {
       draftAction.setError(
@@ -187,23 +214,81 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       )
       return
     }
+    const more = d.added_photo !== null
     setKind('receipt')
     setDraft(d)
     setTarget(null)
-    if (d.supplier) setSupplierId(d.supplier.id)
+    // Поставщик и номер — с первого фото; «Ещё фото» их не меняет (другие — предупреждение).
+    if (d.supplier && (!more || !supplierId)) setSupplierId(d.supplier.id)
     const doc = docText(d.invoice)
-    if (doc) setSupplierDoc(doc)
-    const { found, missing } = splitLines(d)
+    if (doc && (!more || !supplierDoc.trim())) setSupplierDoc(doc)
+    const { found, missing } = splitLines({ lines: newLines(d) })
     const added = found.flatMap((l) => {
       if (!l.product) return []
       // Литры не целыми канистрами и товар на вес — по правилу экрана: литры или кг (SPEC-36 §13).
       const own = suggestFor(l, l.product)
       const s = own.measure ? own : { count: l.count, each: l.each_tyiyn, note: l.note }
-      return [draftLine(l.product, s.count, s.each, { invoice: l.name, check: l.match === 'similar', note: s.note }, own.measure)]
+      const hint: Line['hint'] = {
+        invoice: l.name,
+        check: l.match === 'similar',
+        note: s.note,
+        src: l,
+        candidates: l.candidates,
+        remembered: l.remembered,
+      }
+      return [draftLine(l.product, s.count, s.each, hint, own.measure)]
     })
-    setLines((ls) => [...ls, ...added])
-    setUnmatched(missing)
+    setLines((ls) => {
+      const out = [...ls]
+      for (const a of added) {
+        const dup = duplicateOf(out, a.product.id) !== null
+        out.push(dup && a.hint ? { ...a, hint: { ...a.hint, dup: true } } : a)
+      }
+      return out
+    })
+    setUnmatched((us) => (more ? [...us, ...missing] : missing))
     added.forEach((l) => loadLast(l.product))
+  }
+
+  /** Запомнить выбор «название строки у поставщика → товар» (задача 002, П3); без поставщика — нечего. */
+  const remember = (name: string, p: Product) => {
+    if (!supplierId || !name.trim()) return
+    void post('/supplier-line-map', { op_id: newOpId(), supplier_id: supplierId, name, product_id: p.id })
+      .then(() => toast(`Запомнено: «${name}» → ${p.name}`))
+      .catch((e: unknown) => draftAction.setError(e instanceof Error ? e.message : String(e)))
+  }
+
+  /** Другой товар из вариантов строки «похож»: количество и цена — заново из строки накладной. */
+  const swapProduct = (l: Line, p: Product) => {
+    const hint = l.hint
+    if (!hint) return
+    const s = hint.src ? suggestFor(hint.src, p) : { count: null, each: null, note: null }
+    const others = [l.product, ...(hint.candidates ?? []).filter((c) => c.id !== p.id)]
+    const next = draftLine(p, s.count, s.each, { ...hint, check: false, note: s.note, candidates: others, remembered: false, dup: false }, s.measure)
+    setLines((ls) => ls.map((x) => (x.key === l.key ? { ...next, key: l.key } : x)))
+    loadLast(p)
+    remember(hint.invoice, p)
+  }
+
+  /** «Сложить» строку с той, где этот товар уже есть: та же единица строки и та же цена. */
+  const mergeDuplicate = (l: Line) => {
+    const base = duplicateOf(lines, l.product.id, l.key)
+    if (!base) {
+      updateLine(l.key, { hint: l.hint && { ...l.hint, dup: false } })
+      return
+    }
+    const measure = base.mode === 'l' || base.product.unit === 'g' ? 'milli' : 'whole'
+    const sum = (base.mode ?? '') === (l.mode ?? '') ? addCounts(base.count, l.count, measure) : null
+    if (sum === null) {
+      draftAction.setError(`Не сложить «${l.product.name}»: разные единицы или количество не заполнено — исправьте или оставьте отдельно`)
+      return
+    }
+    if (base.price.trim() !== l.price.trim()) {
+      draftAction.setError(`Не сложить «${l.product.name}»: цены в строках разные (${base.price || '—'} и ${l.price || '—'}) — исправьте цену или оставьте отдельно`)
+      return
+    }
+    draftAction.setError(null)
+    setLines((ls) => ls.filter((x) => x.key !== l.key).map((x) => (x.key === base.key ? { ...x, count: sum } : x)))
   }
 
   const openDraft = (id: string) =>
@@ -235,8 +320,12 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     if (!src) return
     const s = suggestFor(src, p)
     setUnmatched((us) => us.filter((l) => l.no !== no))
-    setLines((ls) => [...ls, draftLine(p, s.count, s.each, { invoice: src.name, check: false, note: s.note }, s.measure)])
+    setLines((ls) => {
+      const hint: Line['hint'] = { invoice: src.name, check: false, note: s.note, src, dup: duplicateOf(ls, p.id) !== null }
+      return [...ls, draftLine(p, s.count, s.each, hint, s.measure)]
+    })
     loadLast(p)
+    remember(src.name, p)
     focusId(`line-${lines.length + 1}-count`)
   }
 
@@ -573,10 +662,22 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
               {draft ? (
                 <div className="flex flex-wrap items-start gap-3" data-testid="draft-banner">
-                  <DraftThumb id={draft.id} contentType={draft.content_type} size="h-20 w-20" />
+                  <div className="flex flex-wrap gap-1" data-testid="draft-photos">
+                    {(draft.photos.length ? draft.photos : [{ id: draft.id, content_type: draft.content_type }]).map((p) => (
+                      <DraftThumb key={p.id} id={p.id} contentType={p.content_type} size="h-20 w-20" />
+                    ))}
+                  </div>
                   <div className="flex flex-col gap-1 text-sm">
-                    <div className="font-medium">Заполнено по фото накладной{draft.source === 'bot' ? ' из бота' : ''}</div>
+                    <div className="font-medium">
+                      Заполнено по фото накладной{draft.source === 'bot' ? ' из бота' : ''}
+                      {draft.photos.length > 1 && ` · фото: ${draft.photos.length}`}
+                    </div>
                     {draft.message && <div className="text-amber-700">{draft.message}</div>}
+                    {draft.warnings.map((w) => (
+                      <div key={w} className="rounded bg-amber-50 px-2 py-1 text-amber-800" data-testid="draft-warning">
+                        {w}
+                      </div>
+                    ))}
                     {draft.supplier ? (
                       <div className="text-slate-600">
                         Поставщик найден по {draft.supplier.by === 'inn' ? 'ИНН' : 'названию'}: {draft.supplier.name}
@@ -604,7 +705,10 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
               ) : (
                 <span className="text-sm text-slate-600">Накладная на бумаге? Сфотографируйте — приход заполнится сам.</span>
               )}
-              {!draft && (
+              {draft ? (
+                // Вторая страница или ещё одна накладная: строки — в этот же приход (задача 002, П2).
+                drafts.data?.enabled && <FillFromPhoto parentId={draft.id} onDraft={applyDraft} />
+              ) : (
                 <FillFromPhoto
                   onDraft={(d) => {
                     applyDraft(d)
@@ -689,7 +793,14 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                           .filter(Boolean)
                           .join(' · ')}
                       </div>
-                      <div className="text-xs text-rose-700">не найден — выберите товар или заведите новый</div>
+                      {l.match === 'several' ? (
+                        <div className="text-xs text-amber-700">с этим кодом несколько товаров — выберите нужный</div>
+                      ) : (
+                        <div className="text-xs text-rose-700">не найден — выберите товар или заведите новый</div>
+                      )}
+                      {l.candidates.length > 0 && (
+                        <Candidates items={l.candidates} onPick={(p) => assign(l.no, p)} />
+                      )}
                     </div>
                     <Button
                       variant={target === l.no ? 'primary' : 'secondary'}
@@ -778,7 +889,26 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                         <div className="mt-0.5 max-w-xs text-xs text-slate-600" data-testid="draft-hint">
                           В накладной: «{l.hint.invoice}»{' '}
                           {l.hint.check && <Badge tone="amber">проверьте</Badge>}
+                          {l.hint.remembered && <Badge tone="green">запомнено</Badge>}
                           {l.hint.note && <div className="text-amber-700">{l.hint.note}</div>}
+                          {l.hint.dup && (
+                            <div className="mt-1 flex flex-wrap items-center gap-2 rounded bg-amber-50 px-2 py-1 text-amber-800" data-testid="draft-dup">
+                              уже есть в приходе — сложить?
+                              <button type="button" className="font-medium text-sky-700 underline" onClick={() => mergeDuplicate(l)}>
+                                Сложить
+                              </button>
+                              <button
+                                type="button"
+                                className="text-slate-600 underline"
+                                onClick={() => updateLine(l.key, { hint: l.hint && { ...l.hint, dup: false } })}
+                              >
+                                Оставить отдельно
+                              </button>
+                            </div>
+                          )}
+                          {(l.hint.candidates?.length ?? 0) > 0 && (
+                            <Candidates items={l.hint.candidates ?? []} onPick={(p) => swapProduct(l, p)} />
+                          )}
                         </div>
                       )}
                     </td>
@@ -1105,6 +1235,27 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
           }}
         />
       )}
+    </div>
+  )
+}
+
+/** Другие товары на выбор: название, артикул, остаток, цена прошлого прихода — выбор одним нажатием. */
+function Candidates({ items, onPick }: { items: Product[]; onPick: (p: Product) => void }) {
+  return (
+    <div className="mt-1 flex flex-col gap-1" data-testid="draft-candidates">
+      <span className="text-xs text-slate-500">Или выберите:</span>
+      {items.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          data-testid="draft-candidate"
+          className="rounded border border-slate-300 bg-white px-2 py-1 text-left text-xs text-slate-700 hover:border-sky-400 hover:bg-sky-50"
+          onClick={() => onPick(p)}
+        >
+          <span className="font-medium">{p.name}</span>
+          <span className="block text-slate-500">{candidateText(p, stockText(p))}</span>
+        </button>
+      ))}
     </div>
   )
 }

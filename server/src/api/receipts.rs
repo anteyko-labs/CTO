@@ -1139,12 +1139,30 @@ pub async fn last_receipt_of(
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct PeriodQuery {
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
     /// Накладные одного поставщика — для его карточки (SPEC-10).
     pub supplier_id: Option<Uuid>,
+    /// Поиск накладной (задача 002, П6): № накладной поставщика, поставщик, товар или сумма в
+    /// сомах — сумма сравнивается с итогом в тыйынах.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Только накладные с фото.
+    #[serde(default)]
+    pub photo: bool,
+}
+
+/// Поиск списка приходов: текст для `ilike` (без подстановочных знаков) и сумма в тыйынах, если
+/// введено число. Пусто — без поиска.
+fn search_of(q: Option<&str>) -> (Option<String>, Option<i64>) {
+    let Some(t) = q.map(str::trim).filter(|t| !t.is_empty()) else {
+        return (None, None);
+    };
+    let t: String = t.chars().take(100).collect();
+    let amount = crate::api::receipt_drafts::money(&t).filter(|a| *a > 0);
+    (Some(crate::api::catalog::escape_like(&t)), amount)
 }
 
 #[derive(Serialize)]
@@ -1167,6 +1185,8 @@ pub(crate) struct ReceiptListItem {
     pub(crate) comment: String,
     /// Товары оприходования словами («Хомут, Шайба»); у прихода — пусто.
     pub(crate) goods: String,
+    /// Фото накладной (действующих, ADR-080); у оприходования — 0.
+    pub(crate) files: i64,
 }
 
 /// Что показывать на экране «Приход» (ADR-086): `all` — приходы и оприходования вместе,
@@ -1192,6 +1212,10 @@ async fn list_receipts(
     };
     let mut conn = state.pool.acquire().await?;
     let mut rows = Vec::new();
+    // Фото бывают только у накладных поставщика: с отбором «с фото» оприходований нет.
+    let stock_ins = stock_ins && !q.photo;
+    let (text, amount) = search_of(q.q.as_deref());
+    let needle = q.q.as_deref().map(|t| t.trim().to_lowercase());
     if stock_ins {
         let filter = crate::api::stock_in::Filter {
             product_id: None,
@@ -1199,7 +1223,18 @@ async fn list_receipts(
             to: q.to,
         };
         let docs = crate::api::stock_in::load(&mut conn, user.branch_id, None, filter).await?;
-        rows.extend(docs.into_iter().map(|d| {
+        // Поиск в оприходованиях: товар, комментарий или сумма.
+        let hit = |d: &crate::api::stock_in::StockInOut| match (&text, &needle) {
+            (Some(_), Some(n)) => {
+                amount == Some(d.cost_tyiyn)
+                    || d.comment.to_lowercase().contains(n.as_str())
+                    || d.lines
+                        .iter()
+                        .any(|l| l.product_name.to_lowercase().contains(n.as_str()))
+            }
+            _ => true,
+        };
+        rows.extend(docs.into_iter().filter(hit).map(|d| {
             let mut names: Vec<&str> = Vec::new();
             for l in &d.lines {
                 if !names.contains(&l.product_name.as_str()) {
@@ -1221,6 +1256,7 @@ async fn list_receipts(
                 on_debt_tyiyn: 0,
                 debt_left_tyiyn: 0,
                 comment: d.comment,
+                files: 0,
             }
         }));
     }
@@ -1240,6 +1276,7 @@ pub(crate) async fn receipts_data(
     user: &CurrentUser,
     q: PeriodQuery,
 ) -> AppResult<Vec<ReceiptListItem>> {
+    let (text, amount) = search_of(q.q.as_deref());
     let rows = sqlx::query_as!(
         ReceiptListItem,
         r#"select 'receipt' as "kind!", r.id, r.number, s.name as "supplier_name?", r.supplier_doc, r.total_tyiyn, r.reversal_of,
@@ -1253,7 +1290,9 @@ pub(crate) async fn receipts_data(
                             from party_ledger l
                             where l.doc_type = 'receipt' and l.doc_id = r.id and l.amount_tyiyn < 0
                               and supplier_ledger_live(l)), 0)::bigint as "debt_left_tyiyn!",
-                  r.comment, '' as "goods!"
+                  r.comment, '' as "goods!",
+                  (select count(*) from receipt_files f
+                   where f.receipt_id = r.id and f.hidden_at is null) as "files!"
            from receipts r
            join users u on u.id = r.user_id
            left join suppliers s on s.id = r.supplier_id
@@ -1261,13 +1300,24 @@ pub(crate) async fn receipts_data(
              and ($2::date is null or r.created_at >= ($2::date)::timestamp at time zone 'Asia/Bishkek')
              and ($3::date is null or r.created_at < ($3::date + 1)::timestamp at time zone 'Asia/Bishkek')
              and ($4::uuid is null or r.supplier_id = $4)
+             and ($6::text is null
+                  or r.supplier_doc ilike '%' || $6 || '%'
+                  or s.name ilike '%' || $6 || '%'
+                  or r.total_tyiyn = $7
+                  or exists (select 1 from receipt_lines l join products p on p.id = l.product_id
+                             where l.receipt_id = r.id and p.name ilike '%' || $6 || '%'))
+             and (not $8 or exists (select 1 from receipt_files f
+                                    where f.receipt_id = r.id and f.hidden_at is null))
            order by r.created_at desc
            limit $5"#,
         user.branch_id,
         q.from,
         q.to,
         q.supplier_id,
-        MAX_ROWS
+        MAX_ROWS,
+        text,
+        amount,
+        q.photo
     )
     .fetch_all(&mut *conn)
     .await?;

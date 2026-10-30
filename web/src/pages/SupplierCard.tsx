@@ -15,6 +15,7 @@ import { InvoiceStatusBadge, SupplierPaymentHistory } from '../components/Suppli
 import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 import { SupplierReturnList, SupplierReturnModal } from '../components/SupplierReturns'
+import { SupplierLineMap } from '../components/SupplierLineMap'
 
 /** За что последняя цена: канистра масла, килограмм или штука. */
 const perText = (r: { unit: string; container_ml: number | null }): string =>
@@ -28,7 +29,8 @@ function invoiceStatus(d: ReceiptListItem): InvoiceStatus | null {
   return left <= 0 ? 'paid' : left >= debt ? 'unpaid' : 'partial'
 }
 
-/** Карточка поставщика: поставки по товарам с остатком (SPEC-26), накладные с остатком долга и платежи (SPEC-10, SPEC-27), возвраты товара (SPEC-29 §9). */
+/** Карточка поставщика: поставки по товарам с остатком (SPEC-26), накладные с остатком долга и платежи (SPEC-10, SPEC-27), возвраты товара (SPEC-29 §9),
+ *  запомненные строки накладных по фото (задача 002, П3). */
 export default function SupplierCard() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
@@ -38,7 +40,7 @@ export default function SupplierCard() {
   const owner = useUser().role === 'owner'
   // Оплата поставщику — право «Приход», возврат — «Возврат поставщику» (ADR-097).
   const can = useCan()
-  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments' | 'returns'>('deliveries')
+  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments' | 'returns' | 'lines'>('deliveries')
   const [returning, setReturning] = useState(false)
   const [returnsKey, setReturnsKey] = useState(0)
   const [from, setFrom] = useState('')
@@ -150,6 +152,7 @@ export default function SupplierCard() {
             ['receipts', 'Накладные'],
             ['payments', 'Платежи'],
             ['returns', 'Возвраты'],
+            ['lines', 'Строки накладных'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -315,6 +318,12 @@ export default function SupplierCard() {
           <h2 className="mb-1 font-semibold">Возвраты товара</h2>
           <p className="mb-3 text-xs text-slate-500">Возврат не брака: товар уходит со склада, наш долг меньше или поставщик отдаёт деньги. Брак — в «Остатки» → «Брак».</p>
           <SupplierReturnList key={returnsKey} supplierId={id} onChanged={reloadMoney} />
+        </Card>
+      )}
+
+      {tab === 'lines' && (
+        <Card>
+          <SupplierLineMap supplierId={id} />
         </Card>
       )}
 

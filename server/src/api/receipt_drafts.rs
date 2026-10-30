@@ -42,6 +42,13 @@ const TOO_BIG: &str = "файл больше 5 МБ — сфотографиру
 const MAX_LINES: usize = 300;
 /// Черновиков в списке «Накладные по фото».
 const LIST_LIMIT: i64 = 50;
+/// Фото в одном черновике: первое и дописанные «Ещё фото» (задача 002, П2). У накладной до 20
+/// файлов — запас остаётся на фото, прикреплённые позже.
+pub const MAX_PHOTOS: i64 = 10;
+/// Похожих товаров у строки «проверьте» — до трёх, кроме выбранного (задача 002, П3).
+const MORE_SIMILAR: i64 = 3;
+/// Точных совпадений по коду на выбор — не больше пяти.
+const MAX_EXACT: i64 = 5;
 // Похожее название товара или поставщика — сходство по триграммам не меньше 0,4 (SPEC-30 §9).
 // Порог стоит в запросах числом: дробных чисел в учёте нет (инвариант 1).
 
@@ -316,6 +323,8 @@ pub struct DraftItem {
     pub doc_number: String,
     pub lines: i64,
     pub total_tyiyn: Option<i64>,
+    /// Фото в черновике: первое и дописанные «Ещё фото».
+    pub photos: i64,
 }
 
 #[derive(Serialize)]
@@ -349,11 +358,18 @@ pub struct LineOut {
     pub liters: bool,
     pub price_tyiyn: Option<i64>,
     pub sum_tyiyn: Option<i64>,
-    /// `exact` — совпал штрихкод или артикул, `similar` — похожее название (проверьте),
-    /// `none` — не найден.
+    /// `exact` — совпал штрихкод, артикул или запомненный выбор, `similar` — похожее название
+    /// (проверьте), `several` — по коду несколько товаров (выберите из `candidates`), `none` — не
+    /// найден.
     #[serde(rename = "match")]
     pub matched: &'static str,
     pub product: Option<ProductOut>,
+    /// Товар выбран по запомненному «название у поставщика → товар» (задача 002, П3).
+    pub remembered: bool,
+    /// Другие товары на выбор: похожие названия (до 3) или все точные совпадения по коду.
+    pub candidates: Vec<ProductOut>,
+    /// С какого фото строка: 1 — первое, дальше — «Ещё фото» по порядку.
+    pub photo: i64,
     /// Для найденного товара: штук или канистр и цена за штуку или канистру.
     pub count: Option<i64>,
     pub each_tyiyn: Option<i64>,
@@ -382,6 +398,24 @@ pub struct DraftOut {
     pub total_tyiyn: Option<i64>,
     pub lines_sum_tyiyn: Option<i64>,
     pub message: Option<String>,
+    /// Фото черновика по порядку: первое и дописанные «Ещё фото».
+    pub photos: Vec<PhotoOut>,
+    /// Фото не подходит к первому (другой поставщик или № накладной) — предупреждение, не отказ.
+    pub warnings: Vec<String>,
+    /// Ответ на «Ещё фото»: номер только что добавленного фото — его строки дописываются в приход.
+    pub added_photo: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct PhotoOut {
+    pub id: Uuid,
+    pub no: i64,
+    pub name: String,
+    pub content_type: String,
+    pub recognition: String,
+    pub supplier_name: String,
+    pub doc_number: String,
+    pub lines: i64,
 }
 
 enum Start {
@@ -400,6 +434,8 @@ struct NewDraft<'a> {
     service: bool,
     /// Лимит часа исчерпан: бот сохраняет фото без распознавания, экран отказывает (429).
     keep_on_limit: bool,
+    /// «Ещё фото»: черновик, который фото дописывает (задача 002, П2).
+    parent_id: Option<Uuid>,
 }
 
 /// Записать черновик: фото, откуда и будет ли распознавание (лимит часа — общий с вопросами).
@@ -424,6 +460,11 @@ async fn start(pool: &PgPool, ctx: &Ctx, d: NewDraft<'_>) -> AppResult<Start> {
     {
         return Ok(Start::Existing(id));
     }
+    // «Ещё фото» — только в открытый первый черновик своего филиала, не больше 10 фото.
+    let parent_id = match d.parent_id {
+        Some(p) => Some(open_parent(&mut tx, branch_id, p).await?),
+        None => None,
+    };
     let recognition = if !d.service {
         "off"
     } else if assistant::used_last_hour(&mut tx, branch_id).await? >= assistant::HOURLY_LIMIT {
@@ -439,8 +480,8 @@ async fn start(pool: &PgPool, ctx: &Ctx, d: NewDraft<'_>) -> AppResult<Start> {
     let size = i32::try_from(d.data.len()).map_err(|_| invalid(TOO_BIG))?;
     sqlx::query!(
         r#"insert into receipt_drafts (id, branch_id, source, op_id, chat_id, name, content_type,
-                                       size_bytes, data, recognition, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+                                       size_bytes, data, recognition, user_id, device_id, parent_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
         id,
         branch_id,
         d.source,
@@ -452,7 +493,8 @@ async fn start(pool: &PgPool, ctx: &Ctx, d: NewDraft<'_>) -> AppResult<Start> {
         d.data,
         recognition,
         ctx.user.id,
-        ctx.device_id
+        ctx.device_id,
+        parent_id
     )
     .execute(&mut *tx)
     .await?;
@@ -462,11 +504,54 @@ async fn start(pool: &PgPool, ctx: &Ctx, d: NewDraft<'_>) -> AppResult<Start> {
         "receipt_draft.add",
         "receipt_draft",
         Some(id),
-        json!({ "from": d.source, "name": name, "size": size, "type": d.kind, "recognition": recognition }),
+        json!({ "from": d.source, "name": name, "size": size, "type": d.kind,
+                "recognition": recognition, "parent": parent_id }),
     )
     .await?;
     tx.commit().await?;
     Ok(Start::New { id, recognition })
+}
+
+/// Черновик, который дописывает «Ещё фото»: первый (дописанное фото ведёт к своему первому),
+/// своего филиала, ещё открытый, фото меньше предела.
+async fn open_parent(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<Uuid> {
+    let p = sqlx::query!(
+        r#"select coalesce(d.parent_id, d.id) as "root!", r.status
+           from receipt_drafts d join receipt_drafts r on r.id = coalesce(d.parent_id, d.id)
+           where d.id = $1 and d.branch_id = $2
+           for update of r"#,
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("накладная по фото не найдена"))?;
+    match p.status.as_str() {
+        "new" => {}
+        "acceptance" => return Err(AppError::Conflict(WAITS.into())),
+        "used" => {
+            return Err(AppError::Conflict(
+                "по этой накладной уже проведён приход — фото прикрепите в самой накладной".into(),
+            ));
+        }
+        _ => {
+            return Err(AppError::Conflict(
+                "накладную по фото убрали — начните заново".into(),
+            ));
+        }
+    }
+    let photos = sqlx::query_scalar!(
+        r#"select count(*) as "n!" from receipt_drafts where id = $1 or parent_id = $1"#,
+        p.root
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if photos >= MAX_PHOTOS {
+        return Err(invalid(format!(
+            "в одной накладной по фото — не больше {MAX_PHOTOS} фото"
+        )));
+    }
+    Ok(p.root)
 }
 
 /// Распознать фото черновика и записать итог. Сервис ждём без открытой транзакции.
@@ -544,11 +629,59 @@ fn lines_sum(inv: &Invoice) -> Option<i64> {
     })
 }
 
-/// Товар строки: точный штрихкод или артикул — `exact`, похожее название — `similar`.
+/// Ключ названия строки для запомненного выбора: строчные буквы, пробелы схлопнуты.
+pub fn line_key(name: &str) -> String {
+    clean(name, 200)
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Что нашли для строки накладной.
+#[derive(Default)]
+struct Found {
+    product: Option<Uuid>,
+    how: &'static str,
+    remembered: bool,
+    candidates: Vec<Uuid>,
+}
+
+impl Found {
+    fn exact(id: Uuid, remembered: bool) -> Self {
+        Found {
+            product: Some(id),
+            how: "exact",
+            remembered,
+            candidates: Vec::new(),
+        }
+    }
+}
+
+/// Товар строки: запомненный выбор у этого поставщика, точный штрихкод или артикул — `exact`;
+/// по коду несколько товаров — `several` со всеми на выбор; похожее название — `similar` и до
+/// трёх других похожих (SPEC-30 §9, задача 002, П3).
 async fn match_product(
     conn: &mut PgConnection,
+    branch_id: Uuid,
+    supplier_id: Option<Uuid>,
     line: &InvoiceLine,
-) -> AppResult<Option<(Uuid, &'static str)>> {
+) -> AppResult<Found> {
+    let key = line_key(&line.name);
+    if let Some(s) = supplier_id
+        && !key.is_empty()
+        && let Some(id) = sqlx::query_scalar!(
+            r#"select m.product_id from supplier_line_map m join products p on p.id = m.product_id
+               where m.branch_id = $1 and m.supplier_id = $2 and m.name_key = $3 and not p.archived"#,
+            branch_id,
+            s,
+            key
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+    {
+        return Ok(Found::exact(id, true));
+    }
     let digits = |s: &str| -> Option<String> {
         let d: String = s.chars().filter(|c| !c.is_whitespace()).collect();
         (d.len() >= 6 && d.chars().all(|c| c.is_ascii_digit())).then_some(d)
@@ -557,17 +690,23 @@ async fn match_product(
         .into_iter()
         .flatten()
         .collect();
+    // Несколько товаров с одним кодом — все на выбор, а не «без товара».
+    let mut several: Vec<Uuid> = Vec::new();
     if !codes.is_empty() {
-        let found = sqlx::query_scalar!(
-            r#"select distinct b.product_id from product_barcodes b
-               join products p on p.id = b.product_id
-               where b.code = any($1) and not p.archived limit 2"#,
-            &codes
+        several = sqlx::query_scalar!(
+            r#"select p.id from products p
+               where not p.archived
+                 and exists (select 1 from product_barcodes b
+                             where b.product_id = p.id and b.code = any($1))
+               order by p.name, p.id
+               limit $2"#,
+            &codes,
+            MAX_EXACT
         )
         .fetch_all(&mut *conn)
         .await?;
-        if let [one] = found.as_slice() {
-            return Ok(Some((*one, "exact")));
+        if let [one] = several.as_slice() {
+            return Ok(Found::exact(*one, false));
         }
     }
     for code in [&line.code, &line.barcode] {
@@ -577,14 +716,30 @@ async fn match_product(
         let found = sqlx::query_scalar!(
             r#"select id from products
                where not archived and norm_code(article) <> '' and norm_code(article) = norm_code($1)
-               limit 2"#,
-            code
+               order by name, id
+               limit $2"#,
+            code,
+            MAX_EXACT
         )
         .fetch_all(&mut *conn)
         .await?;
-        if let [one] = found.as_slice() {
-            return Ok(Some((*one, "exact")));
+        for id in found {
+            if !several.contains(&id)
+                && i64::try_from(several.len()).unwrap_or(i64::MAX) < MAX_EXACT
+            {
+                several.push(id);
+            }
         }
+    }
+    if let [one] = several.as_slice() {
+        return Ok(Found::exact(*one, false));
+    }
+    if !several.is_empty() {
+        return Ok(Found {
+            how: "several",
+            candidates: several,
+            ..Found::default()
+        });
     }
     if line.name.chars().count() >= 3 {
         let similar = sqlx::query_scalar!(
@@ -592,16 +747,25 @@ async fn match_product(
                where not archived
                  and greatest(similarity(name, $1), similarity(brand || ' ' || name, $1)) >= 0.4
                order by greatest(similarity(name, $1), similarity(brand || ' ' || name, $1)) desc, name
-               limit 1"#,
-            line.name
+               limit $2"#,
+            line.name,
+            MORE_SIMILAR + 1
         )
-        .fetch_optional(&mut *conn)
+        .fetch_all(&mut *conn)
         .await?;
-        if let Some(id) = similar {
-            return Ok(Some((id, "similar")));
+        if let Some((first, rest)) = similar.split_first() {
+            return Ok(Found {
+                product: Some(*first),
+                how: "similar",
+                remembered: false,
+                candidates: rest.to_vec(),
+            });
         }
     }
-    Ok(None)
+    Ok(Found {
+        how: "none",
+        ..Found::default()
+    })
 }
 
 /// Поставщик учёта по ИНН, иначе по названию (без кавычек и формы собственности).
@@ -652,8 +816,97 @@ async fn match_supplier(conn: &mut PgConnection, inv: &Invoice) -> AppResult<Opt
     }))
 }
 
-/// Черновик для экрана: распознанное и подсказки «Нового прихода».
+/// Фото черновика: первое или дописанное «Ещё фото».
+struct Photo {
+    id: Uuid,
+    name: String,
+    content_type: String,
+    recognition: String,
+    invoice: Option<Invoice>,
+}
+
+/// Номер накладной для сравнения фото между собой.
+fn doc_key(inv: &Invoice) -> String {
+    inv.doc_number.trim().to_lowercase()
+}
+
+/// Итог нескольких фото: страницы одной накладной (тот же номер или без номера) дают один итог —
+/// наибольший из прочитанных, разные накладные складываются. Хоть у одной итога нет — `None`.
+fn photos_total(invs: &[&Invoice]) -> Option<i64> {
+    let first = invs.first().map(|i| doc_key(i)).unwrap_or_default();
+    let mut groups: Vec<(String, Option<i64>)> = Vec::new();
+    for inv in invs {
+        let key = match doc_key(inv) {
+            k if k.is_empty() => first.clone(),
+            k => k,
+        };
+        let total = money(&inv.total);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, t)) => *t = (*t).max(total),
+            None => groups.push((key, total)),
+        }
+    }
+    if groups.is_empty() {
+        return None;
+    }
+    groups
+        .into_iter()
+        .try_fold(0i64, |acc, (_, t)| acc.checked_add(t?))
+}
+
+/// Предупреждения: фото не подходит к первому — другой поставщик или № накладной, не распознано.
+fn photo_warnings(photos: &[(i64, &Photo, Option<Uuid>)]) -> Vec<String> {
+    let Some((_, first, first_supplier)) = photos.first() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (no, p, supplier) in photos.iter().skip(1) {
+        let Some(inv) = p.invoice.as_ref().filter(|i| i.readable) else {
+            out.push(format!("Фото {no} не распознано — строки внесите вручную"));
+            continue;
+        };
+        let Some(base) = first.invoice.as_ref().filter(|i| i.readable) else {
+            continue;
+        };
+        let other_supplier = match (first_supplier, supplier) {
+            (Some(a), Some(b)) => a != b,
+            _ => {
+                let (a, b) = (
+                    supplier_core(&base.supplier_name).to_lowercase(),
+                    supplier_core(&inv.supplier_name).to_lowercase(),
+                );
+                !a.is_empty() && !b.is_empty() && a != b
+            }
+        };
+        if other_supplier {
+            out.push(format!(
+                "Фото {no}: другой поставщик — «{}». Проверьте, та ли это накладная",
+                inv.supplier_name
+            ));
+        }
+        let (a, b) = (doc_key(base), doc_key(inv));
+        if !a.is_empty() && !b.is_empty() && a != b {
+            out.push(format!(
+                "Фото {no}: другой № накладной — {} (на первом фото — {})",
+                inv.doc_number, base.doc_number
+            ));
+        }
+    }
+    out
+}
+
+/// Черновик для экрана: распознанное и подсказки «Нового прихода» по всем его фото. Дописанное
+/// «Ещё фото» показывает свой первый черновик.
 async fn draft_out(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResult<DraftOut> {
+    let root = sqlx::query_scalar!(
+        r#"select coalesce(parent_id, id) as "root!" from receipt_drafts
+           where id = $1 and branch_id = $2"#,
+        id,
+        user.branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
     let d = sqlx::query!(
         r#"select d.id, d.source, d.status, d.recognition, d.recognized, d.created_at,
                   d.name, d.content_type, d.receipt_id, r.number as "receipt_number?",
@@ -662,68 +915,173 @@ async fn draft_out(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> App
            join users u on u.id = d.user_id
            left join receipts r on r.id = d.receipt_id
            where d.id = $1 and d.branch_id = $2"#,
-        id,
+        root,
         user.branch_id
     )
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(AppError::NotFound)?;
+    let more = sqlx::query!(
+        r#"select id, name, content_type, recognition, recognized from receipt_drafts
+           where parent_id = $1 and branch_id = $2
+           order by created_at, id"#,
+        root,
+        user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let invoice = d.recognized.as_ref().and_then(parse_invoice);
-    let mut supplier = None;
-    let mut lines = Vec::new();
-    if let Some(inv) = &invoice {
-        supplier = match_supplier(conn, inv).await?;
-        let mut found = Vec::with_capacity(inv.lines.len());
-        for l in &inv.lines {
-            found.push(match_product(conn, l).await?);
-        }
-        let ids: Vec<Uuid> = found.iter().flatten().map(|(id, _)| *id).collect();
-        let products: HashMap<Uuid, ProductOut> = if ids.is_empty() {
-            HashMap::new()
-        } else {
-            query_products(
-                conn,
-                user,
-                ProductFilter {
-                    ids: Some(ids),
-                    limit: 500,
-                    ..Default::default()
-                },
-            )
-            .await?
-            .into_iter()
-            .map(|p| (p.id, p))
-            .collect()
-        };
-        for (i, (l, m)) in inv.lines.iter().zip(found).enumerate() {
-            let product = m.and_then(|(id, _)| products.get(&id).cloned());
-            let s = product
-                .as_ref()
-                .map(|p| suggest(l, &p.unit, p.container_ml));
-            lines.push(LineOut {
-                no: i64::try_from(i + 1).unwrap_or(i64::MAX),
-                name: l.name.clone(),
-                code: l.code.clone(),
-                barcode: l.barcode.clone(),
-                quantity: l.quantity.clone(),
-                unit: l.unit.clone(),
-                price: l.price.clone(),
-                sum: l.sum.clone(),
-                qty_milli: thousandths(&l.quantity),
-                liters: is_liters(&l.unit),
-                price_tyiyn: money(&l.price),
-                sum_tyiyn: money(&l.sum),
-                matched: match (&product, m) {
-                    (Some(_), Some((_, how))) => how,
-                    _ => "none",
-                },
-                count: s.as_ref().and_then(|s| s.count),
-                each_tyiyn: s.as_ref().and_then(|s| s.each_tyiyn),
-                note: s.and_then(|s| s.note),
-                product,
-            });
+    let mut photos = vec![Photo {
+        id: d.id,
+        name: d.name.clone(),
+        content_type: d.content_type.clone(),
+        recognition: d.recognition.clone(),
+        invoice: invoice.clone(),
+    }];
+    photos.extend(more.into_iter().map(|m| Photo {
+        id: m.id,
+        name: m.name,
+        content_type: m.content_type,
+        recognition: m.recognition,
+        invoice: m.recognized.as_ref().and_then(parse_invoice),
+    }));
+    // Поставщик — по первому фото, не нашли — по следующим; у каждого фото — свой для сверки.
+    let mut own_supplier: Vec<Option<SupplierHit>> = Vec::with_capacity(photos.len());
+    for p in &photos {
+        own_supplier.push(match &p.invoice {
+            Some(inv) => match_supplier(conn, inv).await?,
+            None => None,
+        });
+    }
+    let supplier = own_supplier.iter().flatten().next().map(|s| SupplierHit {
+        id: s.id,
+        name: s.name.clone(),
+        by: s.by,
+    });
+    let supplier_id = supplier.as_ref().map(|s| s.id);
+    let mut found = Vec::new();
+    for (k, p) in photos.iter().enumerate() {
+        if let Some(inv) = &p.invoice {
+            for l in &inv.lines {
+                let f = match_product(conn, user.branch_id, supplier_id, l).await?;
+                found.push((k, l, f));
+            }
         }
     }
+    let mut ids: Vec<Uuid> = Vec::new();
+    for (_, _, f) in &found {
+        ids.extend(f.product);
+        ids.extend(f.candidates.iter().copied());
+    }
+    ids.sort();
+    ids.dedup();
+    let products: HashMap<Uuid, ProductOut> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        query_products(
+            conn,
+            user,
+            ProductFilter {
+                ids: Some(ids),
+                limit: 500,
+                no_limit: true,
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .map(|p| (p.id, p))
+        .collect()
+    };
+    let mut lines = Vec::with_capacity(found.len());
+    for (i, (k, l, f)) in found.into_iter().enumerate() {
+        let product = f.product.and_then(|id| products.get(&id).cloned());
+        let s = product
+            .as_ref()
+            .map(|p| suggest(l, &p.unit, p.container_ml));
+        lines.push(LineOut {
+            no: i64::try_from(i + 1).unwrap_or(i64::MAX),
+            name: l.name.clone(),
+            code: l.code.clone(),
+            barcode: l.barcode.clone(),
+            quantity: l.quantity.clone(),
+            unit: l.unit.clone(),
+            price: l.price.clone(),
+            sum: l.sum.clone(),
+            qty_milli: thousandths(&l.quantity),
+            liters: is_liters(&l.unit),
+            price_tyiyn: money(&l.price),
+            sum_tyiyn: money(&l.sum),
+            matched: match (&product, f.how) {
+                (Some(_), how) => how,
+                (None, "several") => "several",
+                _ => "none",
+            },
+            remembered: f.remembered && product.is_some(),
+            candidates: f
+                .candidates
+                .iter()
+                .filter_map(|id| products.get(id).cloned())
+                .collect(),
+            photo: i64::try_from(k + 1).unwrap_or(i64::MAX),
+            count: s.as_ref().and_then(|s| s.count),
+            each_tyiyn: s.as_ref().and_then(|s| s.each_tyiyn),
+            note: s.and_then(|s| s.note),
+            product,
+        });
+    }
+    let numbered: Vec<(i64, &Photo, Option<Uuid>)> = photos
+        .iter()
+        .zip(&own_supplier)
+        .enumerate()
+        .map(|(k, (p, s))| {
+            (
+                i64::try_from(k + 1).unwrap_or(i64::MAX),
+                p,
+                s.as_ref().map(|s| s.id),
+            )
+        })
+        .collect();
+    let warnings = photo_warnings(&numbered);
+    let invs: Vec<&Invoice> = photos.iter().filter_map(|p| p.invoice.as_ref()).collect();
+    let (total_tyiyn, lines_sum_tyiyn) = if photos.len() == 1 {
+        (
+            invoice.as_ref().and_then(|i| money(&i.total)),
+            invoice.as_ref().and_then(lines_sum),
+        )
+    } else {
+        let sum = if invs.is_empty() {
+            None
+        } else {
+            invs.iter()
+                .try_fold(0i64, |acc, i| acc.checked_add(lines_sum(i)?))
+        };
+        (photos_total(&invs), sum)
+    };
+    let photos_out = numbered
+        .iter()
+        .map(|(no, p, _)| PhotoOut {
+            id: p.id,
+            no: *no,
+            name: p.name.clone(),
+            content_type: p.content_type.clone(),
+            recognition: p.recognition.clone(),
+            supplier_name: p
+                .invoice
+                .as_ref()
+                .map(|i| i.supplier_name.clone())
+                .unwrap_or_default(),
+            doc_number: p
+                .invoice
+                .as_ref()
+                .map(|i| i.doc_number.clone())
+                .unwrap_or_default(),
+            lines: p
+                .invoice
+                .as_ref()
+                .map_or(0, |i| i64::try_from(i.lines.len()).unwrap_or(0)),
+        })
+        .collect();
     let recognized = invoice.as_ref().is_some_and(|i| i.readable);
     let message = match d.recognition.as_str() {
         "off" => Some(format!("{NOT_CONFIGURED} — заполните приход вручную")),
@@ -744,12 +1102,15 @@ async fn draft_out(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> App
         content_type: d.content_type,
         receipt_id: d.receipt_id,
         receipt_number: d.receipt_number,
-        total_tyiyn: invoice.as_ref().and_then(|i| money(&i.total)),
-        lines_sum_tyiyn: invoice.as_ref().and_then(lines_sum),
+        total_tyiyn,
+        lines_sum_tyiyn,
         invoice,
         supplier,
         lines,
         message,
+        photos: photos_out,
+        warnings,
+        added_photo: None,
     })
 }
 
@@ -760,9 +1121,10 @@ async fn list(State(state): State<AppState>, user: CurrentUser) -> AppResult<Jso
     may_use(&mut conn, &user).await?;
     let rows = sqlx::query!(
         r#"select d.id, d.source, d.status, d.recognition, d.recognized, d.created_at, d.name,
-                  d.content_type, u.full_name as user_name
+                  d.content_type, u.full_name as user_name,
+                  (select count(*) from receipt_drafts m where m.parent_id = d.id) + 1 as "photos!"
            from receipt_drafts d join users u on u.id = d.user_id
-           where d.branch_id = $1 and d.status = 'new'
+           where d.branch_id = $1 and d.status = 'new' and d.parent_id is null
            order by d.created_at desc, d.id desc
            limit $2"#,
         user.branch_id,
@@ -795,6 +1157,7 @@ async fn list(State(state): State<AppState>, user: CurrentUser) -> AppResult<Jso
                     .as_ref()
                     .map_or(0, |i| i64::try_from(i.lines.len()).unwrap_or(0)),
                 total_tyiyn: inv.as_ref().and_then(invoice_total),
+                photos: r.photos,
             }
         })
         .collect();
@@ -819,9 +1182,14 @@ struct UploadQuery {
     op_id: Uuid,
     #[serde(default)]
     name: String,
+    /// «Ещё фото» в открытом черновике: фото дописывает этот черновик (задача 002, П2).
+    #[serde(default)]
+    parent_id: Option<Uuid>,
 }
 
 /// «Заполнить по фото» в «Новом приходе»: сохранить фото черновиком и распознать (ждём ответ).
+/// «Ещё фото» (`parent_id`): фото дописывает открытый черновик, ответ — весь черновик, а
+/// `added_photo` — номер нового фото, его строки экран добавляет в приход.
 async fn upload(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -869,6 +1237,7 @@ async fn upload(
             data: &body,
             service: true,
             keep_on_limit: false,
+            parent_id: q.parent_id,
         },
     )
     .await?;
@@ -882,7 +1251,11 @@ async fn upload(
         }
     };
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(draft_out(&mut conn, &ctx.user, id).await?))
+    let mut out = draft_out(&mut conn, &ctx.user, id).await?;
+    if out.id != id {
+        out.added_photo = out.photos.iter().find(|p| p.id == id).map(|p| p.no);
+    }
+    Ok(Json(out))
 }
 
 async fn download(
@@ -937,7 +1310,7 @@ async fn remove(
     let mut tx = state.pool.begin().await?;
     may_use(&mut tx, &ctx.user).await?;
     let d = sqlx::query!(
-        r#"select d.status, r.number as "number?" from receipt_drafts d
+        r#"select d.status, d.parent_id, r.number as "number?" from receipt_drafts d
            left join receipts r on r.id = d.receipt_id
            where d.id = $1 and d.branch_id = $2 for update of d"#,
         id,
@@ -946,6 +1319,11 @@ async fn remove(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    if d.parent_id.is_some() {
+        return Err(invalid(
+            "это дописанное фото — уберите всю накладную по первому фото",
+        ));
+    }
     match d.status.as_str() {
         "used" => {
             return Err(AppError::Conflict(format!(
@@ -957,9 +1335,10 @@ async fn remove(
         // Повтор после потерянного ответа — тот же результат.
         "removed" => {}
         _ => {
+            // Дописанные «Ещё фото» убираются вместе с первым.
             sqlx::query!(
                 r#"update receipt_drafts set status = 'removed', closed_at = now(), closed_by = $2
-                   where id = $1"#,
+                   where (id = $1 or parent_id = $1) and status = 'new'"#,
                 id,
                 ctx.user.id
             )
@@ -1017,8 +1396,7 @@ async fn attach_inner(
     may_use(conn, &ctx.user).await?;
     let branch_id = ctx.user.branch_id;
     let d = sqlx::query!(
-        r#"select d.status, d.receipt_id, d.name, d.content_type, d.size_bytes, d.data, d.user_id,
-                  d.device_id, r.number as "number?"
+        r#"select d.status, d.receipt_id, d.parent_id, r.number as "number?"
            from receipt_drafts d left join receipts r on r.id = d.receipt_id
            where d.id = $1 and d.branch_id = $2 for update of d"#,
         draft_id,
@@ -1027,6 +1405,11 @@ async fn attach_inner(
     .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| invalid("накладная по фото не найдена"))?;
+    if d.parent_id.is_some() {
+        return Err(invalid(
+            "это дописанное фото — проводите приход по первому фото накладной",
+        ));
+    }
     match d.status.as_str() {
         "used" if d.receipt_id == Some(receipt_id) => return Ok(()),
         "used" => {
@@ -1043,9 +1426,6 @@ async fn attach_inner(
         "acceptance" if !accepted => return Err(AppError::Conflict(WAITS.into())),
         _ => {}
     }
-    let data = d
-        .data
-        .ok_or_else(|| AppError::Internal("у черновика нет фото".into()))?;
     let r = sqlx::query!(
         "select number, reversal_of from receipts where id = $1 and branch_id = $2",
         receipt_id,
@@ -1059,6 +1439,50 @@ async fn attach_inner(
             "фото прикрепляют к самой накладной, не к её сторно",
         ));
     }
+    // Первое фото и дописанные «Ещё фото» — к накладной по порядку (задача 002, П2).
+    let more = sqlx::query_scalar!(
+        r#"select id from receipt_drafts where parent_id = $1 and status = 'new'
+           order by created_at, id for update"#,
+        draft_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for id in std::iter::once(draft_id).chain(more) {
+        move_photo(conn, ctx, id, receipt_id, r.number, draft_id).await?;
+    }
+    ops::audit(
+        conn,
+        ctx,
+        "receipt_draft.use",
+        "receipt_draft",
+        Some(draft_id),
+        json!({ "receipt": receipt_id, "number": r.number }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Фото черновика — в файлы накладной (как загруженное к ней, ADR-080), черновик — «использован».
+async fn move_photo(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    receipt_id: Uuid,
+    number: i64,
+    draft_id: Uuid,
+) -> AppResult<()> {
+    let branch_id = ctx.user.branch_id;
+    let d = sqlx::query!(
+        r#"select name, content_type, size_bytes, data, user_id, device_id from receipt_drafts
+           where id = $1 and branch_id = $2"#,
+        id,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let data = d
+        .data
+        .ok_or_else(|| AppError::Internal("у черновика нет фото".into()))?;
     let name = if d.name.is_empty() {
         "накладная по фото".to_string()
     } else {
@@ -1086,7 +1510,7 @@ async fn attach_inner(
         r#"update receipt_drafts
            set status = 'used', receipt_id = $2, file_id = $3, data = null, closed_at = now(), closed_by = $4
            where id = $1"#,
-        draft_id,
+        id,
         receipt_id,
         fid,
         ctx.user.id
@@ -1099,17 +1523,8 @@ async fn attach_inner(
         "receipt.file_add",
         "receipt",
         Some(receipt_id),
-        json!({ "number": r.number, "file": fid, "name": name, "size": d.size_bytes,
-                "type": d.content_type, "draft": draft_id }),
-    )
-    .await?;
-    ops::audit(
-        conn,
-        ctx,
-        "receipt_draft.use",
-        "receipt_draft",
-        Some(draft_id),
-        json!({ "receipt": receipt_id, "number": r.number }),
+        json!({ "number": number, "file": fid, "name": name, "size": d.size_bytes,
+                "type": d.content_type, "draft": draft_id, "photo_draft": id }),
     )
     .await?;
     Ok(())
@@ -1203,7 +1618,8 @@ pub struct ExactInvoice {
 /// строки, если она есть, сходится с ценой. Хоть что-то «похоже» или не найдено — `None`:
 /// кнопки «📦 На приёмку» нет, накладную проверяют в программе.
 pub fn exact_from(d: &DraftOut) -> Option<ExactInvoice> {
-    if d.status != "new" {
+    // Фото не подходят друг к другу — проверяют в программе.
+    if d.status != "new" || !d.warnings.is_empty() {
         return None;
     }
     let inv = d.invoice.as_ref().filter(|i| i.readable)?;
@@ -1415,6 +1831,7 @@ pub async fn from_bot_reply(
             data: &file.data,
             service: a.is_some(),
             keep_on_limit: true,
+            parent_id: None,
         },
     )
     .await?;

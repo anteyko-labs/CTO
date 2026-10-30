@@ -56,6 +56,7 @@ export function ReceiptDraftsBlock({
                   <div className="font-medium">
                     {d.supplier_name || 'Поставщик не указан'}
                     {d.doc_number && <span className="ml-2 text-slate-500">№ {d.doc_number}</span>}
+                    {d.photos > 1 && <span className="ml-2 text-slate-500">· {d.photos} фото</span>}
                   </div>
                   <div className="text-xs text-slate-500">
                     {formatDateTime(d.created_at)} · <Badge tone={d.source === 'bot' ? 'sky' : 'slate'}>{d.source === 'bot' ? 'из бота' : 'с экрана'}</Badge> · {d.user_name}
@@ -84,8 +85,17 @@ export function ReceiptDraftsBlock({
   )
 }
 
-/** «Заполнить по фото»: камера телефона или файл; снимок сжимается, сервер сохраняет и распознаёт. */
-export function FillFromPhoto({ onDraft, disabled }: { onDraft: (d: Draft) => void; disabled?: boolean }) {
+/** «Заполнить по фото»: камера телефона или файл; снимок сжимается, сервер сохраняет и распознаёт.
+ *  «Ещё фото» (`parentId`) — фото дописывает открытый черновик (задача 002, П2). */
+export function FillFromPhoto({
+  onDraft,
+  disabled,
+  parentId,
+}: {
+  onDraft: (d: Draft) => void
+  disabled?: boolean
+  parentId?: string
+}) {
   const camera = useRef<HTMLInputElement>(null)
   const file = useRef<HTMLInputElement>(null)
   const act = useAction()
@@ -96,7 +106,12 @@ export function FillFromPhoto({ onDraft, disabled }: { onDraft: (d: Draft) => vo
     void act.run(async () => {
       const p = await prepareFile(f)
       // Распознавание — обычно до минуты, с повторами сервиса — до четырёх: ждём пять.
-      const d = await upload<Draft>(`/receipt-drafts${qs({ op_id: newOpId(), name: p.name })}`, p.blob, p.type, 300_000)
+      const d = await upload<Draft>(
+        `/receipt-drafts${qs({ op_id: newOpId(), name: p.name, ...(parentId ? { parent_id: parentId } : {}) })}`,
+        p.blob,
+        p.type,
+        300_000,
+      )
       onDraft(d)
     })
   }
@@ -104,7 +119,7 @@ export function FillFromPhoto({ onDraft, disabled }: { onDraft: (d: Draft) => vo
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="secondary" disabled={disabled || act.busy} onClick={() => camera.current?.click()}>
-          {act.busy ? 'Распознаю…' : 'Заполнить по фото'}
+          {act.busy ? 'Распознаю…' : parentId ? 'Ещё фото' : 'Заполнить по фото'}
         </Button>
         <Button variant="ghost" disabled={disabled || act.busy} onClick={() => file.current?.click()}>
           из файла
@@ -114,7 +129,7 @@ export function FillFromPhoto({ onDraft, disabled }: { onDraft: (d: Draft) => vo
       <input ref={camera} type="file" accept="image/*" capture="environment" className="hidden" onChange={pick} />
       <input
         ref={file}
-        data-testid="fill-photo-input"
+        data-testid={parentId ? 'more-photo-input' : 'fill-photo-input'}
         type="file"
         accept="image/jpeg,image/png,image/webp,application/pdf"
         className="hidden"

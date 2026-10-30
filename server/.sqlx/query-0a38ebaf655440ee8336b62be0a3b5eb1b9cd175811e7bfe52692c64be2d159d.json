@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from supplier_line_map m using products p\n           where m.id = $1 and m.branch_id = $2 and p.id = m.product_id\n           returning m.supplier_id, m.name, m.product_id, p.name as product_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "product_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0a38ebaf655440ee8336b62be0a3b5eb1b9cd175811e7bfe52692c64be2d159d"
+}

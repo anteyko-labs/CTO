@@ -49,6 +49,7 @@ pub mod sales;
 pub mod shift_report;
 pub mod stock_in;
 pub mod supplier_debts;
+pub mod supplier_line_map;
 pub mod supplier_returns;
 pub mod telegram;
 
@@ -99,6 +100,7 @@ pub fn routes() -> Router<AppState> {
         .merge(shift_report::routes())
         .merge(stock_in::routes())
         .merge(supplier_debts::routes())
+        .merge(supplier_line_map::routes())
         .merge(supplier_returns::routes())
         .merge(telegram::routes())
 }

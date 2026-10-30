@@ -173,6 +173,12 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   // Банковский счёт — здание банка; «Расходы» — круг со стрелкой вниз.
+  camera: (
+    <>
+      <path d="M4 8h3l2-3h6l2 3h3v11H4z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </>
+  ),
   bank: (
     <>
       <path d="M3 10 12 4l9 6" />

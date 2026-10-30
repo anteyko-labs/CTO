@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.id, m.supplier_id, m.name, m.product_id, p.name as product_name,\n                  p.article as product_article, u.full_name as user_name, m.updated_at\n           from supplier_line_map m\n           join products p on p.id = m.product_id\n           join users u on u.id = m.user_id\n           where m.branch_id = $1 and m.supplier_id = $2\n           order by m.name_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "product_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "product_article",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d33a38b589b3997985c2eebac3ddef3ae4d7e4999dfa304acad539c44455cf31"
+}

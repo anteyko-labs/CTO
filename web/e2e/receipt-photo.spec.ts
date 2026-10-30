@@ -135,7 +135,8 @@ test('накладная по фото открывает заполненный
   await unmatched.getByRole('button', { name: 'Выбрать товар' }).click()
   await expect(page.getByTestId('draft-target')).toBeVisible()
   await page.locator('#receipt-picker').fill(`Держатель ${RUN}`)
-  await page.getByText(`Держатель ${RUN}`).first().click()
+  // Результат поиска, а не вариант товара у строки «похож» (задача 002, П3).
+  await page.locator('[data-picker] ~ ul').getByText(`Держатель ${RUN}`).first().click()
   await expect(page.getByTestId('draft-unmatched')).toBeHidden()
   await expect(page.locator('#line-4-count')).toHaveValue('3')
   await expect(page.locator('#line-4-price')).toHaveValue('100')
@@ -206,6 +207,130 @@ test('накладная по фото: 18 л масла не делятся н�
     page.once('dialog', (d) => void d.accept())
     await row.getByRole('button', { name: 'Убрать' }).click()
     await expect(row).toHaveCount(0)
+  } finally {
+    invoice = INVOICE
+  }
+})
+
+// Задача 002, П2–П3, П6: «Ещё фото» дописывает тот же приход (тот же товар — «сложить?»,
+// другая накладная — предупреждение), варианты товара на выбор и запоминание выбора, поиск
+// накладной в списке приходов и фото на весь экран.
+test('ещё фото, варианты товара, запомненный выбор и поиск накладной', async ({ page }) => {
+  await login(page)
+  const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
+  test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Фото-два ${RUN}`, kind: 'other' })
+  const supplier = await apiPost<{ id: string }>(page.request, '/suppliers', { name: `Фото-два ${RUN}` })
+  const product = (name: string, extra: Record<string, unknown> = {}) =>
+    apiPost<{ id: string; name: string }>(page.request, '/products', {
+      op_id: crypto.randomUUID(), category_id: cat.id, name, sale_price_tyiyn: 50_000, ...extra,
+    })
+  const filter = await product(`Фильтр салона ${RUN}`, { barcodes: [`47${RUN}301`] })
+  // Два товара с одним артикулом — оба на выбор.
+  await product(`Ремень ГРМ ${RUN} старый`, { article: `RB-${RUN}` })
+  const belt = await product(`Ремень ГРМ ${RUN} новый`, { article: `RB ${RUN}` })
+  await product(`Лампа H7 ${RUN} 55W`)
+  await product(`Лампа H7 ${RUN} 100W`)
+  const doc = `F${RUN}`
+  const first = {
+    ...INVOICE,
+    supplier_name: `ОсОО «Фото-два ${RUN}»`,
+    doc_number: doc,
+    lines: [
+      { name: `Фильтр салона ${RUN}`, code: '', barcode: `47${RUN}301`, quantity: '2', unit: 'шт', price: '350', sum: '700' },
+      { name: `Ремень зубчатый ${RUN}`, code: `RB${RUN}`, barcode: '', quantity: '1', unit: 'шт', price: '900', sum: '900' },
+      { name: `Лампа H7 ${RUN}`, code: '', barcode: '', quantity: '2', unit: 'шт', price: '150', sum: '300' },
+    ],
+    total: '1900',
+  }
+  const second = {
+    ...INVOICE,
+    supplier_name: `ОсОО «Другая фирма ${RUN}»`,
+    doc_number: `G${RUN}`,
+    lines: [{ name: `Фильтр салона ${RUN}`, code: '', barcode: `47${RUN}301`, quantity: '1', unit: 'шт', price: '350', sum: '350' }],
+    total: '350',
+  }
+  try {
+    invoice = first
+    await page.goto('/receipts/new')
+    await page.getByTestId('fill-photo-input').setInputFiles({ name: 'p1.png', mimeType: 'image/png', buffer: PNG })
+    await expect(page.getByTestId('draft-banner')).toBeVisible()
+    await expect(page.locator('#receipt-supplier')).toHaveValue(supplier.id)
+
+    // Два точных совпадения по артикулу — строка без товара с обоими вариантами.
+    const several = page.getByTestId('draft-unmatched-line')
+    await expect(several).toContainText('с этим кодом несколько товаров')
+    await expect(several.getByTestId('draft-candidate')).toHaveCount(2)
+    await several.getByTestId('draft-candidate').filter({ hasText: belt.name }).click()
+    await expect(page.getByText(`Запомнено: «Ремень зубчатый ${RUN}» → ${belt.name}`)).toBeVisible()
+    await expect(page.getByTestId('draft-unmatched')).toBeHidden()
+
+    // «Похож» — другие похожие с остатком и ценой; выбор одним нажатием меняет товар строки.
+    const lamp = page.getByTestId('draft-hint').filter({ hasText: `Лампа H7 ${RUN}` })
+    await expect(lamp).toContainText('проверьте')
+    const option = lamp.getByTestId('draft-candidate').first()
+    await expect(option).toContainText('остаток')
+    const optionName = (await option.locator('span').first().textContent()) ?? ''
+    await option.click()
+    await expect(page.locator('tr', { has: page.getByText(`«Лампа H7 ${RUN}»`) })).toContainText(optionName)
+
+    // «Ещё фото»: строки второй накладной — в этот же приход; другая накладная — предупреждение.
+    invoice = second
+    await page.getByTestId('more-photo-input').setInputFiles({ name: 'p2.png', mimeType: 'image/png', buffer: PNG })
+    await expect(page.getByTestId('draft-photos').locator('img')).toHaveCount(2)
+    await expect(page.getByTestId('draft-warning').first()).toContainText('другой поставщик')
+    await expect(page.getByTestId('draft-warning').nth(1)).toContainText(`другой № накладной — G${RUN}`)
+    await expect(page.locator('#line-4-count')).toHaveValue('1')
+    const dup = page.getByTestId('draft-dup')
+    await expect(dup).toContainText('уже есть в приходе — сложить?')
+    await dup.getByRole('button', { name: 'Сложить' }).click()
+    await expect(page.locator('#line-4-count')).toHaveCount(0)
+    await expect(page.locator('#line-1-count')).toHaveValue('3')
+
+    await page.getByLabel('Вся в долг').check()
+    const print = page.getByLabel('Печатать этикетки')
+    if (await print.isChecked()) await print.uncheck()
+    await page.getByRole('button', { name: 'Провести приход' }).first().click()
+    await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
+    const id = page.url().split('/').pop()!
+    await expect(page.getByTestId('receipt-photos').locator('img')).toHaveCount(2)
+    const receipt = await apiGet<{ lines: { product_id: string; qty: number }[] }>(page.request, `/receipts/${id}`)
+    expect(receipt.lines.find((l) => l.product_id === filter.id)).toMatchObject({ qty: 3 })
+
+    // Следующая накладная поставщика: запомненная строка совпадает точно.
+    invoice = first
+    await page.goto('/receipts/new')
+    await page.getByTestId('fill-photo-input').setInputFiles({ name: 'p3.png', mimeType: 'image/png', buffer: PNG })
+    await expect(page.getByTestId('draft-banner')).toBeVisible()
+    await expect(page.getByTestId('draft-unmatched')).toBeHidden()
+    await expect(page.getByTestId('draft-hint').filter({ hasText: `Ремень зубчатый ${RUN}` })).toContainText('запомнено')
+    await expect(page.locator('tr', { has: page.getByText(`«Ремень зубчатый ${RUN}»`) })).toContainText(belt.name)
+
+    // Карточка поставщика: запомненные строки, «Забыть».
+    await page.goto(`/suppliers/${supplier.id}`)
+    await page.getByRole('tab', { name: 'Строки накладных' }).click()
+    const remembered = page.getByTestId('supplier-line')
+    await expect(remembered).toHaveCount(2)
+    page.once('dialog', (d) => void d.accept())
+    await remembered.filter({ hasText: `Ремень зубчатый ${RUN}` }).getByRole('button', { name: 'Забыть' }).click()
+    await expect(remembered).toHaveCount(1)
+
+    // Список приходов: поиск по № накладной — за всё время; значок фото открывает фото на весь экран.
+    await page.goto('/receipts')
+    await page.locator('#receipts-search').fill(doc.toLowerCase())
+    const rows = page.getByTestId('receipt-row')
+    await expect(rows).toHaveCount(1)
+    await expect(page.getByText('Поиск за всё время')).toBeVisible()
+    await page.locator('#receipts-search').fill(`Ремень ГРМ ${RUN} новый`)
+    await expect(rows).toHaveCount(1)
+    await page.locator('#receipts-search').fill('')
+    await page.getByLabel('с фото').check()
+    await expect(rows.filter({ hasText: `Фото-два ${RUN}` })).toHaveCount(1)
+    await rows.filter({ hasText: `Фото-два ${RUN}` }).getByTestId('receipt-photo-mark').click()
+    await expect(page.getByTestId('photo-viewer')).toBeVisible()
+    await expect(page.getByTestId('photo-viewer')).toContainText('1 из 2')
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('photo-viewer')).toBeHidden()
   } finally {
     invoice = INVOICE
   }

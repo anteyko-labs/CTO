@@ -1,7 +1,7 @@
 // Просмотр прихода, сторно и печать этикеток (SPEC-03); оплата накладной в долг по частям и история
 // платежей (SPEC-27); фото накладной (SPEC-29 §3).
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ReceiptAcceptance } from '../components/Acceptances'
 import { CorrectionLinks, FixButton } from '../components/Correction'
 import { printLabels } from '../components/labels'
@@ -37,6 +37,8 @@ function labelCopies(l: ReceiptLine): number {
 
 export default function ReceiptView() {
   const { id = '' } = useParams()
+  // Из списка приходов по значку фото — сразу фото на весь экран (задача 002, П6).
+  const [params] = useSearchParams()
   const navigate = useNavigate()
   const can = useCan()
   const receipt = useLoad(() => get<Receipt>(`/receipts/${id}`), [id])
@@ -213,7 +215,7 @@ export default function ReceiptView() {
 
       {!isReversal && (
         <Card>
-          <ReceiptPhotos receiptId={r.id} canAdd={mayReceipts} />
+          <ReceiptPhotos receiptId={r.id} canAdd={mayReceipts} openFirst={params.get('photo') === '1'} />
         </Card>
       )}
 
