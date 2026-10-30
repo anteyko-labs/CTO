@@ -23,7 +23,7 @@
 - SQL в Rust — макросы `sqlx::query!`; после правки SQL — `cargo sqlx prepare -- --all-targets` на базе `avtodom_e2e*`, коммит `server/.sqlx`.
 
 ## Уведомления владельцу
-- `WATCHED` в `server/src/api/notifications.rs` (длина массива = число событий) + текст в `describe`; уходят и в бот владельца. Новое событие — SPEC-13.
+- `WATCHED` в `server/src/api/notifications.rs` (длина массива = число событий) + текст в `describe`; уходят и в бот владельца. Новое событие — SPEC-13 и выключатель в `server/src/api/bot_feed.rs` (`EVENTS`, тест сверяет); что приходит в бот, каждый владелец выбирает сам, чеки по умолчанию не приходят (ADR-138).
 
 ## Проверки (команда — `scripts/sdd-review.sh`)
 - Быстрый набор (каждая задача): сервер — `cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test`; клиент — `tsc -b`, `oxlint src`, `npm test`, `vite build`.

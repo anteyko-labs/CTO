@@ -16,6 +16,7 @@ use avtodom_server::{app, auth::hash_password, bootstrap, build_state};
 
 const OWNER_CHAT: i64 = 700_001;
 const ADMIN_CHAT: i64 = 700_002;
+const SECOND_OWNER_CHAT: i64 = 700_003;
 
 async fn call(
     app: &Router,
@@ -268,13 +269,45 @@ impl W {
         .unwrap();
     }
 
-    /// Что сейчас уйдёт в чаты; всё отмечается доставленным. Чату администратора — ничего.
-    async fn feed(&self) -> Vec<Outgoing> {
+    /// Что сейчас уйдёт в чаты всех владельцев; всё отмечается доставленным.
+    async fn feed_all(&self) -> Vec<Outgoing> {
         let mut conn = self.pool.acquire().await.unwrap();
         let out = pending(&mut conn).await.unwrap();
         for m in &out {
             mark_sent(&mut conn, m).await.unwrap();
         }
+        out
+    }
+
+    /// «Уведомления в бот» владельца (ADR-138): выключенные события и режим чеков.
+    async fn bot_feed(&self, who: &str, off: &[&str], sales: &str) {
+        let (s, _, out) = call(
+            &self.app,
+            "PUT",
+            "/api/v1/settings/bot-feed",
+            Some(who),
+            Some(json!({ "op_id": Uuid::now_v7(), "off": off, "sales": sales })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{out}");
+    }
+
+    /// Процент баллов — событие экрана «Уведомления» (`settings.loyalty`).
+    async fn loyalty(&self, rate_bp: i64) {
+        let (s, _, out) = call(
+            &self.app,
+            "PUT",
+            "/api/v1/settings/loyalty",
+            Some(&self.owner),
+            Some(json!({ "rate_bp": rate_bp })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{out}");
+    }
+
+    /// Что сейчас уйдёт в чаты; всё отмечается доставленным. Чату администратора — ничего.
+    async fn feed(&self) -> Vec<Outgoing> {
+        let out = self.feed_all().await;
         assert!(
             out.iter().all(|m| m.chat_id == OWNER_CHAT),
             "только владельцу"
@@ -311,6 +344,8 @@ fn find<'a>(msgs: &'a [Outgoing], start: &str) -> &'a str {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn debt_sale_and_return_show_client_debt(pool: PgPool) {
     let w = world(pool).await;
+    // Чеки в бот владелец включил сам: по умолчанию не присылаются (ADR-138).
+    w.bot_feed(&w.owner, &[], "all").await;
     w.feed().await;
     // Продажа: 600 наличными + 400 в долг.
     let sale = w
@@ -476,4 +511,163 @@ async fn shift_close_sends_shift_report_and_day_total_after_last_shift(pool: PgP
     assert!(day.contains("ЧИСТАЯ ПРИБЫЛЬ"), "{day}");
     // Повторно не приходит.
     assert!(w.feed().await.is_empty());
+}
+
+fn has(msgs: &[Outgoing], part: &str) -> bool {
+    msgs.iter().any(|m| m.text.contains(part))
+}
+
+/// Вернуть чек целиком наличными.
+async fn return_cash(w: &W, sale: &Value) -> Value {
+    ok(
+        &w.app,
+        &w.admin,
+        &format!("/api/v1/sales/{}/return", id_of(sale)),
+        json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                "payments": [{ "method": "cash", "amount_tyiyn": 100_000 }] }),
+    )
+    .await
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn switched_off_event_stays_on_screen_but_not_in_bot(pool: PgPool) {
+    // ADR-138: выключенное в «Уведомлениях в бот» не уходит в чат, а экран «Уведомления»
+    // показывает всё как раньше. По умолчанию чеки и возвраты не присылаются.
+    let w = world(pool).await;
+    w.feed().await;
+    let feed = get(&w.app, &w.owner, "/api/v1/settings/bot-feed").await;
+    assert_eq!(feed["sales"], "none");
+    let loyalty = feed["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["events"].as_array().unwrap().iter())
+        .find(|e| e["action"] == "settings.loyalty")
+        .unwrap()
+        .clone();
+    assert_eq!(loyalty["on"], true, "{loyalty}");
+
+    let sale = w
+        .sale(
+            json!([{ "method": "cash", "amount_tyiyn": 100_000 }]),
+            false,
+        )
+        .await;
+    return_cash(&w, &sale).await;
+    w.loyalty(200).await;
+    let msgs = w.feed().await;
+    assert!(
+        !has(&msgs, "Чек №") && !has(&msgs, "Возврат №"),
+        "чеки по умолчанию не присылаются"
+    );
+    assert!(has(&msgs, "Изменён процент баллов"));
+
+    w.bot_feed(&w.owner, &["settings.loyalty"], "none").await;
+    w.loyalty(300).await;
+    let msgs = w.feed().await;
+    assert!(!has(&msgs, "процент баллов"), "выключено — в бот не идёт");
+    let screen = get(&w.app, &w.owner, "/api/v1/notifications").await;
+    let titles: Vec<&str> = screen["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["title"].as_str())
+        .collect();
+    assert_eq!(
+        titles
+            .iter()
+            .filter(|t| **t == "Изменён процент баллов")
+            .count(),
+        2,
+        "{titles:?}"
+    );
+    assert!(titles.contains(&"Оформлен возврат"), "{titles:?}");
+
+    // Включили обратно — снова приходит.
+    w.bot_feed(&w.owner, &[], "none").await;
+    w.loyalty(100).await;
+    assert!(has(&w.feed().await, "Изменён процент баллов"));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn only_debt_sales_and_returns_reach_the_bot(pool: PgPool) {
+    // Режим чеков «только в долг и возвраты» (ADR-138).
+    let w = world(pool).await;
+    w.feed().await;
+    w.bot_feed(&w.owner, &[], "debt_returns").await;
+    let cash = w
+        .sale(
+            json!([{ "method": "cash", "amount_tyiyn": 100_000 }]),
+            false,
+        )
+        .await;
+    let debt = w
+        .sale(
+            json!([{ "method": "cash", "amount_tyiyn": 60_000 }, { "method": "debt", "amount_tyiyn": 40_000 }]),
+            true,
+        )
+        .await;
+    let ret = return_cash(&w, &cash).await;
+    let msgs = w.feed().await;
+    let no = |v: &Value| v["number"].as_i64().unwrap();
+    assert!(
+        !has(&msgs, &format!("🧾 Чек № {} —", no(&cash))),
+        "чек без долга не приходит"
+    );
+    find(&msgs, &format!("🧾 Чек № {} —", no(&debt)));
+    find(&msgs, &format!("↩️ Возврат № {}", no(&ret)));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn each_owner_has_own_bot_feed(pool: PgPool) {
+    // Два владельца с привязкой к боту: у каждого своя настройка (ADR-138).
+    let w = world(pool).await;
+    let hash = hash_password("owner2-pass-1".into()).await.unwrap();
+    sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) select $1, branch_id, 'owner2', $2, 'owner', 'Второй' from users where login = 'owner'")
+        .bind(Uuid::now_v7())
+        .bind(hash)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, linked_at, tg_user_id) select $1, id, branch_id, now() - interval '1 hour', $1 from users where login = 'owner2'")
+        .bind(SECOND_OWNER_CHAT)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let owner2 = login(&w.app, "owner2", "owner2-pass-1").await;
+    w.feed_all().await;
+    w.bot_feed(&w.owner, &[], "all").await;
+    w.bot_feed(&owner2, &["settings.loyalty"], "none").await;
+    let second = get(&w.app, &owner2, "/api/v1/settings/bot-feed").await;
+    assert_eq!(second["off"], json!(["settings.loyalty"]));
+    assert_eq!(
+        get(&w.app, &w.owner, "/api/v1/settings/bot-feed").await["off"],
+        json!([])
+    );
+
+    w.sale(
+        json!([{ "method": "cash", "amount_tyiyn": 100_000 }]),
+        false,
+    )
+    .await;
+    w.loyalty(200).await;
+    ok(
+        &w.app,
+        &w.admin,
+        "/api/v1/cash/movements",
+        json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 5_000, "comment": "размен" }),
+    )
+    .await;
+    let msgs = w.feed_all().await;
+    let has_in = |chat: i64, part: &str| {
+        msgs.iter()
+            .any(|m| m.chat_id == chat && m.text.contains(part))
+    };
+    assert!(has_in(OWNER_CHAT, "🧾 Чек №") && has_in(OWNER_CHAT, "Изменён процент баллов"));
+    assert!(
+        !has_in(SECOND_OWNER_CHAT, "Чек №") && !has_in(SECOND_OWNER_CHAT, "процент баллов"),
+        "у второго владельца — своя настройка"
+    );
+    assert!(has_in(OWNER_CHAT, "➕ Внесли") && has_in(SECOND_OWNER_CHAT, "➕ Внесли"));
+    assert!(msgs.iter().all(|m| m.chat_id != ADMIN_CHAT));
 }

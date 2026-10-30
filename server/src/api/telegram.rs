@@ -2484,7 +2484,8 @@ async fn set_state(conn: &mut PgConnection, key: &str, value: Value) -> AppResul
 }
 
 fn watched_actions() -> Vec<String> {
-    // Владельцу в бот — всё: важные события экрана «Уведомления» и вся текущая работа точки.
+    // Владельцу в бот — важные события экрана «Уведомления» и текущая работа точки; что из
+    // этого выключил владелец, отсекает запрос (ADR-138).
     WATCHED
         .iter()
         .chain(FEED.iter())
@@ -2532,12 +2533,23 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
            -- Владелец получает ленту всех филиалов (SPEC-33 §3).
            join telegram_links t on true
            join users o on o.id = t.user_id and o.active and o.role = 'owner'
+           -- Что этот владелец выключил в «Уведомлениях в бот» (ADR-138).
+           left join settings f on f.branch_id = o.branch_id and f.key = 'bot_feed:' || o.id::text
            left join users w on w.id = a.user_id
            left join employees e on e.id = a.entity_id
            where a.created_at > greatest($1::timestamptz - interval '15 minutes', $2::timestamptz,
                                          now() - interval '1 day')
              and a.created_at >= t.linked_at
              and a.action = any($3)
+             and not coalesce(f.value -> 'off' ? a.action, false)
+             -- Чеки и возвраты — по режиму владельца, по умолчанию не присылаются.
+             and (a.action not in ('sale.post', 'sale.return', 'sale.return_no_receipt')
+                  or case coalesce(f.value ->> 'sales', 'none')
+                       when 'all' then true
+                       when 'debt_returns' then a.action <> 'sale.post'
+                         or exists (select 1 from sale_payments x
+                                    where x.sale_id = a.entity_id and x.method = 'debt')
+                       else false end)
              -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.
              and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')
              -- Приход по приёмке на планшете — одним сообщением «Приход № N принял …» (SPEC-39 §9).
@@ -2699,10 +2711,20 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
            from audit_log a
            join telegram_links t on true
            join users o on o.id = t.user_id and o.active and o.role = 'owner'
+           -- Тот же отбор, что в `pending`: выключенное не держит курсор (ADR-138).
+           left join settings f on f.branch_id = o.branch_id and f.key = 'bot_feed:' || o.id::text
            where a.created_at > greatest($1::timestamptz - interval '15 minutes', $2::timestamptz,
                                          now() - interval '1 day')
              and a.created_at >= t.linked_at
              and a.action = any($3)
+             and not coalesce(f.value -> 'off' ? a.action, false)
+             and (a.action not in ('sale.post', 'sale.return', 'sale.return_no_receipt')
+                  or case coalesce(f.value ->> 'sales', 'none')
+                       when 'all' then true
+                       when 'debt_returns' then a.action <> 'sale.post'
+                         or exists (select 1 from sale_payments x
+                                    where x.sale_id = a.entity_id and x.method = 'debt')
+                       else false end)
              -- Оплата части накладной при приходе уже есть в ленте погашением поставщику.
              and not (a.action = 'receipt.supplier_payment' and a.data ? 'partial')
              -- Приход по приёмке на планшете — одним сообщением «Приход № N принял …» (SPEC-39 §9).
@@ -2723,7 +2745,7 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
 }
 
 /// Текущая работа точки, которая идёт владельцу в бот сверх экрана «Уведомления».
-const FEED: [&str; 17] = [
+pub(crate) const FEED: [&str; 17] = [
     "sale.post",
     "shift.open",
     "shift.close",

@@ -11612,3 +11612,54 @@ async fn receipt_by_weight_compares_price_per_kg(pool: PgPool) {
         assert_eq!(flagged().await, want);
     }
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_feed_settings_are_owner_only(pool: PgPool) {
+    // «Настройки → Уведомления в бот» (задача 002 П11): только владелец; повтор `op_id` — без
+    // второй записи журнала.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (s, _, _) = call(&app, "GET", "/api/v1/settings/bot-feed", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let body = json!({ "op_id": Uuid::now_v7(), "off": ["shift.open"], "sales": "all" });
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/bot-feed",
+        Some(&admin),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, v) = call(&app, "GET", "/api/v1/settings/bot-feed", Some(&owner), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["sales"], "none", "чеки по умолчанию не присылаются");
+    assert_eq!(v["off"], json!([]));
+    for _ in 0..2 {
+        let (s, _, v) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings/bot-feed",
+            Some(&owner),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let logged: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'settings.bot_feed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(logged, 1, "изменение — одна запись журнала");
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/bot-feed",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "off": [], "sales": "иногда" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
