@@ -11153,6 +11153,165 @@ async fn admin_pays_only_masters(pool: PgPool) {
     assert_eq!(err["error"]["message"], "Нет права: Выплаты мастерам");
 }
 
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn payroll_month_actions_are_checked_by_server(pool: PgPool) {
+    // «Расчёт за месяц» (задача 002, П13): кнопки скрываются по правам, решает сервер (I12).
+    // Администратору: аванс без «Аванс мастерам» — 403 (с правом — tests/payouts.rs,
+    // admin_pays_masters_for_services_and_advance_only_with_right); бонус, удержание, отмена и
+    // исправление выплаты — 403. Бонус прошлого месяца его последним днём попадает в тот месяц.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = named_cashier(&app, &owner, "Айбек").await;
+    let (s, _, e) = call(
+        &app,
+        "POST",
+        "/api/v1/employees",
+        Some(&owner),
+        Some(json!({ "full_name": "Мастер Нурлан", "is_master": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    let master = e["id"].as_str().unwrap().to_string();
+    let accrual = |who: &str, kind: &str, date: Option<&str>| {
+        let mut body = json!({ "op_id": Uuid::now_v7(), "employee_id": master, "kind": kind,
+                               "amount_tyiyn": 20_000, "comment": "за месяц" });
+        if let Some(d) = date {
+            body["business_date"] = json!(d);
+        }
+        let (app, who) = (app.clone(), who.to_string());
+        async move {
+            call(
+                &app,
+                "POST",
+                "/api/v1/payroll/accruals",
+                Some(&who),
+                Some(body),
+            )
+            .await
+        }
+    };
+    for kind in ["bonus", "penalty"] {
+        let (s, _, out) = accrual(&admin, kind, None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{kind}: {out}");
+    }
+    let (s, _, out) = accrual(&owner, "bonus", None).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/cash/movements",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "kind": "cash_in", "amount_tyiyn": 500_000, "comment": "размен" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Аванс из месяца — тот же POST /payouts: без права — 403 с подписью права.
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "employee_id": master,
+                     "lines": [{ "purpose": "advance", "amount_tyiyn": 1_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    assert_eq!(out["error"]["message"], "Нет права: Аванс мастерам");
+    // Выплату проводит владелец; отменить и исправить её администратор не может.
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/payouts",
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "employee_id": master,
+                     "lines": [{ "purpose": "bonus", "amount_tyiyn": 20_000 }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let payout = out["id"].as_str().unwrap().to_string();
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/payouts/{payout}/reverse"),
+        Some(&admin),
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "ошибка" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    let (s, _, draft) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/corrections/draft/payout/{payout}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{draft}");
+    let mut doc = draft["doc"].clone();
+    doc["amount_tyiyn"] = json!(15_000);
+    let fix = json!({ "op_id": Uuid::now_v7(), "kind": "payout", "original_id": payout,
+                      "comment": "не та сумма", "doc": doc });
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/corrections",
+        Some(&admin),
+        Some(fix.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    let (s, _, out) = call(&app, "POST", "/api/v1/corrections", Some(&owner), Some(fix)).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Строка месяца: начислено 20 000, выплачено 15 000 (сторно 20 000 и новая на 15 000).
+    let row = |month: Value| {
+        month["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["employee_id"] == json!(master))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let (s, _, month) = call(&app, "GET", "/api/v1/payroll/month", Some(&owner), None).await;
+    assert_eq!(s, StatusCode::OK, "{month}");
+    let now = row(month);
+    assert_eq!(now["bonus_tyiyn"], 20_000, "{now}");
+    assert_eq!(now["paid_tyiyn"], 15_000, "{now}");
+    assert_eq!(now["closing_tyiyn"], 5_000, "{now}");
+    // Бонус прошлого месяца — его последним днём: попадает в тот месяц, не в текущий.
+    let last_of_prev: chrono::NaiveDate = sqlx::query_scalar(
+        "select (date_trunc('month', (now() at time zone 'Asia/Bishkek')::date) - interval '1 day')::date",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (s, _, out) = accrual(&owner, "bonus", Some(&last_of_prev.to_string())).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (_, _, prev) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/payroll/month?month={last_of_prev}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(row(prev)["bonus_tyiyn"], 20_000);
+    let (_, _, month) = call(&app, "GET", "/api/v1/payroll/month", Some(&owner), None).await;
+    let now = row(month);
+    assert_eq!(now["bonus_tyiyn"], 20_000, "{now}");
+    assert_eq!(now["opening_tyiyn"], 20_000, "{now}");
+}
+
 // ---------- SPEC-30 §1: оплата «По счёту» ----------
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

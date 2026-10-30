@@ -57,6 +57,14 @@ export function initialLines(r: PayoutRemains, opts: { owner: boolean; advance: 
   return out
 }
 
+/**
+ * Окно «Аванс» из «Расчёта за месяц» (задача 002, П13): только строка аванса, сразу отмечена.
+ * Нет строки (нет права «Аванс мастерам») — пусто: выдать нечего.
+ */
+export function advanceOnly(lines: PayoutLineDraft[]): PayoutLineDraft[] {
+  return lines.filter((l) => l.purpose === 'advance').map((l) => ({ ...l, checked: true }))
+}
+
 /** Что уйдёт на сервер: отмеченные строки с суммой; ошибка — первая неверная строка. */
 export function payoutLines(
   lines: PayoutLineDraft[],

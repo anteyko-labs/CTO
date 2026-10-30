@@ -55,6 +55,7 @@ export function ProductFormModal({
   presetCategoryId,
   preset,
   umagRow,
+  inRevision,
   onClose,
   onSaved,
 }: {
@@ -69,6 +70,9 @@ export function ProductFormModal({
   /** Строка старой базы Умаг, из которой заводят товар (SPEC-35): сервер в той же операции свяжет
    *  её с товаром и перенесёт её коды. */
   umagRow?: OldCatalogHit
+  /** Открыта из строки ревизии (задача 002, П5): остаток меняет только ревизия (I6), поэтому
+   *  «Объединить дубли» (перенос остатка) скрыто — сервер его во время ревизии и так не примет. */
+  inRevision?: boolean
   onClose: () => void
   onSaved: (p: Product) => void
 }) {
@@ -536,7 +540,12 @@ export function ProductFormModal({
         <ErrorBox error={error} />
         <Missing items={missing} className="text-right" />
         <div className="flex flex-wrap justify-end gap-2">
-          {editing && owner && (
+          {inRevision && (
+            <span className="mr-auto self-center text-xs text-slate-500" data-testid="revision-stock-note">
+              Остаток меняется только пересчётом в ревизии
+            </span>
+          )}
+          {editing && owner && !inRevision && (
             <Button variant="secondary" className="mr-auto" onClick={() => setMerging(true)}>
               Объединить дубли
             </Button>

@@ -1,12 +1,17 @@
 // Расчёт за месяц: остаток на начало, начисления по видам, выплаты, остаток на конец (SPEC-07).
+// У строки — те же действия, что в «За день» (задача 002, П13): выплата, аванс, бонус, удержание,
+// исправление последней выплаты; права те же, проверяет сервер.
 import { useState } from 'react'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatSom, somInput, todayBishkek } from '../lib/format'
-import { useLoad } from '../lib/hooks'
+import { formatDate, formatSom, somInput, todayBishkek } from '../lib/format'
+import { useAction, useLoad } from '../lib/hooks'
+import { useCan } from '../lib/permissions'
+import { accrualDate, lastPayout, type MonthPayout } from '../lib/payrollMonth'
+import { FixDraft } from './FixDraft'
 import { PayrollEntries } from './PayrollEntries'
-import { SalaryForm } from './PayrollForms'
-import { Badge, Button, Card, Empty, ErrorBox, Loading, Modal, Money, Table } from './ui'
+import { ExtraForm, PayoutForm, SalaryForm, type PayoutDoc } from './PayrollForms'
+import { Badge, Button, Card, Empty, ErrorBox, Loading, Modal, Money, RowMenu, Table } from './ui'
 import { BranchScope } from './BranchScope'
 import { branchParam, useAllBranches } from '../lib/branchReport'
 
@@ -59,8 +64,43 @@ export function PayrollMonth() {
   const data = useLoad(() => get<MonthOut>(`/payroll/month${qs({ month, ...branchParam(all) })}`), [month, all])
   const [salary, setSalary] = useState<MonthRow | null>(null)
   const [entries, setEntries] = useState<MonthRow | null>(null)
+  // Действия у строки (задача 002, П13).
+  const can = useCan()
+  const acts = !all
+  const mayPay = acts && can('payroll_pay')
+  const mayAdvance = mayPay && can('payroll_advance')
+  const [paying, setPaying] = useState<{ row: MonthRow; advance: boolean } | null>(null)
+  const [extra, setExtra] = useState<{ row: MonthRow; kind: 'bonus' | 'penalty' } | null>(null)
+  const [fixing, setFixing] = useState<{ row: MonthRow; payout: MonthPayout } | null>(null)
+  const act = useAction()
   const [y, m] = month.split('-').map(Number)
-  const current = shiftMonth(todayBishkek(), 0)
+  const today = todayBishkek()
+  const current = shiftMonth(today, 0)
+  // Выплата проводится сегодняшним днём и попадает в текущий месяц: в прошлом месяце её не видно,
+  // поэтому выплата, аванс и исправление выплаты — только в текущем. Бонус и удержание прошлого
+  // месяца ложатся его последним днём (`accrualDate`).
+  const isCurrent = month === current
+  const extraDate = accrualDate(month, today)
+  const closeAct = () => {
+    setPaying(null)
+    setExtra(null)
+    setFixing(null)
+  }
+  const doneAct = () => {
+    closeAct()
+    data.reload()
+  }
+  /** «Исправить последнюю выплату»: последняя действующая выплата месяца — в форму исправления. */
+  const fixLast = (r: MonthRow) =>
+    void act.run(async () => {
+      if (!data.data) return
+      const out = await get<{ payouts: (MonthPayout & { amount_tyiyn: number })[] }>(
+        `/payroll/entries${qs({ employee_id: r.employee_id, from: data.data.from, to: data.data.to })}`,
+      )
+      const p = lastPayout(out.payouts)
+      if (!p) throw new Error(`${r.full_name}: в этом месяце нет выплат, которые можно исправить`)
+      setFixing({ row: r, payout: p })
+    })
   const rows = data.data?.rows ?? []
   const total = (key: keyof MonthRow) => rows.reduce((acc, r) => acc + (r[key] as number), 0)
   const advances = rows.reduce((acc, r) => acc + (r.advance_tyiyn ?? 0), 0)
@@ -84,7 +124,7 @@ export function PayrollMonth() {
           «На конец» — сколько ещё должны сотруднику; с минусом — выдано больше заработанного.
         </div>
       </Card>
-      <ErrorBox error={data.error} />
+      <ErrorBox error={data.error ?? act.error} />
       {data.loading && !data.data ? (
         <Loading />
       ) : rows.length === 0 ? (
@@ -115,21 +155,43 @@ export function PayrollMonth() {
                 <td className="px-2 py-2 font-semibold md:text-right">
                   <Money value={r.closing_tyiyn} tone="negative" />
                 </td>
-                <td className="px-2 py-2 text-right whitespace-nowrap">
-                  {owner && (
-                    <Button variant="secondary" className="mr-1 px-2 py-1 text-xs" onClick={() => setEntries(r)}>
-                      Подробно
-                    </Button>
-                  )}
-                  {owner && !r.salary_done && month <= current && (
-                    <Button
-                      variant="secondary"
-                      className="px-2 py-1 text-xs"
-                      onClick={() => setSalary(r)}
-                    >
-                      Оклад
-                    </Button>
-                  )}
+                <td className="overflow-visible! px-2 py-2 text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-1">
+                    {mayPay && isCurrent && (
+                      <Button
+                        className="px-2 py-1 text-xs"
+                        disabled={r.closing_tyiyn <= 0 && !owner && !mayAdvance}
+                        onClick={() => setPaying({ row: r, advance: false })}
+                      >
+                        Выплатить
+                      </Button>
+                    )}
+                    {mayAdvance && isCurrent && (
+                      <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setPaying({ row: r, advance: true })}>
+                        Аванс
+                      </Button>
+                    )}
+                    {owner && (
+                      <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setEntries(r)}>
+                        Подробно
+                      </Button>
+                    )}
+                    {owner && !r.salary_done && month <= current && (
+                      <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setSalary(r)}>
+                        Оклад
+                      </Button>
+                    )}
+                    {owner && (
+                      <RowMenu
+                        label={`Начисления и выплаты: ${r.full_name}`}
+                        items={[
+                          { label: 'Бонус', onClick: () => setExtra({ row: r, kind: 'bonus' }) },
+                          { label: 'Удержать', onClick: () => setExtra({ row: r, kind: 'penalty' }), danger: true },
+                          ...(isCurrent ? [{ label: 'Исправить последнюю выплату', onClick: () => fixLast(r) }] : []),
+                        ]}
+                      />
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -164,6 +226,27 @@ export function PayrollMonth() {
             if (changed) data.reload()
           }}
         />
+      )}
+
+      {paying && (
+        <Modal title={`${paying.advance ? 'Аванс' : 'Выплата'}: ${paying.row.full_name}`} onClose={closeAct}>
+          <PayoutForm employeeId={paying.row.employee_id} advance={paying.advance} onCancel={closeAct} onDone={doneAct} />
+        </Modal>
+      )}
+
+      {extra && (
+        <Modal title={`${extra.kind === 'bonus' ? 'Бонус' : 'Удержание'} за ${formatDate(extraDate)}: ${extra.row.full_name}`} onClose={closeAct}>
+          <ExtraForm employeeId={extra.row.employee_id} kind={extra.kind} date={extraDate} onCancel={closeAct} onDone={doneAct} />
+        </Modal>
+      )}
+
+      {fixing && (
+        // Проведённая выплата не правится: сторно и новая выплата одной операцией (I4, ADR-085).
+        <Modal title={`Исправить выплату № ${fixing.payout.number}: ${fixing.row.full_name}`} onClose={closeAct}>
+          <FixDraft<PayoutDoc> key={fixing.payout.id} kind="payout" id={fixing.payout.id} onCancel={closeAct}>
+            {(fix) => <PayoutForm employeeId={fixing.row.employee_id} fix={fix} onCancel={closeAct} onDone={doneAct} />}
+          </FixDraft>
+        </Modal>
       )}
 
       {salary && (

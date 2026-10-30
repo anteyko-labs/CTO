@@ -4,6 +4,7 @@
 import { useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put } from '../lib/api'
@@ -106,6 +107,8 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   const [posting, setPosting] = useState<{ comment: string; opId: string } | null>(null)
   /** «Товар не из программы»: окно новой карточки, с кодом, если его отсканировали. */
   const [adding, setAdding] = useState<{ barcode?: string } | null>(null)
+  /** Карточка товара из строки (задача 002, П5): с правом «Товары и штрихкоды» — правка, иначе просмотр. */
+  const [card, setCard] = useState<Product | null>(null)
   const act = useAction()
   const draft = rev.head.status === 'draft'
 
@@ -311,7 +314,19 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                 <tr key={l.product_id}>
                   <td className="px-2 py-2">
                     <div className="font-medium">
-                      {l.name}{' '}
+                      <button
+                        type="button"
+                        className="text-left font-medium text-sky-800 hover:underline"
+                        data-testid="revision-card"
+                        title="Открыть карточку товара"
+                        onClick={() =>
+                          void act.run(async () => {
+                            setCard(await get<Product>(`/products/${l.product_id}`))
+                          })
+                        }
+                      >
+                        {l.name}
+                      </button>{' '}
                       {v &&
                         (v.fromName ? (
                           <span className="text-xs font-normal text-slate-400" data-testid="viscosity-from-name" title="Вязкость из названия — заполните в карточке">
@@ -419,6 +434,22 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
           onExisting={goTo}
           onDone={() => {
             setAdding(null)
+            onChanged()
+          }}
+        />
+      )}
+      {card && (
+        // Остаток в карточке не правится — только пересчётом ревизии (I6); после закрытия строка
+        // перечитывается: название и коды могли поменяться.
+        <ProductFormModal
+          product={card}
+          inRevision
+          onClose={() => {
+            setCard(null)
+            onChanged()
+          }}
+          onSaved={() => {
+            setCard(null)
             onChanged()
           }}
         />
