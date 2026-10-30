@@ -2835,7 +2835,19 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
     mark_sent(&mut conn, &msgs[0]).await.unwrap();
     advance_cursor(&mut conn).await.unwrap();
     assert!(pending(&mut conn).await.unwrap().is_empty());
-    // Владельцу в бот — и обычный чек: номер, сумма, как платили, кассир.
+    // Владельцу в бот — и обычный чек: номер, сумма, как платили, кассир. Чеки в бот владелец
+    // включает сам — по умолчанию не присылаются (ADR-138).
+    avtodom_server::api::bot_feed::save_tx(
+        &mut conn,
+        &w.owner,
+        Uuid::now_v7(),
+        avtodom_server::api::bot_feed::Feed {
+            off: Vec::new(),
+            sales: "all".into(),
+        },
+    )
+    .await
+    .unwrap();
     receive(&pool, &w.admin, w.filter, 2, 2_000).await;
     sell(
         &pool,
@@ -4859,6 +4871,105 @@ async fn bot_feed_reaches_each_owner_chat_exactly_once(pool: PgPool) {
     feed_pass(&mut conn, &api).await.unwrap();
     assert_eq!(fake.texts(second_chat).len(), 3);
     assert_eq!(fake.texts(owner_chat).len(), 155);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_feed_follows_each_owner_settings(pool: PgPool) {
+    // «Уведомления в бот» (ADR-138): выключенное не уходит в чат и не держит курсор; чеки — по
+    // режиму владельца (по умолчанию не присылаются); у двух владельцев настройки свои.
+    use avtodom_server::api::bot_feed::{Feed, save_tx};
+    use avtodom_server::api::telegram::feed_pass;
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    let second = Uuid::now_v7();
+    sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'owner2', 'x', 'owner', 'Второй')")
+        .bind(second)
+        .bind(branch)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut second_ctx = Ctx {
+        user: w.owner.user.clone(),
+        device_id: Uuid::now_v7(),
+        bot_chat: None,
+    };
+    second_ctx.user.id = second;
+    let (first_chat, second_chat) = (910_001i64, 910_002i64);
+    link_user_chat(&pool, w.owner.user.id, branch, first_chat, 1).await;
+    link_user_chat(&pool, second, branch, second_chat, 1).await;
+    feed_started_hour_ago(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    // Первый: без прихода, чеки — только в долг и возвраты. Второй — как по умолчанию.
+    let feed = Feed {
+        off: vec!["receipt.reverse".into()],
+        sales: "debt_returns".into(),
+    };
+    save_tx(&mut conn, &w.owner, Uuid::now_v7(), feed)
+        .await
+        .unwrap();
+    // Администратор настройку не меняет.
+    assert!(matches!(
+        save_tx(&mut conn, &w.admin, Uuid::now_v7(), Feed::default()).await,
+        Err(AppError::Forbidden)
+    ));
+
+    open_till(&pool, &w).await;
+    receive(&pool, &w.admin, w.filter, 10, 30_000).await;
+    let party = Uuid::now_v7();
+    sqlx::query(
+        "insert into parties (id, branch_id, role, kind, name, inn) values ($1, $2, 'customer', 'company', 'ОсОО Лента', '01204201910124')",
+    )
+    .bind(party)
+    .bind(branch)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let plain = sell(
+        &pool,
+        &w.admin,
+        takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+    )
+    .await
+    .unwrap();
+    let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
+    req.payments[0].method = "debt".into();
+    req.party_id = Some(party);
+    let debt = sell(&pool, &w.admin, req).await.unwrap();
+    journal_event(
+        &pool,
+        branch,
+        "receipt.reverse",
+        serde_json::json!({ "number": 41 }),
+        0,
+    )
+    .await;
+    let (api, fake) = fake_telegram().await;
+    feed_pass(&mut conn, &api).await.unwrap();
+    feed_pass(&mut conn, &api).await.unwrap();
+    let first = fake.texts(first_chat).join("\n---\n");
+    let other = fake.texts(second_chat).join("\n---\n");
+    assert!(
+        !first.contains(&format!("Чек № {} ", plain.number)),
+        "{first}"
+    );
+    assert!(
+        first.contains(&format!("Чек № {} ", debt.number)),
+        "{first}"
+    );
+    assert!(!first.contains("Сторно прихода"), "{first}");
+    assert!(!other.contains("Чек №"), "{other}");
+    assert!(other.contains("Сторно прихода"), "{other}");
+    // Курсор ушёл вперёд: выключенное не держит его на месте.
+    let cursor: String =
+        sqlx::query_scalar("select value #>> '{}' from bot_state where key = 'cursor'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let cursor = chrono::DateTime::parse_from_rfc3339(&cursor).unwrap();
+    assert!(
+        cursor > chrono::Utc::now() - chrono::Duration::minutes(5),
+        "{cursor}"
+    );
 }
 
 #[tokio::test]

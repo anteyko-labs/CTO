@@ -90,7 +90,7 @@ jq -r '.adr[]|select(.spec|index("SPEC-33"))|"\(.id) \(.title)"' $R
 - Таблицы: `old_catalog`, `old_catalog_link_rejects`, `product_barcodes`. Тесты: `server/tests/umag.rs`, e2e `umag-codes`.
 
 ### Бот: клиенты, работники, владелец
-- SPEC-18, SPEC-19, SPEC-21…24, SPEC-30 §10. ADR-050, ADR-053/124 (баллы только за замену), ADR-060/067 (вопросы в режиме «Спросить»), ADR-063 (доставка по чатам), ADR-066 (кабинет работника), ADR-068 (черновик → «Провести»), ADR-119 («Сейчас в машине», «Прошлые ТО»), ADR-121 (лента). Черновик SPEC-39 §7, ADR-135 — накладные в бот от администратора.
+- SPEC-18, SPEC-19, SPEC-21…24, SPEC-30 §10. ADR-050, ADR-053/124 (баллы только за замену), ADR-060/067 (вопросы в режиме «Спросить»), ADR-063 (доставка по чатам), ADR-066 (кабинет работника), ADR-068 (черновик → «Провести»), ADR-119 («Сейчас в машине», «Прошлые ТО»), ADR-121 (лента), ADR-138 (что приходит в бот — настройка владельца, `bot_feed.rs`, `pages/BotFeedSettings.tsx`). Черновик SPEC-39 §7, ADR-135 — накладные в бот от администратора.
 - `server/src/api/telegram.rs` (4100 строк: команды, лента), `bot_cars.rs`, `bot_book.rs`, `bot_staff.rs`, `bot_drafts.rs`, `bot_reports.rs`, `loyalty.rs`, `notifications.rs`, вопросы — `assistant.rs`.
 - Таблицы: `telegram_links`, `telegram_customers`, `telegram_employees`, `telegram_sent`, `bot_state`, `bot_input`, `bot_drafts`, `loyalty_ledger`. Тесты: `server/tests/bot_book.rs`, `flow.rs`.
 
