@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseSom, somInput } from './format'
-import { initialLines, payoutLines } from './payouts'
+import { advanceOnly, initialLines, payoutLines } from './payouts'
 import type { PayoutRemains } from './types'
 
 const remains: PayoutRemains = {
@@ -42,5 +42,10 @@ describe('окно «Выплата» по видам (ADR-122)', () => {
     lines[0] = { ...lines[0], sum: '600' }
     expect(payoutLines(lines, parseSom).error).toBe('Проценты: больше, чем к выдаче')
     expect(payoutLines(lines.map((l) => ({ ...l, checked: false })), parseSom).error).toBe('Отметьте, за что выплатить')
+  })
+
+  it('«Аванс» из месяца — только строка аванса, отмечена; без права — пусто (задача 002, П13)', () => {
+    expect(advanceOnly(initialLines(remains, { owner: true, advance: true }, somInput))).toEqual([{ purpose: 'advance', remain: 0, checked: true, sum: '' }])
+    expect(advanceOnly(initialLines(remains, { owner: false, advance: false }, somInput))).toEqual([])
   })
 })

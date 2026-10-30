@@ -9,7 +9,7 @@ import { formatSom, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { useNumField, useTouchMode } from '../lib/cashierMode'
-import { initialLines, payoutLines, PURPOSE_LABELS, type PayoutLineDraft } from '../lib/payouts'
+import { advanceOnly, initialLines, payoutLines, PURPOSE_LABELS, type PayoutLineDraft } from '../lib/payouts'
 import type { CashAccount, PayoutRemains } from '../lib/types'
 import { FIX_SUBMIT, FixBanner, type FixMode } from './FixDraft'
 import { Button, ErrorBox, Field, Loading, Money, toast } from './ui'
@@ -64,17 +64,20 @@ function Footer({ onCancel, disabled, onSubmit, label, fix }: { onCancel: () => 
  */
 export function PayoutForm({
   employeeId,
+  advance = false,
   fix,
   onCancel,
   onDone,
 }: {
   employeeId: string
   balance?: number
+  /** «Аванс» из «Расчёта за месяц» (задача 002, П13): в окне только строка аванса. */
+  advance?: boolean
   fix?: FixMode<PayoutDoc>
   onCancel: () => void
   onDone: () => void
 }) {
-  return fix ? <PayoutFixForm fix={fix} onCancel={onCancel} onDone={onDone} /> : <PayoutLinesForm employeeId={employeeId} onCancel={onCancel} onDone={onDone} />
+  return fix ? <PayoutFixForm fix={fix} onCancel={onCancel} onDone={onDone} /> : <PayoutLinesForm employeeId={employeeId} advance={advance} onCancel={onCancel} onDone={onDone} />
 }
 
 /** Откуда платим: владелец — любой действующий счёт, администратор — касса смены (SPEC-29 §13, ADR-076). */
@@ -103,13 +106,17 @@ function usePayFrom(initial: string) {
   return { fromId, fromAcc, field, where }
 }
 
-function PayoutLinesForm({ employeeId, onCancel, onDone }: { employeeId: string; onCancel: () => void; onDone: () => void }) {
+function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId: string; advance: boolean; onCancel: () => void; onDone: () => void }) {
   const owner = useUser().role === 'owner'
   // Аванс выдаёт владелец; администратор — с правом «Аванс мастерам» (ADR-122).
   const mayAdvance = useCan()('payroll_advance')
   const rem = useLoad(() => get<PayoutRemains>(`/payroll/remains${qs({ employee_id: employeeId })}`), [employeeId])
   const [edited, setEdited] = useState<PayoutLineDraft[] | null>(null)
-  const lines = edited ?? (rem.data ? initialLines(rem.data, { owner, advance: mayAdvance }, somInput) : [])
+  const start = (r: PayoutRemains) => {
+    const all = initialLines(r, { owner, advance: mayAdvance }, somInput)
+    return advance ? advanceOnly(all) : all
+  }
+  const lines = edited ?? (rem.data ? start(rem.data) : [])
   const set = (i: number, patch: Partial<PayoutLineDraft>) => setEdited(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)))
   const [comment, setComment] = useState('')
   const from = usePayFrom('')
@@ -146,7 +153,9 @@ function PayoutLinesForm({ employeeId, onCancel, onDone }: { employeeId: string;
       )}
       {from.field}
       {lines.length === 0 ? (
-        <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">Выплачивать нечего: по всем видам выдано.</div>
+        <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+          {advance ? 'Аванс выдаёт владелец или администратор с правом «Аванс мастерам».' : 'Выплачивать нечего: по всем видам выдано.'}
+        </div>
       ) : (
         <PayoutLinesEditor
           lines={lines}
@@ -165,7 +174,7 @@ function PayoutLinesForm({ employeeId, onCancel, onDone }: { employeeId: string;
         <input value={comment} onChange={(e) => setComment(e.target.value)} />
       </Field>
       <ErrorBox error={act.error ?? (lines.length > 0 && result.lines.length > 0 ? result.error : null)} />
-      <Footer label="Выплатить" fix={false} onCancel={onCancel} onSubmit={pay} disabled={act.busy || !rem.data || result.error !== null} />
+      <Footer label={advance ? 'Выдать аванс' : 'Выплатить'} fix={false} onCancel={onCancel} onSubmit={pay} disabled={act.busy || !rem.data || result.error !== null} />
     </div>
   )
 }
