@@ -645,6 +645,8 @@ async fn create_user(
 
 #[derive(Deserialize)]
 struct UpdateUserReq {
+    /// Новый логин (задача 003 Н10): занятый — 409, вход по прежним сессиям сохраняется.
+    login: Option<String>,
     full_name: Option<String>,
     role: Option<String>,
     active: Option<bool>,
@@ -672,7 +674,19 @@ async fn update_user(
     if full_name.as_deref() == Some("") {
         return Err(invalid("имя обязательно"));
     }
+    let login = req.login.map(|s| s.trim().to_string());
+    if login.as_deref() == Some("") {
+        return Err(invalid("логин обязателен"));
+    }
     let mut tx = state.pool.begin().await?;
+    let login_before = sqlx::query_scalar!(
+        "select login from users where id = $1 and (branch_id = $2 or role = 'owner')",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
     // Блокируем владельцев, чтобы проверка «последнего владельца» была надёжной. Владелец —
     // всех филиалов (SPEC-33): его правят из любого филиала, администратора — из его филиала.
     let owners =
@@ -692,7 +706,8 @@ async fn update_user(
              full_name = coalesce($3, full_name),
              role = coalesce($4, role),
              active = coalesce($5, active),
-             password_hash = coalesce($6, password_hash)
+             password_hash = coalesce($6, password_hash),
+             login = coalesce($7, login)
            where id = $1 and (branch_id = $2 or role = 'owner')
            returning id, login, full_name, role, active, branch_id"#,
         id,
@@ -700,10 +715,18 @@ async fn update_user(
         full_name,
         role.map(Role::as_str),
         req.active,
-        hash
+        hash,
+        login
     )
     .fetch_optional(&mut *tx)
-    .await?
+    .await
+    .map_err(|e| {
+        if is_unique_violation(&e) {
+            AppError::Conflict("логин занят".into())
+        } else {
+            e.into()
+        }
+    })?
     .ok_or(AppError::NotFound)?;
     // Владелец стал администратором — как новому администратору, права по умолчанию (SPEC-30 §5).
     if before_role == "owner" && row.role == "admin" {
@@ -754,6 +777,7 @@ async fn update_user(
         Some(id),
         json!({
             "login": out.login,
+            "login_before": (login_before != out.login).then_some(&login_before),
             "role": out.role,
             "active": out.active,
             "password_changed": hash.is_some(),

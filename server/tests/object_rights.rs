@@ -699,3 +699,35 @@ async fn vehicle_moves_with_its_book(pool: PgPool) {
     assert_eq!(s, StatusCode::CONFLICT);
     assert_ne!(twin["id"], json!(vid));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn owner_changes_user_login(pool: PgPool) {
+    let w = W::new(pool).await;
+    let uri = format!("/api/v1/users/{}", w.admin_id);
+    // Администратор логин не меняет; занятый логин — 409; пустой — 422.
+    let (s, _) = w
+        .req("PATCH", &w.admin, &uri, Some(json!({ "login": "kassa" })))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = w
+        .req("PATCH", &w.owner, &uri, Some(json!({ "login": "owner" })))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = w
+        .req("PATCH", &w.owner, &uri, Some(json!({ "login": "  " })))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let out = w
+        .ok("PATCH", &w.owner, &uri, json!({ "login": " kassa " }))
+        .await;
+    assert_eq!(out["login"], json!("kassa"));
+    // Новым логином входят с тем же паролем; журнал помнит прежний.
+    login(&w.app, "kassa", "admin-pass-1").await;
+    let logged: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'user.update' order by created_at desc limit 1",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(logged["login_before"], json!("admin"));
+}

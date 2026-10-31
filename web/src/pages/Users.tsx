@@ -32,6 +32,7 @@ function RoleSelect({ value, onChange }: { value: Role; onChange: (r: Role) => v
 
 function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({
+    login: user.login,
     full_name: user.full_name,
     role: user.role,
     active: user.active,
@@ -43,6 +44,8 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
     run(async () => {
       if (form.password && [...form.password].length < MIN_PASSWORD) throw new Error(`Пароль не короче ${MIN_PASSWORD} символов`)
       await patch<UserRow>(`/users/${user.id}`, {
+        // Логин меняется (задача 003 Н10): занятый — ошибка «логин занят».
+        ...(form.login.trim() !== user.login ? { login: form.login.trim() } : {}),
         full_name: form.full_name,
         role: form.role,
         active: form.active,
@@ -54,6 +57,9 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
   return (
     <Modal title={`Пользователь ${user.login}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
+        <Field label="Логин" hint="Новым логином входят со следующего входа; пароль прежний">
+          <input id="user-edit-login" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
+        </Field>
         <Field label="Имя">
           <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
         </Field>
@@ -74,7 +80,7 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || !form.full_name.trim()} onClick={() => void save()}>
+          <Button disabled={busy || !form.full_name.trim() || !form.login.trim()} onClick={() => void save()}>
             Сохранить
           </Button>
         </div>

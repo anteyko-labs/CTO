@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select login from users where id = $1 and (branch_id = $2 or role = 'owner')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "login",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3e8d2b3ff46350e7a2b10b660e9316fc62ec4130b3ccc9915fb7056881163e43"
+}
