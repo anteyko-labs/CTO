@@ -698,7 +698,7 @@ export function ProductFormModal({
           draft={points}
           onChange={setPoints}
           disabled={!owner}
-          hint={owner ? 'Порядок: товар → категория → общая ставка в «Телеграм и баллы»' : 'Баллы задаёт владелец'}
+          hint={owner ? 'Сначала правило товара, затем его категории, затем общая ставка в «Телеграм и баллы»' : 'Баллы задаёт владелец'}
         />
       </div>
       </fieldset>

@@ -43,7 +43,7 @@ test('владелец выбирает, что можно администра�
 
   // «Настройки» → «Пользователи» → администратор → «Что можно».
   await page.getByRole('link', { name: 'Настройки' }).click()
-  await page.getByRole('link', { name: /Пользователи/ }).click()
+  await page.getByRole('link', { name: 'Пользователи и права', exact: true }).click()
   const row = page.getByRole('row', { name: new RegExp(admin) })
   await expect(row.getByRole('button', { name: '25 из 33' })).toBeVisible()
   await row.getByRole('button', { name: '25 из 33' }).click()
