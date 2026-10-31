@@ -363,7 +363,7 @@ async fn load_doc(
         Kind::Accrual => {
             let a = sqlx::query!(
                 r#"select a.employee_id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,
-                          e.full_name
+                          e.full_name, a.period_from, a.period_to
                    from payroll_accruals a join employees e on e.id = a.employee_id
                    where a.id = $1 and a.branch_id = $2"#,
                 id,
@@ -386,11 +386,24 @@ async fn load_doc(
             desc.field("Сумма", format_som(a.amount_tyiyn.abs()));
             let draft = if a.kind == "monthly_salary" {
                 let month = a.business_date.with_day(1).unwrap_or(a.business_date);
-                desc.field("Месяц", format!("{:02}.{}", month.month(), month.year()));
+                // Исправленный оклад — за тот же период (задача 003 Н11); у прежних начислений
+                // без периода — календарный месяц.
+                match (a.period_from, a.period_to) {
+                    (Some(f), Some(t)) => desc.field("Период", crate::domain::salary::label(f, t)),
+                    _ => desc.field("Месяц", format!("{:02}.{}", month.month(), month.year())),
+                }
+                let from = a.period_from.unwrap_or(month);
+                let to = a.period_to.or_else(|| {
+                    month
+                        .checked_add_months(chrono::Months::new(1))
+                        .and_then(|d| d.pred_opt())
+                });
                 json!({
                     "type": "salary",
                     "employee_id": a.employee_id,
                     "month": month,
+                    "period_from": from,
+                    "period_to": to,
                     "amount_tyiyn": a.amount_tyiyn,
                 })
             } else {
@@ -414,7 +427,7 @@ async fn load_doc(
         Kind::Payout => {
             let p = sqlx::query!(
                 r#"select p.number, p.employee_id, p.amount_tyiyn, p.account_id, p.comment, p.purpose,
-                          e.full_name
+                          e.full_name, p.pay_date
                    from payouts p join employees e on e.id = p.employee_id
                    where p.id = $1 and p.branch_id = $2"#,
                 id,
@@ -431,6 +444,7 @@ async fn load_doc(
                 crate::api::payroll::purpose_label(&p.purpose).to_string(),
             );
             desc.field("Откуда", or_none(account_name(conn, p.account_id).await?));
+            desc.field("Дата выплаты", date_text(p.pay_date));
             desc.field("Комментарий", or_none(Some(p.comment.clone())));
             Ok(Doc {
                 number: Some(p.number),
@@ -444,6 +458,8 @@ async fn load_doc(
                     // Исправляет владелец: прежней выплате без вида сверх заработанного ему можно.
                     "advance": true,
                     "comment": p.comment,
+                    // Дата в расчёте — исходной выплаты, её можно поменять (ADR-{B9.1}).
+                    "pay_date": p.pay_date,
                 }),
                 desc,
             })

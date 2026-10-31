@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(amount_tyiyn) filter (where purpose = 'advance'), 0)::bigint as \"advance!\",\n                  coalesce(sum(amount_tyiyn) filter (where purpose = 'salary'), 0)::bigint as \"salary!\"\n           from payouts where employee_id = $1 and pay_date between $2 and $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "advance!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "salary!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "0444c6aba7dba5f529cfb551b275e05c89efa504c8b084d4a626b3fe0c07d8e4"
+}

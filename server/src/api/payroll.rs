@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::api::cash::{self, CashEntry};
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::money::div_round;
+use crate::domain::salary::{self, Period};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops::{self, new_id};
 use crate::state::AppState;
@@ -23,7 +24,10 @@ pub fn routes() -> Router<AppState> {
         .route("/payroll/month", routing::get(month))
         .route("/payroll/entries", routing::get(entries))
         .route("/payroll/accruals", routing::post(post_accrual))
-        .route("/payroll/salary", routing::post(post_salary))
+        .route(
+            "/payroll/salary",
+            routing::get(salary_now).post(post_salary),
+        )
         .route("/payroll/remains", routing::get(remains))
         .route("/payouts", routing::post(post_payout))
         .route("/payouts/{id}/reverse", routing::post(reverse_payout))
@@ -39,6 +43,112 @@ pub fn routes() -> Router<AppState> {
             "/employees/{id}/pay-rules/{rule_id}",
             routing::delete(close_rule),
         )
+        .route(
+            "/employees/{id}/salary-day",
+            routing::get(get_salary_day).put(put_salary_day),
+        )
+        .route(
+            "/settings/payroll",
+            routing::get(get_settings).put(put_settings),
+        )
+}
+
+// ---------- Настройки «Зарплата» (задача 003 Н11) ----------
+
+/// Настройки «Настройки → Зарплата»: меняет владелец, каждое изменение — в журнал (I5).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayrollSettings {
+    /// На сколько дней назад владелец может поставить дату выплаты; 0 — только сегодня.
+    #[serde(default = "backdate_days")]
+    pub payout_backdate_days: i32,
+    /// Выплаты и авансы — только при открытой смене филиала, с любого счёта.
+    #[serde(default)]
+    pub payout_requires_shift: bool,
+    /// Во вкладке «Оклад» — «заработано на сегодня» (ориентир, не начисление).
+    #[serde(default)]
+    pub salary_show_to_date: bool,
+    /// В 09:00 дня расчёта — событие «Сегодня расчёт оклада» владельцу.
+    #[serde(default = "yes")]
+    pub salary_due_notify: bool,
+}
+
+fn backdate_days() -> i32 {
+    35
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Больше года назад дату выплаты не ставят.
+const MAX_BACKDATE_DAYS: i32 = 366;
+
+impl Default for PayrollSettings {
+    fn default() -> Self {
+        Self {
+            payout_backdate_days: backdate_days(),
+            payout_requires_shift: false,
+            salary_show_to_date: false,
+            salary_due_notify: true,
+        }
+    }
+}
+
+pub async fn load_settings(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<PayrollSettings> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'payroll'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(
+        v.and_then(|v| serde_json::from_value::<PayrollSettings>(v).ok())
+            .unwrap_or_default(),
+    )
+}
+
+async fn get_settings(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> AppResult<Json<PayrollSettings>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(load_settings(&mut conn, user.branch_id).await?))
+}
+
+async fn put_settings(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<PayrollSettings>,
+) -> AppResult<Json<PayrollSettings>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    if !(0..=MAX_BACKDATE_DAYS).contains(&req.payout_backdate_days) {
+        return Err(invalid(format!(
+            "дней назад для даты выплаты — от 0 до {MAX_BACKDATE_DAYS}"
+        )));
+    }
+    let value = json!(req);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, 'payroll', $2)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        ctx.user.branch_id,
+        value
+    )
+    .execute(&mut *tx)
+    .await?;
+    ops::audit(&mut tx, &ctx, "settings.payroll", "settings", None, value).await?;
+    tx.commit().await?;
+    Ok(Json(req))
+}
+
+async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
+    Ok(
+        sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+            .fetch_one(&mut *conn)
+            .await?,
+    )
 }
 
 // ---------- Сторно ----------
@@ -82,7 +192,8 @@ pub async fn reverse_accrual_tx(
         return Ok(done);
     }
     let a = sqlx::query!(
-        r#"select employee_id, business_date, kind, amount_tyiyn, doc_type, reversal_of
+        r#"select employee_id, business_date, kind, amount_tyiyn, doc_type, reversal_of,
+                  period_from, period_to
            from payroll_accruals where id = $1 and branch_id = $2 for update"#,
         id,
         ctx.user.branch_id
@@ -101,9 +212,11 @@ pub async fn reverse_accrual_tx(
     lock_employee(&mut *tx, ctx.user.branch_id, a.employee_id).await?;
     let rid = new_id();
     sqlx::query!(
+        // Сторно оклада — за тот же период (задача 003 Н11).
         r#"insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,
-                                         doc_type, doc_id, comment, reversal_of, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, 'reversal', $7, $8, $7, $9, $10)"#,
+                                         doc_type, doc_id, comment, reversal_of, user_id, device_id,
+                                         period_from, period_to)
+           values ($1, $2, $3, $4, $5, $6, 'reversal', $7, $8, $7, $9, $10, $11, $12)"#,
         rid,
         ctx.user.branch_id,
         a.employee_id,
@@ -113,7 +226,9 @@ pub async fn reverse_accrual_tx(
         id,
         req.comment.trim(),
         ctx.user.id,
-        ctx.device_id
+        ctx.device_id,
+        a.period_from,
+        a.period_to
     )
     .execute(&mut *tx)
     .await
@@ -173,7 +288,7 @@ pub async fn reverse_payout_tx(
         return Ok(done);
     }
     let p = sqlx::query!(
-        r#"select employee_id, amount_tyiyn, source, account_id, reversal_of, purpose
+        r#"select employee_id, amount_tyiyn, source, account_id, reversal_of, purpose, pay_date
            from payouts where id = $1 and branch_id = $2 for update"#,
         id,
         branch_id
@@ -188,10 +303,12 @@ pub async fn reverse_payout_tx(
     let number = ops::next_counter(&mut *tx, branch_id, "payout").await?;
     let rid = new_id();
     sqlx::query!(
-        // Сторно — того же вида, что и выплата: остаток по виду возвращается (ADR-122).
+        // Сторно — того же вида, что и выплата: остаток по виду возвращается (ADR-122); и той же
+        // даты в расчёте: месяц и период исходной выплаты сходятся в ноль (ADR-{B9.1}).
         r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
-                                account_id, comment, reversal_of, user_id, device_id, purpose, op_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
+                                account_id, comment, reversal_of, user_id, device_id, purpose, op_id,
+                                pay_date)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
         rid,
         branch_id,
         number,
@@ -204,7 +321,8 @@ pub async fn reverse_payout_tx(
         ctx.user.id,
         ctx.device_id,
         p.purpose,
-        req.op_id
+        req.op_id,
+        p.pay_date
     )
     .execute(&mut *tx)
     .await
@@ -217,7 +335,7 @@ pub async fn reverse_payout_tx(
     })?;
     // Деньги возвращаются в кассу смены — только в открытую смену (SPEC-07).
     if let Some(acc) = p.account_id {
-        cash::require_open_shift(&mut *tx, branch_id, acc).await?;
+        require_shift_for_payout(&mut *tx, branch_id, acc, true).await?;
         cash::add_movement(
             &mut *tx,
             ctx,
@@ -246,7 +364,7 @@ pub async fn reverse_payout_tx(
         "employee",
         Some(p.employee_id),
         json!({ "payout": id, "amount_tyiyn": p.amount_tyiyn, "purpose": p.purpose,
-                "comment": req.comment.trim() }),
+                "pay_date": p.pay_date, "comment": req.comment.trim() }),
     )
     .await?;
     let out = PayoutOut {
@@ -296,6 +414,8 @@ struct PayoutRow {
     reversed: bool,
     user_name: String,
     created_at: DateTime<Utc>,
+    /// Дата выплаты в расчёте (ADR-{B9.1}); деньги ушли в `created_at`.
+    pay_date: NaiveDate,
 }
 
 #[derive(Serialize)]
@@ -329,11 +449,11 @@ async fn entries(
         r#"select p.id, p.number, p.amount_tyiyn, p.purpose, p.source, c.name as "account_name?", p.comment,
                   p.reversal_of as "reversal_of?",
                   exists (select 1 from payouts r where r.reversal_of = p.id) as "reversed!",
-                  u.full_name as "user_name!", p.created_at
+                  u.full_name as "user_name!", p.created_at, p.pay_date
            from payouts p join users u on u.id = p.user_id
            left join cash_accounts c on c.id = p.account_id
            where p.branch_id = $1 and p.employee_id = $2
-             and (p.created_at at time zone 'Asia/Bishkek')::date between $3 and $4
+             and p.pay_date between $3 and $4
            order by p.created_at desc"#,
         user.branch_id,
         q.employee_id,
@@ -1663,7 +1783,7 @@ async fn day(
              coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date < $2), 0)::bigint
              - coalesce((select sum(p.amount_tyiyn) from payouts p
-                         where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)::bigint
+                         where p.employee_id = e.id and p.pay_date < $2), 0)::bigint
                as "opening!",
              coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date = $2), 0)::bigint as "accrued!",
@@ -1682,10 +1802,10 @@ async fn day(
              coalesce((select sum(a.base_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date = $2 and a.kind = 'revenue_percent'), 0)::bigint as "base!",
              coalesce((select sum(p.amount_tyiyn) from payouts p
-                       where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as "paid!",
+                       where p.employee_id = e.id and p.pay_date = $2), 0)::bigint as "paid!",
              coalesce((select sum(p.amount_tyiyn) from payouts p
                        where p.employee_id = e.id and p.purpose = 'advance'
-                         and (p.created_at at time zone 'Asia/Bishkek')::date = $2), 0)::bigint as "advance!"
+                         and p.pay_date = $2), 0)::bigint as "advance!"
            from employees e
            where e.branch_id = $1
            order by e.full_name"#,
@@ -1746,10 +1866,14 @@ pub(crate) struct MonthRow {
     /// В том числе авансом (ADR-122).
     pub(crate) advance_tyiyn: i64,
     pub(crate) closing_tyiyn: i64,
-    /// Оклад за этот месяц уже начислен (повторно — 409).
+    /// Оклад за период, который заканчивается в этом месяце, уже начислен (повторно — 409).
     pub(crate) salary_done: bool,
     /// Ставка оклада по действующему правилу — подставляется в форму начисления.
     pub(crate) salary_rule_tyiyn: Option<i64>,
+    /// День расчёта оклада и период, который заканчивается в этом месяце (задача 003 Н11).
+    pub(crate) salary_day: i16,
+    pub(crate) salary_from: NaiveDate,
+    pub(crate) salary_to: NaiveDate,
 }
 
 #[derive(Serialize)]
@@ -1803,11 +1927,11 @@ pub(crate) async fn month_data(
     .await?;
     let rows = sqlx::query!(
         r#"select e.id as "employee_id!", e.full_name as "full_name!", e.is_cashier as "is_cashier!",
-             e.is_master as "is_master!",
+             e.is_master as "is_master!", e.salary_day as "salary_day!",
              coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
                        where a.employee_id = e.id and a.business_date < $2), 0)::bigint
              - coalesce((select sum(p.amount_tyiyn) from payouts p
-                         where p.employee_id = e.id and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)::bigint
+                         where p.employee_id = e.id and p.pay_date < $2), 0)::bigint
                as "opening!",
              coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'monthly_salary'), 0)::bigint as "salary!",
              coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'revenue_percent'), 0)::bigint as "percent!",
@@ -1819,38 +1943,30 @@ pub(crate) async fn month_data(
              coalesce(sum(a.amount_tyiyn), 0)::bigint as "accrued!",
              coalesce((select sum(p.amount_tyiyn) from payouts p
                        where p.employee_id = e.id
-                         and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "paid!",
+                         and p.pay_date between $2 and $3), 0)::bigint as "paid!",
              coalesce((select sum(p.amount_tyiyn) from payouts p
                        where p.employee_id = e.id and p.purpose = 'advance'
-                         and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3), 0)::bigint as "advance!",
-             exists (select 1 from payroll_accruals s
-                     where s.employee_id = e.id and s.kind = 'monthly_salary' and s.reversal_of is null
-                       and s.business_date between $2 and $3
-                       and not exists (select 1 from payroll_accruals r where r.reversal_of = s.id)) as "salary_done!",
-             (select r.amount_tyiyn from employee_pay_rules r
-               where r.employee_id = e.id and r.kind = 'monthly_salary'
-                 and r.active_from <= $3 and (r.active_to is null or r.active_to > $3)
-               order by r.created_at desc limit 1) as "salary_rule?"
+                         and p.pay_date between $2 and $3), 0)::bigint as "advance!"
            from employees e
            left join payroll_accruals a on a.employee_id = e.id and a.business_date between $2 and $3
            where e.branch_id = $1
-           group by e.id, e.full_name, e.is_cashier, e.is_master, e.active
+           group by e.id, e.full_name, e.is_cashier, e.is_master, e.active, e.salary_day
            -- Отключённый сотрудник виден, пока с ним есть расчёт: начисления или выплаты в месяце,
            -- долг на начало или на конец.
            having e.active or coalesce(sum(a.amount_tyiyn), 0) <> 0
                or exists (select 1 from payouts p
                           where p.employee_id = e.id
-                            and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3)
+                            and p.pay_date between $2 and $3)
                or coalesce((select sum(x.amount_tyiyn) from payroll_accruals x
                             where x.employee_id = e.id and x.business_date <= $3), 0)
                   <> coalesce((select sum(p.amount_tyiyn) from payouts p
                                where p.employee_id = e.id
-                                 and (p.created_at at time zone 'Asia/Bishkek')::date <= $3), 0)
+                                 and p.pay_date <= $3), 0)
                or coalesce((select sum(x.amount_tyiyn) from payroll_accruals x
                             where x.employee_id = e.id and x.business_date < $2), 0)
                   <> coalesce((select sum(p.amount_tyiyn) from payouts p
                                where p.employee_id = e.id
-                                 and (p.created_at at time zone 'Asia/Bishkek')::date < $2), 0)
+                                 and p.pay_date < $2), 0)
            order by e.full_name"#,
         branch_id,
         b.from,
@@ -1858,9 +1974,16 @@ pub(crate) async fn month_data(
     )
     .fetch_all(&mut *conn)
     .await?;
-    let rows = rows
-        .into_iter()
-        .map(|r| MonthRow {
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        // Оклад — за период работника, который заканчивается в этом месяце (задача 003 Н11):
+        // при дне расчёта 1 — сам месяц, как было.
+        let day = salary_day_u32(r.salary_day);
+        let period =
+            effective_period(&mut *conn, r.employee_id, period_ending_in(day, b.from)?).await?;
+        let st = salary_state(&mut *conn, r.employee_id, period).await?;
+        let rule = rule_amount(&mut *conn, branch_id, r.employee_id, period.to).await?;
+        out.push(MonthRow {
             employee_id: r.employee_id,
             full_name: r.full_name,
             is_cashier: r.is_cashier,
@@ -1877,14 +2000,17 @@ pub(crate) async fn month_data(
             paid_tyiyn: r.paid,
             advance_tyiyn: r.advance,
             closing_tyiyn: r.opening.saturating_add(r.accrued).saturating_sub(r.paid),
-            salary_done: r.salary_done,
-            salary_rule_tyiyn: r.salary_rule,
-        })
-        .collect();
+            salary_done: st.accrual_id.is_some(),
+            salary_rule_tyiyn: rule,
+            salary_day: r.salary_day,
+            salary_from: period.from,
+            salary_to: period.to,
+        });
+    }
     Ok(MonthOut {
         from: b.from,
         to: b.to,
-        rows,
+        rows: out,
     })
 }
 
@@ -1985,8 +2111,15 @@ pub async fn post_accrual_tx(
 pub struct SalaryReq {
     pub op_id: Uuid,
     pub employee_id: Uuid,
-    /// Первый день месяца, за который платим.
-    pub month: NaiveDate,
+    /// Любой день месяца: оклад за период работника, который заканчивается в этом месяце
+    /// (при дне расчёта 1 — сам месяц). Прежний способ — экран «За месяц» и бот владельца.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub month: Option<NaiveDate>,
+    /// Начало периода (задача 003 Н11): конец — `period_to` или конец периода работника.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_from: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_to: Option<NaiveDate>,
     pub amount_tyiyn: Option<i64>,
 }
 
@@ -2001,7 +2134,7 @@ async fn post_salary(
     Ok(Json(out))
 }
 
-/// Оклад за месяц.
+/// Оклад за расчётный период работника (задача 003 Н11, ADR-{B9.2}).
 /// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
 pub async fn post_salary_tx(
     conn: &mut PgConnection,
@@ -2015,27 +2148,52 @@ pub async fn post_salary_tx(
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
-    lock_employee(&mut *conn, ctx.user.branch_id, req.employee_id).await?;
-    // Оклад попадает в последний день месяца, но не в будущее (SPEC-07).
-    let d = sqlx::query!(
-        r#"select least((date_trunc('month', $1::date) + interval '1 month - 1 day')::date,
-                        (now() at time zone 'Asia/Bishkek')::date) as "d!",
-                  date_trunc('month', $1::date) > date_trunc('month', now() at time zone 'Asia/Bishkek')
-                    as "future!""#,
-        req.month
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    // Иначе оклад «за ноябрь» лёг бы в октябрь и закрыл бы начисление настоящего октябрьского.
-    if d.future {
+    let branch_id = ctx.user.branch_id;
+    lock_employee(&mut *conn, branch_id, req.employee_id).await?;
+    let day = employee_salary_day(&mut *conn, branch_id, req.employee_id).await?;
+    let period = match (req.period_from, req.month) {
+        (Some(from), _) => {
+            let std = period_of(day, from)?;
+            let to = req.period_to.unwrap_or(std.to);
+            if to < from {
+                return Err(invalid("конец периода раньше начала"));
+            }
+            let longest = from
+                .checked_add_months(chrono::Months::new(1))
+                .and_then(|d| d.pred_opt())
+                .ok_or_else(crate::error::overflow)?;
+            if to > longest {
+                return Err(invalid("период оклада — не больше месяца"));
+            }
+            Period {
+                from,
+                to,
+                pay: to.succ_opt().ok_or_else(crate::error::overflow)?,
+            }
+        }
+        (None, Some(month)) => {
+            effective_period(&mut *conn, req.employee_id, period_ending_in(day, month)?).await?
+        }
+        (None, None) => return Err(invalid("укажите период оклада")),
+    };
+    let today = today(&mut *conn).await?;
+    // Иначе оклад «за следующий период» лёг бы в этот и закрыл бы начисление настоящего.
+    if period.from > today {
         return Err(invalid(
-            "оклад за месяц, который ещё не начался, не начисляется",
+            "оклад за период, который ещё не начался, не начисляется",
         ));
     }
-    let date = d.d;
+    // Оклад попадает в последний день периода, но не в будущее (SPEC-07, SPEC-08).
+    let date = period.to.min(today);
+    if let Some((from, to)) = salary_overlap(&mut *conn, req.employee_id, period).await? {
+        return Err(AppError::Conflict(format!(
+            "оклад за {} уже начислен",
+            salary::label(from, to)
+        )));
+    }
     let rule = active_rule(
         &mut *conn,
-        ctx.user.branch_id,
+        branch_id,
         req.employee_id,
         "monthly_salary",
         date,
@@ -2048,37 +2206,25 @@ pub async fn post_salary_tx(
     if amount <= 0 {
         return Err(invalid("сумма больше нуля"));
     }
-    let exists = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from payroll_accruals a
-           where a.employee_id = $1 and a.kind = 'monthly_salary' and a.reversal_of is null
-             and date_trunc('month', a.business_date) = date_trunc('month', $2::date)
-             -- сторнированный оклад можно начислить заново
-             and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)"#,
+    ops::check_amount(amount)?;
+    let accrual_id = new_id();
+    sqlx::query!(
+        r#"insert into payroll_accruals (id, branch_id, employee_id, business_date, kind, amount_tyiyn,
+                                         rule_id, doc_type, comment, user_id, device_id,
+                                         period_from, period_to)
+           values ($1, $2, $3, $4, 'monthly_salary', $5, $6, 'salary', '', $7, $8, $9, $10)"#,
+        accrual_id,
+        branch_id,
         req.employee_id,
-        req.month
+        date,
+        amount,
+        rule.map(|r| r.0),
+        ctx.user.id,
+        ctx.device_id,
+        period.from,
+        period.to
     )
-    .fetch_one(&mut *conn)
-    .await?;
-    if exists > 0 {
-        return Err(AppError::Conflict(
-            "оклад за этот месяц уже начислен".into(),
-        ));
-    }
-    let accrual_id = add_accrual(
-        &mut *conn,
-        ctx,
-        Some(date),
-        Accrual {
-            employee_id: req.employee_id,
-            kind: "monthly_salary",
-            amount,
-            base: None,
-            rule_id: rule.map(|r| r.0),
-            doc_type: "salary",
-            doc_id: None,
-            comment: "",
-        },
-    )
+    .execute(&mut *conn)
     .await?;
     ops::audit(
         &mut *conn,
@@ -2086,15 +2232,512 @@ pub async fn post_salary_tx(
         KIND,
         "employee",
         Some(req.employee_id),
-        json!({ "amount_tyiyn": amount, "month": req.month }),
+        json!({ "amount_tyiyn": amount, "month": period.to.with_day(1),
+                "period_from": period.from, "period_to": period.to, "accrual_id": accrual_id }),
     )
     .await?;
     let out = OkOut {
         ok: true,
-        id: accrual_id,
+        id: Some(accrual_id),
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+// ---------- Период оклада и «Оклад сейчас» (задача 003 Н11, ADR-{B9.2}) ----------
+
+fn salary_day_u32(day: i16) -> u32 {
+    u32::try_from(day).unwrap_or(1)
+}
+
+fn period_of(day: u32, date: NaiveDate) -> AppResult<Period> {
+    salary::period_of(day, date).ok_or_else(crate::error::overflow)
+}
+
+fn period_ending_in(day: u32, month: NaiveDate) -> AppResult<Period> {
+    salary::period_ending_in(day, month).ok_or_else(crate::error::overflow)
+}
+
+async fn employee_salary_day(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<u32> {
+    let d = sqlx::query_scalar!(
+        "select salary_day from employees where id = $1 and branch_id = $2",
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    Ok(salary_day_u32(d))
+}
+
+/// Действующий оклад, который пересекается с периодом: его даты. Прежние начисления без периода —
+/// за календарный месяц своего дня (так их и начисляли).
+async fn salary_overlap(
+    conn: &mut PgConnection,
+    employee_id: Uuid,
+    p: Period,
+) -> AppResult<Option<(NaiveDate, NaiveDate)>> {
+    let r = sqlx::query!(
+        r#"select coalesce(a.period_from, date_trunc('month', a.business_date)::date) as "from!",
+                  coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) as "to!"
+           from payroll_accruals a
+           where a.employee_id = $1 and a.kind = 'monthly_salary' and a.reversal_of is null
+             and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)
+             and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= $3
+             and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= $2
+           order by 1 limit 1"#,
+        employee_id,
+        p.from,
+        p.to
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(r.map(|r| (r.from, r.to)))
+}
+
+/// Период после смены дня расчёта: если прежний оклад (например, за календарный месяц)
+/// захватил начало периода, период начинается со дня после него — «переходный» период
+/// своими датами. Смена дня действует со следующего периода, проведённое не меняется (I4).
+async fn effective_period(
+    conn: &mut PgConnection,
+    employee_id: Uuid,
+    std: Period,
+) -> AppResult<Period> {
+    let covered = sqlx::query_scalar!(
+        r#"select max(coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date))
+           from payroll_accruals a
+           where a.employee_id = $1 and a.kind = 'monthly_salary' and a.reversal_of is null
+             and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)
+             and coalesce(a.period_from, date_trunc('month', a.business_date)::date) < $2
+             and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= $2"#,
+        employee_id,
+        std.from
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(match covered.and_then(|c| c.succ_opt()) {
+        Some(next) if next <= std.to => Period { from: next, ..std },
+        _ => std,
+    })
+}
+
+/// Период работника, который заканчивается в месяце `month`, со сдвигом после смены дня
+/// расчёта — для бота владельца (SPEC-24).
+pub(crate) async fn salary_period_for_month(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee_id: Uuid,
+    month: NaiveDate,
+) -> AppResult<Period> {
+    let day = employee_salary_day(&mut *conn, branch_id, employee_id).await?;
+    effective_period(conn, employee_id, period_ending_in(day, month)?).await
+}
+
+/// Оклад за период: начислено (со сторно) и действующее начисление.
+struct SalaryState {
+    accrued: i64,
+    accrual_id: Option<Uuid>,
+}
+
+async fn salary_state(
+    conn: &mut PgConnection,
+    employee_id: Uuid,
+    p: Period,
+) -> AppResult<SalaryState> {
+    let r = sqlx::query!(
+        r#"select coalesce(sum(a.amount_tyiyn), 0)::bigint as "sum!",
+                  (array_agg(a.id order by a.created_at desc) filter (
+                      where a.reversal_of is null
+                        and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)))[1]
+                    as "id?"
+           from payroll_accruals a
+           where a.employee_id = $1 and a.kind = 'monthly_salary'
+             and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= $3
+             and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= $2"#,
+        employee_id,
+        p.from,
+        p.to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(SalaryState {
+        accrued: r.sum,
+        accrual_id: r.id,
+    })
+}
+
+async fn rule_amount(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee_id: Uuid,
+    on: NaiveDate,
+) -> AppResult<Option<i64>> {
+    Ok(
+        active_rule(conn, branch_id, employee_id, "monthly_salary", on)
+            .await?
+            .and_then(|r| r.1),
+    )
+}
+
+/// «Оклад сейчас» по работнику (задача 003 Н11): период, ставка, начислено, авансы и оклад,
+/// выданные в периоде (по дате выплаты), долг по окладу с прошлых периодов и сколько к выплате
+/// в день расчёта. Всё в целых тыйынах (I1).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SalaryRow {
+    pub employee_id: Uuid,
+    pub full_name: String,
+    pub is_cashier: bool,
+    pub is_master: bool,
+    pub salary_day: i16,
+    pub period_from: NaiveDate,
+    pub period_to: NaiveDate,
+    /// День выплаты — следующий за концом периода.
+    pub pay_date: NaiveDate,
+    /// Ставка по правилу оклада; без правила — пусто.
+    pub rule_tyiyn: Option<i64>,
+    /// Начислено за период; не начислен — пусто.
+    pub accrued_tyiyn: Option<i64>,
+    pub accrual_id: Option<Uuid>,
+    /// Выдано авансом и окладом в периоде.
+    pub advance_tyiyn: i64,
+    pub paid_salary_tyiyn: i64,
+    /// Остаток по окладу на день перед периодом: плюс — недоплачено, минус — выдано вперёд.
+    pub carry_tyiyn: i64,
+    /// К выплате в день расчёта: начислено (не начислен — ставка) − авансы − оклад + долг прошлых.
+    pub expected_tyiyn: i64,
+    /// Заработано на сегодня по ставке — ориентир, только с настройкой.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_date_tyiyn: Option<i64>,
+}
+
+pub(crate) struct SalaryEmployee {
+    pub(crate) id: Uuid,
+    pub(crate) full_name: String,
+    pub(crate) is_cashier: bool,
+    pub(crate) is_master: bool,
+    pub(crate) salary_day: i16,
+}
+
+/// Строка «Оклад» работника на день `date` (период — тот, в который входит день). Нет правила
+/// оклада и ничего не начислено — `None`.
+pub(crate) async fn salary_row(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    e: SalaryEmployee,
+    date: NaiveDate,
+    to_date: bool,
+) -> AppResult<Option<SalaryRow>> {
+    let day = salary_day_u32(e.salary_day);
+    let p = effective_period(&mut *conn, e.id, period_of(day, date)?).await?;
+    let st = salary_state(&mut *conn, e.id, p).await?;
+    let rule = rule_amount(&mut *conn, branch_id, e.id, date.min(p.to)).await?;
+    if rule.is_none() && st.accrual_id.is_none() && st.accrued == 0 {
+        return Ok(None);
+    }
+    let paid = sqlx::query!(
+        r#"select coalesce(sum(amount_tyiyn) filter (where purpose = 'advance'), 0)::bigint as "advance!",
+                  coalesce(sum(amount_tyiyn) filter (where purpose = 'salary'), 0)::bigint as "salary!"
+           from payouts where employee_id = $1 and pay_date between $2 and $3"#,
+        e.id,
+        p.from,
+        p.to
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let before = p.from.pred_opt().ok_or_else(crate::error::overflow)?;
+    let carry = remains_of(&mut *conn, branch_id, Some(e.id), Some(before))
+        .await?
+        .into_iter()
+        .next()
+        .map_or(0, |(_, r, _)| r.salary_tyiyn);
+    let base = if st.accrual_id.is_some() {
+        st.accrued
+    } else {
+        rule.unwrap_or(0)
+    };
+    let expected = base
+        .saturating_sub(paid.advance)
+        .saturating_sub(paid.salary)
+        .saturating_add(carry);
+    Ok(Some(SalaryRow {
+        employee_id: e.id,
+        full_name: e.full_name,
+        is_cashier: e.is_cashier,
+        is_master: e.is_master,
+        salary_day: e.salary_day,
+        period_from: p.from,
+        period_to: p.to,
+        pay_date: p.pay,
+        rule_tyiyn: rule,
+        accrued_tyiyn: st.accrual_id.map(|_| st.accrued),
+        accrual_id: st.accrual_id,
+        advance_tyiyn: paid.advance,
+        paid_salary_tyiyn: paid.salary,
+        carry_tyiyn: carry,
+        expected_tyiyn: expected,
+        to_date_tyiyn: match (to_date, rule) {
+            (true, Some(rate)) => Some(salary::earned_to_date(rate, p.from, p.to, date)),
+            _ => None,
+        },
+    }))
+}
+
+/// Работники филиала для вкладки «Оклад»; `employee` — один.
+pub(crate) async fn salary_employees(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee: Option<Uuid>,
+) -> AppResult<Vec<SalaryEmployee>> {
+    Ok(sqlx::query!(
+        r#"select id, full_name, is_cashier, is_master, salary_day from employees
+           where branch_id = $1 and ($2::uuid is null or id = $2)
+           order by full_name"#,
+        branch_id,
+        employee
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| SalaryEmployee {
+        id: r.id,
+        full_name: r.full_name,
+        is_cashier: r.is_cashier,
+        is_master: r.is_master,
+        salary_day: r.salary_day,
+    })
+    .collect())
+}
+
+#[derive(Deserialize)]
+struct SalaryQuery {
+    date: Option<NaiveDate>,
+    employee_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct SalaryOut {
+    date: NaiveDate,
+    today: NaiveDate,
+    rows: Vec<SalaryRow>,
+}
+
+/// Вкладка «Оклад» (задача 003 Н11): по каждому работнику с окладом — период дня `date`
+/// (по умолчанию сегодня). Администратор видит только тех, кому может платить: мастеров не
+/// кассиров (SPEC-30 §6), как в «За день».
+async fn salary_now(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<SalaryQuery>,
+) -> AppResult<Json<SalaryOut>> {
+    let mut conn = state.pool.acquire().await?;
+    let today = today(&mut conn).await?;
+    let date = q.date.unwrap_or(today);
+    let settings = load_settings(&mut conn, user.branch_id).await?;
+    let owner = user.is_owner();
+    let mut rows = Vec::new();
+    for e in salary_employees(&mut conn, user.branch_id, q.employee_id).await? {
+        if !owner && (e.is_cashier || !e.is_master) {
+            continue;
+        }
+        if let Some(r) = salary_row(
+            &mut conn,
+            user.branch_id,
+            e,
+            date,
+            settings.salary_show_to_date && date >= today,
+        )
+        .await?
+        {
+            rows.push(r);
+        }
+    }
+    Ok(Json(SalaryOut { date, today, rows }))
+}
+
+#[derive(Serialize, Deserialize)]
+struct SalaryDay {
+    salary_day: i16,
+}
+
+/// День расчёта оклада работника (задача 003 Н11) — настройка оплаты, её видит и меняет владелец.
+async fn get_salary_day(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<Json<SalaryDay>> {
+    if !user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let mut conn = state.pool.acquire().await?;
+    let d = employee_salary_day(&mut conn, user.branch_id, id).await?;
+    Ok(Json(SalaryDay {
+        salary_day: i16::try_from(d).unwrap_or(1),
+    }))
+}
+
+/// Смена дня действует со следующего периода: проведённое не меняется (I4), а оклад, уже
+/// захвативший начало нового периода, сдвигает его начало (`effective_period`).
+async fn put_salary_day(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SalaryDay>,
+) -> AppResult<Json<SalaryDay>> {
+    if !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let max = i16::try_from(salary::MAX_DAY).unwrap_or(28);
+    if !(1..=max).contains(&req.salary_day) {
+        return Err(invalid(format!("день расчёта оклада — от 1 до {max}")));
+    }
+    let mut tx = state.pool.begin().await?;
+    let prev = sqlx::query!(
+        "select full_name, salary_day from employees where id = $1 and branch_id = $2 for update",
+        id,
+        ctx.user.branch_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if prev.salary_day != req.salary_day {
+        sqlx::query!(
+            "update employees set salary_day = $3 where id = $1 and branch_id = $2",
+            id,
+            ctx.user.branch_id,
+            req.salary_day
+        )
+        .execute(&mut *tx)
+        .await?;
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "employee.update",
+            "employee",
+            Some(id),
+            json!({ "full_name": prev.full_name, "salary_day": req.salary_day,
+                    "before": { "salary_day": prev.salary_day },
+                    "after": { "salary_day": req.salary_day } }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(req))
+}
+
+/// С какого часа дня расчёта приходит «Сегодня расчёт оклада».
+const SALARY_DUE_HOUR: i32 = 9;
+
+/// «Сегодня расчёт оклада» (задача 003 Н11): в день расчёта, не раньше 09:00 по Бишкеку, по
+/// каждому работнику с окладом — событие `payroll.salary_due` за закончившийся вчера период,
+/// один раз (ключ — работник и начало периода). Уходит в «Уведомления» и в бот владельца.
+/// Возвращает, сколько событий записано.
+pub async fn salary_due_pass(pool: &sqlx::PgPool) -> AppResult<usize> {
+    let mut tx = pool.begin().await?;
+    let now = sqlx::query!(
+        r#"select (now() at time zone 'Asia/Bishkek')::date as "today!",
+                  extract(hour from now() at time zone 'Asia/Bishkek')::int as "hour!""#
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if now.hour < SALARY_DUE_HOUR {
+        return Ok(0);
+    }
+    let sent = salary_due_on(&mut tx, now.today).await?;
+    tx.commit().await?;
+    Ok(sent)
+}
+
+/// События дня расчёта `today` — без проверки часа (тесты).
+pub async fn salary_due_on(conn: &mut PgConnection, today: NaiveDate) -> AppResult<usize> {
+    let day = i16::try_from(today.day()).unwrap_or(0);
+    let yesterday = today.pred_opt().ok_or_else(crate::error::overflow)?;
+    let candidates = sqlx::query!(
+        r#"select e.id, e.branch_id, e.full_name, e.is_cashier, e.is_master, e.salary_day
+           from employees e
+           where e.active and e.salary_day = $1
+             and exists (select 1 from employee_pay_rules r
+                         where r.employee_id = e.id and r.kind = 'monthly_salary'
+                           and r.active_from <= $2 and (r.active_to is null or r.active_to > $2))
+           order by e.branch_id, e.full_name"#,
+        day,
+        yesterday
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut sent = 0;
+    let mut enabled: HashMap<Uuid, bool> = HashMap::new();
+    for c in candidates {
+        let on = match enabled.get(&c.branch_id) {
+            Some(v) => *v,
+            None => {
+                let v = load_settings(&mut *conn, c.branch_id)
+                    .await?
+                    .salary_due_notify;
+                enabled.insert(c.branch_id, v);
+                v
+            }
+        };
+        if !on {
+            continue;
+        }
+        let e = SalaryEmployee {
+            id: c.id,
+            full_name: c.full_name,
+            is_cashier: c.is_cashier,
+            is_master: c.is_master,
+            salary_day: c.salary_day,
+        };
+        let Some(row) = salary_row(&mut *conn, c.branch_id, e, yesterday, false).await? else {
+            continue;
+        };
+        let done = sqlx::query_scalar!(
+            r#"select exists (select 1 from audit_log
+                              where action = 'payroll.salary_due' and entity_id = $1
+                                and data ->> 'period_from' = $2) as "v!""#,
+            c.id,
+            row.period_from.to_string()
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if done {
+            continue;
+        }
+        sqlx::query!(
+            r#"insert into audit_log (id, branch_id, user_id, device_id, action, entity, entity_id, data)
+               values ($1, $2, null, null, 'payroll.salary_due', 'employee', $3, $4)"#,
+            new_id(),
+            c.branch_id,
+            c.id,
+            json!({
+                "full_name": row.full_name,
+                "period_from": row.period_from,
+                "period_to": row.period_to,
+                "pay_date": row.pay_date,
+                "rule_tyiyn": row.rule_tyiyn,
+                "accrued_tyiyn": row.accrued_tyiyn,
+                "advance_tyiyn": row.advance_tyiyn,
+                "expected_tyiyn": row.expected_tyiyn,
+            })
+        )
+        .execute(&mut *conn)
+        .await?;
+        sent += 1;
+    }
+    Ok(sent)
+}
+
+/// Фоновая проверка дня расчёта — раз в 5 минут.
+pub fn spawn_salary_due(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            if let Err(e) = salary_due_pass(&pool).await {
+                tracing::warn!(error = %e, "день расчёта оклада: проверка не прошла");
+            }
+        }
+    });
 }
 
 // ---------- Выплаты по видам (SPEC-36 §11, ADR-122) ----------
@@ -2259,7 +2902,7 @@ pub(crate) async fn remains_of(
                       coalesce(sum(amount_tyiyn) filter (where purpose = 'advance'), 0)::bigint as advance
                from payouts
                where employee_id = e.id
-                 and ($3::date is null or (created_at at time zone 'Asia/Bishkek')::date <= $3)
+                 and ($3::date is null or pay_date <= $3)
            ) p
            where e.branch_id = $1 and ($2::uuid is null or e.id = $2)"#,
         branch_id,
@@ -2305,6 +2948,15 @@ struct RemainsOut {
     balance_tyiyn: i64,
     /// Аванс в счёт чего: `salary` или `service_fee`.
     advance_to: &'static str,
+    /// Оклад сейчас: период, ставка, авансы, к выплате (задача 003 Н11); без оклада — пусто.
+    salary: Option<SalaryRow>,
+    /// Смена открыта: без неё касса смены недоступна (задача 003 Н11).
+    shift_open: bool,
+    /// Выплаты — только при открытой смене (настройка «Зарплата»).
+    requires_shift: bool,
+    /// На сколько дней назад владелец может поставить дату выплаты.
+    backdate_days: i32,
+    today: NaiveDate,
 }
 
 /// Остатки сотрудника по видам сейчас — для окна «Выплата» (ADR-122). Администратор видит
@@ -2334,6 +2986,20 @@ async fn remains(
         .into_iter()
         .next()
         .ok_or(AppError::NotFound)?;
+    let today = today(&mut conn).await?;
+    let settings = load_settings(&mut conn, user.branch_id).await?;
+    let salary = match salary_employees(&mut conn, user.branch_id, Some(q.employee_id))
+        .await?
+        .into_iter()
+        .next()
+    {
+        Some(se) => salary_row(&mut conn, user.branch_id, se, today, false).await?,
+        None => None,
+    };
+    let till = cash::default_account(&mut conn, user.branch_id).await?;
+    let shift_open = cash::open_shift_id(&mut conn, user.branch_id, till)
+        .await?
+        .is_some();
     Ok(Json(RemainsOut {
         employee_id: q.employee_id,
         full_name: e.full_name,
@@ -2342,6 +3008,11 @@ async fn remains(
         balance_tyiyn: r.total(),
         remains: r,
         advance_to: if to_salary { "salary" } else { "service_fee" },
+        salary,
+        shift_open,
+        requires_shift: settings.payout_requires_shift,
+        backdate_days: settings.payout_backdate_days,
+        today,
     }))
 }
 
@@ -2360,6 +3031,10 @@ pub struct PayoutReq {
     pub advance: bool,
     #[serde(default)]
     pub comment: String,
+    /// Дата выплаты в расчёте (задача 003 Н11, ADR-{B9.1}): пусто — сегодня. Другую ставит
+    /// только владелец, не позже сегодня и не раньше настройки «Зарплата». Деньги уходят сейчас.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pay_date: Option<NaiveDate>,
 }
 
 /// Строка выплаты: вид и сумма.
@@ -2503,6 +3178,9 @@ pub async fn post_payouts_tx(
     if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
+    let settings = load_settings(&mut *conn, branch_id).await?;
+    let today = today(&mut *conn).await?;
+    let pay_date = check_pay_date(req.pay_date, today, owner, settings.payout_backdate_days)?;
     lock_employee(&mut *conn, branch_id, req.employee_id).await?;
     // Администратор выдаёт деньги только мастерам — за услуги и, с правом, аванс; кассиру
     // и остальным — владелец (SPEC-30 §6, ADR-122).
@@ -2571,14 +3249,29 @@ pub async fn post_payouts_tx(
     // Администратор платит только из кассы смены: счета и сейфы — владельцу; архивный
     // счёт не выбирается (ADR-037, ADR-076).
     cash::check_pay_account(&mut *conn, &ctx.user, id).await?;
+    // Из кассы смены — только в открытую смену (SPEC-07); с настройкой «Выплаты только при
+    // открытой смене» — и с сейфа или счёта (задача 003 Н11).
+    if settings.payout_requires_shift {
+        let till = cash::default_account(&mut *conn, branch_id).await?;
+        if cash::open_shift_id(&mut *conn, branch_id, till)
+            .await?
+            .is_none()
+        {
+            return Err(AppError::Conflict(
+                "Смена не открыта: выплаты — только при открытой смене (Настройки → Зарплата)"
+                    .into(),
+            ));
+        }
+    }
+    require_shift_for_payout(&mut *conn, branch_id, id, owner).await?;
     let mut out_lines = Vec::with_capacity(lines.len());
     for l in &lines {
         let number = ops::next_counter(&mut *conn, branch_id, "payout").await?;
         let pid = new_id();
         sqlx::query!(
             r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
-                                    account_id, comment, user_id, device_id, purpose, op_id)
-               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+                                    account_id, comment, user_id, device_id, purpose, op_id, pay_date)
+               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
             pid,
             branch_id,
             number,
@@ -2590,7 +3283,8 @@ pub async fn post_payouts_tx(
             ctx.user.id,
             ctx.device_id,
             l.purpose,
-            req.op_id
+            req.op_id,
+            pay_date
         )
         .execute(&mut *conn)
         .await?;
@@ -2601,8 +3295,7 @@ pub async fn post_payouts_tx(
             amount_tyiyn: l.amount_tyiyn,
         });
     }
-    // Из кассы — только в открытую смену (SPEC-07); по движению на каждую строку.
-    cash::require_open_shift(&mut *conn, branch_id, id).await?;
+    // Деньги уходят сейчас, по движению на каждую строку; дата выплаты — только в расчёте.
     for l in &out_lines {
         cash::add_movement(
             &mut *conn,
@@ -2634,6 +3327,9 @@ pub async fn post_payouts_tx(
             "over_tyiyn": total.saturating_sub(balance.max(0)).max(0),
             "account_id": id,
             "lines": lines,
+            // Дата в расчёте; деньги ушли сегодня (ADR-{B9.1}).
+            "pay_date": pay_date,
+            "money_date": today,
         }),
     )
     .await?;
@@ -2650,6 +3346,70 @@ pub async fn post_payouts_tx(
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+/// Дата выплаты в расчёте (ADR-{B9.1}): пусто — сегодня; не позже сегодня (422); другую дату
+/// ставит только владелец (403); не раньше `backdate_days` дней назад (422).
+pub fn check_pay_date(
+    asked: Option<NaiveDate>,
+    today: NaiveDate,
+    owner: bool,
+    backdate_days: i32,
+) -> AppResult<NaiveDate> {
+    let Some(d) = asked else { return Ok(today) };
+    if d > today {
+        return Err(invalid("дата выплаты — не позже сегодня"));
+    }
+    if d != today && !owner {
+        return Err(AppError::ForbiddenWith(
+            "Дату выплаты меняет владелец".into(),
+        ));
+    }
+    let earliest = today
+        .checked_sub_days(chrono::Days::new(
+            u64::try_from(backdate_days.max(0)).unwrap_or(0),
+        ))
+        .ok_or_else(crate::error::overflow)?;
+    if d < earliest {
+        return Err(invalid(format!(
+            "дата выплаты — не раньше {} (Настройки → Зарплата)",
+            earliest.format("%d.%m.%Y")
+        )));
+    }
+    Ok(d)
+}
+
+/// Из кассы смены — только в открытую смену (SPEC-07): иначе деньги не с чем сверить. Владельцу
+/// подсказка — сейф или счёт, администратору — открыть смену (задача 003 Н11).
+async fn require_shift_for_payout(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    account_id: Uuid,
+    owner: bool,
+) -> AppResult<()> {
+    let kind = sqlx::query_scalar!(
+        "select kind from cash_accounts where id = $1 and branch_id = $2",
+        account_id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("касса не найдена"))?;
+    if kind == "register"
+        && cash::open_shift_id(&mut *conn, branch_id, account_id)
+            .await?
+            .is_none()
+    {
+        return Err(AppError::Conflict(
+            if owner {
+                "Смена не открыта — из кассы смены выплатить нельзя. Откройте смену или выберите сейф или счёт"
+            } else {
+                "Смена не открыта — администратор платит только из кассы смены. Откройте смену"
+            }
+            .into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -2741,8 +3501,7 @@ pub async fn staff_pay_with(
     for p in &mut out {
         p.paid_tyiyn = sqlx::query_scalar!(
             r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "paid!" from payouts
-               where employee_id = $1
-                 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3"#,
+               where employee_id = $1 and pay_date between $2 and $3"#,
             p.employee_id,
             from,
             to

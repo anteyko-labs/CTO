@@ -1,22 +1,22 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.number, p.employee_id, p.amount_tyiyn, p.account_id, p.comment, p.purpose,\n                          e.full_name\n                   from payouts p join employees e on e.id = p.employee_id\n                   where p.id = $1 and p.branch_id = $2",
+  "query": "select employee_id, amount_tyiyn, source, account_id, reversal_of, purpose, pay_date\n           from payouts where id = $1 and branch_id = $2 for update",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "number",
-        "type_info": "Int8"
-      },
-      {
-        "ordinal": 1,
         "name": "employee_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 2,
+        "ordinal": 1,
         "name": "amount_tyiyn",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "source",
+        "type_info": "Text"
       },
       {
         "ordinal": 3,
@@ -25,8 +25,8 @@
       },
       {
         "ordinal": 4,
-        "name": "comment",
-        "type_info": "Text"
+        "name": "reversal_of",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 5,
@@ -35,8 +35,8 @@
       },
       {
         "ordinal": 6,
-        "name": "full_name",
-        "type_info": "Text"
+        "name": "pay_date",
+        "type_info": "Date"
       }
     ],
     "parameters": {
@@ -50,10 +50,10 @@
       false,
       false,
       true,
-      false,
+      true,
       false,
       false
     ]
   },
-  "hash": "d5c40bb18210c6fa541df6ba76ae44b732e437b346aad859553565a09ffc66b4"
+  "hash": "f57e91bd8acc54ffc21c0a09326316fc34cc3630cdf571b7ecf30df6c888c385"
 }

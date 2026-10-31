@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id, e.branch_id, e.full_name, e.is_cashier, e.is_master, e.salary_day\n           from employees e\n           where e.active and e.salary_day = $1\n             and exists (select 1 from employee_pay_rules r\n                         where r.employee_id = e.id and r.kind = 'monthly_salary'\n                           and r.active_from <= $2 and (r.active_to is null or r.active_to > $2))\n           order by e.branch_id, e.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_master",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "salary_day",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "33d7106fff8cda86d690224a88ac400af013b0d8fe42c2cb67594b062d9add3a"
+}

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(a.period_from, date_trunc('month', a.business_date)::date) as \"from!\",\n                  coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) as \"to!\"\n           from payroll_accruals a\n           where a.employee_id = $1 and a.kind = 'monthly_salary' and a.reversal_of is null\n             and not exists (select 1 from payroll_accruals r where r.reversal_of = a.id)\n             and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= $3\n             and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= $2\n           order by 1 limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "from!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "to!",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "e1c4d0d0ecbc6c4767816054dfefb5c31f86ef0209c3c562c43cd21d0e73f7cd"
+}

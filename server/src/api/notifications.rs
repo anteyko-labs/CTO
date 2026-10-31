@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 76] = [
+pub(crate) const WATCHED: [&str; 77] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -97,6 +97,8 @@ pub(crate) const WATCHED: [&str; 76] = [
     "telegram.admin_link",
     "shift.cash_to_bank",
     "shift.cash_to_bank_reverse",
+    // День расчёта оклада (задача 003 Н11).
+    "payroll.salary_due",
 ];
 
 #[derive(Serialize)]
@@ -767,6 +769,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .map(|_| "отключён".to_string()),
                 flag("pay_rules_added", "назначена оплата кассира по умолчанию"),
                 flag("phone_changed", "изменён телефон (кабинет в боте)"),
+                num("salary_day").map(|d| format!("день расчёта оклада — {d}-е")),
             ]
             .into_iter()
             .flatten()
@@ -1049,6 +1052,30 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 }
             ),
         ),
+        "payroll.salary_due" => {
+            let short = |key: &str| {
+                chrono::NaiveDate::parse_from_str(&text(key), "%Y-%m-%d")
+                    .map(|d| d.format("%d.%m").to_string())
+                    .unwrap_or_default()
+            };
+            let accrued = match num("accrued_tyiyn") {
+                Some(a) => format!("начислен {}", money(Some(a))),
+                None => format!("не начислен, ставка {}", money(num("rule_tyiyn"))),
+            };
+            let advance = num("advance_tyiyn")
+                .filter(|a| *a != 0)
+                .map(|a| format!(", авансом {}", money(Some(a))))
+                .unwrap_or_default();
+            (
+                format!("Сегодня расчёт оклада: {}", text("full_name")),
+                format!(
+                    "за {}–{}: {accrued}{advance}; к выплате {}",
+                    short("period_from"),
+                    short("period_to"),
+                    money(num("expected_tyiyn"))
+                ),
+            )
+        }
         "payroll.rule_close" => (
             "Закрыта ставка сотрудника".into(),
             format!("{}, действует по {}", pay_rule(data), text("active_to")),

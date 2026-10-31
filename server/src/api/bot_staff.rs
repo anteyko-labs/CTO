@@ -608,11 +608,15 @@ async fn month(
     if let Some(p) = &pay {
         push_items(conn, e, (data.from, data.to), &p.items, &mut lines).await?;
     }
-    if let Some(r) = row
-        && r.salary_tyiyn == 0
-        && r.salary_rule_tyiyn.is_some()
-    {
-        lines.push("Оклад за этот месяц ещё не начислен — его начисляют в конце месяца.".into());
+    // Оклад всегда виден (задача 003 Н11): в текущем месяце — период, в который входит сегодня,
+    // в прошлом — период, который в нём закончился.
+    let on = if m == current {
+        today(conn).await?
+    } else {
+        data.from
+    };
+    if let Some(r) = salary_line(conn, e, on).await? {
+        lines.push(r);
     }
     if days.is_empty() {
         lines.push(String::new());
@@ -648,6 +652,52 @@ async fn month(
         vec![nav]
     };
     Ok(reply(e, lines.join("\n"), both, rows))
+}
+
+/// Строка оклада для работника (задача 003 Н11): «Оклад за 20.10–19.11: 30 000 с (не начислен —
+/// начислит владелец), авансом 5 000 с, к выплате 20.11 — 25 000 с». Без оклада — `None`.
+async fn salary_line(
+    conn: &mut PgConnection,
+    e: &Employee,
+    on: NaiveDate,
+) -> AppResult<Option<String>> {
+    let Some(se) = payroll::salary_employees(conn, e.branch_id, Some(e.id))
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let Some(r) = payroll::salary_row(conn, e.branch_id, se, on, false).await? else {
+        return Ok(None);
+    };
+    let mut parts = vec![match (r.accrued_tyiyn, r.rule_tyiyn) {
+        (Some(a), _) => format!("начислен {}", format_som(a)),
+        (None, Some(rate)) => format!("{} (не начислен — начислит владелец)", format_som(rate)),
+        (None, None) => "не начислен".into(),
+    }];
+    if r.advance_tyiyn != 0 {
+        parts.push(format!("авансом {}", format_som(r.advance_tyiyn)));
+    }
+    if r.paid_salary_tyiyn != 0 {
+        parts.push(format!("выдано {}", format_som(r.paid_salary_tyiyn)));
+    }
+    if r.carry_tyiyn != 0 {
+        parts.push(format!(
+            "с прошлых периодов {}",
+            format_som_signed(r.carry_tyiyn)
+        ));
+    }
+    parts.push(format!(
+        "к выплате {} — {}",
+        r.pay_date.format("%d.%m"),
+        format_som(r.expected_tyiyn)
+    ));
+    Ok(Some(format!(
+        "Оклад за {}: {}",
+        crate::domain::salary::label(r.period_from, r.period_to),
+        parts.join(", ")
+    )))
 }
 
 /// Премии и удержания за текущий и прошлый месяц: дата, сумма, комментарий владельца; отменённые

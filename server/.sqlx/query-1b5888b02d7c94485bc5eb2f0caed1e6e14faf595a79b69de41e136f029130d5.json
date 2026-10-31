@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from audit_log\n                              where action = 'payroll.salary_due' and entity_id = $1\n                                and data ->> 'period_from' = $2) as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1b5888b02d7c94485bc5eb2f0caed1e6e14faf595a79b69de41e136f029130d5"
+}

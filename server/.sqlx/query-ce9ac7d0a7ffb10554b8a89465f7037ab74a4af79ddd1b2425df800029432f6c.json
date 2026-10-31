@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.employee_id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,\n                          e.full_name, a.period_from, a.period_to\n                   from payroll_accruals a join employees e on e.id = a.employee_id\n                   where a.id = $1 and a.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "period_from",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 8,
+        "name": "period_to",
+        "type_info": "Date"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ce9ac7d0a7ffb10554b8a89465f7037ab74a4af79ddd1b2425df800029432f6c"
+}

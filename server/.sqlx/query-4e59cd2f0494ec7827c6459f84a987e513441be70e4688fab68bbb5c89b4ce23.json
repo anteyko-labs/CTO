@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select a.employee_id, a.business_date, a.kind, a.amount_tyiyn, a.comment, a.doc_type,\n                          e.full_name\n                   from payroll_accruals a join employees e on e.id = a.employee_id\n                   where a.id = $1 and a.branch_id = $2",
+  "query": "select employee_id, business_date, kind, amount_tyiyn, doc_type, reversal_of,\n                  period_from, period_to\n           from payroll_accruals where id = $1 and branch_id = $2 for update",
   "describe": {
     "columns": [
       {
@@ -25,18 +25,23 @@
       },
       {
         "ordinal": 4,
-        "name": "comment",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 5,
         "name": "doc_type",
         "type_info": "Text"
       },
       {
+        "ordinal": 5,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
         "ordinal": 6,
-        "name": "full_name",
-        "type_info": "Text"
+        "name": "period_from",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 7,
+        "name": "period_to",
+        "type_info": "Date"
       }
     ],
     "parameters": {
@@ -51,9 +56,10 @@
       false,
       false,
       false,
-      false,
-      false
+      true,
+      true,
+      true
     ]
   },
-  "hash": "f033849aadd494a2b67d9e750086614e87bc5f4c61141504b258f5f91410b402"
+  "hash": "4e59cd2f0494ec7827c6459f84a987e513441be70e4688fab68bbb5c89b4ce23"
 }

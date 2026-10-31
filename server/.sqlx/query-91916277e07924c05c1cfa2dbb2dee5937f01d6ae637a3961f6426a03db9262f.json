@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, salary_day from employees where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "salary_day",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "91916277e07924c05c1cfa2dbb2dee5937f01d6ae637a3961f6426a03db9262f"
+}

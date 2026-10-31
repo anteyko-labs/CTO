@@ -46,7 +46,8 @@ export function StaffPayout({ shiftCashier, onClose }: { shiftCashier: string | 
             </select>
           </Field>
         )}
-        {chosen && <PayoutForm key={chosen.employee_id} employeeId={chosen.employee_id} onCancel={onClose} onDone={onClose} />}
+        {/* На кассе дата выплаты — всегда сегодня (задача 003 Н11). */}
+        {chosen && <PayoutForm key={chosen.employee_id} employeeId={chosen.employee_id} noDate onCancel={onClose} onDone={onClose} />}
       </div>
     </Modal>
   )

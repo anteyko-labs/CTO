@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (now() at time zone 'Asia/Bishkek')::date as \"today!\",\n                  extract(hour from now() at time zone 'Asia/Bishkek')::int as \"hour!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "today!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "hour!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "c5b5eeea3c36aadf85e8cada50f567731b8d7173fa6ce87544207ca073cde35a"
+}

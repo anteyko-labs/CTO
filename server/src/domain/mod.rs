@@ -10,3 +10,4 @@ pub mod phone;
 pub mod plate;
 pub mod points;
 pub mod qty;
+pub mod salary;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.id, p.number, p.amount_tyiyn, p.purpose, p.source, c.name as \"account_name?\", p.comment,\n                  p.reversal_of as \"reversal_of?\",\n                  exists (select 1 from payouts r where r.reversal_of = p.id) as \"reversed!\",\n                  u.full_name as \"user_name!\", p.created_at\n           from payouts p join users u on u.id = p.user_id\n           left join cash_accounts c on c.id = p.account_id\n           where p.branch_id = $1 and p.employee_id = $2\n             and (p.created_at at time zone 'Asia/Bishkek')::date between $3 and $4\n           order by p.created_at desc",
+  "query": "select p.id, p.number, p.amount_tyiyn, p.purpose, p.source, c.name as \"account_name?\", p.comment,\n                  p.reversal_of as \"reversal_of?\",\n                  exists (select 1 from payouts r where r.reversal_of = p.id) as \"reversed!\",\n                  u.full_name as \"user_name!\", p.created_at, p.pay_date\n           from payouts p join users u on u.id = p.user_id\n           left join cash_accounts c on c.id = p.account_id\n           where p.branch_id = $1 and p.employee_id = $2\n             and p.pay_date between $3 and $4\n           order by p.created_at desc",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,11 @@
         "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "pay_date",
+        "type_info": "Date"
       }
     ],
     "parameters": {
@@ -78,8 +83,9 @@
       true,
       null,
       false,
+      false,
       false
     ]
   },
-  "hash": "18cba54df9daa0c6cd99e8bd6a44264d21c4df7f96ece8003c061709cf99f592"
+  "hash": "d0264aa2c155cc7a5ddd13a64094d803c7c219410e5411b226660d6b2bcfdb96"
 }

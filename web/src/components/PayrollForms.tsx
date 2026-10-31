@@ -3,13 +3,14 @@
 import { useState, type ReactNode } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { accountLabel, isBank, isTill, payAccounts } from '../lib/accounts'
+import { accountLabel, isBank, isTill, payAccounts, payFromPick } from '../lib/accounts'
 import { amountInput, fixedText } from '../lib/docFix'
-import { formatSom, parseSom, somInput } from '../lib/format'
+import { formatSom, parseSom, somInput, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { useNumField, useTouchMode } from '../lib/cashierMode'
 import { advanceOnly, initialLines, payoutLines, PURPOSE_LABELS, type PayoutLineDraft } from '../lib/payouts'
+import { earliestPayDate, payDateHint, salaryText, shortDate } from '../lib/payrollPeriod'
 import type { CashAccount, PayoutRemains } from '../lib/types'
 import { FIX_SUBMIT, FixBanner, type FixMode } from './FixDraft'
 import { Button, ErrorBox, Field, Loading, Money, toast } from './ui'
@@ -24,6 +25,8 @@ export interface PayoutDoc {
   comment: string
   /** Вид выплаты (ADR-122): при исправлении сохраняется. */
   purpose?: string
+  /** Дата выплаты в расчёте (задача 003 Н11): деньги уходят сейчас. */
+  pay_date?: string
 }
 
 /** Бонус или удержание в виде запроса проведения. */
@@ -36,11 +39,13 @@ export interface ExtraDoc {
   comment: string
 }
 
-/** Оклад за месяц в виде запроса проведения. */
+/** Оклад за период в виде запроса проведения (задача 003 Н11: период работника). */
 export interface SalaryDoc {
   type?: 'salary'
   employee_id: string
-  month: string
+  month?: string
+  period_from?: string
+  period_to?: string
   amount_tyiyn: number | null
 }
 
@@ -65,6 +70,8 @@ function Footer({ onCancel, disabled, onSubmit, label, fix }: { onCancel: () => 
 export function PayoutForm({
   employeeId,
   advance = false,
+  date,
+  noDate = false,
   fix,
   onCancel,
   onDone,
@@ -73,28 +80,41 @@ export function PayoutForm({
   balance?: number
   /** «Аванс» из «Расчёта за месяц» (задача 002, П13): в окне только строка аванса. */
   advance?: boolean
+  /** Дата выплаты по умолчанию (задача 003 Н11): день «За день» или месяц «За месяц». Меняет владелец. */
+  date?: string
+  /** Без поля даты — касса (всегда сегодня). */
+  noDate?: boolean
   fix?: FixMode<PayoutDoc>
   onCancel: () => void
   onDone: () => void
 }) {
-  return fix ? <PayoutFixForm fix={fix} onCancel={onCancel} onDone={onDone} /> : <PayoutLinesForm employeeId={employeeId} advance={advance} onCancel={onCancel} onDone={onDone} />
+  return fix ? (
+    <PayoutFixForm fix={fix} onCancel={onCancel} onDone={onDone} />
+  ) : (
+    <PayoutLinesForm employeeId={employeeId} advance={advance} date={date} noDate={noDate} onCancel={onCancel} onDone={onDone} />
+  )
 }
 
-/** Откуда платим: владелец — любой действующий счёт, администратор — касса смены (SPEC-29 §13, ADR-076). */
-function usePayFrom(initial: string) {
+/**
+ * Откуда платим: владелец — любой действующий счёт, администратор — касса смены (SPEC-29 §13, ADR-076).
+ * Без открытой смены касса смены недоступна, по умолчанию — сейф или счёт (задача 003 Н11).
+ */
+function usePayFrom(initial: string, shiftOpen = true) {
   const owner = useUser().role === 'owner'
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const payFrom = payAccounts(accounts.data ?? [], owner)
   const [fromPick, setFromPick] = useState(initial)
-  const fromId = payFrom.some((a) => a.id === fromPick) ? fromPick : (payFrom[0]?.id ?? '')
+  const fromId = payFromPick(payFrom, shiftOpen, fromPick)
   const fromAcc = payFrom.find((a) => a.id === fromId)
+  const closedTill = (a: CashAccount) => !shiftOpen && isTill(a)
   const field =
     payFrom.length > 1 ? (
       <Field label="Откуда">
         <select id="payout-from" value={fromId} onChange={(e) => setFromPick(e.target.value)}>
           {payFrom.map((a) => (
-            <option key={a.id} value={a.id}>
+            <option key={a.id} value={a.id} disabled={closedTill(a)}>
               {accountLabel(a)}
+              {closedTill(a) ? ' — смена не открыта' : ''}
             </option>
           ))}
         </select>
@@ -106,7 +126,21 @@ function usePayFrom(initial: string) {
   return { fromId, fromAcc, field, where }
 }
 
-function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId: string; advance: boolean; onCancel: () => void; onDone: () => void }) {
+function PayoutLinesForm({
+  employeeId,
+  advance,
+  date,
+  noDate,
+  onCancel,
+  onDone,
+}: {
+  employeeId: string
+  advance: boolean
+  date?: string
+  noDate: boolean
+  onCancel: () => void
+  onDone: () => void
+}) {
   const owner = useUser().role === 'owner'
   // Аванс выдаёт владелец; администратор — с правом «Аванс мастерам» (ADR-122).
   const mayAdvance = useCan()('payroll_advance')
@@ -119,7 +153,17 @@ function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId
   const lines = edited ?? (rem.data ? start(rem.data) : [])
   const set = (i: number, patch: Partial<PayoutLineDraft>) => setEdited(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)))
   const [comment, setComment] = useState('')
-  const from = usePayFrom('')
+  // Смена (задача 003 Н11): без неё касса смены недоступна; администратор без смены не платит.
+  const shiftOpen = rem.data?.shift_open ?? true
+  const from = usePayFrom('', shiftOpen)
+  const blocked = !shiftOpen && (Boolean(rem.data?.requires_shift) || !owner)
+  // Дата выплаты в расчёте — только владелец, не позже сегодня и не раньше настройки (ADR-{B9.1}).
+  const today = rem.data?.today ?? todayBishkek()
+  const backDays = rem.data?.backdate_days ?? 0
+  const dateField = owner && !noDate && backDays > 0
+  const [payPick, setPayPick] = useState(date ?? '')
+  const payDate = dateField && payPick ? payPick : today
+  const salary = rem.data?.salary ?? null
   const num = useNumField()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит операцию.
   const [opId] = useState(newOpId)
@@ -137,8 +181,10 @@ function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId
         account_id: from.fromId || undefined,
         comment,
         lines: result.lines,
+        pay_date: payDate !== today ? payDate : undefined,
       })
-      toast(from.fromAcc && !isTill(from.fromAcc) ? `Выплачено: ${from.fromAcc.name}` : 'Выплачено из кассы')
+      const when = payDate !== today ? ` за ${shortDate(payDate)}` : ''
+      toast(from.fromAcc && !isTill(from.fromAcc) ? `Выплачено${when}: ${from.fromAcc.name}` : `Выплачено${when} из кассы`)
       onDone()
     })
 
@@ -151,7 +197,34 @@ function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId
           Всего к выплате {formatSom(rem.data.balance_tyiyn)}, деньги уйдут {from.where}
         </div>
       )}
+      {!shiftOpen && (
+        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="payout-no-shift">
+          {rem.data?.requires_shift
+            ? 'Смена не открыта: выплаты — только при открытой смене (Настройки → Зарплата). Откройте смену.'
+            : owner
+              ? `Смена не открыта: из кассы смены выплатить нельзя. Деньги уйдут ${from.where}. Или откройте смену.`
+              : 'Откройте смену — администратор платит только из кассы смены.'}
+        </div>
+      )}
       {from.field}
+      {dateField && (
+        <Field label="Дата выплаты" hint={payDateHint(payDate, today, from.where) || 'в какой день выплата видна в расчёте'}>
+          <input
+            id="payout-date"
+            type="date"
+            className="w-44"
+            min={earliestPayDate(today, backDays)}
+            max={today}
+            value={payDate}
+            onChange={(e) => setPayPick(e.target.value)}
+          />
+        </Field>
+      )}
+      {salary && (
+        <div className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="payout-salary">
+          Оклад: {salaryText(salary)}
+        </div>
+      )}
       {lines.length === 0 ? (
         <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
           {advance ? 'Аванс выдаёт владелец или администратор с правом «Аванс мастерам».' : 'Выплачивать нечего: по всем видам выдано.'}
@@ -162,7 +235,9 @@ function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId
           onChange={set}
           total={result.total}
           numProps={num('decimal')}
-          advanceHint={`в счёт ${rem.data?.advance_to === 'salary' ? 'оклада' : 'оплаты за услуги'}${owner ? '; можно сверх заработанного' : ''}`}
+          advanceHint={`в счёт ${rem.data?.advance_to === 'salary' ? 'оклада' : 'оплаты за услуги'}${owner ? '; можно сверх заработанного' : ''}${
+            salary ? ` · по окладу к выплате ${shortDate(salary.pay_date)} — ${formatSom(salary.expected_tyiyn)}` : ''
+          }`}
         />
       )}
       {withheld < 0 && (
@@ -174,7 +249,13 @@ function PayoutLinesForm({ employeeId, advance, onCancel, onDone }: { employeeId
         <input value={comment} onChange={(e) => setComment(e.target.value)} />
       </Field>
       <ErrorBox error={act.error ?? (lines.length > 0 && result.lines.length > 0 ? result.error : null)} />
-      <Footer label={advance ? 'Выдать аванс' : 'Выплатить'} fix={false} onCancel={onCancel} onSubmit={pay} disabled={act.busy || !rem.data || result.error !== null} />
+      <Footer
+        label={advance ? 'Выдать аванс' : 'Выплатить'}
+        fix={false}
+        onCancel={onCancel}
+        onSubmit={pay}
+        disabled={act.busy || !rem.data || result.error !== null || blocked || !from.fromId}
+      />
     </div>
   )
 }
@@ -246,13 +327,22 @@ function PayoutFixForm({ fix, onCancel, onDone }: { fix: FixMode<PayoutDoc>; onC
   const [sum, setSum] = useState(amountInput(fix.doc.amount_tyiyn))
   const [comment, setComment] = useState(fix.doc.comment)
   const from = usePayFrom(fix.doc.account_id ?? '')
+  const today = todayBishkek()
+  // Дата в расчёте — исходной выплаты, её можно поменять (задача 003 Н11).
+  const [payDate, setPayDate] = useState(fix.doc.pay_date ?? today)
   const act = useAction()
 
   const pay = () =>
     void act.run(async () => {
       const amount = parseSom(sum)
       if (amount === null || amount <= 0) throw new Error('Неверная сумма')
-      const out = await fix.save({ ...fix.doc, amount_tyiyn: amount, account_id: from.fromId || fix.doc.account_id, comment })
+      const out = await fix.save({
+        ...fix.doc,
+        amount_tyiyn: amount,
+        account_id: from.fromId || fix.doc.account_id,
+        comment,
+        pay_date: payDate || today,
+      })
       if (!out) return
       toast(fixedText(out))
       onDone()
@@ -265,6 +355,9 @@ function PayoutFixForm({ fix, onCancel, onDone }: { fix: FixMode<PayoutDoc>; onC
         {fix.doc.purpose && fix.doc.purpose !== 'general' ? `${PURPOSE_LABELS[fix.doc.purpose] ?? fix.doc.purpose}, ` : ''}деньги уйдут {from.where}
       </div>
       {from.field}
+      <Field label="Дата выплаты" hint={payDateHint(payDate, today, from.where)}>
+        <input id="payout-date" type="date" className="w-44" max={today} value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+      </Field>
       <Field label="Сумма, с" required>
         <input inputMode="decimal" value={sum} onChange={(e) => setSum(e.target.value)} />
       </Field>
@@ -342,6 +435,7 @@ export function ExtraForm({
 export function SalaryForm({
   employeeId,
   month,
+  period,
   hint,
   initialSum = '',
   optional = false,
@@ -350,7 +444,10 @@ export function SalaryForm({
   onDone,
 }: {
   employeeId: string
-  month: string
+  /** Месяц, в котором заканчивается период работника (прежний способ). */
+  month?: string
+  /** Период работника (задача 003 Н11): с какого по какой день. */
+  period?: { from: string; to: string }
   hint: ReactNode
   initialSum?: string
   optional?: boolean
@@ -374,7 +471,12 @@ export function SalaryForm({
         onDone()
         return
       }
-      await post('/payroll/salary', { op_id: opId, employee_id: employeeId, month, amount_tyiyn: amount })
+      await post('/payroll/salary', {
+        op_id: opId,
+        employee_id: employeeId,
+        ...(period ? { period_from: period.from, period_to: period.to } : { month }),
+        amount_tyiyn: amount,
+      })
       toast('Оклад начислен')
       onDone()
     })
