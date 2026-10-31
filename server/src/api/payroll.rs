@@ -2522,21 +2522,23 @@ struct SalaryOut {
 }
 
 /// Вкладка «Оклад» (задача 003 Н11): по каждому работнику с окладом — период дня `date`
-/// (по умолчанию сегодня). Администратор видит только тех, кому может платить: мастеров не
-/// кассиров (SPEC-30 §6), как в «За день».
+/// (по умолчанию сегодня). Раздел «Расчёт» — по праву `view_payroll`, как «За месяц»; без права
+/// «Заработок кассиров» администратор видит только тех, кому может платить: мастеров не
+/// кассиров (SPEC-30 §6, ADR-{B7.1}), как в «За день».
 async fn salary_now(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<SalaryQuery>,
 ) -> AppResult<Json<SalaryOut>> {
     let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "view_payroll").await?;
+    let see_all = crate::auth::has_permission(&mut conn, &user, "payroll_view_all").await?;
     let today = today(&mut conn).await?;
     let date = q.date.unwrap_or(today);
     let settings = load_settings(&mut conn, user.branch_id).await?;
-    let owner = user.is_owner();
     let mut rows = Vec::new();
     for e in salary_employees(&mut conn, user.branch_id, q.employee_id).await? {
-        if !owner && (e.is_cashier || !e.is_master) {
+        if !see_all && (e.is_cashier || !e.is_master) {
             continue;
         }
         if let Some(r) = salary_row(

@@ -11225,6 +11225,12 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
             Box::new(|| json!({})),
         ),
         (
+            "view_payroll",
+            "GET",
+            "/api/v1/payroll/salary".into(),
+            Box::new(|| json!({})),
+        ),
+        (
             "view_income",
             "GET",
             "/api/v1/reports/income".into(),
