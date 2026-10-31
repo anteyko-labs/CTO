@@ -9,7 +9,7 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, Pa
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { OilCountInput, type OilCount } from '../components/OilCountInput'
-import { formatDateTime, formatSom, litersInput, parseLiters } from '../lib/format'
+import { formatDateTime, formatSom, litersInput, parseLiters, plural } from '../lib/format'
 import { countText, kgInput, oilFields, parseKg, parseOil, viscosityFromName, viscosityKey } from '../lib/units'
 import { errorText, useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
@@ -32,15 +32,23 @@ import {
   type Seen,
 } from '../lib/revisionCount'
 import {
+  cleanQueues,
+  closedText,
+  newScan,
+  otherQueues,
   queueAdd,
-  queueAfterSend,
+  queueResolve,
   queueToSend,
+  queueWithout,
   readQueue,
+  scansText,
   sendOutcome,
   unsentByLine,
+  unsentCodes,
   unsentCount,
+  unsentFirstText,
   unsentText,
-  writeQueue,
+  updateQueue,
   type QueuedScan,
   type SendOutcome,
 } from '../lib/revisionQueue'
@@ -288,23 +296,58 @@ function Draft({
   // загруженном сервере первая могла дойти позже и затереть вторую (12,5 вместо 12,6).
   const writes = useRef(new Map<string, Promise<Saved>>())
 
-  /** Неотправленные сканы этой ревизии на устройстве: в памяти и в localStorage, переживают
-   *  перезагрузку; уходят при связи с теми же op_id (задача 003, Н14). */
+  /** Неотправленные сканы этой ревизии и этого пользователя на устройстве: в localStorage,
+   *  переживают перезагрузку, общие для вкладок; уходят при связи с теми же op_id (задача 003, Н14). */
   const revId = rev.head.id
-  const [queue, setQueue] = useState<QueuedScan[]>(() => readQueue(localStorage, revId))
+  const user = { id: me.id, name: me.full_name }
+  const [queue, setQueue] = useState<QueuedScan[]>(() => readQueue(localStorage, revId, me.id) ?? [])
   const queueNow = useRef(queue)
+  /** Свои сканы, которые сейчас отправляются впервые: ещё не «не отправлено». */
+  const [fresh] = useState(() => new Set<string>())
+  /** Запись — слияние со свежей очередью из хранилища: скан другой вкладки не затирается. */
   const putQueue = (f: (q: QueuedScan[]) => QueuedScan[]) => {
-    queueNow.current = f(queueNow.current)
-    writeQueue(localStorage, revId, queueNow.current)
+    queueNow.current = updateQueue(localStorage, revId, user, f, queueNow.current)
     setQueue(queueNow.current)
   }
+  /** Неотправленные сканы этой ревизии под другими пользователями этого устройства — не отправляются. */
+  const [others, setOthers] = useState(() => otherQueues(localStorage, revId, me.id))
+  // Другая вкладка изменила очередь (свой скан, отправила) — отметки ⏳ здесь те же.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && !e.key.startsWith('avtodom.revision.unsent.')) return
+      const q = readQueue(localStorage, revId, me.id)
+      if (q) {
+        queueNow.current = q
+        setQueue(q)
+      }
+      setOthers(otherQueues(localStorage, revId, me.id))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [revId, me.id])
+  /** Сканы из очереди, которые сервер окончательно не принял: на экране, пока не нажмут «Понятно». */
+  const [closedLost, setClosedLost] = useState(0)
+  const [lostNotes, setLostNotes] = useState<string[]>([])
+  const [lostCodes, setLostCodes] = useState<{ code: string; why: 'not_found' | 'not_fit' | 'need_qty' }[]>([])
+  /** Сессия кончилась (401): сканы ждут входа. */
+  const [needLogin, setNeedLogin] = useState(false)
+  const note = (t: string) => setLostNotes((n) => (n.includes(t) ? n : [...n, t]))
 
   /**
    * Запись строки — по очереди с прошлыми записями этой строки; `null` — этот ввод уже
    * отправляется. `shown` — итог на экране, если ввод не начинали (сверка «= итог»). Ответа нет —
-   * тот же запрос повторяется сам (`tries` раз) с тем же op_id.
+   * тот же запрос повторяется сам (`tries` раз) с тем же op_id. `gate` — проверка перед отправкой,
+   * когда прошлые записи строки ответили: бросила — запись не уходит.
    */
-  const send = (id: string, shown: Seen, qty: number | null, mode: CountMode, opId: string, tries = 2): Promise<Saved> | null => {
+  const send = (
+    id: string,
+    shown: Seen,
+    qty: number | null,
+    mode: CountMode,
+    opId: string,
+    tries = 2,
+    gate?: () => void,
+  ): Promise<Saved> | null => {
     if (inflight.current.has(opId)) return null
     inflight.current.add(opId)
     const prev = writes.current.get(id)
@@ -313,6 +356,7 @@ function Draft({
     const write = (prev ?? Promise.resolve(null))
       .catch(() => null)
       .then(() => {
+        gate?.()
         // С чем сверять — когда своя прошлая запись строки уже ответила; ввод не начинали — что на экране.
         const base = own.baseOr(id, seq, shown)
         return retrySame(
@@ -369,7 +413,20 @@ function Draft({
     // иначе новое число пропало бы, не записавшись.
     const id = l.product_id
     const was = { text: editsNow.current[id], oil: oilEditsNow.current[id] }
-    const write = send(id, l.counted_qty, qty, mode, opId)
+    // «= итог» и очистка — после неотправленных сканов этой строки, а не до них: иначе прибавка
+    // из очереди ушла бы после итога и прибавилась к нему. Сканы уходят первыми в той же цепочке
+    // записей строки и, записавшись, входят в сверку как свои (человек их видел с отметкой ⏳);
+    // не ушли — итог не записывается, число остаётся в поле.
+    const before = mode === 'set' ? queueNow.current.filter((x) => x.productId === id).map((x) => x.opId) : []
+    for (const s of queueNow.current) if (before.includes(s.opId) && !inflight.current.has(s.opId)) void sendScan(s, 0)
+    const gate =
+      before.length === 0
+        ? undefined
+        : () => {
+            const left = queueNow.current.filter((x) => before.includes(x.opId)).length
+            if (left > 0) throw new Error(unsentFirstText(left))
+          }
+    const write = send(id, l.counted_qty, qty, mode, opId, 2, gate)
     if (!write) return
     void act.run(async () => {
       let res: Saved | null = null
@@ -394,12 +451,29 @@ function Draft({
     })
   }
 
+  /** Сервер окончательно не принял скан из очереди: ревизию провели — в общее число «не учтены»,
+   *  иначе — причина; на экране, пока не нажмут «Понятно» (следующий скан её не стирает). */
+  const refusedScan = (e: unknown) => {
+    if (e instanceof ApiError && e.code === 'revision_closed') {
+      setClosedLost((n) => n + 1)
+      void reload()
+    } else note(`Скан не учтён: ${errorText(e)}`)
+  }
+  /** Ждать связи или входа: отметки ⏳ остаются, 401 — «Войдите снова». */
+  const waitScan = (outcome: SendOutcome) => {
+    if (outcome === 'login') setNeedLogin(true)
+  }
+
   /**
-   * Скан из очереди на сервер (тот же op_id). Записан — уходит из очереди; ответа нет — остаётся с
-   * отметкой «не отправлено»; сервер отказал (ревизию провели) — уходит, причина — на экране.
+   * Скан из очереди на сервер (тот же op_id). Записан — уходит из очереди; ответа нет, 5xx, 429,
+   * 401 — остаётся с отметкой «не отправлено»; сервер окончательно отказал по существу (ревизию
+   * провели, неверные данные) — уходит, причина — на экране. Убирается только свой op_id: сканы
+   * других вкладок остаются.
    */
   const sendScan = async (s: QueuedScan, tries: number): Promise<SendOutcome | 'busy'> => {
-    const write = send(s.productId, null, s.qty, 'add', s.opId, tries)
+    if (s.productId === null) return resolveScan(s)
+    const productId = s.productId
+    const write = send(productId, null, s.qty, 'add', s.opId, tries)
     if (!write) return 'busy'
     let outcome: SendOutcome = 'ok'
     let res: Saved | null = null
@@ -407,14 +481,55 @@ function Draft({
       res = await write
     } catch (e) {
       outcome = sendOutcome(e)
-      if (outcome === 'refused') {
-        if (e instanceof ApiError && e.code === 'revision_closed') void reload()
-        act.setError(errorText(e))
-      }
+      if (outcome === 'refused') refusedScan(e)
+      else waitScan(outcome)
     }
-    putQueue((q) => queueAfterSend(q, s.opId, outcome))
-    if (res) applySaved(s.productId, s.qty, 'add', res)
+    fresh.delete(s.opId)
+    if (outcome === 'ok' || outcome === 'refused') putQueue((q) => queueWithout(q, [s.opId]))
+    else setQueue([...queueNow.current])
+    if (outcome === 'ok') setNeedLogin(false)
+    if (res) applySaved(productId, s.qty, 'add', res)
     return outcome
+  }
+
+  /** Строка товара на экране: её нет в загруженном списке — появляется сразу, до перечитывания. */
+  const showLine = (p: Product) => setExtra((e) => (e.some((x) => x.product_id === p.id) ? e : [...e, lineOf(p)]))
+
+  /**
+   * Скан кода, которого не было на экране, отсканированный без связи: товар — по коду на сервере.
+   * Нашёлся и подходит ревизии — тот же op_id уходит прибавкой к его строке; не нашёлся, не этой
+   * ревизии или считается не сканом (на вес, масло без тары) — скан уходит из очереди, коды — на
+   * экране списком.
+   */
+  const resolveScan = async (s: QueuedScan): Promise<SendOutcome | 'busy'> => {
+    const code = s.barcode ?? ''
+    if (inflight.current.has(s.opId)) return 'busy'
+    inflight.current.add(s.opId)
+    let p: Product
+    try {
+      p = await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+    } catch (e) {
+      const outcome = sendOutcome(e)
+      if (outcome === 'refused') {
+        if (e instanceof ApiError && e.status === 404) setLostCodes((c) => [...c, { code, why: 'not_found' }])
+        else note(`Скан ${code} не учтён: ${errorText(e)}`)
+        putQueue((q) => queueWithout(q, [s.opId]))
+      } else waitScan(outcome)
+      return outcome
+    } finally {
+      inflight.current.delete(s.opId)
+    }
+    const qty = p.unit === 'piece' ? 1 : oilTare(p)
+    const why = !fitsRevision(p) ? 'not_fit' : qty === null ? 'need_qty' : null
+    if (why || qty === null) {
+      if (why === 'need_qty') showLine(p)
+      setLostCodes((c) => [...c, { code, why: why ?? 'need_qty' }])
+      putQueue((q) => queueWithout(q, [s.opId]))
+      return 'refused'
+    }
+    showLine(p)
+    putQueue((q) => queueResolve(q, s.opId, p.id, qty))
+    return sendScan({ ...s, productId: p.id, barcode: null, qty }, 0)
   }
 
   /** Неотправленные сканы — на сервер по порядку; связи по-прежнему нет — до следующего раза. */
@@ -424,7 +539,10 @@ function Draft({
     flushing.current = true
     try {
       for (const s of queueToSend(queueNow.current, inflight.current)) {
-        if ((await sendScan(s, 0)) === 'no_answer') break
+        // Пока шли прошлые, скан могли отправить «= итог» строки или другая вкладка.
+        if (!queueNow.current.some((x) => x.opId === s.opId)) continue
+        const r = await sendScan(s, 0)
+        if (r === 'wait' || r === 'login') break
       }
     } finally {
       flushing.current = false
@@ -438,7 +556,8 @@ function Draft({
   /** Скан: штука или канистра — прибавка в очередь (сразу в localStorage) и на сервер. Ответа нет
    *  и после повторов — скан остаётся в очереди с отметкой у строки, а не пропадает молча. */
   const scanAdd = (l: Line, qty: number) => {
-    const s: QueuedScan = { opId: newOpId(), productId: l.product_id, qty, unsent: false }
+    const s = newScan(newOpId(), { productId: l.product_id, qty })
+    fresh.add(s.opId)
     putQueue((q) => queueAdd(q, s))
     void sendScan(s, 2).then((r) => {
       // Связь есть — заодно уходят сканы, не отправленные раньше.
@@ -453,7 +572,7 @@ function Draft({
   useEffect(() => {
     if (!draft) return
     const refresh = () => {
-      if (queueNow.current.some((x) => x.unsent)) void flushNow.current()
+      if (queueNow.current.some((x) => !fresh.has(x.opId))) void flushNow.current()
       if (document.visibilityState !== 'visible' || writes.current.size > 0) return
       void reload()
     }
@@ -468,7 +587,7 @@ function Draft({
       window.removeEventListener('online', online)
       stop()
     }
-  }, [revId, draft, reload])
+  }, [revId, draft, reload, fresh])
 
   /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
@@ -476,8 +595,15 @@ function Draft({
     const id = l.product_id
     const mode = modeOf(l)
     if (mode === 'add' && (qty === null || qty === 0)) return dropEdit(id)
-    // Пустую строку очистили, своих записей в пути нет — убирать нечего.
-    if (mode === 'set' && qty === null && own.base(id, Number.MAX_SAFE_INTEGER) === null && !writes.current.has(id)) return dropEdit(id)
+    // Пустую строку очистили, своих записей в пути и неотправленных сканов нет — убирать нечего.
+    if (
+      mode === 'set' &&
+      qty === null &&
+      own.base(id, Number.MAX_SAFE_INTEGER) === null &&
+      !writes.current.has(id) &&
+      !queueNow.current.some((x) => x.productId === id)
+    )
+      return dropEdit(id)
     save(l, qty, mode, ops.take(id, inputKey(mode, qty)))
   }
 
@@ -543,7 +669,7 @@ function Draft({
       countLine(l)
       return
     }
-    void get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+    void retrySame(() => get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`))
       .then((p) => {
         const mine = allLines.find((x) => x.product_id === p.id)
         if (mine) return countLine(mine)
@@ -563,7 +689,14 @@ function Draft({
           // Нет в ревизии: товара нет и в программе — предлагаем завести с найденным количеством.
           act.setError(null)
           setAdding({ barcode: code })
-        } else act.setError(e instanceof Error ? e.message : 'Ошибка')
+          return
+        }
+        const outcome = sendOutcome(e)
+        if (outcome === 'refused') return act.setError(errorText(e))
+        // Связи нет: скан не пропадает — в очередь по коду со своим op_id; товар уточнится при связи.
+        act.setError(null)
+        waitScan(outcome)
+        putQueue((q) => queueAdd(q, newScan(newOpId(), { barcode: code })))
       })
   }
 
@@ -573,27 +706,71 @@ function Draft({
   }
 
   const counted = allLines.filter((l) => l.counted_qty !== null)
-  const unsent = unsentCount(queue)
-  const unsentLines = unsentByLine(queue)
+  const unsent = unsentCount(queue, fresh)
+  const unsentLines = unsentByLine(queue, fresh)
+  const codes = unsentCodes(queue, fresh)
+  // Ревизию провели или отменили, а сканы с устройства ещё не дошли: сколько не учтено — одним числом.
+  const closedCount = closedLost + (draft ? 0 : queue.length)
   const sendNow = (
     <Button variant="secondary" onClick={() => void flush()}>
       Отправить сейчас
     </Button>
   )
+  const codesOf = (why: 'not_found' | 'not_fit' | 'need_qty') => [...new Set(lostCodes.filter((c) => c.why === why).map((c) => c.code))].join(', ')
   const diffs = counted.filter((l) => l.counted_qty !== l.expected_qty)
   const overs = counted.filter((l) => overNorm(l, rev.oil_norm_bp))
   const valueTotal = rev.lines.reduce((acc, l) => acc + (l.value_delta_tyiyn ?? 0), 0)
 
   return (
     <div className="flex flex-col gap-4">
-      {!draft && queue.length > 0 && (
+      {closedCount > 0 && (
         <Notice tone="rose">
           <div className="flex flex-wrap items-center gap-3">
             <span data-testid="unsent-closed">
-              На этом устройстве остались неотправленные сканы: {queue.length}. Ревизия уже {rev.head.status === 'posted' ? 'проведена' : 'отменена'} — они не
-              учтены; найденное проведите оприходованием или новой ревизией.
+              {closedText(closedCount, rev.head.number, rev.head.status === 'cancelled' ? 'cancelled' : 'posted')} — найденное проведите
+              оприходованием или новой ревизией.
             </span>
-            <Button variant="secondary" onClick={() => putQueue(() => [])}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setClosedLost(0)
+                if (!draft) putQueue(() => [])
+              }}
+            >
+              Понятно
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {(lostNotes.length > 0 || lostCodes.length > 0) && (
+        <Notice tone="rose">
+          <div className="flex flex-wrap items-center gap-3">
+            <div data-testid="unsent-lost" className="flex flex-col gap-1">
+              {codesOf('not_found') && (
+                <span>
+                  Сканы без связи не учтены — товар не найден по кодам: {codesOf('not_found')}. Заведите его кнопкой «+ Товар не из программы».
+                </span>
+              )}
+              {codesOf('not_fit') && (
+                <span>
+                  Сканы без связи не учтены — товар не входит в эту ревизию
+                  {rev.head.category_name ? ` (категория «${rev.head.category_name}»)` : ''}, коды: {codesOf('not_fit')}.
+                </span>
+              )}
+              {codesOf('need_qty') && (
+                <span>Сканы без связи не учтены — товар на вес или масло без тары, впишите количество в строке; коды: {codesOf('need_qty')}.</span>
+              )}
+              {lostNotes.map((t) => (
+                <span key={t}>{t}</span>
+              ))}
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setLostNotes([])
+                setLostCodes([])
+              }}
+            >
               Понятно
             </Button>
           </div>
@@ -602,13 +779,29 @@ function Draft({
       {draft && unsent > 0 && (
         <Notice>
           <div className="flex flex-wrap items-center gap-3">
-            <span data-testid="unsent">
-              ⏳ {unsentText(unsent)}. Сканы не потеряны — повторно не сканируйте.
-            </span>
+            <div className="flex flex-col gap-1">
+              <span data-testid="unsent">
+                ⏳ {unsentText(unsent)}. Сканы не потеряны — повторно не сканируйте.
+              </span>
+              {codes.map((c) => (
+                <span key={c} data-unsent-code={c}>
+                  ⏳ скан {c} — товар уточнится при связи
+                </span>
+              ))}
+              {needLogin && <span data-testid="unsent-login">Войдите снова — {scansText(unsent)} {plural(unsent, ['ждёт', 'ждут', 'ждут'])} отправки.</span>}
+            </div>
             {sendNow}
           </div>
         </Notice>
       )}
+      {others.map((o) => (
+        <Notice key={o.user}>
+          <span data-testid="unsent-other">
+            На этом устройстве {o.count} {plural(o.count, ['неотправленный скан', 'неотправленных скана', 'неотправленных сканов'])} пользователя {o.user}{' '}
+            — они уйдут, когда он войдёт и откроет эту ревизию.
+          </span>
+        </Notice>
+      ))}
       {draft && (
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -988,6 +1181,20 @@ function Revision() {
   useEffect(() => {
     openNow.current = openId
   }, [openId])
+
+  // Очереди неотправленных сканов на устройстве: проведённых и отменённых ревизий — убираются со
+  // словами, сколько сканов не учтено; сканы старше недели — убираются (задача 003, Н14).
+  const [lostClosed, setLostClosed] = useState<{ revisionId: string; number: number; status: 'posted' | 'cancelled'; count: number }[]>([])
+  useEffect(() => {
+    if (!list.data) return
+    const closed = new Map(
+      list.data
+        .filter((h) => h.status !== 'draft' && h.id !== openNow.current)
+        .map((h) => [h.id, { number: h.number, status: h.status === 'posted' ? ('posted' as const) : ('cancelled' as const) }]),
+    )
+    const lost = cleanQueues(localStorage, closed)
+    if (lost.length > 0) setLostClosed((was) => [...was.filter((x) => !lost.some((y) => y.revisionId === x.revisionId)), ...lost])
+  }, [list.data])
   const onFresh = useCallback((update: (r: RevisionOut) => RevisionOut) => setRev((r) => (r ? update(r) : r)), [setRev])
   const reloadRev = useCallback(async () => {
     const id = openNow.current
@@ -1080,6 +1287,23 @@ function Revision() {
           Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются. Начали несколько человек — все считают в одной ревизии.
         </div>
       </Card>
+      {lostClosed.length > 0 && (
+        <Notice tone="rose">
+          <div className="flex flex-wrap items-center gap-3">
+            <div data-testid="unsent-closed" className="flex flex-col gap-1">
+              {lostClosed.map((x) => (
+                <span key={x.revisionId}>
+                  На этом устройстве оставались неотправленные сканы: {closedText(x.count, x.number, x.status)} — найденное проведите
+                  оприходованием или новой ревизией.
+                </span>
+              ))}
+            </div>
+            <Button variant="secondary" onClick={() => setLostClosed([])}>
+              Понятно
+            </Button>
+          </div>
+        </Notice>
+      )}
       {busy && (
         <Notice>
           <div className="flex flex-wrap items-center gap-3">

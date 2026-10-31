@@ -1,6 +1,6 @@
 // Один товар лежит в нескольких местах, его сканируют разные люди с разных устройств в одной
 // ревизии — итог складывается и виден всем (задача 003, Н14).
-import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Browser, type BrowserContext, type Page } from '@playwright/test'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -355,4 +355,163 @@ test('ревизия: двое начинают одну ревизию — од
   await expect(c.getByRole('heading', { name: /Ревизия № \d+ · / })).toBeVisible()
 
   await cancelDraft(a.request, cat.id)
+})
+
+/** Одно устройство, несколько вкладок: общий контекст браузера (общий localStorage), один вход. */
+async function tabsDevice(browser: Browser): Promise<{ ctx: BrowserContext; page: Page }> {
+  const ctx = await browser.newContext()
+  const page = await ctx.newPage()
+  await page.goto('/login')
+  await page.getByLabel('Логин').fill(OWNER)
+  await page.getByLabel('Пароль').fill(OWNER_PASSWORD)
+  await page.getByRole('button', { name: 'Войти' }).click()
+  await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
+  return { ctx, page }
+}
+
+/** Категория, штучный товар и черновик ревизии; `counted` — итог строки на сервере. */
+async function piece(request: APIRequestContext, tag: string, n: string) {
+  const category = `Кат ${tag} ${RUN}`
+  const code = `27${RUN}${n}`
+  const cat = await apiPost<{ id: string }>(request, '/categories', { name: category, kind: 'other' })
+  const p = await apiPost<{ id: string }>(request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Свеча ${tag} ${RUN}`,
+    barcodes: [code],
+    sale_price_tyiyn: 30_000,
+  })
+  const rev = await apiPost<{ head: { id: string; number: number } }>(request, '/revisions', { category_id: cat.id })
+  const counted = async () =>
+    ((await (await request.get(`/api/v1/revisions/${rev.head.id}/lines/${p.id}`)).json()) as { counted_qty: number | null }).counted_qty
+  return { category, code, cat, p, rev, counted }
+}
+
+const LINES = /\/api\/v1\/revisions\/[0-9a-f-]+\/lines$/
+
+test('ревизия: две вкладки одного устройства без связи — оба скана дошли', async ({ browser }) => {
+  const { ctx, page: tab1 } = await tabsDevice(browser)
+  const { category, code, cat, p, counted } = await piece(tab1.request, 'две вкладки', '501')
+  const tab2 = await ctx.newPage()
+  await openRevision(tab1, category)
+  await openRevision(tab2, category)
+  let offline = true
+  await ctx.route(LINES, (r) => (r.request().method() === 'PUT' && offline ? r.abort('connectionrefused') : r.continue()))
+
+  // Скан в каждой вкладке: очередь общая — запись одной вкладки не затирает скан другой.
+  await scan(tab1, code)
+  await expect(tab1.getByTestId('unsent')).toContainText('Не отправлено: 1', { timeout: 20_000 })
+  await tab2.bringToFront()
+  await scan(tab2, code)
+  await expect(tab2.getByTestId('unsent')).toContainText('Не отправлено: 2', { timeout: 20_000 })
+  // Первая вкладка видит отметку и скана второй.
+  await expect(tab1.getByTestId('unsent')).toContainText('Не отправлено: 2')
+  await expect(tab1.locator(`[data-unsent="${p.id}"]`)).toHaveText(text('⏳ +2 шт не отправлено'))
+
+  // Первую закрыли, вторую перезагрузили — в очереди оба.
+  await tab1.close()
+  await openRevision(tab2, category)
+  await expect(tab2.getByTestId('unsent')).toContainText('Не отправлено: 2')
+  offline = false
+  await expect(tab2.getByTestId('unsent')).toBeHidden({ timeout: 20_000 })
+  await expect(total(tab2, p.id)).toHaveText(text('итого 2 шт'))
+  expect(await counted()).toBe(2)
+  await cancelDraft(tab2.request, cat.id)
+})
+
+test('ревизия: «= итог» при неотправленном скане строки ждёт его — лишнего не прибавилось', async ({ browser }) => {
+  const a = await device(browser)
+  const { category, code, cat, p, counted } = await piece(a.request, 'итог после очереди', '502')
+  await openRevision(a, category)
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 1 шт'))
+
+  // Следующий скан не доходит: у строки «⏳ +1».
+  let blocked: string | null = null
+  let block = true
+  await a.route(LINES, (r) => {
+    if (r.request().method() !== 'PUT') return r.continue()
+    const body = r.request().postDataJSON() as { op_id: string; mode: string }
+    if (body.mode === 'add') blocked ??= body.op_id
+    return block && body.op_id === blocked ? r.abort('connectionrefused') : r.continue()
+  })
+  await scan(a, code)
+  const mark = a.locator(`[data-unsent="${p.id}"]`)
+  await expect(mark).toHaveText(text('⏳ +1 шт не отправлено'), { timeout: 20_000 })
+
+  // Человек видит 1 и ⏳ +1 и пишет «= итог 2»: без связи итог не уходит раньше скана.
+  const row = a.getByRole('row', { name: new RegExp(`Свеча итог после очереди ${RUN}`) })
+  await row.locator('[data-mode="set"]').click()
+  const field = a.locator(`[data-count="${p.id}"]`)
+  await field.fill('2')
+  await field.press('Enter')
+  await expect(a.getByText(/Сначала отправится 1 неотправленный скан этой строки/)).toBeVisible({ timeout: 10_000 })
+  await expect(field).toHaveValue('2')
+  expect(await counted()).toBe(1)
+
+  // Связь вернулась: скан, затем итог — 2, а не 3.
+  block = false
+  await field.focus()
+  await field.press('Enter')
+  await expect(mark).toBeHidden({ timeout: 20_000 })
+  await expect(total(a, p.id)).toHaveText(text('итого 2 шт'))
+  await expect(field).toHaveValue('2')
+  expect(await counted()).toBe(2)
+  // Очередь пуста: позже ничего не прибавится.
+  await a.waitForTimeout(6_000)
+  expect(await counted()).toBe(2)
+  await a.unroute(LINES)
+  await cancelDraft(a.request, cat.id)
+})
+
+test('ревизия: товар не из загруженного списка отсканирован без связи — дошёл при связи', async ({ browser }) => {
+  const a = await device(browser)
+  const category = `Кат код без связи ${RUN}`
+  const code = `27${RUN}503`
+  const unknown = `27${RUN}504`
+  const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'other' })
+  const rev = await apiPost<{ head: { id: string } }>(a.request, '/revisions', { category_id: cat.id })
+  await openRevision(a, category)
+  // Товар заведён, когда список ревизии уже загружен (с нулевым остатком, только что заведён).
+  const p = await apiPost<{ id: string }>(a.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Свеча код без связи ${RUN}`,
+    barcodes: [code],
+    sale_price_tyiyn: 30_000,
+  })
+  let offline = true
+  await a.context().route(/\/api\/v1\//, (r) => (offline ? r.abort('connectionrefused') : r.continue()))
+  await scan(a, code)
+  await expect(a.locator(`[data-unsent-code="${code}"]`)).toHaveText(text(`⏳ скан ${code} — товар уточнится при связи`), { timeout: 20_000 })
+  await scan(a, unknown)
+  await expect(a.locator(`[data-unsent-code="${unknown}"]`)).toBeVisible({ timeout: 20_000 })
+  await expect(a.getByTestId('unsent')).toContainText('Не отправлено: 2')
+
+  // Связь вернулась: товар нашёлся по коду — строка с итогом 1; кода нет в программе — сказано.
+  offline = false
+  await expect(a.getByTestId('unsent')).toBeHidden({ timeout: 20_000 })
+  await expect(total(a, p.id)).toHaveText(text('итого 1 шт'))
+  await expect(a.getByTestId('unsent-lost')).toContainText(`товар не найден по кодам: ${unknown}`)
+  const line = await (await a.request.get(`/api/v1/revisions/${rev.head.id}/lines/${p.id}`)).json()
+  expect(line.counted_qty).toBe(1)
+  await cancelDraft(a.request, cat.id)
+})
+
+test('ревизию провели с другого устройства, а сканы ждали связи — сказано, сколько не учтено', async ({ browser }) => {
+  const a = await device(browser)
+  const { category, code, p, rev } = await piece(a.request, 'проведена без связи', '505')
+  await openRevision(a, category)
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 1 шт'))
+  let offline = true
+  await a.context().route(/\/api\/v1\//, (r) => (offline ? r.abort('connectionrefused') : r.continue()))
+  await scan(a, code)
+  await scan(a, code)
+  await expect(a.getByTestId('unsent')).toContainText('Не отправлено: 2', { timeout: 20_000 })
+  await apiPost(a.request, `/revisions/${rev.head.id}/post`, { op_id: crypto.randomUUID(), comment: 'e2e', force: true })
+  offline = false
+  await expect(a.getByTestId('unsent-closed')).toContainText(`2 скана не учтены: ревизия № ${rev.head.number} проведена`, { timeout: 20_000 })
+  await a.getByRole('button', { name: 'Понятно' }).click()
+  await expect(a.getByTestId('unsent-closed')).toBeHidden()
 })
