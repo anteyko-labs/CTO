@@ -26,7 +26,7 @@ async function api<T>(page: Page, method: 'post' | 'put' | 'get', path: string, 
 
 test('прибыль и убытки: раскрытие до документов, сторно, скачать', async ({ page, browser }) => {
   await login(page, OWNER, OWNER_PASSWORD)
-  await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false })
+  await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false, expenses_bonus_accruals: true })
   const safe = await ownerSafe(page.request)
   const articles = await api<{ id: string; name: string }[]>(page, 'get', '/expense-articles')
   const household = articles.find((a) => a.name === 'Хозтовары')!.id
@@ -75,7 +75,7 @@ test('прибыль и убытки: раскрытие до документо
   await expect(art.getByRole('treeitem').filter({ hasText: `Ошибка ${RUN}` })).toHaveCount(0)
   await page.getByLabel('Показать сторно и исправления').check()
   await expect(art.getByRole('treeitem').filter({ hasText: `Ошибка ${RUN}` })).toHaveCount(2)
-  await expect(art.getByText('сторно', { exact: true })).toBeVisible()
+  await expect(art.getByRole('treeitem').filter({ hasText: `Ошибка ${RUN}` }).getByText('сторно', { exact: true })).toBeVisible()
 
   // Зарплата работникам → работник → выдано списком.
   await page.getByTestId('pnl-opex.salary').getByRole('button').first().click()
@@ -106,9 +106,12 @@ test('прибыль и убытки: раскрытие до документо
   expect(book.sheets[1].some((r) => r.includes('сторно'))).toBeTruthy()
   expect(book.sheets[2].some((r) => r[0] === worker && r[1] === 'Выдано: Без вида')).toBeTruthy()
 
-  // «Расходы» → «В Excel»: все строки отбора, «Кому» — столбцом, сторно — отметкой.
+  // «Расходы» → «В Excel»: все строки отбора, «Кому» — столбцом; сторно — с «Показать сторно»,
+  // отметкой (задача 003 Н12б: в списке и выплаты работникам).
   await page.goto('/expenses')
   await expect(page.getByRole('cell', { name: payee })).toBeVisible()
+  await page.getByLabel('Показать сторно').check()
+  await expect(page.getByRole('row').filter({ hasText: `Ошибка ${RUN}` })).toHaveCount(2)
   const listFile = page.waitForEvent('download')
   await page.getByRole('button', { name: 'В Excel' }).click()
   const saved = await listFile
@@ -116,12 +119,13 @@ test('прибыль и убытки: раскрытие до документо
   const listPath = test.info().outputPath('expenses.xlsx')
   await saved.saveAs(listPath)
   const list = readBook(listPath)
-  expect(list.names).toEqual(['Расходы'])
+  expect(list.names).toEqual(['Расходы', 'Итог по статьям'])
   const head = list.sheets[0].find((r) => r[0] === '№')
-  expect(head).toEqual(['№', 'День', 'Статья', 'Кому', 'Из кассы', 'Сумма', 'Комментарий', 'Кто провёл', 'Когда', 'Отметка'])
+  expect(head).toEqual(['№', 'Дата', 'Что', 'Кому', 'За что', 'Касса', 'Сумма', 'Кто провёл', 'Когда', 'Отметка'])
   const line = list.sheets[0].find((r) => r[3] === payee)
-  expect(line?.[5]).toBe('123.00')
+  expect(line?.[6]).toBe('123.00')
   expect(list.sheets[0].filter((r) => r[3] === `Ошибка ${RUN}`).map((r) => r[9])).toEqual(['сторно', 'сторнирован'])
+  expect(list.sheets[0].some((r) => r[3] === worker && r[2] === 'Выплата: Без вида')).toBeTruthy()
 
   // Администратору отчёта нет: ни пункта меню, ни ответа сервера.
   const admin = `pnl${RUN}`
@@ -138,7 +142,7 @@ test('прибыль и убытки: раскрытие до документо
 
 test('настройки отчёта: поле «Кому» обязательное — расход без него не записать', async ({ page }) => {
   await login(page, OWNER, OWNER_PASSWORD)
-  await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false })
+  await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false, expenses_bonus_accruals: true })
   await page.goto('/settings')
   await page.getByRole('link', { name: /Отчёт о прибыли/ }).click()
   await expect(page.getByRole('heading', { name: 'Отчёт о прибыли' })).toBeVisible()
@@ -152,6 +156,6 @@ test('настройки отчёта: поле «Кому» обязатель�
     await page.locator('#expense-payee').fill(`Электросети ${RUN}`)
     await expect(page.getByRole('button', { name: 'Записать' })).toBeEnabled()
   } finally {
-    await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false })
+    await api(page, 'put', '/settings/profit-report', { default_period: 'month', expense_payee: 'optional', show_reversals: false, expenses_bonus_accruals: true })
   }
 })

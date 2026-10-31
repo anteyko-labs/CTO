@@ -1059,6 +1059,19 @@ export interface ProfitDetail {
     reversed: boolean
     branch: string
   }[]
+  /** Оклад за незаконченный период без начисления — справочно, в чистую не входит (задача 003 Н12б). */
+  salary_expected?: SalaryExpected[]
+}
+
+/** Оклад «ожидается»: период работника не закончился, оклад не начислен. */
+export interface SalaryExpected {
+  employee_id: string
+  employee_name: string
+  period_from: string
+  period_to: string
+  /** День расчёта: оклад начислится в этот день. */
+  pay_date: string
+  expected_tyiyn: number
 }
 
 /** Настройки «Отчёт о прибыли» (`/settings/profit-report`, только владелец). */
@@ -1066,6 +1079,46 @@ export interface ProfitSettings {
   default_period: 'month' | 'today' | 'week'
   expense_payee: 'off' | 'optional' | 'required'
   show_reversals: boolean
+  /** «Расходы»: начисленные бонусы отдельной строкой и «начислено, не выдано» (по умолчанию да). */
+  expenses_bonus_accruals?: boolean
+}
+
+/** Строка «Расходов» — все траты, кроме оплаты поставщикам (`GET /expenses/all`, задача 003 Н12б). */
+export interface SpendingRow {
+  kind: 'expense' | 'payout' | 'bonus_accrual'
+  id: string
+  number: number | null
+  /** Дата расхода, дата выплаты в расчёте или день начисления. */
+  date: string
+  amount_tyiyn: number
+  /** Статья; у выплаты и бонуса — «Зарплата работникам». */
+  article: string
+  /** Вид выплаты; у бонуса — `bonus`. */
+  purpose: string | null
+  /** Кому: «Кому» расхода или работник. */
+  payee: string
+  employee_id: string | null
+  comment: string
+  source: string | null
+  account_name: string | null
+  user_name: string
+  created_at: string
+  reversal_of: string | null
+  reversed: boolean
+}
+
+/** Итог «Расходов» (`GET /expenses/all/summary`). */
+export interface SpendingSummary {
+  articles: { article: string; amount_tyiyn: number }[]
+  expenses_tyiyn: number
+  payouts_tyiyn: number
+  purposes: { purpose: string; amount_tyiyn: number }[]
+  bonus_paid_tyiyn: number
+  bonus_accrued_tyiyn: number | null
+  bonus_unpaid_tyiyn: number | null
+  total_tyiyn: number
+  expenses: boolean
+  payouts: boolean
 }
 
 export interface Dashboard {

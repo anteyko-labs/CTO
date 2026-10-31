@@ -192,6 +192,7 @@ function PermissionsModal({ user, others, onClose, onSaved }: { user: UserRow; o
           })}
           <div className="flex flex-col gap-1 rounded-md border border-slate-200 bg-slate-50 p-3 text-slate-500" data-testid="owner-only">
             <div className="text-sm font-medium">Только у владельца — правом не выдаётся</div>
+            <div className="text-xs text-slate-600">Прибыль, сводка, себестоимость — только владелец: администратору сервер их не отдаёт ни при каких правах.</div>
             {OWNER_ONLY.map((o) => (
               <div key={o.label} className="text-xs">
                 {o.label} <span className="text-slate-400">— {o.why}</span>

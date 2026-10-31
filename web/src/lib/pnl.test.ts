@@ -138,6 +138,29 @@ describe('прибыль и убытки', () => {
     expect(paid?.children?.[0]).toMatchObject({ label: 'Бонус', amount: 15_000 })
   })
 
+  it('оклад «ожидается» за незаконченный период — серой строкой, в сумму не входит', () => {
+    const r: ProfitReport = {
+      ...report,
+      detail: {
+        ...report.detail!,
+        salary_expected: [
+          { employee_id: 'e9', employee_name: 'Айбек', period_from: '2026-10-20', period_to: '2026-11-19', pay_date: '2026-11-20', expected_tyiyn: 3_000_000 },
+        ],
+      },
+    }
+    const salary = find(pnlTree(r), 'opex.salary')
+    expect(salary?.amount).toBe(report.totals.payroll_tyiyn)
+    const aibek = find(pnlTree(r), 'opex.staff.e9')
+    expect(aibek?.amount).toBe(0)
+    const line = find(pnlTree(r), 'opex.staff.e9.expected')
+    const plain = (x: unknown) => String(x).replace(/\u00a0/g, ' ')
+    expect(line).toMatchObject({ amount: null, info: true })
+    expect(plain(line?.label)).toBe('Оклад за 20.10–19.11 — ожидается 30 000 с, начислится 20.11')
+    expect(find(pnlTree(r), 'net')?.amount).toBe(report.totals.net_tyiyn)
+    const sheet = pnlSheets(r, { branch: 'Основной', now: '31.10.2026 18:00' })[2]
+    expect(sheet.rows.some((x) => plain((Array.isArray(x) ? x : x.cells)[1]) === 'Оклад за 20.10–19.11 — ожидается 30 000 с, начислится 20.11')).toBe(true)
+  })
+
   it('не входит в прибыль: поставщикам, изъятия, выдано работникам', () => {
     const money = notInProfit(report)
     expect(money.map((n) => [n.label, n.amount])).toEqual([

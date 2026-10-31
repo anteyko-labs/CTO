@@ -3,7 +3,7 @@ type: spec
 status: approved
 tier: 4
 stage: 2
-updated: 2026-10-28
+updated: 2026-10-31
 ---
 
 # SPEC-08. Прибыль и экран владельца
@@ -191,3 +191,9 @@ payment_method_fees               -- прежние ставки по спосо
 - API: `GET /reports/profit?detail=1` — тот же ответ и поле `detail`: `products`, `services`, `returns_tyiyn`, `revision_tyiyn` + `revaluation_only_tyiyn` (= `totals.revaluation_tyiyn`), `revisions`, `revaluations`, `expenses` (все строки периода с `payee`, без потолка строк), `payouts`, `fees`, `cash_diffs`, `defects`, `supplier_returns`, `not_in_profit`; у строк-документов — `id` и `branch`. Без `detail` ответ прежний. Администратору — 403 и с любыми правами (I13).
 - «Настройки → Отчёт о прибыли» (`GET/PUT /settings/profit-report`, только владелец, журнал `settings.profit_report`): период при открытии (`month` | `today` | `week`), поле «Кому» в расходе (`optional` | `required` | `off`, SPEC-06), показывать сторно сразу (нет).
 - Проверка: `server/tests/pnl.rs` (раскрытие сходится с итогами, сторно парой, выплата не меняет чистую, 403 администратору со всеми правами), `server/tests/branches.rs` (раскрытие «Все филиалы» — строки обоих филиалов подряд), `web/src/lib/pnl.test.ts`, e2e `web/e2e/profit-pnl.spec.ts`.
+
+## Дополнено задачей 003 (31.10.2026): оклад «ожидается» (Н12б, ADR-{f2.1})
+
+- В «Зарплате работникам» у работника с правилом оклада, чей период (по дню расчёта `employees.salary_day`, ADR-155), пересекающий отчёт, ещё не закончился и оклад за него не начислен, — серая справочная строка «Оклад за 01.11–30.11 — ожидается 30 000 с, начислится 01.12» (ставка по правилу). В сумму работника, «Зарплату работникам» и чистую не входит; после начисления строки нет. В выгрузке — на листе «Зарплата» с отметкой «справочно».
+- API: `detail.salary_expected` — `[{employee_id, employee_name, period_from, period_to, pay_date, expected_tyiyn}]` (`payroll::expected_salaries`).
+- Проверка: `server/tests/spending.rs` (`profit_shows_expected_salary_outside_net`), `web/src/lib/pnl.test.ts`.

@@ -55,6 +55,7 @@ pub mod reports;
 pub mod revisions;
 pub mod sales;
 pub mod shift_report;
+pub mod spending;
 pub mod stock_in;
 pub mod supplier_debts;
 pub mod supplier_line_map;
@@ -104,6 +105,7 @@ pub fn routes() -> Router<AppState> {
         .merge(parties::routes())
         .merge(pay_fix::routes())
         .merge(pnl::routes())
+        .merge(spending::routes())
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())

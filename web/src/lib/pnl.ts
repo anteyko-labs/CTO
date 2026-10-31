@@ -1,9 +1,10 @@
 // «Прибыль и убытки» (задача 003 Н12, SPEC-08, ADR-157): ответ `GET /reports/profit?detail=1`
 // → дерево строк для экрана и листы для выгрузки в Excel. Только раскладка: итоги — серверные
 // `totals` (`gross_tyiyn`, `net_tyiyn`), раскрытие каждой строки складывается в её сумму.
-import { shiftDate } from './format'
+import { formatSom, shiftDate } from './format'
 import { PURPOSE_LABELS } from './payouts'
-import type { ProfitDetail, ProfitReport } from './types'
+import { periodLabel, shortDate } from './payrollPeriod'
+import type { ProfitDetail, ProfitReport, SalaryExpected } from './types'
 import { periodText, xl } from './exportTable'
 import type { Cell, Sheet, SheetRow } from './xlsxWrite'
 
@@ -118,6 +119,11 @@ const EMPTY_DETAIL: ProfitDetail = {
   defects: [],
   supplier_returns: [],
   not_in_profit: [],
+}
+
+/** «Оклад за 01.11–30.11 — ожидается 30 000 с, начислится 01.12» (задача 003 Н12б): справочно. */
+export function expectedSalaryText(e: SalaryExpected): string {
+  return `Оклад за ${periodLabel(e.period_from, e.period_to)} — ожидается ${formatSom(e.expected_tyiyn)}, начислится ${shortDate(e.pay_date)}`
 }
 
 /** Отметка сторно у строки-документа. */
@@ -249,11 +255,14 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
     return { id: `opex.article.${name}`, label: name, amount: sumOf(rows, (e) => e.amount_tyiyn), ...withReversals(docs, showReversals) }
   })
   const payoutsBy = groupBy(d.payouts, (p) => p.employee_id)
-  const employees = [...new Set([...staff.map((s) => s.employee_id), ...payoutsBy.map(([id]) => id)])]
+  // Оклад за незаконченный период без начисления — серой строкой, в чистую не входит (Н12б).
+  const expected = d.salary_expected ?? []
+  const employees = [...new Set([...staff.map((s) => s.employee_id), ...payoutsBy.map(([id]) => id), ...expected.map((e) => e.employee_id)])]
   const salaryNodes: PnlNode[] = employees.map((id) => {
     const s = staff.find((x) => x.employee_id === id)
     const paid = payoutsBy.find(([k]) => k === id)?.[1] ?? []
-    const name = s?.name ?? paid[0]?.employee_name ?? 'Работник'
+    const soon = expected.filter((e) => e.employee_id === id)
+    const name = s?.name ?? paid[0]?.employee_name ?? soon[0]?.employee_name ?? 'Работник'
     const docs: PnlNode[] = paid.map((p) => ({
       id: `opex.payout.${p.id}`,
       label: purposeLabel(p.purpose),
@@ -274,6 +283,7 @@ export function pnlTree(r: ProfitReport, showReversals = false): PnlNode[] {
         ...(s?.owed_tyiyn !== undefined && s.owed_tyiyn !== 0
           ? [{ id: `opex.staff.${id}.owed`, label: 'Остаток к выплате на сегодня', amount: s.owed_tyiyn, info: true }]
           : []),
+        ...soon.map((e) => ({ id: `opex.staff.${id}.expected`, label: expectedSalaryText(e), amount: null, info: true })),
       ],
     }
   })
@@ -518,6 +528,9 @@ export function pnlSheets(r: ProfitReport, opts: { branch: string; now: string }
     salaryRows.push({
       cells: [p.employee_name, `Выдано: ${purposeLabel(p.purpose)}`, xl.date(p.date), xl.money(p.amount_tyiyn), p.account_name ?? '', p.user_name, p.comment, mark(p) ?? '', ...branchCol(p.branch)],
     })
+  }
+  for (const e of d.salary_expected ?? []) {
+    salaryRows.push({ cells: [e.employee_name, expectedSalaryText(e), xl.date(e.pay_date), null, '', '', '', 'справочно, в прибыль не входит', ...branchCol('')] })
   }
   for (const s of staff) {
     salaryRows.push({ cells: [s.name, 'Итого начислено', null, xl.money(s.total_tyiyn)], bold: true })

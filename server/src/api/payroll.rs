@@ -2508,6 +2508,82 @@ pub(crate) async fn salary_employees(
     .collect())
 }
 
+/// Оклад, который ещё не начислен: период работника не закончился (задача 003 Н12б, ADR-{f2.1}).
+/// В «Прибыли и убытках» — серой строкой «ожидается», в чистую не входит.
+#[derive(Serialize, Clone, Debug)]
+pub struct SalaryExpected {
+    pub employee_id: Uuid,
+    pub employee_name: String,
+    pub period_from: NaiveDate,
+    pub period_to: NaiveDate,
+    /// День расчёта — следующий за концом периода: оклад начисляют в этот день.
+    pub pay_date: NaiveDate,
+    /// Ставка по правилу оклада.
+    pub expected_tyiyn: i64,
+}
+
+/// Работники с правилом оклада, у которых период, пересекающий `[from, to]`, ещё не закончился
+/// (по дню расчёта, `employees.salary_day`) и оклад за него не начислен. Начисленный оклад уже в
+/// прибыли — его здесь нет (ADR-023).
+pub(crate) async fn expected_salaries(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> AppResult<Vec<SalaryExpected>> {
+    let today = today(&mut *conn).await?;
+    let date = to.min(today);
+    if date < from {
+        return Ok(Vec::new());
+    }
+    let staff = sqlx::query!(
+        r#"select e.id, e.full_name, e.salary_day from employees e
+           where e.branch_id = $1 and e.active
+             and exists (select 1 from employee_pay_rules r
+                         where r.employee_id = e.id and r.kind = 'monthly_salary'
+                           and (r.active_to is null or r.active_to > $2))
+           order by e.full_name"#,
+        branch_id,
+        date
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out = Vec::new();
+    for e in staff {
+        let p = effective_period(
+            &mut *conn,
+            e.id,
+            period_of(salary_day_u32(e.salary_day), date)?,
+        )
+        .await?;
+        if p.to < today {
+            continue;
+        }
+        if salary_state(&mut *conn, e.id, p)
+            .await?
+            .accrual_id
+            .is_some()
+        {
+            continue;
+        }
+        let Some(rate) = rule_amount(&mut *conn, branch_id, e.id, date).await? else {
+            continue;
+        };
+        if rate <= 0 {
+            continue;
+        }
+        out.push(SalaryExpected {
+            employee_id: e.id,
+            employee_name: e.full_name,
+            period_from: p.from,
+            period_to: p.to,
+            pay_date: p.pay,
+            expected_tyiyn: rate,
+        });
+    }
+    Ok(out)
+}
+
 #[derive(Deserialize)]
 struct SalaryQuery {
     date: Option<NaiveDate>,
