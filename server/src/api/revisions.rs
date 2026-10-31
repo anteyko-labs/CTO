@@ -377,12 +377,7 @@ async fn create(
     }
     // Замок «черновик филиала» — при любом начале ревизии (и со старой версии экрана):
     // устройства, начавшие одновременно, ждут друг друга и находят черновик первого.
-    sqlx::query!(
-        "select pg_advisory_xact_lock(hashtextextended('revision.draft:' || $1::text, 0))",
-        ctx.user.branch_id.to_string()
-    )
-    .execute(&mut *tx)
-    .await?;
+    lock_branch_drafts(&mut tx, ctx.user.branch_id).await?;
     // Охваты пересекаются: «весь склад» включает любую категорию. Две ревизии одного товара
     // вычли бы его остаток дважды — открытый черновик того же охвата или «весь склад»
     // продолжаем; «весь склад» при открытой категории — 409 «закончите или присоединитесь».
@@ -440,6 +435,54 @@ async fn create(
     let out = load(&mut tx, &ctx.user, id).await?;
     tx.commit().await?;
     Ok(Json(out))
+}
+
+/// Замок «черновики филиала» до конца транзакции: начало ревизии, запись пересчёта и проведение
+/// идут по очереди. Без него проведение черновика X и запись того же товара в черновик Y (товар
+/// перенесли в другую категорию, пока открыты оба) разминулись бы: проверка пересечения при
+/// проведении X строки в Y ещё не видит, а строка Y берёт остаток до движения X — недостача
+/// вычлась бы дважды (задача 003, Н14). Берётся раньше замка строки ревизии.
+async fn lock_branch_drafts(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<()> {
+    sqlx::query!(
+        "select pg_advisory_xact_lock(hashtextextended('revision.draft:' || $1::text, 0))",
+        branch_id.to_string()
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Товар посчитан и в другом открытом черновике филиала (заведён до проверки охватов или товар
+/// перенесли в другую категорию): провести оба — вычесть остаток дважды. Под замком
+/// `lock_branch_drafts`: черновик, который сейчас проводят, дождётся конца проведения.
+async fn counted_elsewhere(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    id: Uuid,
+    product_ids: &[Uuid],
+) -> AppResult<()> {
+    let twice = sqlx::query!(
+        r#"select p.name, r.number from revision_lines l
+           join revisions r on r.id = l.revision_id
+           join products p on p.id = l.product_id
+           where r.branch_id = $1 and r.status = 'draft' and r.id <> $2 and l.product_id = any($3)
+           order by p.name, r.number limit 1"#,
+        branch_id,
+        id,
+        product_ids
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match twice {
+        Some(t) => Err(AppError::ConflictCode(
+            "revision_overlap",
+            format!(
+                "«{}» посчитан и в открытой ревизии № {} — проведите или отмените одну из них, иначе остаток вычтется дважды",
+                t.name, t.number
+            ),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Черновик ревизии этого филиала, заблокированный для правки.
@@ -633,6 +676,7 @@ async fn put_line(
     {
         return Ok(Json(done));
     }
+    lock_branch_drafts(&mut tx, ctx.user.branch_id).await?;
     lock_draft_for_count(&mut tx, ctx.user.branch_id, id).await?;
     let product = sqlx::query!(
         "select archived, unit from products where id = $1",
@@ -644,6 +688,9 @@ async fn put_line(
     if product.archived {
         return Err(invalid("товар в архиве: считайте основную карточку"));
     }
+    // Товар уже посчитан в другом открытом черновике: вторая строка вычла бы остаток дважды.
+    // Тот черновик проводят — замок выше ждёт конца проведения, остаток ниже — уже после него.
+    counted_elsewhere(&mut tx, ctx.user.branch_id, id, &[req.product_id]).await?;
     let add = req.mode == CountMode::Add;
     // Записи строк одной ревизии идут по очереди (замок черновика выше): посчитанное сейчас —
     // точное, проверка итога на экране не гоняется с чужой прибавкой.
@@ -764,6 +811,9 @@ async fn new_product(
             return Ok(Json(done));
         }
     }
+    // Тот же порядок замков, что у записи пересчёта и проведения (новый товар в другом черновике
+    // посчитан быть не может — проверять пересечение нечего).
+    lock_branch_drafts(&mut tx, ctx.user.branch_id).await?;
     lock_draft_for_count(&mut tx, ctx.user.branch_id, id).await?;
     let mut product = req.product;
     // Своя операция карточки: повтор всей операции отсекает `op_id` выше.
@@ -900,6 +950,9 @@ pub async fn post_revision_tx(
         return Err(invalid("укажите причину или кто пересчитывал"));
     }
     let branch_id = ctx.user.branch_id;
+    // Замок черновиков филиала — до конца проведения: запись того же товара в другой черновик
+    // ждёт и потом видит эту ревизию проведённой, а остаток — после её движения.
+    lock_branch_drafts(conn, branch_id).await?;
     lock_draft(conn, branch_id, id).await?;
     let lines = sqlx::query!(
         "select product_id, counted_qty, stock_at_count from revision_lines where revision_id = $1",
@@ -911,29 +964,8 @@ pub async fn post_revision_tx(
         return Err(invalid("ничего не пересчитано"));
     }
     let ids: Vec<Uuid> = lines.iter().map(|l| l.product_id).collect();
-    // Товар посчитан и в другом открытом черновике (заведён до проверки охватов или товар
-    // перенесли в другую категорию): проведение обоих вычло бы его остаток дважды.
-    let twice = sqlx::query!(
-        r#"select p.name, r.number from revision_lines l
-           join revisions r on r.id = l.revision_id
-           join products p on p.id = l.product_id
-           where r.branch_id = $1 and r.status = 'draft' and r.id <> $2 and l.product_id = any($3)
-           order by p.name, r.number limit 1"#,
-        branch_id,
-        id,
-        &ids[..]
-    )
-    .fetch_optional(&mut *conn)
-    .await?;
-    if let Some(t) = twice {
-        return Err(AppError::ConflictCode(
-            "revision_overlap",
-            format!(
-                "«{}» посчитан и в открытой ревизии № {} — проведите или отмените одну из них, иначе остаток вычтется дважды",
-                t.name, t.number
-            ),
-        ));
-    }
+    // Товар посчитан и в другом открытом черновике — перепроверка под замком черновиков.
+    counted_elsewhere(conn, branch_id, id, &ids).await?;
     // Другие ещё считают (за последние 60 с были записи строк) — спросить владельца: скан,
     // пришедший после проведения, не учтётся.
     if !req.force {

@@ -1350,3 +1350,152 @@ async fn new_product_retry_with_changed_count_does_not_create_twice(pool: PgPool
     assert_eq!(c["counted_qty"], json!(3));
     assert_eq!(products("Щётка не дошла").await, 1);
 }
+
+/// Остаток товара на филиале сейчас.
+async fn stock(w: &World, item: &str) -> i64 {
+    sqlx::query_scalar(
+        "select stock_qty from branch_products where branch_id = $1 and product_id = $2",
+    )
+    .bind(w.branch)
+    .bind(Uuid::parse_str(item).unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap()
+}
+
+/// Товар перенесли из категории X в Y, пока открыты ревизии обеих: строка в Y, пока товар
+/// посчитан в X, — 409 `revision_overlap`; пока X проводится, запись в Y ждёт её конца и берёт
+/// остаток уже после движения X — недостача не вычитается дважды (задача 003, Н14).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn moved_product_is_not_subtracted_twice(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (cat_x, cat_y) = (w.category("filter").await, w.category("filter").await);
+    let p = ok(
+        &w.app,
+        "POST",
+        "/api/v1/products",
+        w.owner(),
+        json!({ "op_id": Uuid::now_v7(), "category_id": cat_x, "name": "Фильтр перенесённый", "sale_price_tyiyn": 10_000 }),
+    )
+    .await;
+    let item = p["id"].as_str().unwrap().to_string();
+    let other = w.product("Фильтр соседний").await;
+    for it in [&item, &other] {
+        ok(
+            &w.app,
+            "POST",
+            "/api/v1/stock-ins",
+            w.owner(),
+            json!({ "op_id": Uuid::now_v7(), "comment": "приход",
+                    "lines": [{ "product_id": it, "qty": 10, "price_tyiyn": 5_000 }] }),
+        )
+        .await;
+    }
+    let rev = |cat: &str| json!({ "category_id": cat });
+    let x = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), rev(&cat_x)).await;
+    let xid = x["head"]["id"].as_str().unwrap().to_string();
+    let (s, v) = put_line(
+        &w,
+        &format!("/api/v1/revisions/{xid}/lines"),
+        0,
+        json!({ "product_id": item, "counted_qty": 7, "mode": "set", "expected_empty": true, "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Товар перенесли в категорию Y; ревизия Y — своя (охваты не пересекаются).
+    sqlx::query("update products set category_id = $1 where id = $2")
+        .bind(Uuid::parse_str(&cat_y).unwrap())
+        .bind(Uuid::parse_str(&item).unwrap())
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query("update products set category_id = $1 where id = $2")
+        .bind(Uuid::parse_str(&cat_y).unwrap())
+        .bind(Uuid::parse_str(&other).unwrap())
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let y = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), rev(&cat_y)).await;
+    let yid = y["head"]["id"].as_str().unwrap().to_string();
+    assert_ne!(xid, yid);
+    let y_lines = format!("/api/v1/revisions/{yid}/lines");
+    let add = |it: &str| json!({ "product_id": it, "counted_qty": 7, "mode": "add", "op_id": Uuid::now_v7() });
+
+    // Товар посчитан в открытой X — в Y не записывается; соседний товар — записывается.
+    let (s, v) = put_line(&w, &y_lines, 1, add(&item)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "revision_overlap", "{v}");
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(
+        m.contains("Фильтр перенесённый") && m.contains(&format!("№ {}", x["head"]["number"])),
+        "{m}"
+    );
+    let (s, v) = put_line(&w, &y_lines, 1, add(&other)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // X проводится (замок черновиков филиала держит «проведение» ниже), в Y тем временем сканируют
+    // тот же товар: запись ждёт конца проведения и видит X проведённой.
+    let mut held = w.pool.begin().await.unwrap();
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended('revision.draft:' || $1::text, 0))")
+        .bind(w.branch.to_string())
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    let (app, owner, post_x) = (
+        w.app.clone(),
+        w.owner().to_string(),
+        format!("/api/v1/revisions/{xid}/post"),
+    );
+    let posting = tokio::spawn(async move {
+        call(
+            &app,
+            "POST",
+            &post_x,
+            Some(&owner),
+            None,
+            Some(json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт X" })),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let (app, admin, uri, body) = (
+        w.app.clone(),
+        w.people[1].clone(),
+        y_lines.clone(),
+        add(&item),
+    );
+    let scanning =
+        tokio::spawn(async move { call(&app, "PUT", &uri, Some(&admin), None, Some(body)).await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !posting.is_finished() && !scanning.is_finished(),
+        "проведение и запись ждут замка черновиков филиала"
+    );
+    held.commit().await.unwrap();
+    let (s, v) = posting.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = scanning.await.unwrap();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(stock(&w, &item).await, 7, "X: недостача 3");
+    let at: Option<i64> = sqlx::query_scalar(
+        "select stock_at_count from revision_lines where revision_id = $1 and product_id = $2",
+    )
+    .bind(Uuid::parse_str(&yid).unwrap())
+    .bind(Uuid::parse_str(&item).unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(at, Some(7), "остаток строки Y — после движения X");
+
+    // Y проводится: в Y тоже 7 — расхождения нет, недостача не вычлась второй раз.
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/revisions/{yid}/post"),
+        w.owner(),
+        json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт Y", "force": true }),
+    )
+    .await;
+    assert_eq!(stock(&w, &item).await, 7, "недостача вычтена один раз");
+    assert_eq!(stock(&w, &other).await, 7);
+}
