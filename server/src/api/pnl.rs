@@ -505,7 +505,7 @@ pub async fn detail(
 
     let payouts = sqlx::query!(
         r#"select p.id, p.number, p.employee_id, e.full_name as employee_name,
-                  (p.created_at at time zone 'Asia/Bishkek')::date as "date!",
+                  p.pay_date as "date!",
                   p.amount_tyiyn, p.purpose, c.name as "account_name?", p.comment,
                   u.full_name as user_name, p.created_at, p.reversal_of,
                   exists (select 1 from payouts x where x.reversal_of = p.id) as "reversed!"
@@ -514,8 +514,8 @@ pub async fn detail(
            join users u on u.id = p.user_id
            left join cash_accounts c on c.id = p.account_id
            where p.branch_id = $1
-             and (p.created_at at time zone 'Asia/Bishkek')::date between $2 and $3
-           order by e.full_name, p.created_at"#,
+             and p.pay_date between $2 and $3
+           order by e.full_name, p.pay_date, p.created_at"#,
         b,
         from,
         to

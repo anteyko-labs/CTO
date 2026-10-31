@@ -9,5 +9,6 @@ alter table expenses add column payee text not null default '';
 -- Подсказки «Кому» в форме расхода — прежние значения филиала, последние сначала.
 create index expenses_payee_idx on expenses (branch_id, created_at desc) where payee <> '';
 
--- 2. «Выдано работникам» за период в отчёте о прибыли — выплаты филиала по дням.
-create index payouts_branch_created_idx on payouts (branch_id, created_at);
+-- 2. «Выдано работникам» за период в отчёте о прибыли — выплаты филиала по дате выплаты
+--    (`payouts.pay_date`, 0083, ADR-154): как «Выдано» в итогах (`payroll::staff_pay`).
+create index payouts_branch_pay_date_idx on payouts (branch_id, pay_date);
