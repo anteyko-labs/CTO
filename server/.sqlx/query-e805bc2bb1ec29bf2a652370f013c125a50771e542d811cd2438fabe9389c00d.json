@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.id, m.kind, (m.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  m.amount_tyiyn, c.name as account_name, sup.name as \"payee?\", m.comment,\n                  u.full_name as user_name, m.created_at,\n                  exists (select 1 from cash_movements x where x.kind = 'reversal'\n                            and x.doc_type = 'cash_movement' and x.doc_id = m.id) as \"reversed!\"\n           from cash_movements m\n           join cash_accounts c on c.id = m.account_id\n           join users u on u.id = m.user_id\n           left join receipts r on m.doc_type = 'receipt' and r.id = m.doc_id\n           left join suppliers sup on sup.id = r.supplier_id\n           where m.branch_id = $1 and m.kind in ('supplier_payment', 'cash_out', 'transfer_out')\n             and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n           order by m.kind, m.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "date!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "account_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "payee?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "e805bc2bb1ec29bf2a652370f013c125a50771e542d811cd2438fabe9389c00d"
+}

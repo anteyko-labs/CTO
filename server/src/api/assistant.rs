@@ -1104,6 +1104,7 @@ fn tools() -> Value {
                     "amount": { "type": "string", "description": "Сумма строкой, как сказал владелец: «1 500», «350,50»" },
                     "source": { "type": "string", "description": "Откуда: «Касса» (по умолчанию), «Счёт», «Сейф владельца» или «Сейф магазина»" },
                     "date": { "type": "string", "description": "День расхода ГГГГ-ММ-ДД, если не сегодня (не раньше 31 дня назад)" },
+                    "payee": { "type": "string", "description": "Кому отдали деньги: имя человека или организации, если владелец сказал" },
                     "comment": { "type": "string", "description": "Комментарий" }
                 },
                 "required": ["article", "amount"],

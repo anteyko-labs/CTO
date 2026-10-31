@@ -25,13 +25,19 @@ describe('исправление расхода', () => {
   }
 
   it('касса смены в форме — пустой выбор, другой счёт — как есть', () => {
-    expect(expenseFields(doc, 'till')).toEqual({ article: 'a1', sum: '1500,50', account: '', date: '2026-10-18', comment: 'вода' })
+    expect(expenseFields(doc, 'till')).toEqual({ article: 'a1', sum: '1500,50', account: '', date: '2026-10-18', comment: 'вода', payee: '' })
     expect(expenseFields({ ...doc, account_id: 'safe' }, 'till').account).toBe('safe')
   })
 
   it('обратно — исправленный документ; сумма в тыйынах', () => {
     const f = { ...expenseFields(doc, 'till'), sum: '2000', article: 'a2' }
-    expect(expenseDoc(doc, f)).toEqual({ ...doc, article_id: 'a2', amount_tyiyn: 200_000, account_id: null })
+    expect(expenseDoc(doc, f)).toEqual({ ...doc, article_id: 'a2', amount_tyiyn: 200_000, account_id: null, payee: '' })
+  })
+
+  it('«Кому» переносится в исправление (задача 003 Н12)', () => {
+    const f = expenseFields({ ...doc, payee: 'Иман' }, 'till')
+    expect(f.payee).toBe('Иман')
+    expect(expenseDoc(doc, { ...f, payee: '  Алексей ' })?.payee).toBe('Алексей')
   })
 
   it('неверная сумма — ничего', () => {

@@ -281,6 +281,7 @@ async fn load_doc(
             desc.field("Сумма", format_som(e.amount_tyiyn));
             desc.field("Откуда", or_none(e.account_name.clone()));
             desc.field("Дата", date_text(e.expense_date));
+            desc.field("Кому", or_none(Some(e.payee.clone())));
             desc.field("Комментарий", or_none(Some(e.comment.clone())));
             Ok(Doc {
                 number: Some(e.number),
@@ -291,6 +292,7 @@ async fn load_doc(
                     "account_id": account_id,
                     "expense_date": e.expense_date,
                     "comment": e.comment,
+                    "payee": e.payee,
                 }),
                 desc,
             })

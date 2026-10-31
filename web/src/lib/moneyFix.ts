@@ -12,6 +12,8 @@ export interface ExpenseDoc {
   account_id: string | null
   expense_date: string | null
   comment: string
+  /** «Кому» (задача 003 Н12); у старого черновика — нет. */
+  payee?: string
 }
 
 /** Поля формы расхода: пустой счёт — касса смены, как при записи. */
@@ -21,6 +23,7 @@ export interface ExpenseFields {
   account: string
   date: string
   comment: string
+  payee: string
 }
 
 export function expenseFields(doc: ExpenseDoc, tillId: string | null): ExpenseFields {
@@ -30,6 +33,7 @@ export function expenseFields(doc: ExpenseDoc, tillId: string | null): ExpenseFi
     account: !doc.account_id || doc.account_id === tillId ? '' : doc.account_id,
     date: doc.expense_date ?? '',
     comment: doc.comment,
+    payee: doc.payee ?? '',
   }
 }
 
@@ -44,6 +48,7 @@ export function expenseDoc(base: ExpenseDoc, f: ExpenseFields): ExpenseDoc | nul
     account_id: f.account || null,
     expense_date: f.date || base.expense_date,
     comment: f.comment,
+    payee: f.payee.trim(),
   }
 }
 

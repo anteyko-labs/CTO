@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select sv.id as \"service_id?\", coalesce(sv.name, 'Работа') as \"name!\",\n                  (count(*) filter (where s.kind <> 'return') - count(*) filter (where s.kind = 'return')) as \"count!\",\n                  coalesce(sum(l.amount_tyiyn), 0)::bigint as \"revenue!\",\n                  coalesce(sum(case when s.kind = 'return' then -abs(l.master_fee_tyiyn)\n                                    else l.master_fee_tyiyn end), 0)::bigint as \"fee!\"\n           from sale_lines l\n           join sales s on s.id = l.sale_id\n           left join services sv on sv.id = l.service_id\n           where s.branch_id = $1 and s.business_date between $2 and $3 and l.kind = 'service'\n           group by sv.id, sv.name\n           order by 4 desc, 2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "service_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "revenue!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "fee!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f87c7dfaeef71e337771f6c7a2ae54b86de29045ecf42d97d017a3fea6b3309b"
+}

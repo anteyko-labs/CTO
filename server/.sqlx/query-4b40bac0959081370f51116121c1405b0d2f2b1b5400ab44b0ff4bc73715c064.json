@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id as \"product_id?\", coalesce(p.name, 'Без товара') as \"name!\",\n                  coalesce(c.name, 'Без категории') as \"category!\", coalesce(p.unit, 'piece') as \"unit!\",\n                  coalesce(sum(case when s.kind = 'return' then -l.units else l.units end), 0)::bigint as \"units!\",\n                  coalesce(sum(l.amount_tyiyn), 0)::bigint as \"revenue!\",\n                  coalesce(sum(l.cost_tyiyn), 0)::bigint as \"cost!\"\n           from sale_lines l\n           join sales s on s.id = l.sale_id\n           left join products p on p.id = l.product_id\n           left join categories c on c.id = p.category_id\n           where s.branch_id = $1 and s.business_date between $2 and $3 and l.kind <> 'service'\n           group by p.id, p.name, c.name, p.unit\n           order by 6 desc, 2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "category!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "unit!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "units!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "revenue!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "cost!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "4b40bac0959081370f51116121c1405b0d2f2b1b5400ab44b0ff4bc73715c064"
+}

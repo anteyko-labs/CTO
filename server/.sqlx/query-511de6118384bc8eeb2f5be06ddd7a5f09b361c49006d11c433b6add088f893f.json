@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.number, (r.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  sp.name as \"supplier?\", r.diff_tyiyn, r.reversal_of, u.full_name as user_name\n           from supplier_returns r\n           left join suppliers sp on sp.id = r.supplier_id\n           join users u on u.id = r.user_id\n           where r.branch_id = $1 and r.diff_tyiyn <> 0\n             and (r.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n           order by r.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "date!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "supplier?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "511de6118384bc8eeb2f5be06ddd7a5f09b361c49006d11c433b6add088f893f"
+}

@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select x.id, d.number, (x.created_at at time zone 'Asia/Bishkek')::date as \"date!\",\n                  p.name as product, x.kind, x.writeoff_tyiyn, x.diff_tyiyn, x.reversal_of,\n                  u.full_name as user_name\n           from defect_resolutions x\n           join defects d on d.id = x.defect_id\n           join products p on p.id = d.product_id\n           join users u on u.id = x.user_id\n           where x.branch_id = $1\n             and (x.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n             and (x.writeoff_tyiyn <> 0 or x.diff_tyiyn <> 0)\n           order by x.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "date!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "product",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "writeoff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "diff_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "99816929a9b4fecb173b597e54ca06d8c4f2994ac30ccfc1d5b8e951118874d1"
+}

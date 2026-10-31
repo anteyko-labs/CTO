@@ -37,7 +37,7 @@ const Expenses = lazyPage(() => import('./pages/Expenses'))
 const Gifts = lazyPage(() => import('./pages/Gifts'))
 const LabelSettingsPage = lazyPage(() => import('./pages/LabelSettings'))
 const Notifications = lazyPage(() => import('./pages/Notifications'))
-const Profit = lazyPage(() => import('./pages/Owner'))
+const Profit = lazyPage(() => import('./pages/Profit'))
 const OwnerDashboard = lazyPage(() => import('./pages/Owner').then((m) => ({ default: m.OwnerDashboard })))
 const Payroll = lazyPage(() => import('./pages/Payroll'))
 const Products = lazyPage(() => import('./pages/Products'))
@@ -67,6 +67,7 @@ const OilBookSettings = lazyPage(() => import('./pages/OilBookSettings'))
 const CrossPickSettings = lazyPage(() => import('./pages/CrossPickSettings'))
 const CashierSettingsPage = lazyPage(() => import('./pages/CashierSettings'))
 const PayrollSettings = lazyPage(() => import('./pages/PayrollSettings'))
+const ProfitSettings = lazyPage(() => import('./pages/ProfitSettings'))
 const ClientMessages = lazyPage(() => import('./pages/ClientMessages'))
 const ExpenseArticles = lazyPage(() => import('./pages/ExpenseArticles'))
 const SupplierCard = lazyPage(() => import('./pages/SupplierCard'))
@@ -102,7 +103,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     items: [
       { to: '/expenses', label: 'Расходы', icon: 'expenses', permission: 'expenses' },
       { to: '/payroll', label: 'Расчёт', icon: 'payroll', permission: 'view_payroll' },
-      { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
+      { to: '/profit', label: 'Прибыль и убытки', icon: 'profit', ownerOnly: true },
       { to: '/income', label: 'Поступления', icon: 'income', permission: 'view_income' },
       { to: '/accounts', label: 'Счета', icon: 'wallet', permission: 'view_accounts' },
       { to: '/money', label: 'Внести / Изъять', icon: 'plus', permission: 'cash_moves' },
@@ -394,6 +395,7 @@ function Shell() {
           {owner && <Route path="/settings/cross-pick" element={<CrossPickSettings />} />}
           {owner && <Route path="/settings/cashier" element={<CashierSettingsPage />} />}
           {owner && <Route path="/settings/payroll" element={<PayrollSettings />} />}
+          {owner && <Route path="/settings/profit-report" element={<ProfitSettings />} />}
           {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
           {owner && <Route path="/settings/client-messages" element={<ClientMessages />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}

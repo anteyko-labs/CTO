@@ -972,11 +972,26 @@ async fn expense(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
         format!("По «{article_q}» подходит несколько статей"),
     ));
     let text = comment(input, "comment");
+    // «Кому» (задача 003 Н12): обязательно ли — настройка «Отчёт о прибыли».
+    let payee: String = comment(input, "payee").chars().take(100).collect();
+    if payee.is_empty()
+        && crate::api::pnl::profit_settings(conn, branch_id)
+            .await?
+            .expense_payee
+            == "required"
+    {
+        return Ok(Err("укажите, кому отдали деньги (поле «Кому»)".into()));
+    }
     let (source, account_id) = match &src {
         Source::Account { id, .. } => ("account", Some(*id)),
     };
+    let to_whom = if payee.is_empty() {
+        String::new()
+    } else {
+        format!("\nКому: {}", quoted(&payee))
+    };
     let summary = format!(
-        "Расход\nСтатья: {}\nСумма: {}\nОткуда: {}\nДата: {}\nКомментарий: {}",
+        "Расход\nСтатья: {}\nСумма: {}{to_whom}\nОткуда: {}\nДата: {}\nКомментарий: {}",
         one_line(&article.name),
         format_som(sum),
         src.line(),
@@ -992,6 +1007,7 @@ async fn expense(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
             account_id,
             expense_date: Some(date),
             comment: text,
+            payee,
         }),
         kind: "expense",
         summary,
