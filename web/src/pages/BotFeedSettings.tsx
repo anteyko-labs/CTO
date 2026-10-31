@@ -12,12 +12,12 @@ export default function BotFeedSettings() {
   const s = st.data
 
   // Выключатель меняется сразу; не сохранилось — экран перечитывает настройку с сервера.
-  const save = (off: string[], sales: SalesMode, done: string) => {
-    st.setData((prev) => prev && applyFeed(prev, off, sales))
+  const save = (off: string[], sales: SalesMode, done: string, profit: boolean = s?.profit ?? true) => {
+    st.setData((prev) => prev && applyFeed(prev, off, sales, profit))
     void act.run(async () => {
       try {
-        const saved = await put<{ off: string[]; sales: SalesMode }>('/settings/bot-feed', { op_id: newOpId(), off, sales })
-        st.setData((prev) => prev && applyFeed(prev, saved.off, saved.sales))
+        const saved = await put<{ off: string[]; sales: SalesMode; profit?: boolean }>('/settings/bot-feed', { op_id: newOpId(), off, sales, profit })
+        st.setData((prev) => prev && applyFeed(prev, saved.off, saved.sales, saved.profit ?? true))
         toast(done)
       } catch (e) {
         st.reload()
@@ -55,7 +55,23 @@ export default function BotFeedSettings() {
                 </label>
               ))}
             </div>
-            <p className="mt-2 text-sm text-slate-500">Отчёт при закрытии смены и «Итог дня» приходят всегда.</p>
+            {/* Прибыль — не на бумаге, а в Телеграм (задача 003 Н4): в сообщении о чеке — себестоимость и прибыль. */}
+            <label className="mt-3 inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={s.profit ?? true}
+                disabled={act.busy}
+                onChange={(e) =>
+                  save(s.off, s.sales, e.target.checked ? 'Прибыль в сообщениях о чеках — приходит' : 'Прибыль в сообщениях о чеках — не приходит', e.target.checked)
+                }
+              />
+              Себестоимость и прибыль в сообщениях о чеках
+            </label>
+            <p className="mt-2 text-sm text-slate-500">
+              Отчёт при закрытии смены (с себестоимостью и из чего сложилась чистая прибыль) и «Итог дня» приходят всегда. Чек смены на
+              бумаге прибыль не печатает — «Настройки → Касса».
+            </p>
           </Card>
           {s.groups.map((g) => {
             const n = groupCount(g)

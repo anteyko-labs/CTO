@@ -14,16 +14,27 @@ import { useShiftClose } from './ShiftClose'
 import { printShift } from './shiftPrint'
 import { toast } from './ui'
 import type { Shift } from '../lib/types'
+import { DEFAULT_CASHIER, type ButtonId } from '../lib/cashierLayout'
+
+/** Кнопки полосы по умолчанию — как было. */
+const BAR_DEFAULT: ButtonId[] = DEFAULT_CASHIER.buttons.filter((b) => b.place === 'bar').map((b) => b.id)
 
 export function CashierModeBar({
   shift,
   onOpenShift,
   onShiftChanged,
+  buttons = BAR_DEFAULT,
+  exitGrey = false,
 }: {
   shift: Shift | null | undefined
   onOpenShift: () => void
   /** Смену закрыли или сдали кассу — перечитать смену на кассе. */
   onShiftChanged?: () => void
+  /** Кнопки полосы и их порядок из «Настройки → Касса» (задача 003 Н2); остальные — в «Ещё
+   *  действия…» или скрыты. */
+  buttons?: ButtonId[]
+  /** «Выйти из режима кассы» — серой. */
+  exitGrey?: boolean
 }) {
   // Связь — с сервером, а не только сеть устройства; не отправлено — чеки вошедшего пользователя.
   const online = useServerOnline()
@@ -79,14 +90,16 @@ export function CashierModeBar({
               Смена № {shift.number} · кассир <b>{shift.cashier_name}</b>
             </span>
             <span className="flex shrink-0 gap-2">
-              <button
-                type="button"
-                className="rounded-lg border border-slate-500 px-4 text-base font-medium active:bg-slate-700"
-                disabled={printing.busy}
-                onClick={() => printCheck(shift.id)}
-              >
-                Чек смены
-              </button>
+              {buttons.includes('shift_print') && (
+                <button
+                  type="button"
+                  className="rounded-lg border border-slate-500 px-4 text-base font-medium active:bg-slate-700"
+                  disabled={printing.busy}
+                  onClick={() => printCheck(shift.id)}
+                >
+                  Чек смены
+                </button>
+              )}
               <button
                 type="button"
                 className="rounded-lg bg-amber-500 px-4 text-base font-semibold text-slate-900 active:bg-amber-400"
@@ -120,31 +133,47 @@ export function CashierModeBar({
               Приёмка: {toAccept}
             </button>
           )}
-          <button
-            type="button"
-            aria-pressed={keyboard}
-            className={`rounded-lg px-5 text-base font-semibold ${keyboard ? 'border-2 border-sky-400 bg-slate-700 text-white active:bg-slate-800' : 'border border-slate-500 active:bg-slate-700'}`}
-            onPointerDown={keepFocus}
-            onMouseDown={keepFocus}
-            onClick={() => setKeyboardOpen(!keyboard)}
-          >
-            ⌨ Клавиатура
-          </button>
-          {canFull && !full && (
-            <button type="button" className="rounded-lg border border-slate-500 px-5 text-base font-medium active:bg-slate-700" onClick={enterFullscreen}>
-              Во весь экран
-            </button>
-          )}
-          <button
-            type="button"
-            className="rounded-lg bg-sky-600 px-5 text-base font-semibold text-white active:bg-sky-700"
-            onClick={() => {
-              exitFullscreen()
-              setCashierMode(false)
-            }}
-          >
-            Выйти из режима кассы
-          </button>
+          {buttons.map((id) => {
+            if (id === 'keyboard')
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={keyboard}
+                  className={`rounded-lg px-5 text-base font-semibold ${keyboard ? 'border-2 border-sky-400 bg-slate-700 text-white active:bg-slate-800' : 'border border-slate-500 active:bg-slate-700'}`}
+                  onPointerDown={keepFocus}
+                  onMouseDown={keepFocus}
+                  onClick={() => setKeyboardOpen(!keyboard)}
+                >
+                  ⌨ Клавиатура
+                </button>
+              )
+            if (id === 'fullscreen')
+              return canFull && !full ? (
+                <button key={id} type="button" className="rounded-lg border border-slate-500 px-5 text-base font-medium active:bg-slate-700" onClick={enterFullscreen}>
+                  Во весь экран
+                </button>
+              ) : null
+            if (id === 'exit')
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={
+                    exitGrey
+                      ? 'rounded-lg border border-slate-600 px-4 text-base font-medium text-slate-300 active:bg-slate-700'
+                      : 'rounded-lg bg-sky-600 px-5 text-base font-semibold text-white active:bg-sky-700'
+                  }
+                  onClick={() => {
+                    exitFullscreen()
+                    setCashierMode(false)
+                  }}
+                >
+                  Выйти из режима кассы
+                </button>
+              )
+            return null
+          })}
         </span>
       </div>
       {/* Окна — вне тёмной полосы: у них свои цвета. */}

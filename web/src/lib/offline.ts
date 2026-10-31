@@ -10,6 +10,7 @@ import { searchRank } from './pickerResults'
 import type { OilBookSettings } from './oilBookSettings'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 import { sameCode } from './umagLink'
+import type { CashierSettings } from './cashierLayout'
 
 export interface SnapshotProduct extends Product {
   barcodes: string[]
@@ -39,6 +40,9 @@ export interface Snapshot {
   oil_change_master_fee_tyiyn: number
   /** «Масляная книжка и печать» (задача 003 Н5): что касса печатает без сети; у старого снимка — нет. */
   oil_book?: Partial<OilBookSettings>
+  /** «Настройки → Касса» (задача 003 Н2–Н4): раскладка режима кассы и скидка без сети; у снимка
+   *  до 31.10.2026 — нет. */
+  cashier?: Partial<CashierSettings>
   saved_at: string
 }
 

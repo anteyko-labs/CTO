@@ -1,9 +1,11 @@
 // Экран «Касса»: чек на вынос или в сервис, масло канистрой и на розлив, оплата, клиент и долг,
 // подарки, работа без сети (SPEC-04, SPEC-09, SPEC-10, SPEC-11).
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
 import { CashierModeBar } from '../components/CashierModeBar'
+import { DiscountModal, type DiscountLine } from '../components/DiscountModal'
+import { printShift } from '../components/shiftPrint'
 import { NoReceiptReturn } from '../components/NoReceiptReturn'
 import { ShiftOpenModal } from '../components/ShiftOpen'
 import { CorrectionBanner } from '../components/Correction'
@@ -62,7 +64,9 @@ import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } fr
 import { forServer, removedLine, sendCancelled, unremove, type CancelReason, type RemovedLine } from '../lib/cancelledLines'
 import { useUser } from '../lib/auth'
 import { can } from '../lib/permissions'
-import { enterFullscreen, setCashierMode, setKeyboardOpen, useNumField, useTouchMode } from '../lib/cashierMode'
+import { enterFullscreen, exitFullscreen, setCashierMode, setKeyboardOpen, useKeyboardOpen, useNumField, useTouchMode } from '../lib/cashierMode'
+import { DEFAULT_CASHIER, loadCashierSettings, placed, type ButtonId, type Place } from '../lib/cashierLayout'
+import { checkDiscount, overLimit as discountOverLimit } from '../lib/discount'
 import { postCorrection } from '../lib/corrections'
 import type { SaleFixState } from '../lib/saleFix'
 import { formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
@@ -345,6 +349,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // клавиатурой. В исправлении чека владельцем режима нет.
   const touch = useTouchMode() && !fix
   const num = useNumField()
+  // «Настройки → Касса» (задача 003 Н2–Н4): раскладка режима кассы и скидка; без связи — из снимка.
+  const cashierCfg = useLoad(loadCashierSettings, [])
+  const cs = cashierCfg.data ?? DEFAULT_CASHIER
+  const keyboard = useKeyboardOpen()
   const [shiftOpen, setShiftOpen] = useState<{ till: CashAccount | undefined } | null>(null)
   // Без связи — сотрудники из снимка кассы: кассир и мастер выбираются и после перезагрузки (SPEC-09).
   const employees = useLoad(
@@ -426,6 +434,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       : null,
   )
   const [bonusOpen, setBonusOpen] = useState(false)
+  // Окно «Скидка» (задача 003 Н3) и «Ещё действия…» режима кассы (Н2).
+  const [discountOpen, setDiscountOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   // Старый аккумулятор в оплату: вес × цена приёма за кг; сумму считает сервер (SPEC-27).
   const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKgText: string } | null>(fix?.state.battery ?? null)
   const batteryLoad = useAction()
@@ -653,6 +664,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const batteryAmt = batteryPay && batteryGrams && batteryGrams > 0 && batteryPerKg && batteryPerKg > 0 ? batteryAmount(batteryGrams, batteryPerKg) : 0
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
+  // Скидка чека (задача 003 Н3): строки ниже прайса; у администратора — предел из «Настройки → Касса»
+  // (проверяет и сервер, ADR-{B4.2}).
+  const discLines: DiscountLine[] = lines.map((l) => ({
+    key: l.key,
+    name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
+    kind: l.kind,
+    qty: lineQty(l) ?? 0,
+    list: lineList(l),
+    price: parseSom(l.priceText) ?? lineList(l),
+    gift: l.gift,
+  }))
+  const checkDisc = checkDiscount(discLines)
+  const discountLimit = owner || (cs.admin_limit_pct === null && cs.admin_limit_tyiyn === null) ? null : { pct: cs.admin_limit_pct, tyiyn: cs.admin_limit_tyiyn }
+  const discountLimitText = discountLimit
+    ? [discountLimit.pct !== null ? `${discountLimit.pct} %` : '', discountLimit.tyiyn !== null ? formatSom(discountLimit.tyiyn) : ''].filter(Boolean).join(' и ')
+    : ''
+  const overDiscount = canDiscount && discountLimit ? discountOverLimit(checkDisc.discount, checkDisc.list, discountLimit) : null
 
   // Сколько к оплате картой: на это QR банка (SPEC-31).
   const cardDue = payMode === 'card' ? Math.max(due, 0) : payMode === 'mixed' ? Math.max(parseSom(split.card) ?? 0, 0) : 0
@@ -1149,6 +1177,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       'следующая замена',
     ],
     [discountLines.length === 0, 'цена ниже каталожной — скидку ставит владелец', undefined, 'цена ниже прайса'],
+    [overDiscount === null, `скидка больше предела администратора (${discountLimitText})`, undefined, 'скидка больше предела'],
     [invoiceAmount === 0 || party !== null, 'клиента для оплаты «По счёту»', '[data-client]', 'клиент для счёта'],
     [payments !== null, 'сумму оплаты', '[data-pay]', 'оплата'],
     [
@@ -1310,7 +1339,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
     const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
     // Товарный чек сам — по настройке «Масляная книжка и печать» (по умолчанию нет).
-    if (bookVehicle && prefs.auto_receipt) printSale(sale, saleChange, { bookBlock: prefs.receipt_block })
+    if (bookVehicle && prefs.auto_receipt) printSale(sale, saleChange, { bookBlock: prefs.receipt_block, discount: cs.print_discount })
     if (bookVehicle) {
       const client = party?.name ?? null
       void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
@@ -1428,6 +1457,165 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const tbtn =
     'inline-flex min-h-[56px] items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1 text-center text-base leading-tight font-medium text-slate-800 shadow-sm active:bg-slate-100 disabled:text-slate-400'
   const delivering = delivery !== null
+  // Раскладка режима кассы (задача 003 Н2, ADR-{B4.1}): кнопки по местам из «Настройки → Касса»;
+  // без права у вошедшего кнопки нет нигде (`placed`). Вне режима кассы — прежний вид.
+  const at = (place: Place): ButtonId[] => placed(cs, place, user)
+  const moreIds = at('more')
+  const startBattery = () =>
+    void batteryLoad.run(async () => {
+      const info = await get<BatteryInfo>('/batteries')
+      setBatteryPay({ kgText: '', perKgText: somInput(info.intake_per_kg_tyiyn) })
+      focusAfterRender('#battery-kg')
+    })
+  /** Кнопка режима кассы по ключу; `where` — место: у «Итого» и в окне «Ещё действия…» — крупнее. */
+  const modeButton = (id: ButtonId, where: Place): ReactNode => {
+    const cls = `${tbtn} ${where === 'total' || where === 'more' ? 'min-h-[64px]! text-lg!' : ''}`
+    // Из окна «Ещё действия…» — сначала закрыть окно.
+    const act = (fn: () => void) => () => {
+      setMoreOpen(false)
+      fn()
+    }
+    switch (id) {
+      case 'debt_payment':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(() => setDebtPay(true))}>
+            <Icon name="debts" className="h-5 w-5 shrink-0" />
+            Принять оплату долга
+          </button>
+        )
+      case 'expense':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(() => setExpense(true))}>
+            <Icon name="expenses" className="h-5 w-5 shrink-0" />
+            Мелкий расход из кассы
+          </button>
+        )
+      case 'battery_intake':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(() => setBatteryIntake(true))}>
+            Приём аккумуляторов
+          </button>
+        )
+      case 'battery_sell':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(sellBatteries)}>
+            Аккумуляторы на вес
+          </button>
+        )
+      // Выплата сотруднику (SPEC-36 §11): то же окно, что в «Расчёте»; правила — на сервере.
+      case 'staff_pay':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(() => setStaffPay(true))}>
+            <Icon name="payroll" className="h-5 w-5 shrink-0" />
+            Выплата сотруднику
+          </button>
+        )
+      // Возврат без чека — только владелец (ADR-105).
+      case 'no_receipt':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(() => setNoReceipt(true))}>
+            Возврат без чека
+          </button>
+        )
+      // Скидка (задача 003 Н3): без права — неактивна с подписью, проверяет сервер.
+      case 'discount':
+        return (
+          <button
+            key={id}
+            type="button"
+            data-testid="discount-open"
+            className={`${cls} ${checkDisc.discount > 0 ? 'border-amber-400! bg-amber-50!' : ''}`}
+            disabled={!canDiscount || lines.length === 0 || total <= 0}
+            onClick={act(() => setDiscountOpen(true))}
+          >
+            <span>
+              {checkDisc.discount > 0 ? `Скидка −${formatSom(checkDisc.discount)}` : 'Скидка'}
+              {!canDiscount && <span className="block text-sm font-normal">скидку даёт владелец</span>}
+            </span>
+          </button>
+        )
+      case 'delivery':
+        return (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={delivering}
+            className={`${cls} ${delivering ? 'border-sky-600! bg-sky-50! text-sky-800!' : ''}`}
+            onClick={act(() => setDelivery(delivering ? null : ''))}
+          >
+            {delivering ? '✓ Доставка' : 'Доставка'}
+          </button>
+        )
+      case 'comment':
+        return (
+          <button key={id} type="button" className={cls} disabled={commentOpen || Boolean(comment)} onClick={act(() => setCommentOpen(true))}>
+            Комментарий
+          </button>
+        )
+      case 'battery_pay':
+        return (
+          <button key={id} type="button" className={cls} disabled={total <= 0 || Boolean(batteryPay) || batteryLoad.busy || !online} onClick={act(startBattery)}>
+            <span>
+              Сдал аккумулятор
+              {!online && <span className="block text-sm font-normal">нет связи</span>}
+            </span>
+          </button>
+        )
+      case 'bonus':
+        return (
+          <button key={id} type="button" className={cls} disabled={total <= 0 || Boolean(bonus)} onClick={act(() => setBonusOpen(true))}>
+            <Icon name="star" className="h-5 w-5 shrink-0" />
+            Баллы клиента
+          </button>
+        )
+      // Кнопки полосы, перенесённые в «Ещё действия…».
+      case 'shift_print':
+        return shift.data ? (
+          <button
+            key={id}
+            type="button"
+            className={cls}
+            onClick={act(() => {
+              const sid = shift.data?.id
+              if (sid) void printShift(sid).catch(() => toast('Чек смены не напечатался — нет связи с сервером'))
+            })}
+          >
+            Чек смены
+          </button>
+        ) : null
+      case 'keyboard':
+        return (
+          <button key={id} type="button" aria-pressed={keyboard} className={cls} onClick={act(() => setKeyboardOpen(!keyboard))}>
+            ⌨ Клавиатура
+          </button>
+        )
+      case 'fullscreen':
+        return (
+          <button key={id} type="button" className={cls} onClick={act(enterFullscreen)}>
+            Во весь экран
+          </button>
+        )
+      case 'exit':
+        return (
+          <button
+            key={id}
+            type="button"
+            className={cls}
+            onClick={act(() => {
+              exitFullscreen()
+              setCashierMode(false)
+            })}
+          >
+            Выйти из режима кассы
+          </button>
+        )
+    }
+  }
+  const moreButton = (
+    <button key="more" type="button" data-testid="more-actions" className={tbtn} onClick={() => setMoreOpen(true)}>
+      Ещё действия…
+    </button>
+  )
 
   // Данные замены и клиента. В режиме кассы у чека «В сервис» — в левой колонке под строками чека
   // (SPEC-30 §17): справа остаются тип, итог, оплата и «Провести».
@@ -1890,7 +2078,20 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       ) : (
         <Missing items={blockers} />
       )}
-      {touch ? (
+      {touch && cs.submit_wide ? (
+        // «Настройки → Касса»: «Провести чек» во всю ширину, «Отложить» и «Очистить» — рядом над ним.
+        <div className="flex shrink-0 flex-col gap-1.5" data-testid="submit-wide">
+          {!fix && lines.length > 0 && <div className="flex gap-1.5">{parkClear}</div>}
+          <Button
+            className="min-h-[76px]! w-full flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
+            disabled={!canSubmit}
+            onClick={trySubmit}
+          >
+            {fix ? 'Сохранить исправление' : 'Провести чек'}
+            {due > 0 && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
+          </Button>
+        </div>
+      ) : touch ? (
         // Режим кассы: «Провести» слева, «Отложить» и «Очистить» столбиком справа — меньше высоты,
         // больше места колонке оплаты.
         <div className="flex shrink-0 items-stretch gap-2">
@@ -1928,7 +2129,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     >
       {touch && (
         <div className="lg:col-span-2">
-          <CashierModeBar shift={shift.loading && !shiftKnown ? undefined : shift.data} onOpenShift={startShift} onShiftChanged={shift.reload} />
+          <CashierModeBar
+            shift={shift.loading && !shiftKnown ? undefined : shift.data}
+            onOpenShift={startShift}
+            onShiftChanged={shift.reload}
+            buttons={at('bar')}
+            exitGrey={cs.exit_grey}
+          />
         </div>
       )}
       <div className={`flex min-w-0 flex-col ${touch ? `${serviceLeft ? 'gap-2' : 'gap-3'} lg:min-h-0` : 'gap-4'}`}>
@@ -2022,43 +2229,18 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           {touch ? (
             // В режиме кассы всё на виду и крупно: без скрытого меню «…» и мелких ссылок. У чека
             // «В сервис» место под чеком занимают данные замены (SPEC-30 §17) — редкие действия кассы
-            // доступны на вынос.
+            // доступны на вынос. Какие кнопки здесь — «Настройки → Касса» (задача 003 Н2).
             serviceLeft ? null : (
-            <div className={`mt-2 grid grid-cols-2 gap-2 ${['sm:grid-cols-4', 'sm:grid-cols-5', 'sm:grid-cols-6'][Number(user.role === 'owner' && !fix) + Number(can(user, 'payroll_pay') && !fix)]}`}>
-              {can(user, 'debt_payment') && (
-                <button type="button" className={tbtn} onClick={() => setDebtPay(true)}>
-                  <Icon name="debts" className="h-5 w-5 shrink-0" />
-                  Принять оплату долга
-                </button>
-              )}
-              {can(user, 'expenses') && (
-                <button type="button" className={tbtn} onClick={() => setExpense(true)}>
-                  <Icon name="expenses" className="h-5 w-5 shrink-0" />
-                  Мелкий расход из кассы
-                </button>
-              )}
-              {can(user, 'battery_intake') && (
-                <button type="button" className={tbtn} onClick={() => setBatteryIntake(true)}>
-                  Приём аккумуляторов
-                </button>
-              )}
-              <button type="button" className={tbtn} onClick={sellBatteries}>
-                Аккумуляторы на вес
-              </button>
-              {/* Выплата сотруднику (SPEC-36 §11): то же окно, что в «Расчёте»; правила — на сервере. */}
-              {can(user, 'payroll_pay') && !fix && (
-                <button type="button" className={tbtn} onClick={() => setStaffPay(true)}>
-                  <Icon name="payroll" className="h-5 w-5 shrink-0" />
-                  Выплата сотруднику
-                </button>
-              )}
-              {/* Возврат без чека — только владелец (ADR-105). */}
-              {user.role === 'owner' && !fix && (
-                <button type="button" className={tbtn} onClick={() => setNoReceipt(true)}>
-                  Возврат без чека
-                </button>
-              )}
-            </div>
+              (() => {
+                const items = [...at('search').map((id) => modeButton(id, 'search')).filter(Boolean), ...(moreIds.length > 0 ? [moreButton] : [])]
+                if (items.length === 0) return null
+                const cols = items.length === 1 ? 'grid-cols-1' : `grid-cols-2 ${['sm:grid-cols-2', 'sm:grid-cols-3', 'sm:grid-cols-4', 'sm:grid-cols-5', 'sm:grid-cols-6', 'sm:grid-cols-7'][Math.min(items.length, 7) - 2]}`
+                return (
+                  <div className={`mt-2 grid gap-2 ${cols}`} data-testid="mode-actions">
+                    {items}
+                  </div>
+                )
+              })()
             )
           ) : (
             <div className={`mt-2 flex-wrap items-center gap-x-1 gap-y-1 ${fix ? 'hidden' : 'flex'}`}>
@@ -2099,9 +2281,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         </Card>
 
         {serviceLeft ? null : touch ? (
-          // Плитки не съедают место чека: не выше четверти экрана, дальше прокручиваются. У чека
-          // «В сервис» их место — данным замены (SPEC-30 §17); товар добавляется поиском.
-          <div className="relative lg:max-h-[24dvh] lg:shrink-0 lg:overflow-y-auto lg:overscroll-contain">
+          // Плитки не съедают место чека: не выше четверти экрана (высота — «Настройки → Касса»),
+          // дальше прокручиваются. У чека «В сервис» их место — данным замены (SPEC-30 §17).
+          <div
+            className="relative lg:max-h-(--tiles-h) lg:shrink-0 lg:overflow-y-auto lg:overscroll-contain"
+            style={{ '--tiles-h': `${cs.tiles_dvh}dvh` } as CSSProperties}
+            data-testid="mode-tiles"
+          >
             <CashierFavorites compact onProduct={addProduct} onService={addService} />
           </div>
         ) : (
@@ -2124,7 +2310,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 </div>
               </div>
               <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => printSale(done.sale, done.change, { bookBlock: prefs.receipt_block })}>
+                <Button variant="secondary" onClick={() => printSale(done.sale, done.change, { bookBlock: prefs.receipt_block, discount: cs.print_discount })}>
                   Печать чека
                 </Button>
                 {done.book && saleCheckOf(done.book, done.sale.id, prefs) && (
@@ -2370,7 +2556,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                                 ? 'border-amber-400 bg-amber-50'
                                 : priceEdit === l.key
                                   ? ''
-                                  : 'cursor-pointer border-transparent bg-transparent text-right font-medium text-slate-800 shadow-none'
+                                  : touch && canDiscount
+                                    ? // Режим кассы: цену можно изменить — пунктирная рамка и «✎» (задача 003 Н3).
+                                      'cursor-pointer border-dashed border-slate-400 bg-transparent pr-6 text-right font-medium text-slate-800 shadow-none'
+                                    : 'cursor-pointer border-transparent bg-transparent text-right font-medium text-slate-800 shadow-none'
                             }`}
                             // Без права на скидку цену можно только поднять: ниже прайса «Провести» не даст (ADR-097).
                             {...num('decimal')}
@@ -2386,9 +2575,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                           {priceEdit !== l.key && (
                             <span
                               aria-hidden="true"
-                              className={`pointer-events-none absolute inset-0 flex items-center justify-end truncate px-2 font-medium text-slate-800 ${touch ? 'text-lg' : ''}`}
+                              className={`pointer-events-none absolute inset-0 flex items-center justify-end gap-1 truncate px-2 font-medium text-slate-800 ${touch ? 'text-lg' : ''}`}
                             >
                               {priceShown(l.priceText)}
+                              {touch && canDiscount && <span className="text-base text-slate-400">✎</span>}
                             </span>
                           )}
                           </span>
@@ -2406,6 +2596,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                         </span>
                         {/* В режиме кассы подсказок по наведению нет — прайс виден подписью. */}
                         {touch && changed && !lowNoRight && <span className="text-amber-700">прайс {formatSom(lineList(l))}</span>}
+                        {/* Без права цену можно только поднять: подпись — пока цену правят. */}
+                        {touch && !canDiscount && priceEdit === l.key && !lowNoRight && <span className="text-slate-500">скидку даёт владелец</span>}
                         {lowNoRight && (
                           <span className="text-rose-700" data-testid="price-below-list">
                             ниже прайса {formatSom(lineList(l))} — скидку ставит владелец
@@ -2533,41 +2725,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           )}
           {!serviceLeft && customerFields}
           {touch ? (
-            // Редкое — кнопками: доставка, комментарий, аккумулятор и баллы в оплату.
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 2xl:grid-cols-4">
-              <button
-                type="button"
-                aria-pressed={delivering}
-                className={`${tbtn} ${delivering ? 'border-sky-600! bg-sky-50! text-sky-800!' : ''}`}
-                onClick={() => setDelivery(delivering ? null : '')}
-              >
-                {delivering ? '✓ Доставка' : 'Доставка'}
-              </button>
-              <button type="button" className={tbtn} disabled={commentOpen || Boolean(comment)} onClick={() => setCommentOpen(true)}>
-                Комментарий
-              </button>
-              <button
-                type="button"
-                className={tbtn}
-                disabled={total <= 0 || Boolean(batteryPay) || batteryLoad.busy || !online}
-                onClick={() =>
-                  void batteryLoad.run(async () => {
-                    const info = await get<BatteryInfo>('/batteries')
-                    setBatteryPay({ kgText: '', perKgText: somInput(info.intake_per_kg_tyiyn) })
-                    focusAfterRender('#battery-kg')
-                  })
-                }
-              >
-                <span>
-                  Сдал аккумулятор
-                  {!online && <span className="block text-sm font-normal">нет связи</span>}
-                </span>
-              </button>
-              <button type="button" className={tbtn} disabled={total <= 0 || Boolean(bonus)} onClick={() => setBonusOpen(true)}>
-                <Icon name="star" className="h-5 w-5 shrink-0" />
-                Баллы клиента
-              </button>
-            </div>
+            // Редкое — кнопками: доставка, комментарий, аккумулятор и баллы в оплату (место каждой —
+            // «Настройки → Касса», задача 003 Н2).
+            at('pay').length > 0 && (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2 2xl:grid-cols-4" data-testid="mode-pay-buttons">
+                {at('pay').map((id) => modeButton(id, 'pay'))}
+              </div>
+            )
           ) : (
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
               <label className="inline-flex cursor-pointer items-center gap-1.5 text-sky-700 max-lg:min-h-[42px]">
@@ -2628,6 +2792,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <Money value={total} className="text-3xl font-bold" />
             </div>
           )}
+          {/* Скидка чека (задача 003 Н3): на сколько строки дешевле прайса; до проведения меняется. */}
+          {checkDisc.discount > 0 && (
+            <div className="-mt-1 flex items-center justify-end gap-2 text-sm text-amber-800" data-testid="check-discount">
+              Скидка −{formatSom(checkDisc.discount)} от прайса {formatSom(checkDisc.list)}
+              {overDiscount && <span className="font-semibold text-rose-700">· больше предела {discountLimitText}</span>}
+            </div>
+          )}
           {bonus && (
             <div className="flex items-center justify-between gap-2 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900">
               <span>
@@ -2675,6 +2846,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               ))}
             </div>
           )}
+          {/* Режим кассы: ряд крупных кнопок у «Итого» — что меняет сумму (задача 003 Н2); у чека «В
+              сервис» сюда же — «Ещё действия…», если что-то туда перенесли. */}
+          {touch &&
+            (() => {
+              const items = [...at('total').map((id) => modeButton(id, 'total')).filter(Boolean), ...(serviceLeft && moreIds.length > 0 ? [moreButton] : [])]
+              if (items.length === 0) return null
+              const cols = ['grid-cols-1', 'grid-cols-2', 'grid-cols-3', 'grid-cols-2 2xl:grid-cols-4'][Math.min(items.length, 4) - 1]
+              return (
+                <div className={`grid gap-2 ${cols}`} data-testid="mode-total-buttons">
+                  {items}
+                </div>
+              )
+            })()}
           {/* В режиме кассы «→ Касса · наличные» не пишем: наличные всегда в кассу. */}
           {payCaptions.length > 0 && !(touch && payMode === 'cash') && (
             <div className="-mt-1 flex flex-col text-xs text-slate-500" data-testid="pay-dest">
@@ -2747,8 +2931,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               onRetry={() => void bankQr.create(cardDue > 0 ? cardDue : bankQr.qr?.amount_tyiyn ?? 0)}
             />
           )}
-          {!touch && total > 0 && (!bonus || !batteryPay) && (
+          {!touch && total > 0 && (
             <div className="-mt-1 flex flex-wrap justify-end gap-x-4 gap-y-1">
+              {/* Скидка на чек или строку (задача 003 Н3); без права — подпись, проверяет сервер. */}
+              <button
+                type="button"
+                data-testid="discount-open"
+                className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline max-lg:min-h-[42px]"
+                disabled={!canDiscount || lines.length === 0}
+                title={canDiscount ? 'Скидка на весь чек или на строку' : 'Скидку даёт владелец'}
+                onClick={() => setDiscountOpen(true)}
+              >
+                {canDiscount ? (checkDisc.discount > 0 ? 'Изменить скидку' : 'Скидка') : 'Скидка — даёт владелец'}
+              </button>
               {!batteryPay && (
                 <button
                   type="button"
@@ -2869,7 +3064,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                     Без сдачи
                   </button>
                   {NOTES.filter((n) => n > due)
-                    .slice(0, touch ? 1 : 3)
+                    .slice(0, touch ? cs.notes : 3)
                     .map((n) => (
                       <button
                         key={n}
@@ -3141,6 +3336,27 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         />
       )}
       {noReceipt && <NoReceiptReturn touch={touch} onClose={() => setNoReceipt(false)} />}
+      {discountOpen && (
+        <DiscountModal
+          lines={discLines}
+          quick={cs.discount_quick}
+          services={cs.discount_services}
+          limit={discountLimit}
+          touch={touch}
+          onClose={() => setDiscountOpen(false)}
+          onApply={(prices) => {
+            setLines((ls) => ls.map((l) => (prices.has(l.key) ? { ...l, priceText: somInput(prices.get(l.key) ?? 0) } : l)))
+            setDiscountOpen(false)
+          }}
+        />
+      )}
+      {moreOpen && (
+        <Modal title="Ещё действия" onClose={() => setMoreOpen(false)}>
+          <div className="grid grid-cols-2 gap-3" data-testid="more-actions-modal">
+            {moreIds.map((id) => modeButton(id, 'more'))}
+          </div>
+        </Modal>
+      )}
       {declinedOpen && (
         <Modal title="Мастер рекомендовал (клиент отказался)" onClose={() => setDeclinedOpen(false)}>
           <div className="flex flex-col gap-3">

@@ -11988,3 +11988,87 @@ async fn bot_feed_settings_are_owner_only(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
+    // «Настройки → Касса» (задача 003 Н2–Н4): читают все вошедшие, меняет только владелец; неизвестная
+    // кнопка, недопустимое место и процент больше 100 — 422; повтор `op_id` — тот же ответ без
+    // второй записи журнала; раскладка — в снимке кассы.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let (s, _, v) = call(&app, "GET", "/api/v1/settings/cashier", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["print_shift_profit"], false,
+        "прибыль на бумаге по умолчанию — нет"
+    );
+    assert_eq!(v["sale_cost_on_till"], false);
+    assert_eq!(v["tiles_dvh"], 24);
+    assert_eq!(v["admin_limit_pct"], Value::Null);
+    let body = json!({ "op_id": Uuid::now_v7(),
+                       "buttons": [{ "id": "bonus", "place": "total" },
+                                   { "id": "battery_sell", "place": "hidden" }],
+                       "admin_limit_pct": 10, "print_shift_profit": true });
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        Some(&admin),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    for _ in 0..2 {
+        let (s, _, v) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings/cashier",
+            Some(&owner),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["buttons"][0]["id"], "bonus");
+        assert_eq!(v["admin_limit_pct"], 10);
+    }
+    let logged: Vec<Value> =
+        sqlx::query_scalar("select data from audit_log where action = 'settings.cashier'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(logged.len(), 1, "изменение — одна запись журнала");
+    assert_eq!(logged[0]["before"]["admin_limit_pct"], Value::Null);
+    assert_eq!(logged[0]["after"]["admin_limit_pct"], 10);
+    let (_, _, v) = call(&app, "GET", "/api/v1/settings/cashier", Some(&admin), None).await;
+    assert_eq!(v["print_shift_profit"], true);
+    let place = |v: &Value, id: &str| {
+        v["buttons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == id)
+            .map(|b| b["place"].clone())
+            .unwrap()
+    };
+    assert_eq!(place(&v, "battery_sell"), "hidden");
+    assert_eq!(place(&v, "debt_payment"), "search", "остальное — как было");
+    let (_, _, snap) = call(&app, "GET", "/api/v1/offline/snapshot", Some(&admin), None).await;
+    assert_eq!(place(&snap["cashier"], "bonus"), "total");
+    for bad in [
+        json!({ "op_id": Uuid::now_v7(), "buttons": [{ "id": "print_money", "place": "search" }] }),
+        json!({ "op_id": Uuid::now_v7(), "buttons": [{ "id": "exit", "place": "hidden" }] }),
+        json!({ "op_id": Uuid::now_v7(), "admin_limit_pct": 150 }),
+        json!({ "op_id": Uuid::now_v7(), "notes": 5 }),
+    ] {
+        let (s, _, v) = call(
+            &app,
+            "PUT",
+            "/api/v1/settings/cashier",
+            Some(&owner),
+            Some(bad),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    }
+}

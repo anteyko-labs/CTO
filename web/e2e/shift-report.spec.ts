@@ -210,6 +210,8 @@ test('чек смены: безнал по счетам, чистая прибы
   await page.addInitScript(PRINT_STUB)
   await login(page)
   await apiPut(page.request, '/settings/shift', { print_on_close: true })
+  // Прибыль на бумаге — по умолчанию нет (задача 003 Н4): настройка кассы — как по умолчанию.
+  await apiPut(page.request, '/settings/cashier', { op_id: crypto.randomUUID() })
   const { shift } = await shiftWithSales(page.request, 'А')
 
   // «Смена»: безнал по счетам виден и при одном счёте — с «Упало на счёт».
@@ -229,18 +231,25 @@ test('чек смены: безнал по счетам, чистая прибы
   const check = (await prints(page)).find((t) => t.includes(`Чек смены № ${shift.number}`)) ?? ''
   expect(check).toContain('Безнал по счетам')
   expect(check).toContain('Выручка 1 000,00 с')
-  expect(check).toContain('Валовая прибыль 800,00 с')
-  expect(check).toContain('Чистая прибыль')
   expect(check).toContain('Осталось в кассе')
+  expect(check).not.toContain('Себестоимость')
+  expect(check).not.toContain('Валовая прибыль')
+  expect(check).not.toContain('Чистая прибыль')
 
-  // «Смена № N»: чистая прибыль владельцу и кнопка «Печать чека смены» рядом с «Печать».
+  // «Смена № N»: чистая прибыль владельцу на экране — как раньше; кнопка «Печать чека смены» рядом
+  // с «Печать». С настройкой «Печатать прибыль в чеке смены» — на бумаге и прибыль.
   await page.goto(`/shifts/${shift.id}`)
   await expect(page.getByTestId('tile-net-profit')).toBeVisible()
   await expect(page.getByTestId('net-profit')).toContainText('без оклада')
   await expect(page.getByTestId('net-profit-total')).toContainText('Чистая прибыль за смену')
+  await apiPut(page.request, '/settings/cashier', { op_id: crypto.randomUUID(), print_shift_profit: true })
   const before = (await prints(page)).length
   await page.getByRole('button', { name: 'Печать чека смены' }).click()
   await expect.poll(async () => (await prints(page)).length).toBe(before + 1)
+  const withProfit = (await prints(page))[before]
+  expect(withProfit).toContain('Валовая прибыль 800,00 с')
+  expect(withProfit).toContain('Чистая прибыль')
+  await apiPut(page.request, '/settings/cashier', { op_id: crypto.randomUUID() })
 
   // Список смен: своя кнопка у каждой смены. Настройка выключает автопечать.
   await page.goto('/shift')

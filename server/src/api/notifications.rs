@@ -387,13 +387,51 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 format!("{}{}", changes, comment(data)),
             )
         }
-        "sale.price_override" => (
-            "Цена изменена прямо в чеке".into(),
-            data.get("lines")
+        // Чек №, товар, «прайс → цена» и сумма скидки (задача 003 Н3); у прежних записей — число строк.
+        "sale.price_override" => {
+            let lines = data
+                .get("lines")
                 .and_then(Value::as_array)
-                .map(|l| format!("строк: {}", l.len()))
-                .unwrap_or_default(),
-        ),
+                .cloned()
+                .unwrap_or_default();
+            let named: Vec<String> = lines
+                .iter()
+                .filter_map(|l| {
+                    let name = l.get("name").and_then(Value::as_str)?;
+                    let per = match l.get("kind").and_then(Value::as_str) {
+                        Some("pour") => " за л",
+                        Some("weight") => " за кг",
+                        _ => "",
+                    };
+                    let price = |k: &str| money(l.get(k).and_then(Value::as_i64));
+                    Some(format!(
+                        "{name}: прайс {}{per} → {}{per}",
+                        price("list"),
+                        price("price")
+                    ))
+                })
+                .collect();
+            let off: i64 = lines
+                .iter()
+                .filter_map(|l| l.get("off").and_then(Value::as_i64))
+                .sum();
+            let details = if named.is_empty() {
+                format!("строк: {}", lines.len())
+            } else {
+                let mut d = named.join("; ");
+                if off > 0 {
+                    d.push_str(&format!(" · скидка {}", money(Some(off))));
+                }
+                d
+            };
+            (
+                match num("number") {
+                    Some(n) => format!("Цена изменена прямо в чеке № {n}"),
+                    None => "Цена изменена прямо в чеке".into(),
+                },
+                details,
+            )
+        }
         "sale.credit_limit_exceeded" => (
             "Долг клиента вышел за лимит".into(),
             format!("в долг {}", money(num("debt"))),
@@ -1427,6 +1465,29 @@ async fn mark_seen(State(state): State<AppState>, ctx: Ctx) -> AppResult<Json<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn price_override_names_check_line_and_discount() {
+        // Задача 003 Н3: чек №, товар, «прайс → цена» и сумма скидки; у прежних записей — число строк.
+        let (title, text) = describe(
+            "sale.price_override",
+            &json!({ "number": 12, "lines": [
+                { "line_no": 1, "name": "Фильтр W712", "kind": "piece", "list": 50_000, "price": 45_000, "off": 10_000 },
+                { "line_no": 2, "name": "Масло 5W-30", "kind": "pour", "list": 61_000, "price": 55_000, "off": 9_000 },
+            ] }),
+        );
+        assert_eq!(title, "Цена изменена прямо в чеке № 12");
+        assert_eq!(
+            text,
+            "Фильтр W712: прайс 500 с → 450 с; Масло 5W-30: прайс 610 с за л → 550 с за л · скидка 190 с"
+        );
+        let (title, text) = describe(
+            "sale.price_override",
+            &json!({ "lines": [{ "line_no": 1, "list": 1, "price": 2 }] }),
+        );
+        assert_eq!(title, "Цена изменена прямо в чеке");
+        assert_eq!(text, "строк: 1");
+    }
 
     #[test]
     fn new_events_are_described_in_words() {

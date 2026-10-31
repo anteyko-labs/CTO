@@ -186,6 +186,8 @@ struct Snapshot {
     oil_change_master_fee_tyiyn: i64,
     /// «Масляная книжка и печать» (задача 003 Н5): что касса печатает без сети.
     oil_book: crate::api::book_settings::OilBookSettings,
+    /// «Настройки → Касса» (задача 003 Н2–Н4): раскладка режима кассы и скидка без сети.
+    cashier: crate::api::cashier_settings::CashierSettings,
 }
 
 /// Снимок без себестоимости и стоимости остатка: касса их не использует (SPEC-09).
@@ -306,6 +308,7 @@ async fn snapshot(
     })
     .unwrap_or(crate::api::sales::DEFAULT_OIL_CHANGE_FEE);
     let oil_book = crate::api::book_settings::load(&mut conn, user.branch_id).await?;
+    let cashier = crate::api::cashier_settings::load(&mut conn, user.branch_id).await?;
 
     // Версия снимка — отпечаток содержимого: не изменилось, отвечаем 304.
     let body = Snapshot {
@@ -319,6 +322,7 @@ async fn snapshot(
         bank_accounts,
         oil_change_master_fee_tyiyn: fee,
         oil_book: oil_book.clone(),
+        cashier,
     };
     let payload = serde_json::to_string(&json!({
         "products": &body.products,
@@ -329,6 +333,7 @@ async fn snapshot(
         "bank_accounts": &body.bank_accounts,
         "fee": fee,
         "oil_book": &oil_book,
+        "cashier": &body.cashier,
     }))
     .unwrap_or_default();
     let version = format!("{:x}", seahash(&payload));

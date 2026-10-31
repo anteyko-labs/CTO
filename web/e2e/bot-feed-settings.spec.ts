@@ -13,7 +13,7 @@ test('уведомления в бот: выключатель события и
   await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
   // Повтор после сбоя начинает с настройки по умолчанию.
   const reset = await page.request.put('/api/v1/settings/bot-feed', {
-    data: { op_id: crypto.randomUUID(), off: [], sales: 'none' },
+    data: { op_id: crypto.randomUUID(), off: [], sales: 'none', profit: true },
     headers: { 'x-device-id': crypto.randomUUID() },
   })
   expect(reset.ok()).toBeTruthy()
@@ -37,11 +37,19 @@ test('уведомления в бот: выключатель события и
   await expect(open).not.toBeChecked()
   await sales.getByRole('radio', { name: 'Только в долг и возвраты' }).check()
   await expect(page.getByText('Чеки: только в долг и возвраты')).toBeVisible()
+  // Себестоимость и прибыль в сообщениях о чеках (задача 003 Н4): по умолчанию — да.
+  const profit = sales.getByRole('checkbox', { name: 'Себестоимость и прибыль в сообщениях о чеках' })
+  await expect(profit).toBeChecked()
+  await profit.uncheck()
+  await expect(page.getByText('Прибыль в сообщениях о чеках — не приходит')).toBeVisible()
 
   await page.reload()
   await expect(page.getByTestId('bot-feed-sales').getByRole('radio', { name: 'Только в долг и возвраты' })).toBeChecked()
   await expect(page.getByTestId('bot-feed-group-shift').getByRole('checkbox', { name: 'Смена открыта' })).not.toBeChecked()
   await expect(page.getByTestId('bot-feed-group-shift').getByText('включено 6 из 7')).toBeVisible()
+  await expect(page.getByTestId('bot-feed-sales').getByRole('checkbox', { name: 'Себестоимость и прибыль в сообщениях о чеках' })).not.toBeChecked()
+  await page.getByTestId('bot-feed-sales').getByRole('checkbox', { name: 'Себестоимость и прибыль в сообщениях о чеках' }).check()
+  await expect(page.getByText('Прибыль в сообщениях о чеках — приходит')).toBeVisible()
 
   // Вернуть как было.
   await page.getByTestId('bot-feed-group-shift').getByRole('checkbox', { name: 'Смена открыта' }).check()

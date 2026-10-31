@@ -2658,7 +2658,9 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.created_at, a.entity_id, a.branch_id,
                   w.full_name as "who?", t.chat_id,
-                  e.full_name as "employee?", b.name as branch_name
+                  e.full_name as "employee?", b.name as branch_name,
+                  -- Себестоимость и прибыль в сообщениях о чеках (задача 003 Н4), по умолчанию — да.
+                  coalesce((f.value ->> 'profit')::boolean, true) as "profit!"
            from audit_log a
            join branches b on b.id = a.branch_id
            -- Владелец получает ленту всех филиалов (SPEC-33 §3).
@@ -2696,11 +2698,13 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     )
     .fetch_all(&mut *conn)
     .await?;
-    let mut texts: HashMap<Uuid, String> = HashMap::new();
+    // Текст события — один на всех владельцев, кроме прибыли в чеке: у каждого свой выключатель.
+    let mut texts: HashMap<(Uuid, bool), String> = HashMap::new();
     let mut out = Vec::with_capacity(rows.len());
     let several = crate::api::branches::several(conn).await?;
     for r in rows {
-        let text = match texts.get(&r.id) {
+        let profit = r.profit && matches!(r.action.as_str(), "sale.post" | "sale.return");
+        let text = match texts.get(&(r.id, profit)) {
             Some(t) => t.clone(),
             None => {
                 let data = crate::api::notifications::safe_data(&r.data);
@@ -2710,7 +2714,15 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
                     entity_id: r.entity_id,
                     employee: r.employee.as_deref(),
                 };
-                let (title, details) = event_text(conn, &ev).await?;
+                let (title, mut details) = event_text(conn, &ev).await?;
+                if profit && let Some(id) = r.entity_id {
+                    let line = sale_profit_line(conn, id).await?;
+                    details = if details.is_empty() {
+                        line
+                    } else {
+                        format!("{details}\n{line}")
+                    };
+                }
                 let who = r.who.map(|w| format!("\n— {w}")).unwrap_or_default();
                 let text = if details.is_empty() {
                     format!("{title}{who}")
@@ -2719,7 +2731,7 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
                 };
                 // Несколько филиалов — у события название филиала.
                 let text = branch_head(several, &r.branch_name, text);
-                texts.insert(r.id, text.clone());
+                texts.insert((r.id, profit), text.clone());
                 text
             }
         };
@@ -3483,6 +3495,41 @@ pub async fn sale_text(conn: &mut PgConnection, id: Uuid) -> AppResult<(String, 
         ),
         details.join("\n"),
     ))
+}
+
+/// Себестоимость и прибыль чека или возврата для владельца (задача 003 Н4, ADR-{B4.3}):
+/// «💹 себестоимость 1 200 с · прибыль 300 с (20 %)»; строки без цены закупки — «без закупки:
+/// N поз.» (их себестоимость — ноль, ADR-062). Себестоимость — зафиксированная в строке (I3).
+/// Только в ленту владельцев (I13).
+async fn sale_profit_line(conn: &mut PgConnection, id: Uuid) -> AppResult<String> {
+    let r = sqlx::query!(
+        r#"select s.total_tyiyn,
+                  coalesce(sum(l.cost_tyiyn), 0)::bigint as "cost!",
+                  count(l.line_no) filter (where l.cost_unknown) as "unknown!"
+           from sales s left join sale_lines l on l.sale_id = s.id
+           where s.id = $1 group by s.id"#,
+        id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    // Возврат — с минусом в учёте; в сообщении — суммы без знака, как сумма возврата.
+    let total = r.total_tyiyn.saturating_abs();
+    let cost = r.cost.saturating_abs();
+    let profit = total.saturating_sub(cost);
+    let mut line = format!(
+        "💹 себестоимость {} · прибыль {}",
+        format_som(cost),
+        format_som(profit)
+    );
+    if total > 0 {
+        let pct = crate::domain::money::div_round(i128::from(profit) * 100, i128::from(total))
+            .unwrap_or(0);
+        line.push_str(&format!(" ({pct} %)"));
+    }
+    if r.unknown > 0 {
+        line.push_str(&format!(" · без закупки: {} поз.", r.unknown));
+    }
+    Ok(line)
 }
 
 /// Долг клиента на момент документа: журнал долга по всем филиалам до этого времени включительно

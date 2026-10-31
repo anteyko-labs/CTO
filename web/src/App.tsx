@@ -65,6 +65,7 @@ const BotFeedSettings = lazyPage(() => import('./pages/BotFeedSettings'))
 const StockSettingsPage = lazyPage(() => import('./pages/StockSettings'))
 const OilBookSettings = lazyPage(() => import('./pages/OilBookSettings'))
 const CrossPickSettings = lazyPage(() => import('./pages/CrossPickSettings'))
+const CashierSettingsPage = lazyPage(() => import('./pages/CashierSettings'))
 const ClientMessages = lazyPage(() => import('./pages/ClientMessages'))
 const ExpenseArticles = lazyPage(() => import('./pages/ExpenseArticles'))
 const SupplierCard = lazyPage(() => import('./pages/SupplierCard'))
@@ -387,6 +388,7 @@ function Shell() {
           {owner && <Route path="/settings/stock" element={<StockSettingsPage />} />}
           {owner && <Route path="/settings/oil-book" element={<OilBookSettings />} />}
           {owner && <Route path="/settings/cross-pick" element={<CrossPickSettings />} />}
+          {owner && <Route path="/settings/cashier" element={<CashierSettingsPage />} />}
           {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
           {owner && <Route path="/settings/client-messages" element={<ClientMessages />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}

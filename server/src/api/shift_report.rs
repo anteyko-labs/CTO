@@ -1624,8 +1624,40 @@ pub fn report_text(r: &ShiftReport, extra: &[String]) -> String {
                 .join(", ")
         ));
     }
-    if let Some(g) = v.gross_tyiyn {
+    // Прибыль — только в виде владельца (I13): себестоимость, валовая, из чего сложилась чистая
+    // (без нулевых) и чистая (задача 003 Н4, ADR-{B4.3}: с бумаги убрана — в бот владельцу).
+    if let Some(c) = v.cost_tyiyn {
+        rev.push(format!(
+            "  себестоимость: {}{}",
+            format_som(c),
+            match v.cost_unknown_lines {
+                Some(n) if n > 0 => format!(" (без цены закупки: {n} строк)"),
+                _ => String::new(),
+            }
+        ));
+    }
+    // Валовая — та же, с которой начинаются слагаемые: их сумма — чистая прибыль.
+    let gross = v
+        .profit
+        .iter()
+        .flatten()
+        .find(|l| l.key == "gross")
+        .map(|l| l.amount_tyiyn)
+        .or(v.gross_tyiyn);
+    if let Some(g) = gross {
         rev.push(format!("  валовая прибыль: {}", format_som(g)));
+    }
+    for l in v
+        .profit
+        .iter()
+        .flatten()
+        .filter(|l| l.key != "gross" && l.amount_tyiyn != 0)
+    {
+        rev.push(format!(
+            "    {}: {}",
+            l.label.to_lowercase(),
+            format_som_signed(l.amount_tyiyn)
+        ));
     }
     if let Some(n) = v.net_profit_tyiyn {
         rev.push(format!("  чистая прибыль: {} (без оклада)", format_som(n)));

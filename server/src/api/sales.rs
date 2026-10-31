@@ -769,6 +769,48 @@ async fn check_discounts(
         None => ctx.user.clone(),
     };
     if crate::auth::has_permission(conn, &user, "discount").await? {
+        if user.is_owner() {
+            return Ok(());
+        }
+        // Предел скидки администратора (задача 003 Н3, ADR-{B4.2}): скидка чека — сколько не
+        // хватает до прайса по строкам ниже прайса, от суммы чека по прайсу (без подарков).
+        let settings = crate::api::cashier_settings::load(conn, ctx.user.branch_id).await?;
+        if settings.admin_limit_pct.is_none() && settings.admin_limit_tyiyn.is_none() {
+            return Ok(());
+        }
+        let list_amount = |p: &Prepared, list: i64| -> Option<i64> {
+            match p.kind.as_str() {
+                "pour" | "weight" => div_round(i128::from(p.qty) * i128::from(list), 1000),
+                _ => mul(p.qty, list),
+            }
+        };
+        let mut discount: i64 = 0;
+        for (p, list) in &lines {
+            let off = list_amount(p, *list)
+                .and_then(|l| l.checked_sub(p.amount))
+                .ok_or_else(overflow)?;
+            discount = discount.checked_add(off.max(0)).ok_or_else(overflow)?;
+        }
+        let mut list_total: i64 = 0;
+        for p in prepared.iter().filter(|p| !p.gift) {
+            let list = list_amount(p, p.seen_list.unwrap_or(p.list_price)).ok_or_else(overflow)?;
+            list_total = list_total.checked_add(list).ok_or_else(overflow)?;
+        }
+        let Some(limit) =
+            crate::api::cashier_settings::limit_exceeded(&settings, discount, list_total)
+        else {
+            return Ok(());
+        };
+        if !offline {
+            return Err(AppError::ForbiddenWith(format!(
+                "Скидка {} больше предела администратора ({limit}) — уменьшите скидку или попросите владельца",
+                crate::domain::money::format_som(discount)
+            )));
+        }
+        bypass.push(format!(
+            "скидка {} больше предела администратора ({limit})",
+            crate::domain::money::format_som(discount)
+        ));
         return Ok(());
     }
     if !offline {
@@ -1673,7 +1715,9 @@ pub async fn post_sale_core(
                         crate::domain::money::format_som(cost)
                     )
                 } else {
-                    format!("строка {line_no}: цена ниже закупочной, дешевле продать нельзя")
+                    format!(
+                        "строка {line_no}: цена ниже закупочной, дешевле продать нельзя — уменьшите скидку"
+                    )
                 }));
             }
             below_cost.push(json!({ "line_no": line_no, "amount": p.amount, "cost": cost }));
@@ -1706,7 +1750,24 @@ pub async fn post_sale_core(
         // мог смениться, пока чек лежал без сети: это не правка кассира, а старая цена (SPEC-09).
         let seen = p.seen_list.unwrap_or(p.list_price);
         if p.unit_price != seen && !p.gift && replay.is_none() {
-            overrides.push(json!({ "line_no": line_no, "list": seen, "price": p.unit_price }));
+            // Для сообщения владельцу (задача 003 Н3): товар, прайс → цена и на сколько дешевле.
+            let name = sqlx::query_scalar!(
+                r#"select coalesce((select name from products where id = $1),
+                                   (select name from services where id = $2), '') as "n!""#,
+                p.product_id,
+                p.service_id
+            )
+            .fetch_one(&mut *conn)
+            .await?;
+            let list_amount = match p.kind.as_str() {
+                "pour" | "weight" => div_round(i128::from(p.qty) * i128::from(seen), 1000),
+                _ => mul(p.qty, seen),
+            }
+            .ok_or_else(overflow)?;
+            overrides.push(json!({
+                "line_no": line_no, "list": seen, "price": p.unit_price, "name": name,
+                "kind": p.kind, "off": list_amount - p.amount,
+            }));
         }
         if offline && seen != p.list_price && !p.gift {
             stale.push(json!({ "line_no": line_no, "seen": seen, "list": p.list_price }));
@@ -1828,7 +1889,7 @@ pub async fn post_sale_core(
             "sale.price_override",
             "sale",
             Some(id),
-            json!({ "lines": overrides }),
+            json!({ "number": number, "lines": overrides }),
         )
         .await?;
     }
