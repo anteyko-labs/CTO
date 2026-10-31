@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from sale_payments\n                          where sale_id = $1\n                            and (method not in ('cash', 'card', 'bonus', 'battery')\n                                 or bank_qr_id is not null)) as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "45c8ff09e7e727f2064bbc3fabc819de937c31a66f22b8832b91f5d3f6555510"
+}

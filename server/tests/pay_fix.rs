@@ -753,3 +753,497 @@ async fn no_shift_then_counted_at_open_and_cost_from_original(pool: PgPool) {
     assert_eq!(w.balance(&w.till).await, till);
     assert_eq!(w.withheld().await, withheld);
 }
+
+// ---------- Наличные ↔ QR в обе стороны и право администратора (задача 003 Н1) ----------
+
+impl W {
+    async fn get_as(&self, who: &str, uri: &str) -> (StatusCode, Value) {
+        let (s, _, v) = call(&self.app, "GET", uri, Some(who), None).await;
+        (s, v)
+    }
+
+    async fn grant_admin(&self, permission: &str) {
+        sqlx::query(
+            "insert into user_permissions (user_id, branch_id, permission)
+             select id, branch_id, $1 from users where login = 'admin'",
+        )
+        .bind(permission)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn expected(&self) -> i64 {
+        self.get("/api/v1/shifts/current").await["expected_tyiyn"]
+            .as_i64()
+            .unwrap()
+    }
+}
+
+fn lines_of(v: &Value) -> String {
+    v["effect"]["lines"].to_string()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn qr_to_cash_in_open_and_closed_shift(pool: PgPool) {
+    let w = W::new(pool).await;
+    let s1 = w.open_shift().await;
+    for _ in 0..3 {
+        w.sale(json!([card(100_000, &w.bank)])).await;
+    }
+    w.sale(json!([cash(100_000)])).await;
+    let uri = format!("/api/v1/shifts/{s1}/cash-to-bank");
+    let info = w.get(&uri).await;
+    let bank_limit = info["bank_limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["account_id"] == json!(w.bank))
+        .cloned()
+        .unwrap();
+    assert_eq!(bank_limit["limit_tyiyn"], 300_000, "{info}");
+    assert_eq!(info["limit_tyiyn"], 100_000);
+    assert_eq!(info["sales"].as_array().unwrap().len(), 4);
+    assert!(info["sales"][0]["fixable"].as_bool().unwrap(), "{info}");
+
+    // Больше предела по счёту — 422.
+    let (s, e) = w
+        .post(
+            &w.owner,
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "direction": "to_cash", "amount_tyiyn": 300_001,
+                    "account_id": w.bank, "comment": "наличными" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+
+    let till = w.balance(&w.till).await;
+    let bank = w.balance(&w.bank).await;
+    let expected = w.expected().await;
+    let gross = w.get("/api/v1/reports/profit").await["totals"]["gross_tyiyn"].clone();
+    let op = Uuid::now_v7();
+    let body = json!({ "op_id": op, "direction": "to_cash", "amount_tyiyn": 100_000,
+                       "account_id": w.bank, "comment": "клиент дал наличные, нажали QR" });
+    let out = w.ok(&uri, body.clone()).await;
+    // Касса +, счёт −, комиссия возвращена; «Должно быть» больше; выручка и валовая те же.
+    assert_eq!(w.balance(&w.till).await, till + 100_000);
+    assert_eq!(w.balance(&w.bank).await, bank - 100_000 + 500);
+    assert_eq!(w.expected().await, expected + 100_000);
+    assert_eq!(
+        w.get("/api/v1/reports/profit").await["totals"]["gross_tyiyn"],
+        gross
+    );
+    assert_eq!(out["effect"]["fee_tyiyn"], -500, "{out}");
+    assert!(lines_of(&out).contains("больше"), "{out}");
+    // Повтор `op_id` — тот же перенос.
+    assert_eq!(w.ok(&uri, body).await, out);
+    assert_eq!(w.scalar("select count(*) from pay_fixes").await, 1);
+    // Предел «из наличных в QR» вырос на обратный перенос.
+    let info = w.get(&uri).await;
+    assert_eq!(info["limit_tyiyn"], 200_000, "{info}");
+    assert_eq!(info["items"][0]["amount_tyiyn"], -100_000);
+    // Отчёт смены: поступление «Из QR в наличные», безнал −, отдельная строка в «Деньгах».
+    let r = w.get(&format!("/api/v1/shifts/{s1}/report")).await;
+    let income = r["cash"]["income"].as_array().unwrap();
+    let line = income.iter().find(|l| l["key"] == json!("bank_to_cash"));
+    assert_eq!(line.unwrap()["amount_tyiyn"], 100_000, "{r}");
+    let split = r["shift"]["bank_split"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["account_id"] == json!(w.bank))
+        .cloned()
+        .unwrap();
+    assert_eq!(split["cash_to_bank_tyiyn"], -100_000);
+    assert_eq!(r["pay_fix_items"].as_array().unwrap().len(), 1);
+    let money = r["money"].as_array().unwrap();
+    let row = money.iter().find(|m| m["kind"] == json!("bank_to_cash"));
+    assert_eq!(row.unwrap()["amount_tyiyn"], 100_000, "{r}");
+    // Безнал (банк) по дням — отдельная строка; сводка дня владельца — по счёту.
+    let b = w.get("/api/v1/cash/bank").await;
+    assert_eq!(b["cash_to_bank_tyiyn"], -100_000, "{b}");
+    let d = w.get("/api/v1/owner/dashboard").await;
+    let acc = d["noncash"]["by_account"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["account_id"] == json!(w.bank))
+        .cloned()
+        .unwrap();
+    assert_eq!(acc["cash_to_bank_tyiyn"], -100_000, "{d}");
+    // Сверка с банком: перенос закрывает нашу несопоставленную оплату картой в окне смены.
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let recon = w
+        .get(&format!("/api/v1/bank/reconcile?from={today}&to={today}"))
+        .await;
+    assert_eq!(recon["days"][0]["unmatched"], 2, "{recon}");
+
+    // Отмена — всё обратно.
+    let fix = out["id"].as_str().unwrap().to_string();
+    w.ok(
+        &format!("/api/v1/cash-to-bank/{fix}/reverse"),
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибся" }),
+    )
+    .await;
+    assert_eq!(w.balance(&w.till).await, till);
+    assert_eq!(w.balance(&w.bank).await, bank);
+    assert_eq!(w.expected().await, expected);
+    let recon = w
+        .get(&format!("/api/v1/bank/reconcile?from={today}&to={today}"))
+        .await;
+    assert_eq!(recon["days"][0]["unmatched"], 3, "{recon}");
+
+    // Закрытая смена без расхождения: «из QR в наличные» — недостача 1 000, удержание 1 000;
+    // без галочки — удержания нет. «Касса» не меняется.
+    w.close_shift(&s1, 0).await;
+    let s2 = w.open_shift().await;
+    let till = w.balance(&w.till).await;
+    let (s, dry) = w
+        .post(
+            &w.owner,
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "direction": "to_cash", "amount_tyiyn": 100_000,
+                    "account_id": w.bank, "comment": "", "dry_run": true, "fix_withholding": false }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{dry}");
+    assert_eq!(dry["effect"]["withhold_tyiyn"], 0);
+    assert_eq!(dry["effect"]["withhold_possible_tyiyn"], -100_000);
+    let out = w
+        .ok(
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "direction": "to_cash", "amount_tyiyn": 100_000,
+                    "account_id": w.bank, "comment": "наличными" }),
+        )
+        .await;
+    assert_eq!(out["effect"]["diff_after_tyiyn"], -100_000, "{out}");
+    assert_eq!(out["effect"]["withhold_tyiyn"], -100_000);
+    assert_eq!(w.balance(&w.till).await, till);
+    assert_eq!(w.withheld().await, -100_000);
+    let r1 = w.get(&format!("/api/v1/shifts/{s1}/report")).await;
+    assert_eq!(r1["after_close"]["after"]["cash_to_bank_tyiyn"], -100_000);
+    let last = r1["after_close"]["items"]
+        .as_array()
+        .unwrap()
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(
+        last["new_text"].as_str().unwrap().contains("в наличные"),
+        "{r1}"
+    );
+    // Отчёт открытой сейчас смены не меняется.
+    let r2 = w.get(&format!("/api/v1/shifts/{s2}/report")).await;
+    assert!(r2["pay_fix_items"].as_array().unwrap().is_empty());
+    // Отмена поправки удержания возвращает удержанное.
+    let fix = out["id"].as_str().unwrap().to_string();
+    w.ok(
+        &format!("/api/v1/cash-to-bank/{fix}/reverse"),
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибся" }),
+    )
+    .await;
+    assert_eq!(w.withheld().await, 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn closed_shift_surplus_goes_to_zero_after_qr_to_cash(pool: PgPool) {
+    let w = W::new(pool).await;
+    let s1 = w.open_shift().await;
+    w.sale(json!([card(100_000, &w.bank)])).await;
+    // Кассир нажал QR, а взял наличные: при закрытии излишек 1 000.
+    w.close_shift(&s1, 100_000).await;
+    w.open_shift().await;
+    let out = w
+        .ok(
+            &format!("/api/v1/shifts/{s1}/cash-to-bank"),
+            json!({ "op_id": Uuid::now_v7(), "direction": "to_cash", "amount_tyiyn": 100_000,
+                    "account_id": w.bank, "comment": "клиент платил наличными" }),
+        )
+        .await;
+    assert_eq!(out["effect"]["diff_before_tyiyn"], 100_000, "{out}");
+    assert_eq!(out["effect"]["diff_after_tyiyn"], 0);
+    assert_eq!(out["effect"]["withhold_tyiyn"], 0);
+    assert_eq!(w.withheld().await, 0);
+    // Владельцу — прибыль дня: комиссия вернулась, излишек ушёл.
+    assert!(lines_of(&out).contains("Прибыль дня"), "{out}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_with_till_pay_fix_only_in_open_shift(pool: PgPool) {
+    let w = W::new(pool).await;
+    let s1 = w.open_shift().await;
+    let (a, _) = w.sale(json!([cash(100_000)])).await;
+    let (b, _) = w.sale(json!([card(100_000, &w.bank)])).await;
+    let (c, _) = w.sale(json!([cash(100_000)])).await;
+    w.sale(json!([cash(100_000)])).await;
+    let uri = format!("/api/v1/shifts/{s1}/cash-to-bank");
+
+    // Без права — 403 «Нет права: …».
+    let no = "Нет права: Наличные ↔ QR в открытой смене";
+    let (s, e) = w.get_as(&w.admin, &uri).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(e["error"]["message"], no);
+    let (s, e) = w
+        .pay_change(
+            &w.admin,
+            &a,
+            Uuid::now_v7(),
+            json!({ "payments": [card(100_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(e["error"]["message"], no);
+
+    w.grant_admin("till_pay_fix").await;
+    let (s, info) = w.get_as(&w.admin, &uri).await;
+    assert_eq!(s, StatusCode::OK, "{info}");
+    assert!(info["admin_max_tyiyn"].is_null());
+    // Перенос в обе стороны; администратору — без прибыли (I13).
+    let (s, out) = w
+        .post(
+            &w.admin,
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": 50_000, "account_id": w.bank,
+                    "comment": "QR" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["effect"]["profit_tyiyn"], 0);
+    assert!(out["effect"]["month_note"].is_null());
+    assert!(!lines_of(&out).contains("Прибыль"), "{out}");
+    let own = out["id"].as_str().unwrap().to_string();
+    let (s, out) = w
+        .post(
+            &w.admin,
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "direction": "to_cash", "amount_tyiyn": 30_000,
+                    "account_id": w.bank, "comment": "наличными" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Каждый перенос администратора — владельцу событием.
+    let by_admin: i64 = w
+        .scalar(
+            "select count(*) from audit_log l join users u on u.id = l.user_id
+             where l.action = 'shift.cash_to_bank' and u.login = 'admin'",
+        )
+        .await;
+    assert_eq!(by_admin, 2);
+    // Чек открытой смены: наличные → карта; без прибыли.
+    let (s, out) = w
+        .pay_change(
+            &w.admin,
+            &a,
+            Uuid::now_v7(),
+            json!({ "payments": [card(100_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["effect"]["profit_tyiyn"], 0);
+    assert!(!lines_of(&out).contains("Прибыль"), "{out}");
+    let (s, info) = w
+        .get_as(&w.admin, &format!("/api/v1/sales/{b}/pay-change"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{info}");
+    // В долг — только владелец.
+    let (s, e) = w
+        .pay_change(
+            &w.admin,
+            &c,
+            Uuid::now_v7(),
+            json!({ "payments": [{ "method": "debt", "amount_tyiyn": 100_000 }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+
+    // Чужой перенос администратор не отменяет; свой — да.
+    let owners = w
+        .ok(
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": 10_000, "account_id": w.bank,
+                    "comment": "QR" }),
+        )
+        .await;
+    let (s, _) = w
+        .post(
+            &w.admin,
+            &format!(
+                "/api/v1/cash-to-bank/{}/reverse",
+                owners["id"].as_str().unwrap()
+            ),
+            json!({ "op_id": Uuid::now_v7(), "comment": "не то" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, e) = w
+        .post(
+            &w.admin,
+            &format!("/api/v1/cash-to-bank/{own}/reverse"),
+            json!({ "op_id": Uuid::now_v7(), "comment": "ошибся" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+
+    // Предел владельца на администратора: исправлено 30 000 + 100 000 (чек), ещё 1 — 422.
+    let (s, _, e) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/shift",
+        Some(&w.admin),
+        Some(json!({ "print_on_close": true, "admin_pay_fix_max_tyiyn": 1 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, _, e) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/shift",
+        Some(&w.owner),
+        Some(json!({ "print_on_close": true, "pay_fix_on_close": true,
+                     "admin_pay_fix_max_tyiyn": 130_000 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    let (s, info) = w.get_as(&w.admin, &uri).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(info["admin_used_tyiyn"], 130_000, "{info}");
+    let (s, e) = w
+        .post(
+            &w.admin,
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": 100, "account_id": w.bank,
+                    "comment": "QR" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("разрешённого владельцем")
+    );
+    let settings = w.get("/api/v1/settings/shift").await;
+    assert_eq!(settings["admin_pay_fix_max_tyiyn"], 130_000);
+    assert_eq!(settings["pay_fix_on_close"], true);
+
+    // Смена закрыта — только владелец: окно, перенос, чек этой смены.
+    w.close_shift(&s1, 0).await;
+    let (s, _) = w.get_as(&w.admin, &uri).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = w
+        .post(
+            &w.admin,
+            &uri,
+            json!({ "op_id": Uuid::now_v7(), "amount_tyiyn": 100, "account_id": w.bank,
+                    "comment": "QR" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    w.open_shift().await;
+    let (s, _) = w
+        .pay_change(
+            &w.admin,
+            &c,
+            Uuid::now_v7(),
+            json!({ "payments": [card(100_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, out) = w
+        .pay_change(
+            &w.owner,
+            &c,
+            Uuid::now_v7(),
+            json!({ "payments": [card(100_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn shift_sales_tab_and_items_per_change(pool: PgPool) {
+    let w = W::new(pool).await;
+    let s1 = w.open_shift().await;
+    let (a, na) = w.sale(json!([cash(100_000)])).await;
+    let (b, _) = w.sale(json!([cash(100_000)])).await;
+    // Чек с возвратом «По чекам» не меняется — причину говорит сервер.
+    w.ok(
+        &format!("/api/v1/sales/{b}/return"),
+        json!({ "op_id": Uuid::now_v7(), "comment": "вернул",
+                "lines": [{ "line_no": 1, "qty": 1 }],
+                "payments": [cash(100_000)] }),
+    )
+    .await;
+    let info = w.get(&format!("/api/v1/shifts/{s1}/cash-to-bank")).await;
+    let sales = info["sales"].as_array().unwrap();
+    let row = |id: &str| {
+        sales
+            .iter()
+            .find(|s| s["id"] == json!(id))
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(row(&a)["fixable"], true, "{info}");
+    assert_eq!(row(&b)["fixable"], false, "{info}");
+    assert!(row(&b)["reason"].is_string());
+    // Два изменения оплаты — две строки отчёта с номерами чеков; сумма — строка движения денег.
+    let (s, out) = w
+        .pay_change(
+            &w.owner,
+            &a,
+            Uuid::now_v7(),
+            json!({ "payments": [card(100_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (c, _) = w.sale(json!([cash(100_000)])).await;
+    let (s, out) = w
+        .pay_change(
+            &w.owner,
+            &c,
+            Uuid::now_v7(),
+            json!({ "payments": [card(40_000, &w.bank), cash(60_000)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let r = w.get(&format!("/api/v1/shifts/{s1}/report")).await;
+    let items = r["pay_fix_items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{r}");
+    assert_eq!(items[0]["original_number"], na);
+    let sum: i64 = items
+        .iter()
+        .map(|i| i["cash_delta_tyiyn"].as_i64().unwrap())
+        .sum();
+    assert_eq!(sum, -140_000);
+    // Строки «Изменение оплаты чеков» в движении денег: ушло минус пришло — то же.
+    let line = |side: &str, key: &str| {
+        r["cash"][side]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["key"] == json!(key))
+            .map_or(0, |l| l["amount_tyiyn"].as_i64().unwrap())
+    };
+    assert_eq!(
+        line("outgo", "pay_fix_out") - line("income", "pay_fix_in"),
+        140_000,
+        "{r}"
+    );
+    let fixes: Vec<&Value> = r["money"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["kind"] == json!("pay_fix"))
+        .collect();
+    assert_eq!(fixes.len(), 2, "{r}");
+    assert!(
+        fixes[0]["counterparty"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("№ {na}"))
+    );
+}

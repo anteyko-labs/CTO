@@ -1,7 +1,7 @@
 // Отчёт смены, как в Умаге (SPEC-30 §7, §8): типы ответа `GET /shifts/{id}/report` и правила
 // показа. Все суммы считает сервер; здесь — подписи, отбор и высота столбиков.
 import { formatPercentBp } from './format'
-import type { AfterClose, TransferRow } from './payChange'
+import type { AfterClose, AfterItem, TransferRow } from './payChange'
 import type { BankSplit, Shift } from './types'
 
 export interface ReportLine {
@@ -181,10 +181,12 @@ export interface ShiftReport {
   cancelled_tyiyn: number
   /** Оплачено по QR банка за смену, а чека с этой оплатой нет (SPEC-31). */
   qr_unclaimed?: { id: string; amount_tyiyn: number; paid_at: string | null; user_name: string }[]
-  /** Переносы «из наличных в QR» смены (SPEC-37 §3). */
+  /** Переносы «Наличные ↔ QR» смены (SPEC-37 §3, задача 003 Н1). */
   transfers?: TransferRow[]
   /** Изменения после пересчёта наличных смены: блок «После закрытия» (SPEC-37 §4). */
   after_close?: AfterClose | null
+  /** Изменения оплаты чеков и переносы, деньги которых легли в эту смену, — каждое отдельно. */
+  pay_fix_items?: AfterItem[]
 }
 
 /** Вкладки отчёта в порядке Умага. */
@@ -289,7 +291,7 @@ export function debtTotals(rows: DebtRow[]): { sold: number; repaid: number; adj
 
 /** Строка безнала одного счёта за смену: подпись и сумма со знаком (ADR-120). */
 export interface BankPart {
-  key: 'card' | 'transfer' | 'invoice' | 'debt' | 'cash_to_bank' | 'returns'
+  key: 'card' | 'transfer' | 'invoice' | 'debt' | 'cash_to_bank' | 'bank_to_cash' | 'returns'
   label: string
   value: number
 }
@@ -302,7 +304,9 @@ export function bankParts(b: BankSplit): BankPart[] {
     { key: 'transfer', label: 'QR владельцу', value: b.transfer_tyiyn },
     { key: 'invoice', label: 'По счёту', value: b.invoice_tyiyn ?? 0 },
     { key: 'debt', label: 'Оплаты долга', value: b.debt_tyiyn ?? 0 },
-    { key: 'cash_to_bank', label: 'Из наличных в QR', value: b.cash_to_bank_tyiyn ?? 0 },
+    // Наличные ↔ QR (задача 003 Н1): + из наличных в QR, − из QR в наличные.
+    { key: 'cash_to_bank', label: 'Из наличных в QR', value: Math.max(0, b.cash_to_bank_tyiyn ?? 0) },
+    { key: 'bank_to_cash', label: 'Из QR в наличные', value: Math.min(0, b.cash_to_bank_tyiyn ?? 0) },
     { key: 'returns', label: 'Возвраты', value: -(b.returns_tyiyn ?? 0) },
   ]
   return parts.filter((p) => p.value !== 0)

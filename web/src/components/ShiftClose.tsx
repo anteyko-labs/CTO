@@ -1,9 +1,12 @@
 // Закрытие смены и «Сдать кассу» (SPEC-05, SPEC-27, SPEC-29 §13–14): одно и то же окно на экране
 // «Смена» и в полосе режима кассы (SPEC-36 §10). После «Сдать кассу» или «Деньги остались в кассе»
 // чек смены печатается сам, если владелец не выключил это настройкой `shift.print_on_close`.
+// «Наличные ↔ QR» прямо в окне закрытия (задача 003 Н1): ошибку способа оплаты видно здесь — по
+// расхождению; после переноса «Должно быть» и безнал берутся с сервера заново, «Факт» остаётся.
 import { useEffect, useState, type ReactNode } from 'react'
 import { Button, Checkbox, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
 import { ShiftBank } from './ShiftBank'
+import { CashToBankButton, CashToBankModal, useCanFixPay } from './PayChange'
 import { printShift } from './shiftPrint'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -79,6 +82,10 @@ export function useShiftClose(onChanged: () => void): {
   // ещё нет. Закрыть смену до их отправки — ложная недостача (ADR-059).
   const [unsent, setUnsent] = useState(0)
   useEffect(() => watchOutbox((items) => setUnsent(pendingCount(items))), [])
+  // Окно «Наличные ↔ QR» поверх закрытия и настройка «Смена» — показывать ли кнопку (по умолчанию да).
+  const [payFix, setPayFix] = useState(false)
+  const [payFixOnClose, setPayFixOnClose] = useState(true)
+  const canFix = useCanFixPay(true) && payFixOnClose
 
   const loadAccounts = () =>
     get<CashAccount[]>('/cash/accounts')
@@ -98,6 +105,9 @@ export function useShiftClose(onChanged: () => void): {
       // до 20 с, а число неотправленных в окне обновится само.
       void syncOutbox()
       void loadAccounts()
+      void get<ShiftSettings>('/settings/shift')
+        .then((st) => setPayFixOnClose(st.pay_fix_on_close !== false))
+        .catch(() => undefined)
       // Сумму «должно быть» берём свежую с сервера: за время на экране могли пройти чеки с другого
       // устройства, и старая сумма дала бы недостачу, которой нет.
       const fresh = await get<Shift | null>('/shifts/current')
@@ -117,6 +127,12 @@ export function useShiftClose(onChanged: () => void): {
     })
 
   /** Окно «Сдать кассу»: куда — предлагает сервер (куда сдавали в прошлый раз или сейф магазина). */
+  /** После «Наличные ↔ QR»: свежая смена с сервера — «Должно быть» и безнал; введённое не сбрасываем. */
+  const refreshClosing = () =>
+    void get<Shift | null>('/shifts/current')
+      .then((fresh) => setClosing((c) => (c && fresh && fresh.id === c.shift.id ? { ...c, shift: fresh } : c)))
+      .catch(() => undefined)
+
   const startHandover = (s: Shift) => {
     act.setError(null)
     setClosing(null)
@@ -294,6 +310,7 @@ export function useShiftClose(onChanged: () => void): {
             <div className="rounded-md bg-slate-50 px-3 py-2" data-testid="close-noncash">
               <ShiftBank list={shift.bank_split ?? []} testId="close-noncash-banks" />
               <div className="text-xs text-slate-500">В кассе этих денег нет — сверьте с терминалом и выпиской банка.</div>
+              {canFix && <CashToBankButton open className="mt-2" onClick={() => setPayFix(true)} />}
             </div>
             <div className="text-sm text-slate-600">
               Должно быть в кассе: {formatSom(shift.expected_tyiyn)}
@@ -317,6 +334,14 @@ export function useShiftClose(onChanged: () => void): {
               <div className={`rounded-md px-3 py-2 text-sm ${closeDiff < 0 ? 'bg-rose-50 text-rose-800' : 'bg-amber-50 text-amber-800'}`}>
                 {closeDiff < 0 ? 'Недостача' : 'Излишек'} {formatSom(Math.abs(closeDiff))}
                 {closeDiff < 0 && ` · будет удержана с кассира ${shift.cashier_name}`}
+                {canFix && (
+                  <div className="mt-1" data-testid="close-pay-fix-hint">
+                    Ошиблись способом оплаты?{' '}
+                    <button type="button" className="font-medium underline" onClick={() => setPayFix(true)}>
+                      Наличные ↔ QR
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             <Field label="Комментарий" required={Boolean(closeDiff)} hint="Обязателен при расхождении">
@@ -334,6 +359,17 @@ export function useShiftClose(onChanged: () => void): {
             </div>
           </div>
         </Modal>
+      )}
+      {closing && shift && payFix && (
+        <CashToBankModal
+          shiftId={shift.id}
+          onClose={() => setPayFix(false)}
+          onDone={() => {
+            setPayFix(false)
+            refreshClosing()
+          }}
+          onChanged={refreshClosing}
+        />
       )}
 
       {handover && (

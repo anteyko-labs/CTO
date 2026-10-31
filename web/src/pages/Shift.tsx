@@ -11,8 +11,9 @@ import { ShiftOpenModal } from '../components/ShiftOpen'
 import { StaffPayList } from '../components/StaffPayList'
 import { ShiftBank } from '../components/ShiftBank'
 import { useShiftClose } from '../components/ShiftClose'
+import { CashToBankButton, CashToBankModal, useCanFixPay } from '../components/PayChange'
 import { printShift } from '../components/shiftPrint'
-import { formatDate, formatDateTime, formatSom, parseSom } from '../lib/format'
+import { formatDate, formatDateTime, formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad, usePolling } from '../lib/hooks'
 import { MOVEMENT_LABELS, shiftSales } from '../lib/income'
@@ -82,6 +83,9 @@ export default function Shift() {
   // Движения открытой кассы перечитываются по счётчику: после любой операции на экране.
   const [movesTick, setMovesTick] = useState(0)
   const act = useAction()
+  // «Наличные ↔ QR» открытой смены (задача 003 Н1): владелец и администратор с правом.
+  const [toBank, setToBank] = useState(false)
+  const canFix = useCanFixPay(true)
 
   const shift = current.data ?? null
   // Продано − возвраты = итого = сумма по способам оплаты: числа на экране складываются.
@@ -111,19 +115,24 @@ export default function Shift() {
   // Чек смены 80 мм (SPEC-36 §10): печать из списка смен и с открытой смены.
   const printCheck = (id: string) => void act.run(() => printShift(id))
   const settings = useLoad(() => get<ShiftSettings>('/settings/shift'), [])
-  const togglePrint = (v: boolean) => {
-    // Отметка меняется сразу; не сохранилось — возвращается как было.
-    settings.setData({ print_on_close: v })
+  /** Сохранить настройки «Смена» целиком: поле меняется сразу, не сохранилось — как было. */
+  const saveSettings = (patch: Partial<ShiftSettings>, done: string) => {
+    const before = settings.data
+    if (!before) return
+    const next = { ...before, ...patch }
+    settings.setData(next)
     void act.run(async () => {
       try {
-        settings.setData(await put<ShiftSettings>('/settings/shift', { print_on_close: v }))
+        settings.setData(await put<ShiftSettings>('/settings/shift', next))
       } catch (e) {
-        settings.setData({ print_on_close: !v })
+        settings.setData(before)
         throw e
       }
-      toast(v ? 'Чек смены будет печататься после сдачи кассы' : 'Чек смены сам не печатается')
+      toast(done)
     })
   }
+  const togglePrint = (v: boolean) =>
+    saveSettings({ print_on_close: v }, v ? 'Чек смены будет печататься после сдачи кассы' : 'Чек смены сам не печатается')
 
   const submitReopen = () =>
     void act.run(async () => {
@@ -326,6 +335,8 @@ export default function Shift() {
                 </Button>
               </>
             )}
+            {/* Ошиблись способом оплаты — «Наличные ↔ QR» (задача 003 Н1). */}
+            <CashToBankButton open onClick={() => setToBank(true)} />
             {/* Отчёт смены, как в Умаге (SPEC-30 §7): движение денег, выручка, операции, отменённые товары. */}
             <Link
               to={`/shifts/${shift.id}`}
@@ -417,8 +428,23 @@ export default function Shift() {
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-semibold">Прошлые смены</h2>
           {owner && settings.data && (
-            <div data-testid="print-on-close">
-              <Checkbox label="Печатать чек смены после сдачи кассы" checked={settings.data.print_on_close} onChange={togglePrint} />
+            <div className="flex flex-col gap-1">
+              <div data-testid="print-on-close">
+                <Checkbox label="Печатать чек смены после сдачи кассы" checked={settings.data.print_on_close} onChange={togglePrint} />
+              </div>
+              <div data-testid="pay-fix-on-close">
+                <Checkbox
+                  label="«Наличные ↔ QR» в окне закрытия смены"
+                  checked={settings.data.pay_fix_on_close !== false}
+                  onChange={(v) => saveSettings({ pay_fix_on_close: v }, v ? 'Кнопка «Наличные ↔ QR» есть в закрытии смены' : 'В закрытии смены кнопки «Наличные ↔ QR» нет')}
+                />
+              </div>
+              <AdminPayFixMax
+                value={settings.data.admin_pay_fix_max_tyiyn ?? null}
+                onSave={(v) =>
+                  saveSettings({ admin_pay_fix_max_tyiyn: v }, v == null ? 'Предел администратора снят' : `Администратор переносит не больше ${formatSom(v)} за смену`)
+                }
+              />
             </div>
           )}
         </div>
@@ -616,6 +642,28 @@ export default function Shift() {
                 {moneyOverdraw}
               </div>
             )}
+            {/* Касса → счёт банка: если это ошибка способа оплаты — перенос с комиссией и поправкой смены. */}
+            {money.kind === 'transfer' &&
+              !money.fix &&
+              shift &&
+              canFix &&
+              money.from === shift.account_id &&
+              accs.find((a) => a.id === money.to)?.kind === 'bank' && (
+                <div className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="money-pay-fix-hint">
+                  Ошиблись способом оплаты?{' '}
+                  <button
+                    type="button"
+                    className="font-medium underline"
+                    onClick={() => {
+                      closeDialogs()
+                      setToBank(true)
+                    }}
+                  >
+                    Наличные ↔ QR
+                  </button>{' '}
+                  — запишется как оплата QR, с комиссией банка и поправкой смены.
+                </div>
+              )}
             <Missing items={moneyMissing} />
             <ErrorBox error={money.fix ? correction.error : act.error} />
             <div className="flex justify-end gap-2">
@@ -634,6 +682,18 @@ export default function Shift() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {toBank && shift && (
+        <CashToBankModal
+          shiftId={shift.id}
+          onClose={() => setToBank(false)}
+          onDone={() => {
+            setToBank(false)
+            reloadAll()
+          }}
+          onChanged={reloadAll}
+        />
       )}
 
       {!owner && <div className="text-xs text-slate-400">Сейф владельца и его остаток администратору не показываются.</div>}
@@ -690,6 +750,28 @@ function AccountMoves({ id, tick, onReverse, onFix }: { id: string; tick: number
           <Pager page={pager.page} size={pager.size} total={moves.data?.total ?? 0} onPage={pager.setPage} onSize={pager.setSize} label="Страницы движений кассы" />
         </>
       )}
+    </div>
+  )
+}
+
+/** «Наибольшая сумма переноса администратором за смену» (настройка «Смена», задача 003 Н1): пусто — без предела. */
+function AdminPayFixMax({ value, onSave }: { value: number | null; onSave: (v: number | null) => void }) {
+  const [text, setText] = useState(value == null ? '' : somInput(value))
+  const parsed = text.trim() === '' ? null : parseSom(text.trim())
+  const bad = text.trim() !== '' && (parsed == null || parsed < 0)
+  const changed = !bad && parsed !== value
+  return (
+    <div className="flex flex-wrap items-end gap-2 text-sm" data-testid="admin-pay-fix-max">
+      <label className="flex flex-col gap-1">
+        <span className="text-slate-600">Наличные ↔ QR администратором за смену, не больше, с</span>
+        <input className="w-40" inputMode="decimal" placeholder="без предела" value={text} onChange={(e) => setText(e.target.value)} />
+      </label>
+      {changed && (
+        <Button variant="secondary" className="min-h-9 px-3 py-1" onClick={() => onSave(parsed)}>
+          Сохранить
+        </Button>
+      )}
+      {bad && <span className="text-rose-700">Неверная сумма</span>}
     </div>
   )
 }

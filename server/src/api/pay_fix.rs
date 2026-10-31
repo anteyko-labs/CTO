@@ -11,6 +11,11 @@
 //! день), меняется только оплата. Перенос за смену чеки не меняет. Обе операции записываются в
 //! `pay_fixes`; деньги пишутся в конце — сначала с плюсом, потом с минусом, чтобы касса не уходила
 //! в минус даже на миг.
+//!
+//! Перенос за смену — в обе стороны: «из наличных в QR» и «из QR в наличные» (задача 003 Н1,
+//! ADR-{B5.1}). Администратор с правом «Наличные ↔ QR в открытой смене» правит только открытую
+//! смену своего филиала: наличные ещё не пересчитаны, удержание кассира не меняется, прибыль ему
+//! не отдаётся (I13). Закрытую смену правит владелец.
 
 use std::collections::BTreeMap;
 
@@ -51,14 +56,132 @@ fn yes() -> bool {
     true
 }
 
-const OWNER_ONLY: &str = "изменяет оплату и переносит наличные в банк только владелец";
+/// Право администратора «Наличные ↔ QR в открытой смене» (ADR-{B5.1}).
+const TILL_PAY_FIX: &str = "till_pay_fix";
 
-fn require_owner(user: &CurrentUser) -> AppResult<()> {
+const CLOSED_OWNER: &str =
+    "закрытую смену правит владелец: администратору — только открытая смена своего филиала";
+const SALE_OWNER: &str = "этот чек правит владелец: администратору — только чеки открытой смены, наличные которых ещё не пересчитаны";
+const METHODS_OWNER: &str = "администратор меняет только «Наличные» и «Карта / QR банка» без привязанного QR; долг, «По счёту», перевод и QR банка — владелец";
+
+/// Владелец правит оплату всегда; администратор — с правом «Наличные ↔ QR в открытой смене»
+/// (403 «Нет права: …»), а область — открытая смена — проверяется у каждого действия.
+async fn require_fix(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<()> {
     if user.is_owner() {
-        Ok(())
-    } else {
-        Err(AppError::ForbiddenWith(OWNER_ONLY.into()))
+        return Ok(());
     }
+    crate::auth::require_permission(conn, user, TILL_PAY_FIX).await
+}
+
+/// Открытая сейчас смена кассы филиала.
+struct OpenShift {
+    id: Uuid,
+    opened_at: DateTime<Utc>,
+}
+
+async fn open_shift_of(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Option<OpenShift>> {
+    let register = cash::default_account(conn, branch_id).await?;
+    let Some(id) = cash::open_shift_id(conn, branch_id, register).await? else {
+        return Ok(None);
+    };
+    let opened_at = sqlx::query_scalar!("select opened_at from shifts where id = $1", id)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(Some(OpenShift { id, opened_at }))
+}
+
+/// Чек правит администратор (ADR-{B5.1}): чек открытой смены, его наличные ещё не пересчитаны;
+/// в чеке и в новой оплате — только «Наличные» и «Карта / QR банка» без привязанного QR; клиент
+/// тот же. Иначе 403 — это делает владелец.
+async fn admin_sale_scope(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    sale_id: Uuid,
+    new: Option<&[PayLine]>,
+    party: Option<Uuid>,
+) -> AppResult<OpenShift> {
+    let open = open_shift_of(conn, branch_id)
+        .await?
+        .ok_or_else(|| AppError::ForbiddenWith(CLOSED_OWNER.into()))?;
+    let created = sqlx::query_scalar!(
+        "select created_at from sales where id = $1 and branch_id = $2",
+        sale_id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if created < open.opened_at || sale_counted(conn, branch_id, sale_id).await?.is_some() {
+        return Err(AppError::ForbiddenWith(SALE_OWNER.into()));
+    }
+    let other = sqlx::query_scalar!(
+        r#"select exists (select 1 from sale_payments
+                          where sale_id = $1
+                            and (method not in ('cash', 'card', 'bonus', 'battery')
+                                 or bank_qr_id is not null)) as "v!""#,
+        sale_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let new_other = new.is_some_and(|lines| {
+        lines
+            .iter()
+            .any(|p| !matches!(p.method.as_str(), "cash" | "card") || p.bank_qr_id.is_some())
+    });
+    if other || new_other {
+        return Err(AppError::ForbiddenWith(METHODS_OWNER.into()));
+    }
+    if party.is_some() {
+        return Err(AppError::ForbiddenWith(
+            "клиента к чеку добавляет владелец".into(),
+        ));
+    }
+    Ok(open)
+}
+
+/// Исправлено администраторами в открытой смене: переносы и изменения оплаты чеков по модулю, без
+/// отменённых.
+async fn admin_used(conn: &mut PgConnection, branch_id: Uuid, open: &OpenShift) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce(sum(abs(case when f.kind = 'shift' then f.amount_tyiyn
+                                         else f.cash_delta_tyiyn end)), 0)::bigint as "v!"
+           from pay_fixes f join users u on u.id = f.user_id
+           where f.branch_id = $1 and u.role = 'admin' and f.reversal_of is null
+             and not exists (select 1 from pay_fixes r where r.reversal_of = f.id)
+             and ((f.kind = 'shift' and f.shift_id = $2)
+                  or (f.kind = 'sale' and f.counted_shift_id is null and f.created_at >= $3))"#,
+        branch_id,
+        open.id,
+        open.opened_at
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Предел администратора за смену (настройка «Смена», ADR-{B5.1}): его прежние переносы и
+/// изменения оплаты чеков открытой смены по модулю, без отменённых, плюс это — не больше заданного
+/// владельцем. Не задан — только предел по чекам.
+async fn admin_limit(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    open: &OpenShift,
+    amount: i64,
+) -> AppResult<()> {
+    let Some(max) = crate::api::shift_report::settings_of(conn, branch_id)
+        .await?
+        .admin_pay_fix_max_tyiyn
+    else {
+        return Ok(());
+    };
+    let used = admin_used(conn, branch_id, open).await?;
+    if used.saturating_add(amount.saturating_abs()) > max {
+        return Err(invalid(format!(
+            "больше разрешённого владельцем: {} за смену, уже исправлено {}",
+            format_som(max),
+            format_som(used)
+        )));
+    }
+    Ok(())
 }
 
 /// Причина изменения: обязательна, до 500 знаков. У пробного проведения может быть пустой.
@@ -680,9 +803,12 @@ async fn pay_change_info(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<PayChangeInfo>> {
-    require_owner(&user)?;
     let mut conn = state.pool.acquire().await?;
+    require_fix(&mut conn, &user).await?;
     crate::api::corrections::check_sale_correctable(&mut conn, user.branch_id, id).await?;
+    if !user.is_owner() {
+        admin_sale_scope(&mut conn, user.branch_id, id, None, None).await?;
+    }
     let sale = crate::api::sales::load_sale(&mut conn, &user, id).await?;
     let business_date = sale
         .business_date
@@ -877,7 +1003,8 @@ pub async fn pay_change_tx(
     req: PayChangeReq,
 ) -> AppResult<PayChangeOut> {
     const KIND: &str = "sale.pay_change";
-    require_owner(&ctx.user)?;
+    require_fix(&mut *conn, &ctx.user).await?;
+    let owner = ctx.user.is_owner();
     let dry = req.dry_run;
     let comment = reason(&req.comment, dry)?;
     if !dry && let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
@@ -892,6 +1019,11 @@ pub async fn pay_change_tx(
     .execute(&mut *conn)
     .await?;
     crate::api::corrections::check_sale_correctable(&mut *conn, branch_id, id).await?;
+    let admin_open = if owner {
+        None
+    } else {
+        Some(admin_sale_scope(&mut *conn, branch_id, id, Some(&req.payments), req.party_id).await?)
+    };
     let orig = sqlx::query!(
         r#"select number, business_date, total_tyiyn, master_fee_tyiyn, party_id as "party_id?"
            from sales where id = $1 and branch_id = $2"#,
@@ -1042,6 +1174,16 @@ pub async fn pay_change_tx(
     let delta = new_cash.checked_sub(old_cash).ok_or_else(overflow)?;
     let counted = sale_counted(&mut *conn, branch_id, id).await?;
     let register = cash::default_account(&mut *conn, branch_id).await?;
+    if let Some(open) = &admin_open {
+        // Предел администратора считается по очереди: под блокировкой кассы.
+        sqlx::query!(
+            "select id from cash_accounts where id = $1 for update",
+            register
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        admin_limit(&mut *conn, branch_id, open, delta).await?;
+    }
     let open_shift = cash::open_shift_id(&mut *conn, branch_id, register).await?;
     let open_shift_number = match open_shift {
         Some(s) => {
@@ -1266,12 +1408,15 @@ pub async fn pay_change_tx(
     effect.fee_tyiyn = totals.fee;
     effect.percent_tyiyn = totals.percent;
     effect.percent_pending = totals.pending;
-    effect.profit_tyiyn = totals
-        .gross
-        .saturating_sub(totals.payroll)
-        .saturating_sub(totals.fee)
-        .saturating_sub(totals.bonus)
-        .saturating_sub(correction_delta);
+    // Прибыль — только владельцу (I13): администратору — деньги по счетам, комиссия и смена.
+    if owner {
+        effect.profit_tyiyn = totals
+            .gross
+            .saturating_sub(totals.payroll)
+            .saturating_sub(totals.fee)
+            .saturating_sub(totals.bonus)
+            .saturating_sub(correction_delta);
+    }
     if let Some(p) = &party {
         let after = sqlx::query_scalar!(
             r#"select coalesce((select balance_tyiyn from party_balances
@@ -1290,7 +1435,9 @@ pub async fn pay_change_tx(
             });
         }
     }
-    effect.month_note = month_note(&mut *conn, orig.business_date).await?;
+    if owner {
+        effect.month_note = month_note(&mut *conn, orig.business_date).await?;
+    }
     let mut text = vec![format!("Оплата: {old_text} → {new_text}")];
     account_lines(&effect, &mut text);
     shift_lines(&effect, &mut text);
@@ -1317,7 +1464,9 @@ pub async fn pay_change_tx(
     if effect.percent_pending {
         text.push("2 % с долговой части — по мере погашения".into());
     }
-    profit_line(&effect, &mut text);
+    if owner {
+        profit_line(&effect, &mut text);
+    }
     if let Some(m) = &effect.month_note {
         text.push(format!("Чек за {m}"));
     }
@@ -1389,14 +1538,17 @@ pub async fn pay_change_tx(
     Ok(out)
 }
 
-// ---------- Из наличных в QR за смену ----------
+// ---------- Наличные ↔ QR за смену ----------
 
-/// Перенос «из наличных в QR» в списке отчёта смены.
+/// Перенос «Наличные ↔ QR» в списке отчёта смены.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TransferRow {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
+    /// Кто перенёс: администратор отменяет только свой перенос, пока смена открыта.
+    pub user_id: Uuid,
     pub user_name: String,
+    /// Со знаком: + из наличных в QR, − из QR в наличные.
     pub amount_tyiyn: i64,
     pub fee_tyiyn: i64,
     pub account_id: Uuid,
@@ -1415,7 +1567,7 @@ pub(crate) async fn transfers_of(
 ) -> AppResult<Vec<TransferRow>> {
     Ok(sqlx::query_as!(
         TransferRow,
-        r#"select f.id, f.created_at, u.full_name as user_name, f.amount_tyiyn, f.fee_tyiyn,
+        r#"select f.id, f.created_at, f.user_id, u.full_name as user_name, f.amount_tyiyn, f.fee_tyiyn,
                   f.account_id as "account_id!", a.name as account_name, f.comment,
                   r.created_at as "reversed_at?", r.comment as "reverse_comment?",
                   f.counted_shift_id is not null as "counted!"
@@ -1483,7 +1635,174 @@ async fn cash_limit(
     })
 }
 
-/// Окно «Из наличных в QR»: предел, счета, состояние смены и прежние переносы.
+/// Сколько можно перенести «из QR в наличные» с одного счёта (ADR-{B5.1}): оплаты «Карта / QR
+/// банка» чеков смены на этот счёт без привязанного QR банка (привязанный банк подтвердил — эти
+/// деньги точно на счёте) минус возвраты на этот счёт плюс переносы этой смены на счёт со знаком.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BankLimit {
+    pub account_id: Uuid,
+    pub name: String,
+    pub card_sales_tyiyn: i64,
+    pub card_returns_tyiyn: i64,
+    /// Перенесено на счёт: + из наличных, − обратно, за вычетом отмен.
+    pub moved_tyiyn: i64,
+    pub limit_tyiyn: i64,
+}
+
+/// Чеки смены — как в отчёте смены, с изменениями оплаты для её пересчёта.
+async fn bank_limits(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    shift: &cash::ShiftOut,
+) -> AppResult<Vec<BankLimit>> {
+    let rows = sqlx::query!(
+        r#"with p as materialized (
+             select p.account_id, s.kind, p.amount_tyiyn
+             from sale_payments p join sales s on s.id = p.sale_id
+             where p.method = 'card' and p.bank_qr_id is null and s.branch_id = $1
+               and ((s.created_at >= $2 and s.created_at <= coalesce($3, now())
+                     and not pay_fix_counted_sale(s.id))
+                    or exists (select 1 from pay_fixes f where f.counted_shift_id = $4
+                                 and (f.reversal_sale_id = s.id or f.new_sale_id = s.id)))
+           )
+           select a.id, a.name,
+                  coalesce((select sum(p.amount_tyiyn) from p
+                            where p.account_id = a.id and p.kind = 'sale'), 0)::bigint as "sales!",
+                  coalesce((select -sum(p.amount_tyiyn) from p
+                            where p.account_id = a.id and p.kind = 'return'), 0)::bigint as "returns!",
+                  coalesce((select sum(f.amount_tyiyn) from pay_fixes f
+                            where f.kind = 'shift' and f.shift_id = $4 and f.account_id = a.id), 0)::bigint as "moved!"
+           from cash_accounts a
+           where a.branch_id = $1 and a.kind = 'bank' and a.active and (not a.owner_only or $5)
+           order by a.default_card desc, a.default_transfer desc, a.name"#,
+        user.branch_id,
+        shift.opened_at,
+        shift.closed_at,
+        shift.id,
+        user.is_owner()
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| BankLimit {
+            account_id: r.id,
+            name: r.name,
+            card_sales_tyiyn: r.sales,
+            card_returns_tyiyn: r.returns,
+            moved_tyiyn: r.moved,
+            limit_tyiyn: r
+                .sales
+                .saturating_sub(r.returns)
+                .saturating_add(r.moved)
+                .max(0),
+        })
+        .collect())
+}
+
+/// Чек смены во вкладке «По чекам»: оплата и можно ли её поменять кнопкой «⇄».
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ShiftSaleFix {
+    pub id: Uuid,
+    pub number: i64,
+    pub created_at: DateTime<Utc>,
+    pub total_tyiyn: i64,
+    pub payments: Vec<SalePayBrief>,
+    /// Можно поменять оплату (те же правила, что «Изменить оплату»); нет — почему.
+    pub fixable: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SalePayBrief {
+    pub method: String,
+    pub amount_tyiyn: i64,
+    pub account_id: Option<Uuid>,
+    pub account_name: Option<String>,
+    /// Оплата по QR банка, привязанному к чеку.
+    pub bank_qr: bool,
+}
+
+/// Чеки смены с наличными или «Картой / QR банка» — новые сверху, не больше 300.
+async fn shift_sales(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    shift: &cash::ShiftOut,
+) -> AppResult<Vec<ShiftSaleFix>> {
+    let rows = sqlx::query!(
+        r#"select s.id, s.number, s.created_at, s.total_tyiyn
+           from sales s
+           where s.branch_id = $1 and s.kind = 'sale'
+             and ((s.created_at >= $2 and s.created_at <= coalesce($3, now())
+                   and not pay_fix_counted_sale(s.id))
+                  or exists (select 1 from pay_fixes f where f.counted_shift_id = $4 and f.new_sale_id = s.id))
+             and exists (select 1 from sale_payments p
+                         where p.sale_id = s.id and p.method in ('cash', 'card'))
+           order by s.created_at desc
+           limit 300"#,
+        user.branch_id,
+        shift.opened_at,
+        shift.closed_at,
+        shift.id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let pays = sqlx::query!(
+        r#"select p.sale_id, p.method, p.account_id, a.name as "account_name?",
+                  sum(p.amount_tyiyn)::bigint as "amount!", bool_or(p.bank_qr_id is not null) as "qr!"
+           from sale_payments p left join cash_accounts a on a.id = p.account_id
+           where p.sale_id = any($1)
+           group by p.sale_id, p.method, p.account_id, a.name
+           order by p.sale_id, min(p.id::text)"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut by: BTreeMap<Uuid, Vec<SalePayBrief>> = BTreeMap::new();
+    for p in pays {
+        by.entry(p.sale_id).or_default().push(SalePayBrief {
+            method: p.method,
+            amount_tyiyn: p.amount,
+            account_id: p.account_id,
+            account_name: p.account_name,
+            bank_qr: p.qr,
+        });
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let checked =
+            crate::api::corrections::check_sale_correctable(&mut *conn, user.branch_id, r.id).await;
+        let checked = match checked {
+            Ok(()) if !user.is_owner() => {
+                admin_sale_scope(&mut *conn, user.branch_id, r.id, None, None)
+                    .await
+                    .map(|_| ())
+            }
+            other => other,
+        };
+        let reason = match checked {
+            Ok(()) => None,
+            Err(AppError::Conflict(m) | AppError::Validation(m) | AppError::ForbiddenWith(m)) => {
+                Some(m)
+            }
+            Err(e) => return Err(e),
+        };
+        out.push(ShiftSaleFix {
+            id: r.id,
+            number: r.number,
+            created_at: r.created_at,
+            total_tyiyn: r.total_tyiyn,
+            payments: by.remove(&r.id).unwrap_or_default(),
+            fixable: reason.is_none(),
+            reason,
+        });
+    }
+    Ok(out)
+}
+
+/// Окно «Наличные ↔ QR»: пределы в обе стороны, счета, состояние смены, прежние переносы и чеки
+/// смены для вкладки «По чекам».
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CashToBankInfo {
     pub shift_id: Uuid,
@@ -1498,6 +1817,17 @@ pub struct CashToBankInfo {
     pub withheld_tyiyn: i64,
     pub accounts: Vec<BankAccountBrief>,
     pub items: Vec<TransferRow>,
+    /// «Из QR в наличные»: предел по каждому счёту.
+    #[serde(default)]
+    pub bank_limits: Vec<BankLimit>,
+    /// Чеки смены для вкладки «По чекам».
+    #[serde(default)]
+    pub sales: Vec<ShiftSaleFix>,
+    /// Администратору: предел владельца за смену и сколько уже исправлено (пусто — без предела).
+    #[serde(default)]
+    pub admin_max_tyiyn: Option<i64>,
+    #[serde(default)]
+    pub admin_used_tyiyn: i64,
 }
 
 async fn shift_in_branch(
@@ -1513,11 +1843,25 @@ async fn cash_to_bank_info(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<CashToBankInfo>> {
-    require_owner(&user)?;
     let mut conn = state.pool.acquire().await?;
+    require_fix(&mut conn, &user).await?;
     let shift = shift_in_branch(&mut conn, user.branch_id, id).await?;
+    let admin_open = if user.is_owner() {
+        None
+    } else {
+        Some(admin_shift_scope(&mut conn, user.branch_id, &shift).await?)
+    };
     let limit = cash_limit(&mut conn, user.branch_id, &shift).await?;
     let open = shift.closed_at.is_none();
+    let (admin_max_tyiyn, admin_used_tyiyn) = match &admin_open {
+        Some(o) => {
+            let max = crate::api::shift_report::settings_of(&mut conn, user.branch_id)
+                .await?
+                .admin_pay_fix_max_tyiyn;
+            (max, admin_used(&mut conn, user.branch_id, o).await?)
+        }
+        None => (None, 0),
+    };
     let diff_tyiyn = if open {
         None
     } else {
@@ -1535,13 +1879,46 @@ async fn cash_to_bank_info(
         withheld_tyiyn: withheld_of(&mut conn, id).await?,
         accounts: bank_accounts(&mut conn, &user, shift.business_date).await?,
         items: transfers_of(&mut conn, id).await?,
+        bank_limits: bank_limits(&mut conn, &user, &shift).await?,
+        sales: shift_sales(&mut conn, &user, &shift).await?,
+        admin_max_tyiyn,
+        admin_used_tyiyn,
     }))
+}
+
+/// Перенос администратора (ADR-{B5.1}): только открытая сейчас смена своего филиала.
+async fn admin_shift_scope(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    shift: &cash::ShiftOut,
+) -> AppResult<OpenShift> {
+    if cash::open_shift_id(conn, branch_id, shift.account_id).await? != Some(shift.id) {
+        return Err(AppError::ForbiddenWith(CLOSED_OWNER.into()));
+    }
+    Ok(OpenShift {
+        id: shift.id,
+        opened_at: shift.opened_at,
+    })
+}
+
+/// Направление переноса за смену (ADR-{B5.1}). Старый клиент направления не шлёт — «в QR».
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// Из наличных в QR: «Касса» −, счёт банка +.
+    #[default]
+    ToBank,
+    /// Из QR в наличные: счёт банка −, «Касса» +, комиссия возвращается.
+    ToCash,
 }
 
 #[derive(Deserialize)]
 pub struct CashToBankReq {
     pub op_id: Uuid,
+    /// Сумма переноса, больше нуля; куда — `direction`.
     pub amount_tyiyn: i64,
+    #[serde(default)]
+    pub direction: Direction,
     pub account_id: Option<Uuid>,
     #[serde(default)]
     pub comment: String,
@@ -1588,6 +1965,8 @@ struct Move<'a> {
     undo: Option<Undo>,
     fix_id: Uuid,
     comment: &'a str,
+    /// Перенос (или отменяемый перенос) — «из QR в наличные».
+    to_cash: bool,
 }
 
 struct Undo {
@@ -1646,7 +2025,16 @@ async fn apply_transfer(conn: &mut PgConnection, ctx: &Ctx, m: Move<'_>) -> AppR
         Hold::New(v) if m.fix_withholding => v,
         _ => 0,
     };
-    let comment = format!("перенос из наличных, смена № {}", m.shift.number);
+    let comment = if m.to_cash {
+        format!("перенос из QR в наличные, смена № {}", m.shift.number)
+    } else {
+        format!("перенос из наличных, смена № {}", m.shift.number)
+    };
+    let what = if m.to_cash {
+        "перенос из QR в наличные"
+    } else {
+        "перенос из наличных в QR"
+    };
     let mut moves = vec![
         CashMove {
             account_id: m.register,
@@ -1736,17 +2124,16 @@ async fn apply_transfer(conn: &mut PgConnection, ctx: &Ctx, m: Move<'_>) -> AppR
                     doc_type: "shift",
                     doc_id: Some(c.shift_id),
                     comment: &match (withhold > 0, m.undo.is_some()) {
-                        (true, _) => format!(
-                            "возврат удержания: смена № {}, перенос из наличных в QR",
-                            c.number
-                        ),
-                        (false, true) => format!(
-                            "недостача: смена № {}, отмена переноса из наличных в QR",
-                            c.number
-                        ),
-                        (false, false) => {
-                            format!("недостача: смена № {}, перенос из наличных в QR", c.number)
+                        (true, true) => {
+                            format!("возврат удержания: смена № {}, отмена: {what}", c.number)
                         }
+                        (true, false) => {
+                            format!("возврат удержания: смена № {}, {what}", c.number)
+                        }
+                        (false, true) => {
+                            format!("недостача: смена № {}, отмена: {what}", c.number)
+                        }
+                        (false, false) => format!("недостача: смена № {}, {what}", c.number),
                     },
                 },
             )
@@ -1770,19 +2157,25 @@ async fn apply_transfer(conn: &mut PgConnection, ctx: &Ctx, m: Move<'_>) -> AppR
             None
         },
         fee_tyiyn: m.fee,
-        // Прибыль дня смены: комиссия, поправка пересчёта и поправка удержания (ADR-065).
-        profit_tyiyn: m
+        ..Effect::default()
+    };
+    // Прибыль дня смены: комиссия, поправка пересчёта и поправка удержания (ADR-065). Только
+    // владельцу (I13): администратору — деньги по счетам, комиссия и «Должно быть».
+    let owner = ctx.user.is_owner();
+    if owner {
+        effect.profit_tyiyn = m
             .fee
             .saturating_neg()
             .saturating_sub(correction)
-            .saturating_sub(withhold),
-        ..Effect::default()
-    };
-    effect.month_note = month_note(&mut *conn, m.shift.business_date).await?;
+            .saturating_sub(withhold);
+        effect.month_note = month_note(&mut *conn, m.shift.business_date).await?;
+    }
     let mut text = Vec::new();
     account_lines(&effect, &mut text);
     shift_lines(&effect, &mut text);
-    profit_line(&effect, &mut text);
+    if owner {
+        profit_line(&effect, &mut text);
+    }
     if let Some(n) = &effect.month_note {
         text.push(format!("Смена за {n}"));
     }
@@ -1855,7 +2248,7 @@ pub async fn cash_to_bank_tx(
     req: CashToBankReq,
 ) -> AppResult<CashToBankOut> {
     const KIND: &str = "shift.cash_to_bank";
-    require_owner(&ctx.user)?;
+    require_fix(&mut *conn, &ctx.user).await?;
     let dry = req.dry_run;
     let comment = reason(&req.comment, dry)?;
     if !dry && let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
@@ -1863,9 +2256,15 @@ pub async fn cash_to_bank_tx(
     }
     let branch_id = ctx.user.branch_id;
     let shift = shift_in_branch(&mut *conn, branch_id, shift_id).await?;
+    let admin_open = if ctx.user.is_owner() {
+        None
+    } else {
+        Some(admin_shift_scope(&mut *conn, branch_id, &shift).await?)
+    };
     if req.amount_tyiyn <= 0 || req.amount_tyiyn > ops::MAX_AMOUNT_TYIYN {
         return Err(invalid("сумма переноса больше нуля"));
     }
+    let to_cash = req.direction == Direction::ToCash;
     // Переносы одной смены — по очереди: предел считается под блокировкой кассы.
     sqlx::query!(
         "select id from cash_accounts where id = $1 for update",
@@ -1873,17 +2272,38 @@ pub async fn cash_to_bank_tx(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let limit = cash_limit(&mut *conn, branch_id, &shift).await?;
-    if req.amount_tyiyn > limit.limit_tyiyn {
-        return Err(invalid(format!(
-            "перенести можно не больше {}: наличными по чекам смены {}, возвраты {}, уже перенесено {}",
-            format_som(limit.limit_tyiyn),
-            format_som(limit.cash_sales_tyiyn),
-            format_som(limit.cash_returns_tyiyn),
-            format_som(limit.moved_tyiyn)
-        )));
-    }
     let account_id = pay_account(&mut *conn, &ctx.user, "card", req.account_id).await?;
+    if to_cash {
+        let limits = bank_limits(&mut *conn, &ctx.user, &shift).await?;
+        let l = limits
+            .iter()
+            .find(|l| l.account_id == account_id)
+            .cloned()
+            .unwrap_or_default();
+        if req.amount_tyiyn > l.limit_tyiyn {
+            return Err(invalid(format!(
+                "из QR в наличные можно не больше {}: «Карта / QR банка» по чекам смены на этот счёт без привязанного QR банка {}, возвраты {}, перенесено на счёт {}",
+                format_som(l.limit_tyiyn),
+                format_som(l.card_sales_tyiyn),
+                format_som(l.card_returns_tyiyn),
+                format_som_signed(l.moved_tyiyn)
+            )));
+        }
+    } else {
+        let limit = cash_limit(&mut *conn, branch_id, &shift).await?;
+        if req.amount_tyiyn > limit.limit_tyiyn {
+            return Err(invalid(format!(
+                "перенести можно не больше {}: наличными по чекам смены {}, возвраты {}, уже перенесено {}",
+                format_som(limit.limit_tyiyn),
+                format_som(limit.cash_sales_tyiyn),
+                format_som(limit.cash_returns_tyiyn),
+                format_som_signed(limit.moved_tyiyn)
+            )));
+        }
+    }
+    if let Some(open) = &admin_open {
+        admin_limit(&mut *conn, branch_id, open, req.amount_tyiyn).await?;
+    }
     let open =
         cash::open_shift_id(&mut *conn, branch_id, shift.account_id).await? == Some(shift_id);
     // Смена закрыта: наличные пересчитаны при её закрытии — поправка закрытия (§1).
@@ -1892,6 +2312,8 @@ pub async fn cash_to_bank_tx(
     } else {
         Some(counted_of(&mut *conn, branch_id, shift_id, "close").await?)
     };
+    // Комиссия — по ставке счёта в учётный день смены, одно округление; из QR в наличные она
+    // возвращается: перенос со знаком минус.
     let fee = crate::api::fees::fee_on(
         &mut *conn,
         account_id,
@@ -1899,6 +2321,11 @@ pub async fn cash_to_bank_tx(
         req.amount_tyiyn,
     )
     .await?;
+    let (amount, fee) = if to_cash {
+        (req.amount_tyiyn.saturating_neg(), fee.saturating_neg())
+    } else {
+        (req.amount_tyiyn, fee)
+    };
     let id = new_id();
     let moved = apply_transfer(
         &mut *conn,
@@ -1907,28 +2334,19 @@ pub async fn cash_to_bank_tx(
             shift: &shift,
             register: shift.account_id,
             account_id,
-            amount: req.amount_tyiyn,
+            amount,
             fee,
             counted,
             fix_withholding: req.fix_withholding,
             undo: None,
             fix_id: id,
             comment: &comment,
+            to_cash,
         },
     )
     .await?;
     insert_transfer_fix(
-        &mut *conn,
-        ctx,
-        id,
-        req.op_id,
-        shift_id,
-        account_id,
-        req.amount_tyiyn,
-        fee,
-        &moved,
-        &comment,
-        None,
+        &mut *conn, ctx, id, req.op_id, shift_id, account_id, amount, fee, &moved, &comment, None,
     )
     .await?;
     let account_name = moved
@@ -1948,8 +2366,9 @@ pub async fn cash_to_bank_tx(
         json!({
             "number": shift.number,
             "amount": req.amount_tyiyn,
+            "direction": req.direction,
             "account": account_name,
-            "fee": fee,
+            "fee": fee.saturating_abs(),
             "closed": c.is_some(),
             "diff_before": moved.effect.diff_before_tyiyn,
             "diff_after": moved.effect.diff_after_tyiyn,
@@ -2007,7 +2426,7 @@ pub async fn reverse_transfer_tx(
     req: ReverseTransferReq,
 ) -> AppResult<CashToBankOut> {
     const KIND: &str = "shift.cash_to_bank_reverse";
-    require_owner(&ctx.user)?;
+    require_fix(&mut *conn, &ctx.user).await?;
     let dry = req.dry_run;
     let comment = reason(&req.comment, dry)?;
     if !dry && let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
@@ -2017,7 +2436,7 @@ pub async fn reverse_transfer_tx(
     let f = sqlx::query!(
         r#"select f.kind, f.shift_id as "shift_id!", f.account_id as "account_id!", f.amount_tyiyn,
                   f.fee_tyiyn, f.counted_shift_id, f.counted_at, f.accrual_id, f.reversal_of,
-                  f.created_at
+                  f.created_at, f.user_id
            from pay_fixes f where f.id = $1 and f.branch_id = $2 and f.kind = 'shift'"#,
         id,
         branch_id
@@ -2029,6 +2448,16 @@ pub async fn reverse_transfer_tx(
         return Err(AppError::Conflict("это уже отмена переноса".into()));
     }
     let shift = shift_in_branch(&mut *conn, branch_id, f.shift_id).await?;
+    // Администратор отменяет только свой перенос, пока смена открыта (ADR-{B5.1}).
+    if !ctx.user.is_owner() {
+        admin_shift_scope(&mut *conn, branch_id, &shift).await?;
+        if f.user_id != ctx.user.id || f.counted_shift_id.is_some() {
+            return Err(AppError::ForbiddenWith(
+                "отменить чужой перенос может только владелец".into(),
+            ));
+        }
+    }
+    let to_cash = f.amount_tyiyn < 0;
     sqlx::query!(
         "select id from cash_accounts where id = $1 for update",
         shift.account_id
@@ -2068,6 +2497,7 @@ pub async fn reverse_transfer_tx(
             undo: Some(undo),
             fix_id: rid,
             comment: &comment,
+            to_cash,
         },
     )
     .await?;
@@ -2097,9 +2527,10 @@ pub async fn reverse_transfer_tx(
         Some(f.shift_id),
         json!({
             "number": shift.number,
-            "amount": f.amount_tyiyn,
+            "amount": f.amount_tyiyn.saturating_abs(),
+            "direction": if to_cash { Direction::ToCash } else { Direction::ToBank },
             "account": account,
-            "fee": f.fee_tyiyn,
+            "fee": f.fee_tyiyn.saturating_abs(),
             "closed": c.is_some(),
             "diff_before": moved.effect.diff_before_tyiyn,
             "diff_after": moved.effect.diff_after_tyiyn,
@@ -2144,6 +2575,11 @@ pub struct AfterItem {
     /// Поправка удержания: + вернули кассиру, − удержали.
     pub withhold_tyiyn: i64,
     pub comment: String,
+    /// Перенос: счёт банка и сумма со знаком (+ в QR, − в наличные).
+    #[serde(default)]
+    pub account_name: Option<String>,
+    #[serde(default)]
+    pub amount_tyiyn: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -2159,7 +2595,7 @@ pub struct AfterBank {
 pub struct AfterTotals {
     /// Наличными по чекам смены.
     pub cash_sales_tyiyn: i64,
-    /// Из наличных в QR — отдельной строкой: чеки перенос не меняет.
+    /// Наличные ↔ QR — отдельной строкой: чеки перенос не меняет (+ в QR, − в наличные).
     pub cash_to_bank_tyiyn: i64,
     /// Безнал по счетам и комиссия.
     pub bank: Vec<AfterBank>,
@@ -2179,6 +2615,73 @@ pub struct AfterClose {
     pub items: Vec<AfterItem>,
     pub before: AfterTotals,
     pub after: AfterTotals,
+}
+
+/// Изменения оплаты и переносы, деньги которых легли в эту смену (наличные ещё не пересчитаны):
+/// каждое — отдельной строкой в отчёте смены (задача 003 Н1). Чеки — изменённые за время смены,
+/// переносы — этой смены.
+pub(crate) async fn shift_items(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    shift: &cash::ShiftOut,
+) -> AppResult<Vec<AfterItem>> {
+    let rows = sqlx::query!(
+        r#"select f.id, f.kind, f.reversal_of is not null as "reversal!", f.created_at,
+                  u.full_name as user_name, f.sale_id, o.number as "original_number?",
+                  f.new_sale_id, n.number as "new_number?", f.amount_tyiyn,
+                  a.name as "account?", f.cash_delta_tyiyn, f.withhold_tyiyn, f.comment
+           from pay_fixes f
+           join users u on u.id = f.user_id
+           left join sales o on o.id = f.sale_id
+           left join sales n on n.id = f.new_sale_id
+           left join cash_accounts a on a.id = f.account_id
+           where f.branch_id = $1 and f.counted_shift_id is null
+             and ((f.kind = 'shift' and f.shift_id = $2)
+                  or (f.kind = 'sale' and f.created_at >= $3
+                      and f.created_at <= coalesce($4, now())))
+           order by f.created_at, f.id"#,
+        branch_id,
+        shift.id,
+        shift.opened_at,
+        shift.closed_at
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let (old_text, new_text) = match (r.kind.as_str(), r.sale_id, r.new_sale_id) {
+            ("sale", Some(o), Some(n)) => (
+                payments_text(&mut *conn, o).await?,
+                payments_text(&mut *conn, n).await?,
+            ),
+            _ => transfer_texts(
+                &r.account.clone().unwrap_or_default(),
+                r.amount_tyiyn,
+                r.reversal,
+            ),
+        };
+        out.push(AfterItem {
+            id: r.id,
+            kind: r.kind,
+            reversal: r.reversal,
+            created_at: r.created_at,
+            user_name: r.user_name,
+            original_id: r.sale_id,
+            original_number: r.original_number,
+            new_id: r.new_sale_id,
+            new_number: r.new_number,
+            old_text,
+            new_text,
+            cash_delta_tyiyn: r.cash_delta_tyiyn,
+            diff_before_tyiyn: None,
+            diff_after_tyiyn: None,
+            withhold_tyiyn: r.withhold_tyiyn,
+            comment: r.comment,
+            account_name: r.account,
+            amount_tyiyn: r.amount_tyiyn,
+        });
+    }
+    Ok(out)
 }
 
 /// Блок «После закрытия» (SPEC-37 §4): изменения оплаты и переносы, поправившие пересчёт смены.
@@ -2229,17 +2732,7 @@ pub(crate) async fn after_close(
             ),
             _ => {
                 let account = r.account.clone().unwrap_or_default();
-                if r.reversal {
-                    (
-                        format!("перенос в «{account}» {}", format_som(-r.amount_tyiyn)),
-                        "отменён".into(),
-                    )
-                } else {
-                    (
-                        format!("наличные {}", format_som(r.amount_tyiyn)),
-                        format!("в «{account}» {}", format_som(r.amount_tyiyn)),
-                    )
-                }
+                transfer_texts(&account, r.amount_tyiyn, r.reversal)
             }
         };
         if r.kind == "sale" {
@@ -2264,6 +2757,8 @@ pub(crate) async fn after_close(
             diff_after_tyiyn: r.diff_after_tyiyn,
             withhold_tyiyn: r.withhold_tyiyn,
             comment: r.comment,
+            account_name: r.account.clone(),
+            amount_tyiyn: r.amount_tyiyn,
         });
     }
     // Безнал по счетам: при закрытии — как в отчёте; сейчас — плюс деньги изменений на счетах.
@@ -2366,6 +2861,21 @@ pub(crate) async fn after_close(
     }))
 }
 
+/// Перенос словами «было → стало»: «наличные 1 000 с → в «Optima» 1 000 с» или обратно; у отмены
+/// `amount` — со знаком отмены.
+pub fn transfer_texts(account: &str, amount: i64, reversal: bool) -> (String, String) {
+    let sum = format_som(amount.saturating_abs());
+    match (reversal, amount < 0) {
+        (true, true) => (format!("перенос в «{account}» {sum}"), "отменён".into()),
+        (true, false) => (
+            format!("перенос из «{account}» в наличные {sum}"),
+            "отменён".into(),
+        ),
+        (false, false) => (format!("наличные {sum}"), format!("в «{account}» {sum}")),
+        (false, true) => (format!("«{account}» {sum}"), format!("в наличные {sum}")),
+    }
+}
+
 /// Блок «После закрытия» словами — для чека смены и бота (SPEC-37 §4).
 pub fn after_close_lines(a: &AfterClose) -> Vec<String> {
     let mut out = vec![if a.at == "close" {
@@ -2401,10 +2911,15 @@ pub fn after_close_lines(a: &AfterClose) -> Vec<String> {
         format_som(b.cash_sales_tyiyn),
         format_som(n.cash_sales_tyiyn)
     ));
-    if n.cash_to_bank_tyiyn != 0 {
+    if n.cash_to_bank_tyiyn > 0 {
         out.push(format!(
             "  из наличных в QR: {}",
             format_som(n.cash_to_bank_tyiyn)
+        ));
+    } else if n.cash_to_bank_tyiyn < 0 {
+        out.push(format!(
+            "  из QR в наличные: {}",
+            format_som(-n.cash_to_bank_tyiyn)
         ));
     }
     for nb in &n.bank {

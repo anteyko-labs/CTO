@@ -461,7 +461,7 @@ async fn doc_label(
     let word = match (doc_type, kind) {
         (_, "bank_fee") => "комиссия банка",
         (_, "reversal") => "сторно",
-        ("pay_fix", _) | (_, "cash_to_bank") => "перенос из наличных в QR",
+        ("pay_fix", _) | (_, "cash_to_bank") => "перенос наличные ↔ QR",
         ("expense", _) => "расход",
         ("sale", "sale_return") => "возврат по чеку",
         ("sale", _) => "чек",

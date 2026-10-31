@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.id, f.kind, f.reversal_of is not null as \"reversal!\", f.created_at,\n                  u.full_name as user_name, f.sale_id, o.number as \"original_number?\",\n                  f.new_sale_id, n.number as \"new_number?\", f.amount_tyiyn,\n                  a.name as \"account?\", f.cash_delta_tyiyn, f.withhold_tyiyn, f.comment\n           from pay_fixes f\n           join users u on u.id = f.user_id\n           left join sales o on o.id = f.sale_id\n           left join sales n on n.id = f.new_sale_id\n           left join cash_accounts a on a.id = f.account_id\n           where f.branch_id = $1 and f.counted_shift_id is null\n             and ((f.kind = 'shift' and f.shift_id = $2)\n                  or (f.kind = 'sale' and f.created_at >= $3\n                      and f.created_at <= coalesce($4, now())))\n           order by f.created_at, f.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "reversal!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "original_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "new_sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "new_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "account?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "cash_delta_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "withhold_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "comment",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e19f788910c214f3e1477977b15f9a14a0c1d1a0e0bd5c84fcad04b73fa1d6b6"
+}

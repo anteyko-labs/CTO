@@ -4,7 +4,7 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
-import { AfterCloseBlock, CashToBankButton, CashToBankModal, TransfersList } from '../components/PayChange'
+import { AfterCloseBlock, CashToBankButton, CashToBankModal, PayChangeModal, TransfersList, useCanFixPay } from '../components/PayChange'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get } from '../lib/api'
 import { formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
@@ -12,6 +12,7 @@ import { useAction, useLoad } from '../lib/hooks'
 import { ShiftBank } from '../components/ShiftBank'
 import { printShift } from '../components/shiftPrint'
 import { PURPOSE_LABELS } from '../lib/payouts'
+import { fixItemsFor, type AfterItem } from '../lib/payChange'
 import {
   CANCEL_REASONS,
   TABS,
@@ -83,12 +84,15 @@ export default function ShiftReport() {
   const r = useLoad(() => get<Report>(`/shifts/${id}/report`), [id])
   const printing = useAction()
   const [toBank, setToBank] = useState(false)
+  // «Оплата» у строки продаж (задача 003 Н1): окно «Изменить оплату» прямо в отчёте.
+  const [payFix, setPayFix] = useState<string | null>(null)
   const data = r.data
+  const open = data ? data.shift.closed_at === null : false
+  const canFix = useCanFixPay(open)
 
   if (r.loading && !data) return <Loading />
   if (!data) return <ErrorBox error={r.error ?? 'Отчёт не загрузился'} />
   const s = data.shift
-  const open = s.closed_at === null
   const counts: Partial<Record<TabKey, number>> = {
     sales: data.sales_totals.count,
     returns: data.returns_totals.count,
@@ -131,8 +135,8 @@ export default function ShiftReport() {
             <Button variant="secondary" disabled={printing.busy} onClick={() => void printing.run(() => printShift(s.id))}>
               Печать чека смены
             </Button>
-            {/* Из наличных в QR одной суммой за смену (SPEC-37 §3). */}
-            <CashToBankButton onClick={() => setToBank(true)} />
+            {/* Наличные ↔ QR за смену (SPEC-37 §3, задача 003 Н1). */}
+            <CashToBankButton open={open} onClick={() => setToBank(true)} />
           </span>
         }
       />
@@ -165,13 +169,25 @@ export default function ShiftReport() {
             setToBank(false)
             r.reload()
           }}
+          onChanged={r.reload}
+        />
+      )}
+      {payFix && (
+        <PayChangeModal
+          saleId={payFix}
+          onClose={() => setPayFix(null)}
+          onSaved={() => {
+            // Отчёт перечитывается на месте: новый чек — в «Продажах», изменение — отдельной строкой.
+            setPayFix(null)
+            r.reload()
+          }}
         />
       )}
       {data.after_close && <AfterCloseBlock a={data.after_close} />}
-      <TransfersList items={data.transfers ?? []} onChanged={r.reload} />
+      <TransfersList items={data.transfers ?? []} open={open} onChanged={r.reload} />
 
       {tab === 'overview' && <Overview data={data} />}
-      {tab === 'sales' && <SalesTab data={data} />}
+      {tab === 'sales' && <SalesTab data={data} onPayFix={canFix ? setPayFix : undefined} />}
       {tab === 'returns' && <ReturnsTab data={data} />}
       {tab === 'receipts' && <ReceiptsTab data={data} />}
       {tab === 'money' && <MoneyTab data={data} />}
@@ -240,14 +256,14 @@ function Overview({ data }: { data: Report }) {
               <Row label={<span className="font-medium">Приход</span>} value={c.income_tyiyn} sign="+" tone="green" testId="flow-income" />
               <div className="-mt-1 pb-1 text-xs text-slate-500">поступление наличных в кассу</div>
               {c.income.map((l) => (
-                <Row key={l.key} label={l.label} value={l.amount_tyiyn} sub testId={`flow-${l.key}`} />
+                <FlowRow key={l.key} line={l} items={data.pay_fix_items ?? []} />
               ))}
             </div>
             <div className="mt-2">
               <Row label={<span className="font-medium">Расход</span>} value={c.outgo_tyiyn} sign="−" tone="rose" testId="flow-outgo" />
               <div className="-mt-1 pb-1 text-xs text-slate-500">выдано наличными из кассы</div>
               {c.outgo.map((l) => (
-                <Row key={l.key} label={l.label} value={l.amount_tyiyn} sub testId={`flow-${l.key}`} />
+                <FlowRow key={l.key} line={l} items={data.pay_fix_items ?? []} />
               ))}
             </div>
             <Row label="Должно быть в кассе" value={c.expected_tyiyn} strong testId="flow-expected" />
@@ -429,7 +445,47 @@ function SaleLink({ id, number }: { id: string; number: number }) {
   )
 }
 
-function SalesTable({ rows, pagerKey, returns }: { rows: SaleRow[]; pagerKey: string; returns?: boolean }) {
+/**
+ * Строка движения денег; у «Изменения оплаты чеков» и «Наличные ↔ QR» — расшифровка: каждое изменение
+ * отдельной строкой (задача 003 Н1).
+ */
+function FlowRow({ line, items }: { line: ReportLine; items: AfterItem[] }) {
+  const fixes = fixItemsFor(line.key, items)
+  return (
+    <>
+      <Row label={line.label} value={line.amount_tyiyn} sub testId={`flow-${line.key}`} />
+      {fixes.map((i) => (
+        <div key={i.id} className="pb-1 pl-8 text-xs text-slate-500" data-testid="flow-fix-item">
+          {formatTime(i.created_at)} · {i.user_name} ·{' '}
+          {i.kind === 'sale' && i.original_id && i.new_id ? (
+            <>
+              <SaleLink id={i.original_id} number={i.original_number ?? 0} /> → <SaleLink id={i.new_id} number={i.new_number ?? 0} />:{' '}
+            </>
+          ) : i.reversal ? (
+            'отмена: '
+          ) : (
+            ''
+          )}
+          {i.old_text} → {i.new_text}
+          {i.comment && ` · ${i.comment}`}
+        </div>
+      ))}
+    </>
+  )
+}
+
+function SalesTable({
+  rows,
+  pagerKey,
+  returns,
+  onPayFix,
+}: {
+  rows: SaleRow[]
+  pagerKey: string
+  returns?: boolean
+  /** Кнопка «Оплата» в строке: изменить оплату чека прямо в отчёте (задача 003 Н1). */
+  onPayFix?: (id: string) => void
+}) {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [method, setMethod] = useState('')
@@ -461,7 +517,13 @@ function SalesTable({ rows, pagerKey, returns }: { rows: SaleRow[]; pagerKey: st
         <Empty icon="receipt">{rows.length === 0 ? (returns ? 'Возвратов за смену не было' : 'Продаж за смену не было') : 'Ничего не нашлось'}</Empty>
       ) : (
         <>
-          <Table head={returns ? ['№', 'Время', 'По чеку', 'Способ', 'Счёт', 'Кассир', 'Покупатель', 'Сумма'] : ['№', 'Время', 'Способ', 'Счёт', 'Кассир', 'Покупатель', 'Сумма']}>
+          <Table
+            head={
+              returns
+                ? ['№', 'Время', 'По чеку', 'Способ', 'Счёт', 'Кассир', 'Покупатель', 'Сумма']
+                : ['№', 'Время', 'Способ', 'Счёт', 'Кассир', 'Покупатель', 'Сумма', ...(onPayFix ? [''] : [])]
+            }
+          >
             {pager.shown.map((s) => (
               <tr key={s.id} className="cursor-pointer hover:bg-slate-50" onClick={() => navigate(`/sales/${s.id}`)}>
                 <td className="px-2 py-2 whitespace-nowrap">
@@ -480,6 +542,23 @@ function SalesTable({ rows, pagerKey, returns }: { rows: SaleRow[]; pagerKey: st
                 <td className="px-2 py-2 text-right font-medium">
                   <Money value={returns ? -s.total_tyiyn : s.total_tyiyn} />
                 </td>
+                {onPayFix && (
+                  <td className="px-2 py-1 text-right">
+                    {s.kind === 'sale' && (
+                      <Button
+                        variant="secondary"
+                        className="min-h-0 px-2 py-1 text-xs"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onPayFix(s.id)
+                        }}
+                        data-testid="sale-pay-fix"
+                      >
+                        Оплата
+                      </Button>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </Table>
@@ -490,7 +569,7 @@ function SalesTable({ rows, pagerKey, returns }: { rows: SaleRow[]; pagerKey: st
   )
 }
 
-function SalesTab({ data }: { data: Report }) {
+function SalesTab({ data, onPayFix }: { data: Report; onPayFix?: (id: string) => void }) {
   const t = data.sales_totals
   return (
     <div className="flex flex-col gap-4">
@@ -500,7 +579,7 @@ function SalesTab({ data }: { data: Report }) {
         <Tile label="Оплачено баллами" value={formatSom(t.bonus_tyiyn)} />
         <Tile label="В долг" value={formatSom(t.debt_tyiyn)} tone={t.debt_tyiyn > 0 ? 'rose' : undefined} />
       </div>
-      <SalesTable rows={data.sales.filter((s) => s.kind === 'sale')} pagerKey="shift_report.sales" />
+      <SalesTable rows={data.sales.filter((s) => s.kind === 'sale')} pagerKey="shift_report.sales" onPayFix={onPayFix} />
     </div>
   )
 }

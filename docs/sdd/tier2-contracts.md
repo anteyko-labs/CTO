@@ -4,7 +4,7 @@
 
 ## Роли и права
 - Роли со входом: `owner` (всё, все филиалы), `admin` (только по правам, один филиал). Кассиры и мастера — без входа.
-- Права администратора — `PERMISSIONS` в `server/src/auth.rs` и зеркально `web/src/lib/permissions.ts` (ключ, подпись, группа, «по умолчанию» совпадают; тест сверяет). Сейчас 19, по умолчанию 15; не по умолчанию: `discount`, `oil_transfer`, `payroll_advance`, `old_debts`.
+- Права администратора — `PERMISSIONS` в `server/src/auth.rs` и зеркально `web/src/lib/permissions.ts` (ключ, подпись, группа, «по умолчанию» совпадают; тест сверяет). Сейчас 20, по умолчанию 15; не по умолчанию: `discount`, `oil_transfer`, `payroll_advance`, `old_debts`, `till_pay_fix`.
 - Новое право = миграция (выдача существующим админам, если по умолчанию), запись в оба списка, обход в `server/tests/http.rs`, подписи «N из M» в `web/e2e/admin-permissions.spec.ts`, SPEC-30 §5.
 - Отказ: 403 `{"error":{"message":"Нет права: <подпись>"}}`.
 

@@ -97,7 +97,7 @@ const fn perm(
 /// Владельцу права не нужны: он может всё. Правом не выдаются себестоимость, прибыль, маржа
 /// (инвариант 6), «Исправить» документов (ADR-085), цены товаров (ADR-032), отмена перелива,
 /// начисления, бонусы и удержания — это только владелец (ADR-097).
-pub const PERMISSIONS: [PermissionDef; 19] = [
+pub const PERMISSIONS: [PermissionDef; 20] = [
     perm("sale_return", "Возврат по чеку", "Касса", true),
     perm("sale_debt", "Продажа в долг", "Касса", true),
     perm("discount", "Скидка в чеке", "Касса", false),
@@ -113,6 +113,14 @@ pub const PERMISSIONS: [PermissionDef; 19] = [
     perm("payroll_advance", "Аванс мастерам", "Деньги", false),
     // Старый долг клиента из тетради с датой долга (SPEC-38, ADR-133).
     perm("old_debts", "Старые долги из тетради", "Деньги", false),
+    // Наличные ↔ QR и «Изменить оплату» чека — только открытая смена своего филиала, без
+    // прибыли (задача 003 Н1, ADR-{B5.1}); закрытую смену правит владелец.
+    perm(
+        "till_pay_fix",
+        "Наличные ↔ QR в открытой смене",
+        "Деньги",
+        false,
+    ),
     perm(
         "receipts",
         "Приход товара и оплата поставщику",
@@ -524,7 +532,7 @@ mod tests {
     fn permissions_match_the_screen_list() {
         // Список прав (SPEC-30 §5) — на сервере и на экране; ключ, подпись и «по умолчанию»
         // должны совпадать, иначе «Нет права: …» и флажок назовут право по-разному.
-        assert_eq!(PERMISSIONS.len(), 19);
+        assert_eq!(PERMISSIONS.len(), 20);
         assert_eq!(default_permissions().len(), 15);
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/src/lib/permissions.ts");
         let Ok(ts) = std::fs::read_to_string(path) else {

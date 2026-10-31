@@ -448,6 +448,40 @@ async fn compute(
     }
     let mut bank_matched = vec![false; bank.len()];
     let mut ours_unmatched = Vec::new();
+    // Из QR в наличные (задача 003 Н1): наши оплаты «Карта / QR» в окне смены, не сопоставленные с
+    // банком, по времени — пока их сумма не дойдёт до суммы переноса. Сошлась точно — эти оплаты
+    // ушли в наличные: в банке их и не должно быть.
+    let mut absorbed = vec![false; ours.len()];
+    let mut back_matched = vec![false; transfers.len()];
+    for (k, t) in transfers.iter().enumerate() {
+        if t.amount_tyiyn >= 0 {
+            continue;
+        }
+        let need = t.amount_tyiyn.saturating_neg();
+        let (start, end) = t.window.unwrap_or((t.at, t.at));
+        let mut taken = Vec::new();
+        let mut sum: i64 = 0;
+        for (i, o) in ours.iter().enumerate() {
+            if sum >= need {
+                break;
+            }
+            if pairs[i].is_none()
+                && !absorbed[i]
+                && o.kind == "card"
+                && o.at >= start
+                && o.at <= end
+            {
+                sum = sum.saturating_add(o.amount_tyiyn);
+                taken.push(i);
+            }
+        }
+        if sum == need && !taken.is_empty() {
+            for i in taken {
+                absorbed[i] = true;
+            }
+            back_matched[k] = true;
+        }
+    }
     for (i, o) in ours.iter().enumerate() {
         let own = day_of(o.at);
         if let Some(x) = days.get_mut(&own) {
@@ -462,6 +496,7 @@ async fn compute(
                     x.our_fee_tyiyn = x.our_fee_tyiyn.saturating_add(o.fee_tyiyn);
                 }
             }
+            None if absorbed[i] => {}
             None => {
                 if let Some(x) = days.get_mut(&own) {
                     x.unmatched += 1;
@@ -474,11 +509,22 @@ async fn compute(
     }
     // Перенос из наличных в QR: QR банка в окне смены, не сопоставленные с чеками, по времени —
     // пока их сумма не дойдёт до суммы переноса. Сошлась точно — перенос сопоставлен.
-    for t in &transfers {
+    for (k, t) in transfers.iter().enumerate() {
         let own = day_of(t.at);
         if let Some(x) = days.get_mut(&own) {
             x.ours_count += 1;
             x.ours_tyiyn = x.ours_tyiyn.saturating_add(t.amount_tyiyn);
+        }
+        if t.amount_tyiyn < 0 {
+            if !back_matched[k]
+                && let Some(x) = days.get_mut(&own)
+            {
+                x.unmatched += 1;
+                if x.loaded {
+                    ours_unmatched.push(t.clone());
+                }
+            }
+            continue;
         }
         let (start, end) = t.window.unwrap_or((t.at, t.at));
         let mut taken = Vec::new();

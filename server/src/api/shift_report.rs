@@ -33,11 +33,19 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-/// Настройки смены (SPEC-36 §10): печатать ли чек смены сам после сдачи кассы.
+/// Настройки смены (SPEC-36 §10): печатать ли чек смены сам после сдачи кассы; «Наличные ↔ QR»
+/// в окне закрытия и предел переноса администратором (задача 003 Н1, ADR-{B5.1}).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct ShiftSettings {
     #[serde(default = "yes")]
     pub print_on_close: bool,
+    /// Кнопка «Наличные ↔ QR» в окне «Закрыть смену» и подсказка при расхождении.
+    #[serde(default = "yes")]
+    pub pay_fix_on_close: bool,
+    /// Наибольшая сумма, которую администратор переносит «Наличные ↔ QR» за смену (по модулю,
+    /// вместе с изменениями оплаты чеков); пусто — без своего предела, только предел по чекам.
+    #[serde(default)]
+    pub admin_pay_fix_max_tyiyn: Option<i64>,
 }
 
 fn yes() -> bool {
@@ -48,24 +56,32 @@ impl Default for ShiftSettings {
     fn default() -> Self {
         Self {
             print_on_close: true,
+            pay_fix_on_close: true,
+            admin_pay_fix_max_tyiyn: None,
         }
     }
+}
+
+/// Настройки смены филиала; не заданы или не читаются — по умолчанию.
+pub async fn settings_of(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<ShiftSettings> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'shift'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(
+        v.and_then(|v| serde_json::from_value::<ShiftSettings>(v).ok())
+            .unwrap_or_default(),
+    )
 }
 
 async fn get_settings(
     State(state): State<AppState>,
     user: CurrentUser,
 ) -> AppResult<Json<ShiftSettings>> {
-    let v = sqlx::query_scalar!(
-        "select value from settings where branch_id = $1 and key = 'shift'",
-        user.branch_id
-    )
-    .fetch_optional(&state.pool)
-    .await?;
-    Ok(Json(
-        v.and_then(|v| serde_json::from_value::<ShiftSettings>(v).ok())
-            .unwrap_or_default(),
-    ))
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(settings_of(&mut conn, user.branch_id).await?))
 }
 
 async fn put_settings(
@@ -75,6 +91,13 @@ async fn put_settings(
 ) -> AppResult<Json<ShiftSettings>> {
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
+    }
+    if let Some(m) = req.admin_pay_fix_max_tyiyn
+        && !(0..=crate::ops::MAX_AMOUNT_TYIYN).contains(&m)
+    {
+        return Err(crate::error::invalid(
+            "предел переноса администратором — от 0 или пусто",
+        ));
     }
     let value = serde_json::json!(req);
     let mut tx = state.pool.begin().await?;
@@ -338,12 +361,17 @@ pub struct ShiftReport {
     /// Изменения после пересчёта наличных этой смены (SPEC-37 §4): блок «После закрытия».
     #[serde(default)]
     pub after_close: Option<crate::api::pay_fix::AfterClose>,
+    /// Изменения оплаты чеков и переносы «Наличные ↔ QR», деньги которых легли в эту смену, —
+    /// каждое отдельной строкой (задача 003 Н1).
+    #[serde(default)]
+    pub pay_fix_items: Vec<crate::api::pay_fix::AfterItem>,
 }
 
 /// Вид движения наличных и сторона: приход (`true`) или расход.
-const FLOW: [(&str, &str, bool); 21] = [
+const FLOW: [(&str, &str, bool); 22] = [
     ("cash_sales", "Продажи наличными", true),
     ("pay_fix_in", "Изменение оплаты чеков", true),
+    ("bank_to_cash", "Из QR в наличные", true),
     ("debt_repayments", "Оплаты долга покупателей", true),
     ("cash_in", "Внесения", true),
     ("transfers_in", "Переводы в кассу", true),
@@ -511,7 +539,8 @@ pub async fn load(
     let compare = compare(conn, branch_id, &shift, revenue.net_tyiyn).await?;
     let hours = hours(conn, branch_id, &w).await?;
     let receipts = receipts(conn, branch_id, &shift, &w).await?;
-    let (money, money_totals) = money(conn, branch_id, owner, &shift, &w).await?;
+    let pay_fix_items = crate::api::pay_fix::shift_items(conn, branch_id, &shift).await?;
+    let (money, money_totals) = money(conn, branch_id, owner, &shift, &w, &pay_fix_items).await?;
     let debts = debts(conn, branch_id, &w).await?;
     let payouts = payouts(conn, branch_id, owner, &w).await?;
     let payouts_tyiyn = sum(payouts.iter().map(|p| &p.amount_tyiyn))?;
@@ -550,6 +579,7 @@ pub async fn load(
         qr_unclaimed,
         transfers,
         after_close,
+        pay_fix_items,
     })
 }
 
@@ -564,7 +594,11 @@ async fn cash_flow(conn: &mut PgConnection, s: &ShiftOut, w: &Window) -> AppResu
                   (m.doc_type = 'sale' and exists (
                      select 1 from pay_fixes f
                      where f.counted_shift_id is null
-                       and (f.reversal_sale_id = m.doc_id or f.new_sale_id = m.doc_id))) as "pay_fix!"
+                       and (f.reversal_sale_id = m.doc_id or f.new_sale_id = m.doc_id))) as "pay_fix!",
+                  -- Перенос за смену: направление исходного (у отмены — отменённого) переноса.
+                  (select coalesce(o.amount_tyiyn, f.amount_tyiyn) from pay_fixes f
+                   left join pay_fixes o on o.id = f.reversal_of
+                   where m.doc_type = 'pay_fix' and f.id = m.doc_id) as "fix_amount?"
            from cash_movements m
            where m.account_id = $1 and m.created_at >= $2
              and (m.created_at < coalesce($3, 'infinity'::timestamptz)
@@ -598,6 +632,9 @@ async fn cash_flow(conn: &mut PgConnection, s: &ShiftOut, w: &Window) -> AppResu
             } else {
                 "pay_fix_out"
             }
+        } else if r.kind == "cash_to_bank" && r.fix_amount.is_some_and(|a| a < 0) {
+            // Из QR в наличные и его отмена — своей строкой в поступлениях.
+            "bank_to_cash"
         } else {
             advance_key(
                 flow_key(&r.kind, &r.doc_type, r.orig_kind.as_deref(), r.amount_tyiyn),
@@ -1041,6 +1078,7 @@ async fn money(
     owner: bool,
     s: &ShiftOut,
     w: &Window,
+    fixes: &[crate::api::pay_fix::AfterItem],
 ) -> AppResult<(Vec<MoneyRow>, Vec<Line>)> {
     let moves = sqlx::query!(
         r#"select m.id, m.created_at, m.kind, m.doc_type, m.amount_tyiyn, m.comment,
@@ -1167,6 +1205,34 @@ async fn money(
             comment: t.comment,
         });
     }
+    // Изменения оплаты чеков и переносы «Наличные ↔ QR» — каждое отдельной строкой: сумма — как
+    // изменились наличные «Кассы» смены (задача 003 Н1).
+    for f in fixes {
+        let (key, counterparty) = match (f.kind.as_str(), f.original_number, f.new_number) {
+            ("sale", Some(o), Some(n)) => ("pay_fix", Some(format!("чек № {o} → № {n}"))),
+            ("sale", _, _) => ("pay_fix", None),
+            _ if (f.amount_tyiyn < 0) != f.reversal => ("bank_to_cash", None),
+            _ => ("cash_to_bank", None),
+        };
+        let what = format!("{} → {}", f.old_text, f.new_text);
+        out.push(MoneyRow {
+            id: f.id,
+            created_at: f.created_at,
+            kind: key.into(),
+            label: money_label(key).into(),
+            reversal: f.reversal,
+            amount_tyiyn: f.cash_delta_tyiyn,
+            account_name: s.account_name.clone(),
+            to_account_name: f.account_name.clone(),
+            user_name: f.user_name.clone(),
+            counterparty,
+            comment: if f.comment.is_empty() {
+                what
+            } else {
+                format!("{what}. {}", f.comment)
+            },
+        });
+    }
     out.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     // Итоги — положительными: внесено, переведено, оплачено, потрачено.
     let mut by: HashMap<String, i64> = HashMap::new();
@@ -1186,6 +1252,9 @@ async fn money(
         "cash_out",
         "transfers_out",
         "transfers",
+        "pay_fix",
+        "cash_to_bank",
+        "bank_to_cash",
         "other",
     ];
     let always = [
@@ -1203,7 +1272,7 @@ async fn money(
         if raw == 0 && !always.contains(&key) {
             continue;
         }
-        let amount = if key == "other" || key == "transfers" || is_income(key) {
+        let amount = if matches!(key, "other" | "transfers" | "pay_fix") || is_income(key) {
             raw
         } else {
             -raw
@@ -1232,6 +1301,9 @@ fn money_label(key: &str) -> &'static str {
         "debt_repayments" => "Оплата долга",
         "supplier_refunds" => "Деньги от поставщика",
         "battery_intake" => "Приём аккумуляторов",
+        "pay_fix" => "Изменение оплаты чека",
+        "cash_to_bank" => "Из наличных в QR",
+        "bank_to_cash" => "Из QR в наличные",
         _ => "Прочее",
     }
 }
@@ -1375,6 +1447,17 @@ pub fn bank_text(b: &crate::api::income::BankSplit) -> String {
     }
     if b.returns_tyiyn != 0 {
         parts.push(format!("возвраты −{}", format_som(b.returns_tyiyn)));
+    }
+    if b.cash_to_bank_tyiyn > 0 {
+        parts.push(format!(
+            "из наличных в QR {}",
+            format_som(b.cash_to_bank_tyiyn)
+        ));
+    } else if b.cash_to_bank_tyiyn < 0 {
+        parts.push(format!(
+            "из QR в наличные −{}",
+            format_som(-b.cash_to_bank_tyiyn)
+        ));
     }
     let mut out = format!("безнал «{}»: {}", b.name, format_som(b.total_tyiyn));
     if !parts.is_empty() {

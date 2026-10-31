@@ -353,7 +353,14 @@ export function OwnerDashboard() {
                 </div>
                 {(data.noncash.by_account ?? []).length > 1 && (
                   <div className="text-xs tabular-nums text-slate-500" data-testid="noncash-banks">
-                    {(data.noncash.by_account ?? []).map((b) => `${b.name} ${formatSom(b.total_tyiyn)}`).join(' · ')}
+                    {(data.noncash.by_account ?? [])
+                      .map((b) => {
+                        // Наличные ↔ QR за смену — отдельно от чеков (задача 003 Н1).
+                        const moved = b.cash_to_bank_tyiyn ?? 0
+                        const extra = moved > 0 ? ` (+ из наличных ${formatSom(moved)})` : moved < 0 ? ` (− в наличные ${formatSom(-moved)})` : ''
+                        return `${b.name} ${formatSom(b.total_tyiyn)}${extra}`
+                      })
+                      .join(' · ')}
                   </div>
                 )}
               </Tile>

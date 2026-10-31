@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select f.account_id as \"account_id!\", a.name,\n                      coalesce(sum(f.amount_tyiyn), 0)::bigint as \"v!\"\n               from pay_fixes f\n               join shifts s on s.id = f.shift_id\n               join cash_accounts a on a.id = f.account_id\n               where f.branch_id = $1 and f.kind = 'shift' and s.business_date between $2 and $3\n               group by f.account_id, a.name, a.default_card\n               order by a.default_card desc, a.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "v!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "3e8215e5801e633393ba2f64547fe14e356d9b3a953ba5ff189ce692c2b254e2"
+}

@@ -9,14 +9,15 @@ describe('права администратора', () => {
     expect(can({ role: 'admin', permissions: ['oil_transfer'] }, 'expenses')).toBe(false)
   })
 
-  it('по умолчанию — всё, кроме скидки, перелива, аванса и старых долгов; приёмка — по умолчанию (SPEC-30 §5, ADR-122, ADR-133, ADR-134)', () => {
-    expect(PERMISSIONS).toHaveLength(19)
-    expect(new Set(PERMISSIONS.map((p) => p.key)).size).toBe(19)
+  it('по умолчанию — всё, кроме скидки, перелива, аванса, старых долгов и «Наличные ↔ QR»; приёмка — по умолчанию (SPEC-30 §5, ADR-122, ADR-133, ADR-134, ADR-{B5.1})', () => {
+    expect(PERMISSIONS).toHaveLength(20)
+    expect(new Set(PERMISSIONS.map((p) => p.key)).size).toBe(20)
     expect(DEFAULT_PERMISSIONS).toHaveLength(15)
     expect(DEFAULT_PERMISSIONS).not.toContain('discount')
     expect(DEFAULT_PERMISSIONS).not.toContain('oil_transfer')
     expect(DEFAULT_PERMISSIONS).not.toContain('payroll_advance')
     expect(DEFAULT_PERMISSIONS).not.toContain('old_debts')
+    expect(DEFAULT_PERMISSIONS).not.toContain('till_pay_fix')
     expect(DEFAULT_PERMISSIONS).toContain('acceptance')
     expect(PERMISSIONS.every((p) => PERMISSION_GROUPS.includes(p.group))).toBe(true)
   })
