@@ -1989,8 +1989,10 @@ async fn get_bot_settings(
 async fn put_bot_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(mut s): Json<BotReceiptSettings>,
+    Json(req): Json<ops::WithOp<BotReceiptSettings>>,
 ) -> AppResult<Json<BotReceiptSettings>> {
+    const KIND: &str = "receipt_draft.bot_settings";
+    let (op_id, mut s) = (req.op_id, req.body);
     ctx.user.require_owner()?;
     s.invoice_hint = s.invoice_hint.trim().to_string();
     if !(0..=MAX_MERGE_MINUTES).contains(&s.merge_minutes) {
@@ -2003,6 +2005,9 @@ async fn put_bot_settings(
     }
     let branch_id = ctx.user.branch_id;
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     let before = load_bot_settings(&mut tx, branch_id).await?;
     let value = serde_json::to_value(&s).map_err(|e| AppError::Internal(e.to_string()))?;
     sqlx::query!(
@@ -2018,13 +2023,14 @@ async fn put_bot_settings(
         ops::audit(
             &mut tx,
             &ctx,
-            "receipt_draft.bot_settings",
+            KIND,
             "settings",
             None,
             json!({ "changes": ops::changes(&old, &value) }),
         )
         .await?;
     }
+    ops::finish_opt(&mut tx, &ctx, op_id, KIND, &s).await?;
     tx.commit().await?;
     Ok(Json(s))
 }

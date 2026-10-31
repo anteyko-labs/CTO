@@ -129,7 +129,7 @@ export default function Shift() {
     settings.setData(next)
     void act.run(async () => {
       try {
-        settings.setData(await put<ShiftSettings>('/settings/shift', next))
+        settings.setData(await put<ShiftSettings>('/settings/shift', { op_id: newOpId(), ...next }))
       } catch (e) {
         settings.setData(before)
         throw e

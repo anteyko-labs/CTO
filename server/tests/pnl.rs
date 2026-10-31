@@ -747,3 +747,40 @@ async fn expense_payee_is_stored_reversed_and_set_up_by_owner(pool: PgPool) {
     )
     .await;
 }
+
+/// Подсказки «Кому» (перекрёстная проверка задачи 003): по праву «Расходы»; администратору —
+/// только из того, что ему показывает список расходов (касса, неделя, без статей владельца).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn expense_payees_follow_expense_rights(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let household = article(&app, &owner, "Хозтовары").await;
+    let safe = account(&app, &owner, |a| a["owner_only"] == json!(true)).await;
+    ok(
+        &app,
+        "POST",
+        "/api/v1/expenses",
+        &owner,
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "article_id": household, "amount_tyiyn": 100_000,
+                     "source": "account", "account_id": safe, "payee": "ИП Асанов" }),
+        ),
+    )
+    .await;
+    let names = |v: &Value| v["names"].as_array().unwrap().clone();
+    let all = ok(&app, "GET", "/api/v1/expenses/payees", &owner, None).await;
+    assert!(names(&all).contains(&json!("ИП Асанов")), "{all}");
+    let form = ok(&app, "GET", "/api/v1/expenses/payees", &admin, None).await;
+    assert!(!names(&form).contains(&json!("ИП Асанов")), "{form}");
+    // Без права «Расходы» — 403.
+    sqlx::query(
+        "delete from user_permissions where permission = 'expenses'
+           and user_id = (select id from users where login = 'admin')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, _, _) = call(&app, "GET", "/api/v1/expenses/payees", Some(&admin), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

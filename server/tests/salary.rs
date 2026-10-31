@@ -1001,3 +1001,130 @@ async fn salary_due_period_on_pay_day(pool: PgPool) {
         today_row.period_from.to_string()
     );
 }
+
+/// PUT настроек с `op_id` (перекрёстная проверка задачи 003, I8): повтор потерянного ответа —
+/// тот же ответ без второй записи журнала и без отката позднего изменения; журнал — было → стало.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn settings_put_is_idempotent_by_op_id(pool: PgPool) {
+    let w = world(pool, false).await;
+    let first = Uuid::now_v7();
+    let body = |op: Uuid, days: i64| json!({ "op_id": op, "payout_backdate_days": days });
+    ok(
+        &w.app,
+        &w.owner,
+        "PUT",
+        "/api/v1/settings/payroll",
+        body(first, 10),
+    )
+    .await;
+    ok(
+        &w.app,
+        &w.owner,
+        "PUT",
+        "/api/v1/settings/payroll",
+        body(Uuid::now_v7(), 20),
+    )
+    .await;
+    let again = ok(
+        &w.app,
+        &w.owner,
+        "PUT",
+        "/api/v1/settings/payroll",
+        body(first, 10),
+    )
+    .await;
+    assert_eq!(again["payout_backdate_days"], 10);
+    let now = get(&w.app, &w.owner, "/api/v1/settings/payroll").await;
+    assert_eq!(
+        now["payout_backdate_days"], 20,
+        "повтор не откатывает позднее изменение"
+    );
+    let log: Vec<Value> = sqlx::query_scalar(
+        "select data from audit_log where action = 'settings.payroll' order by created_at",
+    )
+    .fetch_all(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(
+        log[1]["changes"]["payout_backdate_days"],
+        json!({ "old": 10, "new": 20 })
+    );
+    // День расчёта оклада — так же.
+    let uri = format!("/api/v1/employees/{}/salary-day", w.cashier);
+    let op = Uuid::now_v7();
+    ok(
+        &w.app,
+        &w.owner,
+        "PUT",
+        &uri,
+        json!({ "op_id": op, "salary_day": 20 }),
+    )
+    .await;
+    ok(
+        &w.app,
+        &w.owner,
+        "PUT",
+        &uri,
+        json!({ "op_id": Uuid::now_v7(), "salary_day": 5 }),
+    )
+    .await;
+    ok(
+        &w.app,
+        &w.owner,
+        "PUT",
+        &uri,
+        json!({ "op_id": op, "salary_day": 20 }),
+    )
+    .await;
+    assert_eq!(get(&w.app, &w.owner, &uri).await["salary_day"], 5);
+    // Остальные новые настройки задачи 003 — повтор `op_id` возвращает тот же ответ.
+    for (uri, a, b) in [
+        (
+            "/api/v1/settings/profit-report",
+            json!({ "default_period": "today", "expense_payee": "optional", "show_reversals": false }),
+            json!({ "default_period": "week", "expense_payee": "optional", "show_reversals": false }),
+        ),
+        (
+            "/api/v1/settings/shift",
+            json!({ "print_on_close": false, "pay_fix_on_close": false }),
+            json!({ "print_on_close": false, "pay_fix_on_close": true }),
+        ),
+        (
+            "/api/v1/settings/loyalty",
+            json!({ "rate_bp": 100 }),
+            json!({ "rate_bp": 200 }),
+        ),
+        (
+            "/api/v1/settings/client-messages",
+            json!({ "monthly_hour": 11 }),
+            json!({ "monthly_hour": 12 }),
+        ),
+        (
+            "/api/v1/settings/bot-receipts",
+            json!({ "merge_minutes": 3, "invoice_hint": "Снимите накладную" }),
+            json!({ "merge_minutes": 4, "invoice_hint": "Снимите накладную" }),
+        ),
+    ] {
+        let op = Uuid::now_v7();
+        let with = |mut v: Value, op: Uuid| {
+            v["op_id"] = json!(op);
+            v
+        };
+        let one = ok(&w.app, &w.owner, "PUT", uri, with(a.clone(), op)).await;
+        ok(
+            &w.app,
+            &w.owner,
+            "PUT",
+            uri,
+            with(b.clone(), Uuid::now_v7()),
+        )
+        .await;
+        let late = ok(&w.app, &w.owner, "PUT", uri, with(a, op)).await;
+        assert_eq!(late, one, "{uri}");
+        let cur = get(&w.app, &w.owner, uri).await;
+        for (k, v) in b.as_object().unwrap() {
+            assert_eq!(&cur[k], v, "{uri}: {k}");
+        }
+    }
+}

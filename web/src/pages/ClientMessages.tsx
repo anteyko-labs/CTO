@@ -9,7 +9,7 @@ import { Pager, usePagedLoad } from '../components/Pager'
 import { ExportButton } from '../components/ExportButton'
 import { cappedWarning, fetchAllPages, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Notice, PageHeader, Table, toast } from '../components/ui'
-import { get, post, put, qs } from '../lib/api'
+import { get, newOpId, post, put, qs } from '../lib/api'
 import {
   CHANNEL_LABELS,
   DEBT_DUE_MARKS,
@@ -213,7 +213,7 @@ function SettingsForm({ s }: { s: MessageSettingsOut }) {
         disabled={bad || save.busy}
         onClick={() =>
           void save.run(async () => {
-            await put('/settings/client-messages', { ...f, km_per_day: kmValue })
+            await put('/settings/client-messages', { op_id: newOpId(), ...f, km_per_day: kmValue })
             toast('Сохранено')
           })
         }

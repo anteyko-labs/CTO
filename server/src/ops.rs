@@ -94,6 +94,44 @@ pub async fn finish_op<T: Serialize>(
     Ok(())
 }
 
+/// Тело PUT настроек с `op_id` (I8, перекрёстная проверка задачи 003): повтор потерянного
+/// ответа — тот же ответ (`begin_op`), без второй записи журнала и без отката позднего изменения.
+/// Прежний клиент без `op_id` — как раньше, без повтора.
+#[derive(serde::Deserialize)]
+pub struct WithOp<T> {
+    #[serde(default)]
+    pub op_id: Option<Uuid>,
+    #[serde(flatten)]
+    pub body: T,
+}
+
+/// `begin_op`, если запрос несёт `op_id`.
+pub async fn begin_opt<T: DeserializeOwned>(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    op_id: Option<Uuid>,
+    kind: &str,
+) -> AppResult<Option<T>> {
+    match op_id {
+        Some(op) => begin_op(conn, ctx, op, kind).await,
+        None => Ok(None),
+    }
+}
+
+/// `finish_op`, если запрос несёт `op_id`.
+pub async fn finish_opt<T: Serialize>(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    op_id: Option<Uuid>,
+    kind: &str,
+    response: &T,
+) -> AppResult<()> {
+    match op_id {
+        Some(op) => finish_op(conn, ctx, op, kind, response).await,
+        None => Ok(()),
+    }
+}
+
 /// Запись в журнал действий (инвариант 5).
 pub async fn audit(
     conn: &mut PgConnection,

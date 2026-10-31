@@ -279,18 +279,23 @@ struct PayeesOut {
     names: Vec<String>,
 }
 
-/// Поле «Кому» в форме расхода (задача 003 Н12): как его показывать и подсказки. Прежние
-/// значения — только по статьям, которые видны этому пользователю (инвариант 13).
+/// Поле «Кому» в форме расхода (задача 003 Н12): как его показывать и подсказки. По праву
+/// «Расходы»; прежние значения администратору — только из того, что ему показывает список
+/// расходов (`list_data`: из кассы, за неделю, без статей владельца; инвариант 13).
 async fn payees(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<PayeesOut>> {
     let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "expenses").await?;
     let mode = crate::api::pnl::profit_settings(&mut conn, user.branch_id)
         .await?
         .expense_payee;
     let mut names = sqlx::query_scalar!(
         r#"select e.payee as "payee!" from expenses e
            join expense_articles a on a.id = e.article_id
+           left join cash_accounts c on c.id = e.account_id
            where e.branch_id = $1 and e.payee <> '' and e.reversal_of is null
-             and (not a.owner_only or $2)
+             and ($2 or (not a.owner_only and e.source = 'account'
+                         and c.kind = 'register' and not c.owner_only
+                         and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))
            group by e.payee order by max(e.created_at) desc limit 30"#,
         user.branch_id,
         user.is_owner()

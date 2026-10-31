@@ -1381,3 +1381,57 @@ async fn debtor_texts_settings_and_send_to_self(pool: PgPool) {
         w.tg.texts(801)
     );
 }
+
+/// «Получили оплату» снова включили в одном филиале (перекрёстная проверка задачи 003): ждущие
+/// утра погашения других филиалов не пропадают — «с какого момента» у каждого филиала свой.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn payment_switch_of_one_branch_keeps_others_pending(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    let azis = w.person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(801, azis, "0555 11 22 33").await;
+    w.debt(azis, 600_000).await;
+    // Погасил ночью — сообщение ждёт утра.
+    w.repay(azis, 100_000).await;
+    w.pass(21).await;
+    assert!(w.tg.texts(801).is_empty());
+    // Во втором филиале «Получили оплату» выключили и включили.
+    let other = Uuid::now_v7();
+    sqlx::query("insert into branches (id, name) values ($1, 'Вторая точка')")
+        .bind(other)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    for on in [false, true] {
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/settings/client-messages")
+            .header("x-device-id", Uuid::now_v7().to_string())
+            .header("x-branch-id", other.to_string())
+            .header(header::COOKIE, &w.owner)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "payment_enabled": on }).to_string()))
+            .unwrap();
+        let res = w.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+    // Утром сообщение первого филиала уходит.
+    w.pass(9).await;
+    assert_eq!(
+        w.tg.texts(801),
+        vec!["Здравствуйте, Азиз! Получили оплату 1 000 сом. Долг на сегодня — 5 000 сом."]
+    );
+    // В самом втором филиале погашения до включения не пишутся (ADR-141) — ключ свой.
+    let keys: Vec<String> = sqlx::query_scalar(
+        "select key from bot_state where key like 'client_messages_payments_since%' order by key",
+    )
+    .fetch_all(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        keys,
+        vec![
+            "client_messages_payments_since".to_string(),
+            format!("client_messages_payments_since:{other}")
+        ]
+    );
+}

@@ -87,8 +87,10 @@ async fn get_settings(
 async fn put_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<ShiftSettings>,
+    Json(req): Json<crate::ops::WithOp<ShiftSettings>>,
 ) -> AppResult<Json<ShiftSettings>> {
+    const KIND: &str = "settings.shift";
+    let (op_id, req) = (req.op_id, req.body);
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
@@ -101,6 +103,9 @@ async fn put_settings(
     }
     let value = serde_json::json!(req);
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = crate::ops::begin_opt(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'shift', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,
@@ -109,7 +114,8 @@ async fn put_settings(
     )
     .execute(&mut *tx)
     .await?;
-    crate::ops::audit(&mut tx, &ctx, "settings.shift", "settings", None, value).await?;
+    crate::ops::audit(&mut tx, &ctx, KIND, "settings", None, value).await?;
+    crate::ops::finish_opt(&mut tx, &ctx, op_id, KIND, &req).await?;
     tx.commit().await?;
     Ok(Json(req))
 }

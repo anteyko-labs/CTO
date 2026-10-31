@@ -1677,9 +1677,30 @@ pub async fn plan_payments(conn: &mut PgConnection, ch: &Channels) -> AppResult<
     .await?
     .and_then(|v| v.as_str().and_then(|s| s.parse::<DateTime<Utc>>().ok()))
     .unwrap_or_else(Utc::now);
+    // «Получили оплату» снова включили в филиале — с этого момента, только в нём (ADR-141).
+    let mut branch_since: std::collections::HashMap<Uuid, DateTime<Utc>> =
+        std::collections::HashMap::new();
+    for r in sqlx::query!(
+        r#"select key, value from bot_state where key like 'client_messages_payments_since:%'"#
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    {
+        let id = r
+            .key
+            .strip_prefix("client_messages_payments_since:")
+            .and_then(|k| k.parse::<Uuid>().ok());
+        let at = r
+            .value
+            .as_str()
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+        if let (Some(id), Some(at)) = (id, at) {
+            branch_since.insert(id, at);
+        }
+    }
     let rows = sqlx::query!(
         r#"select g.id as "id!", g.branch_id as "branch_id!", g.party_id as "party_id!",
-                  g.amount as "amount!", g.day as "day!",
+                  g.amount as "amount!", g.day as "day!", g.at as "at!",
                   p.kind, p.name, p.first_name, p.phone, p.bot_code,
                   (select coalesce(sum(x.amount_tyiyn), 0) from party_ledger x
                    where x.party_id = g.party_id and x.created_at <= g.at)::bigint as "debt!"
@@ -1707,6 +1728,9 @@ pub async fn plan_payments(conn: &mut PgConnection, ch: &Channels) -> AppResult<
     .await?;
     let mut made = 0;
     for r in rows {
+        if branch_since.get(&r.branch_id).is_some_and(|at| r.at <= *at) {
+            continue;
+        }
         let settings = load_settings(conn, r.branch_id).await?;
         if !settings.payment_enabled {
             continue;
@@ -2157,12 +2181,17 @@ async fn get_settings(
 async fn put_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(mut s): Json<MessageSettings>,
+    Json(req): Json<ops::WithOp<MessageSettings>>,
 ) -> AppResult<Json<SettingsOut>> {
+    const KIND: &str = "client_message.settings";
+    let (op_id, mut s) = (req.op_id, req.body);
     ctx.user.require_owner()?;
     check_settings(&mut s)?;
     let branch_id = ctx.user.branch_id;
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt::<MessageSettings>(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(settings_out(&state, done)));
+    }
     let before = load_settings(&mut tx, branch_id).await?;
     let value = serde_json::to_value(&s).map_err(|e| AppError::Internal(e.to_string()))?;
     sqlx::query!(
@@ -2173,13 +2202,15 @@ async fn put_settings(
     )
     .execute(&mut *tx)
     .await?;
-    // «Получили оплату» снова включили — о погашениях, пока было выключено, не пишем.
+    // «Получили оплату» снова включили — о погашениях этого филиала, пока было выключено, не
+    // пишем; ждущие погашения других филиалов не трогаем — ключ у каждого филиала свой.
     if !before.payment_enabled && s.payment_enabled {
         sqlx::query!(
             r#"insert into bot_state (key, value)
-               values ('client_messages_payments_since',
+               values ('client_messages_payments_since:' || $1::uuid::text,
                        to_jsonb(to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
-               on conflict (key) do update set value = excluded.value"#
+               on conflict (key) do update set value = excluded.value"#,
+            branch_id
         )
         .execute(&mut *tx)
         .await?;
@@ -2196,6 +2227,7 @@ async fn put_settings(
         )
         .await?;
     }
+    ops::finish_opt(&mut tx, &ctx, op_id, KIND, &s).await?;
     tx.commit().await?;
     Ok(Json(settings_out(&state, s)))
 }

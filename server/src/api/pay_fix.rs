@@ -1019,6 +1019,15 @@ pub async fn pay_change_tx(
     .execute(&mut *conn)
     .await?;
     crate::api::corrections::check_sale_correctable(&mut *conn, branch_id, id).await?;
+    // Касса — до проверки смены и пересчёта: закрытие смены держит её, и после него чек уже
+    // пересчитан (поправка закрытия), а администратору он закрыт (ADR-149).
+    let register = cash::default_account(&mut *conn, branch_id).await?;
+    sqlx::query!(
+        "select id from cash_accounts where id = $1 for update",
+        register
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let admin_open = if owner {
         None
     } else {
@@ -1173,15 +1182,8 @@ pub async fn pay_change_tx(
         .ok_or_else(overflow)?;
     let delta = new_cash.checked_sub(old_cash).ok_or_else(overflow)?;
     let counted = sale_counted(&mut *conn, branch_id, id).await?;
-    let register = cash::default_account(&mut *conn, branch_id).await?;
     if let Some(open) = &admin_open {
-        // Предел администратора считается по очереди: под блокировкой кассы.
-        sqlx::query!(
-            "select id from cash_accounts where id = $1 for update",
-            register
-        )
-        .fetch_one(&mut *conn)
-        .await?;
+        // Предел администратора считается по очереди: под блокировкой кассы (взята выше).
         admin_limit(&mut *conn, branch_id, open, delta).await?;
     }
     let open_shift = cash::open_shift_id(&mut *conn, branch_id, register).await?;
@@ -2256,22 +2258,23 @@ pub async fn cash_to_bank_tx(
     }
     let branch_id = ctx.user.branch_id;
     let shift = shift_in_branch(&mut *conn, branch_id, shift_id).await?;
-    let admin_open = if ctx.user.is_owner() {
-        None
-    } else {
-        Some(admin_shift_scope(&mut *conn, branch_id, &shift).await?)
-    };
     if req.amount_tyiyn <= 0 || req.amount_tyiyn > ops::MAX_AMOUNT_TYIYN {
         return Err(invalid("сумма переноса больше нуля"));
     }
     let to_cash = req.direction == Direction::ToCash;
-    // Переносы одной смены — по очереди: предел считается под блокировкой кассы.
+    // Переносы одной смены — по очереди: предел считается под блокировкой кассы. Открыта ли
+    // смена — тоже под ней: закрытие держит кассу, и после него перенос администратора — 403.
     sqlx::query!(
         "select id from cash_accounts where id = $1 for update",
         shift.account_id
     )
     .fetch_one(&mut *conn)
     .await?;
+    let admin_open = if ctx.user.is_owner() {
+        None
+    } else {
+        Some(admin_shift_scope(&mut *conn, branch_id, &shift).await?)
+    };
     let account_id = pay_account(&mut *conn, &ctx.user, "card", req.account_id).await?;
     if to_cash {
         let limits = bank_limits(&mut *conn, &ctx.user, &shift).await?;
@@ -2448,6 +2451,13 @@ pub async fn reverse_transfer_tx(
         return Err(AppError::Conflict("это уже отмена переноса".into()));
     }
     let shift = shift_in_branch(&mut *conn, branch_id, f.shift_id).await?;
+    // Касса — до проверки открытой смены: закрытие держит её (ADR-149).
+    sqlx::query!(
+        "select id from cash_accounts where id = $1 for update",
+        shift.account_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     // Администратор отменяет только свой перенос, пока смена открыта (ADR-149).
     if !ctx.user.is_owner() {
         admin_shift_scope(&mut *conn, branch_id, &shift).await?;
@@ -2458,12 +2468,6 @@ pub async fn reverse_transfer_tx(
         }
     }
     let to_cash = f.amount_tyiyn < 0;
-    sqlx::query!(
-        "select id from cash_accounts where id = $1 for update",
-        shift.account_id
-    )
-    .fetch_one(&mut *conn)
-    .await?;
     if sqlx::query_scalar!(
         r#"select exists (select 1 from pay_fixes where reversal_of = $1) as "v!""#,
         id

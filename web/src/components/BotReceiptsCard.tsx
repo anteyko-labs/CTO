@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { AdminTelegramModal, noReceiptsRight } from './AdminTelegramModal'
 import { Badge, Button, Card, CardTitle, ErrorBox, Field, Loading, toast } from './ui'
-import { get, put } from '../lib/api'
+import { get, newOpId, put } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import type { UserRow } from '../lib/types'
@@ -54,7 +54,7 @@ function SettingsForm({ s, onSaved }: { s: BotReceiptSettings; onSaved: () => vo
           disabled={n === null || !hintOk || save.busy}
           onClick={() =>
             void save.run(async () => {
-              await put('/settings/bot-receipts', { merge_minutes: n, invoice_hint: hint.trim() })
+              await put('/settings/bot-receipts', { op_id: newOpId(), merge_minutes: n, invoice_hint: hint.trim() })
               toast('Сохранено')
               onSaved()
             })

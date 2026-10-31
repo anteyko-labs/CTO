@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.payee as \"payee!\" from expenses e\n           join expense_articles a on a.id = e.article_id\n           left join cash_accounts c on c.id = e.account_id\n           where e.branch_id = $1 and e.payee <> '' and e.reversal_of is null\n             and ($2 or (not a.owner_only and e.source = 'account'\n                         and c.kind = 'register' and not c.owner_only\n                         and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))\n           group by e.payee order by max(e.created_at) desc limit 30",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "payee!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e710514a529e517e50b345f2cabf4c66a377f2532f4dfcfeb01fcf88d4510221"
+}

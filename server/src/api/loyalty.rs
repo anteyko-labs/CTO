@@ -603,6 +603,9 @@ async fn party_history(
 /// Изменение настройки: без `oil_change_only` — прежнее значение.
 #[derive(Deserialize)]
 struct SettingsReq {
+    /// Повтор потерянного ответа — тот же ответ (I8).
+    #[serde(default)]
+    op_id: Option<Uuid>,
     rate_bp: i32,
     oil_change_only: Option<bool>,
 }
@@ -626,7 +629,11 @@ async fn put_settings(
     if !(0..=1000).contains(&req.rate_bp) {
         return Err(invalid("процент начисления от 0 до 10"));
     }
+    const KIND: &str = "settings.loyalty";
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     let before = settings(&mut tx, ctx.user.branch_id).await?;
     let out = Settings {
         rate_bp: req.rate_bp,
@@ -641,7 +648,8 @@ async fn put_settings(
     )
     .execute(&mut *tx)
     .await?;
-    ops::audit(&mut tx, &ctx, "settings.loyalty", "settings", None, value).await?;
+    ops::audit(&mut tx, &ctx, KIND, "settings", None, value).await?;
+    ops::finish_opt(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
 }

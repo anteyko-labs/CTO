@@ -1297,3 +1297,90 @@ async fn admin_changes_payment_of_discounted_sale(pool: PgPool) {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+/// Администратор переносит «Наличные ↔ QR», а смену в это время закрывают (перекрёстная
+/// проверка задачи 003): открытость смены проверяется под блокировкой кассы — после закрытия
+/// перенос администратора не проходит как поправка закрытой смены (ADR-149).
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_transfer_waits_for_close_and_sees_closed_shift(pool: PgPool) {
+    let w = W::new(pool.clone()).await;
+    let shift = w.open_shift().await;
+    w.sale(json!([cash(100_000)])).await;
+    w.grant_admin("till_pay_fix").await;
+    let expected = w.expected().await;
+    let waiting = |n: i64| {
+        let pool = pool.clone();
+        async move {
+            for _ in 0..200 {
+                let k: i64 = sqlx::query_scalar(
+                    "select count(*) from pg_stat_activity
+                     where datname = current_database() and wait_event_type = 'Lock'",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if k >= n {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            panic!("запросы не встали в очередь за кассой");
+        }
+    };
+    // Касса занята — закрытие смены встаёт в очередь первым, перенос администратора — за ним.
+    let mut hold = pool.begin().await.unwrap();
+    sqlx::query("select id from cash_accounts where id = $1::uuid for update")
+        .bind(&w.till)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    let close = {
+        let (app, owner, uri) = (
+            w.app.clone(),
+            w.owner.clone(),
+            format!("/api/v1/shifts/{shift}/close"),
+        );
+        tokio::spawn(async move {
+            call(
+                &app,
+                "POST",
+                &uri,
+                Some(&owner),
+                Some(json!({
+                "op_id": Uuid::now_v7(), "counted_tyiyn": expected, "comment": "пересчёт" })),
+            )
+            .await
+        })
+    };
+    waiting(1).await;
+    let transfer = {
+        let (app, admin, uri, bank) = (
+            w.app.clone(),
+            w.admin.clone(),
+            format!("/api/v1/shifts/{shift}/cash-to-bank"),
+            w.bank.clone(),
+        );
+        tokio::spawn(async move {
+            call(
+                &app,
+                "POST",
+                &uri,
+                Some(&admin),
+                Some(json!({
+                "op_id": Uuid::now_v7(), "amount_tyiyn": 50_000, "account_id": bank,
+                "comment": "QR" })),
+            )
+            .await
+        })
+    };
+    waiting(2).await;
+    hold.commit().await.unwrap();
+    let (s, out) = {
+        let r = close.await.unwrap();
+        (r.0, r.2)
+    };
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, _, out) = transfer.await.unwrap();
+    assert_eq!(s, StatusCode::FORBIDDEN, "{out}");
+    assert_eq!(w.withheld().await, 0);
+}

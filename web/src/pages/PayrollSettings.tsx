@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button, Card, Checkbox, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
-import { get, put } from '../lib/api'
+import { get, newOpId, put } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
 import type { PayrollSettings as Settings } from '../lib/types'
 
@@ -22,7 +22,7 @@ export default function PayrollSettings() {
       if (!s) return
       const n = Number(daysText.trim())
       if (!Number.isInteger(n) || n < 0 || n > 366) throw new Error('Дней назад — целое число от 0 до 366')
-      const saved = await put<Settings>('/settings/payroll', { ...s, payout_backdate_days: n })
+      const saved = await put<Settings>('/settings/payroll', { op_id: newOpId(), ...s, payout_backdate_days: n })
       st.setData(saved)
       setDraft(null)
       setDays(null)

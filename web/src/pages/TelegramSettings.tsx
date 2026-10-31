@@ -3,7 +3,7 @@ import { BotStartLink, startLink } from '../components/BotStartLink'
 import { BotReceiptsCard } from '../components/BotReceiptsCard'
 import { useState } from 'react'
 import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
-import { del, get, post, put } from '../lib/api'
+import { del, get, newOpId, post, put } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 
@@ -32,7 +32,7 @@ function LoyaltyRate() {
   const s = st.data
   const save = (next: LoyaltySettings, done: string) =>
     void act.run(async () => {
-      await put('/settings/loyalty', next)
+      await put('/settings/loyalty', { op_id: newOpId(), ...next })
       setText(null)
       st.reload()
       toast(done)

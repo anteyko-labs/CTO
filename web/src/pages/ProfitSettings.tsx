@@ -3,7 +3,7 @@
 // изменение — в журнал (сервер).
 import { Link } from 'react-router-dom'
 import { Card, CardTitle, ErrorBox, Loading, PageHeader, toast } from '../components/ui'
-import { get, put } from '../lib/api'
+import { get, newOpId, put } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
 import type { ProfitSettings as Settings } from '../lib/types'
 
@@ -28,7 +28,7 @@ export default function ProfitSettings() {
     void act.run(async () => {
       st.setData(next)
       try {
-        st.setData(await put<Settings>('/settings/profit-report', next))
+        st.setData(await put<Settings>('/settings/profit-report', { op_id: newOpId(), ...next }))
         toast(done)
       } catch (e) {
         st.reload()

@@ -50,7 +50,7 @@ function SalaryDayField({ employee }: { employee: Employee }) {
   const day = cur.data?.salary_day ?? 1
   const save = (v: number) =>
     void act.run(async () => {
-      await put(uri, { salary_day: v })
+      await put(uri, { op_id: newOpId(), salary_day: v })
       cur.reload()
       toast(v === 1 ? 'Оклад — за календарный месяц' : `День расчёта оклада — ${v}-е`)
     })

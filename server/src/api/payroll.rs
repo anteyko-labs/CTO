@@ -118,8 +118,10 @@ async fn get_settings(
 async fn put_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<PayrollSettings>,
+    Json(req): Json<ops::WithOp<PayrollSettings>>,
 ) -> AppResult<Json<PayrollSettings>> {
+    const KIND: &str = "settings.payroll";
+    let (op_id, req) = (req.op_id, req.body);
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
@@ -130,6 +132,10 @@ async fn put_settings(
     }
     let value = json!(req);
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let before = json!(load_settings(&mut tx, ctx.user.branch_id).await?);
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'payroll', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,
@@ -138,7 +144,17 @@ async fn put_settings(
     )
     .execute(&mut *tx)
     .await?;
-    ops::audit(&mut tx, &ctx, "settings.payroll", "settings", None, value).await?;
+    // Журнал — было → стало (I5).
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "settings",
+        None,
+        json!({ "settings": value, "changes": ops::changes(&before, &value) }),
+    )
+    .await?;
+    ops::finish_opt(&mut tx, &ctx, op_id, KIND, &req).await?;
     tx.commit().await?;
     Ok(Json(req))
 }
@@ -2741,8 +2757,10 @@ async fn put_salary_day(
     State(state): State<AppState>,
     ctx: Ctx,
     Path(id): Path<Uuid>,
-    Json(req): Json<SalaryDay>,
+    Json(req): Json<ops::WithOp<SalaryDay>>,
 ) -> AppResult<Json<SalaryDay>> {
+    const KIND: &str = "employee.salary_day";
+    let (op_id, req) = (req.op_id, req.body);
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
@@ -2751,6 +2769,9 @@ async fn put_salary_day(
         return Err(invalid(format!("день расчёта оклада — от 1 до {max}")));
     }
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     let prev = sqlx::query!(
         "select full_name, salary_day from employees where id = $1 and branch_id = $2 for update",
         id,
@@ -2780,6 +2801,7 @@ async fn put_salary_day(
         )
         .await?;
     }
+    ops::finish_opt(&mut tx, &ctx, op_id, KIND, &req).await?;
     tx.commit().await?;
     Ok(Json(req))
 }

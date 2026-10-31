@@ -99,8 +99,10 @@ async fn get_settings(
 async fn put_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<ProfitSettings>,
+    Json(req): Json<ops::WithOp<ProfitSettings>>,
 ) -> AppResult<Json<ProfitSettings>> {
+    const KIND: &str = "settings.profit_report";
+    let (op_id, req) = (req.op_id, req.body);
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
@@ -116,6 +118,9 @@ async fn put_settings(
     }
     // Запись и журнал — одна транзакция (инвариант 7).
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     let before = profit_settings(&mut tx, ctx.user.branch_id).await?;
     let value = json!(req);
     sqlx::query!(
@@ -135,6 +140,7 @@ async fn put_settings(
         json!({ "changes": ops::changes(&json!(before), &value) }),
     )
     .await?;
+    ops::finish_opt(&mut tx, &ctx, op_id, KIND, &req).await?;
     tx.commit().await?;
     Ok(Json(req))
 }
