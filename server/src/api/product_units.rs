@@ -259,7 +259,8 @@ pub async fn change_unit_tx(
         return Ok(done);
     }
     let cur = sqlx::query!(
-        r#"select name, unit, container_ml, category_id, merged_into, sale_price_tyiyn
+        r#"select name, unit, container_ml, category_id, merged_into, sale_price_tyiyn,
+                  points_mode, points_value
            from products where id = $1 for update"#,
         id
     )
@@ -316,6 +317,7 @@ pub async fn change_unit_tx(
     )
     .fetch_all(&mut *conn)
     .await?;
+    let mut gift_log = Vec::new();
     for g in &gifts {
         let qty = exact(g.gift_qty, p.mul, p.div)
             .filter(|q| *q > 0)
@@ -333,7 +335,61 @@ pub async fn change_unit_tx(
         )
         .execute(&mut *conn)
         .await?;
+        gift_log.push(json!({ "rule_id": g.rule_id, "from": g.gift_qty, "to": qty }));
     }
+    // Порог правила, где товар — условие («от 8 л»), — в единицах учёта товара-условия
+    // (SPEC-11): переводится так же, целым числом, иначе ничего не меняем.
+    let thresholds = sqlx::query!(
+        "select id, min_units from gift_rules where trigger_product_id = $1 for update",
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut threshold_log = Vec::new();
+    for t in &thresholds {
+        let to = exact(t.min_units, p.mul, p.div).ok_or_else(|| {
+            invalid(format!(
+                "товар — условие правила подарка «от {}»: порог не переходит в новую единицу \
+                 целым числом: поправьте порог правила подарка, потом меняйте единицу",
+                stock_text(t.min_units, &cur.unit, cur.container_ml)
+            ))
+        })?;
+        if to == t.min_units {
+            continue;
+        }
+        sqlx::query!(
+            "update gift_rules set min_units = $2 where id = $1",
+            t.id,
+            to
+        )
+        .execute(&mut *conn)
+        .await?;
+        threshold_log.push(json!({ "rule_id": t.id, "from": t.min_units, "to": to }));
+    }
+    // Баллы «за единицу» товара (ADR-140) — ставка за штуку, литр или кг: в новую единицу
+    // переводится обратно количеству, чтобы за тот же товар начислялось столько же; одно
+    // округление `div_round` (I2), было → стало — в журнал.
+    let points = if cur.points_mode == "fixed" && cur.points_value > 0 {
+        let to = points_rate(cur.points_value, &cur.unit, p.unit, p.mul, p.div)?;
+        if to <= 0 {
+            return Err(invalid(format!(
+                "баллы товара — {} за {}: в новой единице это меньше 0,01 с. Поправьте баллы \
+                 товара, потом меняйте единицу",
+                crate::domain::money::format_som(cur.points_value),
+                unit_word(&cur.unit)
+            )));
+        }
+        sqlx::query!(
+            "update products set points_value = $2 where id = $1",
+            id,
+            to
+        )
+        .execute(&mut *conn)
+        .await?;
+        Some(json!({ "from": cur.points_value, "to": to }))
+    } else {
+        None
+    };
     let price = |v: i64| {
         div_round(
             i128::from(v) * i128::from(p.price_mul),
@@ -451,6 +507,9 @@ pub async fn change_unit_tx(
                 "branch": r.branch_name, "from_qty": r.from_qty, "to_qty": r.to_qty,
             })).collect::<Vec<_>>(),
             "prices": prices,
+            "gift_qty": gift_log,
+            "gift_thresholds": threshold_log,
+            "points": points,
         }),
     )
     .await?;
@@ -461,6 +520,33 @@ pub async fn change_unit_tx(
     };
     ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
     Ok(out)
+}
+
+/// Сколько единиц учёта в единице правила «за единицу» (`loyalty::line_rules`): литр — 1000 мл,
+/// кг — 1000 г, штука — 1.
+fn per_unit(unit: &str) -> i64 {
+    match unit {
+        "ml" | "g" => 1000,
+        _ => 1,
+    }
+}
+
+fn unit_word(unit: &str) -> &'static str {
+    match unit {
+        "ml" => "литр",
+        "g" => "кг",
+        _ => "штуку",
+    }
+}
+
+/// Ставка баллов «за единицу» в новой единице: количество переходит `× mul / div`, ставка за
+/// единицу учёта — `× div / mul`, и единица правила (литр или штука) — своя у каждой единицы.
+pub fn points_rate(value: i64, from: &str, to: &str, mul: i64, div: i64) -> AppResult<i64> {
+    div_round(
+        i128::from(value) * i128::from(div) * i128::from(per_unit(to)),
+        i128::from(mul) * i128::from(per_unit(from)),
+    )
+    .ok_or_else(overflow)
 }
 
 /// Количество в единицах документа от `since` — в нынешних единицах товара: все пересчёты

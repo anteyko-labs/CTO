@@ -1090,3 +1090,161 @@ async fn service_kinds_count_liters_only_from_ml_lines(pool: PgPool) {
         "штуки не идут в литры"
     );
 }
+
+/// Смена единицы переводит порог правила подарка, где товар — условие, и ставку баллов «за
+/// единицу» товара (перекрёстная проверка задачи 003; ADR-139). Правило категории «за единицу» —
+/// за единицу товара строки: штуку, литр или кг.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn unit_change_moves_gift_threshold_and_points_rate(pool: PgPool) {
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w, w.oil, 8_000, 400_000).await;
+    receive(&pool, &w, w.filter, 10, 10_000).await;
+    // Правило: от 2 канистр (8 л) масла — фильтр в подарок; масло — 10 с за литр.
+    let rule = Uuid::now_v7();
+    sqlx::query("insert into gift_rules (id, branch_id, trigger_product_id, user_id, min_units) values ($1, $2, $3, $4, 8000)")
+        .bind(rule)
+        .bind(w.owner.user.branch_id)
+        .bind(w.oil)
+        .bind(w.owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into gift_rule_items (rule_id, gift_product_id, gift_qty) values ($1, $2, 1)",
+    )
+    .bind(rule)
+    .bind(w.filter)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("update products set points_mode = 'fixed', points_value = 1000 where id = $1")
+        .bind(w.oil)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let threshold = || async {
+        sqlx::query_scalar::<_, i64>("select min_units from gift_rules where id = $1")
+            .bind(rule)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let rate = || async {
+        sqlx::query_scalar::<_, i64>("select points_value from products where id = $1")
+            .bind(w.oil)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    // Литры → штуки по 4 л: порог 8000 мл → 2 шт, 10 с за литр → 40 с за штуку.
+    change(&pool, &w.owner, w.oil, unit_req("piece", None, Some(4_000)))
+        .await
+        .unwrap();
+    assert_eq!(threshold().await, 2);
+    assert_eq!(rate().await, 4_000);
+    let log: serde_json::Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'product.unit_change' order by created_at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(log["gift_thresholds"][0]["from"], 8_000, "{log}");
+    assert_eq!(log["gift_thresholds"][0]["to"], 2, "{log}");
+    assert_eq!(
+        log["points"],
+        json!({ "from": 1_000, "to": 4_000 }),
+        "{log}"
+    );
+
+    // Начисление — за штуку: чек на 1 канистру участнику даёт 40 с.
+    let client = member(&pool, &w).await;
+    loyalty_settings(&pool, &w, false).await;
+    let one = sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            Some(client.0),
+            vec![line("piece", w.oil, 1, 200_000)],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accrued_lines(&pool, one.id).await,
+        vec![(1, 4_000, "product".into())]
+    );
+    // Правило категории «за единицу» — тоже за единицу товара строки (здесь — штуку).
+    sqlx::query("update products set points_mode = 'inherit' where id = $1")
+        .bind(w.oil)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "update categories set points_mode = 'fixed', points_value = 500 where kind = 'oil'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let by_cat = sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            Some(client.0),
+            vec![line("piece", w.oil, 1, 200_000)],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        accrued_lines(&pool, by_cat.id).await,
+        vec![(1, 500, "category".into())]
+    );
+    sqlx::query("update products set points_mode = 'fixed', points_value = 4000 where id = $1")
+        .bind(w.oil)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Обратно в литры канистрой 4 л: 2 шт → 8000 мл, 40 с за штуку → 10 с за литр.
+    change(&pool, &w.owner, w.oil, unit_req("ml", Some(4_000), None))
+        .await
+        .unwrap();
+    assert_eq!(threshold().await, 8_000);
+    assert_eq!(rate().await, 1_000);
+
+    // Ставка, которая не делится нацело, округляется одним правилом: 10,01 с за литр → штука
+    // по 0,3 л — 3,00 с (3,003).
+    sqlx::query("update products set points_value = 1001 where id = $1")
+        .bind(w.oil)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Порог 3 л не переходит в целые штуки по 4 л — 422, ничего не меняется.
+    sqlx::query("update gift_rules set min_units = 3000 where id = $1")
+        .bind(rule)
+        .execute(&pool)
+        .await
+        .unwrap();
+    match change(&pool, &w.owner, w.oil, unit_req("piece", None, Some(4_000))).await {
+        Err(AppError::Validation(m)) => {
+            assert!(m.contains("поправьте порог правила подарка"), "{m}");
+            assert!(m.contains("3 л"), "{m}");
+        }
+        other => panic!("{:?}", other.map(|o| o.branches)),
+    }
+    assert_eq!(threshold().await, 3_000);
+    assert_eq!(rate().await, 1_001);
+    // Штуки по 0,5 л: 3 л → 6 шт; ставка 10,01 с за литр → 5,01 с за штуку (5,005 → 5,01).
+    change(&pool, &w.owner, w.oil, unit_req("piece", None, Some(500)))
+        .await
+        .unwrap();
+    assert_eq!(threshold().await, 6);
+    assert_eq!(rate().await, 501);
+    assert_consistent(&pool, &w).await;
+}
