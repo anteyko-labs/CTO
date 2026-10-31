@@ -1,23 +1,60 @@
 // Ревизия склада: пересчёт сканером по категориям, проведение владельцем (SPEC-15). Один экран с
 // «Работой с товарами» (SPEC-20): вкладки «Ревизия» и «Сканер товаров»; в ревизию вписывают и
 // товар, которого нет в программе — карточка заводится с найденным количеством (SPEC-29 §10).
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { ExportButton } from '../components/ExportButton'
 import { colsIf, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
-import { ApiError, del, get, newOpId, post, put } from '../lib/api'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
+import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { OilCountInput, type OilCount } from '../components/OilCountInput'
-import { formatDateTime, formatSom, litersInput, parseLiters } from '../lib/format'
+import { formatDateTime, formatSom, litersInput, parseLiters, plural } from '../lib/format'
 import { countText, kgInput, oilFields, parseKg, parseOil, viscosityFromName, viscosityKey } from '../lib/units'
-import { useAction, useLoad } from '../lib/hooks'
+import { errorText, useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import type { Category, Product } from '../lib/types'
 import { sameCode } from '../lib/umagCodes'
+import { retrySame } from '../lib/retrySame'
+import {
+  appendCount,
+  countLogText,
+  defaultCountMode,
+  expectedBody,
+  expectedQuery,
+  freshRevision,
+  InputOps,
+  inputKey,
+  OwnWrites,
+  patchIfNewer,
+  type CountEntry,
+  type CountMode,
+  type Seen,
+} from '../lib/revisionCount'
+import {
+  cleanQueues,
+  closedText,
+  newScan,
+  otherQueues,
+  queueAdd,
+  queueResolve,
+  queueToSend,
+  queueWithout,
+  readQueue,
+  scansText,
+  sendOutcome,
+  unsentByLine,
+  unsentCodes,
+  unsentCount,
+  unsentFirstText,
+  unsentText,
+  updateQueue,
+  type QueuedScan,
+  type SendOutcome,
+} from '../lib/revisionQueue'
 import ProductIntake from './ProductIntake'
 
 interface Head {
@@ -45,6 +82,18 @@ interface Line {
   value_delta_tyiyn?: number
   /** Вязкость масла из карточки (SPEC-36 §13). */
   viscosity?: string | null
+  /** Кто записал строку последним: считают несколько человек с разных устройств (задача 003, Н14). */
+  counted_by?: string | null
+  /** Кто сколько посчитал: «Айбек +2, Нурлан +1, Азиз = 5». */
+  counted_log?: CountEntry[]
+  /** Номер последней записи строки на сервере: показывается только ответ новее показанного. */
+  version?: number
+}
+
+/** Ответ записи строки: общий итог (убрали строку — нет) и номер записи. */
+interface Saved {
+  counted_qty: number | null
+  version?: number
 }
 
 interface RevisionOut {
@@ -52,6 +101,8 @@ interface RevisionOut {
   lines: Line[]
   /** Норма расхождения по маслу, сотые доли процента (ADR-052). */
   oil_norm_bp: number
+  /** Номер последней записи пересчёта ревизии. */
+  version?: number
 }
 
 /** Сотые доли процента для показа: 50 → «0,5 %». */
@@ -89,6 +140,9 @@ function parseCount(l: Line, text: string): number | null {
 /** Посчитанное в поле: литры или кг — с запятой; граммы в поле не показываются (ошибка ×1000). */
 const countInput = (l: Line, q: number): string => (l.unit === 'ml' ? litersInput(q) : l.unit === 'g' ? kgInput(q) : String(q))
 
+/** Строки ревизии перечитываются раз в 5 с и при возврате на вкладку: каждый видит общий итог. */
+const REFRESH_MS = 5_000
+
 /** Вязкость строки: из карточки; у масла без неё — из названия, с пометкой. */
 function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string; fromName: boolean } | null {
   if (l.viscosity) return { v: l.viscosity, fromName: false }
@@ -97,91 +151,468 @@ function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string;
   return v ? { v, fromName: true } : null
 }
 
-function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) {
-  const owner = useUser().role === 'owner'
+function Draft({
+  rev,
+  onChanged,
+  onFresh,
+  reload,
+}: {
+  rev: RevisionOut
+  onChanged: () => void
+  /** Свой ответ сервера (итог строки после своей записи) — показать сразу. */
+  onFresh: (update: (r: RevisionOut) => RevisionOut) => void
+  /** Перечитать ревизию: общий итог с других устройств; устаревший ответ не показывается. */
+  reload: () => Promise<void>
+}) {
+  const me = useUser()
+  const owner = me.role === 'owner'
   const [scan, setScan] = useState('')
   const [filter, setFilter] = useState('')
   const [edits, setEdits] = useState<Record<string, string>>({})
   /** Масло в таре: поля «кан.» и «+ л» строки, пока их правят. */
   const [oilEdits, setOilEdits] = useState<Record<string, OilCount>>({})
+  /** Режим поля строки: выбранный человеком или застывший с начала ввода (задача 003, Н14). */
+  const [modes, setModes] = useState<Record<string, CountMode>>({})
+  /** Товары, которых нет в загруженном списке (их только что завёл другой): строка — до перечитывания. */
+  const [extra, setExtra] = useState<Line[]>([])
+  /** «= итог» не записан: пока вводили, итог строки изменился — переспросить (`now` null — строки нет). */
+  const [ask, setAsk] = useState<{ line: Line; qty: number | null; now: Seen } | null>(null)
   /** Отбор по вязкости (ключ `viscosityKey`), пусто — все. */
   const [visc, setVisc] = useState('')
-  const [posting, setPosting] = useState<{ comment: string; opId: string } | null>(null)
+  /** Окно проведения; `warn` — «Ещё считают: …» с сервера, проведение — после подтверждения. */
+  const [posting, setPosting] = useState<{ comment: string; opId: string; warn?: string } | null>(null)
   /** «Товар не из программы»: окно новой карточки, с кодом, если его отсканировали. */
   const [adding, setAdding] = useState<{ barcode?: string } | null>(null)
   /** Карточка товара из строки (задача 002, П5): с правом «Товары и штрихкоды» — правка, иначе просмотр. */
   const [card, setCard] = useState<Product | null>(null)
   const act = useAction()
   const draft = rev.head.status === 'draft'
+  // Строка, появившаяся до перечитывания, — новее загруженной, пока перечитывание её не догонит.
+  const allLines = [
+    ...rev.lines.map((x) => {
+      const e = extra.find((y) => y.product_id === x.product_id)
+      return e && (e.version ?? -1) > (x.version ?? -1) ? e : x
+    }),
+    ...extra.filter((e) => !rev.lines.some((x) => x.product_id === e.product_id)),
+  ]
 
-  /** Товар уже есть в программе: показать его строку и поставить курсор в поле пересчёта. */
-  const goTo = (p: Pick<Product, 'id' | 'name'>) => {
-    setAdding(null)
-    const l = rev.lines.find((x) => x.product_id === p.id)
-    if (!l) {
-      act.setError(`«${p.name}» не входит в эту ревизию${rev.head.category_name ? ` (категория «${rev.head.category_name}»)` : ''}`)
-      return
-    }
+  /** Товар этой ревизии: весь склад или её категория. */
+  const fitsRevision = (p: Pick<Product, 'category_id'>) => !rev.head.category_id || p.category_id === rev.head.category_id
+  /** Строка для товара, которого ещё нет в загруженном списке. */
+  const lineOf = (p: Product): Line => ({
+    product_id: p.id,
+    name: p.name,
+    article: p.article,
+    barcodes: p.barcodes,
+    unit: p.unit,
+    container_ml: p.container_ml,
+    expected_qty: p.stock_qty ?? 0,
+    counted_qty: null,
+  })
+
+  const focusLine = (l: Line) => {
     setFilter(l.name)
     setVisc('')
     setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
   }
 
+  /** Товар уже есть в программе: показать его строку и поставить курсор в поле пересчёта. Строки
+   *  ещё нет на экране, а товар этой ревизии — строка появляется сразу. */
+  const goTo = (p: Product) => {
+    setAdding(null)
+    const l = allLines.find((x) => x.product_id === p.id)
+    if (l) return focusLine(l)
+    if (!fitsRevision(p)) {
+      act.setError(`«${p.name}» не входит в эту ревизию${rev.head.category_name ? ` (категория «${rev.head.category_name}»)` : ''}`)
+      return
+    }
+    const line = lineOf(p)
+    setExtra((e) => [...e.filter((x) => x.product_id !== p.id), line])
+    void reload()
+    focusLine(line)
+  }
+
   // Правки — и в ref: Enter и уход из поля читают набранное сейчас, а не из прошлой отрисовки.
   const editsNow = useRef(edits)
   const oilEditsNow = useRef(oilEdits)
-  const putEdit = (id: string, text: string) => {
-    editsNow.current = { ...editsNow.current, [id]: text }
+  const modesNow = useRef(modes)
+  /** Свои записи строк: «= итог» и очистка сверяются на сервере с тем, что человек видел, когда
+   *  начал ввод, плюс его собственные записи после этого (409 — пока вводили, другие прибавили;
+   *  чужие сканы не затираются). */
+  const [own] = useState(() => new OwnWrites())
+  /** op_id ввода в поле строки: тот же не записанный ввод — тот же op_id (ADR-062). */
+  const [ops] = useState(() => new InputOps(newOpId))
+  /** op_id записей, которые ещё идут: тот же ввод второй раз не отправляется. */
+  const inflight = useRef(new Set<string>())
+  const modeOf = (l: Line): CountMode => modesNow.current[l.product_id] ?? defaultCountMode(l)
+  const putMode = (id: string, m: CountMode) => {
+    modesNow.current = { ...modesNow.current, [id]: m }
+    setModes(modesNow.current)
+  }
+  /** Ввод начался: режим и итог на экране застывают — чужая прибавка не меняет смысл числа в поле. */
+  const begin = (l: Line) => {
+    const id = l.product_id
+    if (editsNow.current[id] !== undefined || oilEditsNow.current[id] !== undefined) return
+    putMode(id, modeOf(l))
+    own.see(id, l.counted_qty)
+  }
+  /** Человек выбрал режим сам: набранное остаётся и читается по-новому. */
+  const switchMode = (l: Line, m: CountMode) => {
+    putMode(l.product_id, m)
+    own.see(l.product_id, l.counted_qty)
+  }
+  const putEdit = (l: Line, text: string) => {
+    begin(l)
+    editsNow.current = { ...editsNow.current, [l.product_id]: text }
     setEdits(editsNow.current)
   }
-  const putOilEdit = (id: string, val: OilCount) => {
-    oilEditsNow.current = { ...oilEditsNow.current, [id]: val }
+  const putOilEdit = (l: Line, val: OilCount) => {
+    begin(l)
+    oilEditsNow.current = { ...oilEditsNow.current, [l.product_id]: val }
     setOilEdits(oilEditsNow.current)
+  }
+  /** Убрать правку поля, если её не поменяли с `was` (не передан — в любом случае). */
+  const dropEdit = (id: string, was?: { text?: string; oil?: OilCount }) => {
+    const drop = <T,>(cur: Record<string, T>, sent: T | undefined): Record<string, T> | null => {
+      if (cur[id] === undefined || (was && cur[id] !== sent)) return null
+      const next = { ...cur }
+      delete next[id]
+      return next
+    }
+    const e = drop(editsNow.current, was?.text)
+    if (e) {
+      editsNow.current = e
+      setEdits(e)
+    }
+    const o = drop(oilEditsNow.current, was?.oil)
+    if (o) {
+      oilEditsNow.current = o
+      setOilEdits(o)
+    }
+  }
+  /** Строка по ответу сервера — и в загруженной ревизии, и среди только что появившихся; ответ
+   *  старее показанной строки (`version`) не показывается. */
+  const setLine = (id: string, version: number | undefined, patch: (x: Line) => Line) => {
+    const fresh = (x: Line) => (x.product_id === id ? patchIfNewer(x, version, patch) : x)
+    onFresh((r) => ({ ...r, lines: r.lines.map(fresh) }))
+    setExtra((e) => (e.some((x) => x.product_id === id) ? e.map(fresh) : e))
   }
   // Записи одной строки — по очереди: вторая правка уходит после ответа на первую, иначе на
   // загруженном сервере первая могла дойти позже и затереть вторую (12,5 вместо 12,6).
-  const writes = useRef(new Map<string, Promise<unknown>>())
+  const writes = useRef(new Map<string, Promise<Saved>>())
 
-  const save = (l: Line, qty: number | null) => {
+  /** Неотправленные сканы этой ревизии и этого пользователя на устройстве: в localStorage,
+   *  переживают перезагрузку, общие для вкладок; уходят при связи с теми же op_id (задача 003, Н14). */
+  const revId = rev.head.id
+  const user = { id: me.id, name: me.full_name }
+  const [queue, setQueue] = useState<QueuedScan[]>(() => readQueue(localStorage, revId, me.id) ?? [])
+  const queueNow = useRef(queue)
+  /** Свои сканы, которые сейчас отправляются впервые: ещё не «не отправлено». */
+  const [fresh] = useState(() => new Set<string>())
+  /** Запись — слияние со свежей очередью из хранилища: скан другой вкладки не затирается. */
+  const putQueue = (f: (q: QueuedScan[]) => QueuedScan[]) => {
+    queueNow.current = updateQueue(localStorage, revId, user, f, queueNow.current)
+    setQueue(queueNow.current)
+  }
+  /** Неотправленные сканы этой ревизии под другими пользователями этого устройства — не отправляются. */
+  const [others, setOthers] = useState(() => otherQueues(localStorage, revId, me.id))
+  // Другая вкладка изменила очередь (свой скан, отправила) — отметки ⏳ здесь те же.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && !e.key.startsWith('avtodom.revision.unsent.')) return
+      const q = readQueue(localStorage, revId, me.id)
+      if (q) {
+        queueNow.current = q
+        setQueue(q)
+      }
+      setOthers(otherQueues(localStorage, revId, me.id))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [revId, me.id])
+  /** Сканы из очереди, которые сервер окончательно не принял: на экране, пока не нажмут «Понятно». */
+  const [closedLost, setClosedLost] = useState(0)
+  const [lostNotes, setLostNotes] = useState<string[]>([])
+  const [lostCodes, setLostCodes] = useState<{ code: string; why: 'not_found' | 'not_fit' | 'need_qty' }[]>([])
+  /** Сессия кончилась (401): сканы ждут входа. */
+  const [needLogin, setNeedLogin] = useState(false)
+  const note = (t: string) => setLostNotes((n) => (n.includes(t) ? n : [...n, t]))
+
+  /**
+   * Запись строки — по очереди с прошлыми записями этой строки; `null` — этот ввод уже
+   * отправляется. `shown` — итог на экране, если ввод не начинали (сверка «= итог»). Ответа нет —
+   * тот же запрос повторяется сам (`tries` раз) с тем же op_id. `gate` — проверка перед отправкой,
+   * когда прошлые записи строки ответили: бросила — запись не уходит.
+   */
+  const send = (
+    id: string,
+    shown: Seen,
+    qty: number | null,
+    mode: CountMode,
+    opId: string,
+    tries = 2,
+    gate?: () => void,
+  ): Promise<Saved> | null => {
+    if (inflight.current.has(opId)) return null
+    inflight.current.add(opId)
+    const prev = writes.current.get(id)
+    const seq = own.start(id, qty === null ? 'clear' : mode, qty ?? 0)
+    const path = `/revisions/${revId}/lines`
+    const write = (prev ?? Promise.resolve(null))
+      .catch(() => null)
+      .then(() => {
+        gate?.()
+        // С чем сверять — когда своя прошлая запись строки уже ответила; ввод не начинали — что на экране.
+        const base = own.baseOr(id, seq, shown)
+        return retrySame(
+          () =>
+            qty === null
+              ? del<Saved>(`${path}/${id}?${expectedQuery(base)}&op_id=${opId}`)
+              : put<Saved>(path, { product_id: id, counted_qty: qty, mode, op_id: opId, ...(mode === 'set' ? expectedBody(base) : {}) }),
+          tries,
+        )
+      })
+      .then(
+        (r) => {
+          own.settle(id, seq, true)
+          return r
+        },
+        (e: unknown) => {
+          own.settle(id, seq, false)
+          throw e
+        },
+      )
+    writes.current.set(id, write)
+    const done = () => {
+      inflight.current.delete(opId)
+      if (writes.current.get(id) === write) writes.current.delete(id)
+    }
+    write.then(done, done)
+    return write
+  }
+
+  /** Своя запись записана: итог строки — из ответа, в журнале строки — своя запись. */
+  const applySaved = (id: string, qty: number | null, mode: CountMode, res: Saved) => {
+    const total = res.counted_qty
+    const entry: CountEntry = qty === null ? { by: me.full_name, mode: 'clear', qty: 0 } : { by: me.full_name, mode, qty }
+    setLine(id, res.version, (x) => ({
+      ...x,
+      counted_qty: total,
+      counted_by: total === null ? null : me.full_name,
+      counted_log: appendCount(x.counted_log ?? [], entry),
+    }))
+    // Строки не было в загруженном списке — перечитываем, чтобы она стала настоящей.
+    if (!rev.lines.some((x) => x.product_id === id)) void reload()
+  }
+
+  /**
+   * `add` — прибавить к общему итогу строки («+ добавить»): 4 человека нашли по одному — 4, а не 1.
+   * `set` — «= итог», сверка с тем, что человек видел, когда начал ввод, плюс его собственные
+   * записи после этого (`own`): пока вводили, другие прибавили — сервер отвечает 409, строка
+   * перечитывается и человека переспрашивают. `qty === null` в `set` — убрать строку.
+   * `opId` — op_id ввода: повтор того же ввода (автоматический после обрыва или ещё одно нажатие
+   * с тем же числом в поле) не прибавит дважды. На экране — итог из ответа сервера (задача 003, Н14).
+   */
+  const save = (l: Line, qty: number | null, mode: CountMode, opId: string) => {
     // Записанный ввод убирается из правок, только если его не успели поменять, пока шёл запрос:
     // иначе новое число пропало бы, не записавшись.
     const id = l.product_id
-    const sent = editsNow.current[id]
-    const sentOil = oilEditsNow.current[id]
-    const prev = writes.current.get(id) ?? Promise.resolve()
-    const write = prev
-      .catch(() => undefined)
-      .then(() =>
-        qty === null ? del(`/revisions/${rev.head.id}/lines/${id}`) : put(`/revisions/${rev.head.id}/lines`, { product_id: id, counted_qty: qty }),
-      )
-    writes.current.set(id, write)
+    const was = { text: editsNow.current[id], oil: oilEditsNow.current[id] }
+    // «= итог» и очистка — после неотправленных сканов этой строки, а не до них: иначе прибавка
+    // из очереди ушла бы после итога и прибавилась к нему. Сканы уходят первыми в той же цепочке
+    // записей строки и, записавшись, входят в сверку как свои (человек их видел с отметкой ⏳);
+    // не ушли — итог не записывается, число остаётся в поле.
+    const before = mode === 'set' ? queueNow.current.filter((x) => x.productId === id).map((x) => x.opId) : []
+    for (const s of queueNow.current) if (before.includes(s.opId) && !inflight.current.has(s.opId)) void sendScan(s, 0)
+    const gate =
+      before.length === 0
+        ? undefined
+        : () => {
+            const left = queueNow.current.filter((x) => before.includes(x.opId)).length
+            if (left > 0) throw new Error(unsentFirstText(left))
+          }
+    const write = send(id, l.counted_qty, qty, mode, opId, 2, gate)
+    if (!write) return
     void act.run(async () => {
+      let res: Saved | null = null
       try {
-        await write
-      } finally {
-        if (writes.current.get(id) === write) writes.current.delete(id)
+        res = await write
+      } catch (e) {
+        // Ревизию провели или отменили, пока считали: сообщение — с сервера, экран — заново.
+        if (e instanceof ApiError && e.code === 'revision_closed') void reload()
+        if (!(e instanceof ApiError && e.code === 'count_changed')) throw e
       }
-      const drop = <T,>(cur: Record<string, T>, was: T | undefined): Record<string, T> | null => {
-        if (cur[id] === undefined || cur[id] !== was) return null
-        const next = { ...cur }
-        delete next[id]
-        return next
+      if (!res) {
+        // Пока вводили, итог изменился: перечитываем строку и переспрашиваем.
+        const now = await get<Saved>(`/revisions/${revId}/lines/${id}`)
+        setLine(id, now.version, (x) => ({ ...x, counted_qty: now.counted_qty }))
+        setAsk({ line: l, qty, now: now.counted_qty })
+        return
       }
-      const e = drop(editsNow.current, sent)
-      if (e) {
-        editsNow.current = e
-        setEdits(e)
-      }
-      const o = drop(oilEditsNow.current, sentOil)
-      if (o) {
-        oilEditsNow.current = o
-        setOilEdits(o)
-      }
-      onChanged()
+      ops.done(id, opId)
+      applySaved(id, qty, mode, res)
+      dropEdit(id, was)
+      void flush()
     })
   }
 
-  /** Поля масла ушли из фокуса: «кан. + л» → мл; оба пустые — строка не посчитана. */
+  /** Сервер окончательно не принял скан из очереди: ревизию провели — в общее число «не учтены»,
+   *  иначе — причина; на экране, пока не нажмут «Понятно» (следующий скан её не стирает). */
+  const refusedScan = (e: unknown) => {
+    if (e instanceof ApiError && e.code === 'revision_closed') {
+      setClosedLost((n) => n + 1)
+      void reload()
+    } else note(`Скан не учтён: ${errorText(e)}`)
+  }
+  /** Ждать связи или входа: отметки ⏳ остаются, 401 — «Войдите снова». */
+  const waitScan = (outcome: SendOutcome) => {
+    if (outcome === 'login') setNeedLogin(true)
+  }
+
+  /**
+   * Скан из очереди на сервер (тот же op_id). Записан — уходит из очереди; ответа нет, 5xx, 429,
+   * 401 — остаётся с отметкой «не отправлено»; сервер окончательно отказал по существу (ревизию
+   * провели, неверные данные) — уходит, причина — на экране. Убирается только свой op_id: сканы
+   * других вкладок остаются.
+   */
+  const sendScan = async (s: QueuedScan, tries: number): Promise<SendOutcome | 'busy'> => {
+    if (s.productId === null) return resolveScan(s)
+    const productId = s.productId
+    const write = send(productId, null, s.qty, 'add', s.opId, tries)
+    if (!write) return 'busy'
+    let outcome: SendOutcome = 'ok'
+    let res: Saved | null = null
+    try {
+      res = await write
+    } catch (e) {
+      outcome = sendOutcome(e)
+      if (outcome === 'refused') refusedScan(e)
+      else waitScan(outcome)
+    }
+    fresh.delete(s.opId)
+    if (outcome === 'ok' || outcome === 'refused') putQueue((q) => queueWithout(q, [s.opId]))
+    else setQueue([...queueNow.current])
+    if (outcome === 'ok') setNeedLogin(false)
+    if (res) applySaved(productId, s.qty, 'add', res)
+    return outcome
+  }
+
+  /** Строка товара на экране: её нет в загруженном списке — появляется сразу, до перечитывания. */
+  const showLine = (p: Product) => setExtra((e) => (e.some((x) => x.product_id === p.id) ? e : [...e, lineOf(p)]))
+
+  /**
+   * Скан кода, которого не было на экране, отсканированный без связи: товар — по коду на сервере.
+   * Нашёлся и подходит ревизии — тот же op_id уходит прибавкой к его строке; не нашёлся, не этой
+   * ревизии или считается не сканом (на вес, масло без тары) — скан уходит из очереди, коды — на
+   * экране списком.
+   */
+  const resolveScan = async (s: QueuedScan): Promise<SendOutcome | 'busy'> => {
+    const code = s.barcode ?? ''
+    if (inflight.current.has(s.opId)) return 'busy'
+    inflight.current.add(s.opId)
+    let p: Product
+    try {
+      p = await get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+    } catch (e) {
+      const outcome = sendOutcome(e)
+      if (outcome === 'refused') {
+        if (e instanceof ApiError && e.status === 404) setLostCodes((c) => [...c, { code, why: 'not_found' }])
+        else note(`Скан ${code} не учтён: ${errorText(e)}`)
+        putQueue((q) => queueWithout(q, [s.opId]))
+      } else waitScan(outcome)
+      return outcome
+    } finally {
+      inflight.current.delete(s.opId)
+    }
+    const qty = p.unit === 'piece' ? 1 : oilTare(p)
+    const why = !fitsRevision(p) ? 'not_fit' : qty === null ? 'need_qty' : null
+    if (why || qty === null) {
+      if (why === 'need_qty') showLine(p)
+      setLostCodes((c) => [...c, { code, why: why ?? 'need_qty' }])
+      putQueue((q) => queueWithout(q, [s.opId]))
+      return 'refused'
+    }
+    showLine(p)
+    putQueue((q) => queueResolve(q, s.opId, p.id, qty))
+    return sendScan({ ...s, productId: p.id, barcode: null, qty }, 0)
+  }
+
+  /** Неотправленные сканы — на сервер по порядку; связи по-прежнему нет — до следующего раза. */
+  const flushing = useRef(false)
+  const flush = async () => {
+    if (flushing.current) return
+    flushing.current = true
+    try {
+      for (const s of queueToSend(queueNow.current, inflight.current)) {
+        // Пока шли прошлые, скан могли отправить «= итог» строки или другая вкладка.
+        if (!queueNow.current.some((x) => x.opId === s.opId)) continue
+        const r = await sendScan(s, 0)
+        if (r === 'wait' || r === 'login') break
+      }
+    } finally {
+      flushing.current = false
+    }
+  }
+  const flushNow = useRef(flush)
+  useEffect(() => {
+    flushNow.current = flush
+  })
+
+  /** Скан: штука или канистра — прибавка в очередь (сразу в localStorage) и на сервер. Ответа нет
+   *  и после повторов — скан остаётся в очереди с отметкой у строки, а не пропадает молча. */
+  const scanAdd = (l: Line, qty: number) => {
+    const s = newScan(newOpId(), { productId: l.product_id, qty })
+    fresh.add(s.opId)
+    putQueue((q) => queueAdd(q, s))
+    void sendScan(s, 2).then((r) => {
+      // Связь есть — заодно уходят сканы, не отправленные раньше.
+      if (r === 'ok') void flush()
+    })
+  }
+
+  // Общий итог с других устройств: перечитываем, пока ничего не пишется; поле, которое сейчас
+  // правят, не затирается — правка живёт в `edits`, пока её не запишут. Строка, показанная новее
+  // ответа, не заменяется (`reload` сверяет версии строк). Неотправленные сканы уходят раз в 5 с,
+  // при возврате связи и при следующем ответе сервера.
+  useEffect(() => {
+    if (!draft) return
+    const refresh = () => {
+      if (queueNow.current.some((x) => !fresh.has(x.opId))) void flushNow.current()
+      if (document.visibilityState !== 'visible' || writes.current.size > 0) return
+      void reload()
+    }
+    const online = () => void flushNow.current()
+    const t = setInterval(refresh, REFRESH_MS)
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('online', online)
+    const stop = watchServerReachable((up) => up && online())
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('online', online)
+      stop()
+    }
+  }, [revId, draft, reload, fresh])
+
+  /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
+   *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
+  const commit = (l: Line, qty: number | null) => {
+    const id = l.product_id
+    const mode = modeOf(l)
+    if (mode === 'add' && (qty === null || qty === 0)) return dropEdit(id)
+    // Пустую строку очистили, своих записей в пути и неотправленных сканов нет — убирать нечего.
+    if (
+      mode === 'set' &&
+      qty === null &&
+      own.base(id, Number.MAX_SAFE_INTEGER) === null &&
+      !writes.current.has(id) &&
+      !queueNow.current.some((x) => x.productId === id)
+    )
+      return dropEdit(id)
+    save(l, qty, mode, ops.take(id, inputKey(mode, qty)))
+  }
+
+  /** Поля масла ушли из фокуса: «кан. + л» → мл; оба пустые — в «= итог» строка не посчитана. */
   const saveOil = (l: Line, tare: number) => {
     const e = oilEditsNow.current[l.product_id]
     if (!e) return
@@ -190,19 +621,19 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
       act.setError(`Неверное количество: ${l.name}`)
       return
     }
-    save(l, ml === 'empty' ? null : ml)
+    commit(l, ml === 'empty' ? null : ml)
   }
 
   // Поиск — по названию, артикулу и вязкости; отбор «Вязкость» — по строкам ревизии (SPEC-36 §13).
   const q = filter.trim().toLowerCase()
   const qKey = viscosityKey(filter)
   const viscs = new Map<string, string>()
-  for (const l of rev.lines) {
+  for (const l of allLines) {
     const v = viscosityOf(l)
     if (v && !viscs.has(viscosityKey(v.v))) viscs.set(viscosityKey(v.v), v.v)
   }
   const viscOptions = [...viscs.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru', { numeric: true }))
-  const lines = rev.lines.filter((l) => {
+  const lines = allLines.filter((l) => {
     const v = viscosityOf(l)
     if (visc && (!v || viscosityKey(v.v) !== visc)) return false
     if (!q) return true
@@ -212,53 +643,170 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   const pager = usePager(lines, 'revision.lines', `${q}|${visc}`)
 
   /** Товар строки посчитан сканом: штучный +1, масло в таре +1 канистра — курсор остаётся в сканере;
-   *  на вес и масло без тары — фокус на поле количества (на его странице). */
+   *  на вес и масло без тары — фокус на поле количества (на его странице) в режиме «+ добавить»:
+   *  тот же товар в другом месте может считать другой человек. */
   const countLine = (l: Line) => {
     act.setError(null)
     const tare = oilTare(l)
-    if (l.unit === 'piece') save(l, (l.counted_qty ?? 0) + 1)
-    else if (tare) save(l, (l.counted_qty ?? 0) + tare)
+    // Прибавка, а не «своё число + 1»: другие устройства считают ту же строку (задача 003, Н14).
+    // Каждый скан — новый ввод со своим op_id; его повтор (автоматический после обрыва и из
+    // очереди неотправленных) — тот же.
+    if (l.unit === 'piece') scanAdd(l, 1)
+    else if (tare) scanAdd(l, tare)
     else {
-      const at = lines.indexOf(l)
+      if (editsNow.current[l.product_id] === undefined) switchMode(l, 'add')
+      const at = lines.findIndex((x) => x.product_id === l.product_id)
       if (at >= 0) pager.setPage(Math.floor(at / pager.size))
       // Поле появится после перехода на страницу.
-      setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 0)
+      setTimeout(() => document.querySelector<HTMLInputElement>(`[data-count="${l.product_id}"]`)?.focus(), 50)
     }
   }
 
   // Скан: код строки ревизии — и с потерянными Excel нулями впереди (код Умага, SPEC-35 §1); нет —
-  // товар по коду на сервере: в ревизии — та же строка, вне её — сообщение; нигде — новая карточка.
+  // товар по коду на сервере: этой ревизии — его строка (появится, если её ещё нет на экране), вне
+  // её — сообщение; нигде — новая карточка.
   const onScan = () => {
     const code = scan.trim()
     if (!code) return
-    const l = rev.lines.find((x) => x.barcodes.includes(code)) ?? rev.lines.find((x) => x.barcodes.some((b) => sameCode(b, code)))
+    const l = allLines.find((x) => x.barcodes.includes(code)) ?? allLines.find((x) => x.barcodes.some((b) => sameCode(b, code)))
     setScan('')
     if (l) {
       countLine(l)
       return
     }
-    void get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`)
+    void retrySame(() => get<Product>(`/products/by-barcode/${encodeURIComponent(code)}`))
       .then((p) => {
-        const mine = rev.lines.find((x) => x.product_id === p.id)
-        if (mine) countLine(mine)
-        else goTo(p)
+        const mine = allLines.find((x) => x.product_id === p.id)
+        if (mine) return countLine(mine)
+        if (!fitsRevision(p)) return goTo(p)
+        // Товар этой ревизии, а строки на экране нет (его только что завёл другой или остатка не
+        // было): строка появляется сразу, список перечитывается; штуку и канистру считаем сразу,
+        // на вес и масло без тары — поле открыто.
+        const line = lineOf(p)
+        setExtra((e) => [...e.filter((x) => x.product_id !== p.id), line])
+        setFilter(p.name)
+        setVisc('')
+        void reload()
+        countLine(line)
       })
       .catch((e) => {
         if (e instanceof ApiError && e.status === 404) {
           // Нет в ревизии: товара нет и в программе — предлагаем завести с найденным количеством.
           act.setError(null)
           setAdding({ barcode: code })
-        } else act.setError(e instanceof Error ? e.message : 'Ошибка')
+          return
+        }
+        const outcome = sendOutcome(e)
+        if (outcome === 'refused') return act.setError(errorText(e))
+        // Связи нет: скан не пропадает — в очередь по коду со своим op_id; товар уточнится при связи.
+        act.setError(null)
+        waitScan(outcome)
+        putQueue((q) => queueAdd(q, newScan(newOpId(), { barcode: code })))
       })
   }
 
-  const counted = rev.lines.filter((l) => l.counted_qty !== null)
+  const cancelAsk = () => {
+    if (ask) dropEdit(ask.line.product_id)
+    setAsk(null)
+  }
+
+  const counted = allLines.filter((l) => l.counted_qty !== null)
+  const unsent = unsentCount(queue, fresh)
+  const unsentLines = unsentByLine(queue, fresh)
+  const codes = unsentCodes(queue, fresh)
+  // Ревизию провели или отменили, а сканы с устройства ещё не дошли: сколько не учтено — одним числом.
+  const closedCount = closedLost + (draft ? 0 : queue.length)
+  const sendNow = (
+    <Button variant="secondary" onClick={() => void flush()}>
+      Отправить сейчас
+    </Button>
+  )
+  const codesOf = (why: 'not_found' | 'not_fit' | 'need_qty') => [...new Set(lostCodes.filter((c) => c.why === why).map((c) => c.code))].join(', ')
   const diffs = counted.filter((l) => l.counted_qty !== l.expected_qty)
   const overs = counted.filter((l) => overNorm(l, rev.oil_norm_bp))
   const valueTotal = rev.lines.reduce((acc, l) => acc + (l.value_delta_tyiyn ?? 0), 0)
 
   return (
     <div className="flex flex-col gap-4">
+      {closedCount > 0 && (
+        <Notice tone="rose">
+          <div className="flex flex-wrap items-center gap-3">
+            <span data-testid="unsent-closed">
+              {closedText(closedCount, rev.head.number, rev.head.status === 'cancelled' ? 'cancelled' : 'posted')} — найденное проведите
+              оприходованием или новой ревизией.
+            </span>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setClosedLost(0)
+                if (!draft) putQueue(() => [])
+              }}
+            >
+              Понятно
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {(lostNotes.length > 0 || lostCodes.length > 0) && (
+        <Notice tone="rose">
+          <div className="flex flex-wrap items-center gap-3">
+            <div data-testid="unsent-lost" className="flex flex-col gap-1">
+              {codesOf('not_found') && (
+                <span>
+                  Сканы без связи не учтены — товар не найден по кодам: {codesOf('not_found')}. Заведите его кнопкой «+ Товар не из программы».
+                </span>
+              )}
+              {codesOf('not_fit') && (
+                <span>
+                  Сканы без связи не учтены — товар не входит в эту ревизию
+                  {rev.head.category_name ? ` (категория «${rev.head.category_name}»)` : ''}, коды: {codesOf('not_fit')}.
+                </span>
+              )}
+              {codesOf('need_qty') && (
+                <span>Сканы без связи не учтены — товар на вес или масло без тары, впишите количество в строке; коды: {codesOf('need_qty')}.</span>
+              )}
+              {lostNotes.map((t) => (
+                <span key={t}>{t}</span>
+              ))}
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setLostNotes([])
+                setLostCodes([])
+              }}
+            >
+              Понятно
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {draft && unsent > 0 && (
+        <Notice>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col gap-1">
+              <span data-testid="unsent">
+                ⏳ {unsentText(unsent)}. Сканы не потеряны — повторно не сканируйте.
+              </span>
+              {codes.map((c) => (
+                <span key={c} data-unsent-code={c}>
+                  ⏳ скан {c} — товар уточнится при связи
+                </span>
+              ))}
+              {needLogin && <span data-testid="unsent-login">Войдите снова — {scansText(unsent)} {plural(unsent, ['ждёт', 'ждут', 'ждут'])} отправки.</span>}
+            </div>
+            {sendNow}
+          </div>
+        </Notice>
+      )}
+      {others.map((o) => (
+        <Notice key={o.user}>
+          <span data-testid="unsent-other">
+            На этом устройстве {o.count} {plural(o.count, ['неотправленный скан', 'неотправленных скана', 'неотправленных сканов'])} пользователя {o.user}{' '}
+            — они уйдут, когда он войдёт и откроет эту ревизию.
+          </span>
+        </Notice>
+      ))}
       {draft && (
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -282,9 +830,10 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
             </Button>
           </div>
           <div className="text-sm text-slate-600">
-            Пересчитано {counted.length} из {rev.lines.length}, расхождений {diffs.length}
+            Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
             {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
-            Непересчитанные товары не меняются; не нашли товар — впишите 0.
+            Непересчитанные товары не меняются; не нашли товар — впишите 0 в «= итог». «+ добавить» — то, что нашли в своём месте:
+            товар в нескольких местах считают разные люди, итог складывается.
           </div>
         </Card>
       )}
@@ -328,6 +877,7 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
               const tare = oilTare(l)
+              const mode = modes[l.product_id] ?? defaultCountMode(l)
               const v = viscosityOf(l)
               return (
                 <tr key={l.product_id}>
@@ -363,39 +913,89 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                     {countText(l, l.expected_qty)}
                   </td>
                   <td className="whitespace-nowrap px-2 py-2">
-                    {draft && tare ? (
-                      <OilCountInput
-                        containerMl={tare}
-                        dataCount={l.product_id}
-                        value={oilEdits[l.product_id] ?? (l.counted_qty === null ? { cans: '', liters: '' } : oilFields(l.counted_qty, tare))}
-                        onChange={(val) => putOilEdit(l.product_id, val)}
-                        onCommit={() => saveOil(l, tare)}
-                      />
-                    ) : draft ? (
-                      <input
-                        data-count={l.product_id}
-                        className="w-24"
-                        inputMode={l.unit === 'piece' ? 'numeric' : 'decimal'}
-                        placeholder={l.unit === 'ml' ? 'л' : l.unit === 'g' ? 'кг' : 'шт'}
-                        aria-label={l.unit === 'ml' ? 'Пересчитано, л' : l.unit === 'g' ? 'Пересчитано, кг' : 'Пересчитано, шт'}
-                        value={edit ?? (l.counted_qty === null ? '' : countInput(l, l.counted_qty))}
-                        onChange={(e) => putEdit(l.product_id, e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-                        onBlur={() => {
-                          const typed = editsNow.current[l.product_id]
-                          if (typed === undefined) return
-                          const v = parseCount(l, typed)
-                          if (typed.trim() && v === null) {
-                            act.setError(`Неверное количество: ${l.name}`)
-                            return
-                          }
-                          save(l, v)
-                        }}
-                      />
+                    {draft ? (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex gap-1" role="group" aria-label="Как записать">
+                          {(
+                            [
+                              ['add', '+ добавить', 'Прибавить найденное в своём месте к общему итогу'],
+                              ['set', '= итог', 'Записать итог строки целиком'],
+                            ] as const
+                          ).map(([m, label, title]) => (
+                            <button
+                              key={m}
+                              type="button"
+                              title={title}
+                              aria-pressed={mode === m}
+                              data-mode={m}
+                              // Поле не теряет фокус: набранное не записывается в прежнем режиме.
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => switchMode(l, m)}
+                              className={`min-h-[28px] rounded border px-2 text-xs ${mode === m ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        {tare ? (
+                          <OilCountInput
+                            containerMl={tare}
+                            dataCount={l.product_id}
+                            value={
+                              oilEdits[l.product_id] ??
+                              (mode === 'add' || l.counted_qty === null ? { cans: '', liters: '' } : oilFields(l.counted_qty, tare))
+                            }
+                            onChange={(val) => putOilEdit(l, val)}
+                            onCommit={() => saveOil(l, tare)}
+                          />
+                        ) : (
+                          <input
+                            data-count={l.product_id}
+                            className="w-24"
+                            inputMode={l.unit === 'piece' ? 'numeric' : 'decimal'}
+                            placeholder={`${mode === 'add' ? '+ ' : ''}${l.unit === 'ml' ? 'л' : l.unit === 'g' ? 'кг' : 'шт'}`}
+                            aria-label={l.unit === 'ml' ? 'Пересчитано, л' : l.unit === 'g' ? 'Пересчитано, кг' : 'Пересчитано, шт'}
+                            value={edit ?? (mode === 'add' || l.counted_qty === null ? '' : countInput(l, l.counted_qty))}
+                            onChange={(e) => putEdit(l, e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                            onBlur={() => {
+                              const typed = editsNow.current[l.product_id]
+                              if (typed === undefined) return
+                              const v = parseCount(l, typed)
+                              if (typed.trim() && v === null) {
+                                act.setError(`Неверное количество: ${l.name}`)
+                                return
+                              }
+                              commit(l, v)
+                            }}
+                          />
+                        )}
+                        {l.counted_qty !== null && (
+                          <div className="text-xs font-medium text-slate-700" data-total={l.product_id}>
+                            итого {countText(l, l.counted_qty)}
+                          </div>
+                        )}
+                        {unsentLines.has(l.product_id) && (
+                          <div
+                            className="text-xs font-medium text-amber-700"
+                            data-unsent={l.product_id}
+                            title="Скан не дошёл до сервера — отправится сам, когда появится связь"
+                          >
+                            ⏳ +{countText(l, unsentLines.get(l.product_id) ?? 0)} не отправлено
+                          </div>
+                        )}
+                      </div>
                     ) : l.counted_qty === null ? (
                       '—'
                     ) : (
                       countText(l, l.counted_qty)
+                    )}
+                    {l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
+                      <div className="mt-0.5 whitespace-normal text-xs text-slate-400" data-testid="counted-by">
+                        {l.counted_log?.length
+                          ? `считали: ${countLogText(l.counted_log, (n) => countText(l, n))}`
+                          : `последним считал: ${l.counted_by}`}
+                      </div>
                     )}
                   </td>
                   <td className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
@@ -473,6 +1073,47 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
           }}
         />
       )}
+      {ask && (
+        <Modal title="Пока вы вводили, итог изменился" onClose={cancelAsk}>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm text-slate-700" data-testid="count-changed">
+              «{ask.line.name}»: пока вы вводили, итог изменили — сейчас{' '}
+              <b>{ask.now === null ? 'строка не посчитана' : countText(ask.line, ask.now)}</b>.{' '}
+              {ask.qty === null ? 'Всё равно убрать строку?' : `Записать итог ${countText(ask.line, ask.qty)}?`}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="secondary" onClick={cancelAsk}>
+                Отмена
+              </Button>
+              {ask.qty !== null && ask.qty > 0 && (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setAsk(null)
+                    // Поле переходит в «+ добавить» с тем же числом: ответ потеряли — Enter в поле
+                    // уходит тем же op_id, а не прибавляет второй раз; записано — поле очищается.
+                    const id = ask.line.product_id
+                    putMode(id, 'add')
+                    save(ask.line, ask.qty, 'add', ops.take(id, inputKey('add', ask.qty)))
+                  }}
+                >
+                  Прибавить {countText(ask.line, ask.qty)} — будет {countText(ask.line, (ask.now ?? 0) + ask.qty)}
+                </Button>
+              )}
+              <Button
+                onClick={() => {
+                  setAsk(null)
+                  // Человек увидел «сейчас N» и подтвердил: сверка — с ним.
+                  own.see(ask.line.product_id, ask.now)
+                  save(ask.line, ask.qty, 'set', ops.take(ask.line.product_id, inputKey('set', ask.qty)))
+                }}
+              >
+                {ask.qty === null ? 'Убрать строку' : `Записать итог ${countText(ask.line, ask.qty)}`}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {posting && (
         <Modal title={`Провести ревизию № ${rev.head.number}`} onClose={() => setPosting(null)}>
           <div className="flex flex-col gap-3">
@@ -483,6 +1124,21 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
             <Field label="Кто пересчитывал, причина" required>
               <input autoFocus value={posting.comment} onChange={(e) => setPosting({ ...posting, comment: e.target.value })} />
             </Field>
+            {unsent > 0 && (
+              <Notice tone="rose">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span data-testid="unsent-on-post">
+                    На этом устройстве не отправлено сканов: {unsent} — без связи они не войдут в ревизию. Отправьте их перед проведением.
+                  </span>
+                  {sendNow}
+                </div>
+              </Notice>
+            )}
+            {posting.warn && (
+              <Notice>
+                <span data-testid="still-counting">{posting.warn}</span> Скан, который придёт после проведения, не учтётся.
+              </Notice>
+            )}
             <ErrorBox error={act.error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setPosting(null)}>
@@ -492,14 +1148,23 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                 disabled={act.busy || !posting.comment.trim()}
                 onClick={() =>
                   void act.run(async () => {
-                    await post(`/revisions/${rev.head.id}/post`, { op_id: posting.opId, comment: posting.comment })
+                    try {
+                      await post(`/revisions/${rev.head.id}/post`, { op_id: posting.opId, comment: posting.comment, force: Boolean(posting.warn) })
+                    } catch (e) {
+                      // Другие ещё считают (записи за последние 60 с) — спросить, проводить ли.
+                      if (e instanceof ApiError && e.code === 'still_counting') {
+                        setPosting((p) => (p ? { ...p, warn: e.message } : p))
+                        return
+                      }
+                      throw e
+                    }
                     setPosting(null)
                     onChanged()
                     toast('Ревизия проведена')
                   })
                 }
               >
-                Провести
+                {posting.warn ? 'Провести всё равно' : 'Провести'}
               </Button>
             </div>
           </div>
@@ -555,10 +1220,67 @@ function Revision() {
   const [norm, setNorm] = useState<string | null>(null)
   const normBp = norm === null ? null : parsePercentBp(norm)
 
+  /** Открытый черновик другого охвата: «весь склад» при открытой категории — присоединиться к ней. */
+  const [busy, setBusy] = useState<{ id: string; message: string } | null>(null)
+
+  // Ответы записи и перечитывания приходят в любом порядке: строка показывается из ответа, только
+  // если он новее показанной (версия строки — номер её последней записи на сервере), — старый
+  // итог не возвращается поверх свежего (задача 003, Н14).
+  const setRev = rev.setData
+  const openNow = useRef(openId)
+  useEffect(() => {
+    openNow.current = openId
+  }, [openId])
+
+  // Очереди неотправленных сканов на устройстве: проведённых и отменённых ревизий — убираются со
+  // словами, сколько сканов не учтено; сканы старше недели — убираются (задача 003, Н14).
+  const [lostClosed, setLostClosed] = useState<{ revisionId: string; number: number; status: 'posted' | 'cancelled'; count: number }[]>([])
+  useEffect(() => {
+    if (!list.data) return
+    const closed = new Map(
+      list.data
+        .filter((h) => h.status !== 'draft' && h.id !== openNow.current)
+        .map((h) => [h.id, { number: h.number, status: h.status === 'posted' ? ('posted' as const) : ('cancelled' as const) }]),
+    )
+    const lost = cleanQueues(localStorage, closed)
+    if (lost.length > 0) setLostClosed((was) => [...was.filter((x) => !lost.some((y) => y.revisionId === x.revisionId)), ...lost])
+  }, [list.data])
+  const onFresh = useCallback((update: (r: RevisionOut) => RevisionOut) => setRev((r) => (r ? update(r) : r)), [setRev])
+  const reloadRev = useCallback(async () => {
+    const id = openNow.current
+    if (!id) return
+    try {
+      const r = await get<RevisionOut>(`/revisions/${id}`)
+      if (openNow.current !== id) return
+      // Проведённая или отменённая ревизия в черновик не возвращается: ответ перечитывания,
+      // ушедшего до проведения, мог прийти позже.
+      setRev((cur) => freshRevision(cur, r))
+    } catch {
+      // Следующее перечитывание покажет.
+    }
+  }, [setRev])
+
   const start = () =>
     void act.run(async () => {
-      const r = await post<RevisionOut>('/revisions', { category_id: category || null })
+      setBusy(null)
+      const want = category || null
+      let r: RevisionOut
+      try {
+        // Двое нажали «Начать ревизию» — один черновик на всех; открыт «весь склад» — категория
+        // считается в нём: две ревизии одного товара вычли бы остаток дважды (задача 003, Н14).
+        r = await post<RevisionOut>('/revisions', { category_id: want })
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 'revision_open') {
+          const open = (await get<Head[]>('/revisions')).find((h) => h.status === 'draft' && h.category_id !== null)
+          if (open) {
+            setBusy({ id: open.id, message: e.message })
+            return
+          }
+        }
+        throw e
+      }
       list.reload()
+      if (r.head.category_id !== want) toast('Идёт ревизия всего склада — вы присоединились к ней')
       setOpenId(r.head.id)
     })
 
@@ -581,11 +1303,14 @@ function Revision() {
           }
         />
         <Draft
+          key={h.id}
           rev={rev.data}
           onChanged={() => {
-            rev.reload()
+            void reloadRev()
             list.reload()
           }}
+          onFresh={onFresh}
+          reload={reloadRev}
         />
       </div>
     )
@@ -608,8 +1333,43 @@ function Revision() {
         <Button disabled={act.busy} onClick={start}>
           Начать ревизию
         </Button>
-        <div className="text-xs text-slate-500">Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются.</div>
+        <div className="text-xs text-slate-500">
+          Раз в месяц: пересчитайте сканером, владелец проведёт и остатки выровняются. Начали несколько человек — все считают в одной ревизии.
+        </div>
       </Card>
+      {lostClosed.length > 0 && (
+        <Notice tone="rose">
+          <div className="flex flex-wrap items-center gap-3">
+            <div data-testid="unsent-closed" className="flex flex-col gap-1">
+              {lostClosed.map((x) => (
+                <span key={x.revisionId}>
+                  На этом устройстве оставались неотправленные сканы: {closedText(x.count, x.number, x.status)} — найденное проведите
+                  оприходованием или новой ревизией.
+                </span>
+              ))}
+            </div>
+            <Button variant="secondary" onClick={() => setLostClosed([])}>
+              Понятно
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {busy && (
+        <Notice>
+          <div className="flex flex-wrap items-center gap-3">
+            <span data-testid="revision-busy">{busy.message}</span>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setOpenId(busy.id)
+                setBusy(null)
+              }}
+            >
+              Присоединиться
+            </Button>
+          </div>
+        </Notice>
+      )}
       {settings.data &&
         (norm === null ? (
           <div className="-mt-2 px-1 text-sm text-slate-600">

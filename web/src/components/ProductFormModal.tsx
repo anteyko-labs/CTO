@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { can } from '../lib/permissions'
 import { POLARITY_LABELS } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
@@ -67,6 +68,7 @@ export function ProductFormModal({
   inRevision,
   presetCost,
   stockIn,
+  continueIfTaken,
   onClose,
   onSaved,
 }: {
@@ -88,6 +90,9 @@ export function ProductFormModal({
   presetCost?: PriceEntry
   /** Заводят из оприходования: режим цены масла по умолчанию — оприходования («Настройки → Склад»). */
   stockIn?: boolean
+  /** Отсканированный незнакомый код в ту же минуту завёл другой: взять его товар (строка прихода,
+   *  чек), а не показывать ошибку (задача 003, Н14). */
+  continueIfTaken?: boolean
   onClose: () => void
   /** `cost` — введённая цена прихода нового товара: приход ставит её в строку. */
   onSaved: (p: Product, cost?: PriceEntry) => void
@@ -233,22 +238,30 @@ export function ProductFormModal({
       if (!product) {
         const unitCost = entryUnitPrice(cost, isOil ? v.container : null)
         if (unitCost === null) throw new Error('Неверная цена прихода')
-        saved = await post<Product>('/products', {
-          op_id: opId,
-          category_id: form.category_id,
-          name: form.name,
-          brand: form.brand,
-          article: form.article,
-          container_ml: v.container,
-          attrs: form.attrs,
-          barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
-          sale_price_tyiyn: v.sale,
-          min_stock: v.min,
-          ...(typeof unitCost === 'number' ? { initial_cost_tyiyn: unitCost } : {}),
-          ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
-          ...(unitChoice ? { unit: unitChoice } : {}),
-          ...(owner && v.rule.mode !== 'inherit' ? { points: v.rule } : {}),
-        })
+        const r = await createOrTaken(continueIfTaken ? form.barcode.trim() : '', () =>
+          post<Product>('/products', {
+            op_id: opId,
+            category_id: form.category_id,
+            name: form.name,
+            brand: form.brand,
+            article: form.article,
+            container_ml: v.container,
+            attrs: form.attrs,
+            barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
+            sale_price_tyiyn: v.sale,
+            min_stock: v.min,
+            ...(typeof unitCost === 'number' ? { initial_cost_tyiyn: unitCost } : {}),
+            ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
+            ...(unitChoice ? { unit: unitChoice } : {}),
+            ...(owner && v.rule.mode !== 'inherit' ? { points: v.rule } : {}),
+          }),
+        )
+        if (r.taken) {
+          toast(TAKEN_ADDED)
+          onSaved(r.product, cost.text.trim() ? cost : undefined)
+          return
+        }
+        saved = r.created
       } else {
         await patch<Product>(`/products/${product.id}`, {
           category_id: form.category_id,

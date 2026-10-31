@@ -3513,6 +3513,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       {newProductCode !== null && (
         <ProductFormModal
           presetBarcode={newProductCode}
+          continueIfTaken
           onClose={() => setNewProductCode(null)}
           onSaved={(p) => {
             setNewProductCode(null)

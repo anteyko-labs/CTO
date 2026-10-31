@@ -2911,11 +2911,22 @@ async fn revision_count_adds_or_replaces(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(kept, first);
-    // «Заменить» и запрос без режима (экран «Ревизия») записывают число как есть.
-    let (_, _, r) = put_count(4, Some("set")).await;
+    // «Заменить» — с тем, что было на экране (задача 003, Н14): записывает число как есть.
+    let (s, _, r) = call(
+        &app,
+        "PUT",
+        &lines,
+        Some(&admin),
+        Some(json!({ "product_id": pid, "counted_qty": 4, "mode": "set", "expected_qty": 8 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(r["counted_qty"], 4);
-    let (_, _, r) = put_count(6, None).await;
-    assert_eq!(r["counted_qty"], 6);
+    // Запрос без сверки (экран до обновления), а строку только что прибавляли с других
+    // устройств — 409 «обновите страницу», прибавки не затираются.
+    let (s, _, r) = put_count(6, None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{r}");
+    assert_eq!(r["error"]["code"], "client_outdated");
     let (s, _, _) = put_count(1, Some("plus")).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
@@ -3751,7 +3762,7 @@ async fn revision_add_is_idempotent_and_delete_is_logged(pool: PgPool) {
     let (s, _, _) = call(
         &app,
         "DELETE",
-        &format!("/api/v1/revisions/{id}/lines/{item}"),
+        &format!("/api/v1/revisions/{id}/lines/{item}?expected_qty=7"),
         Some(&owner),
         None,
     )
@@ -8826,7 +8837,8 @@ async fn revision_takes_a_product_not_in_the_program(pool: PgPool) {
         "POST",
         &format!("/api/v1/revisions/{rid}/post"),
         Some(&owner),
-        Some(json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт" })),
+        // Администратор только что посчитал — владелец подтверждает «Ещё считают» (задача 003, Н14).
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт", "force": true })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);

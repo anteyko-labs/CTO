@@ -1309,6 +1309,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         <ProductFormModal
           presetBarcode={newProductCode}
           stockIn={stockIn}
+          continueIfTaken
           onClose={() => setNewProductCode(null)}
           onSaved={(p, cost) => {
             setNewProductCode(null)

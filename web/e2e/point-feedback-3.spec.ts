@@ -213,7 +213,7 @@ test('ревизия и товары — один экран; в ревизию 
   await expect(dialog).toBeHidden()
   const row = page.getByRole('row', { name: new RegExp(name) })
   await expect(row).toBeVisible()
-  await expect(row.locator('input')).toHaveValue('5')
+  await expect(row.locator('[data-total]')).toHaveText(/итого 5\sшт/)
   // Проводит владелец: остаток 5 шт по закупке 450 с.
   await page.getByRole('button', { name: 'Провести' }).click()
   await page.getByLabel('Кто пересчитывал, причина').fill('проверка')

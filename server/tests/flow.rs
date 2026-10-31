@@ -1693,6 +1693,7 @@ async fn revision_aligns_stock_and_charges_shortage(pool: PgPool) {
                 PostReq {
                     op_id: Uuid::now_v7(),
                     comment: "ревизия за месяц".into(),
+                    force: false,
                 },
             )
             .await;
@@ -2432,6 +2433,7 @@ async fn revision_counts_from_stock_at_count_and_skips_merged(pool: PgPool) {
         PostReq {
             op_id: Uuid::now_v7(),
             comment: "пересчёт".into(),
+            force: false,
         },
     )
     .await
@@ -2470,6 +2472,7 @@ async fn revision_counts_from_stock_at_count_and_skips_merged(pool: PgPool) {
             PostReq {
                 op_id: Uuid::now_v7(),
                 comment: "пересчёт".into(),
+                force: false,
             },
         )
         .await,

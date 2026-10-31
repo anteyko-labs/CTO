@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select l.counted_qty from revision_lines l\n           join revisions r on r.id = l.revision_id\n           where l.revision_id = $1 and l.product_id = $2 and r.branch_id = $3",
+  "query": "select counted_qty from revision_lines where revision_id = $1 and product_id = $2",
   "describe": {
     "columns": [
       {
@@ -12,7 +12,6 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
         "Uuid"
       ]
     },
@@ -20,5 +19,5 @@
       false
     ]
   },
-  "hash": "613e421c440d929792c08f476865e38cdf3558a67fc716c6bc4377612ac8df3e"
+  "hash": "7f05f82d71350b3e1f57dc8cae9dd9a764a567e1c51a0b8eb6009384f1e1b5da"
 }

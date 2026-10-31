@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.full_name, extract(epoch from clock_timestamp() - max(a.created_at))::bigint as \"ago!\"\n               from revision_line_adds a join users u on u.id = a.user_id\n               where a.revision_id = $1 and a.user_id <> $2\n                 and a.created_at > clock_timestamp() - interval '60 seconds'\n               group by u.full_name order by max(a.created_at) desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "ago!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "16822f8ec1f133de551f71d386b9872aed2bdbf732d8a93f35f50db43742ec09"
+}
