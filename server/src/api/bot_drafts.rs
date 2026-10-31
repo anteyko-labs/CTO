@@ -227,10 +227,18 @@ pub async fn execute(conn: &mut PgConnection, ctx: &Ctx, op: DraftOp) -> AppResu
             }
         }
         DraftOp::Salary(req) => {
-            let month = req.month;
+            let what = match (req.period_from, req.period_to, req.month) {
+                (Some(f), Some(t), _)
+                    if !(f.day() == 1 && t.succ_opt().is_some_and(|n| n.day() == 1)) =>
+                {
+                    crate::domain::salary::label(f, t)
+                }
+                (_, _, Some(m)) => month_name(m),
+                _ => String::new(),
+            };
             crate::api::payroll::post_salary_tx(conn, ctx, req).await?;
             Posted {
-                text: format!("оклад за {}", month_name(month)),
+                text: format!("оклад за {what}"),
                 number: None,
             }
         }
@@ -1450,6 +1458,7 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                     account_id,
                     advance,
                     comment: text,
+                    pay_date: None,
                 },
                 lines,
                 purpose: None,
@@ -1472,13 +1481,12 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
             None => None,
             Some(_) => Some(take!(amount(input, "amount"))),
         };
-        // Сумма по ставке — та же, что возьмёт начисление: на последний день месяца,
-        // не позже сегодня.
-        let last = month
-            .checked_add_months(chrono::Months::new(1))
-            .and_then(|d| d.pred_opt())
-            .unwrap_or(month)
-            .min(today);
+        // Период — работника, который заканчивается в этом месяце (задача 003 Н11; при дне
+        // расчёта 1 — сам месяц). Сумма по ставке — та же, что возьмёт начисление: на последний
+        // день периода, не позже сегодня.
+        let period =
+            crate::api::payroll::salary_period_for_month(conn, branch_id, e.id, month).await?;
+        let last = period.to.min(today);
         let rule = crate::api::payroll::active_rule(conn, branch_id, e.id, "monthly_salary", last)
             .await?
             .and_then(|r| r.1);
@@ -1494,16 +1502,25 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                 )));
             }
         };
+        let when = if period.from.day() == 1 && period.pay.day() == 1 {
+            format!("Месяц: {}", month_name(month))
+        } else {
+            format!(
+                "Период: {}",
+                crate::domain::salary::label(period.from, period.to)
+            )
+        };
         let summary = format!(
-            "Оклад за месяц\nСотрудник: {}\nМесяц: {}\nСумма: {shown}",
-            one_line(&e.name),
-            month_name(month)
+            "Оклад за месяц\nСотрудник: {}\n{when}\nСумма: {shown}",
+            one_line(&e.name)
         );
         return Ok(Ok(Built {
             op: DraftOp::Salary(SalaryReq {
                 op_id,
                 employee_id: e.id,
-                month,
+                month: Some(month),
+                period_from: Some(period.from),
+                period_to: Some(period.to),
                 amount_tyiyn: Some(amount),
             }),
             kind: "salary",

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"paid!\" from payouts\n               where employee_id = $1\n                 and (created_at at time zone 'Asia/Bishkek')::date between $2 and $3",
+  "query": "select coalesce(sum(amount_tyiyn), 0)::bigint as \"paid!\" from payouts\n               where employee_id = $1 and pay_date between $2 and $3",
   "describe": {
     "columns": [
       {
@@ -20,5 +20,5 @@
       null
     ]
   },
-  "hash": "7cc7f47e9426b2aa4d7ecc9c635dc25f94ca0d059868d5110645f8f576a1d5d6"
+  "hash": "222d2fe90eca8fe179b01bd56e9535e87bfa3c4926ba2370e616785a464593bf"
 }

@@ -94,6 +94,17 @@ export function payAccounts<T extends Pick<CashAccount, 'kind' | 'is_default' | 
     .sort((x, y) => Number(isTill(y)) - Number(isTill(x)))
 }
 
+/** Откуда платить с учётом смены (задача 003 Н11): без открытой смены касса смены недоступна, по
+ *  умолчанию — первый счёт не кассы смены (обычно сейф). Выбранный вручную — если он доступен. */
+export function payFromPick<T extends Pick<CashAccount, 'id' | 'kind' | 'is_default'>>(
+  list: readonly T[],
+  shiftOpen: boolean,
+  picked: string,
+): string {
+  const usable = list.filter((a) => shiftOpen || !isTill(a))
+  return usable.some((a) => a.id === picked) ? picked : (usable[0]?.id ?? '')
+}
+
 /** Куда сдать кассу: любой действующий счёт, кроме самой кассы смены; первым — предложенный
  *  сервером (куда сдавали в прошлый раз или сейф магазина), иначе первый сейф (SPEC-29 §14). */
 export function handoverChoices<T extends Pick<CashAccount, 'id' | 'kind' | 'is_default'> & { active?: boolean }>(

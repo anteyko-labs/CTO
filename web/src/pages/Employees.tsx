@@ -6,7 +6,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { del, get, newOpId, patch, post } from '../lib/api'
+import { del, get, newOpId, patch, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDate, formatPercentBp, formatSom, parsePercentBp, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -34,6 +34,40 @@ const RULE_LABELS: Record<PayRule['kind'], string> = {
 }
 
 const ruleValue = (r: PayRule) => (r.kind === 'revenue_percent' ? formatPercentBp(r.rate_bp ?? 0) : formatSom(r.amount_tyiyn ?? 0))
+
+/**
+ * «День расчёта оклада» (задача 003 Н11): период с D-го по (D−1)-е следующего месяца, к выплате D-го;
+ * 1 — календарный месяц. Меняет владелец, действует со следующего периода, в журнал.
+ */
+function SalaryDayField({ employee }: { employee: Employee }) {
+  const uri = `/employees/${employee.id}/salary-day`
+  const cur = useLoad(() => get<{ salary_day: number }>(uri), [uri])
+  const act = useAction()
+  const day = cur.data?.salary_day ?? 1
+  const save = (v: number) =>
+    void act.run(async () => {
+      await put(uri, { salary_day: v })
+      cur.reload()
+      toast(v === 1 ? 'Оклад — за календарный месяц' : `День расчёта оклада — ${v}-е`)
+    })
+  return (
+    <div className="flex flex-col gap-1">
+      <ErrorBox error={cur.error ?? act.error} />
+      <Field
+        label="День расчёта оклада"
+        hint={day === 1 ? 'календарный месяц: с 1-го по последний день, выплата 1-го' : `период с ${day}-го по ${day - 1}-е, выплата ${day}-го`}
+      >
+        <select id="salary-day" className="w-56" value={day} disabled={!cur.data || act.busy} onChange={(e) => save(Number(e.target.value))}>
+          {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+            <option key={d} value={d}>
+              {d === 1 ? '1 — календарный месяц' : `${d}-е число`}
+            </option>
+          ))}
+        </select>
+      </Field>
+    </div>
+  )
+}
 
 /** Правила оплаты сотрудника: действующие, история и новое правило (SPEC-07). Только владелец.
  *  Новое правило того же вида закрывает прежнее сегодняшним днём; начисленное не меняется. */
@@ -100,6 +134,7 @@ function PayRules({ employee }: { employee: Employee }) {
           ))}
         </ul>
       )}
+      {(active.some((r) => r.kind === 'monthly_salary') || employee.is_cashier) && <SalaryDayField employee={employee} />}
       {employee.is_master && (
         <div className="text-xs text-slate-500">
           Мастеру за замену платится ставка из чека — она общая для точки и меняется на экране{' '}

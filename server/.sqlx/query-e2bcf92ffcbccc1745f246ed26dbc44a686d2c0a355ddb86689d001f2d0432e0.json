@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(a.amount_tyiyn), 0)::bigint as \"sum!\",\n                  (array_agg(a.id order by a.created_at desc) filter (\n                      where a.reversal_of is null\n                        and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)))[1]\n                    as \"id?\"\n           from payroll_accruals a\n           where a.employee_id = $1 and a.kind = 'monthly_salary'\n             and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= $3\n             and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sum!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "id?",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "e2bcf92ffcbccc1745f246ed26dbc44a686d2c0a355ddb86689d001f2d0432e0"
+}

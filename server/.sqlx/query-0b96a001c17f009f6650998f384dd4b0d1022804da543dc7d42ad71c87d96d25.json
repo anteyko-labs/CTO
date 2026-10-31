@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id as \"employee_id!\", e.full_name as \"full_name!\", e.is_cashier as \"is_cashier!\",\n             e.is_master as \"is_master!\", e.salary_day as \"salary_day!\",\n             coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                       where a.employee_id = e.id and a.business_date < $2), 0)::bigint\n             - coalesce((select sum(p.amount_tyiyn) from payouts p\n                         where p.employee_id = e.id and p.pay_date < $2), 0)::bigint\n               as \"opening!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'monthly_salary'), 0)::bigint as \"salary!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'revenue_percent'), 0)::bigint as \"percent!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'service_fee'), 0)::bigint as \"service_fee!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'shift_fee'), 0)::bigint as \"shift_fee!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'bonus'), 0)::bigint as \"bonus!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'penalty'), 0)::bigint as \"penalty!\",\n             coalesce(sum(a.amount_tyiyn) filter (where a.kind = 'shortage'), 0)::bigint as \"shortage!\",\n             coalesce(sum(a.amount_tyiyn), 0)::bigint as \"accrued!\",\n             coalesce((select sum(p.amount_tyiyn) from payouts p\n                       where p.employee_id = e.id\n                         and p.pay_date between $2 and $3), 0)::bigint as \"paid!\",\n             coalesce((select sum(p.amount_tyiyn) from payouts p\n                       where p.employee_id = e.id and p.purpose = 'advance'\n                         and p.pay_date between $2 and $3), 0)::bigint as \"advance!\"\n           from employees e\n           left join payroll_accruals a on a.employee_id = e.id and a.business_date between $2 and $3\n           where e.branch_id = $1\n           group by e.id, e.full_name, e.is_cashier, e.is_master, e.active, e.salary_day\n           -- Отключённый сотрудник виден, пока с ним есть расчёт: начисления или выплаты в месяце,\n           -- долг на начало или на конец.\n           having e.active or coalesce(sum(a.amount_tyiyn), 0) <> 0\n               or exists (select 1 from payouts p\n                          where p.employee_id = e.id\n                            and p.pay_date between $2 and $3)\n               or coalesce((select sum(x.amount_tyiyn) from payroll_accruals x\n                            where x.employee_id = e.id and x.business_date <= $3), 0)\n                  <> coalesce((select sum(p.amount_tyiyn) from payouts p\n                               where p.employee_id = e.id\n                                 and p.pay_date <= $3), 0)\n               or coalesce((select sum(x.amount_tyiyn) from payroll_accruals x\n                            where x.employee_id = e.id and x.business_date < $2), 0)\n                  <> coalesce((select sum(p.amount_tyiyn) from payouts p\n                               where p.employee_id = e.id\n                                 and p.pay_date < $2), 0)\n           order by e.full_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "employee_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_cashier!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_master!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "salary_day!",
+        "type_info": "Int2"
+      },
+      {
+        "ordinal": 5,
+        "name": "opening!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "salary!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "percent!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "service_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "shift_fee!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "bonus!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "penalty!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 12,
+        "name": "shortage!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 13,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 14,
+        "name": "paid!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 15,
+        "name": "advance!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0b96a001c17f009f6650998f384dd4b0d1022804da543dc7d42ad71c87d96d25"
+}

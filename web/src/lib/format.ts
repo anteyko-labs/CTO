@@ -115,6 +115,11 @@ export function todayBishkek(): string {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
 }
 
+/** День по Бишкеку для момента `at` (ISO): «2026-10-31». */
+export function bishkekDate(at: string): string {
+  return new Date(at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' })
+}
+
 /** Текущий час в Бишкеке (0–23) — для графика «сегодня по часам». */
 export function hourBishkek(): number {
   return Number(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Bishkek', hour: '2-digit', hour12: false })) % 24

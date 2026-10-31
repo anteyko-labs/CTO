@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select salary_day from employees where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "salary_day",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "25cf13444f2bd1106a33b701122ee462cb42ccd058415e55831a24a48bd7b754"
+}

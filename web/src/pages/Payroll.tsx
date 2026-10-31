@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { PayrollEntries } from '../components/PayrollEntries'
 import { ExtraForm, PayoutForm, SalaryForm } from '../components/PayrollForms'
 import { PayrollMonth } from '../components/PayrollMonth'
+import { PayrollSalary } from '../components/PayrollSalary'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -18,7 +19,7 @@ export default function Payroll() {
   const can = useCan()
   const mayPay = can('payroll_pay')
   const mayAdvance = can('payroll_advance')
-  const [view, setView] = useState<'day' | 'month'>('day')
+  const [view, setView] = useState<'day' | 'month' | 'salary'>('day')
   const [date, setDate] = useState(todayBishkek())
   const [paying, setPaying] = useState<PayrollRow | null>(null)
   const [extra, setExtra] = useState<{ row: PayrollRow; kind: 'bonus' | 'penalty' } | null>(null)
@@ -42,11 +43,12 @@ export default function Payroll() {
   return (
     <div>
       <PageHeader title="Расчёт сотрудников" />
-      <div className="mb-4 inline-grid grid-cols-2 overflow-hidden rounded-md border border-slate-300 text-sm">
+      <div className="mb-4 inline-grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm">
         {(
           [
             ['day', 'За день'],
             ['month', 'За месяц'],
+            ['salary', 'Оклад'],
           ] as const
         ).map(([v, label]) => (
           <button
@@ -59,7 +61,9 @@ export default function Payroll() {
           </button>
         ))}
       </div>
-      {view === 'month' ? (
+      {view === 'salary' ? (
+        <PayrollSalary />
+      ) : view === 'month' ? (
         <PayrollMonth />
       ) : (
       <>
@@ -150,7 +154,8 @@ export default function Payroll() {
 
       {paying && (
         <Modal title={`Выплата: ${paying.full_name}`} onClose={close}>
-          <PayoutForm employeeId={paying.employee_id} onCancel={close} onDone={done} />
+          {/* Выбранный день — дата выплаты в расчёте; другую дату ставит владелец (задача 003 Н11). */}
+          <PayoutForm employeeId={paying.employee_id} date={owner ? date : undefined} onCancel={close} onDone={done} />
         </Modal>
       )}
 

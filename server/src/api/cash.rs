@@ -1214,6 +1214,7 @@ async fn close_shift(
                         account_id: Some(from),
                         advance: false,
                         comment: comment.clone(),
+                        pay_date: None,
                     },
                     lines: p.lines.clone(),
                     purpose: None,

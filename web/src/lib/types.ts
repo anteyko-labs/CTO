@@ -835,6 +835,49 @@ export interface PayoutRemains {
   balance_tyiyn: number
   /** Аванс в счёт оклада или оплаты за услуги. */
   advance_to: 'salary' | 'service_fee'
+  /** Оклад сейчас (задача 003 Н11); без оклада — null. */
+  salary?: SalaryNow | null
+  /** Смена открыта: без неё касса смены недоступна. */
+  shift_open?: boolean
+  /** Настройка «Выплаты только при открытой смене». */
+  requires_shift?: boolean
+  /** На сколько дней назад владелец ставит дату выплаты. */
+  backdate_days?: number
+  today?: string
+}
+
+/** «Оклад сейчас» работника за период (задача 003 Н11): `GET /payroll/salary`. */
+export interface SalaryNow {
+  employee_id: string
+  full_name: string
+  is_cashier: boolean
+  is_master: boolean
+  /** День расчёта оклада 1–28; 1 — календарный месяц. */
+  salary_day: number
+  period_from: string
+  period_to: string
+  /** День выплаты — следующий за концом периода. */
+  pay_date: string
+  rule_tyiyn: number | null
+  /** Начислено за период; не начислен — null. */
+  accrued_tyiyn: number | null
+  accrual_id: string | null
+  advance_tyiyn: number
+  paid_salary_tyiyn: number
+  /** Остаток по окладу до периода: плюс — недоплачено, минус — выдано вперёд. */
+  carry_tyiyn: number
+  /** К выплате в день расчёта. */
+  expected_tyiyn: number
+  /** Заработано на сегодня по ставке (ориентир) — только с настройкой. */
+  to_date_tyiyn?: number
+}
+
+/** «Настройки → Зарплата» (задача 003 Н11). */
+export interface PayrollSettings {
+  payout_backdate_days: number
+  payout_requires_shift: boolean
+  salary_show_to_date: boolean
+  salary_due_notify: boolean
 }
 
 // ---------- Прибыль и сводка (SPEC-08) ----------

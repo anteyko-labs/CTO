@@ -8,6 +8,7 @@ import { formatDate, formatSom, somInput, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { accrualDate, lastPayout, type MonthPayout } from '../lib/payrollMonth'
+import { isCalendar, payoutDate, periodLabel } from '../lib/payrollPeriod'
 import { FixDraft } from './FixDraft'
 import { PayrollEntries } from './PayrollEntries'
 import { ExtraForm, PayoutForm, SalaryForm, type PayoutDoc } from './PayrollForms'
@@ -35,6 +36,10 @@ interface MonthRow {
   closing_tyiyn: number
   salary_done: boolean
   salary_rule_tyiyn: number | null
+  /** День расчёта оклада и период, который заканчивается в этом месяце (задача 003 Н11). */
+  salary_day?: number
+  salary_from?: string
+  salary_to?: string
 }
 
 interface MonthOut {
@@ -76,11 +81,17 @@ export function PayrollMonth() {
   const [y, m] = month.split('-').map(Number)
   const today = todayBishkek()
   const current = shiftMonth(today, 0)
-  // Выплата проводится сегодняшним днём и попадает в текущий месяц: в прошлом месяце её не видно,
-  // поэтому выплата, аванс и исправление выплаты — только в текущем. Бонус и удержание прошлого
-  // месяца ложатся его последним днём (`accrualDate`).
+  // Дата выплаты в расчёте (задача 003 Н11): владелец платит и в прошлом месяце — выплата ложится
+  // его последним днём (`payoutDate`), деньги уходят сегодня. Администратор ставит только сегодня,
+  // поэтому у него выплата и аванс — в текущем месяце. Бонус и удержание прошлого месяца ложатся
+  // его последним днём (`accrualDate`).
   const isCurrent = month === current
+  const payable = isCurrent || owner
+  const payDate = payoutDate(month, today)
   const extraDate = accrualDate(month, today)
+  // Администратор без смены не платит: только из кассы смены.
+  const shift = useLoad(() => (owner ? Promise.resolve({ id: 'owner' }) : get<{ id: string } | null>('/shifts/current')), [owner])
+  const noShift = !owner && shift.data === null
   const closeAct = () => {
     setPaying(null)
     setExtra(null)
@@ -142,7 +153,18 @@ export function PayrollMonth() {
                 </td>
                 <td className="px-2 py-2 md:text-right">{cell(r.opening_tyiyn)}</td>
                 <td className="px-2 py-2 whitespace-nowrap md:text-right">
-                  {r.salary_done ? cell(r.salary_tyiyn) : r.salary_rule_tyiyn ? <Badge tone="amber">не начислен</Badge> : '—'}
+                  {r.salary_done ? (
+                    cell(r.salary_tyiyn)
+                  ) : r.salary_rule_tyiyn ? (
+                    <span className="inline-flex items-center gap-1">
+                      <Money value={r.salary_rule_tyiyn} /> <Badge tone="amber">не начислен</Badge>
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                  {r.salary_from && r.salary_to && !isCalendar(r.salary_from, r.salary_to) && (r.salary_done || r.salary_rule_tyiyn) && (
+                    <div className="text-xs text-slate-500">за {periodLabel(r.salary_from, r.salary_to)}</div>
+                  )}
                 </td>
                 <td className="px-2 py-2 md:text-right">{cell(r.percent_tyiyn)}</td>
                 <td className="px-2 py-2 md:text-right">{cell(r.service_fee_tyiyn)}</td>
@@ -157,17 +179,24 @@ export function PayrollMonth() {
                 </td>
                 <td className="overflow-visible! px-2 py-2 text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1">
-                    {mayPay && isCurrent && (
+                    {mayPay && payable && (
                       <Button
                         className="px-2 py-1 text-xs"
-                        disabled={r.closing_tyiyn <= 0 && !owner && !mayAdvance}
+                        disabled={(r.closing_tyiyn <= 0 && !owner && !mayAdvance) || noShift}
+                        title={noShift ? 'Откройте смену — администратор платит только из кассы смены' : undefined}
                         onClick={() => setPaying({ row: r, advance: false })}
                       >
                         Выплатить
                       </Button>
                     )}
-                    {mayAdvance && isCurrent && (
-                      <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setPaying({ row: r, advance: true })}>
+                    {mayAdvance && payable && (
+                      <Button
+                        variant="secondary"
+                        className="px-2 py-1 text-xs"
+                        disabled={noShift}
+                        title={noShift ? 'Откройте смену — администратор платит только из кассы смены' : undefined}
+                        onClick={() => setPaying({ row: r, advance: true })}
+                      >
                         Аванс
                       </Button>
                     )}
@@ -187,7 +216,7 @@ export function PayrollMonth() {
                         items={[
                           { label: 'Бонус', onClick: () => setExtra({ row: r, kind: 'bonus' }) },
                           { label: 'Удержать', onClick: () => setExtra({ row: r, kind: 'penalty' }), danger: true },
-                          ...(isCurrent ? [{ label: 'Исправить последнюю выплату', onClick: () => fixLast(r) }] : []),
+                          { label: 'Исправить последнюю выплату', onClick: () => fixLast(r) },
                         ]}
                       />
                     )}
@@ -230,7 +259,7 @@ export function PayrollMonth() {
 
       {paying && (
         <Modal title={`${paying.advance ? 'Аванс' : 'Выплата'}: ${paying.row.full_name}`} onClose={closeAct}>
-          <PayoutForm employeeId={paying.row.employee_id} advance={paying.advance} onCancel={closeAct} onDone={doneAct} />
+          <PayoutForm employeeId={paying.row.employee_id} advance={paying.advance} date={owner ? payDate : undefined} onCancel={closeAct} onDone={doneAct} />
         </Modal>
       )}
 
@@ -250,10 +279,14 @@ export function PayrollMonth() {
       )}
 
       {salary && (
-        <Modal title={`Оклад за ${MONTHS[m - 1]}: ${salary.full_name}`} onClose={() => setSalary(null)}>
+        <Modal
+          title={`Оклад за ${salary.salary_from && salary.salary_to && !isCalendar(salary.salary_from, salary.salary_to) ? periodLabel(salary.salary_from, salary.salary_to) : MONTHS[m - 1]}: ${salary.full_name}`}
+          onClose={() => setSalary(null)}
+        >
           <SalaryForm
             employeeId={salary.employee_id}
             month={month}
+            period={salary.salary_from && salary.salary_to ? { from: salary.salary_from, to: salary.salary_to } : undefined}
             hint={`По правилу ${salary.salary_rule_tyiyn ? formatSom(salary.salary_rule_tyiyn) : 'оклада нет'}. За неполный месяц укажите сумму, которую решили платить.`}
             initialSum={salary.salary_rule_tyiyn ? somInput(salary.salary_rule_tyiyn) : ''}
             onCancel={() => setSalary(null)}

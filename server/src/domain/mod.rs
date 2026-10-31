@@ -9,3 +9,4 @@ pub mod oil_service;
 pub mod phone;
 pub mod plate;
 pub mod qty;
+pub mod salary;

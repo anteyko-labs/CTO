@@ -3085,6 +3085,21 @@ fn payout_text(data: &Value, emp: &str, from: Option<&str>) -> (String, String) 
     } else if over < 0 {
         parts.push("сверх заработанного".into());
     }
+    // Дата в расчёте не сегодня (ADR-{B9.1}): «за 20.10, проведена 22.10».
+    let day = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+    };
+    if let (Some(pay), Some(money)) = (day("pay_date"), day("money_date"))
+        && pay != money
+    {
+        parts.push(format!(
+            "за {}, проведена {}",
+            pay.format("%d.%m"),
+            money.format("%d.%m")
+        ));
+    }
     let title = if lines.iter().all(|(p, _)| *p == "advance") && !lines.is_empty() {
         format!("👛 Аванс: {emp}")
     } else {

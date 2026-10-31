@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update employees set salary_day = $3 where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cb5dbe532bb8a99cefeec70a580067882287fcae45fb31a44d66235d958f6b8d"
+}

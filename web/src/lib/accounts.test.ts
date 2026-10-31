@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, feeShort, overdrawText, handoverChoices, isDefaultFor, isTill, payAccounts, payCaption } from './accounts'
+import { accountLabel, accountNote, accountTotals, accountType, bankChoices, defaultBankId, feeShort, overdrawText, handoverChoices, isDefaultFor, isTill, payAccounts, payCaption, payFromPick } from './accounts'
 import { PAYMENT_LABELS } from './types'
 import { formatSom } from './format'
 import type { CashAccount } from './types'
@@ -94,6 +94,16 @@ describe('выбор счёта с остатком (SPEC-29 §12–14)', () => 
   it('откуда платить: владелец — любой действующий, касса первой; администратор — только касса', () => {
     expect(payAccounts(list, true).map((a) => a.id)).toEqual(['Касса', 'Сейф-1', 'СВИНЕЦ', 'Оптима', 'Счёт'])
     expect(payAccounts(list, false).map((a) => a.id)).toEqual(['Касса'])
+  })
+
+  it('без открытой смены касса смены недоступна: по умолчанию — сейф (задача 003 Н11)', () => {
+    const owner = payAccounts(list, true)
+    expect(payFromPick(owner, true, '')).toBe('Касса')
+    expect(payFromPick(owner, false, '')).toBe('Сейф-1')
+    expect(payFromPick(owner, false, 'Касса')).toBe('Сейф-1')
+    expect(payFromPick(owner, false, 'Оптима')).toBe('Оптима')
+    // Администратору без смены платить неоткуда.
+    expect(payFromPick(payAccounts(list, false), false, '')).toBe('')
   })
 
   it('куда сдать кассу: не сама касса, первым — предложенный, иначе сейф', () => {

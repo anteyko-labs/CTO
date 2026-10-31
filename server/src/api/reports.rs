@@ -155,27 +155,39 @@ pub(crate) async fn reliability_warnings(
         ));
     }
     let salary = sqlx::query!(
+        // По закончившимся периодам каждого работника: период с его дня расчёта по день до
+        // него, отнесён к месяцу, в котором закончился (задача 003 Н11); при дне 1 — месяц.
         r#"with months as (
-             select m::date as start, (m + interval '1 month - 1 day')::date as stop
+             select m::date as m
              from generate_series(date_trunc('month', $2::date), date_trunc('month', $3::date),
                                   interval '1 month') m
-             where (m + interval '1 month - 1 day')::date < (now() at time zone 'Asia/Bishkek')::date
+           ), periods as (
+             select mo.m, e.id as employee_id,
+                    case when e.salary_day = 1 then mo.m
+                         else (mo.m - interval '1 month' + make_interval(days => e.salary_day - 1))::date
+                    end as start,
+                    case when e.salary_day = 1 then (mo.m + interval '1 month - 1 day')::date
+                         else (mo.m + make_interval(days => e.salary_day - 2))::date
+                    end as stop
+             from months mo join employees e on e.branch_id = $1 and e.active
            ), due as (
-             select distinct mo.start, r.employee_id
-             from months mo
-             join employee_pay_rules r on r.branch_id = $1 and r.kind = 'monthly_salary'
-               and r.active_from <= mo.stop and (r.active_to is null or r.active_to > mo.start)
-             join employees e on e.id = r.employee_id and e.active
+             select distinct p.m, p.employee_id, p.start, p.stop
+             from periods p
+             join employee_pay_rules r on r.branch_id = $1 and r.employee_id = p.employee_id
+               and r.kind = 'monthly_salary'
+               and r.active_from <= p.stop and (r.active_to is null or r.active_to > p.start)
+             where p.stop < (now() at time zone 'Asia/Bishkek')::date
            )
-           select d.start as "month!", count(*) as "due!",
+           select d.m as "month!", count(*) as "due!",
                   count(*) filter (where not exists (
                     select 1 from payroll_accruals a
                     where a.branch_id = $1 and a.employee_id = d.employee_id
                       and a.kind = 'monthly_salary' and a.reversal_of is null
-                      and date_trunc('month', a.business_date) = d.start
+                      and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= d.stop
+                      and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= d.start
                       and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)
                   )) as "missing!"
-           from due d group by d.start order by d.start"#,
+           from due d group by d.m order by d.m"#,
         branch_id,
         from,
         to

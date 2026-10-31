@@ -3,9 +3,10 @@
 import { useState } from 'react'
 import { get, newOpId, post, qs } from '../lib/api'
 import { correctionMarks, loadCorrections } from '../lib/corrections'
-import { formatDate, formatDateTime, formatSom } from '../lib/format'
+import { bishkekDate, formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { CorrectionBadges, FixButton } from './Correction'
+import { isCalendar, periodLabel } from '../lib/payrollPeriod'
 import { FixDraft, type FixMode } from './FixDraft'
 import { Pager, usePager } from './Pager'
 import { ExtraForm, PayoutForm, SalaryForm, type ExtraDoc, type PayoutDoc, type SalaryDoc } from './PayrollForms'
@@ -38,6 +39,8 @@ interface PayoutRow {
   reversed: boolean
   user_name: string
   created_at: string
+  /** Дата выплаты в расчёте (задача 003 Н11); деньги ушли в `created_at`. */
+  pay_date?: string
 }
 
 interface EntriesOut {
@@ -61,6 +64,13 @@ type Target = { what: 'accrual'; row: AccrualRow } | { what: 'payout'; row: Payo
 const FIXABLE_KINDS = ['bonus', 'penalty', 'monthly_salary']
 
 const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
+
+/** Подпись исправления оклада: «за 20.10–19.11» или «за октябрь 2026» (задача 003 Н11). */
+function salaryFixHint(d: SalaryDoc): string {
+  if (d.period_from && d.period_to && !isCalendar(d.period_from, d.period_to)) return `Оклад за ${periodLabel(d.period_from, d.period_to)}.`
+  const m = d.month ?? d.period_from ?? ''
+  return `Оклад за ${MONTHS[Number(m.slice(5, 7)) - 1] ?? ''} ${m.slice(0, 4)}.`
+}
 
 /** Что отменяем и как это назвать: прощение недостачи — это сторно её удержания (ADR-064). */
 function actionLabel(t: Target): string {
@@ -129,7 +139,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                     <SalaryForm
                       employeeId={employee.employee_id}
                       month={fix.doc.month}
-                      hint={`Оклад за ${MONTHS[Number(fix.doc.month.slice(5, 7)) - 1] ?? ''} ${fix.doc.month.slice(0, 4)}.`}
+                      hint={salaryFixHint(fix.doc)}
                       fix={fix as FixMode<SalaryDoc>}
                       onCancel={() => setFixing(null)}
                       onDone={fixed}
@@ -222,7 +232,9 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                   {payPager.shown.map((p) => (
                     <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                       <span className={struck(p)}>
-                        № {p.number} · {formatDateTime(p.created_at)} · {p.reversal_of ? 'Сторно: ' : ''}
+                        № {p.number} · {formatDateTime(p.created_at)}
+                        {p.pay_date && p.pay_date !== bishkekDate(p.created_at) && <> · в расчёте за {formatDate(p.pay_date)}</>} ·{' '}
+                        {p.reversal_of ? 'Сторно: ' : ''}
                         <Money value={p.amount_tyiyn} tone="negative" />
                         {p.purpose && p.purpose !== 'general' && <> · {(PURPOSE_LABELS[p.purpose] ?? p.purpose).toLowerCase()}</>} ·{' '}
                         {p.account_name ? `из «${p.account_name}»` : 'мимо касс'}

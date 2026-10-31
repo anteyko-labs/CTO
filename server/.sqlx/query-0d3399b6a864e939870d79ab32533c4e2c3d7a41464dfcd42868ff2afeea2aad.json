@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with months as (\n             select m::date as m\n             from generate_series(date_trunc('month', $2::date), date_trunc('month', $3::date),\n                                  interval '1 month') m\n           ), periods as (\n             select mo.m, e.id as employee_id,\n                    case when e.salary_day = 1 then mo.m\n                         else (mo.m - interval '1 month' + make_interval(days => e.salary_day - 1))::date\n                    end as start,\n                    case when e.salary_day = 1 then (mo.m + interval '1 month - 1 day')::date\n                         else (mo.m + make_interval(days => e.salary_day - 2))::date\n                    end as stop\n             from months mo join employees e on e.branch_id = $1 and e.active\n           ), due as (\n             select distinct p.m, p.employee_id, p.start, p.stop\n             from periods p\n             join employee_pay_rules r on r.branch_id = $1 and r.employee_id = p.employee_id\n               and r.kind = 'monthly_salary'\n               and r.active_from <= p.stop and (r.active_to is null or r.active_to > p.start)\n             where p.stop < (now() at time zone 'Asia/Bishkek')::date\n           )\n           select d.m as \"month!\", count(*) as \"due!\",\n                  count(*) filter (where not exists (\n                    select 1 from payroll_accruals a\n                    where a.branch_id = $1 and a.employee_id = d.employee_id\n                      and a.kind = 'monthly_salary' and a.reversal_of is null\n                      and coalesce(a.period_from, date_trunc('month', a.business_date)::date) <= d.stop\n                      and coalesce(a.period_to, (date_trunc('month', a.business_date) + interval '1 month - 1 day')::date) >= d.start\n                      and not exists (select 1 from payroll_accruals x where x.reversal_of = a.id)\n                  )) as \"missing!\"\n           from due d group by d.m order by d.m",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "month!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "due!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "missing!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0d3399b6a864e939870d79ab32533c4e2c3d7a41464dfcd42868ff2afeea2aad"
+}

@@ -149,13 +149,15 @@ fn name_taken(e: sqlx::Error) -> AppError {
 
 /// Настройки, которые новый филиал получает копией главного (SPEC-33 §1). Не копируются
 /// точка и касса банка (Optima — у каждого филиала свои) и отметки «просмотрено».
-const COPIED_SETTINGS: [&str; 8] = [
+const COPIED_SETTINGS: [&str; 9] = [
     "batteries",
     "client_messages",
     "debt_docs",
     "favorites",
     "labels",
     "loyalty",
+    // «Настройки → Зарплата» (задача 003 Н11).
+    "payroll",
     "sales",
     "stock",
 ];

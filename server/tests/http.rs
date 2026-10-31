@@ -4069,9 +4069,15 @@ async fn bot(
         .unwrap()
 }
 
-/// Слова о выплатах: в кабинете работника их быть не должно (SPEC-23).
+/// Слова о выплатах: в кабинете работника их быть не должно (SPEC-23). Кроме строки оклада:
+/// ставка, авансы и «к выплате» по окладу работник видит (задача 003 Н11, ADR-{B9.3}).
 fn no_payout_words(text: &str) {
-    let low = text.to_lowercase();
+    let low: String = text
+        .to_lowercase()
+        .lines()
+        .filter(|l| !l.starts_with("оклад за "))
+        .collect::<Vec<_>>()
+        .join("\n");
     for w in ["выплат", "выдан", "выдач", "аванс", "к выплате", "остаток"]
     {
         assert!(!low.contains(w), "«{w}» в ответе работнику: {text}");
@@ -4303,7 +4309,12 @@ async fn bot_employee_cabinet_matches_payroll_screen(pool: PgPool) {
         r.text
     );
     assert!(r.text.contains(&format!("— {}", format_som(c_day))));
-    assert!(r.text.contains("Оклад за этот месяц ещё не начислен"));
+    // Оклад всегда виден (задача 003 Н11): ставка, «не начислен» и к выплате.
+    assert!(
+        r.text.contains("(не начислен — начислит владелец)") && r.text.contains("к выплате"),
+        "{}",
+        r.text
+    );
     // Листается назад, вперёд дальше текущего — нет.
     let texts: Vec<&str> = r.inline.iter().flatten().map(|b| b.text.as_str()).collect();
     assert_eq!(texts.len(), 1, "{texts:?}");
