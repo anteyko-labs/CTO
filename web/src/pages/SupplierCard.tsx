@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Pager, usePagedLoad, usePager } from '../components/Pager'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
-import { get, qs } from '../lib/api'
+import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
+import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { balanceText, qtyText as unitQty } from '../lib/defects'
-import { formatDateTime, formatSom } from '../lib/format'
-import { useLoad } from '../lib/hooks'
+import { formatDate, formatDateTime, formatSom } from '../lib/format'
+import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
-import type { DeliveryReceipt, DeliveryRow, InvoiceStatus, Party, ReceiptListItem, Supplier, SupplierDeliveries, SupplierInvoices } from '../lib/types'
+import type { DeliveryReceipt, DeliveryRow, InvoiceStatus, Party, ReceiptListItem, Supplier, SupplierDeliveries, SupplierInvoice, SupplierInvoices } from '../lib/types'
 import { ReconciliationButton } from '../components/ReconciliationButton'
 import { RepaymentModal, type InvoiceToPay } from '../components/RepaymentModal'
 import { InvoiceStatusBadge, SupplierPaymentHistory } from '../components/SupplierPayments'
@@ -16,6 +16,8 @@ import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 import { SupplierReturnList, SupplierReturnModal } from '../components/SupplierReturns'
 import { SupplierLineMap } from '../components/SupplierLineMap'
+import { SupplierOldDebtModal } from '../components/SupplierOldDebtModal'
+import { FixButton } from '../components/Correction'
 import { ExportButton } from '../components/ExportButton'
 import { cappedWarning, colsIf, fetchAllPages, listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 
@@ -42,7 +44,13 @@ export default function SupplierCard() {
   const owner = useUser().role === 'owner'
   // Оплата поставщику — право «Приход», возврат — «Возврат поставщику» (ADR-097).
   const can = useCan()
-  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'payments' | 'returns' | 'lines'>('deliveries')
+  const [tab, setTab] = useState<'deliveries' | 'receipts' | 'old' | 'payments' | 'returns' | 'lines'>('deliveries')
+  // Старый долг поставщику из тетради (задача 003 Н15): занести — право «Старые долги из тетради»,
+  // сторно и «Исправить» — владелец (I14).
+  const [oldDebt, setOldDebt] = useState(false)
+  const [fixingOld, setFixingOld] = useState<string | null>(null)
+  const [reversing, setReversing] = useState<{ item: SupplierInvoice; comment: string; opId: string } | null>(null)
+  const revAct = useAction()
   const [returning, setReturning] = useState(false)
   const [returnsKey, setReturnsKey] = useState(0)
   const [from, setFrom] = useState('')
@@ -66,6 +74,7 @@ export default function SupplierCard() {
   }
 
   const owed = party.data ? -Math.min(party.data.balance_tyiyn, 0) : 0
+  const oldDebts = (invoices.data?.invoices ?? []).filter((i) => i.kind === 'old_debt')
 
   const rows = deliveries.data?.rows ?? []
   const docs = receipts.items
@@ -86,6 +95,11 @@ export default function SupplierCard() {
               К списку
             </Button>
             <ReconciliationButton partyId={id} />
+            {can('old_debts') && party.data && (
+              <Button variant="secondary" onClick={() => setOldDebt(true)}>
+                Занести старый долг
+              </Button>
+            )}
             {can('supplier_returns') && (
               <Button variant="secondary" onClick={() => setReturning(true)}>
                 Возврат поставщику
@@ -163,13 +177,19 @@ export default function SupplierCard() {
           [
             ['deliveries', 'Поставки'],
             ['receipts', 'Накладные'],
+            ['old', 'Старые долги'],
             ['payments', 'Платежи'],
             ['returns', 'Возвраты'],
             ['lines', 'Строки накладных'],
           ] as const
         )
           // Накладные и возвраты — по праву своего пункта меню (задача 003; проверяет и сервер).
-          .filter(([key]) => (key !== 'receipts' || can('receipts')) && (key !== 'returns' || can('supplier_returns')))
+          .filter(
+            ([key]) =>
+              (key !== 'receipts' || can('receipts')) &&
+              (key !== 'returns' || can('supplier_returns')) &&
+              (key !== 'old' || can('old_debts') || oldDebts.length > 0),
+          )
           .map(([key, label]) => (
           <button
             key={key}
@@ -346,6 +366,53 @@ export default function SupplierCard() {
       </Card>
       )}
 
+      {tab === 'old' && (
+        <Card>
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">Старые долги из тетради</h2>
+            {can('old_debts') && party.data && (
+              <Button variant="secondary" onClick={() => setOldDebt(true)}>
+                Занести старый долг
+              </Button>
+            )}
+          </div>
+          <p className="mb-3 text-xs text-slate-500">Наш долг поставщику до программы. Оплата без выбора накладной гасит самые старые долги первыми — и эти.</p>
+          <ErrorBox error={invoices.error} />
+          {invoices.loading && !invoices.data ? (
+            <Loading />
+          ) : oldDebts.length === 0 ? (
+            <Empty>Старых долгов поставщику нет</Empty>
+          ) : (
+            <Table head={['Дата долга', 'Накладная', 'Сумма', 'Оплачено', 'Осталось', 'Статус', 'Комментарий', 'Занёс', '']}>
+              {oldDebts.map((d) => (
+                <tr key={d.ledger_id} data-testid="supplier-old-debt-row">
+                  <td className="whitespace-nowrap px-2 py-2">{formatDate(d.business_date)}</td>
+                  <td className="px-2 py-2">{d.supplier_doc || '—'}</td>
+                  <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatSom(d.total_tyiyn)}</td>
+                  <td className="whitespace-nowrap px-2 py-2 tabular-nums">{formatSom(d.paid_tyiyn)}</td>
+                  <td className={`whitespace-nowrap px-2 py-2 tabular-nums ${d.left_tyiyn > 0 ? 'font-semibold text-rose-700' : ''}`}>{formatSom(d.left_tyiyn)}</td>
+                  <td className="px-2 py-2">
+                    <InvoiceStatusBadge status={d.status} />
+                  </td>
+                  <td className="px-2 py-2 text-slate-600">{d.comment || '—'}</td>
+                  <td className="px-2 py-2">{d.user_name || '—'}</td>
+                  <td className="px-2 py-2 text-right">
+                    {owner && (
+                      <div className="flex items-center justify-end gap-2">
+                        <FixButton small onClick={() => setFixingOld(d.ledger_id)} />
+                        <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setReversing({ item: d, comment: '', opId: newOpId() })}>
+                          Сторно
+                        </Button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Card>
+      )}
+
       {tab === 'payments' && (
         <Card>
           <h2 className="mb-1 font-semibold">История платежей</h2>
@@ -383,6 +450,61 @@ export default function SupplierCard() {
             reloadMoney()
           }}
         />
+      )}
+
+      {oldDebt && party.data && (
+        <SupplierOldDebtModal
+          party={party.data}
+          onClose={() => setOldDebt(false)}
+          onSaved={() => {
+            reloadMoney()
+            setTab('old')
+          }}
+        />
+      )}
+      {fixingOld && party.data && (
+        <SupplierOldDebtModal
+          key={fixingOld}
+          party={party.data}
+          fixId={fixingOld}
+          onClose={() => setFixingOld(null)}
+          onSaved={() => {
+            reloadMoney()
+            corrections.reload()
+          }}
+        />
+      )}
+      {reversing && (
+        <Modal title={`Сторно: старый долг ${formatSom(reversing.item.total_tyiyn)}`} onClose={() => setReversing(null)}>
+          <div className="flex flex-col gap-3">
+            <div className="text-sm text-slate-600">
+              Запись останется в истории, рядом появится обратная. Оплаты, которые легли на этот долг, перейдут на другие накладные или станут авансом.
+            </div>
+            <Field label="Причина" required>
+              <input autoFocus value={reversing.comment} onChange={(e) => setReversing({ ...reversing, comment: e.target.value })} />
+            </Field>
+            <ErrorBox error={revAct.error} />
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setReversing(null)}>
+                Отмена
+              </Button>
+              <Button
+                variant="danger"
+                disabled={revAct.busy || !reversing.comment.trim()}
+                onClick={() =>
+                  void revAct.run(async () => {
+                    await post(`/debts/ledger/${reversing.item.ledger_id}/reverse`, { op_id: reversing.opId, comment: reversing.comment.trim() })
+                    setReversing(null)
+                    reloadMoney()
+                    toast('Сторно проведено')
+                  })
+                }
+              >
+                Провести сторно
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {payingInvoice && party.data && (

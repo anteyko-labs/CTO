@@ -865,7 +865,7 @@ async fn load_receipt_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) ->
 async fn load_ledger_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<Doc> {
     let l = sqlx::query!(
         r#"select l.party_id, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.comment,
-                  p.name, p.role, l.business_date
+                  p.name, p.role, l.business_date, l.supplier_doc
            from party_ledger l join parties p on p.id = l.party_id
            where l.id = $1 and l.branch_id = $2"#,
         id,
@@ -876,6 +876,30 @@ async fn load_ledger_doc(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> 
     .ok_or(AppError::NotFound)?;
     let mut desc = Desc::default();
     let supplier = l.role == "supplier";
+    // Старый долг поставщику из тетради (задача 003 Н15): поставщик, сумма нашего долга, дата,
+    // номер его накладной и комментарий.
+    if l.doc_type == crate::api::parties::OLD_DEBT_DOC && supplier {
+        let text = crate::api::parties::old_debt_text(&l.comment).to_string();
+        let amount = l.amount_tyiyn.saturating_neg();
+        desc.field("Вид", "старый долг поставщику из тетради");
+        desc.field("Поставщик", l.name.clone());
+        desc.field("Сумма", format_som(amount));
+        desc.field("Дата долга", date_text(l.business_date));
+        desc.field("Накладная", or_none(Some(l.supplier_doc.clone())));
+        desc.field("Комментарий", or_none(Some(text.clone())));
+        return Ok(Doc {
+            number: None,
+            draft: json!({
+                "type": "supplier_old_debt",
+                "party_id": l.party_id,
+                "amount_tyiyn": amount,
+                "date": l.business_date,
+                "supplier_doc": l.supplier_doc,
+                "comment": text,
+            }),
+            desc,
+        });
+    }
     // Старый долг из тетради (SPEC-38): клиент, сумма, дата долга и комментарий.
     if l.doc_type == crate::api::parties::OLD_DEBT_DOC {
         let text = crate::api::parties::old_debt_text(&l.comment).to_string();
@@ -1630,6 +1654,14 @@ async fn post_new(
         Kind::CashTransfer => {
             let out = crate::api::cash::post_transfer_tx(conn, ctx, req_of(doc)?).await?;
             (value_id(&out)?, out.get("number").and_then(Value::as_i64))
+        }
+        Kind::Ledger if doc_type(&original.draft) == "supplier_old_debt" => {
+            // Верный старый долг поставщику — тому же или другому поставщику; исходный уже
+            // сторнирован, исправление владельца — само подтверждение (задача 003 Н15).
+            let mut req: crate::api::supplier_debts::SupplierOldDebtReq = req_of(doc)?;
+            req.confirm_duplicate = true;
+            let out = crate::api::supplier_debts::post_supplier_old_debt_tx(conn, ctx, req).await?;
+            (out.ledger_id, None)
         }
         Kind::Ledger if doc_type(&original.draft) == "old_debt" => {
             // Верный старый долг — существующему клиенту; исходный уже сторнирован, а

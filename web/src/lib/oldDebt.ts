@@ -71,3 +71,32 @@ export function oldDebtPreview(balance: number, amount: number | null, date: str
   }
   return lines
 }
+
+// ---------- Старый долг поставщику из тетради (задача 003 Н15, ADR-{g1.1}) ----------
+
+/** Номер накладной поставщика — не длиннее (как на сервере). */
+export const SUPPLIER_DOC_MAX = 100
+
+/** Документ «Исправить» старого долга поставщику: поставщик, сумма нашего долга, дата, накладная. */
+export interface SupplierOldDebtDoc {
+  type?: 'supplier_old_debt'
+  party_id: string
+  amount_tyiyn: number
+  date: string
+  supplier_doc: string
+  comment: string
+}
+
+/** Наш долг поставщику словами: баланс меньше нуля — мы должны, больше — аванс поставщику. */
+const weOwe = (balance: number) => (balance <= 0 ? formatSom(-balance) : `аванс ${formatSom(balance)}`)
+
+/** Подсказка под полями: «Наш долг поставщику сейчас … → станет …»; `balance` — баланс филиала. */
+export function supplierOldDebtPreview(balance: number, amount: number | null): string[] {
+  if (amount === null || amount <= 0) return []
+  return [`Наш долг поставщику сейчас ${weOwe(balance)} → станет ${weOwe(balance - amount)}`]
+}
+
+/** Ошибка номера накладной или `null`. */
+export function supplierDocError(doc: string): string | null {
+  return doc.trim().length > SUPPLIER_DOC_MAX ? `Номер накладной — не длиннее ${SUPPLIER_DOC_MAX} знаков` : null
+}

@@ -113,7 +113,8 @@ payments: [{method: cash | card | transfer | debt, amount_tyiyn}]
 ### Оплата накладных по частям (SPEC-27, ADR-073)
 
 ```
-долги поставщику:    party_ledger < 0 — накладная в долг (receipt), правка в сторону долга (adjust)
+долги поставщику:    party_ledger < 0 — накладная в долг (receipt), старый долг из тетради (old_debt,
+                     задача 003 Н15), правка в сторону долга (adjust)
 закрывают:           party_ledger > 0 — оплата (repayment), зачёт брака (defect), правка в нашу пользу (adjust)
 снятые записи:       сторно и сторнированные, сторно накладной и снятая им накладная,
                      отмена решения по браку и отменённое решение — в распределении не участвуют
@@ -130,7 +131,7 @@ supplier_allocations(credit_id, debit_id, amount)   — строки не пра
 Остаток накладной = сумма в долг − распределено на неё; статус — `unpaid` (ничего), `partial`, `paid` (всё). Открытые долги минус аванс = −баланс поставщика. Миграция `0040` распределила оплаты, сделанные до неё, тем же правилом.
 
 - `POST /debts/repayments` принимает `receipt_id` — оплата одной накладной поставщика.
-- `GET /parties/{id}/invoices` (поставщик) → `{invoices: [{ledger_id, receipt_id, number, supplier_doc, business_date, total_tyiyn, paid_tyiyn, left_tyiyn, status}], debt_tyiyn, advance_tyiyn, payments: [{ledger_id, at, user_name, kind: payment | defect | adjust, amount_tyiyn, source, reversed, applied: [{receipt_id, number, amount_tyiyn, gross_tyiyn}]}]}`; `source` — название кассы, `outside` или пусто (зачёт, правка).
+- `GET /parties/{id}/invoices` (поставщик) → `{invoices: [{ledger_id, kind: receipt | old_debt | adjust, user_name, receipt_id, number, supplier_doc, business_date, total_tyiyn, paid_tyiyn, left_tyiyn, status, comment}], debt_tyiyn, advance_tyiyn, payments: [{ledger_id, at, user_name, kind: payment | defect | adjust, amount_tyiyn, source, reversed, applied: [{receipt_id, number, amount_tyiyn, gross_tyiyn}]}]}`; `source` — название кассы, `outside` или пусто (зачёт, правка).
 - `GET /receipts/{id}` → `debt: {total_tyiyn, paid_tyiyn, left_tyiyn, status, payments}` у накладной в долг; `GET /receipts` → `debt_left_tyiyn`.
 
 ## Погашение

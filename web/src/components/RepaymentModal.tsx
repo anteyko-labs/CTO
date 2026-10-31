@@ -400,7 +400,7 @@ function SupplierOpen({ invoices, current }: { invoices: SupplierInvoice[]; curr
           <tr key={i.ledger_id} className={i.receipt_id && i.receipt_id === current ? 'bg-sky-50' : ''}>
             <td className="whitespace-nowrap px-2 py-2">{formatDate(i.business_date)}</td>
             <td className="px-2 py-2">
-              {i.number !== null ? `№ ${i.number}` : i.comment || 'Долг'}
+              {i.number !== null ? `№ ${i.number}` : i.kind === 'old_debt' ? 'Старый долг (из тетради)' : i.comment || 'Долг'}
               {i.supplier_doc && <span className="ml-1 text-xs text-slate-500">({i.supplier_doc})</span>}
             </td>
             <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(i.total_tyiyn)}</td>

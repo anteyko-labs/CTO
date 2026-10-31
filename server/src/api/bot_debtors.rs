@@ -5,6 +5,10 @@
 //! `old_debts` у администратора, `op_id` черновика (повтор нажатия — та же запись), журнал
 //! `debt.old`. Ожидание ввода — `bot_input` вида `old_debt` на 30 минут; любая кнопка внизу или
 //! `/команда` его отменяет.
+//!
+//! Задача 003 Н15: на первом шаге — кнопка «🚚 Мы должны поставщику»: поставщик (поиск по
+//! названию), сумма, дата, номер его накладной, примечание → `supplier_debts::
+//! post_supplier_old_debt_tx` (журнал `debt.old_supplier`), то же право.
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -29,7 +33,12 @@ const FOUND: usize = 6;
 /// Ожидание ответа на шаг, минут.
 const WAIT_MINUTES: i32 = 30;
 
-const ASK_WHO: &str = "➕ Занести долг (старый долг из тетради).\n\nКто должен? Напишите имя, фамилию или телефон клиента.";
+const ASK_WHO: &str = "➕ Занести долг (старый долг из тетради).\n\nКто должен? Напишите имя, фамилию или телефон клиента.\nМы должны поставщику — кнопка «🚚 Мы должны поставщику».";
+const ASK_SUPPLIER: &str =
+    "Старый долг поставщику — мы ему должны. Напишите название поставщика (или часть).";
+const ASK_DOC: &str = "Номер накладной поставщика, по которой остался долг, — или «Пропустить».";
+/// Кнопка первого шага: долг Автодома поставщику, а не клиента нам.
+const BTN_SUPPLIER: &str = "🚚 Мы должны поставщику";
 const ASK_PERSON: &str =
     "Новый клиент — физлицо. Напишите фамилию и имя через пробел (например: Иванов Пётр).";
 const ASK_COMPANY: &str = "Новый клиент — фирма. Напишите название (например: ОсОО Бишкек такси).";
@@ -38,6 +47,8 @@ const ASK_AMOUNT: &str = "Сумма долга, сом (например: 5 000
 const ASK_DATE: &str = "Дата долга — когда взял, ДД.ММ.ГГГГ (например: 15.03.2026). От неё считаются срок оплаты и просрочка.";
 const ASK_COMMENT: &str =
     "Примечание: что брал, страница тетради (до 500 знаков) — или «Пропустить».";
+const ASK_DATE_SUPPLIER: &str =
+    "Дата долга — когда получили товар, ДД.ММ.ГГГГ (например: 15.03.2026).";
 const STALE: &str = "Кнопка устарела. Начать заново — «➕ Занести долг».";
 const NO_RIGHT: &str = "Нет права «Старые долги из тетради» — его выдаёт владелец.";
 
@@ -59,6 +70,12 @@ struct Dialog {
     date: Option<NaiveDate>,
     #[serde(default)]
     comment: String,
+    /// Долг поставщику (задача 003 Н15): мы должны, а не нам.
+    #[serde(default)]
+    supplier: bool,
+    /// Номер накладной поставщика.
+    #[serde(default)]
+    supplier_doc: String,
 }
 
 fn button(text: impl Into<String>, data: impl Into<String>) -> Button {
@@ -216,7 +233,7 @@ async fn start(conn: &mut PgConnection, user: &CurrentUser, chat_id: i64) -> App
         ..Dialog::default()
     };
     save(conn, user, chat_id, &d).await?;
-    Ok(reply(ASK_WHO, vec![vec![button("✖ Отмена", "od:no")]]))
+    Ok(ask(&d))
 }
 
 /// Вопрос текущего шага (и его кнопки).
@@ -229,16 +246,32 @@ fn ask(d: &Dialog) -> Reply {
             ASK_PHONE,
             vec![vec![button("Пропустить", "od:skip"), cancel]],
         ),
+        "amount" if d.supplier => reply(
+            format!(
+                "Поставщик: {}.\n\nСколько мы должны, сом (например: 5 000 или 1 250,50).",
+                d.party_name
+            ),
+            vec![vec![cancel]],
+        ),
         "amount" => reply(
             format!("Клиент: {}.\n\n{ASK_AMOUNT}", d.party_name),
             vec![vec![cancel]],
         ),
+        "date" if d.supplier => reply(
+            ASK_DATE_SUPPLIER,
+            vec![vec![button("Сегодня", "od:today"), cancel]],
+        ),
         "date" => reply(ASK_DATE, vec![vec![button("Сегодня", "od:today"), cancel]]),
+        "who_supplier" => reply(ASK_SUPPLIER, vec![vec![cancel]]),
+        "doc" => reply(ASK_DOC, vec![vec![button("Пропустить", "od:skip"), cancel]]),
         "comment" => reply(
             ASK_COMMENT,
             vec![vec![button("Пропустить", "od:skip"), cancel]],
         ),
-        _ => reply(ASK_WHO, vec![vec![cancel]]),
+        _ => reply(
+            ASK_WHO,
+            vec![vec![button(BTN_SUPPLIER, "od:sup")], vec![cancel]],
+        ),
     }
 }
 
@@ -265,7 +298,10 @@ pub fn parse_date(s: &str, today: NaiveDate) -> Option<NaiveDate> {
 }
 
 /// Итог перед проведением: кто, сколько, дата, примечание, как изменится долг.
-async fn summary(conn: &mut PgConnection, d: &Dialog) -> AppResult<Reply> {
+async fn summary(conn: &mut PgConnection, user: &CurrentUser, d: &Dialog) -> AppResult<Reply> {
+    if d.supplier {
+        return supplier_summary(conn, user, d).await;
+    }
     let mut lines = vec!["Занести старый долг?".to_string()];
     let before = match d.party_id {
         Some(id) => {
@@ -314,6 +350,85 @@ async fn summary(conn: &mut PgConnection, d: &Dialog) -> AppResult<Reply> {
     ))
 }
 
+/// Итог долга поставщику: поставщик, сумма, дата, накладная, как изменится наш долг в филиале.
+async fn supplier_summary(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    d: &Dialog,
+) -> AppResult<Reply> {
+    let mut lines = vec![
+        "Занести старый долг поставщику?".to_string(),
+        format!("Поставщик: {}", d.party_name),
+        format!("Сумма: {} — мы должны", format_som(d.amount)),
+    ];
+    if let Some(date) = d.date {
+        lines.push(format!("Дата долга: {}", day(date)));
+        let today = crate::api::fees::today(&mut *conn).await?;
+        if (today - date).num_days() > 365 {
+            lines.push("⚠ Долгу больше года — проверьте год.".into());
+        }
+    }
+    if !d.supplier_doc.is_empty() {
+        lines.push(format!("Накладная: {}", d.supplier_doc));
+    }
+    if !d.comment.is_empty() {
+        lines.push(format!("Примечание: {}", d.comment));
+    }
+    let before = match d.party_id {
+        Some(id) => crate::api::supplier_debts::branch_balance(conn, user.branch_id, id).await?,
+        None => 0,
+    };
+    lines.push(format!(
+        "Наш долг поставщику сейчас {} → станет {}",
+        format_som(before.saturating_neg().max(0)),
+        format_som(before.saturating_sub(d.amount).saturating_neg().max(0))
+    ));
+    Ok(reply(
+        lines.join("\n"),
+        vec![vec![
+            button("✅ Провести", "od:go"),
+            button("✖ Отмена", "od:no"),
+        ]],
+    ))
+}
+
+/// Ответ на поиск поставщика: найденные кнопками; нового поставщика бот не заводит.
+async fn found_supplier(conn: &mut PgConnection, user: &CurrentUser, q: &str) -> AppResult<Reply> {
+    let rows = search_parties(
+        &mut *conn,
+        user.branch_id,
+        ListQuery {
+            role: Some("supplier".into()),
+            q: Some(q.to_string()),
+            ..ListQuery::default()
+        },
+    )
+    .await?;
+    let hits: Vec<_> = rows.into_iter().take(FOUND).collect();
+    let mut buttons: Vec<Vec<Button>> = hits
+        .iter()
+        .map(|p| {
+            let mut t = p.name.clone();
+            if p.branch_balance_tyiyn < 0 {
+                t.push_str(&format!(
+                    " · должны {}",
+                    format_som(p.branch_balance_tyiyn.saturating_neg())
+                ));
+            }
+            vec![button(t, format!("od:s:{}", p.id.simple()))]
+        })
+        .collect();
+    buttons.push(vec![button("✖ Отмена", "od:no")]);
+    let text = if hits.is_empty() {
+        format!(
+            "Не нашли поставщика «{q}». Напишите иначе; нового поставщика заводят в программе («Поставщики»)."
+        )
+    } else {
+        "Выберите поставщика — или напишите иначе:".into()
+    };
+    Ok(reply(text, buttons))
+}
+
 /// Следующий шаг после выбора клиента или ввода поля.
 async fn next(
     conn: &mut PgConnection,
@@ -325,7 +440,7 @@ async fn next(
     d.step = step.to_string();
     save(conn, user, chat_id, &d).await?;
     if step == "confirm" {
-        return summary(conn, &d).await;
+        return summary(conn, user, &d).await;
     }
     Ok(ask(&d))
 }
@@ -405,6 +520,21 @@ pub async fn on_message(
     }
     let r = match d.step.as_str() {
         "who" => found(conn, &user, t).await?,
+        "who_supplier" => found_supplier(conn, &user, t).await?,
+        "doc" => {
+            if t.chars().count() > 100 {
+                reply(
+                    "Номер накладной — не длиннее 100 знаков.",
+                    vec![vec![
+                        button("Пропустить", "od:skip"),
+                        button("✖ Отмена", "od:no"),
+                    ]],
+                )
+            } else {
+                d.supplier_doc = crate::api::bot_drafts::one_line(t);
+                next(conn, &user, chat_id, d, "comment").await?
+            }
+        }
         "new_person" => {
             let mut words = t.split_whitespace();
             let last = words.next().unwrap_or("").to_string();
@@ -457,7 +587,8 @@ pub async fn on_message(
                 Some(date) => match crate::api::parties::check_old_debt_date(date, today) {
                     Ok(()) => {
                         d.date = Some(date);
-                        next(conn, &user, chat_id, d, "comment").await?
+                        let step = if d.supplier { "doc" } else { "comment" };
+                        next(conn, &user, chat_id, d, step).await?
                     }
                     Err(e) => reply(
                         format!("Не подходит: {e}. {ASK_DATE}"),
@@ -491,7 +622,7 @@ pub async fn on_message(
             }
         }
         // Итог показан — ждём кнопку; текст повторяет итог.
-        _ => summary(conn, &d).await?,
+        _ => summary(conn, &user, &d).await?,
     };
     Ok(Some(r))
 }
@@ -521,16 +652,27 @@ pub async fn callback(
             clear(conn, chat_id).await?;
             Ok(Reply::new("Отменено — долг не занесён.", Keys::Owner))
         }
+        "od:sup" if d.step == "who" => {
+            d.supplier = true;
+            d.party_id = None;
+            d.new_party = None;
+            next(conn, &user, chat_id, d, "who_supplier").await
+        }
         "od:np" => next(conn, &user, chat_id, d, "new_person").await,
         "od:nc" => next(conn, &user, chat_id, d, "new_company").await,
         "od:skip" if d.step == "phone" => next(conn, &user, chat_id, d, "amount").await,
+        "od:skip" if d.step == "doc" => {
+            d.supplier_doc.clear();
+            next(conn, &user, chat_id, d, "comment").await
+        }
         "od:skip" if d.step == "comment" => {
             d.comment.clear();
             next(conn, &user, chat_id, d, "confirm").await
         }
         "od:today" if d.step == "date" => {
             d.date = Some(crate::api::fees::today(&mut *conn).await?);
-            next(conn, &user, chat_id, d, "comment").await
+            let step = if d.supplier { "doc" } else { "comment" };
+            next(conn, &user, chat_id, d, step).await
         }
         // Провести — только тот, кто привязал чат (ADR-070).
         "od:go" | "od:dup" if d.step == "confirm" => {
@@ -542,6 +684,26 @@ pub async fn callback(
             }
             post(conn, &user, chat_id, &d, data == "od:dup").await
         }
+        _ if data.starts_with("od:s:") => match data.strip_prefix("od:s:").map(Uuid::parse_str) {
+            Some(Ok(id)) if d.step == "who_supplier" => {
+                let p = sqlx::query!(
+                    "select name from parties where id = $1 and role = 'supplier'",
+                    id
+                )
+                .fetch_optional(&mut *conn)
+                .await?;
+                let Some(p) = p else {
+                    return Ok(reply(
+                        "Поставщик не найден. Напишите название ещё раз.",
+                        vec![vec![button("✖ Отмена", "od:no")]],
+                    ));
+                };
+                d.party_id = Some(id);
+                d.party_name = p.name;
+                next(conn, &user, chat_id, d, "amount").await
+            }
+            _ => Ok(ask(&d)),
+        },
         _ => match data.strip_prefix("od:p:").map(Uuid::parse_str) {
             Some(Ok(id)) if d.step == "who" => {
                 let p = sqlx::query!(
@@ -578,6 +740,9 @@ async fn post(
     let Some(date) = d.date else {
         return Ok(ask(d));
     };
+    if d.supplier {
+        return post_supplier(conn, user, chat_id, d, date, confirm_duplicate).await;
+    }
     let req = OldDebtReq {
         op_id: d.op_id,
         party_id: d.party_id,
@@ -633,6 +798,72 @@ async fn post(
             text.push_str(&format!(", просрочен на {} дн.", out.overdue_days));
         }
     }
+    Ok(reply(text, vec![vec![button("➕ Ещё долг", "od:start")]]))
+}
+
+/// Отказ проведения долга поставщику словами для чата: повтор — вопрос «Занести ещё раз?»,
+/// понятные отказы — текстом; остальное — ошибкой бота.
+fn refused(e: AppError) -> AppResult<Reply> {
+    match e {
+        AppError::Conflict(why) => Ok(reply(
+            why,
+            vec![vec![
+                button("Да, занести ещё раз", "od:dup"),
+                button("✖ Отмена", "od:no"),
+            ]],
+        )),
+        e @ (AppError::Validation(_)
+        | AppError::Forbidden
+        | AppError::ForbiddenWith(_)
+        | AppError::NotFound) => Ok(reply(
+            format!("Не получилось: {e}."),
+            vec![vec![button("✖ Отмена", "od:no")]],
+        )),
+        e => Err(e),
+    }
+}
+
+/// «✅ Провести» долга поставщику: та же функция, что окно «Занести старый долг» в карточке
+/// поставщика (задача 003 Н15).
+async fn post_supplier(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    chat_id: i64,
+    d: &Dialog,
+    date: NaiveDate,
+    confirm_duplicate: bool,
+) -> AppResult<Reply> {
+    let Some(party_id) = d.party_id else {
+        return Ok(ask(d));
+    };
+    let req = crate::api::supplier_debts::SupplierOldDebtReq {
+        op_id: d.op_id,
+        party_id,
+        amount_tyiyn: d.amount,
+        date,
+        supplier_doc: d.supplier_doc.clone(),
+        comment: d.comment.clone(),
+        confirm_duplicate,
+    };
+    let ctx = Ctx::bot(user.clone(), chat_id);
+    let mut tx = conn.begin().await?;
+    let out = match crate::api::supplier_debts::post_supplier_old_debt_tx(&mut tx, &ctx, req).await
+    {
+        Ok(out) => out,
+        Err(e) => {
+            tx.rollback().await?;
+            return refused(e);
+        }
+    };
+    tx.commit().await?;
+    clear(conn, chat_id).await?;
+    let text = format!(
+        "✅ Занесено: долг поставщику {} — {} от {} (из тетради). Мы должны ему — {}.",
+        d.party_name,
+        format_som(d.amount),
+        day(date),
+        format_som(out.balance_tyiyn.saturating_neg().max(0))
+    );
     Ok(reply(text, vec![vec![button("➕ Ещё долг", "od:start")]]))
 }
 

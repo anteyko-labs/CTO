@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select to_char(l.created_at at time zone 'Asia/Bishkek', 'DD.MM') as \"day!\",\n                  u.full_name\n           from party_ledger l join users u on u.id = l.user_id\n           where l.party_id = $1 and l.kind = 'debt' and l.doc_type = $4\n             and l.amount_tyiyn = $2 and l.business_date = $3 and l.reversal_of is null\n             and ($5::uuid is null or l.branch_id = $5)\n             and not exists (select 1 from party_ledger r where r.reversal_of = l.id)\n           order by l.created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Date",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false
+    ]
+  },
+  "hash": "e7e5ac60b351f38ce296f31fa065783b7d4002040d6c2bdcd5405c4bae9c4e96"
+}
