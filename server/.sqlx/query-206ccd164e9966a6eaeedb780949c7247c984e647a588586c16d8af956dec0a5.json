@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update oil_changes set party_id = $2 where vehicle_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "206ccd164e9966a6eaeedb780949c7247c984e647a588586c16d8af956dec0a5"
+}

@@ -1,11 +1,12 @@
 // Справочник поставщиков; карточка поставщика — SupplierCard (SPEC-02, SPEC-10).
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { SupplierEditModal } from '../components/SupplierFormModal'
+import { SupplierEditModal, SupplierFields } from '../components/SupplierFormModal'
+import { dueDaysOk, EMPTY_SUPPLIER, innOk, supplierBody } from '../lib/supplierForm'
 import { Icon } from '../components/icons'
 import { Pager, usePager } from '../components/Pager'
 import { StockBackLink } from '../components/StockBackLink'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorBox, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, post } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -15,7 +16,7 @@ import type { Supplier } from '../lib/types'
 export default function Suppliers() {
   const list = useLoad(() => get<Supplier[]>('/suppliers'), [])
   const pager = usePager(list.data ?? [], 'suppliers')
-  const [form, setForm] = useState({ name: '', phone: '', comment: '' })
+  const [form, setForm] = useState(EMPTY_SUPPLIER)
   const [editing, setEditing] = useState<Supplier | null>(null)
   const [adding, setAdding] = useState(false)
   const { busy, error, setError, run } = useAction()
@@ -25,8 +26,8 @@ export default function Suppliers() {
   const create = (e: FormEvent) => {
     e.preventDefault()
     void run(async () => {
-      await post<Supplier>('/suppliers', form)
-      setForm({ name: '', phone: '', comment: '' })
+      await post<Supplier>('/suppliers', supplierBody(form, false))
+      setForm(EMPTY_SUPPLIER)
       setAdding(false)
       list.reload()
       toast('Поставщик добавлен')
@@ -65,7 +66,7 @@ export default function Suppliers() {
             Поставщиков пока нет. Их выбирают в приходной накладной.
           </Empty>
         ) : (
-          <Table head={['Название', 'Телефон', 'Комментарий', 'Статус', '']}>
+          <Table head={['Название', 'ИНН', 'Телефон', 'Комментарий', 'Статус', '']}>
             {pager.shown.map((s) => (
               <tr
                 key={s.id}
@@ -73,6 +74,7 @@ export default function Suppliers() {
                 onClick={() => navigate(`/suppliers/${s.id}`)}
               >
                 <td className="px-2 py-2 font-medium">{s.name}</td>
+                <td className="px-2 py-2 whitespace-nowrap">{s.inn || '—'}</td>
                 <td className="px-2 py-2 whitespace-nowrap">{s.phone || '—'}</td>
                 <td className="px-2 py-2">{s.comment || '—'}</td>
                 <td className="px-2 py-2">{s.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
@@ -94,22 +96,14 @@ export default function Suppliers() {
       {adding && (
         <Modal title="Новый поставщик" onClose={() => setAdding(false)}>
           <form onSubmit={create} className="flex flex-col gap-3">
-            <Field label="Название" required>
-              <input id="supplier-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            </Field>
-            <Field label="Телефон">
-              <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-            </Field>
-            <Field label="Комментарий">
-              <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
-            </Field>
+            <SupplierFields form={form} setForm={setForm} nameId="supplier-name" />
             <Missing items={notFilled} />
             <ErrorBox error={error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setAdding(false)}>
                 Отмена
               </Button>
-              <Button type="submit" disabled={busy || notFilled.length > 0}>
+              <Button type="submit" disabled={busy || notFilled.length > 0 || !innOk(form.inn) || !dueDaysOk(form.due_days)}>
                 Добавить
               </Button>
             </div>

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select plate from party_vehicles where party_id = $1 and plate_norm = $2 limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "plate",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3c56034d30d8a19540b7402e434cd676ca050595b90fb332eb107f498a2bf85f"
+}

@@ -933,14 +933,29 @@ async fn update_service(
 
 // ---------- Поставщики ----------
 
-#[derive(Serialize)]
+/// Поставщик с реквизитами (задача 003 Н10): вид, ИНН, адрес, банк и счёт, срок оплаты.
+/// Имя, телефон, комментарий и активность — в `suppliers` (за ним приход) и в `parties`,
+/// реквизиты — в `parties` (там же их видит акт сверки).
+#[derive(Serialize, Deserialize)]
 struct SupplierOut {
     id: Uuid,
     name: String,
     phone: String,
     comment: String,
     active: bool,
+    /// `company` — фирма, `person` — человек.
+    kind: String,
+    inn: String,
+    address: String,
+    /// Банк (название, БИК) и расчётный счёт.
+    bank: String,
+    bank_account: String,
+    /// Срок оплаты поставщику в днях; пусто — не задан.
+    due_days: Option<i32>,
 }
+
+/// Срок оплаты — не больше 10 лет, как у клиентов (SPEC-10).
+const MAX_SUPPLIER_DUE_DAYS: i32 = 3650;
 
 async fn list_suppliers(
     State(state): State<AppState>,
@@ -948,11 +963,91 @@ async fn list_suppliers(
 ) -> AppResult<Json<Vec<SupplierOut>>> {
     let rows = sqlx::query_as!(
         SupplierOut,
-        "select id, name, phone, comment, active from suppliers order by name"
+        r#"select s.id, s.name, s.phone, s.comment, s.active,
+                  coalesce(p.kind, 'company') as "kind!", coalesce(p.inn, '') as "inn!",
+                  coalesce(p.address, '') as "address!", coalesce(p.bank, '') as "bank!",
+                  coalesce(p.bank_account, '') as "bank_account!", p.due_days as "due_days?"
+           from suppliers s left join parties p on p.id = s.id
+           order by s.name"#
     )
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
+}
+
+/// Реквизиты из формы: вид, ИНН, адрес, банк, счёт. Проверка — здесь, а не ограничением базы:
+/// иначе человек увидит «внутреннюю ошибку».
+struct SupplierDetails {
+    kind: Option<String>,
+    inn: Option<String>,
+    address: Option<String>,
+    bank: Option<String>,
+    bank_account: Option<String>,
+}
+
+fn supplier_details(
+    kind: Option<String>,
+    inn: Option<String>,
+    address: Option<String>,
+    bank: Option<String>,
+    bank_account: Option<String>,
+    due_days: Option<i32>,
+) -> AppResult<SupplierDetails> {
+    if kind
+        .as_deref()
+        .is_some_and(|k| !matches!(k, "company" | "person"))
+    {
+        return Err(invalid("вид поставщика: фирма или человек"));
+    }
+    if due_days.is_some_and(|d| !(0..=MAX_SUPPLIER_DUE_DAYS).contains(&d)) {
+        return Err(invalid("срок оплаты — от 0 до 3650 дней"));
+    }
+    let inn = inn.map(|s| s.trim().to_string());
+    if inn
+        .as_deref()
+        .is_some_and(|i| !i.is_empty() && (i.len() > 20 || !i.bytes().all(|b| b.is_ascii_digit())))
+    {
+        return Err(invalid("ИНН — только цифры, не больше 20"));
+    }
+    let text = |v: Option<String>, what: &str, max: usize| -> AppResult<Option<String>> {
+        let v = v.map(|s| s.trim().to_string());
+        if v.as_deref().is_some_and(|t| t.chars().count() > max) {
+            return Err(invalid(format!("{what} — не длиннее {max} знаков")));
+        }
+        Ok(v)
+    };
+    Ok(SupplierDetails {
+        kind,
+        inn,
+        address: text(address, "адрес", 300)?,
+        bank: text(bank, "банк", 200)?,
+        bank_account: text(bank_account, "счёт", 60)?,
+    })
+}
+
+async fn supplier_out(conn: &mut PgConnection, id: Uuid) -> AppResult<SupplierOut> {
+    sqlx::query_as!(
+        SupplierOut,
+        r#"select s.id, s.name, s.phone, s.comment, s.active,
+                  coalesce(p.kind, 'company') as "kind!", coalesce(p.inn, '') as "inn!",
+                  coalesce(p.address, '') as "address!", coalesce(p.bank, '') as "bank!",
+                  coalesce(p.bank_account, '') as "bank_account!", p.due_days as "due_days?"
+           from suppliers s left join parties p on p.id = s.id
+           where s.id = $1"#,
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)
+}
+
+/// Поля поставщика для журнала: было → стало (I5).
+fn supplier_fields(s: &SupplierOut) -> Value {
+    json!({
+        "name": s.name, "phone": s.phone, "comment": s.comment, "active": s.active,
+        "kind": s.kind, "inn": s.inn, "address": s.address, "bank": s.bank,
+        "bank_account": s.bank_account, "due_days": s.due_days,
+    })
 }
 
 #[derive(Deserialize)]
@@ -962,6 +1057,12 @@ struct SupplierReq {
     phone: String,
     #[serde(default)]
     comment: String,
+    kind: Option<String>,
+    inn: Option<String>,
+    address: Option<String>,
+    bank: Option<String>,
+    bank_account: Option<String>,
+    due_days: Option<i32>,
 }
 
 async fn create_supplier(
@@ -970,6 +1071,14 @@ async fn create_supplier(
     Json(req): Json<SupplierReq>,
 ) -> AppResult<Json<SupplierOut>> {
     let name = required(&req.name, "название")?;
+    let d = supplier_details(
+        req.kind,
+        req.inn,
+        req.address,
+        req.bank,
+        req.bank_account,
+        req.due_days,
+    )?;
     let id = new_id();
     let (phone, comment) = (req.phone.trim().to_string(), req.comment.trim().to_string());
     let mut tx = state.pool.begin().await?;
@@ -985,33 +1094,35 @@ async fn create_supplier(
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
-        r#"insert into parties (id, branch_id, role, kind, name, phone, comment)
-           values ($1, $2, 'supplier', 'company', $3, $4, $5)"#,
+        r#"insert into parties (id, branch_id, role, kind, name, phone, comment, inn, address, bank,
+                                bank_account, due_days)
+           values ($1, $2, 'supplier', $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
         id,
         ctx.user.branch_id,
+        d.kind.as_deref().unwrap_or("company"),
         name,
         phone,
-        comment
+        comment,
+        d.inn.as_deref().unwrap_or(""),
+        d.address.as_deref().unwrap_or(""),
+        d.bank.as_deref().unwrap_or(""),
+        d.bank_account.as_deref().unwrap_or(""),
+        req.due_days
     )
     .execute(&mut *tx)
     .await?;
+    let out = supplier_out(&mut tx, id).await?;
     ops::audit(
         &mut tx,
         &ctx,
         "supplier.create",
         "supplier",
         Some(id),
-        json!({ "name": name }),
+        json!({ "name": name, "fields": supplier_fields(&out) }),
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(SupplierOut {
-        id,
-        name,
-        phone,
-        comment,
-        active: true,
-    }))
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
@@ -1020,6 +1131,15 @@ struct SupplierPatch {
     phone: Option<String>,
     comment: Option<String>,
     active: Option<bool>,
+    kind: Option<String>,
+    inn: Option<String>,
+    address: Option<String>,
+    bank: Option<String>,
+    bank_account: Option<String>,
+    /// Срок оплаты в днях; без поля — не менять, `clear_due_days` — снять срок.
+    due_days: Option<i32>,
+    #[serde(default)]
+    clear_due_days: bool,
 }
 
 async fn update_supplier(
@@ -1029,42 +1149,57 @@ async fn update_supplier(
     Json(req): Json<SupplierPatch>,
 ) -> AppResult<Json<SupplierOut>> {
     let name = optional_required(req.name, "название")?;
+    let d = supplier_details(
+        req.kind,
+        req.inn,
+        req.address,
+        req.bank,
+        req.bank_account,
+        req.due_days,
+    )?;
     let mut tx = state.pool.begin().await?;
-    // Править поставщика — то же право, что заводить: «Приход товара» (ADR-097, ADR-128).
+    // Править поставщика — то же право, что заводить: «Приход товара» (ADR-097, ADR-128);
+    // реквизиты и срок оплаты — тоже (задача 003 Н10): это сведения для документов, не деньги.
     crate::auth::require_permission(&mut tx, &ctx.user, "receipts").await?;
     // Поставщик общий для филиалов, без branch_id (отступление записано в ADR-062): журнал
     // правки пишется в филиал того, кто правил.
-    let before = sqlx::query!(
-        "select name, phone, comment, active from suppliers where id = $1 for update",
-        id
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AppError::NotFound)?;
-    let out = sqlx::query_as!(
-        SupplierOut,
+    sqlx::query_scalar!("select id from suppliers where id = $1 for update", id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let before = supplier_out(&mut tx, id).await?;
+    sqlx::query!(
         r#"update suppliers set name = coalesce($2, name), phone = coalesce($3, phone),
              comment = coalesce($4, comment), active = coalesce($5, active)
-           where id = $1 returning id, name, phone, comment, active"#,
+           where id = $1"#,
         id,
         name,
         req.phone.map(|s| s.trim().to_string()),
         req.comment.map(|s| s.trim().to_string()),
         req.active
     )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    .execute(&mut *tx)
+    .await?;
     sqlx::query!(
-        "update parties set name = $2, phone = $3, comment = $4, active = $5 where id = $1",
+        r#"update parties p set name = s.name, phone = s.phone, comment = s.comment, active = s.active,
+             kind = coalesce($2, p.kind), inn = coalesce($3, p.inn),
+             address = coalesce($4, p.address), bank = coalesce($5, p.bank),
+             bank_account = coalesce($6, p.bank_account),
+             due_days = case when $8 then null else coalesce($7, p.due_days) end
+           from suppliers s
+           where p.id = $1 and s.id = p.id"#,
         id,
-        out.name,
-        out.phone,
-        out.comment,
-        out.active
+        d.kind,
+        d.inn,
+        d.address,
+        d.bank,
+        d.bank_account,
+        req.due_days,
+        req.clear_due_days
     )
     .execute(&mut *tx)
     .await?;
+    let out = supplier_out(&mut tx, id).await?;
     ops::audit(
         &mut tx,
         &ctx,
@@ -1074,10 +1209,7 @@ async fn update_supplier(
         json!({
             "name": out.name,
             "active": out.active,
-            "changes": ops::changes(
-                &json!({ "name": before.name, "phone": before.phone, "comment": before.comment, "active": before.active }),
-                &json!({ "name": out.name, "phone": out.phone, "comment": out.comment, "active": out.active }),
-            ),
+            "changes": ops::changes(&supplier_fields(&before), &supplier_fields(&out)),
         }),
     )
     .await?;
@@ -1336,15 +1468,8 @@ async fn get_supplier(
     _user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<SupplierOut>> {
-    sqlx::query_as!(
-        SupplierOut,
-        "select id, name, phone, comment, active from suppliers where id = $1",
-        id
-    )
-    .fetch_optional(&state.pool)
-    .await?
-    .map(Json)
-    .ok_or(AppError::NotFound)
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(supplier_out(&mut conn, id).await?))
 }
 
 /// Что поставщик привозил: по товарам, с количеством, суммой и последней ценой.

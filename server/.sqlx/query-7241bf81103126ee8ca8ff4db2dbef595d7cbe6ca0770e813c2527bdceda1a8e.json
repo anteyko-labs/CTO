@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update parties p set name = s.name, phone = s.phone, comment = s.comment, active = s.active,\n             kind = coalesce($2, p.kind), inn = coalesce($3, p.inn),\n             address = coalesce($4, p.address), bank = coalesce($5, p.bank),\n             bank_account = coalesce($6, p.bank_account),\n             due_days = case when $8 then null else coalesce($7, p.due_days) end\n           from suppliers s\n           where p.id = $1 and s.id = p.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7241bf81103126ee8ca8ff4db2dbef595d7cbe6ca0770e813c2527bdceda1a8e"
+}

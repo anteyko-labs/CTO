@@ -4,7 +4,7 @@ import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { StockBackLink } from '../components/StockBackLink'
 import { ProductFormModal } from '../components/ProductFormModal'
-import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { missingWithFocus } from '../lib/forms'
@@ -204,7 +204,15 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
 export default function Categories() {
   // Категории — часть товаров: заводит и правит владелец или администратор с правом (ADR-097).
   const mayEdit = useCan()('products')
-  const list = useLoad(() => get<Category[]>('/categories'), [])
+  // Со скрытыми: здесь их показывают снова (задача 003 Н10); в выборе товара их нет.
+  const list = useLoad(() => get<Category[]>('/categories?all=true'), [])
+  const hide = useAction()
+  const setHidden = (c: Category, archived: boolean) =>
+    void hide.run(async () => {
+      await patch<Category>(`/categories/${c.id}`, { archived })
+      list.reload()
+      toast(archived ? `Категория «${c.name}» скрыта` : `Категория «${c.name}» снова в выборе`)
+    })
   const [form, setForm] = useState<{ name: string; kind: CategoryKind }>({ name: '', kind: 'other' })
   const [editing, setEditing] = useState<Category | null>(null)
   const [adding, setAdding] = useState(false)
@@ -246,7 +254,7 @@ export default function Categories() {
       />
 
       <Card>
-        <ErrorBox error={list.error} />
+        <ErrorBox error={list.error ?? hide.error} />
         {list.loading && !list.data ? (
           <Loading />
         ) : !list.data?.length ? (
@@ -256,8 +264,14 @@ export default function Categories() {
         ) : (
           <Table head={['Название', 'Вид', 'Строка книжки', 'Характеристик', '']}>
             {list.data.map((c) => (
-              <tr key={c.id} className={mayEdit ? 'cursor-pointer hover:bg-slate-50' : ''} onClick={() => mayEdit && setEditing(c)}>
-                <td className="px-2 py-2 font-medium">{c.name}</td>
+              <tr
+                key={c.id}
+                className={`${mayEdit ? 'cursor-pointer hover:bg-slate-50' : ''} ${c.archived ? 'text-slate-400' : ''}`}
+                onClick={() => mayEdit && setEditing(c)}
+              >
+                <td className="px-2 py-2 font-medium">
+                  {c.name} {c.archived && <Badge>скрыта</Badge>}
+                </td>
                 <td className="px-2 py-2">{KIND_LABELS[c.kind]}</td>
                 <td className="px-2 py-2">
                   {categorySlotText(c).main}
@@ -269,8 +283,23 @@ export default function Categories() {
                   )}
                 </td>
                 <td className="px-2 py-2">{c.attributes.length}</td>
-                <td className="px-2 py-2 text-right">
+                <td className="px-2 py-2 text-right whitespace-nowrap">
                   {mayEdit && (
+                    <Button
+                      variant="ghost"
+                      className="mr-1 px-2 py-1 text-xs"
+                      disabled={hide.busy}
+                      title={c.archived ? 'Вернуть категорию в выбор товара' : 'Скрыть из выбора; можно, когда в ней нет товаров в продаже'}
+                      aria-label={c.archived ? `Показать категорию ${c.name}` : `Скрыть категорию ${c.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setHidden(c, !c.archived)
+                      }}
+                    >
+                      {c.archived ? 'Показать' : 'Скрыть'}
+                    </Button>
+                  )}
+                  {mayEdit && !c.archived && (
                     <Button
                       variant="secondary"
                       className="px-2 py-1 text-xs"

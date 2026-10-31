@@ -593,6 +593,10 @@ pub struct ShiftOut {
     pub cashier_name: String,
     #[serde(default)]
     pub cashier_employee_id: Option<Uuid>,
+    /// Что владелец снял у кассира открытой смены (задача 003 Н10, ADR-{B8.1}): касса прячет эти
+    /// кнопки у администратора; у закрытой смены — пусто.
+    #[serde(default)]
+    pub cashier_denied: Vec<String>,
     pub opened_by: String,
     pub opened_at: DateTime<Utc>,
     pub opening_expected_tyiyn: i64,
@@ -664,7 +668,7 @@ async fn load_shift_with(
 ) -> AppResult<ShiftOut> {
     let h = sqlx::query!(
         r#"select s.id, s.number, s.business_date, s.account_id, a.name as account_name,
-                  e.full_name as cashier_name, s.cashier_employee_id, u.full_name as opened_by, s.opened_at,
+                  e.full_name as cashier_name, s.cashier_employee_id, e.cashier_denied, u.full_name as opened_by, s.opened_at,
                   s.opening_expected_tyiyn, a.balance_tyiyn
            from shifts s
            join cash_accounts a on a.id = s.account_id
@@ -788,6 +792,11 @@ async fn load_shift_with(
         account_name: h.account_name,
         cashier_name: h.cashier_name,
         cashier_employee_id: Some(h.cashier_employee_id),
+        cashier_denied: if close.is_none() {
+            h.cashier_denied
+        } else {
+            Vec::new()
+        },
         opened_by: h.opened_by,
         opened_at: h.opened_at,
         opening_expected_tyiyn: h.opening_expected_tyiyn,

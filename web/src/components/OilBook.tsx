@@ -326,6 +326,10 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
             setEditing(false)
             onChanged()
           }}
+          onMoved={() => {
+            setEditing(false)
+            onChanged()
+          }}
         />
       )}
       {manual && (

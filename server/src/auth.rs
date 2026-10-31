@@ -154,18 +154,56 @@ pub fn no_permission(key: &str) -> AppError {
     ))
 }
 
+/// Группы прав, которые владелец может снять у кассира без входа (задача 003 Н10, ADR-{B8.1}).
+pub const CASHIER_GROUPS: [&str; 2] = ["Касса", "Деньги"];
+
+/// Право можно ограничить у кассира открытой смены: оно из групп «Касса» и «Деньги».
+pub fn cashier_limitable(key: &str) -> bool {
+    permission_def(key).is_some_and(|p| CASHIER_GROUPS.contains(&p.group))
+}
+
+/// Ответ, когда право есть у входа, но владелец снял его у кассира открытой смены:
+/// 403 «Нет права у кассира Нурлан: Скидка в чеке» (ADR-{B8.1}).
+pub fn no_cashier_permission(cashier: &str, key: &str) -> AppError {
+    AppError::ForbiddenWith(format!(
+        "Нет права у кассира {cashier}: {}",
+        permission_def(key).map_or(key, |p| p.label)
+    ))
+}
+
+/// Итог проверки права: можно; нет права у входа; право снято у кассира открытой смены.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    Allowed,
+    NoRight,
+    /// Имя кассира открытой смены, у которого владелец снял это право.
+    Cashier(String),
+}
+
+impl Access {
+    pub fn allowed(&self) -> bool {
+        *self == Self::Allowed
+    }
+
+    /// Отказ с понятной подписью: «Нет права: …» или «Нет права у кассира …: …».
+    pub fn check(self, key: &str) -> AppResult<()> {
+        match self {
+            Self::Allowed => Ok(()),
+            Self::NoRight => Err(no_permission(key)),
+            Self::Cashier(name) => Err(no_cashier_permission(&name, key)),
+        }
+    }
+}
+
 /// Владелец проходит всегда; администратор — если владелец выдал ему право, иначе 403
-/// «Нет права: …» (ADR-097).
+/// «Нет права: …» (ADR-097). Право групп «Касса» и «Деньги», снятое у кассира открытой смены, —
+/// 403 «Нет права у кассира …» (ADR-{B8.1}).
 pub async fn require_permission(
     conn: &mut sqlx::PgConnection,
     user: &CurrentUser,
     permission: &str,
 ) -> AppResult<()> {
-    if has_permission(conn, user, permission).await? {
-        Ok(())
-    } else {
-        Err(no_permission(permission))
-    }
+    access(conn, user, permission).await?.check(permission)
 }
 
 /// Права по умолчанию новому администратору (SPEC-30 §5); уже выданные не трогаются.
@@ -204,24 +242,56 @@ pub async fn permissions(conn: &mut sqlx::PgConnection, user_id: Uuid) -> AppRes
     .await?)
 }
 
-/// Владельцу можно всё; администратору — если владелец выдал ему это право (ADR-082, ADR-097).
+/// Владельцу можно всё; администратору — если владелец выдал ему это право (ADR-082, ADR-097)
+/// и, для групп «Касса» и «Деньги», не снял его у кассира открытой смены (ADR-{B8.1}).
 pub async fn has_permission(
     conn: &mut sqlx::PgConnection,
     user: &CurrentUser,
     permission: &str,
 ) -> AppResult<bool> {
+    Ok(access(conn, user, permission).await?.allowed())
+}
+
+/// Проверка права одной выборкой (без N+1). Владелец не ограничивается правами кассира: он сам
+/// их задаёт. Администратору — пересечение прав входа и кассира открытой смены кассы филиала
+/// по умолчанию (та же смена, что `GET /shifts/current`; кассир чека — кассир смены, ADR-071).
+pub async fn access(
+    conn: &mut sqlx::PgConnection,
+    user: &CurrentUser,
+    permission: &str,
+) -> AppResult<Access> {
     if user.is_owner() {
-        return Ok(true);
+        return Ok(Access::Allowed);
     }
-    Ok(sqlx::query_scalar!(
+    let r = sqlx::query!(
         r#"select exists (select 1 from user_permissions
-                          where user_id = $1 and branch_id = $2 and permission = $3) as "e!""#,
+                          where user_id = $1 and branch_id = $2 and permission = $3) as "granted!",
+                  (case when $4 then
+                     (select e.full_name from employees e
+                      where $3 = any(e.cashier_denied)
+                        and e.id = (select s.cashier_employee_id from shifts s
+                                    join cash_accounts a on a.id = s.account_id
+                                    where s.branch_id = $2 and a.kind = 'register'
+                                      and a.is_default and a.active
+                                      and not exists (
+                                        select 1 from shift_closes c
+                                        where c.shift_id = s.id
+                                          and not exists (select 1 from shift_reopens r
+                                                          where r.close_id = c.id))
+                                    order by s.opened_at desc limit 1))
+                   end) as "cashier?""#,
         user.id,
         user.branch_id,
-        permission
+        permission,
+        cashier_limitable(permission)
     )
     .fetch_one(&mut *conn)
-    .await?)
+    .await?;
+    Ok(match (r.granted, r.cashier) {
+        (false, _) => Access::NoRight,
+        (true, Some(name)) => Access::Cashier(name),
+        (true, None) => Access::Allowed,
+    })
 }
 
 /// Пользователь и устройство изменяющего запроса.

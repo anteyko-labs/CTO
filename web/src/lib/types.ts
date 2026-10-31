@@ -104,6 +104,8 @@ export interface Category {
   book_slot: BookSlot | 'none'
   book_interval_km: number | null
   book_interval_days: number | null
+  /** «Скрыть категорию» (задача 003 Н10): скрытая не попадает в выбор. */
+  archived?: boolean
 }
 
 export interface Product {
@@ -182,6 +184,13 @@ export interface Supplier {
   phone: string
   comment: string
   active: boolean
+  /** Реквизиты (задача 003 Н10): фирма или человек, ИНН, адрес, банк и счёт, срок оплаты в днях. */
+  kind?: 'company' | 'person'
+  inn?: string
+  address?: string
+  bank?: string
+  bank_account?: string
+  due_days?: number | null
 }
 
 export interface LabelSettings {
@@ -717,6 +726,8 @@ export interface Shift {
   account_name: string
   cashier_name: string
   cashier_employee_id?: string
+  /** Что владелец снял у кассира открытой смены (задача 003 Н10); у закрытой — пусто. */
+  cashier_denied?: string[]
   opened_by: string
   opened_at: string
   opening_expected_tyiyn: number

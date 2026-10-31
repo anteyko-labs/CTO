@@ -35,6 +35,10 @@ pub fn routes() -> Router<AppState> {
             "/parties/{id}/vehicles/{vehicle_id}/restore",
             routing::post(restore_vehicle),
         )
+        .route(
+            "/parties/{id}/vehicles/{vehicle_id}/move",
+            routing::post(move_vehicle),
+        )
         .route("/parties/{id}/limit-request", routing::post(limit_request))
         .route("/debts/repayments", routing::post(post_repayment))
         .route("/debts/adjust", routing::post(post_adjust))
@@ -972,6 +976,143 @@ async fn update_vehicle(
     .await?;
     tx.commit().await?;
     Ok(Json(row))
+}
+
+#[derive(Deserialize)]
+struct MoveVehicleReq {
+    op_id: Uuid,
+    /// Клиент, к которому переходит машина.
+    to_party_id: Uuid,
+}
+
+#[derive(Serialize, Deserialize)]
+struct MoveVehicleOut {
+    id: Uuid,
+    plate: String,
+    from_party_id: Uuid,
+    to_party_id: Uuid,
+    /// Сколько записей книжки ушло с машиной.
+    oil_changes: i64,
+}
+
+/// «Перенести к другому клиенту» (задача 003 Н10): продали машину или ошиблись клиентом. Книжка
+/// ТО, интервалы, пометки и напоминания идут с машиной; старые чеки остаются у прежнего клиента
+/// (I4). Одна транзакция (I7), повтор `op_id` — тот же ответ (I8), журнал `vehicle.move` (I5).
+/// Право «Клиенты и машины».
+async fn move_vehicle(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((id, vehicle_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<MoveVehicleReq>,
+) -> AppResult<Json<MoveVehicleOut>> {
+    const KIND: &str = "vehicle.move";
+    if req.to_party_id == id {
+        return Err(invalid("машина уже у этого клиента"));
+    }
+    let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "clients").await?;
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    // Оба клиента — под блокировкой в одном порядке: встречный перенос не взаимоблокируется.
+    let parties = sqlx::query!(
+        "select id, name, role, active from parties where id = any($1) order by id for update",
+        &[id, req.to_party_id][..]
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let from = parties
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or(AppError::NotFound)?;
+    let to = parties
+        .iter()
+        .find(|p| p.id == req.to_party_id)
+        .ok_or_else(|| invalid("клиент, к которому переносим, не найден"))?;
+    if to.role != "customer" {
+        return Err(invalid("машину переносят только к клиенту"));
+    }
+    if !to.active {
+        return Err(invalid(format!(
+            "клиент «{}» отключён: сначала включите его",
+            to.name
+        )));
+    }
+    let v = sqlx::query!(
+        "select plate, plate_norm from party_vehicles where id = $1 and party_id = $2 for update",
+        vehicle_id,
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    // У нового клиента уже есть машина с этим номером — две книжки одной машины не сводим молча.
+    let twin = sqlx::query_scalar!(
+        "select plate from party_vehicles where party_id = $1 and plate_norm = $2 limit 1",
+        req.to_party_id,
+        v.plate_norm
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(plate) = twin {
+        return Err(AppError::Conflict(format!(
+            "у клиента «{}» уже есть машина {plate}: перенос не нужен",
+            to.name
+        )));
+    }
+    sqlx::query!(
+        "update party_vehicles set party_id = $2 where id = $1",
+        vehicle_id,
+        req.to_party_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let moved = sqlx::query!(
+        "update oil_changes set party_id = $2 where vehicle_id = $1",
+        vehicle_id,
+        req.to_party_id
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query!(
+        "update vehicle_notes set party_id = $2 where vehicle_id = $1",
+        vehicle_id,
+        req.to_party_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    // Прежний клиент вводил в боте номер или пометку к этой машине — ожидание снимается.
+    sqlx::query!("delete from bot_input where vehicle_id = $1", vehicle_id)
+        .execute(&mut *tx)
+        .await?;
+    let oil_changes = i64::try_from(moved).unwrap_or(i64::MAX);
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "vehicle",
+        Some(vehicle_id),
+        json!({
+            "plate": v.plate,
+            "from_party_id": id,
+            "from": from.name,
+            "to_party_id": req.to_party_id,
+            "to": to.name,
+            "oil_changes": oil_changes,
+        }),
+    )
+    .await?;
+    let out = MoveVehicleOut {
+        id: vehicle_id,
+        plate: v.plate,
+        from_party_id: id,
+        to_party_id: req.to_party_id,
+        oil_changes,
+    };
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
 }
 
 // ---------- Долг ----------
