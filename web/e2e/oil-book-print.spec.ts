@@ -4,6 +4,7 @@
 // печатается сама; «Настройки → Масляная книжка и печать» убирает блок книжки из товарного чека.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
+import { choosePerson, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -99,15 +100,17 @@ test('чек без цели кассира: «Печать книжки» в э
   await page.getByRole('button', { name: 'Печать', exact: true }).click()
   await expect.poll(async () => (await prints(page)).some((h) => h.includes('Товарный чек'))).toBe(true)
   const receipt = await lastPrint(page, 'Товарный чек')
-  expect(receipt).toContain(`Масло двигателя: ${oilName} · 4,5 л`)
-  expect(receipt).toContain('Масло двигателя: на 138 000 км')
+  // Подпись — товар, а не «Масло двигателя» (задача 003 Н5).
+  expect(receipt).toContain(`${oilName} · 4,5 л Следующая замена — на 138 000 км`)
+  expect(receipt).not.toContain('Масло двигателя')
   // Чек книжки этого чека — то же число, масло одной строкой.
   await page.getByRole('button', { name: 'Печать книжки' }).click()
   await expect.poll(async () => (await prints(page)).filter((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')).length).toBe(1)
   const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')) ?? '')
   expect(book).toContain(`${oilName} · 4,5 л`)
   expect(book.split(`${oilName}`).length - 1).toBe(1)
-  expect(book.split('Следующая замена:')[1] ?? '').toContain('Масло двигателя на 138 000 км')
+  expect(book).toContain(`${oilName} · 4,5 л Следующая замена — на 138 000 км`)
+  expect(book).not.toContain('Масло двигателя')
 
   // «Исправить»: новый чек печатает книжку сам, как после обычного чека.
   await page.getByTestId('fix-button').click()
@@ -145,4 +148,90 @@ test('«Масляная книжка и печать»: без блока кн�
   } finally {
     await api(page.request, 'PUT', '/settings/oil-book', { ...initial, op_id: crypto.randomUUID() })
   }
+})
+
+test('«В сервис» с маслом и фильтрами: чек книжки печатается сам — товары по виду замены и следующая у каждого', async ({ page }) => {
+  // Задача 003 Н5 (31.10.2026): «если в сервис, то он должен печатать, и печатать то, что было указано в
+  // вид замены»; «не "масло в коробке", а какое масло»; топливный фильтр — свой срок.
+  test.setTimeout(90_000)
+  await page.addInitScript(PRINT_STUB)
+  await login(page)
+  const request = page.request
+  const tag = `${RUN}f`
+  const safe = await ownerSafe(request)
+  // По умолчанию: чек книжки сам и с фильтрами.
+  const prefs = await api<{ auto_book: boolean; with_filters: boolean }>(request, 'GET', '/settings/oil-book')
+  expect([prefs.auto_book, prefs.with_filters]).toEqual([true, true])
+  const oilCat = await api<{ id: string }>(request, 'POST', '/categories', { name: `Масла фильтров ${tag}`, kind: 'oil' })
+  const filterCat = await api<{ id: string }>(request, 'POST', '/categories', { name: `Фильтры вида ${tag}`, kind: 'filter' })
+  // Топливные — своя категория со своим интервалом; «Тип» у товара не указан — строка от категории.
+  const fuelCat = await api<{ id: string }>(request, 'POST', '/categories', { name: `Топливные ${tag}`, kind: 'filter', book: { slot: 'fuel_filter', interval_km: 40_000, interval_days: 730 } })
+  const goods = [
+    { key: 'oil', cat: oilCat.id, name: `Mobil 1 ${tag} 5W-30`, extra: { container_ml: 4000 }, qty: 40_000 },
+    { key: 'oilf', cat: filterCat.id, name: `W712-${tag}`, extra: { attrs: { filter_type: 'масляный' } }, qty: 5 },
+    { key: 'air', cat: filterCat.id, name: `C2201-${tag}`, extra: { attrs: { filter_type: 'воздушный' } }, qty: 5 },
+    { key: 'cab', cat: filterCat.id, name: `CU2939-${tag}`, extra: { attrs: { filter_type: 'салонный' } }, qty: 5 },
+    { key: 'fuel', cat: fuelCat.id, name: `Фильтр топливный WK820-${tag}`, extra: {}, qty: 5 },
+  ]
+  const codes: string[] = []
+  const lines = []
+  for (const [i, g] of goods.entries()) {
+    const code = `48${tag.slice(0, 8)}${i}`
+    codes.push(code)
+    const p = await api<{ id: string }>(request, 'POST', '/products', { op_id: crypto.randomUUID(), category_id: g.cat, name: g.name, barcodes: [code], sale_price_tyiyn: 50_000, ...g.extra })
+    lines.push({ product_id: p.id, qty: g.qty, cost_tyiyn: 100_000 })
+  }
+  await api(request, 'POST', '/receipts', { op_id: crypto.randomUUID(), paid_from: safe, lines })
+  const service = `Замена масла в моторе вида ${tag}`
+  await api(request, 'POST', '/services', { name: service, price_tyiyn: 20_000, master_fee_tyiyn: 3_000 })
+  const master = `Мастер вида ${tag}`
+  await api(request, 'POST', '/employees', { full_name: master, is_master: true })
+  const cashier = `Кассир вида ${tag}`
+  await api(request, 'POST', '/employees', { full_name: cashier, is_cashier: true, pin: '1234' })
+  const last = `Вид${tag}`
+  const party = await api<{ id: string }>(request, 'POST', '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0703${tag.slice(-7, -1)}` })
+  const plate = `07KG${tag.slice(-4, -1)}VID`
+  await api(request, 'POST', `/parties/${party.id}/vehicles`, { plate, brand: 'Toyota', model: 'Camry' })
+
+  await page.goto('/')
+  await expect(page.locator('[data-picker]')).toBeVisible()
+  await page.getByRole('button', { name: 'В сервис' }).click()
+  const kinds = page.getByRole('dialog', { name: 'Вид замены' })
+  await kinds.getByPlaceholder('Найти услугу').fill(service)
+  await kinds.getByTestId('service-choices').getByRole('button', { name: new RegExp(service) }).click()
+  await kinds.getByRole('button', { name: 'Готово' }).click()
+  const cart = page.getByTestId('cart').getByRole('listitem')
+  for (const [i, code] of codes.entries()) {
+    await page.locator('[data-picker]').focus()
+    await page.keyboard.type(code, { delay: 5 })
+    await page.keyboard.press('Enter')
+    await expect(cart).toHaveCount(i + 2)
+  }
+  if (await page.locator('#cashier-select').isVisible()) await choosePerson(page, 'cashier-select', cashier)
+  await pickMaster(page, master)
+  await page.locator('[data-client-input]').fill(plate)
+  await page.getByRole('button', { name: new RegExp(last) }).first().click()
+  await page.locator('#mileage').fill('130000')
+  // Фильтры с маслом своих строк не дают — они под строкой масла.
+  await expect(page.getByTestId('next-filters')).toContainText(`W712-${tag} (масляный), C2201-${tag} (воздушный), CU2939-${tag} (салонный) на тот же пробег`)
+  await page.getByRole('button', { name: 'Без сдачи' }).click()
+  const before = (await prints(page)).length
+  await page.getByRole('button', { name: /Провести чек/ }).first().click()
+  await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
+
+  // Чек книжки — сам, без кнопки.
+  await expect.poll(async () => (await prints(page)).slice(before).some((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек'))).toBe(true)
+  const book = plain((await prints(page)).slice(before).find((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')) ?? '')
+  expect(book).toContain(
+    `${service} Mobil 1 ${tag} 5W-30 · 1 кан. × 4 л W712-${tag} (масляный) · 1 шт C2201-${tag} (воздушный) · 1 шт CU2939-${tag} (салонный) · 1 шт Следующая замена — на 138 000 км`,
+  )
+  // Топливный — свой срок (интервал его категории), не пробег масла.
+  expect(book).toContain(`Фильтр топливный WK820-${tag} · 1 шт Следующая замена — на 170 000 км`)
+  for (const no of ['Масло двигателя', 'Фильтр масляный', 'Фильтр воздушный', 'Фильтр салонный', 'Масло в коробке']) expect(book).not.toContain(no)
+  // Товарный чек — тот же блок.
+  await page.getByRole('button', { name: 'Печать чека' }).click()
+  await expect.poll(async () => (await lastPrint(page, 'Товарный чек')).length).toBeGreaterThan(0)
+  const receipt = await lastPrint(page, 'Товарный чек')
+  expect(receipt).toContain(`CU2939-${tag} (салонный) · 1 шт Следующая замена — на 138 000 км`)
+  expect(receipt).toContain(`Фильтр топливный WK820-${tag} · 1 шт Следующая замена — на 170 000 км`)
 })

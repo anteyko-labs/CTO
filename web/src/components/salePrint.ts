@@ -6,6 +6,7 @@ import type { Sale, SaleLine } from '../lib/types'
 import { branchLabel } from '../lib/branch'
 import { mileageText } from '../lib/mileage'
 import { cachedOilBookSettings } from '../lib/oilBookSettings'
+import { bookGroups, bookGroupsHtml } from '../lib/oilBook'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -62,7 +63,8 @@ export function saleHtml(sale: Sale, change: number | null, opts: { bookBlock?: 
     .center { text-align: center; margin-top: 3mm; }
     .book { border-top: 1px dashed #000; margin-top: 2mm; padding-top: 1mm; }
     .book b { display: block; }
-    .book .nx { margin-top: 1mm; }
+    .book .bk { margin-top: 1mm; }
+    .book .grp, .book .nx { font-weight: bold; }
   </style></head><body>
     <h1>Avtodom</h1>
     ${branchLabel() ? `<div class="center" style="margin:0 0 2mm">${esc(branchLabel() ?? '')}</div>` : ''}
@@ -77,21 +79,30 @@ export function saleHtml(sale: Sale, change: number | null, opts: { bookBlock?: 
   </body></html>`
 }
 
-/** Масляная книжка чека «В сервис» (SPEC-34 §4, ADR-116): машина, пробег сейчас, что залито —
- *  жидкости с товаром — и следующая замена по ним, только пробег (ADR-115); строки без напоминания
- *  не печатаются. Ни жидкостей, ни следующей замены (только фильтры или «прочее») — блока нет. */
+/** Масляная книжка чека «В сервис» (SPEC-34 §4, ADR-116, задача 003 Н5): машина, пробег сейчас и
+ *  что поменяли по видам замены — товаром, а не строкой книжки, — со следующей заменой, только пробег
+ *  (ADR-115). Печатать нечего — блока нет. */
 export function bookHtml(sale: Pick<Sale, 'sale_type' | 'kind' | 'book'>): string {
   const b = sale.book
   if (!b || sale.kind === 'return' || sale.sale_type !== 'service') return ''
   const car = [b.brand, b.model].map((x) => x.trim()).filter(Boolean).join(' ')
-  const filled = (b.filled ?? []).map((f) => `<div>${esc(f.label)}: ${esc(f.product)}</div>`).join('')
-  const lines = b.lines.map((l) => `<div>${esc(l.label)}: на ${esc(mileageText(l.next_mileage, l.unit))}</div>`).join('')
-  if (!filled && !lines) return ''
+  const same = (x: { slot?: string; service_id?: string | null }, y: { slot?: string; service_id?: string | null }) =>
+    x.slot === y.slot && (x.service_id ?? null) === (y.service_id ?? null)
+  const nextOf = (x: { slot?: string; service_id?: string | null }) => {
+    const l = b.lines.find((l) => same(l, x))
+    return l ? `на ${mileageText(l.next_mileage, l.unit)}` : ''
+  }
+  const filled = b.filled ?? []
+  const items = [
+    ...filled.map((f) => ({ title: f.label, group: f.group ?? null, next: nextOf(f) })),
+    // Следующая замена без строки «что залито» (чек из очереди старой кассы) — своей строкой.
+    ...b.lines.filter((l) => !filled.some((f) => same(f, l))).map((l) => ({ title: l.label, group: l.group ?? null, next: nextOf(l) })),
+  ]
+  if (items.length === 0) return ''
   return `<div class="book"><b>Масляная книжка</b>
     <div>Машина: ${esc([car, b.plate.trim()].filter(Boolean).join(', '))}</div>
     ${b.mileage !== null ? `<div>Пробег сейчас: ${esc(mileageText(b.mileage, b.mileage_unit))}</div>` : ''}
-    ${filled ? `<div class="nx">Залито:</div>${filled}` : ''}
-    ${lines ? `<div class="nx">Следующая замена:</div>${lines}` : ''}</div>`
+    ${bookGroupsHtml(bookGroups(items))}</div>`
 }
 
 /** Дата чека: день и время записи; если учётный день другой (чек без сети после полуночи,

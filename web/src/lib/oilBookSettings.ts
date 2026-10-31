@@ -15,7 +15,7 @@ export interface OilBookSettings {
   auto_receipt: boolean
   /** Блок «Масляная книжка» в товарном чеке (ADR-116). */
   receipt_block: boolean
-  /** В чеке книжки и блоке — ещё фильтры. */
+  /** В чеке книжки и блоке — ещё фильтры; по умолчанию — да (задача 003 Н5). */
   with_filters: boolean
   /** Запись чека — только фильтры: печатать чек книжки. */
   print_filters_only: boolean
@@ -28,7 +28,7 @@ export const OIL_BOOK_DEFAULTS: OilBookSettings = {
   auto_book: true,
   auto_receipt: false,
   receipt_block: true,
-  with_filters: false,
+  with_filters: true,
   print_filters_only: false,
   qty_style: 'total',
   filters_follow_oil: true,

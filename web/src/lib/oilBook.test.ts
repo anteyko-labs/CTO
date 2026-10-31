@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { categorySlotText, fluidText, lineNextText, overdueSlots, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
+import { bookGroups, categorySlotText, lineNextText, lineTitle, titleOf, overdueSlots, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
 import { oilBookHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
@@ -80,9 +80,10 @@ describe('следующая замена — только пробег (ADR-115
 describe('чек книжки после чека — только этот чек и только жидкости (ADR-116)', () => {
   // 09KG999ZXZ: в чеке № 1 (17.10) меняли масло и воздушный фильтр, в чеке № 8 — масло клиента,
   // антифриз и фильтры. «Прошлые замены с чека убрать», «кроме масел ничего не показывать».
-  const slot = (s: SlotNext['slot'], label: string, last: string, nextKm: number, nextDate: string | null): SlotNext => ({
+  const slot = (s: SlotNext['slot'], label: string, last: string, nextKm: number, nextDate: string | null, title?: string): SlotNext => ({
     slot: s,
     label,
+    title,
     interval_km: null,
     interval_days: null,
     own_interval: false,
@@ -118,9 +119,9 @@ describe('чек книжки после чека — только этот че
       rec({ id: 'r1', change_date: '2026-10-17', mileage_km: 216_000, sale_id: 's1', sale_number: 1, lines: [{ slot: 'oil', text: 'Масло 5W-30' }, { slot: 'air_filter', text: 'Фильтр A1' }] }),
     ],
     slots: [
-      slot('oil', 'Масло двигателя', '2026-10-26', 258_000, '2026-11-26'),
-      slot('oil_filter', 'Фильтр масляный', '2026-10-26', 258_000, '2026-11-26'),
-      slot('air_filter', 'Фильтр воздушный', '2026-10-17', 231_000, '2027-10-17'),
+      slot('oil', 'Масло двигателя', '2026-10-26', 258_000, '2026-11-26', 'масло клиента (двигатель)'),
+      slot('oil_filter', 'Фильтр масляный', '2026-10-26', 258_000, '2026-11-26', 'Фильтр W712 (масляный) · 1 шт'),
+      slot('air_filter', 'Фильтр воздушный', '2026-10-17', 231_000, '2027-10-17', 'Фильтр A1 (воздушный)'),
       slot('antifreeze', 'Антифриз', '2026-10-26', 280_000, '2028-10-26'),
     ],
   }
@@ -136,41 +137,82 @@ describe('чек книжки после чека — только этот че
     expect(await oilBookHtml(book, { link: null, saleId: 'другой' })).toBeNull()
   })
 
-  it('в записи чека только «прочее» — чек книжки не печатается (ADR-131)', async () => {
+  it('в записи чека только «прочее» — чек книжки печатает работу её названием (задача 003 Н5)', async () => {
     const gur: VehicleBook = {
       ...book,
-      records: [rec({ id: 'r9', change_date: '2026-10-28', mileage_km: 251_000, sale_id: 's9', sale_number: 9, lines: [{ slot: 'other', text: 'Замена ГУР', service: 'Замена ГУР' }] }), ...book.records],
+      records: [rec({ id: 'r9', change_date: '2026-10-28', mileage_km: 251_000, sale_id: 's9', sale_number: 9, lines: [{ slot: 'other', text: 'Замена ГУР', service: 'Замена ГУР', service_id: 'g1' }] }), ...book.records],
+      slots: [...(book.slots ?? []), { ...slot('other', 'Замена ГУР', '2026-10-28', 300_000, null), service_id: 'g1' }],
     }
-    expect(saleCheckOf(gur, 's9')).toBeNull()
-    expect(await oilBookHtml(gur, { link: null, saleId: 's9' })).toBeNull()
+    expect(saleCheckOf(gur, 's9')?.id).toBe('r9')
+    expect(plain(await oilBookHtml(gur, { link: null, saleId: 's9' }))).toContain('Замена ГУР Следующая замена — на 300 000 км')
     expect(saleCheckOf(gur, 's8')?.id).toBe('r8')
   })
 
-  it('залито и следующая замена — по жидкостям, с товаром; без фильтров, мастера, рекомендаций и истории', async () => {
+  it('по видам замены, товаром: масло клиента и фильтры с ним, антифриз; без мастера, рекомендаций и истории', async () => {
     const text = plain(await oilBookHtml(book, { link: null, saleId: 's8', master: 'Бакыт', client: 'Асанов' }))
     expect(text).toContain('09KG999ZXZ · Toyota Camry')
     expect(text).toContain('Дата 26.10.2026')
     expect(text).toContain('Пробег 250 000 км')
-    expect(text).toContain('Залито: Масло двигателя масло клиента Антифриз Sintec G12 красный 5 кг · 2 шт')
-    expect(text).toContain('Следующая замена: Масло двигателя на 258 000 км Антифриз на 280 000 км')
-    for (const no of ['Фильтр', 'Бакыт', 'Мастер', 'Рекомендовано', 'салонный', 'По прошлым заменам', 'Прошлые замены', 'наступит раньше', 'или до', '17.10.2026']) {
+    expect(text).toContain('Замена масла в моторе масло клиента (двигатель) Фильтр W712 (масляный) · 1 шт Следующая замена — на 258 000 км')
+    expect(text).toContain('Sintec G12 красный 5 кг · 2 шт Следующая замена — на 280 000 км')
+    for (const no of ['Масло двигателя', 'Фильтр масляный', 'Антифриз', 'Бакыт', 'Мастер', 'Рекомендовано', 'салонный', 'Фильтр A1', 'Прошлые замены', 'или до', '17.10.2026']) {
       expect(text).not.toContain(no)
     }
   })
 
-  it('настройка «Масляная книжка и печать»: фильтры в чеке книжки, запись только с фильтрами (задача 003 Н5)', async () => {
-    const withFilters = plain(await oilBookHtml(book, { link: null, saleId: 's8', print: { with_filters: true } }))
-    expect(withFilters).toContain('Фильтр масляный Фильтр W712 · 1 шт')
-    expect(withFilters).toContain('Фильтр масляный на 258 000 км')
+  it('настройка «Масляная книжка и печать»: без фильтров, запись только с фильтрами (задача 003 Н5)', async () => {
+    const fluids = plain(await oilBookHtml(book, { link: null, saleId: 's8', print: { with_filters: false } }))
+    expect(fluids).toContain('масло клиента (двигатель)')
+    expect(fluids).not.toContain('W712')
     const onlyFilter: VehicleBook = {
       ...book,
       records: [rec({ id: 'r10', change_date: '2026-10-29', mileage_km: 252_000, sale_id: 's10', sale_number: 10, lines: [{ slot: 'air_filter', text: 'Фильтр A1 · 1 шт' }] }), ...book.records],
     }
-    // По умолчанию запись только с фильтрами не печатается; с настройкой — печатается с фильтром.
-    expect(saleCheckOf(onlyFilter, 's10')).toBeNull()
-    expect(saleCheckOf(onlyFilter, 's10', { print_filters_only: true })?.id).toBe('r10')
-    expect(plain(await oilBookHtml(onlyFilter, { link: null, saleId: 's10', print: { print_filters_only: true } }))).toContain('Фильтр воздушный Фильтр A1 · 1 шт')
+    // По умолчанию фильтры в чеке книжки — запись только с фильтром печатается; без фильтров — только
+    // с настройкой «печатать запись только с фильтрами».
+    expect(saleCheckOf(onlyFilter, 's10')?.id).toBe('r10')
+    expect(saleCheckOf(onlyFilter, 's10', { with_filters: false })).toBeNull()
+    expect(saleCheckOf(onlyFilter, 's10', { with_filters: false, print_filters_only: true })?.id).toBe('r10')
+    expect(plain(await oilBookHtml(onlyFilter, { link: null, saleId: 's10' }))).toContain('Фильтр A1 (воздушный) · 1 шт')
     expect(saleRecordOf(onlyFilter, 's10')?.id).toBe('r10')
+  })
+
+  it('«В сервис» с маслом и тремя фильтрами: чек книжки по умолчанию — товары и следующая замена у каждого (задача 003 Н5)', async () => {
+    // Жалоба 31.10.2026: не «Масло в коробке», а какое масло; топливный фильтр — свой срок.
+    const motor = 'Замена масла в моторе'
+    const car: VehicleBook = {
+      ...book,
+      records: [
+        rec({
+          id: 'r20',
+          change_date: '2026-10-31',
+          mileage_km: 130_000,
+          sale_id: 's20',
+          sale_number: 20,
+          lines: [
+            { slot: 'oil', text: 'Mobil 1 5W-30 · 4 л', service: motor },
+            { slot: 'oil_filter', text: 'W712 · 1 шт' },
+            { slot: 'air_filter', text: 'C2201 · 1 шт' },
+            { slot: 'cabin_filter', text: 'Фильтр салонный CU2939 · 1 шт' },
+            { slot: 'gear_oil', text: 'Mobil ATF 3309 · 1 л' },
+            { slot: 'fuel_filter', text: 'Фильтр топливный WK 820 · 1 шт', service: 'Замена топливного фильтра' },
+          ],
+        }),
+      ],
+      slots: [
+        slot('oil', 'Масло двигателя', '2026-10-31', 138_000, null),
+        slot('oil_filter', 'Фильтр масляный', '2026-10-31', 138_000, null),
+        slot('air_filter', 'Фильтр воздушный', '2026-10-31', 138_000, null),
+        slot('cabin_filter', 'Фильтр салонный', '2026-10-31', 138_000, null),
+        slot('gear_oil', 'Масло в коробке', '2026-10-31', 170_000, null),
+        slot('fuel_filter', 'Фильтр топливный', '2026-10-31', 160_000, null),
+      ],
+    }
+    const text = plain(await oilBookHtml(car, { link: null, saleId: 's20' }))
+    expect(text).toContain(`${motor} Mobil 1 5W-30 · 4 л W712 (масляный) · 1 шт C2201 (воздушный) · 1 шт Фильтр салонный CU2939 · 1 шт Следующая замена — на 138 000 км`)
+    expect(text).toContain('Mobil ATF 3309 · 1 л Следующая замена — на 170 000 км')
+    expect(text).toContain('Замена топливного фильтра Фильтр топливный WK 820 · 1 шт Следующая замена — на 160 000 км')
+    for (const no of ['Масло в коробке', 'Масло двигателя', 'Фильтр масляный', 'Фильтр воздушный']) expect(text).not.toContain(no)
   })
 
   it('«Тип» выключен у категории фильтров — строка книжки категории (задача 002 П10)', () => {
@@ -182,11 +224,36 @@ describe('чек книжки после чека — только этот че
     const full = plain(await oilBookHtml(book, { link: null, master: 'Бакыт' }))
     expect(full).toContain('Мастер Бакыт')
     expect(full).toContain('Рекомендовано салонный фильтр')
-    expect(full).toContain('Фильтр воздушный на 231 000 км')
+    expect(full).toContain('Фильтр A1 (воздушный) на 231 000 км')
+    expect(full).toContain('масло клиента (двигатель) Фильтр W712 (масляный) · 1 шт')
     expect(full).toMatch(/Прошлые замены 17\.10\.2026/)
     expect(full).not.toContain('наступит раньше')
     expect(full).not.toContain('или до')
-    expect(fluidText({ slot: 'gear_oil', text: 'Замена масла АКПП', service: 'Замена масла АКПП' })).toBe('масло клиента')
-    expect(fluidText({ slot: 'brake_fluid', text: 'Тормозная жидкость' })).toBe('жидкость клиента')
+  })
+})
+
+describe('подпись строки книжки — товар, а не строка (задача 003 Н5)', () => {
+  it('товар, масло клиента, фильтр без вида в названии, работа без товара — как на сервере', () => {
+    expect(titleOf('gear_oil', 'Mobil ATF 3309 · 1 л')).toBe('Mobil ATF 3309 · 1 л')
+    expect(titleOf('gear_oil', 'Замена масла АКПП', 'Замена масла АКПП')).toBe('масло клиента (коробка)')
+    expect(titleOf('brake_fluid', 'Замена тормозной', 'Замена тормозной')).toBe('жидкость клиента (тормозная)')
+    expect(titleOf('oil_filter', 'W712 · 1 шт')).toBe('W712 (масляный) · 1 шт')
+    expect(titleOf('fuel_filter', 'Фильтр топливный WK 820 · 1 шт')).toBe('Фильтр топливный WK 820 · 1 шт')
+    expect(titleOf('fuel_filter', 'Замена топливного фильтра', 'Замена топливного фильтра')).toBe('Замена топливного фильтра')
+    expect(titleOf('other', 'Замена ГУР', 'Замена ГУР')).toBe('Замена ГУР')
+    // Подпись от сервера — она.
+    expect(lineTitle({ slot: 'gear_oil', text: 'x', title: 'Mobil ATF 3309 · 1 л' })).toBe('Mobil ATF 3309 · 1 л')
+  })
+
+  it('виды замены: строки одной услуги вместе, общий срок — одной строкой', () => {
+    const g = bookGroups([
+      { title: 'Mobil 1 · 4 л', group: 'Замена масла', next: 'на 138 000 км' },
+      { title: 'Shell ATF · 1 л', group: null, next: 'на 170 000 км' },
+      { title: 'W712 (масляный) · 1 шт', group: 'Замена масла', next: 'на 138 000 км' },
+    ])
+    expect(g.map((x) => [x.head, x.items.length, x.next])).toEqual([
+      ['Замена масла', 2, 'на 138 000 км'],
+      [null, 1, 'на 170 000 км'],
+    ])
   })
 })

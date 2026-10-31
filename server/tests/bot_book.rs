@@ -181,6 +181,8 @@ fn next_change_text_is_mileage_only() {
         slot: "oil".into(),
         service_id: None,
         label: "Масло двигателя".into(),
+        title: "Масло двигателя".into(),
+        products: Vec::new(),
         interval_km: Some(8000),
         interval_days: Some(31),
         own_interval: false,
@@ -289,22 +291,22 @@ async fn book_shows_now_in_car_and_past_visits_by_date(pool: PgPool) {
     assert!(book.contains("Сейчас в машине:"), "{book}");
     assert!(
         book.contains(
-            "  Масло двигателя: Mobil 5W-30 · 1 кан. × 4 л — 26.10.2026, 250 000 км → следующая на 258 000 км"
+            "  Mobil 5W-30 · 1 кан. × 4 л — 26.10.2026, 250 000 км → следующая на 258 000 км"
         ),
         "{book}"
     );
     assert!(
         book.contains(
-            "  Фильтр масляный: Фильтр W712 · 1 шт — 01.05.2026, 80 000 км → следующая на 88 000 км"
+            "  Фильтр W712 (масляный) · 1 шт — 01.05.2026, 80 000 км → следующая на 88 000 км"
         ),
         "{book}"
     );
     assert!(
-        book.contains("  Фильтр воздушный: Фильтр воздушный A1 · 1 шт — 01.05.2026, 80 000 км"),
+        book.contains("  Фильтр воздушный A1 · 1 шт — 01.05.2026, 80 000 км"),
         "{book}"
     );
     assert!(
-        book.contains("  Антифриз: Sintec G12 · 2 шт — 26.10.2026, 250 000 км → следующая на"),
+        book.contains("  Sintec G12 · 2 шт — 26.10.2026, 250 000 км → следующая на"),
         "{book}"
     );
     // История — не в книжке, а кнопкой.
@@ -330,9 +332,8 @@ async fn book_shows_now_in_car_and_past_visits_by_date(pool: PgPool) {
         last.text
     );
     assert!(
-        last.text
-            .contains("  Масло двигателя: Mobil 5W-30 · 1 кан. × 4 л")
-            && last.text.contains("  Антифриз: Sintec G12 · 2 шт"),
+        last.text.contains("  Mobil 5W-30 · 1 кан. × 4 л")
+            && last.text.contains("  Sintec G12 · 2 шт"),
         "{}",
         last.text
     );
@@ -367,12 +368,9 @@ async fn book_shows_now_in_car_and_past_visits_by_date(pool: PgPool) {
         may.text
     );
     assert!(
-        may.text
-            .contains("  Масло двигателя: Замена масла (масло клиента)")
-            && may.text.contains("  Фильтр масляный: Фильтр W712 · 1 шт")
-            && may
-                .text
-                .contains("  Фильтр воздушный: Фильтр воздушный A1 · 1 шт")
+        may.text.contains("  масло клиента (двигатель)")
+            && may.text.contains("  Фильтр W712 (масляный) · 1 шт")
+            && may.text.contains("  Фильтр воздушный A1 · 1 шт")
             && may.text.contains("  Мастер рекомендовал: салонный фильтр"),
         "{}",
         may.text
@@ -387,7 +385,7 @@ async fn book_shows_now_in_car_and_past_visits_by_date(pool: PgPool) {
         first
             .text
             .starts_with("📜 09KG999ZXZ — ТО 10.01.2026 · 70 000 км")
-            && first.text.contains("  Масло двигателя: Тетрадное масло")
+            && first.text.contains("  Тетрадное масло")
             && first.text.ends_with("Это первая замена на точке."),
         "{}",
         first.text
@@ -457,7 +455,7 @@ async fn book_shows_now_in_car_and_past_visits_by_date(pool: PgPool) {
     let book = customer_book(&mut conn, me).await.unwrap();
     assert!(
         book.contains(
-            "  Масло двигателя: масло клиента — 20.10.2026, 120 000 км → следующая на 128 000 км"
+            "  масло клиента (двигатель) — 20.10.2026, 120 000 км → следующая на 128 000 км"
         ),
         "{book}"
     );
@@ -505,9 +503,7 @@ async fn book_in_miles_and_without_mileage(pool: PgPool) {
         "{book}"
     );
     assert!(
-        book.contains(
-            "  Масло двигателя: Тетрадное масло — 01.10.2026 → следующая по сроку до 01.11.2026"
-        ),
+        book.contains("  Тетрадное масло — 01.10.2026 → следующая по сроку до 01.11.2026"),
         "{book}"
     );
     no_either_or(&book);

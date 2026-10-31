@@ -68,7 +68,8 @@ async function setup(request: APIRequestContext) {
   const antiCode = `46${tag}3`
   const gearCode = `46${tag}4`
   const brakeCode = `46${tag}5`
-  const oil = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: oilCat.id, name: `Масло ещё ${tag} 5W-30`, container_ml: 4000, barcodes: [oilCode], sale_price_tyiyn: 300_000 })
+  const oilName = `Масло ещё ${tag} 5W-30`
+  const oil = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: oilCat.id, name: oilName, container_ml: 4000, barcodes: [oilCode], sale_price_tyiyn: 300_000 })
   const fuel = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: filterCat.id, name: `Фильтр топливный ещё ${tag}`, attrs: { filter_type: 'топливный' }, barcodes: [fuelCode], sale_price_tyiyn: 60_000 })
   const anti = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: antiCat.id, name: `Антифриз ещё ${tag}`, barcodes: [antiCode], sale_price_tyiyn: 90_000 })
   const gear = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: gearCat.id, name: `ATF ещё ${tag} Dexron`, container_ml: 1000, barcodes: [gearCode], sale_price_tyiyn: 40_000 })
@@ -113,7 +114,7 @@ async function setup(request: APIRequestContext) {
   const party = await api<{ id: string }>(request, '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0702${tag.slice(-6)}` })
   const plate = `08KG${tag.slice(-3)}AFQ`
   const vehicle = await api<{ id: string }>(request, `/parties/${party.id}/vehicles`, { plate, brand: 'Toyota', model: 'Camry' })
-  return { oilCode, fuelCode, antiCode, gearCode, brakeCode, service, serviceId: svcOil.id, antiService, antiServiceId: svcAnti.id, gur, gurId: svcGur.id, shaft, flush, master, cashier, last, plate, vehicle }
+  return { oilCode, oilName, fuelCode, antiCode, gearCode, brakeCode, service, serviceId: svcOil.id, antiService, antiServiceId: svcAnti.id, gur, gurId: svcGur.id, shaft, flush, master, cashier, last, plate, vehicle }
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>
@@ -310,27 +311,33 @@ for (const mode of [
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
 
-      // Итог чека: следующая замена масла и каждой услуги «прочее» — её названием.
+      // Итог чека: следующая замена масла — товаром (задача 003 Н5), каждой услуги «прочее» — её названием.
       const written = page.getByText(/Записано в масляную книжку/).locator('..')
-      await expect(written).toContainText(/Следующая · Масло двигателя: на 225\s000 км/)
+      await expect(written).toContainText(`Следующая · ${s.oilName} · 1 кан. × 4 л: на 225 000 км`)
       await expect(written).toContainText(new RegExp(`Следующая · ${s.gur}: на 300\\s000 км`))
       await expect(written).toContainText(new RegExp(`Следующая · ${s.shaft}: на 237\\s000 км`))
       await expect(written).not.toContainText('Антифриз')
       await expect(written).not.toContainText('Масло в коробке')
       await shot(page, 'next-cart-done-1366')
 
-      // Чек книжки после чека: только жидкости — масло; «прочего» нет (ADR-116).
+      // Чек книжки после чека — по видам замены (задача 003 Н5): масло товаром, работы «прочее» —
+      // названием услуги со своим сроком.
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка'))).toBe(true)
       const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка')) ?? '')
-      expect(book.split('Следующая замена:')[1] ?? '').toContain('Масло двигателя на 225 000 км')
-      for (const no of ['ГУР', 'кардан', 'Антифриз']) expect(book).not.toContain(no)
+      const done = [
+        `${s.service} ${s.oilName} · 1 кан. × 4 л Следующая замена — на 225 000 км`,
+        `${s.shaft} Следующая замена — на 237 000 км`,
+        `${s.gur} Следующая замена — на 300 000 км`,
+      ]
+      for (const t of done) expect(book).toContain(t)
+      for (const no of ['Масло двигателя', 'Антифриз']) expect(book).not.toContain(no)
 
-      // Печатный чек: блок «Масляная книжка» — тоже только жидкости.
+      // Печатный чек: блок «Масляная книжка» — то же.
       await hit(page.getByRole('button', { name: 'Печать чека' }))
       await expect.poll(async () => (await prints(page)).some((h) => h.includes('Товарный чек'))).toBe(true)
       const receipt = plain((await prints(page)).filter((h) => h.includes('Товарный чек')).at(-1) ?? '')
-      expect(receipt).toContain('Следующая замена: Масло двигателя: на 225 000 км')
-      expect(receipt).not.toContain(`${s.gur}: на`)
+      for (const t of done) expect(receipt).toContain(t)
+      expect(receipt).not.toContain('Масло двигателя')
 
       // Книжка машины: строка у каждой услуги «прочее» со своей целью; ни ATF, ни антифриза.
       const b = await api<{ records: { lines: { slot: string; text: string; next_mileage: number | null }[] }[]; slots: { slot: string; label: string; service_id?: string | null; next_mileage?: number | null }[] }>(
@@ -378,8 +385,9 @@ for (const mode of [
           await hit(page.getByRole('button', { name: /Провести чек/ }).first())
           await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
           const written = page.getByText(/Записано в масляную книжку/).locator('..')
-          await expect(written).toContainText(/Следующая · Масло двигателя: на 225\s000 км/)
-          if (!mode.touch) await expect(written).toContainText(/Следующая · Антифриз: на 277\s000 км/)
+          // Масло клиента и антифриз клиента — так и подписаны (задача 003 Н5).
+          await expect(written).toContainText(/Следующая · масло клиента \(двигатель\): на 225\s000 км/)
+          if (!mode.touch) await expect(written).toContainText(/Следующая · жидкость клиента \(антифриз\): на 277\s000 км/)
         },
       )
       if (mode.touch) await hit(page.getByRole('button', { name: 'Выйти из режима кассы' }))
@@ -521,7 +529,7 @@ test.describe('режим кассы 1366×768: «+ ещё» под пальце
     await expect(block.getByText('Масло в коробке', { exact: true })).toBeVisible()
     // Приписка про фильтры — одна строка без двух двоеточий и видна целиком.
     const note = page.getByTestId('next-filters')
-    await expect(note).toHaveText('Масло двигателя — и фильтр: воздушный на тот же пробег')
+    await expect(note).toHaveText(`${s.service} — и фильтр: Фильтр воздушный три ${seq} на тот же пробег`)
     await expect(note).toBeInViewport({ ratio: 1 })
     await expect(page.getByTestId('service-left').getByRole('button', { name: 'Мастер рекомендовал' })).toBeInViewport({ ratio: 1 })
     expect(await noScroll(page)).toBe(true)

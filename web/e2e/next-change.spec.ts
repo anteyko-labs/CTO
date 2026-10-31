@@ -296,9 +296,10 @@ test('чек «В сервис»: следующая замена в книжк�
   const text = plain(receipt)
   expect(text).toContain(`Машина: Toyota Camry, ${s.plate}`)
   expect(text).toContain('Пробег сейчас: 217 000 км')
-  // Чек книжки (ADR-115, ADR-116): что залито — услуги без товара, своё у клиента; следующая — только пробег.
-  expect(text).toContain('Залито: Масло двигателя: масло клиента Антифриз: жидкость клиента')
-  expect(text).toContain('Следующая замена: Масло двигателя: на 225 000 км Антифриз: на 250 000 км')
+  // Чек книжки (ADR-115, ADR-116, задача 003 Н5): по видам замены; без товара — своё у клиента;
+  // следующая — только пробег.
+  expect(text).toContain(`${s.oil} масло клиента (двигатель) Следующая замена — на 225 000 км`)
+  expect(text).toContain(`${s.anti} жидкость клиента (антифриз) Следующая замена — на 250 000 км`)
   expect(text).not.toContain('или до')
   if (SHOTS) {
     const view = await page.context().newPage()
@@ -313,7 +314,7 @@ test('чек «В сервис»: следующая замена в книжк�
   await page.goto(href ?? '/')
   await page.getByRole('button', { name: 'Печать', exact: true }).click()
   await expect.poll(async () => (await prints(page)).filter((h) => h.includes('Масляная книжка')).length).toBeGreaterThan(0)
-  expect(plain((await prints(page)).at(-1) ?? '')).toContain('Антифриз: на 250 000 км')
+  expect(plain((await prints(page)).at(-1) ?? '')).toContain('жидкость клиента (антифриз) Следующая замена — на 250 000 км')
 
   // Без сети: чек в очереди, книжка — в чеке из очереди; пустое поле не печатается.
   await page.route('**/api/v1/sales', (r) => (r.request().method() === 'POST' ? r.abort() : r.continue()))
@@ -321,9 +322,9 @@ test('чек «В сервис»: следующая замена в книжк�
   await page.getByRole('button', { name: 'Печать чека' }).click()
   await expect.poll(async () => (await prints(page)).filter((h) => h.includes('Масляная книжка')).length).toBeGreaterThan(0)
   const queued = plain((await prints(page)).at(-1) ?? '')
-  expect(queued).toContain('Залито: Масло двигателя: масло клиента Антифриз: жидкость клиента')
-  expect(queued).toContain('Следующая замена: Масло двигателя: на 225 000 км')
-  expect(queued).not.toContain('Антифриз: на')
+  expect(queued).toContain(`${s.oil} масло клиента (двигатель) Следующая замена — на 225 000 км`)
+  expect(queued).toContain(`${s.anti} жидкость клиента (антифриз)`)
+  expect(queued).not.toContain('(антифриз) Следующая замена')
   await page.unroute('**/api/v1/sales')
   // Очередь отправит сама: антифриз — без напоминания, масло — 225 000.
   await expect
