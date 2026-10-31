@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { ApiError, get, noServerAnswer, post, setUnauthorizedHandler } from './api'
+import { ApiError, get, noServerAnswer, post, setNoPermissionHandler, setUnauthorizedHandler } from './api'
 import { rememberBranch, selectedBranch } from './branch'
 import type { User } from './types'
 
@@ -13,6 +13,9 @@ interface AuthState {
 const AuthContext = createContext<AuthState | null>(null)
 
 const USER_KEY = 'avtodom.user'
+
+/** Как часто перечитывать права: касса-моноблок работает сутками (задача 003 Н8). */
+const ME_REFRESH_MS = 60_000
 
 /** Последний вошедший — чтобы касса открылась без сети после перезагрузки. */
 function remember(u: User | null): void {
@@ -74,6 +77,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .finally(() => setLoading(false))
   }, [])
+
+  // Права применяются без перезагрузки (задача 003 Н8): `/auth/me` раз в минуту, при возврате на
+  // вкладку и сразу после ответа «Нет права». Без сети и при ошибке — остаётся прежнее.
+  const signedIn = user !== null
+  useEffect(() => {
+    if (!signedIn) return
+    let busy = false
+    const refresh = () => {
+      if (busy) return
+      busy = true
+      loadMe()
+        .then((u) => {
+          remember(u)
+          setUser((prev) => (prev && JSON.stringify(prev) === JSON.stringify(u) ? prev : u))
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          busy = false
+        })
+    }
+    const timer = setInterval(refresh, ME_REFRESH_MS)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    setNoPermissionHandler(refresh)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      setNoPermissionHandler(() => {})
+    }
+  }, [signedIn])
 
   const login = useCallback(async (login: string, password: string) => {
     await post<User>('/auth/login', { login, password })

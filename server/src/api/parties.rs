@@ -1207,6 +1207,9 @@ async fn reconciliation(
     Query(q): Query<ReconQuery>,
 ) -> AppResult<Json<ReconOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Акт сверки администратору — по праву; кабинет юрлица и бот владельца его не спрашивают
+    // (задача 003 Н8, ADR-{B7.1}).
+    crate::auth::require_permission(&mut conn, &user, "reconciliation").await?;
     Ok(Json(
         reconciliation_data(&mut conn, user.branch_id, id, q.from, q.to).await?,
     ))
@@ -2720,6 +2723,8 @@ async fn debts_list(
     Query(scope): Query<crate::api::branches::BranchQuery>,
 ) -> AppResult<Json<Vec<DebtRow>>> {
     let mut conn = state.pool.acquire().await?;
+    // Раздел «Долги» — по праву (задача 003 Н8, ADR-{B7.1}).
+    crate::auth::require_permission(&mut conn, &user, "view_debts").await?;
     let all = scope.all()?;
     crate::api::branches::report_scope(&mut conn, &user, all).await?;
     Ok(Json(debts_list_in(&mut conn, user.branch_id, all).await?))

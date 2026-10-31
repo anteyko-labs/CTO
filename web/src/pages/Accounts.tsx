@@ -75,7 +75,9 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
   // «Внести», «Изъять», «Перевести» у счёта (SPEC-29 §11) — владелец; все счета для «куда».
   // Кнопки над списком — счёт выбирают в окне: владельцу любой действующий, администратору — касса
   // смены, как на экране «Смена» (SPEC-29 §25). Права проверяет сервер.
-  const mayMove = useCan()('cash_moves')
+  const can = useCan()
+  const mayMove = can('cash_moves')
+  const mayHistory = can('view_accounts')
   const [money, setMoney] = useState<{ kind: AccountMoneyKind; account?: CashAccount } | null>(openMoney && mayMove ? { kind: 'cash_in' } : null)
   const choices = payAccounts(rows, owner)
   const act = useAction()
@@ -264,9 +266,12 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
                         <Icon name="edit" className="h-4 w-4" />
                       </Button>
                     )}
-                    <Button variant="ghost" className="px-2" aria-label={`История «${a.name}»`} title="История" onClick={() => setHistory(a)}>
-                      <Icon name="history" className="h-4 w-4" />
-                    </Button>
+                    {/* История счёта — раздел «Счета» (задача 003 Н8); «Внести / Изъять» открывает экран и без него. */}
+                    {mayHistory && (
+                      <Button variant="ghost" className="px-2" aria-label={`История «${a.name}»`} title="История" onClick={() => setHistory(a)}>
+                        <Icon name="history" className="h-4 w-4" />
+                      </Button>
+                    )}
                   </td>
                 </tr>
               ))}

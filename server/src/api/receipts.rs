@@ -1338,6 +1338,7 @@ async fn stock(
     Query(q): Query<StockQuery>,
 ) -> AppResult<Json<Vec<ProductOut>>> {
     let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "view_stock").await?;
     let f = ProductFilter {
         q: q.q,
         category_id: q.category_id,

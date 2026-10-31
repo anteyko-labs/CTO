@@ -859,7 +859,8 @@ function ProductTableRow({
               // «В брак» — только из того, что есть на складе (SPEC-25).
               ...(p.stock_qty > 0 && can('defects') ? [{ label: 'В брак', onClick: onDefect }] : []),
               { label: selected ? 'Убрать из этикеток' : 'Печать этикетки', onClick: () => onToggle(!selected) },
-              ...(can('products') ? [{ label: p.archived ? 'Вернуть из архива' : 'В архив', danger: !p.archived, onClick: onArchive }] : []),
+              // Архив — владелец или администратор с правом «Убирать товар в архив» (ADR-{B7.1}).
+              ...(can('products') && can('products_archive') ? [{ label: p.archived ? 'Вернуть из архива' : 'В архив', danger: !p.archived, onClick: onArchive }] : []),
             ]}
           />
         </div>

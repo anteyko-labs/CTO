@@ -2145,6 +2145,21 @@ async fn account_movements(
     Query(page): Query<crate::api::paging::PageQuery>,
 ) -> AppResult<crate::api::paging::Paged<MovementOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Без раздела «Счета» администратору — только движения кассы смены (экран «Смена»),
+    // сейфы и счета — по праву (задача 003 Н8, ADR-{B7.1}).
+    if !crate::auth::has_permission(&mut conn, &user, "view_accounts").await? {
+        let register = sqlx::query_scalar!(
+            r#"select kind = 'register' as "r!" from cash_accounts where id = $1 and branch_id = $2"#,
+            id,
+            user.branch_id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(AppError::NotFound)?;
+        if !register {
+            return Err(crate::auth::no_permission("view_accounts"));
+        }
+    }
     // История счёта за период (SPEC-28 §5); без дат — все движения, как раньше.
     let period = match (period.from, period.to) {
         (None, None) => None,
@@ -2232,6 +2247,7 @@ async fn account_summary(
     Query(q): Query<PeriodQuery>,
 ) -> AppResult<Json<crate::api::income::AccountFlow>> {
     let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "view_accounts").await?;
     let (from, to) = crate::api::reports::resolve_period(&mut conn, q.from, q.to).await?;
     let flows = crate::api::income::flows_of(&mut conn, &user, from, to, Some(id)).await?;
     flows.into_iter().next().map(Json).ok_or(AppError::NotFound)

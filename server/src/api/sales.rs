@@ -3335,6 +3335,17 @@ async fn list_sales(
     Query(q): Query<DayQuery>,
 ) -> AppResult<Json<DayOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Без права «Чеки прошлых дней» администратору — только сегодняшние чеки: возвраты по ним
+    // работают (задача 003 Н8, ADR-{B7.1}).
+    if let Some(d) = q.date {
+        let today =
+            sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
+                .fetch_one(&mut *conn)
+                .await?;
+        if d != today {
+            crate::auth::require_permission(&mut conn, &user, "view_sales").await?;
+        }
+    }
     Ok(Json(sales_day(&mut conn, &user, q.date).await?))
 }
 

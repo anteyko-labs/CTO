@@ -9,6 +9,7 @@ import { get, newOpId, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatSom, parseSom, plural, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
+import { useCan } from '../lib/permissions'
 import { useAction, useLoad } from '../lib/hooks'
 import { BOOK_SLOT_LABELS, type BookSlot, type Category, type Service } from '../lib/types'
 import { mapUmagRows, preselected, serviceCandidates, type ServiceCandidate } from '../lib/umag'
@@ -138,6 +139,8 @@ function FreeWithOil({
 
 function EditModal({ service, onClose, onSaved }: { service: Service; onClose: () => void; onSaved: () => void }) {
   const owner = useUser().role === 'owner'
+  // Цену услуги меняет владелец или администратор с правом «Цены товаров и услуг» (ADR-{B7.1}).
+  const mayPrice = useCan()('prices')
   const categories = useOilCategories()
   const [form, setForm] = useState({
     name: service.name,
@@ -176,8 +179,8 @@ function EditModal({ service, onClose, onSaved }: { service: Service; onClose: (
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Цена клиенту, с" hint={owner ? 'Со своим маслом' : 'Цену меняет владелец'}>
-            <input id="service-edit-price" inputMode="decimal" disabled={!owner} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+          <Field label="Цена клиенту, с" hint={mayPrice ? 'Со своим маслом' : 'Цену меняет владелец'}>
+            <input id="service-edit-price" inputMode="decimal" disabled={!mayPrice} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
           </Field>
           <Field label="Мастеру, с" hint={FEE_HINT}>
             <input id="service-edit-fee" inputMode="decimal" disabled={!owner} value={form.fee} onChange={(e) => setForm({ ...form, fee: e.target.value })} />
@@ -316,6 +319,8 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
 
 export default function Services() {
   const owner = useUser().role === 'owner'
+  // Заводить и править — по праву «Услуги» (задача 003 Н8); без него список только для чтения.
+  const mayEdit = useCan()('services')
   const list = useLoad(() => get<Service[]>('/services'), [])
   // Флажок доливки: пока владелец его не трогал (null) — по названию услуги, как на сервере.
   const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean; oilCat: string; takeaway: boolean | null }>({ name: '', price: '', fee: '', free: false, oilCat: '', takeaway: null })
@@ -396,9 +401,11 @@ export default function Services() {
                 />
               </label>
             )}
-            <Button onClick={() => setAdding(true)}>
-              <Icon name="plus" /> Добавить
-            </Button>
+            {mayEdit && (
+              <Button onClick={() => setAdding(true)}>
+                <Icon name="plus" /> Добавить
+              </Button>
+            )}
           </div>
         }
       />
@@ -423,9 +430,11 @@ export default function Services() {
           <Empty
             icon="services"
             action={
-              <Button onClick={() => setAdding(true)}>
-                <Icon name="plus" /> Добавить услугу
-              </Button>
+              mayEdit && (
+                <Button onClick={() => setAdding(true)}>
+                  <Icon name="plus" /> Добавить услугу
+                </Button>
+              )
             }
           >
             Услуг пока нет. Добавьте виды замены, например «Замена масла в моторе» и «Замена масла в коробке», — они сразу появятся в кассе.
@@ -437,8 +446,8 @@ export default function Services() {
             {rows.map((s) => (
               <tr
                 key={s.id}
-                className={`cursor-pointer hover:bg-slate-50 ${s.active ? '' : 'text-slate-400'}`}
-                onClick={() => setEditing(s)}
+                className={`${mayEdit ? 'cursor-pointer hover:bg-slate-50' : ''} ${s.active ? '' : 'text-slate-400'}`}
+                onClick={() => mayEdit && setEditing(s)}
               >
                 <td className="px-2 py-2 font-medium">
                   {s.name}
@@ -478,14 +487,16 @@ export default function Services() {
                 </td>
                 <td className="px-2 py-2">{s.active ? <Badge tone="green">активна</Badge> : <Badge>отключена</Badge>}</td>
                 <td className="overflow-visible! px-2 py-1 text-right" onClick={(ev) => ev.stopPropagation()}>
-                  <RowMenu
-                    items={[
-                      { label: 'Изменить', onClick: () => setEditing(s) },
-                      s.active
-                        ? { label: 'Отключить', danger: true, onClick: () => setActive(s, false) }
-                        : { label: 'Включить', onClick: () => setActive(s, true) },
-                    ]}
-                  />
+                  {mayEdit && (
+                    <RowMenu
+                      items={[
+                        { label: 'Изменить', onClick: () => setEditing(s) },
+                        s.active
+                          ? { label: 'Отключить', danger: true, onClick: () => setActive(s, false) }
+                          : { label: 'Включить', onClick: () => setActive(s, true) },
+                      ]}
+                    />
+                  )}
                 </td>
               </tr>
             ))}

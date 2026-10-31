@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update user_permissions set branch_id = $2 where user_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba3653d60088de2df243264a0abf6be72af9bdb6185da8bb716b853ba19af53f"
+}

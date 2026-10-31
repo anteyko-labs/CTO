@@ -90,6 +90,14 @@ export function setUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn
 }
 
+let onNoPermission: () => void = () => {}
+
+/** Ответ 403 «Нет права: …» — владелец снял право, пока экран открыт: права перечитываются
+ *  сразу, меню и кнопки обновляются без перезагрузки (задача 003 Н8). */
+export function setNoPermissionHandler(fn: () => void): void {
+  onNoPermission = fn
+}
+
 /** Текст ошибки, когда сервер не объяснил её сам. */
 function statusMessage(status: number): string {
   if ([502, 503, 504, 530].includes(status)) return 'Сервер недоступен, попробуйте позже'
@@ -151,6 +159,7 @@ async function request<T>(method: string, path: string, body?: unknown, branch?:
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/auth/')) onUnauthorized()
     const err = (data as { error?: { code?: string; message?: string } } | null)?.error
+    if (res.status === 403 && err?.message?.startsWith('Нет права')) onNoPermission()
     throw new ApiError(res.status, err?.code ?? 'error', err?.message ?? statusMessage(res.status))
   }
   if (!parsed) throw new ApiError(res.status, 'bad_response', 'Сервер прислал непонятный ответ, попробуйте ещё раз')

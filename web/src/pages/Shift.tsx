@@ -377,26 +377,32 @@ export default function Shift() {
           <Loading />
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {accs.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                aria-pressed={history === a.id}
-                className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition hover:border-sky-400 hover:bg-slate-50 ${
-                  history === a.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200'
-                }`}
-                onClick={() => setHistory(history === a.id ? '' : a.id)}
-              >
-                <div className="min-w-0">
-                  <div className="text-xs text-slate-500">
-                    {a.name}
-                    {a.owner_only && ' · только владелец'}
+            {accs.map((a) => {
+              // Движения сейфов и счетов — по праву «Счета» (задача 003 Н8); кассы смены — всегда.
+              const open = a.kind === 'register' || can('view_accounts')
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={!open}
+                  title={open ? undefined : 'Движения открывает владелец'}
+                  aria-pressed={history === a.id}
+                  className={`flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition hover:border-sky-400 hover:bg-slate-50 ${
+                    history === a.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200'
+                  }`}
+                  onClick={() => setHistory(history === a.id ? '' : a.id)}
+                >
+                  <div className="min-w-0">
+                    <div className="text-xs text-slate-500">
+                      {a.name}
+                      {a.owner_only && ' · только владелец'}
+                    </div>
+                    <Money value={a.balance_tyiyn} tone="negative" className="text-xl font-bold" />
                   </div>
-                  <Money value={a.balance_tyiyn} tone="negative" className="text-xl font-bold" />
-                </div>
-                <Icon name="chevron" className={`h-4 w-4 shrink-0 text-slate-400 transition ${history === a.id ? 'rotate-90 text-sky-600' : ''}`} />
-              </button>
-            ))}
+                  {open && <Icon name="chevron" className={`h-4 w-4 shrink-0 text-slate-400 transition ${history === a.id ? 'rotate-90 text-sky-600' : ''}`} />}
+                </button>
+              )
+            })}
           </div>
         )}
         {!history && accs.length > 0 && <div className="mt-2 text-xs text-slate-400">Нажмите на кассу, чтобы увидеть её движения.</div>}

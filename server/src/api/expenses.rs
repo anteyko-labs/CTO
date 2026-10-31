@@ -243,6 +243,8 @@ async fn list(
     Query(page): Query<crate::api::paging::PageQuery>,
 ) -> AppResult<crate::api::paging::Paged<ExpenseOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Список расходов — тем, кому раздел «Расходы» открыт (задача 003 Н8, I12).
+    crate::auth::require_permission(&mut conn, &user, "expenses").await?;
     let (items, total) = page.slice(list_data(&mut conn, &user, q).await?, 500);
     Ok(crate::api::paging::paged(items, total))
 }
@@ -254,6 +256,7 @@ async fn summary(
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
     let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "expenses").await?;
     let rows = list_data(&mut conn, &user, q).await?;
     let total = rows
         .iter()

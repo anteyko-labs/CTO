@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind = 'register' as \"r!\" from cash_accounts where id = $1 and branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "r!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d06f25e25aa1e6c30536db0bfaf25c8f550c5586f84366a0e6915099f8ba4140"
+}

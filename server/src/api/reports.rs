@@ -1407,6 +1407,11 @@ async fn top_products(
     Query(scope): Query<BranchQuery>,
 ) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
+    // «Продаваемые» — по праву раздела «Остатки и продаваемые»; что брал один клиент (карточка
+    // клиента) — без него (задача 003 Н8, ADR-{B7.1}).
+    if q.party_id.is_none() {
+        crate::auth::require_permission(&mut conn, &user, "view_stock").await?;
+    }
     Ok(Json(
         branches::report(&mut conn, &user, &scope, |c, u| {
             let q = q.clone();

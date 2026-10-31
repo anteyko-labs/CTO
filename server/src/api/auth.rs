@@ -649,6 +649,10 @@ struct UpdateUserReq {
     role: Option<String>,
     active: Option<bool>,
     password: Option<String>,
+    /// Новый логин (задача 003 Н8): занят — 409.
+    login: Option<String>,
+    /// Филиал администратора (задача 003 Н8, SPEC-33): права переходят вместе с ним.
+    branch_id: Option<Uuid>,
     // Права меняются отдельной операцией `PUT /users/{id}/permissions` (ADR-097): поле
     // `permissions` от старого экрана не принимается, чтобы он не снял права, которых не знает.
 }
@@ -672,6 +676,10 @@ async fn update_user(
     if full_name.as_deref() == Some("") {
         return Err(invalid("имя обязательно"));
     }
+    let login = req.login.map(|s| s.trim().to_string());
+    if login.as_deref() == Some("") {
+        return Err(invalid("логин обязателен"));
+    }
     let mut tx = state.pool.begin().await?;
     // Блокируем владельцев, чтобы проверка «последнего владельца» была надёжной. Владелец —
     // всех филиалов (SPEC-33): его правят из любого филиала, администратора — из его филиала.
@@ -679,20 +687,40 @@ async fn update_user(
         sqlx::query_scalar!("select id from users where role = 'owner' and active for update")
             .fetch_all(&mut *tx)
             .await?;
-    let before_role = sqlx::query_scalar!(
-        "select role from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
+    let before = sqlx::query!(
+        "select role, login, branch_id from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
         id,
         ctx.user.branch_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let before_role = before.role;
+    // Филиал меняют только администратору и только на открытый филиал (SPEC-33): владелец видит
+    // все филиалы, его филиал — лишь «домашний».
+    let new_branch = req.branch_id.filter(|b| *b != before.branch_id);
+    if let Some(b) = new_branch {
+        if !role.map_or(before_role == "admin", |r| r == Role::Admin) {
+            return Err(invalid("филиал меняется только у администратора"));
+        }
+        let open = sqlx::query_scalar!(
+            r#"select not archived as "open!" from branches where id = $1"#,
+            b
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if open != Some(true) {
+            return Err(invalid("нет такого открытого филиала"));
+        }
+    }
     let row = sqlx::query!(
         r#"update users set
              full_name = coalesce($3, full_name),
              role = coalesce($4, role),
              active = coalesce($5, active),
-             password_hash = coalesce($6, password_hash)
+             password_hash = coalesce($6, password_hash),
+             login = coalesce($7, login),
+             branch_id = coalesce($8, branch_id)
            where id = $1 and (branch_id = $2 or role = 'owner')
            returning id, login, full_name, role, active, branch_id"#,
         id,
@@ -700,11 +728,30 @@ async fn update_user(
         full_name,
         role.map(Role::as_str),
         req.active,
-        hash
+        hash,
+        login,
+        new_branch
     )
     .fetch_optional(&mut *tx)
-    .await?
+    .await
+    .map_err(|e| {
+        if is_unique_violation(&e) {
+            AppError::Conflict("логин занят".into())
+        } else {
+            e.into()
+        }
+    })?
     .ok_or(AppError::NotFound)?;
+    // Права администратора хранятся с филиалом (I16): переходят в новый филиал той же операцией.
+    if new_branch.is_some() {
+        sqlx::query!(
+            "update user_permissions set branch_id = $2 where user_id = $1",
+            id,
+            row.branch_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     // Владелец стал администратором — как новому администратору, права по умолчанию (SPEC-30 §5).
     if before_role == "owner" && row.role == "admin" {
         let before = auth::permissions(&mut tx, id).await?;
@@ -743,23 +790,25 @@ async fn update_user(
     }
     // Отключённый или сменивший роль — его чат в Телеграме отвязывается (ADR-063); чат
     // администратора — так же (ADR-135).
-    if !out.active || out.role != before_role {
+    // Сменил филиал — чат администратора тоже: в нём запомнен прежний филиал (SPEC-33 §3).
+    if !out.active || out.role != before_role || new_branch.is_some() {
         crate::api::telegram::drop_owner_link(&mut tx, &ctx, id).await?;
     }
-    ops::audit(
-        &mut tx,
-        &ctx,
-        "user.update",
-        "user",
-        Some(id),
-        json!({
-            "login": out.login,
-            "role": out.role,
-            "active": out.active,
-            "password_changed": hash.is_some(),
-        }),
-    )
-    .await?;
+    let mut data = json!({
+        "login": out.login,
+        "role": out.role,
+        "active": out.active,
+        "password_changed": hash.is_some(),
+    });
+    // Логин и филиал — «было → стало» (задача 003 Н8, I5).
+    if out.login != before.login {
+        data["old_login"] = json!(before.login);
+    }
+    if new_branch.is_some() {
+        data["old_branch_id"] = json!(before.branch_id);
+        data["branch_id"] = json!(row.branch_id);
+    }
+    ops::audit(&mut tx, &ctx, "user.update", "user", Some(id), data).await?;
     tx.commit().await?;
     Ok(Json(out))
 }

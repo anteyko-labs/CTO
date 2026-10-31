@@ -1643,6 +1643,11 @@ async fn day(
     Query(q): Query<DayQuery>,
 ) -> AppResult<Json<Vec<DayRow>>> {
     let mut conn = state.pool.acquire().await?;
+    // «Расчёт за день» — раздел «Расчёт» или выплаты мастерам: день нужен и закрытию смены
+    // (задача 003 Н8, ADR-{B7.1}).
+    if !crate::auth::has_permission(&mut conn, &user, "view_payroll").await? {
+        crate::auth::require_permission(&mut conn, &user, "payroll_pay").await?;
+    }
     let date = match q.date {
         Some(d) => d,
         None => {
@@ -1763,10 +1768,20 @@ async fn month(
 ) -> AppResult<Json<serde_json::Value>> {
     use crate::api::branches;
     let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "view_payroll").await?;
+    // Администратору — только мастера, как «За день» (ADR-122); кассиров — с правом
+    // «Заработок кассиров» (задача 003 Н8, ADR-{B7.1}).
+    let see_cashiers = crate::auth::has_permission(&mut conn, &user, "payroll_view_all").await?;
     let month = q.month;
     Ok(Json(
         branches::report(&mut conn, &user, &scope, |c, u| {
-            Box::pin(async move { branches::to_json(&month_data(c, u.branch_id, month).await?) })
+            Box::pin(async move {
+                let mut out = month_data(c, u.branch_id, month).await?;
+                if !see_cashiers {
+                    out.rows.retain(|r| r.is_master && !r.is_cashier);
+                }
+                branches::to_json(&out)
+            })
         })
         .await?,
     ))

@@ -1311,7 +1311,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       void Promise.all([
         get<Party>(`/parties/${partyId}`),
         get<DebtDocSettings>('/settings/debt-docs'),
-        get<Reconciliation>(`/parties/${partyId}/reconciliation`),
+        // История долга — по праву «Акт сверки»; без него документ печатается без истории.
+        get<Reconciliation>(`/parties/${partyId}/reconciliation`).catch(() => null),
       ])
         .then(([p, settings, history]) => printDebtDoc({ sale, party: p, settings, history }))
         .catch(() => toast('Документ о долге не напечатан — напечатайте его из чека'))
