@@ -10,6 +10,7 @@ pub mod batteries;
 pub mod bot_book;
 pub mod bot_cars;
 pub mod bot_debt;
+pub mod bot_debtors;
 pub mod bot_drafts;
 pub mod bot_feed;
 pub mod bot_reports;

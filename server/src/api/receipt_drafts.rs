@@ -18,13 +18,13 @@ use axum::{Json, Router, routing};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{PgConnection, PgPool};
+use sqlx::{Connection, PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::api::assistant::{self, Assistant};
 use crate::api::catalog::{ProductFilter, ProductOut, query_products};
 use crate::api::receipt_files::{MAX_FILE_BYTES, sniff};
-use crate::auth::{Ctx, CurrentUser, Role};
+use crate::auth::{Ctx, CurrentUser, Owner, Role};
 use crate::domain::money::{div_round, format_som, parse_liters, parse_som};
 use crate::error::{AppError, AppResult, invalid};
 use crate::ops::{self, new_id};
@@ -65,6 +65,10 @@ pub fn routes() -> Router<AppState> {
         .route("/receipt-drafts/{id}", routing::get(get_draft))
         .route("/receipt-drafts/{id}/file", routing::get(download))
         .route("/receipt-drafts/{id}/remove", routing::post(remove))
+        .route(
+            "/settings/bot-receipts",
+            routing::get(get_bot_settings).put(put_bot_settings),
+        )
 }
 
 /// Кто работает с накладными по фото в программе: владелец и администратор с правом
@@ -1189,7 +1193,9 @@ struct UploadQuery {
 
 /// «Заполнить по фото» в «Новом приходе»: сохранить фото черновиком и распознать (ждём ответ).
 /// «Ещё фото» (`parent_id`): фото дописывает открытый черновик, ответ — весь черновик, а
-/// `added_photo` — номер нового фото, его строки экран добавляет в приход.
+/// `added_photo` — номер нового фото, его строки экран добавляет в приход. Без ключа
+/// распознавания фото сохраняется черновиком без строк — приход заполняют вручную (задача 003,
+/// Н6), как фото из бота.
 async fn upload(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -1201,9 +1207,6 @@ async fn upload(
         let mut conn = state.pool.acquire().await?;
         may_use(&mut conn, &ctx.user).await?;
     }
-    let Some(a) = state.assistant.as_ref() else {
-        return Err(invalid(NOT_CONFIGURED));
-    };
     let declared = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -1235,7 +1238,7 @@ async fn upload(
             name: &q.name,
             kind,
             data: &body,
-            service: true,
+            service: state.assistant.is_some(),
             keep_on_limit: false,
             parent_id: q.parent_id,
         },
@@ -1244,7 +1247,7 @@ async fn upload(
     let id = match started {
         Start::Existing(id) => id,
         Start::New { id, recognition } => {
-            if recognition == "pending" {
+            if let ("pending", Some(a)) = (recognition, state.assistant.as_ref()) {
                 recognize(&state.pool, a, &ctx, id, &body, kind).await?;
             }
             id
@@ -1681,8 +1684,7 @@ pub(crate) async fn exact_invoice(
 // ---------- Бот ----------
 
 /// Фото не из чата владельца или администратора: бот вежливо отказывает (SPEC-30 §9).
-pub const NOT_OWNER: &str =
-    "Фото здесь не принимаются: накладные по фото присылает владелец точки. Нажмите кнопку внизу.";
+pub const NOT_OWNER: &str = "Фото здесь не принимаются: накладные присылают владелец и администратор, которому владелец привязал Телеграм («Пользователи» → «Телеграм»). Нажмите кнопку внизу.";
 /// Администратор без права «Приход товара» на момент фото (SPEC-39 §7).
 pub const NO_RIGHT: &str = "Нет права «Приход товара» — фото не принято.";
 /// Кнопка под ответом на точно распознанную накладную (SPEC-39 §2).
@@ -1797,68 +1799,393 @@ pub async fn from_bot_reply(
     from_id: i64,
     file: BotFile,
 ) -> AppResult<(String, Option<Uuid>)> {
+    let r = from_bot_answer(pool, a, chat_id, from_id, file).await?;
+    Ok((r.text, r.acceptance))
+}
+
+/// Ответ на фото накладной из бота: текст и кнопки под ним.
+pub struct BotAnswer {
+    pub text: String,
+    /// Распознано точно — кнопка «📦 На приёмку» для этого черновика (SPEC-39 §2).
+    pub acceptance: Option<Uuid>,
+    /// Фото дописано к открытой накладной (склейка, задача 003 Н6) — кнопка «➕ Это другая
+    /// накладная» для этого фото.
+    pub split: Option<Uuid>,
+}
+
+impl BotAnswer {
+    fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            acceptance: None,
+            split: None,
+        }
+    }
+}
+
+/// Кнопка под ответом на дописанное фото: отделить его в свою накладную.
+pub const BTN_SPLIT: &str = "➕ Это другая накладная";
+
+/// Данные кнопки «➕ Это другая накладная».
+pub fn split_data(id: Uuid) -> String {
+    format!("rs:{}", id.simple())
+}
+
+// ---------- Накладные в бот: настройка (задача 003, Н6) ----------
+
+/// Подсказка на «📷 Накладная» по умолчанию. Камеру кнопка открыть не может — так в Телеграме.
+pub const INVOICE_HINT: &str =
+    "Нажмите 📎 внизу → «Камера» и снимите накладную целиком, чтобы читались строки и итог.";
+
+/// Настройка «Накладные в бот» филиала (`settings`, ключ `bot_receipts`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BotReceiptSettings {
+    /// Склеивать фото в одну накладную, если следующее пришло за столько минут (0 — каждое фото
+    /// отдельно, как было).
+    #[serde(default)]
+    pub merge_minutes: i32,
+    /// Ответ на «📷 Накладная».
+    #[serde(default = "invoice_hint")]
+    pub invoice_hint: String,
+}
+
+fn invoice_hint() -> String {
+    INVOICE_HINT.into()
+}
+
+impl Default for BotReceiptSettings {
+    fn default() -> Self {
+        Self {
+            merge_minutes: 0,
+            invoice_hint: invoice_hint(),
+        }
+    }
+}
+
+/// Склейка — не дольше суток.
+const MAX_MERGE_MINUTES: i32 = 1440;
+
+pub async fn load_bot_settings(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+) -> AppResult<BotReceiptSettings> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'bot_receipts'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default())
+}
+
+async fn get_bot_settings(
+    State(state): State<AppState>,
+    Owner(user): Owner,
+) -> AppResult<Json<BotReceiptSettings>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(load_bot_settings(&mut conn, user.branch_id).await?))
+}
+
+async fn put_bot_settings(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(mut s): Json<BotReceiptSettings>,
+) -> AppResult<Json<BotReceiptSettings>> {
+    ctx.user.require_owner()?;
+    s.invoice_hint = s.invoice_hint.trim().to_string();
+    if !(0..=MAX_MERGE_MINUTES).contains(&s.merge_minutes) {
+        return Err(invalid(format!(
+            "склейка фото — от 0 до {MAX_MERGE_MINUTES} минут"
+        )));
+    }
+    if s.invoice_hint.is_empty() || s.invoice_hint.chars().count() > 1000 {
+        return Err(invalid("подсказка «📷 Накладная» — от 1 до 1000 знаков"));
+    }
+    let branch_id = ctx.user.branch_id;
+    let mut tx = state.pool.begin().await?;
+    let before = load_bot_settings(&mut tx, branch_id).await?;
+    let value = serde_json::to_value(&s).map_err(|e| AppError::Internal(e.to_string()))?;
+    sqlx::query!(
+        r#"insert into settings (branch_id, key, value) values ($1, 'bot_receipts', $2)
+           on conflict (branch_id, key) do update set value = excluded.value"#,
+        branch_id,
+        value
+    )
+    .execute(&mut *tx)
+    .await?;
+    if before != s {
+        let old = serde_json::to_value(&before).map_err(|e| AppError::Internal(e.to_string()))?;
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "receipt_draft.bot_settings",
+            "settings",
+            None,
+            json!({ "changes": ops::changes(&old, &value) }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(s))
+}
+
+/// Ответ на «📷 Накладная»: как снять и, если склейка включена, что страницы соберутся вместе.
+pub async fn invoice_hint_text(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<String> {
+    let s = load_bot_settings(conn, branch_id).await?;
+    let mut text = s.invoice_hint;
+    if s.merge_minutes > 0 {
+        text.push_str(&format!(
+            "\n\nНесколько страниц — по одной, в течение {} мин.: они соберутся в одну накладную. Другая накладная — кнопкой «{BTN_SPLIT}» под ответом.",
+            s.merge_minutes
+        ));
+    }
+    Ok(text)
+}
+
+/// Открытая накладная из бота, к которой пора дописать новое фото: этого человека и чата, ещё
+/// не проведена и не на приёмке, последнее фото — не раньше `minutes` минут назад, фото меньше
+/// предела.
+async fn merge_target(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    chat_id: i64,
+    minutes: i32,
+) -> AppResult<Option<Uuid>> {
+    if minutes <= 0 {
+        return Ok(None);
+    }
+    Ok(sqlx::query_scalar!(
+        r#"select d.id from receipt_drafts d
+           where d.branch_id = $1 and d.user_id = $2 and d.chat_id = $3 and d.source = 'bot'
+             and d.parent_id is null and d.status = 'new'
+             and (select max(x.created_at) from receipt_drafts x where x.id = d.id or x.parent_id = d.id)
+                 > now() - make_interval(mins => $4)
+             and (select count(*) from receipt_drafts x where x.id = d.id or x.parent_id = d.id) < $5
+           order by d.created_at desc limit 1"#,
+        user.branch_id,
+        user.id,
+        chat_id,
+        minutes,
+        MAX_PHOTOS
+    )
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+/// «➕ Это другая накладная»: дописанное фото становится своей накладной (пока обе открыты).
+/// Нажал тот, кто привязал чат (ADR-070); журнал — `receipt_draft.split`.
+pub async fn split_bot(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    from_id: i64,
+    data: &str,
+) -> AppResult<String> {
+    let Some(id) = data
+        .strip_prefix("rs:")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return Ok("Кнопка устарела.".into());
+    };
+    let Some((user, tg)) = chat_sender(&mut *conn, chat_id).await? else {
+        return Ok(NOT_OWNER.into());
+    };
+    if tg.is_some_and(|t| t != from_id) {
+        return Ok(NOT_OWNER.into());
+    }
+    let mut tx = conn.begin().await?;
+    let d = sqlx::query!(
+        r#"select d.parent_id, r.status as "root_status?"
+           from receipt_drafts d left join receipt_drafts r on r.id = d.parent_id
+           where d.id = $1 and d.branch_id = $2 and d.chat_id = $3
+           for update of d"#,
+        id,
+        user.branch_id,
+        chat_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    // Отказ — транзакцию закрываем сразу: соединение не держит блокировку до следующего запроса.
+    let (parent, why) = match d {
+        None => (None, "Фото не найдено."),
+        Some(d) => match (d.parent_id, d.root_status.as_deref()) {
+            (None, _) => (None, "Это фото уже отдельная накладная."),
+            (Some(p), Some("new")) => (Some(p), ""),
+            (Some(_), _) => (
+                None,
+                "Накладная уже на приёмке или проведена — фото не отделить. Поправьте в программе: «Приход» → «Накладные по фото».",
+            ),
+        },
+    };
+    let Some(parent) = parent else {
+        tx.rollback().await?;
+        return Ok(why.into());
+    };
+    sqlx::query!(
+        "update receipt_drafts set parent_id = null where id = $1",
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let ctx = Ctx::bot(user, chat_id);
+    ops::audit(
+        &mut tx,
+        &ctx,
+        "receipt_draft.split",
+        "receipt_draft",
+        Some(id),
+        json!({ "from": parent }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(format!("Готово: это фото — отдельная накладная. {WHERE}"))
+}
+
+/// «📄 Мои накладные»: последние 5 накладных этого человека в его филиале — дата, поставщик,
+/// № накладной и что с ней. Сумм нет (как в «Накладных по фото» у администратора, I13).
+pub async fn my_drafts(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<String> {
+    let rows = sqlx::query!(
+        r#"select d.created_at, d.status, d.recognized, r.number as "receipt_number?",
+                  (select count(*) from receipt_drafts m where m.parent_id = d.id) + 1 as "photos!"
+           from receipt_drafts d left join receipts r on r.id = d.receipt_id
+           where d.branch_id = $1 and d.user_id = $2 and d.parent_id is null
+           order by d.created_at desc, d.id desc limit 5"#,
+        user.branch_id,
+        user.id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if rows.is_empty() {
+        return Ok("Накладных от вас ещё нет. Пришлите фото накладной — кнопка «📷 Накладная» подскажет как.".into());
+    }
+    let mut lines = vec!["📄 Ваши последние накладные:".to_string()];
+    for r in rows {
+        let inv = r.recognized.as_ref().and_then(parse_invoice);
+        let supplier = inv
+            .as_ref()
+            .map(|i| i.supplier_name.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "поставщик не распознан".into());
+        let number = inv
+            .as_ref()
+            .map(|i| i.doc_number.clone())
+            .filter(|s| !s.is_empty())
+            .map(|n| format!(", № {n}"))
+            .unwrap_or_default();
+        let state = match (r.status.as_str(), r.receipt_number) {
+            ("used", Some(n)) => format!("принята: приход № {n}"),
+            ("used", None) => "принята".to_string(),
+            ("acceptance", _) => "на приёмке".to_string(),
+            ("removed", _) => "убрана".to_string(),
+            _ => "ждёт проверки".to_string(),
+        };
+        let photos = if r.photos > 1 {
+            format!(" ({} фото)", r.photos)
+        } else {
+            String::new()
+        };
+        let at = (r.created_at + chrono::Duration::hours(6)).format("%d.%m %H:%M");
+        lines.push(format!("{at} — {supplier}{number}{photos}: {state}"));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Фото накладной из бота: ответ и кнопки. Склейка (настройка «Склеивать фото», по умолчанию
+/// выключена) дописывает фото к открытой накладной этого человека — как «Ещё фото» на экране.
+pub async fn from_bot_answer(
+    pool: &PgPool,
+    a: Option<&Assistant>,
+    chat_id: i64,
+    from_id: i64,
+    file: BotFile,
+) -> AppResult<BotAnswer> {
     let sender = {
         let mut conn = pool.acquire().await?;
         chat_sender(&mut conn, chat_id).await?
     };
     // Чат привязал один человек — фото принимаются только от него (ADR-070).
     let Some((user, _)) = sender.filter(|(_, t)| t.is_none_or(|t| t == from_id)) else {
-        return Ok((NOT_OWNER.into(), None));
+        return Ok(BotAnswer::text(NOT_OWNER));
     };
     // Администратор — с правом «Приход товара» на момент фото (SPEC-39 §7).
-    {
+    let parent = {
         let mut conn = pool.acquire().await?;
         if !crate::auth::has_permission(&mut conn, &user, "receipts").await? {
-            return Ok((NO_RIGHT.into(), None));
+            return Ok(BotAnswer::text(NO_RIGHT));
         }
-    }
+        let s = load_bot_settings(&mut conn, user.branch_id).await?;
+        merge_target(&mut conn, &user, chat_id, s.merge_minutes).await?
+    };
     if file.data.len() > MAX_FILE_BYTES {
-        return Ok((TOO_BIG_BOT.into(), None));
+        return Ok(BotAnswer::text(TOO_BIG_BOT));
     }
     let Some(kind) = sniff(&file.data) else {
-        return Ok((BAD_KIND_BOT.into(), None));
+        return Ok(BotAnswer::text(BAD_KIND_BOT));
     };
     let ctx = Ctx::bot(user, chat_id);
-    let started = start(
-        pool,
-        &ctx,
-        NewDraft {
-            source: "bot",
-            op_id: None,
-            chat_id: Some(chat_id),
-            name: &file.name,
-            kind,
-            data: &file.data,
-            service: a.is_some(),
-            keep_on_limit: true,
-            parent_id: None,
-        },
-    )
-    .await?;
-    let Start::New { id, recognition } = started else {
-        return Ok((format!("{FAILED}: {WHERE}"), None));
+    let new = |parent_id| NewDraft {
+        source: "bot",
+        op_id: None,
+        chat_id: Some(chat_id),
+        name: &file.name,
+        kind,
+        data: &file.data,
+        service: a.is_some(),
+        keep_on_limit: true,
+        parent_id,
     };
-    match (recognition, a) {
-        ("pending", Some(a)) => {
-            recognize(pool, a, &ctx, id, &file.data, kind).await?;
-            let mut conn = pool.acquire().await?;
-            let d = draft_out(&mut conn, &ctx.user, id).await?;
-            match (exact_from(&d), d.invoice.as_ref()) {
-                (Some(_), Some(inv)) => Ok((summary_exact(inv), Some(id))),
-                (_, inv) => Ok((summary(inv), None)),
-            }
+    // Накладную за это время провели или отправили на приёмку — фото становится новой.
+    let started = match start(pool, &ctx, new(parent)).await {
+        Err(AppError::Conflict(_) | AppError::Validation(_)) if parent.is_some() => {
+            start(pool, &ctx, new(None)).await?
         }
-        ("limit", _) => Ok((
-            format!(
+        r => r?,
+    };
+    let Start::New { id, recognition } = started else {
+        return Ok(BotAnswer::text(format!("{FAILED}: {WHERE}")));
+    };
+    if let ("pending", Some(a)) = (recognition, a) {
+        recognize(pool, a, &ctx, id, &file.data, kind).await?;
+    }
+    let mut conn = pool.acquire().await?;
+    let d = draft_out(&mut conn, &ctx.user, id).await?;
+    // Дописано к открытой накладной: какое это фото по счёту и кнопка «другая накладная».
+    let merged = d.id != id;
+    let head = if merged {
+        let no = d.photos.iter().find(|p| p.id == id).map_or(0, |p| p.no);
+        format!("Фото {no} добавлено к накладной, присланной раньше. ")
+    } else {
+        String::new()
+    };
+    let split = merged.then_some(id);
+    let mut answer = match recognition {
+        "pending" if a.is_some() => match (exact_from(&d), d.invoice.as_ref()) {
+            (Some(_), Some(inv)) => BotAnswer {
+                text: summary_exact(inv),
+                acceptance: Some(d.id),
+                split,
+            },
+            (_, inv) => BotAnswer {
+                text: summary(inv),
+                acceptance: None,
+                split,
+            },
+        },
+        "limit" => BotAnswer {
+            text: format!(
                 "Лимит распознаваний на этот час исчерпан. Фото сохранено — заполните приход вручную или пришлите фото позже. {WHERE}"
             ),
-            None,
-        )),
-        _ => Ok((
-            format!("{NOT_CONFIGURED}. Фото сохранено — заполните приход вручную. {WHERE}"),
-            None,
-        )),
-    }
+            acceptance: None,
+            split,
+        },
+        _ => BotAnswer {
+            text: format!("{NOT_CONFIGURED}. Фото сохранено — заполните приход вручную. {WHERE}"),
+            acceptance: None,
+            split,
+        },
+    };
+    answer.text = format!("{head}{}", answer.text);
+    Ok(answer)
 }
 
 #[cfg(test)]

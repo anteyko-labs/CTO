@@ -344,10 +344,76 @@ impl World {
             "PUT",
             "/api/v1/settings/client-messages",
             &self.owner,
+            // «Раз в месяц» выключена: проверки идут в любой день, и 1-го числа тоже.
             json!({ "whatsapp_enabled": true, "oil_template": oil, "oil_language": "ru",
-                    "purchase_template": purchase, "purchase_language": "ru", "km_per_day": 50 }),
+                    "purchase_template": purchase, "purchase_language": "ru", "km_per_day": 50,
+                    "monthly_enabled": false }),
         )
         .await;
+    }
+
+    /// Настройка для сообщений должникам: шаблоны WhatsApp и выключатели поверх `extra`.
+    async fn debtor_settings(&self, extra: Value) {
+        let mut body = json!({ "whatsapp_enabled": true, "km_per_day": 50,
+                               "payment_template": "avtodom_payment",
+                               "monthly_template": "avtodom_monthly" });
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        ok(
+            &self.app,
+            "PUT",
+            "/api/v1/settings/client-messages",
+            &self.owner,
+            body,
+        )
+        .await;
+    }
+
+    /// Старый долг сегодняшним днём.
+    async fn debt(&self, party: Uuid, amount: i64) {
+        let today: String =
+            sqlx::query_scalar("select ((now() at time zone 'Asia/Bishkek')::date)::text")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap();
+        ok(
+            &self.app,
+            "POST",
+            "/api/v1/debts/old",
+            &self.owner,
+            json!({ "op_id": Uuid::now_v7(), "party_id": party, "amount_tyiyn": amount, "date": today }),
+        )
+        .await;
+    }
+
+    /// Погашение наличными в сейф владельца.
+    async fn repay(&self, party: Uuid, amount: i64) -> Value {
+        let accounts = get(&self.app, "/api/v1/cash/accounts", &self.owner).await;
+        let safe = accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["owner_only"] == json!(true))
+            .unwrap()["id"]
+            .clone();
+        ok(
+            &self.app,
+            "POST",
+            "/api/v1/debts/repayments",
+            &self.owner,
+            json!({ "op_id": Uuid::now_v7(), "party_id": party, "amount_tyiyn": amount,
+                    "method": "cash", "account_id": safe }),
+        )
+        .await
+    }
+
+    async fn rows(&self, sql: &str, party: Uuid) -> Vec<(String, String, String, String)> {
+        sqlx::query_as(sql)
+            .bind(party)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap()
     }
 
     async fn person(&self, first: &str, last: &str, phone: &str) -> Uuid {
@@ -993,4 +1059,325 @@ async fn message_waits_for_connection_longer_than_thirty_tries(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(errors, 1);
+}
+
+// ---------- Задача 002, волна 2: сообщения должникам (П7, П7б, П9) ----------
+
+const CHANNELS: &str = "select channel, status, text, error from client_messages
+                        where party_id = $1 order by created_at, channel";
+
+/// «Получили оплату»: частному — в бот (WhatsApp — только юрлицам), юрлицу — бот или WhatsApp
+/// по шаблону и строка в ленте кабинета; ночью — утром; один раз на погашение; выключатель и
+/// текст — в настройке.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn payment_received_goes_to_debtors(pool: PgPool) {
+    let w = World::new(pool, Some("https://avtodom.example")).await;
+    w.debtor_settings(json!({ "monthly_enabled": false })).await;
+    // Частный в боте: текст по умолчанию, долг после оплаты.
+    let azis = w.person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(801, azis, "0555 11 22 33").await;
+    w.debt(azis, 1_000_000).await;
+    w.repay(azis, 400_000).await;
+    w.pass(10).await;
+    assert_eq!(
+        w.tg.texts(801),
+        vec!["Здравствуйте, Азиз! Получили оплату 4 000 сом. Долг на сегодня — 6 000 сом."]
+    );
+    // Один раз на погашение.
+    w.pass(11).await;
+    assert_eq!(w.tg.texts(801).len(), 1);
+    // Частный без бота, с телефоном: WhatsApp — только юрлицам, запись «не отправлено».
+    let bakyt = w.person("Бакыт", "Асанов", "0700 99 88 77").await;
+    w.debt(bakyt, 300_000).await;
+    w.repay(bakyt, 100_000).await;
+    w.pass(10).await;
+    assert!(w.wa.bodies().is_empty());
+    let rows = w.rows(CHANNELS, bakyt).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].1.as_str()),
+        ("none", "not_sent")
+    );
+    assert!(rows[0].3.contains("только юрлицам"), "{rows:?}");
+    // Юрлицо без бота — WhatsApp по шаблону и лента кабинета.
+    let (firm, _, _) = w.firm("ОсОО Такси", "0555 44 55 66").await;
+    w.debt(firm, 500_000).await;
+    w.repay(firm, 200_000).await;
+    w.pass(10).await;
+    let wa = w.wa.bodies();
+    assert_eq!(wa.len(), 1, "{wa:?}");
+    assert_eq!(wa[0]["template"]["name"], "avtodom_payment");
+    assert_eq!(params(&wa[0]), vec!["ОсОО Такси", "2 000 сом", "3 000 сом"]);
+    let rows = w.rows(CHANNELS, firm).await;
+    let cabinet: Vec<_> = rows.iter().filter(|r| r.0 == "cabinet").collect();
+    assert_eq!(cabinet.len(), 1, "{rows:?}");
+    assert_eq!(cabinet[0].1, "sent");
+    assert_eq!(
+        cabinet[0].2,
+        "Здравствуйте, ОсОО Такси! Получили оплату 2 000 сом. Долг на сегодня — 3 000 сом."
+    );
+    let mut conn = w.pool.acquire().await.unwrap();
+    let feed = client_messages::cabinet_feed(&mut conn, firm, 50)
+        .await
+        .unwrap();
+    assert_eq!(feed.len(), 1);
+    assert_eq!(feed[0]["kind"], "payment");
+    // Ночью — не сразу, а утром.
+    w.repay(azis, 100_000).await;
+    w.pass(21).await;
+    assert_eq!(w.tg.texts(801).len(), 1);
+    w.pass(9).await;
+    assert_eq!(
+        w.tg.texts(801)[1],
+        "Здравствуйте, Азиз! Получили оплату 1 000 сом. Долг на сегодня — 5 000 сом."
+    );
+    // Свой текст — с подстановками; выключатель — не пишет.
+    w.debtor_settings(json!({ "monthly_enabled": false,
+                              "payment_text": "{имя}, спасибо! Приняли {сумма} ({дата}), осталось {долг}." }))
+        .await;
+    w.repay(azis, 100_000).await;
+    w.pass(10).await;
+    let last = w.tg.texts(801).pop().unwrap();
+    assert!(
+        last.starts_with("Азиз, спасибо! Приняли 1 000 сом (")
+            && last.ends_with("осталось 4 000 сом."),
+        "{last}"
+    );
+    w.debtor_settings(json!({ "monthly_enabled": false, "payment_enabled": false }))
+        .await;
+    w.repay(azis, 100_000).await;
+    w.pass(10).await;
+    assert_eq!(w.tg.texts(801).len(), 3);
+    // Сторнированное до отправки погашение не пишется.
+    w.debtor_settings(json!({ "monthly_enabled": false })).await;
+    let r = w.repay(azis, 50_000).await;
+    ok(
+        &w.app,
+        "POST",
+        &format!(
+            "/api/v1/debts/ledger/{}/reverse",
+            r["ledger_id"].as_str().unwrap()
+        ),
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "comment": "ошибка кассира" }),
+    )
+    .await;
+    // Выключенное «Получили оплату» и сторнированное — не догоняются.
+    w.pass(10).await;
+    assert_eq!(w.tg.texts(801).len(), 3, "{:?}", w.tg.texts(801));
+}
+
+/// Раз в месяц: в свой день с заданного часа каждому должнику с долгом больше нуля; юрлицу — ещё
+/// ссылка на кабинет и лента; один раз в месяц.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn monthly_debt_message_once_a_month(pool: PgPool) {
+    let w = World::new(pool, Some("https://avtodom.example")).await;
+    w.debtor_settings(json!({ "payment_enabled": false })).await;
+    let azis = w.person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(801, azis, "0555 11 22 33").await;
+    w.debt(azis, 600_000).await;
+    let quiet = w.person("Без", "Долга", "0555 00 00 01").await;
+    w.link_chat(802, quiet, "0555 00 00 01").await;
+    let (firm, _, _) = w.firm("ОсОО Такси", "0555 44 55 66").await;
+    w.debt(firm, 624_000).await;
+    let nov1 = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+    let mut conn = w.pool.acquire().await.unwrap();
+    // 1-го в 9 — ещё рано (по умолчанию 10:00).
+    let made = client_messages::plan_monthly_on(&mut conn, &w.ch, nov1, 9)
+        .await
+        .unwrap();
+    assert_eq!(made, 0);
+    let made = client_messages::plan_monthly_on(&mut conn, &w.ch, nov1, 10)
+        .await
+        .unwrap();
+    assert_eq!(made, 2);
+    client_messages::send_pass(&mut conn, &w.ch).await.unwrap();
+    assert_eq!(
+        w.tg.texts(801),
+        vec!["Здравствуйте, Азиз! На 01.11.2026 ваш долг — 6 000 сом."]
+    );
+    assert!(w.tg.texts(802).is_empty());
+    let wa = w.wa.bodies();
+    assert_eq!(wa.len(), 1);
+    assert_eq!(wa[0]["template"]["name"], "avtodom_monthly");
+    assert_eq!(
+        params(&wa[0]),
+        vec![
+            "ОсОО Такси",
+            "01.11.2026",
+            "6 240 сом",
+            "https://avtodom.example/cabinet"
+        ]
+    );
+    let rows = w.rows(CHANNELS, firm).await;
+    assert!(
+        rows.iter().any(|r| r.0 == "cabinet"
+            && r.2 == "Здравствуйте, ОсОО Такси! На 01.11.2026 ваш долг — 6 240 сом."),
+        "{rows:?}"
+    );
+    // Второй раз в том же месяце (и в догоняющие дни) — нет; в следующем — да.
+    let nov2 = chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+    assert_eq!(
+        client_messages::plan_monthly_on(&mut conn, &w.ch, nov2, 12)
+            .await
+            .unwrap(),
+        0
+    );
+    let dec1 = chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+    assert_eq!(
+        client_messages::plan_monthly_on(&mut conn, &w.ch, dec1, 15)
+            .await
+            .unwrap(),
+        2
+    );
+    // Юрлицо в боте — со ссылкой на кабинет в тексте.
+    let head = w.person("Азиз", "Руководитель", "0700 12 34 56").await;
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/parties/{firm}/contacts"),
+        &w.owner,
+        json!({ "full_name": "Азиз", "phone": "0700 12 34 56", "is_head": true }),
+    )
+    .await;
+    w.link_chat(803, head, "0700 12 34 56").await;
+    let jan1 = chrono::NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+    client_messages::plan_monthly_on(&mut conn, &w.ch, jan1, 10)
+        .await
+        .unwrap();
+    client_messages::send_pass(&mut conn, &w.ch).await.unwrap();
+    assert_eq!(
+        w.tg.texts(803),
+        vec![
+            "Здравствуйте, Азиз (ОсОО Такси)! На 01.01.2027 ваш долг — 6 240 сом. Подробно — в кабинете: https://avtodom.example/cabinet"
+        ]
+    );
+    // Выключили — не пишется.
+    w.debtor_settings(json!({ "payment_enabled": false, "monthly_enabled": false }))
+        .await;
+    let feb1 = chrono::NaiveDate::from_ymd_opt(2027, 2, 1).unwrap();
+    assert_eq!(
+        client_messages::plan_monthly_on(&mut conn, &w.ch, feb1, 10)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+/// Настройка текстов: непонятная подстановка и час вне окна — 422; «Отправить себе» —
+/// образец с примером в Телеграм владельца; администратору — 403.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn debtor_texts_settings_and_send_to_self(pool: PgPool) {
+    let w = World::new(pool, None).await;
+    let st = get(&w.app, "/api/v1/settings/client-messages", &w.owner).await;
+    assert_eq!(st["payment_enabled"], true);
+    assert_eq!(st["monthly_day"], 1);
+    assert_eq!(st["monthly_hour"], 10);
+    assert_eq!(st["payment_params"].as_array().unwrap().len(), 3);
+    assert_eq!(st["monthly_params"].as_array().unwrap().len(), 4);
+    assert!(
+        st["debt_due_text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Здравствуйте, {имя}!")
+    );
+    let (s, v) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/client-messages",
+        Some(&w.owner),
+        Some(json!({ "payment_text": "Привет, {телефон}!" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(v.to_string().contains("{телефон}"), "{v}");
+    let (s, _) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/client-messages",
+        Some(&w.owner),
+        Some(json!({ "monthly_hour": 22 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/client-messages",
+        Some(&w.admin),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let sample = json!({ "kind": "payment", "text": "Здравствуйте, {имя}! Получили {сумма}." });
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        "/api/v1/client-messages/sample",
+        Some(&w.admin),
+        Some(sample.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Телеграм владельца не привязан — понятный отказ.
+    let (s, v) = call(
+        &w.app,
+        "POST",
+        "/api/v1/client-messages/sample",
+        Some(&w.owner),
+        Some(sample.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(v.to_string().contains("не привязан"), "{v}");
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id, tg_user_id) values (901, $1, $2, 901)")
+        .bind(w.owner_id)
+        .bind(w.branch)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let out = ok(
+        &w.app,
+        "POST",
+        "/api/v1/client-messages/sample",
+        &w.owner,
+        sample,
+    )
+    .await;
+    assert_eq!(out["sent"], true);
+    assert_eq!(
+        w.tg.texts(901),
+        vec!["Здравствуйте, Азиз! Получили 5 000 сом."]
+    );
+    let out = ok(
+        &w.app,
+        "POST",
+        "/api/v1/client-messages/sample",
+        &w.owner,
+        json!({ "kind": "debt_due", "text": avtodom_server::api::client_messages::DEBT_DUE_TEXT }),
+    )
+    .await;
+    assert!(
+        out["text"].as_str().unwrap().starts_with(
+            "Здравствуйте, Азиз! Напоминаем: срок оплаты долга 2 400 сом — через 3 дня"
+        ),
+        "{out}"
+    );
+    // «Отправить пробное» клиенту — и для новых видов.
+    let azis = w.person("Азиз", "Касымов", "0555 11 22 33").await;
+    w.link_chat(801, azis, "0555 11 22 33").await;
+    let sent = ok(
+        &w.app,
+        "POST",
+        "/api/v1/client-messages/test",
+        &w.owner,
+        json!({ "party_id": azis, "kind": "monthly" }),
+    )
+    .await;
+    assert_eq!(sent[0]["status"], "sent", "{sent}");
+    assert!(
+        w.tg.texts(801)[0].contains("ваш долг — 0 сом"),
+        "{:?}",
+        w.tg.texts(801)
+    );
 }

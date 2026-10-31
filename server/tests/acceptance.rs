@@ -628,6 +628,78 @@ async fn owner_links_admin_chat_for_invoice_photos_only(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(r.text, avtodom_server::api::telegram::ADMIN_HELP);
+    // Кнопки внизу — «📷 Накладная» и «📄 Мои накладные» (задача 003, Н6); без права «Старые
+    // долги из тетради» — без кнопок долгов.
+    use avtodom_server::api::telegram::{BTN_INVOICE, BTN_MY_INVOICES, Keys};
+    assert_eq!(r.keys, Keys::Admin);
+    let rows = r.keys.markup()["keyboard"].clone();
+    assert_eq!(rows, json!([[BTN_INVOICE, BTN_MY_INVOICES]]));
+    let hint = avtodom_server::api::telegram::handle_message(
+        &mut conn,
+        7001,
+        7001,
+        Some(BTN_INVOICE),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(hint.text, avtodom_server::api::receipt_drafts::INVOICE_HINT);
+    async fn mine(conn: &mut sqlx::PgConnection) -> String {
+        avtodom_server::api::telegram::handle_message(
+            conn,
+            7001,
+            7001,
+            Some(avtodom_server::api::telegram::BTN_MY_INVOICES),
+            None,
+        )
+        .await
+        .unwrap()
+        .text
+    }
+    assert!(
+        mine(&mut conn)
+            .await
+            .starts_with("Накладных от вас ещё нет")
+    );
+    // Фото администратора и владельца: в «Моих накладных» — только его, без сумм.
+    const JPEG: [u8; 12] = [0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1];
+    let photo = || avtodom_server::api::receipt_drafts::BotFile {
+        data: JPEG.to_vec(),
+        name: "фото из бота".into(),
+    };
+    let a =
+        avtodom_server::api::receipt_drafts::from_bot_answer(&w.pool, None, 7001, 7001, photo())
+            .await
+            .unwrap();
+    assert!(a.text.contains("Фото сохранено"), "{}", a.text);
+    sqlx::query(
+        "insert into telegram_links (chat_id, user_id, branch_id, tg_user_id)
+         select 7003, id, branch_id, 7003 from users where role = 'owner'",
+    )
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    avtodom_server::api::receipt_drafts::from_bot_answer(&w.pool, None, 7003, 7003, photo())
+        .await
+        .unwrap();
+    let text = mine(&mut conn).await;
+    assert!(text.starts_with("📄 Ваши последние накладные:"), "{text}");
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(
+        text.contains("ждёт проверки") && !text.contains(" с"),
+        "{text}"
+    );
+    // Неверный код — подсказка, у кого просить новый.
+    let r = avtodom_server::api::telegram::handle_message(
+        &mut conn,
+        7002,
+        7002,
+        Some("/start 000000"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.text, avtodom_server::api::telegram::WRONG_CODE);
     let feed = get(&w.app, "/api/v1/notifications?limit=50", &w.owner).await;
     assert!(feed.to_string().contains("Телеграм привязан"));
     // Отключение администратора — отвязка в той же транзакции.

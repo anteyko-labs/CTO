@@ -1043,3 +1043,250 @@ async fn customer_bot_shows_old_debt_by_its_date_and_reminds_only_ahead(pool: Pg
         reminders[0].text
     );
 }
+
+// ---------- Бот владельца: «📋 Должники» и «➕ Занести долг» (задача 002, П8) ----------
+
+use avtodom_server::api::bot_debtors::{BTN_ADD_DEBT, BTN_DEBTORS};
+use avtodom_server::api::telegram::{Keys, Reply};
+
+impl World {
+    /// Чат Телеграма пользователя `login` (привязал сам — `tg_user_id` = чат).
+    async fn link_bot(&self, chat: i64, login: &str) {
+        sqlx::query(
+            "insert into telegram_links (chat_id, user_id, branch_id, tg_user_id)
+             select $1, id, branch_id, $1 from users where login = $2",
+        )
+        .bind(chat)
+        .bind(login)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn say(&self, chat: i64, text: &str) -> Reply {
+        let mut conn = self.pool.acquire().await.unwrap();
+        avtodom_server::api::telegram::handle_message(&mut conn, chat, chat, Some(text), None)
+            .await
+            .unwrap()
+    }
+
+    async fn press(&self, chat: i64, from: i64, data: &str) -> Reply {
+        let mut conn = self.pool.acquire().await.unwrap();
+        avtodom_server::api::telegram::handle_callback_from(&mut conn, None, chat, from, data)
+            .await
+            .unwrap()
+    }
+}
+
+/// Данные кнопки под ответом по началу её текста.
+fn data_of(r: &Reply, text: &str) -> String {
+    r.inline
+        .iter()
+        .flatten()
+        .find(|b| b.text.starts_with(text))
+        .unwrap_or_else(|| panic!("нет кнопки «{text}»: {:?}", r.inline))
+        .data
+        .clone()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn owner_bot_lists_debtors_and_enters_old_debt_step_by_step(pool: PgPool) {
+    let w = World::new(pool).await;
+    let chat = 95_001i64;
+    w.link_bot(chat, "owner").await;
+    // 12 должников (физлица) и фирма с просрочкой: список по убыванию, по 10 на странице.
+    for i in 1..=12 {
+        let p = w
+            .client("person", &format!("Должник{i:02} Тест"), None)
+            .await;
+        w.owner_old_debt(&p, i * 10_000, &w.today.to_string(), "")
+            .await;
+    }
+    let firm = w.client("company", "ОсОО Просрочка", None).await;
+    w.owner_old_debt(&firm, 500_000, MAR15, "").await;
+    let r = w.say(chat, BTN_DEBTORS).await;
+    assert_eq!(r.keys, Keys::Owner);
+    let lines: Vec<&str> = r.text.lines().collect();
+    assert!(
+        lines[0].starts_with("📋 Должники: 13, всего ") && lines[0].ends_with("стр. 1 из 2"),
+        "{}",
+        r.text
+    );
+    assert!(
+        lines[1].starts_with("1. ОсОО Просрочка — 5 000 с · просрочка "),
+        "{}",
+        r.text
+    );
+    assert!(
+        lines[2].starts_with("2. Должник12 Тест — 1 200 с"),
+        "{}",
+        r.text
+    );
+    assert_eq!(lines.len(), 11);
+    let next = data_of(&r, "Дальше");
+    let r = w.press(chat, chat, &next).await;
+    assert!(r.text.contains("стр. 2 из 2"), "{}", r.text);
+    assert_eq!(r.text.lines().count(), 4);
+    // Кнопки внизу у владельца — и «Должники», и «Занести долг».
+    let rows = Keys::Owner.markup()["keyboard"].to_string();
+    assert!(
+        rows.contains(BTN_DEBTORS) && rows.contains(BTN_ADD_DEBT),
+        "{rows}"
+    );
+
+    // «➕ Занести долг» существующему клиенту: поиск → сумма → дата → примечание → «Провести».
+    let ivanov = w.client("person", "Иванов Пётр", None).await;
+    let r = w.say(chat, BTN_ADD_DEBT).await;
+    assert!(r.text.contains("Кто должен?"), "{}", r.text);
+    let r = w.say(chat, "Иванов").await;
+    let pick = data_of(&r, "Иванов Пётр");
+    let r = w.press(chat, chat, &pick).await;
+    assert!(r.text.contains("Сумма долга"), "{}", r.text);
+    let r = w.say(chat, "сорок").await;
+    assert!(r.text.contains("не разобрать"), "{}", r.text);
+    let r = w.say(chat, "5 000").await;
+    assert!(r.text.contains("Дата долга"), "{}", r.text);
+    let tomorrow = w.today + chrono::Duration::days(1);
+    let r = w.say(chat, &tomorrow.format("%d.%m.%Y").to_string()).await;
+    assert!(r.text.starts_with("Не подходит"), "{}", r.text);
+    // Шесть цифр на шаге — не код привязки.
+    let r = w.say(chat, "15.03.2026").await;
+    assert!(r.text.contains("Примечание"), "{}", r.text);
+    let r = w.say(chat, "стр. 12, масло").await;
+    assert!(r.text.starts_with("Занести старый долг?"), "{}", r.text);
+    assert!(
+        r.text.contains("Долг клиента сейчас 0 с → станет 5 000 с"),
+        "{}",
+        r.text
+    );
+    // «Провести» — только тот, кто привязал чат.
+    let r = w.press(chat, 777, "od:go").await;
+    assert!(r.text.contains("только тот, кто привязал"), "{}", r.text);
+    let r = w.press(chat, chat, "od:go").await;
+    assert!(
+        r.text
+            .starts_with("✅ Занесено: Иванов Пётр — 5 000 с от 15.03.2026"),
+        "{}",
+        r.text
+    );
+    assert_eq!(w.balance(&ivanov).await, 500_000);
+    // Повтор нажатия — не второй долг.
+    let r = w.press(chat, chat, "od:go").await;
+    assert!(r.text.contains("устарела"), "{}", r.text);
+    assert_eq!(w.balance(&ivanov).await, 500_000);
+    let audit: Vec<Value> = sqlx::query_scalar(
+        "select data from audit_log where action = 'debt.old' and data->>'comment' = 'стр. 12, масло'",
+    )
+    .fetch_all(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 1);
+
+    // Тот же долг ещё раз — «уже занесён», второе подтверждение.
+    w.say(chat, BTN_ADD_DEBT).await;
+    let r = w.say(chat, "Иванов").await;
+    w.press(chat, chat, &data_of(&r, "Иванов Пётр")).await;
+    w.say(chat, "5000").await;
+    w.say(chat, "15.03.26").await;
+    w.press(chat, chat, "od:skip").await;
+    let r = w.press(chat, chat, "od:go").await;
+    assert!(r.text.starts_with("Такой долг уже занесён"), "{}", r.text);
+    let r = w.press(chat, chat, &data_of(&r, "Да, занести")).await;
+    assert!(r.text.starts_with("✅ Занесено"), "{}", r.text);
+    assert_eq!(w.balance(&ivanov).await, 1_000_000);
+
+    // Новый клиент: физлицо, без телефона, сегодня, без примечания.
+    w.say(chat, BTN_ADD_DEBT).await;
+    let r = w.say(chat, "Новиков").await;
+    assert!(r.text.starts_with("Не нашли «Новиков»"), "{}", r.text);
+    let r = w.press(chat, chat, "od:np").await;
+    assert!(r.text.contains("фамилию и имя"), "{}", r.text);
+    let r = w.say(chat, "Новиков").await;
+    assert!(r.text.contains("Нужны фамилия и имя"), "{}", r.text);
+    w.say(chat, "Новиков Олег").await;
+    w.press(chat, chat, "od:skip").await;
+    w.say(chat, "1 000").await;
+    w.press(chat, chat, "od:today").await;
+    let r = w.press(chat, chat, "od:skip").await;
+    assert!(r.text.contains("Новиков Олег (новый клиент)"), "{}", r.text);
+    let r = w.press(chat, chat, "od:go").await;
+    assert!(
+        r.text.starts_with("✅ Занесено: Новиков Олег — 1 000 с"),
+        "{}",
+        r.text
+    );
+    let n: i64 = sqlx::query_scalar(
+        "select count(*) from parties where last_name = 'Новиков' and first_name = 'Олег' and balance_tyiyn = 100000",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+
+    // Кнопка внизу отменяет ввод; «✖ Отмена» — тоже.
+    w.say(chat, BTN_ADD_DEBT).await;
+    w.say(chat, "📊 Сегодня").await;
+    let waiting: i64 = sqlx::query_scalar("select count(*) from bot_input where chat_id = $1")
+        .bind(chat)
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    assert_eq!(waiting, 0);
+    w.say(chat, BTN_ADD_DEBT).await;
+    let r = w.press(chat, chat, "od:no").await;
+    assert!(r.text.starts_with("Отменено"), "{}", r.text);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn admin_bot_debts_need_old_debts_right(pool: PgPool) {
+    let w = World::new(pool).await;
+    let chat = 95_002i64;
+    w.link_bot(chat, "admin").await;
+    // Без права — кнопок долгов нет, на «Должники» — отказ.
+    let r = w.say(chat, "привет").await;
+    assert_eq!(r.keys, Keys::Admin);
+    let r = w.say(chat, BTN_DEBTORS).await;
+    assert!(
+        r.text.starts_with("Нет права «Старые долги из тетради»"),
+        "{}",
+        r.text
+    );
+    let r = w.press(chat, chat, "od:start").await;
+    assert!(r.text.starts_with("Нет права"), "{}", r.text);
+    // С правом — список и ввод долга от его имени, в его филиал; владельцу — уведомление.
+    w.grant(&["old_debts"], true).await;
+    let p = w.client("person", "Сыдыков Марат", None).await;
+    let r = w.say(chat, BTN_DEBTORS).await;
+    assert_eq!(r.keys, Keys::AdminDebts);
+    assert!(r.text.starts_with("📋 Должников нет"), "{}", r.text);
+    w.say(chat, BTN_ADD_DEBT).await;
+    let r = w.say(chat, "Сыдыков").await;
+    w.press(chat, chat, &data_of(&r, "Сыдыков Марат")).await;
+    w.say(chat, "2 500").await;
+    w.say(chat, "01.10.2026").await;
+    w.press(chat, chat, "od:skip").await;
+    let r = w.press(chat, chat, "od:go").await;
+    assert!(r.text.starts_with("✅ Занесено"), "{}", r.text);
+    assert_eq!(w.balance(&p).await, 250_000);
+    let who: Uuid = sqlx::query_scalar(
+        "select user_id from party_ledger where party_id = $1::uuid and doc_type = 'old_debt'",
+    )
+    .bind(&p)
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(who, w.admin_id);
+    let feed = get(&w.app, "/api/v1/notifications?limit=50", &w.owner).await;
+    assert!(feed.to_string().contains("Сыдыков Марат"), "{feed}");
+    // Право сняли посреди ввода — провести нельзя.
+    w.say(chat, BTN_ADD_DEBT).await;
+    let r = w.say(chat, "Сыдыков").await;
+    w.press(chat, chat, &data_of(&r, "Сыдыков Марат")).await;
+    w.say(chat, "100").await;
+    w.press(chat, chat, "od:today").await;
+    w.press(chat, chat, "od:skip").await;
+    w.grant(&[], true).await;
+    let r = w.press(chat, chat, "od:go").await;
+    assert!(r.text.starts_with("Нет права"), "{}", r.text);
+    assert_eq!(w.balance(&p).await, 250_000);
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_state (key, value)\n               values ('client_messages_payments_since',\n                       to_jsonb(to_char(now() at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')))\n               on conflict (key) do update set value = excluded.value",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "9d553ef8dd2bfa36b848437308d075bd798908fb4dbd714d141293bfe71a753d"
+}

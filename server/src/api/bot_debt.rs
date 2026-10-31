@@ -148,6 +148,20 @@ pub async fn customer_debt(conn: &mut PgConnection, party_id: Uuid) -> AppResult
     Ok(lines.join("\n"))
 }
 
+/// Текст напоминания о сроке из настройки: «Здравствуйте, Азиз! Напоминаем: срок оплаты долга
+/// 2 400 с — через 3 дня, 03.11.2026. …» (задача 002, П9).
+pub fn due_text(template: &str, name: &str, debt: i64, when: &str, due: NaiveDate) -> String {
+    crate::api::client_messages::fill(
+        template,
+        &[
+            ("имя", name),
+            ("долг", &format_som(debt)),
+            ("когда", when),
+            ("дата", &day(due)),
+        ],
+    )
+}
+
 /// Напоминание о сроке долга одному чату.
 pub struct DebtReminder {
     pub chat_id: i64,
@@ -165,13 +179,16 @@ pub async fn due_debt_reminders(conn: &mut PgConnection) -> AppResult<Vec<DebtRe
         .fetch_one(&mut *conn)
         .await?;
     let links = sqlx::query!(
-        r#"select t.chat_id, p.id, p.balance_tyiyn, p.due_days as "due_days?"
+        r#"select t.chat_id, p.id, p.balance_tyiyn, p.due_days as "due_days?", p.branch_id,
+                  p.name, p.first_name
            from telegram_customers t join parties p on p.id = t.party_id
            where p.active and p.role = 'customer' and p.balance_tyiyn > 0
              and p.due_days is not null"#
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Текст — из «Сообщения клиентам» филиала, где завели карточку (задача 002, П9).
+    let mut texts: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
     let keys: Vec<(Uuid, i64, Option<i32>)> = links
         .iter()
         .map(|l| (l.id, l.balance_tyiyn, l.due_days))
@@ -204,15 +221,27 @@ pub async fn due_debt_reminders(conn: &mut PgConnection) -> AppResult<Vec<DebtRe
             1 => "завтра".to_string(),
             n => format!("через {}", crate::api::telegram::days_word(n)),
         };
+        let template = match texts.get(&l.branch_id) {
+            Some(t) => t.clone(),
+            None => {
+                let t = crate::api::client_messages::load_settings(&mut *conn, l.branch_id)
+                    .await?
+                    .debt_due_text;
+                texts.insert(l.branch_id, t.clone());
+                t
+            }
+        };
         out.push(DebtReminder {
             chat_id: l.chat_id,
             party_id: l.id,
             due,
             days_before,
-            text: format!(
-                "Напоминаем: срок оплаты долга {} — {when}, {}. Подробнее — кнопка «{BTN_DEBT}».",
-                format_som(l.balance_tyiyn),
-                day(due)
+            text: due_text(
+                &template,
+                &crate::api::client_messages::greeting_name(&l.first_name, &l.name),
+                l.balance_tyiyn,
+                &when,
+                due,
             ),
         });
     }

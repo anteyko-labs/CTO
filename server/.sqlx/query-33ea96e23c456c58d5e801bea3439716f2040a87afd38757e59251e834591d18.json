@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.id from receipt_drafts d\n           where d.branch_id = $1 and d.user_id = $2 and d.chat_id = $3 and d.source = 'bot'\n             and d.parent_id is null and d.status = 'new'\n             and (select max(x.created_at) from receipt_drafts x where x.id = d.id or x.parent_id = d.id)\n                 > now() - make_interval(mins => $4)\n             and (select count(*) from receipt_drafts x where x.id = d.id or x.parent_id = d.id) < $5\n           order by d.created_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "33ea96e23c456c58d5e801bea3439716f2040a87afd38757e59251e834591d18"
+}

@@ -657,16 +657,30 @@ async fn supplier_by_name_and_unknown_supplier(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
-    // Без ключа: экран — понятный отказ, бот — фото сохранено без распознавания.
+    // Без ключа: и экран, и бот сохраняют фото черновиком без распознавания (задача 003, Н6) —
+    // приход заполняют вручную.
     let w = setup(pool.clone(), None).await;
-    let (s, v) = upload(&w.app, &w.owner, Uuid::now_v7(), &JPEG).await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let op = Uuid::now_v7();
+    let (s, v) = upload(&w.app, &w.admin, op, &JPEG).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
     assert!(
-        v["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("не настроено")
+        v["message"].as_str().unwrap().contains("не настроено"),
+        "{v}"
     );
+    assert!(v["lines"].as_array().unwrap().is_empty());
+    // Повтор того же op_id — тот же черновик (I8).
+    let (_, again) = upload(&w.app, &w.admin, op, &JPEG).await;
+    assert_eq!(again["id"], v["id"]);
+    let screen = v["id"].as_str().unwrap().to_string();
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/receipt-drafts/{screen}/remove"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
     let (_, list) = call(
         &w.app,
         "GET",
@@ -676,6 +690,7 @@ async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
     )
     .await;
     assert_eq!(list["enabled"], false);
+    assert!(list["items"].as_array().unwrap().is_empty(), "{list}");
     let chat = 950_001i64;
     link_owner_chat(&w, chat).await;
     let file = || BotFile {
@@ -717,11 +732,12 @@ async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
     );
     assert!(d["lines"].as_array().unwrap().is_empty());
     // Журнал: черновик из бота — источник «бот» и чат.
-    let data: Value =
-        sqlx::query_scalar("select data from audit_log where action = 'receipt_draft.add'")
-            .fetch_one(&w.pool)
-            .await
-            .unwrap();
+    let data: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'receipt_draft.add' and data->>'from' = 'bot'",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
     assert_eq!(data["source"], "bot");
     assert_eq!(data["chat"], chat);
     // Не из чата владельца — вежливый отказ, ничего не сохраняется.
@@ -734,7 +750,7 @@ async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(text, receipt_drafts::NOT_OWNER);
-    let n: i64 = sqlx::query_scalar("select count(*) from receipt_drafts")
+    let n: i64 = sqlx::query_scalar("select count(*) from receipt_drafts where source = 'bot'")
         .fetch_one(&w.pool)
         .await
         .unwrap();
@@ -1478,4 +1494,165 @@ fn urlencode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+// ---------- Задача 003, Н6: склейка фото накладной в боте ----------
+
+async fn bot_roots(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "select count(*) from receipt_drafts where source = 'bot' and parent_id is null",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Склейка выключена (0, по умолчанию) — каждое фото отдельно, как было; включена — фото того же
+/// человека за N минут дописывается к открытой накладной, «➕ Это другая накладная» отделяет его.
+/// Настройку меняет только владелец, изменение — в журнал.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_photos_merge_into_one_invoice_when_set(pool: PgPool) {
+    let w = setup(pool.clone(), None).await;
+    let chat = 951_001i64;
+    link_owner_chat(&w, chat).await;
+    let file = || BotFile {
+        data: JPEG.to_vec(),
+        name: "фото из бота".into(),
+    };
+    // По умолчанию — как раньше: два фото — две накладные, кнопки «другая накладная» нет.
+    let (_, st) = call(
+        &w.app,
+        "GET",
+        "/api/v1/settings/bot-receipts",
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(st["merge_minutes"], 0, "{st}");
+    for _ in 0..2 {
+        let a = receipt_drafts::from_bot_answer(&w.pool, None, chat, chat, file())
+            .await
+            .unwrap();
+        assert!(a.split.is_none());
+    }
+    assert_eq!(bot_roots(&w.pool).await, 2);
+    // Администратору настройка не меняется; владельцу — да, в журнал.
+    let body = json!({ "merge_minutes": 10, "invoice_hint": "Снимите накладную целиком." });
+    let (s, _) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/bot-receipts",
+        Some(&w.admin),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/bot-receipts",
+        Some(&w.owner),
+        Some(json!({ "merge_minutes": 2000, "invoice_hint": "x" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, _) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/bot-receipts",
+        Some(&w.owner),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(audit_count(&w.pool, "receipt_draft.bot_settings").await, 1);
+    let mut conn = w.pool.acquire().await.unwrap();
+    let hint = receipt_drafts::invoice_hint_text(&mut conn, w.branch)
+        .await
+        .unwrap();
+    assert!(hint.starts_with("Снимите накладную целиком."), "{hint}");
+    assert!(hint.contains("10 мин."), "{hint}");
+    // Третье фото — к последней открытой накладной, с кнопкой «другая накладная».
+    let a = receipt_drafts::from_bot_answer(&w.pool, None, chat, chat, file())
+        .await
+        .unwrap();
+    let merged = a.split.expect("фото дописано");
+    assert!(
+        a.text.starts_with("Фото 2 добавлено к накладной"),
+        "{}",
+        a.text
+    );
+    assert_eq!(bot_roots(&w.pool).await, 2);
+    let (_, list) = call(
+        &w.app,
+        "GET",
+        "/api/v1/receipt-drafts",
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(list["items"][0]["photos"], 2, "{list}");
+    // Кнопка — только от того, кто привязал чат; отделяет фото в свою накладную, в журнал.
+    let data = receipt_drafts::split_data(merged);
+    let text = receipt_drafts::split_bot(&mut conn, chat, 777, &data)
+        .await
+        .unwrap();
+    assert_eq!(text, receipt_drafts::NOT_OWNER);
+    let text = receipt_drafts::split_bot(&mut conn, chat, chat, &data)
+        .await
+        .unwrap();
+    assert!(text.starts_with("Готово"), "{text}");
+    assert_eq!(bot_roots(&w.pool).await, 3);
+    assert_eq!(audit_count(&w.pool, "receipt_draft.split").await, 1);
+    let text = receipt_drafts::split_bot(&mut conn, chat, chat, &data)
+        .await
+        .unwrap();
+    assert!(text.contains("уже отдельная"), "{text}");
+    // Последнее фото старше 10 минут — следующее становится новой накладной.
+    for sql in [
+        "alter table receipt_drafts disable trigger receipt_drafts_immutable",
+        "update receipt_drafts set created_at = created_at - interval '11 minutes'",
+        "alter table receipt_drafts enable trigger receipt_drafts_immutable",
+    ] {
+        sqlx::query(sql).execute(&w.pool).await.unwrap();
+    }
+    let a = receipt_drafts::from_bot_answer(&w.pool, None, chat, chat, file())
+        .await
+        .unwrap();
+    assert!(a.split.is_none());
+    assert_eq!(bot_roots(&w.pool).await, 4);
+    // Убранную накладную фото не дописывает.
+    let last: Uuid = sqlx::query_scalar(
+        "select id from receipt_drafts where source = 'bot' order by created_at desc limit 1",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    let (s, _) = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/receipt-drafts/{last}/remove"),
+        Some(&w.owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let a = receipt_drafts::from_bot_answer(&w.pool, None, chat, chat, file())
+        .await
+        .unwrap();
+    assert!(a.split.is_none());
+    assert_eq!(bot_roots(&w.pool).await, 5);
+    // Ссылку на первый черновик не поставить и не сменить в базе — только снять кнопкой.
+    let first: Uuid = sqlx::query_scalar(
+        "select id from receipt_drafts where source = 'bot' order by created_at limit 1",
+    )
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    let r = sqlx::query("update receipt_drafts set parent_id = $1 where id = $2")
+        .bind(last)
+        .bind(first)
+        .execute(&w.pool)
+        .await;
+    assert!(r.is_err());
 }

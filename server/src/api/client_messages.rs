@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, Days, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection, PgPool};
@@ -35,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/client-messages", routing::get(journal))
         .route("/client-messages/test", routing::post(test_send))
+        .route("/client-messages/sample", routing::post(sample_send))
         .route("/parties/{id}/bot-link", routing::get(bot_link))
         .route(
             "/parties/{id}/bot-link/reset",
@@ -263,6 +264,35 @@ pub struct MessageSettings {
     /// Пробег в день, если в книжке одна запись, — км.
     #[serde(default = "default_km")]
     pub km_per_day: i32,
+    /// «Получили оплату» должнику после погашения (задача 002, П7): выключатель, текст для бота с
+    /// подстановками, шаблон Meta для юрлиц.
+    #[serde(default = "yes")]
+    pub payment_enabled: bool,
+    #[serde(default = "payment_text")]
+    pub payment_text: String,
+    #[serde(default)]
+    pub payment_template: String,
+    #[serde(default = "ru")]
+    pub payment_language: String,
+    /// Раз в месяц — «кто сколько должен» (П7б): день месяца и час по Бишкеку, текст, хвост
+    /// юрлицу со ссылкой на кабинет, шаблон Meta.
+    #[serde(default = "yes")]
+    pub monthly_enabled: bool,
+    #[serde(default = "monthly_day")]
+    pub monthly_day: i32,
+    #[serde(default = "monthly_hour")]
+    pub monthly_hour: i32,
+    #[serde(default = "monthly_text")]
+    pub monthly_text: String,
+    #[serde(default = "monthly_firm_text")]
+    pub monthly_firm_text: String,
+    #[serde(default)]
+    pub monthly_template: String,
+    #[serde(default = "ru")]
+    pub monthly_language: String,
+    /// Напоминание о сроке долга в бот (SPEC-27 §7, П9): текст с приветствием и именем.
+    #[serde(default = "debt_due_text")]
+    pub debt_due_text: String,
 }
 
 fn yes() -> bool {
@@ -274,6 +304,98 @@ fn ru() -> String {
 fn default_km() -> i32 {
     DEFAULT_KM_PER_DAY
 }
+fn payment_text() -> String {
+    PAYMENT_TEXT.into()
+}
+fn monthly_text() -> String {
+    MONTHLY_TEXT.into()
+}
+fn monthly_firm_text() -> String {
+    MONTHLY_FIRM_TEXT.into()
+}
+fn monthly_day() -> i32 {
+    1
+}
+fn monthly_hour() -> i32 {
+    10
+}
+fn debt_due_text() -> String {
+    DEBT_DUE_TEXT.into()
+}
+
+/// Тексты по умолчанию — как в задаче 002 (П7, П7б, П9). Подстановки — в фигурных скобках.
+pub const PAYMENT_TEXT: &str =
+    "Здравствуйте, {имя}! Получили оплату {сумма}. Долг на сегодня — {долг}.";
+pub const MONTHLY_TEXT: &str = "Здравствуйте, {имя}! На {дата} ваш долг — {долг}.";
+pub const MONTHLY_FIRM_TEXT: &str = "Подробно — в кабинете: {ссылка}";
+pub const DEBT_DUE_TEXT: &str = "Здравствуйте, {имя}! Напоминаем: срок оплаты долга {долг} — {когда}, {дата}. Подробнее — кнопка «💳 Мой долг».";
+
+/// Какие подстановки понимает каждый текст (экран показывает тот же список).
+pub const PAYMENT_MARKS: [&str; 4] = ["имя", "сумма", "долг", "дата"];
+pub const MONTHLY_MARKS: [&str; 3] = ["имя", "долг", "дата"];
+pub const MONTHLY_FIRM_MARKS: [&str; 4] = ["имя", "долг", "дата", "ссылка"];
+pub const DEBT_DUE_MARKS: [&str; 4] = ["имя", "долг", "когда", "дата"];
+/// Дней после дня рассылки «раз в месяц», в которые она догоняется (сервер был выключен).
+pub const MONTHLY_LATE_DAYS: u32 = 2;
+/// Длина текста сообщения в настройке.
+const MAX_TEXT: usize = 1000;
+
+/// Текст с подстановками: `{имя}` → значение. Неизвестные остаются как есть (их не пропускает
+/// настройка).
+pub fn fill(text: &str, values: &[(&str, &str)]) -> String {
+    let mut out = text.to_string();
+    for (k, v) in values {
+        out = out.replace(&format!("{{{k}}}"), v);
+    }
+    out
+}
+
+/// Подстановки текста, которых нет в списке: «телефон» из «{телефон}».
+pub fn unknown_marks(text: &str, allowed: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        let mark = &after[..end];
+        if !allowed.contains(&mark) && !out.iter().any(|m| m == mark) {
+            out.push(mark.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+/// Текст сообщения из настройки: не пустой, не длиннее 1000 знаков, только известные подстановки.
+fn check_text(what: &str, text: &str, allowed: &[&str]) -> AppResult<()> {
+    if text.is_empty() {
+        return Err(invalid(format!("текст «{what}» не может быть пустым")));
+    }
+    if text.chars().count() > MAX_TEXT {
+        return Err(invalid(format!(
+            "текст «{what}» — не длиннее {MAX_TEXT} знаков"
+        )));
+    }
+    let bad = unknown_marks(text, allowed);
+    if !bad.is_empty() {
+        let can = allowed
+            .iter()
+            .map(|m| format!("{{{m}}}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let got = bad
+            .iter()
+            .map(|m| format!("{{{m}}}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(invalid(format!(
+            "в тексте «{what}» непонятная подстановка {got}; можно: {can}"
+        )));
+    }
+    Ok(())
+}
 
 impl Default for MessageSettings {
     fn default() -> Self {
@@ -284,6 +406,18 @@ impl Default for MessageSettings {
             purchase_template: String::new(),
             purchase_language: ru(),
             km_per_day: DEFAULT_KM_PER_DAY,
+            payment_enabled: true,
+            payment_text: payment_text(),
+            payment_template: String::new(),
+            payment_language: ru(),
+            monthly_enabled: true,
+            monthly_day: monthly_day(),
+            monthly_hour: monthly_hour(),
+            monthly_text: monthly_text(),
+            monthly_firm_text: monthly_firm_text(),
+            monthly_template: String::new(),
+            monthly_language: ru(),
+            debt_due_text: debt_due_text(),
         }
     }
 }
@@ -294,6 +428,8 @@ impl MessageSettings {
         let (name, lang) = match kind {
             Kind::Oil => (&self.oil_template, &self.oil_language),
             Kind::Purchase => (&self.purchase_template, &self.purchase_language),
+            Kind::Payment => (&self.payment_template, &self.payment_language),
+            Kind::Monthly => (&self.monthly_template, &self.monthly_language),
         };
         (!name.is_empty()).then_some((name.as_str(), lang.as_str()))
     }
@@ -588,6 +724,104 @@ pub const PURCHASE_PARAMS: [&str; 7] = [
     "ссылка на кабинет или на бот",
 ];
 
+/// Переменные шаблона «получили оплату» — по порядку.
+pub const PAYMENT_PARAMS: [&str; 3] = [
+    "имя и фирма («Азиз (ОсОО Бишкек такси)»)",
+    "сумма оплаты («5 000 сом»)",
+    "долг на сегодня («1 240 сом»)",
+];
+
+/// Переменные шаблона «долг на 1-е число» — по порядку.
+pub const MONTHLY_PARAMS: [&str; 4] = [
+    "имя и фирма («Азиз (ОсОО Бишкек такси)»)",
+    "дата («01.11.2026»)",
+    "долг («6 240 сом»)",
+    "ссылка на кабинет или на бот",
+];
+
+/// Долг словами для сообщения: «1 240 сом», «0 сом», переплата — «0 сом (аванс 500 сом)».
+pub fn debt_words(t: i64) -> String {
+    if t < 0 {
+        format!("0 сом (аванс {})", som(t.saturating_neg()))
+    } else {
+        som(t)
+    }
+}
+
+/// «Получили оплату»: части текста.
+#[derive(Debug, Clone)]
+pub struct PaymentText {
+    pub name: String,
+    pub amount_tyiyn: i64,
+    pub debt_tyiyn: i64,
+    pub day: NaiveDate,
+}
+
+impl PaymentText {
+    pub fn telegram(&self, text: &str) -> String {
+        fill(
+            text,
+            &[
+                ("имя", &self.name),
+                ("сумма", &som(self.amount_tyiyn)),
+                ("долг", &debt_words(self.debt_tyiyn)),
+                ("дата", &self.day.format("%d.%m.%Y").to_string()),
+            ],
+        )
+    }
+
+    pub fn params(&self) -> Vec<String> {
+        vec![
+            self.name.clone(),
+            som(self.amount_tyiyn),
+            debt_words(self.debt_tyiyn),
+        ]
+    }
+}
+
+/// «На 01.11.2026 ваш долг — …»: части текста.
+#[derive(Debug, Clone)]
+pub struct MonthlyText {
+    pub name: String,
+    pub debt_tyiyn: i64,
+    pub day: NaiveDate,
+}
+
+impl MonthlyText {
+    fn values(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("имя", self.name.clone()),
+            ("долг", debt_words(self.debt_tyiyn)),
+            ("дата", self.day.format("%d.%m.%Y").to_string()),
+        ]
+    }
+
+    /// Текст для бота; юрлицу со ссылкой на кабинет — ещё хвост «Подробно — в кабинете: …».
+    pub fn telegram(&self, text: &str, firm_tail: Option<(&str, &str)>) -> String {
+        let values = self.values();
+        let pairs: Vec<(&str, &str)> = values.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let mut out = fill(text, &pairs);
+        if let Some((tail, link)) = firm_tail {
+            let mut pairs = pairs.clone();
+            pairs.push(("ссылка", link));
+            let tail = fill(tail, &pairs);
+            if !tail.trim().is_empty() {
+                out = format!("{} {}", out.trim_end(), tail.trim());
+            }
+        }
+        out
+    }
+
+    pub fn params(&self, link: &str) -> Vec<String> {
+        vec![
+            self.name.clone(),
+            self.day.format("%d.%m.%Y").to_string(),
+            debt_words(self.debt_tyiyn),
+            link.to_string(),
+        ]
+    }
+}
+
 /// Напоминание о замене: части текста.
 #[derive(Debug, Clone)]
 pub struct OilText {
@@ -775,6 +1009,19 @@ fn preview(kind: Kind, params: &[String]) -> String {
             p(5),
             p(6)
         ),
+        Kind::Payment => format!(
+            "Здравствуйте, {}! Получили оплату {}. Долг на сегодня — {}.\nСпасибо, что вы с нами!",
+            p(0),
+            p(1),
+            p(2)
+        ),
+        Kind::Monthly => format!(
+            "Здравствуйте, {}! На {} ваш долг — {}. Подробно — в кабинете: {}\nСпасибо, что вы с нами!",
+            p(0),
+            p(1),
+            p(2),
+            p(3)
+        ),
     }
 }
 
@@ -784,6 +1031,10 @@ fn preview(kind: Kind, params: &[String]) -> String {
 pub enum Kind {
     Oil,
     Purchase,
+    /// «Получили оплату» (задача 002, П7).
+    Payment,
+    /// Раз в месяц — долг на 1-е число (П7б).
+    Monthly,
 }
 
 impl Kind {
@@ -791,6 +1042,28 @@ impl Kind {
         match self {
             Self::Oil => "oil",
             Self::Purchase => "purchase",
+            Self::Payment => "payment",
+            Self::Monthly => "monthly",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "oil" => Some(Self::Oil),
+            "purchase" => Some(Self::Purchase),
+            "payment" => Some(Self::Payment),
+            "monthly" => Some(Self::Monthly),
+            _ => None,
+        }
+    }
+
+    /// Название шаблона на экране настройки.
+    fn title(self) -> &'static str {
+        match self {
+            Self::Oil => "замена масла",
+            Self::Purchase => "закуп юрлица",
+            Self::Payment => "получили оплату",
+            Self::Monthly => "долг раз в месяц",
         }
     }
 }
@@ -857,12 +1130,28 @@ pub fn choose(
         }),
         (Some(_), true, None) => Route::None(format!(
             "клиент не подключён к боту, шаблон WhatsApp «{}» не задан",
-            match kind {
-                Kind::Oil => "замена масла",
-                Kind::Purchase => "закуп юрлица",
-            }
+            kind.title()
         )),
     }
+}
+
+/// Канал сообщения должнику (П7, П7б): бот — всем подключённым, WhatsApp — только юрлицам.
+fn debtor_route(
+    ch: &Channels,
+    settings: &MessageSettings,
+    kind: Kind,
+    firm: bool,
+    chats: Vec<i64>,
+    phone: Option<String>,
+) -> Route {
+    if !firm && (ch.telegram.is_none() || chats.is_empty()) {
+        return Route::None(if chats.is_empty() {
+            "клиент не подключён к боту (WhatsApp — только юрлицам)".into()
+        } else {
+            "Телеграм-бот выключен на сервере (WhatsApp — только юрлицам)".into()
+        });
+    }
+    choose(ch, settings, kind, chats, phone)
 }
 
 /// Телефон для WhatsApp: «+996555123456»; не номер — `None`.
@@ -904,6 +1193,8 @@ struct Draft {
     keys: Vec<String>,
     telegram_text: String,
     params: Vec<String>,
+    /// Юрлицу — ещё строка в ленте «Сообщения» кабинета (П7, П7б): этот текст, сразу «отправлено».
+    cabinet: Option<String>,
 }
 
 /// Записать сообщение (по строке на получателя) и ключи повода одной транзакцией. Повод уже
@@ -987,6 +1278,22 @@ async fn store(conn: &mut PgConnection, d: &Draft, route: &Route) -> AppResult<O
         .await?;
         ids.push(id);
     }
+    if let Some(text) = &d.cabinet {
+        sqlx::query!(
+            r#"insert into client_messages (id, branch_id, party_id, kind, test, channel, text,
+                                            status, sent_at, user_id)
+               values ($1, $2, $3, $4, $5, 'cabinet', $6, 'sent', now(), $7)"#,
+            ops::new_id(),
+            d.branch_id,
+            d.party_id,
+            d.kind.as_str(),
+            d.test,
+            text,
+            d.user_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     let Some(first) = ids.first().copied() else {
         return Ok(None);
     };
@@ -1028,7 +1335,7 @@ struct VehicleOwner {
     bot_code: String,
 }
 
-fn greeting_name(first_name: &str, name: &str) -> String {
+pub fn greeting_name(first_name: &str, name: &str) -> String {
     if first_name.trim().is_empty() {
         name.trim().to_string()
     } else {
@@ -1127,6 +1434,7 @@ async fn oil_for_vehicle(
             .collect(),
         telegram_text: text.telegram(),
         params: text.params(link.as_deref().unwrap_or(NO_LINK)),
+        cabinet: None,
     };
     Ok(store(conn, &draft, &route).await?.is_some())
 }
@@ -1288,9 +1596,251 @@ pub async fn plan_purchases(conn: &mut PgConnection, ch: &Channels) -> AppResult
             keys: vec![format!("purchase:{}", s.sale_id)],
             telegram_text: text.telegram(ch.public_url.as_ref().and(link.as_deref())),
             params: text.params(link.as_deref().unwrap_or(NO_LINK)),
+            cabinet: None,
         };
         if store(conn, &draft, &route).await?.is_some() {
             made += 1;
+        }
+    }
+    Ok(made)
+}
+
+// ---------- Составление: должникам (задача 002, П7 и П7б) ----------
+
+/// Должник для сообщения: имя в обращении, чаты бота, телефон для WhatsApp (только у юрлица) и
+/// ссылка на кабинет или бот (у юрлица).
+struct Debtor {
+    firm: bool,
+    name: String,
+    chats: Vec<i64>,
+    phone: Option<String>,
+    link: Option<String>,
+}
+
+struct DebtorCard<'a> {
+    id: Uuid,
+    kind: &'a str,
+    name: &'a str,
+    first_name: &'a str,
+    phone: &'a str,
+    bot_code: &'a str,
+}
+
+async fn debtor(conn: &mut PgConnection, ch: &Channels, p: &DebtorCard<'_>) -> AppResult<Debtor> {
+    if p.kind != "company" {
+        return Ok(Debtor {
+            firm: false,
+            name: greeting_name(p.first_name, p.name),
+            chats: party_chats(conn, p.id).await?,
+            phone: None,
+            link: None,
+        });
+    }
+    let head = firm_head(conn, p.id).await?;
+    let name = match &head {
+        Some((h, _)) if !h.trim().is_empty() => format!("{} ({})", h.trim(), p.name.trim()),
+        _ => p.name.trim().to_string(),
+    };
+    let head_phone = head.as_ref().map(|(_, ph)| ph.as_str());
+    let chats = firm_chats(conn, p.id, head_phone).await?;
+    let phone = wa_phone(p.phone).or_else(|| head_phone.and_then(wa_phone));
+    let link = firm_link(conn, ch, p.bot_code).await?;
+    Ok(Debtor {
+        firm: true,
+        name,
+        chats,
+        phone,
+        link,
+    })
+}
+
+/// Ссылка в хвосте юрлицу для бота: только кабинет (при `PUBLIC_URL`) — ссылка на бот в самом
+/// боте ни к чему, как у сообщения о закупе.
+fn cabinet_link<'a>(ch: &Channels, d: &'a Debtor) -> Option<&'a str> {
+    ch.public_url.as_ref().and(d.link.as_deref())
+}
+
+/// «Получили оплату» после каждого погашения клиента (П7): одно сообщение на погашение (части по
+/// филиалам — одно погашение), долг — на момент погашения по всем филиалам. Сторнированное до
+/// отправки и верное погашение «Исправить», если об исходном уже писали, — не пишутся.
+pub async fn plan_payments(conn: &mut PgConnection, ch: &Channels) -> AppResult<usize> {
+    let since = sqlx::query_scalar!(
+        "select value from bot_state where key = 'client_messages_payments_since'"
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .and_then(|v| v.as_str().and_then(|s| s.parse::<DateTime<Utc>>().ok()))
+    .unwrap_or_else(Utc::now);
+    let rows = sqlx::query!(
+        r#"select g.id as "id!", g.branch_id as "branch_id!", g.party_id as "party_id!",
+                  g.amount as "amount!", g.day as "day!",
+                  p.kind, p.name, p.first_name, p.phone, p.bot_code,
+                  (select coalesce(sum(x.amount_tyiyn), 0) from party_ledger x
+                   where x.party_id = g.party_id and x.created_at <= g.at)::bigint as "debt!"
+           from (select (array_agg(l.id order by l.created_at, l.id))[1] as id,
+                        (array_agg(l.branch_id order by l.created_at, l.id))[1] as branch_id,
+                        l.party_id, (-sum(l.amount_tyiyn))::bigint as amount,
+                        max(l.created_at) as at,
+                        (max(l.created_at) at time zone 'Asia/Bishkek')::date as day
+                 from party_ledger l
+                 where l.kind = 'repayment' and l.reversal_of is null and l.amount_tyiyn < 0
+                   and l.created_at > $1 and l.created_at > now() - interval '2 days'
+                   and not exists (select 1 from party_ledger r where r.reversal_of = l.id)
+                 group by coalesce(l.doc_id, l.id), l.party_id) g
+           join parties p on p.id = g.party_id
+           where p.role = 'customer' and p.active
+             and not exists (select 1 from client_message_keys k where k.key = 'payment:' || g.id::text)
+             and not exists (select 1 from doc_corrections c
+                             join client_message_keys k on k.key = 'payment:' || c.original_id::text
+                             where c.kind = 'ledger' and c.new_id = g.id)
+           order by g.at
+           limit 200"#,
+        since
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut made = 0;
+    for r in rows {
+        let settings = load_settings(conn, r.branch_id).await?;
+        if !settings.payment_enabled {
+            continue;
+        }
+        let d = debtor(
+            conn,
+            ch,
+            &DebtorCard {
+                id: r.party_id,
+                kind: &r.kind,
+                name: &r.name,
+                first_name: &r.first_name,
+                phone: &r.phone,
+                bot_code: &r.bot_code,
+            },
+        )
+        .await?;
+        let text = PaymentText {
+            name: d.name.clone(),
+            amount_tyiyn: r.amount,
+            debt_tyiyn: r.debt,
+            day: r.day,
+        };
+        let telegram_text = text.telegram(&settings.payment_text);
+        let firm = d.firm;
+        let route = debtor_route(ch, &settings, Kind::Payment, firm, d.chats, d.phone);
+        let draft = Draft {
+            branch_id: r.branch_id,
+            party_id: r.party_id,
+            vehicle_id: None,
+            sale_id: None,
+            kind: Kind::Payment,
+            test: false,
+            user_id: None,
+            keys: vec![format!("payment:{}", r.id)],
+            cabinet: firm.then(|| telegram_text.clone()),
+            telegram_text,
+            params: text.params(),
+        };
+        if store(conn, &draft, &route).await?.is_some() {
+            made += 1;
+        }
+    }
+    Ok(made)
+}
+
+/// Пора ли рассылке «раз в месяц» филиала: в свой день с заданного часа; пропущенная (сервер был
+/// выключен) догоняется ещё два дня.
+pub fn monthly_due(s: &MessageSettings, today: NaiveDate, hour: u32) -> bool {
+    if !s.monthly_enabled {
+        return false;
+    }
+    let (Ok(day), Ok(from)) = (u32::try_from(s.monthly_day), u32::try_from(s.monthly_hour)) else {
+        return false;
+    };
+    let d = today.day();
+    if d == day {
+        hour >= from
+    } else {
+        d > day && d <= day.saturating_add(MONTHLY_LATE_DAYS)
+    }
+}
+
+/// Раз в месяц каждому должнику с долгом больше нуля (П7б): «На 01.11.2026 ваш долг — …».
+/// Клиент общий — по настройке филиала, где карточку завели; ключ `monthly:<клиент>:<месяц>`.
+pub async fn plan_monthly(conn: &mut PgConnection, ch: &Channels, hour: u32) -> AppResult<usize> {
+    let today = today(conn).await?;
+    plan_monthly_on(conn, ch, today, hour).await
+}
+
+/// То же на заданный день — проход и проверки.
+pub async fn plan_monthly_on(
+    conn: &mut PgConnection,
+    ch: &Channels,
+    today: NaiveDate,
+    hour: u32,
+) -> AppResult<usize> {
+    let branches = sqlx::query_scalar!("select id from branches order by created_at")
+        .fetch_all(&mut *conn)
+        .await?;
+    let month = today.format("%Y-%m").to_string();
+    let mut made = 0;
+    for branch_id in branches {
+        let settings = load_settings(conn, branch_id).await?;
+        if !monthly_due(&settings, today, hour) {
+            continue;
+        }
+        let rows = sqlx::query!(
+            r#"select p.id, p.kind, p.name, p.first_name, p.phone, p.bot_code, p.balance_tyiyn
+               from parties p
+               where p.branch_id = $1 and p.role = 'customer' and p.active and p.balance_tyiyn > 0
+                 and not exists (select 1 from client_message_keys k
+                                 where k.key = 'monthly:' || p.id::text || ':' || $2)
+               order by p.name, p.id
+               limit 500"#,
+            branch_id,
+            month
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        for r in rows {
+            let d = debtor(
+                conn,
+                ch,
+                &DebtorCard {
+                    id: r.id,
+                    kind: &r.kind,
+                    name: &r.name,
+                    first_name: &r.first_name,
+                    phone: &r.phone,
+                    bot_code: &r.bot_code,
+                },
+            )
+            .await?;
+            let text = MonthlyText {
+                name: d.name.clone(),
+                debt_tyiyn: r.balance_tyiyn,
+                day: today,
+            };
+            let tail = cabinet_link(ch, &d).map(|l| (settings.monthly_firm_text.as_str(), l));
+            let telegram_text = text.telegram(&settings.monthly_text, tail);
+            let cabinet = d.firm.then(|| text.telegram(&settings.monthly_text, None));
+            let params = text.params(d.link.as_deref().unwrap_or(NO_LINK));
+            let route = debtor_route(ch, &settings, Kind::Monthly, d.firm, d.chats, d.phone);
+            let draft = Draft {
+                branch_id,
+                party_id: r.id,
+                vehicle_id: None,
+                sale_id: None,
+                kind: Kind::Monthly,
+                test: false,
+                user_id: None,
+                keys: vec![format!("monthly:{}:{month}", r.id)],
+                telegram_text,
+                params,
+                cabinet,
+            };
+            if store(conn, &draft, &route).await?.is_some() {
+                made += 1;
+            }
         }
     }
     Ok(made)
@@ -1435,13 +1985,15 @@ pub async fn send_pass(conn: &mut PgConnection, ch: &Channels) -> AppResult<usiz
     Ok(sent)
 }
 
-/// Один проход: в окно 09:00–20:00 — составить закупы (каждый раз), напоминания о замене
-/// (если `oil`) и отправить ждущие.
+/// Один проход: в окно 09:00–20:00 — составить закупы, «Получили оплату» и рассылку «раз в
+/// месяц» (каждый раз), напоминания о замене (если `oil`) и отправить ждущие.
 pub async fn pass(conn: &mut PgConnection, ch: &Channels, hour: u32, oil: bool) -> AppResult<()> {
     if !telegram::in_send_window(hour) {
         return Ok(());
     }
     plan_purchases(conn, ch).await?;
+    plan_payments(conn, ch).await?;
+    plan_monthly(conn, ch, hour).await?;
     if oil {
         plan_oil(conn, ch).await?;
     }
@@ -1504,6 +2056,8 @@ struct SettingsOut {
     /// Переменные шаблонов по порядку.
     oil_params: Vec<&'static str>,
     purchase_params: Vec<&'static str>,
+    payment_params: Vec<&'static str>,
+    monthly_params: Vec<&'static str>,
 }
 
 fn settings_out(state: &AppState, settings: MessageSettings) -> SettingsOut {
@@ -1514,7 +2068,75 @@ fn settings_out(state: &AppState, settings: MessageSettings) -> SettingsOut {
         public_url: state.public_url.clone(),
         oil_params: OIL_PARAMS.to_vec(),
         purchase_params: PURCHASE_PARAMS.to_vec(),
+        payment_params: PAYMENT_PARAMS.to_vec(),
+        monthly_params: MONTHLY_PARAMS.to_vec(),
     }
+}
+
+/// Проверить и подчистить настройку перед записью.
+fn check_settings(s: &mut MessageSettings) -> AppResult<()> {
+    for t in [
+        &mut s.oil_template,
+        &mut s.purchase_template,
+        &mut s.payment_template,
+        &mut s.monthly_template,
+        &mut s.oil_language,
+        &mut s.purchase_language,
+        &mut s.payment_language,
+        &mut s.monthly_language,
+        &mut s.payment_text,
+        &mut s.monthly_text,
+        &mut s.monthly_firm_text,
+        &mut s.debt_due_text,
+    ] {
+        *t = t.trim().to_string();
+    }
+    let names = [
+        &s.oil_template,
+        &s.purchase_template,
+        &s.payment_template,
+        &s.monthly_template,
+    ];
+    if !names.iter().all(|n| valid_template_name(n)) {
+        return Err(invalid(
+            "имя шаблона — как в WhatsApp Manager: строчные латинские буквы, цифры и «_»",
+        ));
+    }
+    let langs = [
+        &s.oil_language,
+        &s.purchase_language,
+        &s.payment_language,
+        &s.monthly_language,
+    ];
+    if !langs.iter().all(|l| valid_language(l)) {
+        return Err(invalid("язык шаблона — код Meta, например ru или en_US"));
+    }
+    if !(1..=1000).contains(&s.km_per_day) {
+        return Err(invalid("пробег в день — от 1 до 1000 км"));
+    }
+    if !(1..=28).contains(&s.monthly_day) {
+        return Err(invalid("день рассылки «раз в месяц» — от 1 до 28"));
+    }
+    // Окно рассылок — 09:00–20:00 (ADR-063).
+    if !(9..=19).contains(&s.monthly_hour) {
+        return Err(invalid("час рассылки «раз в месяц» — с 9 до 19"));
+    }
+    check_text("Получили оплату", &s.payment_text, &PAYMENT_MARKS)?;
+    check_text("Раз в месяц", &s.monthly_text, &MONTHLY_MARKS)?;
+    // Хвост юрлицу можно убрать совсем.
+    if !s.monthly_firm_text.is_empty() {
+        check_text(
+            "Раз в месяц — юрлицу",
+            &s.monthly_firm_text,
+            &MONTHLY_FIRM_MARKS,
+        )?;
+    }
+    check_text(
+        "Напоминание о сроке долга",
+        &s.debt_due_text,
+        &DEBT_DUE_MARKS,
+    )?;
+    Ok(())
 }
 
 async fn get_settings(
@@ -1532,21 +2154,7 @@ async fn put_settings(
     Json(mut s): Json<MessageSettings>,
 ) -> AppResult<Json<SettingsOut>> {
     ctx.user.require_owner()?;
-    s.oil_template = s.oil_template.trim().to_string();
-    s.purchase_template = s.purchase_template.trim().to_string();
-    s.oil_language = s.oil_language.trim().to_string();
-    s.purchase_language = s.purchase_language.trim().to_string();
-    if !valid_template_name(&s.oil_template) || !valid_template_name(&s.purchase_template) {
-        return Err(invalid(
-            "имя шаблона — как в WhatsApp Manager: строчные латинские буквы, цифры и «_»",
-        ));
-    }
-    if !valid_language(&s.oil_language) || !valid_language(&s.purchase_language) {
-        return Err(invalid("язык шаблона — код Meta, например ru или en_US"));
-    }
-    if !(1..=1000).contains(&s.km_per_day) {
-        return Err(invalid("пробег в день — от 1 до 1000 км"));
-    }
+    check_settings(&mut s)?;
     let branch_id = ctx.user.branch_id;
     let mut tx = state.pool.begin().await?;
     let before = load_settings(&mut tx, branch_id).await?;
@@ -1559,6 +2167,17 @@ async fn put_settings(
     )
     .execute(&mut *tx)
     .await?;
+    // «Получили оплату» снова включили — о погашениях, пока было выключено, не пишем.
+    if !before.payment_enabled && s.payment_enabled {
+        sqlx::query!(
+            r#"insert into bot_state (key, value)
+               values ('client_messages_payments_since',
+                       to_jsonb(to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
+               on conflict (key) do update set value = excluded.value"#
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     if before != s {
         let old = serde_json::to_value(&before).map_err(|e| AppError::Internal(e.to_string()))?;
         ops::audit(
@@ -1654,11 +2273,8 @@ async fn test_send(
     Json(req): Json<TestReq>,
 ) -> AppResult<Json<Vec<MessageOut>>> {
     ctx.user.require_owner()?;
-    let kind = match req.kind.as_str() {
-        "oil" => Kind::Oil,
-        "purchase" => Kind::Purchase,
-        _ => return Err(invalid("вид сообщения: oil или purchase")),
-    };
+    let kind = Kind::parse(&req.kind)
+        .ok_or_else(|| invalid("вид сообщения: oil, purchase, payment или monthly"))?;
     let ch = Channels::from_state(&state);
     let branch_id = ctx.user.branch_id;
     let mut conn = state.pool.acquire().await?;
@@ -1770,6 +2386,61 @@ async fn test_send(
                 None,
             )
         }
+        // Должнику — по его долгу сейчас; оплата — последнее погашение, нет его — 5 000 сом.
+        Kind::Payment | Kind::Monthly => {
+            let debt = sqlx::query_scalar!("select balance_tyiyn from parties where id = $1", p.id)
+                .fetch_one(&mut *conn)
+                .await?;
+            let d = debtor(
+                &mut conn,
+                &ch,
+                &DebtorCard {
+                    id: p.id,
+                    kind: &p.kind,
+                    name: &p.name,
+                    first_name: &p.first_name,
+                    phone: &p.phone,
+                    bot_code: &p.bot_code,
+                },
+            )
+            .await?;
+            let (telegram_text, params) = if kind == Kind::Payment {
+                let paid = sqlx::query_scalar!(
+                    r#"select coalesce(-sum(amount_tyiyn), 0)::bigint as "s!" from party_ledger
+                       where party_id = $1 and kind = 'repayment' and doc_id = (
+                           select doc_id from party_ledger where party_id = $1 and kind = 'repayment'
+                             and reversal_of is null order by created_at desc limit 1)"#,
+                    p.id
+                )
+                .fetch_one(&mut *conn)
+                .await?;
+                let paid = if paid > 0 { paid } else { 500_000 };
+                let text = PaymentText {
+                    name: d.name.clone(),
+                    amount_tyiyn: paid,
+                    debt_tyiyn: debt,
+                    day: today,
+                };
+                (text.telegram(&settings.payment_text), text.params())
+            } else {
+                let text = MonthlyText {
+                    name: d.name.clone(),
+                    debt_tyiyn: debt,
+                    day: today,
+                };
+                let tail = cabinet_link(&ch, &d).map(|l| (settings.monthly_firm_text.as_str(), l));
+                (
+                    text.telegram(&settings.monthly_text, tail),
+                    text.params(d.link.as_deref().unwrap_or(NO_LINK)),
+                )
+            };
+            (
+                debtor_route(&ch, &settings, kind, d.firm, d.chats, d.phone),
+                telegram_text,
+                params,
+                None,
+            )
+        }
     };
     let draft = Draft {
         branch_id,
@@ -1782,6 +2453,7 @@ async fn test_send(
         keys: vec![format!("test:{}", ops::new_id())],
         telegram_text,
         params,
+        cabinet: None,
     };
     let ids = store(&mut conn, &draft, &route).await?.unwrap_or_default();
     // Пробное уходит сразу, без окна отправки.
@@ -1842,6 +2514,133 @@ async fn test_send(
     }
     tx.commit().await?;
     Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+struct SampleReq {
+    /// `payment`, `monthly` или `debt_due` (напоминание о сроке долга).
+    kind: String,
+    /// Текст с подстановками, как в поле настройки (ещё не сохранённый).
+    text: String,
+    /// «Раз в месяц»: хвост юрлицу; есть — образец как для юрлица.
+    #[serde(default)]
+    firm_text: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SampleOut {
+    text: String,
+    sent: bool,
+}
+
+/// Образец текста с примером подстановок — экран «Сообщения клиентам» и «Отправить себе».
+pub fn sample_text(
+    kind: &str,
+    text: &str,
+    firm_text: Option<&str>,
+    today: NaiveDate,
+    link: &str,
+) -> AppResult<String> {
+    let day = today.format("%d.%m.%Y").to_string();
+    match kind {
+        "payment" => {
+            check_text("Получили оплату", text, &PAYMENT_MARKS)?;
+            Ok(PaymentText {
+                name: "Азиз".into(),
+                amount_tyiyn: 500_000,
+                debt_tyiyn: 124_000,
+                day: today,
+            }
+            .telegram(text))
+        }
+        "monthly" => {
+            check_text("Раз в месяц", text, &MONTHLY_MARKS)?;
+            let firm = firm_text.map(str::trim).filter(|t| !t.is_empty());
+            if let Some(t) = firm {
+                check_text("Раз в месяц — юрлицу", t, &MONTHLY_FIRM_MARKS)?;
+            }
+            let m = MonthlyText {
+                name: if firm.is_some() {
+                    "Азиз (ОсОО Бишкек такси)".into()
+                } else {
+                    "Азиз".into()
+                },
+                debt_tyiyn: 624_000,
+                day: today,
+            };
+            Ok(m.telegram(text, firm.map(|t| (t, link))))
+        }
+        "debt_due" => {
+            check_text("Напоминание о сроке долга", text, &DEBT_DUE_MARKS)?;
+            Ok(fill(
+                text,
+                &[
+                    ("имя", "Азиз"),
+                    ("долг", &som(240_000)),
+                    ("когда", "через 3 дня"),
+                    ("дата", &day),
+                ],
+            ))
+        }
+        _ => Err(invalid("вид образца: payment, monthly или debt_due")),
+    }
+}
+
+/// «Отправить себе»: образец текста (с примером подстановок) — в Телеграм самого владельца.
+async fn sample_send(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<SampleReq>,
+) -> AppResult<Json<SampleOut>> {
+    ctx.user.require_owner()?;
+    let mut conn = state.pool.acquire().await?;
+    let today = today(&mut conn).await?;
+    let link = match &state.public_url {
+        Some(u) => format!("{u}/cabinet"),
+        None => bot_url(&mut conn, "пример")
+            .await?
+            .unwrap_or_else(|| NO_LINK.into()),
+    };
+    let text = sample_text(
+        &req.kind,
+        req.text.trim(),
+        req.firm_text.as_deref(),
+        today,
+        &link,
+    )?;
+    let Some(api) = &state.telegram_api else {
+        return Err(invalid("Телеграм-бот выключен на сервере"));
+    };
+    let chat = sqlx::query_scalar!(
+        "select chat_id from telegram_links where user_id = $1",
+        ctx.user.id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("ваш Телеграм не привязан к боту — «Настройки → Телеграм и баллы»"))?;
+    let sent = matches!(api.push(chat, &text).await, Delivery::Sent);
+    Ok(Json(SampleOut { text, sent }))
+}
+
+/// Лента «Сообщения» в кабинете юрлица (П7, П7б): что точка писала о его оплатах и долге.
+pub async fn cabinet_feed(
+    conn: &mut PgConnection,
+    party_id: Uuid,
+    limit: i64,
+) -> AppResult<Vec<Value>> {
+    let rows = sqlx::query!(
+        r#"select id, created_at, kind, text from client_messages
+           where party_id = $1 and channel = 'cabinet' and not test
+           order by created_at desc, id desc limit $2"#,
+        party_id,
+        limit
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| json!({ "id": r.id, "created_at": r.created_at, "kind": r.kind, "text": r.text }))
+        .collect())
 }
 
 #[derive(Serialize)]
@@ -2177,11 +2976,90 @@ mod tests {
         for (kind, n) in [
             (Kind::Oil, OIL_PARAMS.len()),
             (Kind::Purchase, PURCHASE_PARAMS.len()),
+            (Kind::Payment, PAYMENT_PARAMS.len()),
+            (Kind::Monthly, MONTHLY_PARAMS.len()),
         ] {
             let marks: Vec<String> = (1..=n).map(|i| format!("{{{{{i}}}}}")).collect();
             let text = preview(kind, &marks).replace('\n', "\\n");
             assert!(ts.contains(&format!("'{text}'")), "{text}");
         }
+    }
+
+    #[test]
+    fn debtor_texts_with_greeting_and_marks() {
+        // «Получили оплату» и «раз в месяц» — текстом из настройки, с подстановками (П7, П7б).
+        let day = d("2026-11-01");
+        let p = PaymentText {
+            name: "Азиз".into(),
+            amount_tyiyn: 500_000,
+            debt_tyiyn: 124_000,
+            day,
+        };
+        assert_eq!(
+            p.telegram(PAYMENT_TEXT),
+            "Здравствуйте, Азиз! Получили оплату 5 000 сом. Долг на сегодня — 1 240 сом."
+        );
+        assert_eq!(p.params(), vec!["Азиз", "5 000 сом", "1 240 сом"]);
+        // Переплата — без минуса.
+        let p = PaymentText {
+            debt_tyiyn: -50_000,
+            ..p
+        };
+        assert!(
+            p.telegram(PAYMENT_TEXT)
+                .ends_with("— 0 сом (аванс 500 сом).")
+        );
+        let m = MonthlyText {
+            name: "Азиз (ОсОО Такси)".into(),
+            debt_tyiyn: 624_000,
+            day,
+        };
+        assert_eq!(
+            m.telegram(
+                MONTHLY_TEXT,
+                Some((MONTHLY_FIRM_TEXT, "https://a.kg/cabinet"))
+            ),
+            "Здравствуйте, Азиз (ОсОО Такси)! На 01.11.2026 ваш долг — 6 240 сом. Подробно — в кабинете: https://a.kg/cabinet"
+        );
+        assert_eq!(
+            m.telegram(MONTHLY_TEXT, None),
+            "Здравствуйте, Азиз (ОсОО Такси)! На 01.11.2026 ваш долг — 6 240 сом."
+        );
+        // Настройка не пропускает непонятные подстановки и пустой текст.
+        assert_eq!(
+            unknown_marks("{имя}, {телефон} {имя} {сумма}", &PAYMENT_MARKS),
+            vec!["телефон"]
+        );
+        assert!(check_text("x", "Привет, {телефон}", &PAYMENT_MARKS).is_err());
+        assert!(check_text("x", "", &PAYMENT_MARKS).is_err());
+        assert!(check_text("x", PAYMENT_TEXT, &PAYMENT_MARKS).is_ok());
+        assert!(check_text("x", DEBT_DUE_TEXT, &DEBT_DUE_MARKS).is_ok());
+        let mut s = MessageSettings::default();
+        assert!(check_settings(&mut s).is_ok());
+        s.monthly_hour = 21;
+        assert!(check_settings(&mut s).is_err());
+    }
+
+    #[test]
+    fn monthly_on_its_day_from_its_hour() {
+        let s = MessageSettings::default();
+        assert!(!monthly_due(&s, d("2026-11-01"), 9));
+        assert!(monthly_due(&s, d("2026-11-01"), 10));
+        // Сервер был выключен — догоняется ещё два дня, потом нет.
+        assert!(monthly_due(&s, d("2026-11-03"), 9));
+        assert!(!monthly_due(&s, d("2026-11-04"), 12));
+        assert!(!monthly_due(&s, d("2026-10-31"), 12));
+        let off = MessageSettings {
+            monthly_enabled: false,
+            ..MessageSettings::default()
+        };
+        assert!(!monthly_due(&off, d("2026-11-01"), 12));
+        let fifth = MessageSettings {
+            monthly_day: 5,
+            ..MessageSettings::default()
+        };
+        assert!(monthly_due(&fifth, d("2026-11-05"), 15));
+        assert!(!monthly_due(&fifth, d("2026-11-01"), 15));
     }
 
     #[test]
