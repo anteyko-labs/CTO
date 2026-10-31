@@ -10142,23 +10142,34 @@ async fn debt_reminders_three_days_before_and_on_due_date_once(pool: PgPool) {
     notify_pass(&mut conn, &api, 10, true).await.unwrap();
     let got = fake.texts(chat);
     assert_eq!(got.len(), 1, "{got:?}");
+    // С приветствием и именем (задача 002, П9).
     assert!(
-        got[0].contains("1 500 с") && got[0].contains("через 3 дня"),
+        got[0].starts_with(
+            "Здравствуйте, Эрлан! Напоминаем: срок оплаты долга 1 500 с — через 3 дня"
+        ),
         "{got:?}"
     );
     notify_pass(&mut conn, &api, 11, true).await.unwrap();
     assert_eq!(fake.texts(chat).len(), 1);
-    // Срок сегодня: второе напоминание, тоже один раз.
+    // Срок сегодня: второе напоминание, тоже один раз; текст — из «Сообщения клиентам».
     sqlx::query("update parties set due_days = 1 where id = $1")
         .bind(party)
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query(
+        r#"insert into settings (branch_id, key, value)
+           values ($1, 'client_messages', '{"debt_due_text": "Салам, {имя}! Долг {долг} — {когда}."}')"#,
+    )
+    .bind(w.owner.user.branch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
     notify_pass(&mut conn, &api, 19, true).await.unwrap();
     notify_pass(&mut conn, &api, 19, true).await.unwrap();
     let got = fake.texts(chat);
     assert_eq!(got.len(), 2, "{got:?}");
-    assert!(got[1].contains("сегодня"), "{got:?}");
+    assert_eq!(got[1], "Салам, Эрлан! Долг 1 500 с — сегодня.");
     // Просрочен — больше не напоминаем; без долга — ничего.
     sqlx::query("update parties set due_days = 0 where id = $1")
         .bind(party)

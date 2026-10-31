@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.parent_id, r.status as \"root_status?\"\n           from receipt_drafts d left join receipt_drafts r on r.id = d.parent_id\n           where d.id = $1 and d.branch_id = $2 and d.chat_id = $3\n           for update of d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "parent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "root_status?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "ce3012dcf4764eff38006886cbecae45eca963af29feeffc9f0c1d46d6b75524"
+}

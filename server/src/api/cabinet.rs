@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/client/contacts", routing::get(contacts))
         .route("/client/reconciliation", routing::get(reconciliation))
         .route("/client/oil-book", routing::get(oil_book))
+        .route("/client/messages", routing::get(messages))
         .route("/parties/{id}/cabinet", routing::get(cabinet_state))
         .route("/parties/{id}/cabinet/reset", routing::post(cabinet_reset))
 }
@@ -490,6 +491,16 @@ async fn reconciliation(
     let act =
         reconciliation_data(&mut conn, client.branch_id, client.party_id, q.from, q.to).await?;
     Ok(Json(json!(act)))
+}
+
+/// Лента «Сообщения»: что точка писала фирме об оплатах и долге (задача 002, П7, П7б) —
+/// последние 50.
+async fn messages(State(state): State<AppState>, client: Client) -> AppResult<Json<Vec<Value>>> {
+    client.ready()?;
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(
+        crate::api::client_messages::cabinet_feed(&mut conn, client.party_id, 50).await?,
+    ))
 }
 
 /// Машины фирмы: когда меняли масло, что залили и когда следующая замена (SPEC-16).

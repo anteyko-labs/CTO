@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.kind, p.name, p.first_name, p.phone, p.bot_code, p.balance_tyiyn\n               from parties p\n               where p.branch_id = $1 and p.role = 'customer' and p.active and p.balance_tyiyn > 0\n                 and not exists (select 1 from client_message_keys k\n                                 where k.key = 'monthly:' || p.id::text || ':' || $2)\n               order by p.name, p.id\n               limit 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "bot_code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "balance_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8e74d0efb4d498827a213c116b3de3e7e17b4ad907bc992a6a7ae0ae85f21a8e"
+}

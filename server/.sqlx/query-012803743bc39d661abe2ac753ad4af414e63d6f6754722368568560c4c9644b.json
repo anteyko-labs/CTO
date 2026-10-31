@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select g.id as \"id!\", g.branch_id as \"branch_id!\", g.party_id as \"party_id!\",\n                  g.amount as \"amount!\", g.day as \"day!\",\n                  p.kind, p.name, p.first_name, p.phone, p.bot_code,\n                  (select coalesce(sum(x.amount_tyiyn), 0) from party_ledger x\n                   where x.party_id = g.party_id and x.created_at <= g.at)::bigint as \"debt!\"\n           from (select (array_agg(l.id order by l.created_at, l.id))[1] as id,\n                        (array_agg(l.branch_id order by l.created_at, l.id))[1] as branch_id,\n                        l.party_id, (-sum(l.amount_tyiyn))::bigint as amount,\n                        max(l.created_at) as at,\n                        (max(l.created_at) at time zone 'Asia/Bishkek')::date as day\n                 from party_ledger l\n                 where l.kind = 'repayment' and l.reversal_of is null and l.amount_tyiyn < 0\n                   and l.created_at > $1 and l.created_at > now() - interval '2 days'\n                   and not exists (select 1 from party_ledger r where r.reversal_of = l.id)\n                 group by coalesce(l.doc_id, l.id), l.party_id) g\n           join parties p on p.id = g.party_id\n           where p.role = 'customer' and p.active\n             and not exists (select 1 from client_message_keys k where k.key = 'payment:' || g.id::text)\n             and not exists (select 1 from doc_corrections c\n                             join client_message_keys k on k.key = 'payment:' || c.original_id::text\n                             where c.kind = 'ledger' and c.new_id = g.id)\n           order by g.at\n           limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "branch_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "party_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "day!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 5,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "phone",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "bot_code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "debt!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      false,
+      null,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "012803743bc39d661abe2ac753ad4af414e63d6f6754722368568560c4c9644b"
+}

@@ -11,7 +11,7 @@
 // приход (тот же товар — «сложить?»), у строки «похож» и при нескольких точных совпадениях — варианты
 // товара на выбор; выбор запоминается для поставщика (задача 002, П2–П3).
 import { useEffect, useState, type KeyboardEvent } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CorrectionBanner } from '../components/Correction'
 import { printLabels } from '../components/labels'
 import { ProductFormModal } from '../components/ProductFormModal'
@@ -159,7 +159,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const [photos, setPhotos] = useState<PendingPhoto[]>([])
   const photoAction = useAction()
   // Оплачена сразу — деньги уходят из выбранной кассы (ADR-062); администратору — только «Касса».
-  const owner = useUser().role === 'owner'
+  const me = useUser()
+  const owner = me.role === 'owner'
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const sources = paySources(accounts.data ?? [], owner)
   const [paidFrom, setPaidFrom] = useState(fix?.state.paidFrom ?? '')
@@ -673,7 +674,23 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
               <span>нужен ключ распознавания (Настройки → Телеграм и баллы / config.ps1)</span>
             </div>
           )}
-          {!fix && (draft || drafts.data?.enabled) && (
+          {/* Накладные в бот (задача 003, Н6): кто не привязал Телеграм — подсказка, как присылать фото туда. */}
+          {!fix && !draft && drafts.data && !me.telegram_linked && (
+            <div className="mb-2 text-xs text-slate-500" data-testid="photo-bot-hint">
+              {owner ? (
+                <>
+                  Фото накладных можно присылать в бот — и вам, и администратору: привязка в{' '}
+                  <Link className="text-sky-700 underline" to="/users">
+                    «Пользователи» → «Телеграм»
+                  </Link>
+                  .
+                </>
+              ) : (
+                'Можно присылать фото накладных в бот — попросите владельца привязать ваш Телеграм («Пользователи» → «Телеграм»).'
+              )}
+            </div>
+          )}
+          {!fix && (draft || drafts.data?.enabled || (drafts.data && !owner)) && (
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3">
               {draft ? (
                 <div className="flex flex-wrap items-start gap-3" data-testid="draft-banner">
@@ -718,7 +735,11 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                   </div>
                 </div>
               ) : (
-                <span className="text-sm text-slate-600">Накладная на бумаге? Сфотографируйте — приход заполнится сам.</span>
+                <span className="text-sm text-slate-600">
+                  {drafts.data?.enabled
+                    ? 'Накладная на бумаге? Сфотографируйте — приход заполнится сам.'
+                    : 'Распознавание не настроено — фото сохранится и прикрепится к приходу, строки заполните вручную.'}
+                </span>
               )}
               {draft ? (
                 // Вторая страница или ещё одна накладная: строки — в этот же приход (задача 002, П2).

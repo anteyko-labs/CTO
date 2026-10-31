@@ -1,5 +1,7 @@
 // «Настройки» → «Сообщения клиентам» (SPEC-32): WhatsApp Business Platform — шаблоны Meta и их
 // переменные по порядку, пробег в день по умолчанию, «Отправить пробное» и журнал сообщений.
+// «Должникам» (задача 002, П7, П7б, П9): «Получили оплату», раз в месяц — кто сколько должен,
+// напоминание о сроке — выключатели, тексты с подстановками, образец и «Отправить себе».
 // Только владелец.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -8,17 +10,27 @@ import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loadi
 import { get, post, put, qs } from '../lib/api'
 import {
   CHANNEL_LABELS,
+  DEBT_DUE_MARKS,
   KIND_LABELS,
+  MONTHLY_FIRM_MARKS,
+  MONTHLY_MARKS,
+  MONTHLY_TEMPLATE_TEXT,
   OIL_TEMPLATE_TEXT,
+  PAYMENT_MARKS,
+  PAYMENT_TEMPLATE_TEXT,
   PURCHASE_TEMPLATE_TEXT,
+  SAMPLE_VALUES,
   STATUS_LABELS,
   languageProblem,
   paramLines,
   recipientText,
+  sampleText,
   statusTone,
   templateNameProblem,
+  textProblem,
   type ClientMessage,
   type MessageKind,
+  type MessageSettings,
   type MessageSettingsOut,
 } from '../lib/clientMessages'
 import { formatDateTime } from '../lib/format'
@@ -34,7 +46,7 @@ export default function ClientMessages() {
     <div className="flex max-w-5xl flex-col gap-4">
       <PageHeader
         title="Сообщения клиентам"
-        subtitle="Напоминание о замене масла и сообщение юрлицу о закупе: в Телеграм, если клиент подключён к боту, иначе — в WhatsApp"
+        subtitle="Напоминание о замене масла, сообщение юрлицу о закупе и сообщения должникам: в Телеграм, если клиент подключён к боту, иначе — в WhatsApp"
         back={
           <Link className="text-sky-700 hover:underline" to="/settings">
             ← Настройки
@@ -89,88 +101,243 @@ function TemplateBox({
   )
 }
 
+/** Поле текста сообщения должнику: подстановки, образец с примером и «Отправить себе». */
+function DebtorText({
+  id,
+  label,
+  kind,
+  value,
+  onChange,
+  marks,
+  firmText,
+  optional = false,
+  hint,
+}: {
+  id: string
+  label: string
+  kind: 'payment' | 'monthly' | 'debt_due'
+  value: string
+  onChange: (v: string) => void
+  marks: readonly string[]
+  firmText?: string
+  optional?: boolean
+  hint?: string
+}) {
+  const send = useAction()
+  const problem = textProblem(value, marks, optional)
+  return (
+    <div className="flex flex-col gap-1">
+      <Field label={label} hint={hint ?? `Подстановки: ${marks.map((m) => `{${m}}`).join(', ')}`} error={problem}>
+        <textarea id={id} rows={2} value={value} onChange={(e) => onChange(e.target.value)} />
+      </Field>
+      {value.trim() && (
+        <div className="text-xs text-slate-500" data-testid={`${id}-sample`}>
+          Образец: {sampleText(value.trim(), SAMPLE_VALUES)}
+        </div>
+      )}
+      {!optional && (
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            className="min-h-[34px] px-3 py-1 text-xs"
+            disabled={problem !== null || send.busy}
+            onClick={() =>
+              void send.run(async () => {
+                const r = await post<{ text: string; sent: boolean }>('/client-messages/sample', {
+                  kind,
+                  text: value.trim(),
+                  firm_text: firmText?.trim() || null,
+                })
+                toast(r.sent ? 'Отправлено вам в Телеграм' : 'Телеграм не принял сообщение')
+              })
+            }
+          >
+            Отправить себе
+          </Button>
+          <ErrorBox error={send.error} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Настройка как её отправляет экран: все поля, без справочных. */
+function editable(s: MessageSettingsOut): MessageSettings {
+  return {
+    whatsapp_enabled: s.whatsapp_enabled,
+    oil_template: s.oil_template,
+    oil_language: s.oil_language,
+    purchase_template: s.purchase_template,
+    purchase_language: s.purchase_language,
+    km_per_day: s.km_per_day,
+    payment_enabled: s.payment_enabled,
+    payment_text: s.payment_text,
+    payment_template: s.payment_template,
+    payment_language: s.payment_language,
+    monthly_enabled: s.monthly_enabled,
+    monthly_day: s.monthly_day,
+    monthly_hour: s.monthly_hour,
+    monthly_text: s.monthly_text,
+    monthly_firm_text: s.monthly_firm_text,
+    monthly_template: s.monthly_template,
+    monthly_language: s.monthly_language,
+    debt_due_text: s.debt_due_text,
+  }
+}
+
 function SettingsForm({ s }: { s: MessageSettingsOut }) {
-  const [wa, setWa] = useState(s.whatsapp_enabled)
-  const [oil, setOil] = useState(s.oil_template)
-  const [oilLang, setOilLang] = useState(s.oil_language)
-  const [buy, setBuy] = useState(s.purchase_template)
-  const [buyLang, setBuyLang] = useState(s.purchase_language)
+  const [f, setF] = useState<MessageSettings>(() => editable(s))
   const [km, setKm] = useState(String(s.km_per_day))
+  const set = <K extends keyof MessageSettings>(k: K) => (v: MessageSettings[K]) => setF((x) => ({ ...x, [k]: v }))
   const save = useAction()
   const kmValue = Number(km)
   const kmOk = Number.isInteger(kmValue) && kmValue >= 1 && kmValue <= 1000
+  const dayOk = Number.isInteger(f.monthly_day) && f.monthly_day >= 1 && f.monthly_day <= 28
+  const hourOk = Number.isInteger(f.monthly_hour) && f.monthly_hour >= 9 && f.monthly_hour <= 19
   const bad =
     !kmOk ||
-    templateNameProblem(oil) !== null ||
-    templateNameProblem(buy) !== null ||
-    languageProblem(oilLang) !== null ||
-    languageProblem(buyLang) !== null
-  return (
-    <Card className="flex flex-col gap-3">
-      <CardTitle>Каналы и шаблоны</CardTitle>
-      <div className="text-sm text-slate-600">
-        Телеграм-бот: {s.telegram ? 'включён' : 'выключен (нет ключа бота на сервере)'} · WhatsApp:{' '}
-        {s.whatsapp_configured ? 'ключ и номер заданы на сервере' : 'не подключён'} · Ссылка на кабинет:{' '}
-        {s.public_url ? `${s.public_url}/cabinet` : 'внешний адрес не задан — вместо неё ссылка на бот'}
-      </div>
-      {!s.whatsapp_configured && (
-        <Notice>
-          WhatsApp Business Platform не подключён: на точке в <code>config.ps1</code> впишите <code>$WhatsAppToken</code> и{' '}
-          <code>$WhatsAppPhoneId</code> из кабинета Meta и перезапустите сервер. Шаблоны ниже подаются в Meta на одобрение заранее.
-        </Notice>
-      )}
-      <Checkbox label="Отправлять в WhatsApp клиентам, не подключённым к боту" checked={wa} onChange={setWa} />
-      <div className="grid gap-3 lg:grid-cols-2">
-        <TemplateBox
-          id="oil"
-          title="Замена масла"
-          text={OIL_TEMPLATE_TEXT}
-          params={s.oil_params}
-          name={oil}
-          lang={oilLang}
-          onName={setOil}
-          onLang={setOilLang}
-        />
-        <TemplateBox
-          id="purchase"
-          title="Закуп юрлица"
-          text={PURCHASE_TEMPLATE_TEXT}
-          params={s.purchase_params}
-          name={buy}
-          lang={buyLang}
-          onName={setBuy}
-          onLang={setBuyLang}
-        />
-      </div>
-      <Field
-        label="Пробег в день по умолчанию, км"
-        hint="Если в книжке машины одна запись с пробегом; иначе — средний по книжке"
-        error={kmOk ? null : 'от 1 до 1000'}
-      >
-        <input id="km-per-day" className="w-28" inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value)} />
-      </Field>
+    !dayOk ||
+    !hourOk ||
+    [f.oil_template, f.purchase_template, f.payment_template, f.monthly_template].some((n) => templateNameProblem(n) !== null) ||
+    [f.oil_language, f.purchase_language, f.payment_language, f.monthly_language].some((l) => languageProblem(l) !== null) ||
+    textProblem(f.payment_text, PAYMENT_MARKS) !== null ||
+    textProblem(f.monthly_text, MONTHLY_MARKS) !== null ||
+    textProblem(f.monthly_firm_text, MONTHLY_FIRM_MARKS, true) !== null ||
+    textProblem(f.debt_due_text, DEBT_DUE_MARKS) !== null
+  const saveButton = (
+    <div>
       <ErrorBox error={save.error} />
-      <div>
-        <Button
-          disabled={bad || save.busy}
-          onClick={() =>
-            void save.run(async () => {
-              await put('/settings/client-messages', {
-                whatsapp_enabled: wa,
-                oil_template: oil.trim(),
-                oil_language: oilLang.trim(),
-                purchase_template: buy.trim(),
-                purchase_language: buyLang.trim(),
-                km_per_day: kmValue,
-              })
-              toast('Сохранено')
-            })
-          }
+      <Button
+        disabled={bad || save.busy}
+        onClick={() =>
+          void save.run(async () => {
+            await put('/settings/client-messages', { ...f, km_per_day: kmValue })
+            toast('Сохранено')
+          })
+        }
+      >
+        Сохранить
+      </Button>
+    </div>
+  )
+  return (
+    <>
+      <Card className="flex flex-col gap-3">
+        <CardTitle>Каналы и шаблоны</CardTitle>
+        <div className="text-sm text-slate-600">
+          Телеграм-бот: {s.telegram ? 'включён' : 'выключен (нет ключа бота на сервере)'} · WhatsApp:{' '}
+          {s.whatsapp_configured ? 'ключ и номер заданы на сервере' : 'не подключён'} · Ссылка на кабинет:{' '}
+          {s.public_url ? `${s.public_url}/cabinet` : 'внешний адрес не задан — вместо неё ссылка на бот'}
+        </div>
+        {!s.whatsapp_configured && (
+          <Notice>
+            WhatsApp Business Platform не подключён: на точке в <code>config.ps1</code> впишите <code>$WhatsAppToken</code> и{' '}
+            <code>$WhatsAppPhoneId</code> из кабинета Meta и перезапустите сервер. Шаблоны ниже подаются в Meta на одобрение заранее.
+          </Notice>
+        )}
+        <Checkbox label="Отправлять в WhatsApp клиентам, не подключённым к боту" checked={f.whatsapp_enabled} onChange={set('whatsapp_enabled')} />
+        <div className="grid gap-3 lg:grid-cols-2">
+          <TemplateBox
+            id="oil"
+            title="Замена масла"
+            text={OIL_TEMPLATE_TEXT}
+            params={s.oil_params}
+            name={f.oil_template}
+            lang={f.oil_language}
+            onName={set('oil_template')}
+            onLang={set('oil_language')}
+          />
+          <TemplateBox
+            id="purchase"
+            title="Закуп юрлица"
+            text={PURCHASE_TEMPLATE_TEXT}
+            params={s.purchase_params}
+            name={f.purchase_template}
+            lang={f.purchase_language}
+            onName={set('purchase_template')}
+            onLang={set('purchase_language')}
+          />
+          <TemplateBox
+            id="payment"
+            title="Получили оплату (только юрлицам)"
+            text={PAYMENT_TEMPLATE_TEXT}
+            params={s.payment_params}
+            name={f.payment_template}
+            lang={f.payment_language}
+            onName={set('payment_template')}
+            onLang={set('payment_language')}
+          />
+          <TemplateBox
+            id="monthly"
+            title="Долг раз в месяц (только юрлицам)"
+            text={MONTHLY_TEMPLATE_TEXT}
+            params={s.monthly_params}
+            name={f.monthly_template}
+            lang={f.monthly_language}
+            onName={set('monthly_template')}
+            onLang={set('monthly_language')}
+          />
+        </div>
+        <Field
+          label="Пробег в день по умолчанию, км"
+          hint="Если в книжке машины одна запись с пробегом; иначе — средний по книжке"
+          error={kmOk ? null : 'от 1 до 1000'}
         >
-          Сохранить
-        </Button>
-      </div>
-    </Card>
+          <input id="km-per-day" className="w-28" inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value)} />
+        </Field>
+        {saveButton}
+      </Card>
+      <Card className="flex flex-col gap-4" data-testid="debtor-messages">
+        <CardTitle>Должникам</CardTitle>
+        <div className="-mt-2 text-sm text-slate-600">
+          В бот — всем подключённым клиентам; в WhatsApp — только юрлицам, по шаблону выше; юрлицу — ещё в ленту «Сообщения» его кабинета. Отправка — с 09:00 до
+          20:00, ночью — утром. Одно и то же дважды не уходит.
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+          <Checkbox label="«Получили оплату» — после каждого погашения долга" checked={f.payment_enabled} onChange={set('payment_enabled')} />
+          <DebtorText id="payment-text" label="Текст для бота" kind="payment" value={f.payment_text} onChange={set('payment_text')} marks={PAYMENT_MARKS} />
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+          <Checkbox label="Раз в месяц — кто сколько должен (каждому с долгом больше нуля)" checked={f.monthly_enabled} onChange={set('monthly_enabled')} />
+          <div className="flex flex-wrap gap-3">
+            <Field label="День месяца" error={dayOk ? null : 'от 1 до 28'}>
+              <input
+                id="monthly-day"
+                className="w-20"
+                inputMode="numeric"
+                value={String(f.monthly_day)}
+                onChange={(e) => set('monthly_day')(Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Час (по Бишкеку)" error={hourOk ? null : 'с 9 до 19'}>
+              <input
+                id="monthly-hour"
+                className="w-20"
+                inputMode="numeric"
+                value={String(f.monthly_hour)}
+                onChange={(e) => set('monthly_hour')(Number(e.target.value))}
+              />
+            </Field>
+          </div>
+          <DebtorText id="monthly-text" label="Текст для бота" kind="monthly" value={f.monthly_text} onChange={set('monthly_text')} marks={MONTHLY_MARKS} firmText={f.monthly_firm_text} />
+          <DebtorText
+            id="monthly-firm-text"
+            label="Юрлицу — дописать (пусто — ничего)"
+            kind="monthly"
+            value={f.monthly_firm_text}
+            onChange={set('monthly_firm_text')}
+            marks={MONTHLY_FIRM_MARKS}
+            optional
+            hint="Ссылка на кабинет — только при внешнем адресе программы. Подстановки: {ссылка}, {имя}, {долг}, {дата}"
+          />
+        </div>
+        <div className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+          <div className="font-medium">Напоминание о сроке долга (в бот за 3 дня и в день срока)</div>
+          <DebtorText id="debt-due-text" label="Текст" kind="debt_due" value={f.debt_due_text} onChange={set('debt_due_text')} marks={DEBT_DUE_MARKS} />
+        </div>
+        {saveButton}
+      </Card>
+    </>
   )
 }
 
@@ -204,6 +371,8 @@ function TestSend({ onSent }: { onSent: () => void }) {
           <select id="test-kind" value={kind} onChange={(e) => setKind(e.target.value as MessageKind)}>
             <option value="oil">{KIND_LABELS.oil}</option>
             <option value="purchase">{KIND_LABELS.purchase}</option>
+            <option value="payment">{KIND_LABELS.payment}</option>
+            <option value="monthly">{KIND_LABELS.monthly}</option>
           </select>
         </Field>
       </div>

@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.created_at, d.status, d.recognized, r.number as \"receipt_number?\",\n                  (select count(*) from receipt_drafts m where m.parent_id = d.id) + 1 as \"photos!\"\n           from receipt_drafts d left join receipts r on r.id = d.receipt_id\n           where d.branch_id = $1 and d.user_id = $2 and d.parent_id is null\n           order by d.created_at desc, d.id desc limit 5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "recognized",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "receipt_number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "photos!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "b404f723bba2d83b40f3f0e73d87d8955ab41bb41f94f6792a7a60b3595b1925"
+}

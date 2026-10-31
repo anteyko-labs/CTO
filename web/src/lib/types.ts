@@ -48,6 +48,8 @@ export interface User {
   branch_name?: string
   branches?: Branch[]
   several_branches?: boolean
+  /** Чат Телеграма привязан к этому пользователю (задача 003, Н6); у старого ответа сервера — нет. */
+  telegram_linked?: boolean
 }
 
 export interface UserRow {

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_input (chat_id, branch_id, kind, data, expires_at)\n           values ($1, $2, 'old_debt', $3, now() + make_interval(mins => $4))\n           on conflict (chat_id) do update set branch_id = excluded.branch_id, kind = excluded.kind,\n               vehicle_id = null, data = excluded.data, expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Jsonb",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7fc05012eadd33cf5f111057365936d704a59034ab5a7a8b988fa5e07f6a908"
+}

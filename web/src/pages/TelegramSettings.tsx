@@ -1,5 +1,6 @@
 // Телеграм-бот владельца: привязка чата одноразовым кодом (SPEC-18, ADR-050); ссылкой и QR (ADR-121).
 import { BotStartLink, startLink } from '../components/BotStartLink'
+import { BotReceiptsCard } from '../components/BotReceiptsCard'
 import { useState } from 'react'
 import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
 import { del, get, post, put } from '../lib/api'
@@ -163,7 +164,7 @@ export default function TelegramSettings() {
             <CardTitle>Телеграм привязан</CardTitle>
             <div className="text-slate-600">
               С {s.linked_at ? formatDateTime(s.linked_at) : '—'} сюда приходят важные события: закрытие смены и сдача кассы, недостача, возвраты,
-              сторно, смена цен, долги. Кнопки внизу чата: «Сегодня», «Смена», «Долги».
+              сторно, смена цен, долги. Кнопки внизу чата: «Сегодня», «Смена», «Долги», «Должники», «Занести долг».
             </div>
           </div>
           <Button
@@ -218,6 +219,7 @@ export default function TelegramSettings() {
       )}
       {s?.enabled && <BotQuestions />}
       {s?.enabled && <LoyaltyRate />}
+      {s?.enabled && <BotReceiptsCard ownerLinked={s.linked} />}
     </div>
   )
 }

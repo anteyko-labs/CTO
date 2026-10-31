@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select chat_id from telegram_links where user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "82cb498f8ba8dc1eec672f6e293e1c4a65b479e22fd8f466d44b31f6c3f48f38"
+}

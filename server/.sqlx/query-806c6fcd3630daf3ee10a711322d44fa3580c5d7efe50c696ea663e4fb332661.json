@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update receipt_drafts set parent_id = null where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "806c6fcd3630daf3ee10a711322d44fa3580c5d7efe50c696ea663e4fb332661"
+}
