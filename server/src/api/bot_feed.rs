@@ -265,7 +265,7 @@ pub struct Feed {
     pub off: Vec<String>,
     #[serde(default = "no_sales")]
     pub sales: String,
-    /// Себестоимость и прибыль в сообщениях о чеках и возвратах (задача 003 Н4, ADR-{B4.3});
+    /// Себестоимость и прибыль в сообщениях о чеках и возвратах (задача 003 Н4, ADR-148);
     /// по умолчанию — да. Чтение в `telegram::pending`.
     #[serde(default = "yes")]
     pub profit: bool,

@@ -256,7 +256,7 @@ struct StockSettings {
     stale_days: i32,
     oil_norm_bp: i32,
     /// Какая цена масла открывается первой в новой строке прихода и в карточке нового товара:
-    /// `can` — за канистру, `l` — за литр (задача 003, Н7, ADR-{B6.1}). По умолчанию `can`.
+    /// `can` — за канистру, `l` — за литр (задача 003, Н7, ADR-150). По умолчанию `can`.
     oil_price_mode_receipt: String,
     /// То же для оприходования; по умолчанию `l` (SPEC-36 §13).
     oil_price_mode_stock_in: String,
@@ -274,7 +274,7 @@ struct StockSettingsReq {
 /// Режим цены масла: за канистру или за литр.
 const OIL_PRICE_MODES: [&str; 2] = ["can", "l"];
 
-/// Режимы цены масла по умолчанию: (приход, оприходование) — ADR-{B6.1}. Неизвестное значение —
+/// Режимы цены масла по умолчанию: (приход, оприходование) — ADR-150. Неизвестное значение —
 /// как по умолчанию: «кан.» в приходе, «л» в оприходовании.
 async fn oil_price_modes(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<(String, String)> {
     let v = sqlx::query_scalar!(
@@ -336,7 +336,7 @@ async fn get_stock_settings(
 }
 
 /// Срок залежалости, норму по маслу и режим цены масла правит владелец (ADR-039, ADR-052,
-/// ADR-{B6.1}); изменение — в журнал действий (I5).
+/// ADR-150); изменение — в журнал действий (I5).
 async fn put_stock_settings(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -1008,7 +1008,7 @@ pub async fn reverse_receipt_tx(
         )
         .await?;
         let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
-        // Единица товара менялась после прихода — его количества в прежних единицах (ADR-{B1.1}).
+        // Единица товара менялась после прихода — его количества в прежних единицах (ADR-139).
         crate::api::product_units::forbid_after_doc(conn, target, id).await?;
         ops::apply_movement(
             conn,

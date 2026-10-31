@@ -139,7 +139,7 @@ function FreeWithOil({
 
 function EditModal({ service, onClose, onSaved }: { service: Service; onClose: () => void; onSaved: () => void }) {
   const owner = useUser().role === 'owner'
-  // Цену услуги меняет владелец или администратор с правом «Цены товаров и услуг» (ADR-{B7.1}).
+  // Цену услуги меняет владелец или администратор с правом «Цены товаров и услуг» (ADR-151).
   const mayPrice = useCan()('prices')
   const categories = useOilCategories()
   const [form, setForm] = useState({

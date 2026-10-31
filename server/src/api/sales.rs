@@ -769,13 +769,13 @@ async fn check_discounts(
         None => ctx.user.clone(),
     };
     // Право входа есть, а у кассира открытой смены владелец его снял — отказ с именем кассира
-    // (задача 003 Н10, ADR-{B8.1}); без сети чек проводится с причиной владельцу (I10).
+    // (задача 003 Н10, ADR-152); без сети чек проводится с причиной владельцу (I10).
     let access = crate::auth::access(conn, &user, "discount").await?;
     if matches!(access, crate::auth::Access::Allowed) {
         if user.is_owner() {
             return Ok(());
         }
-        // Предел скидки администратора (задача 003 Н3, ADR-{B4.2}): скидка чека — сколько не
+        // Предел скидки администратора (задача 003 Н3, ADR-147): скидка чека — сколько не
         // хватает до прайса по строкам ниже прайса, от суммы чека по прайсу (без подарков).
         let settings = crate::api::cashier_settings::load(conn, ctx.user.branch_id).await?;
         if settings.admin_limit_pct.is_none() && settings.admin_limit_tyiyn.is_none() {
@@ -1390,7 +1390,7 @@ pub async fn post_sale_core(
         .ok_or_else(overflow)?;
     // Продажа в долг — владелец или администратор с правом (ADR-097). Чек без сети уже
     // состоялся: проводится, а владелец получает причину (инвариант 5).
-    // Право снято у кассира открытой смены — отказ с его именем (задача 003 Н10, ADR-{B8.1}).
+    // Право снято у кассира открытой смены — отказ с его именем (задача 003 Н10, ADR-152).
     if debt_total > 0 {
         use crate::auth::Access;
         match crate::auth::access(conn, &ctx.user, "sale_debt").await? {
@@ -1816,7 +1816,7 @@ pub async fn post_sale_core(
     crate::api::bank_qr::link_sale(conn, id, &bank_qrs).await?;
     // Баллы: списание оплатой «bonus» (в любом чеке) и начисление с денег по строкам — правило
     // товара → категории → общая ставка, по умолчанию только за замену масла (SPEC-19, ADR-124,
-    // ADR-{B1.2}).
+    // ADR-140).
     let points_lines = prepared
         .iter()
         .enumerate()
@@ -2041,7 +2041,7 @@ pub async fn post_sale_core(
             }
         }
         // «Через сколько менять» из чека — интервал строки у этой машины (SPEC-29 §23); до записи
-        // книжки: по нему же сервер ставит цель, которую кассир не прислал (ADR-{B3.1}).
+        // книжки: по нему же сервер ставит цель, которую кассир не прислал (ADR-144).
         if req.book_intervals.len() > crate::api::oil_book::SLOTS.len() {
             return Err(invalid("интервалов больше, чем строк книжки"));
         }
@@ -2498,7 +2498,7 @@ pub async fn return_sale_core(
         /// Себестоимость строки чека была неизвестна (ADR-062) и сколько в строке было всего.
         cost_unknown: bool,
         orig_qty: i64,
-        /// Сколько из строки вернули раньше — для баллов строки (ADR-{B1.2}).
+        /// Сколько из строки вернули раньше — для баллов строки (ADR-140).
         done_qty: i64,
         /// Сколько из возвращаемых единиц ушли без цены закупки (себестоимость 0).
         unknown_units: i64,
@@ -2866,7 +2866,7 @@ pub async fn return_sale_core(
     .await?;
     for x in &planned {
         if let Some(pid) = x.p.product_id {
-            // После чека единица товара менялась (ADR-{B1.1}): строка возврата — в единицах чека,
+            // После чека единица товара менялась (ADR-139): строка возврата — в единицах чека,
             // на склад — в нынешних.
             let stock_units =
                 crate::api::product_units::units_now(conn, pid, orig.created_at, x.p.units).await?;
@@ -3479,7 +3479,7 @@ async fn list_sales(
 ) -> AppResult<Json<DayOut>> {
     let mut conn = state.pool.acquire().await?;
     // Без права «Чеки прошлых дней» администратору — только сегодняшние чеки: возвраты по ним
-    // работают (задача 003 Н8, ADR-{B7.1}).
+    // работают (задача 003 Н8, ADR-151).
     if let Some(d) = q.date {
         let today =
             sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)

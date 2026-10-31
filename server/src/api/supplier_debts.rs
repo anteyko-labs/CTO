@@ -173,7 +173,7 @@ async fn invoices(
 ) -> AppResult<Json<SupplierInvoices>> {
     let mut conn = state.pool.acquire().await?;
     // Накладные поставщика — раздел «Поставщики» или оплата поставщику (окно оплаты долга),
-    // задача 003 Н8, ADR-{B7.1}.
+    // задача 003 Н8, ADR-151.
     if !crate::auth::has_permission(&mut conn, &user, "view_suppliers").await? {
         crate::auth::require_permission(&mut conn, &user, "receipts").await?;
     }

@@ -143,7 +143,7 @@ async fn create_employee(
     ctx: Ctx,
     Json(req): Json<EmployeeReq>,
 ) -> AppResult<Json<EmployeeOut>> {
-    // Заводить и править сотрудников — по праву «Сотрудники» (задача 003 Н8, ADR-{B7.1}).
+    // Заводить и править сотрудников — по праву «Сотрудники» (задача 003 Н8, ADR-151).
     {
         let mut conn = state.pool.acquire().await?;
         crate::auth::require_permission(&mut conn, &ctx.user, "employees").await?;
@@ -581,7 +581,7 @@ async fn create_service(
     ctx: Ctx,
     Json(req): Json<ServiceReq>,
 ) -> AppResult<Json<ServiceOut>> {
-    // Заводить и править услуги — по праву «Услуги» (задача 003 Н8, ADR-{B7.1}).
+    // Заводить и править услуги — по праву «Услуги» (задача 003 Н8, ADR-151).
     {
         let mut conn = state.pool.acquire().await?;
         crate::auth::require_permission(&mut conn, &ctx.user, "services").await?;
@@ -861,7 +861,7 @@ async fn update_service(
         }
     }
     // Ставку мастера меняет только владелец (решение заказчика, ADR-047), цену — владелец или
-    // администратор с правом «Цены товаров и услуг» (ADR-{B7.1}); форма администратора присылает
+    // администратор с правом «Цены товаров и услуг» (ADR-151); форма администратора присылает
     // их без изменений.
     if !ctx.user.is_owner()
         && (req.master_fee_tyiyn.is_some()
@@ -1507,7 +1507,7 @@ async fn supplier_supplies(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<Vec<SupplyRow>>> {
-    // Раздел «Поставщики» — по праву (задача 003 Н8, ADR-{B7.1}).
+    // Раздел «Поставщики» — по праву (задача 003 Н8, ADR-151).
     let mut conn = state.pool.acquire().await?;
     crate::auth::require_permission(&mut conn, &user, "view_suppliers").await?;
     let rows = sqlx::query!(

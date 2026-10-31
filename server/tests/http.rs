@@ -1247,7 +1247,7 @@ async fn offline_snapshot_has_no_cost(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn new_product_purchase_price_and_cost_in_card(pool: PgPool) {
-    // Цена прихода нового товара и себестоимость в карточке (задача 003, Н7, ADR-{B6.1}):
+    // Цена прихода нового товара и себестоимость в карточке (задача 003, Н7, ADR-150):
     // закупку при заведении вводит и администратор; средняя и стоимость остатка — только владельцу
     // (I13), последний приход — обеим ролям (ADR-040).
     let app = setup(pool.clone()).await;
@@ -4236,7 +4236,7 @@ async fn bot(
 }
 
 /// Слова о выплатах: в кабинете работника их быть не должно (SPEC-23). Кроме строки оклада:
-/// ставка, авансы и «к выплате» по окладу работник видит (задача 003 Н11, ADR-{B9.3}).
+/// ставка, авансы и «к выплате» по окладу работник видит (задача 003 Н11, ADR-156).
 fn no_payout_words(text: &str) {
     let low: String = text
         .to_lowercase()
@@ -11205,7 +11205,7 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                 move || json!({ "plate": format!("01KG{}", &op().simple().to_string()[26..]) }),
             ),
         ),
-        // Разделы (задача 003 Н8, ADR-{B7.1}): отчёт раздела без права — 403.
+        // Разделы (задача 003 Н8, ADR-151): отчёт раздела без права — 403.
         (
             "view_sales",
             "GET",
@@ -11400,7 +11400,7 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn admin_sections_keep_the_till_working(pool: PgPool) {
-    // Задача 003 Н8 (ADR-{B7.1}): без разделов касса работает — сегодняшние чеки, «За день» для
+    // Задача 003 Н8 (ADR-151): без разделов касса работает — сегодняшние чеки, «За день» для
     // выплат мастерам, движения кассы смены, что брал клиент, накладные поставщика при оплате.
     // «За месяц» администратору — только мастера; кассиров — с правом «Заработок кассиров».
     let app = setup(pool.clone()).await;

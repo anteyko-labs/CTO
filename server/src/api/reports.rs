@@ -1437,7 +1437,7 @@ async fn top_products(
 ) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
     // «Продаваемые» — по праву раздела «Остатки и продаваемые»; что брал один клиент (карточка
-    // клиента) — без него (задача 003 Н8, ADR-{B7.1}).
+    // клиента) — без него (задача 003 Н8, ADR-151).
     if q.party_id.is_none() {
         crate::auth::require_permission(&mut conn, &user, "view_stock").await?;
     }

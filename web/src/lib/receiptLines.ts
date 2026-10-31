@@ -13,7 +13,7 @@ export const isOil = (p: Pick<Product, 'unit' | 'container_ml'>): p is Product &
 /** Масло в строке: канистрами (цена за канистру) или литрами (цена за литр). */
 export type QtyMode = 'can' | 'l'
 
-/** Режим цены масла по умолчанию — «Настройки → Склад» (задача 003, Н7, ADR-{B6.1}). */
+/** Режим цены масла по умолчанию — «Настройки → Склад» (задача 003, Н7, ADR-150). */
 export interface OilPriceModes {
   receipt: QtyMode
   stockIn: QtyMode
@@ -69,7 +69,7 @@ export interface LineInput {
  * Расчёт строки прихода (`stockIn = false`) или оприходования (`true`); текст ошибки, если ввод неверен.
  * Масло канистрами: сумма = канистры × цена канистры. Литрами: сумма = divRound(цена за л × мл, 1000);
  * оприходование сервер считает от цены канистры, поэтому и здесь — от неё (одно округление).
- * Канистрами, но вводили цену за литр (`literPrice`, ADR-{B6.1}): в приходе сумма = divRound(цена за л ×
+ * Канистрами, но вводили цену за литр (`literPrice`, ADR-150): в приходе сумма = divRound(цена за л ×
  * мл, 1000) — одно округление, без округлённой цены канистры; в оприходовании — от цены канистры.
  * На вес: кг до 3 знаков, цена за кг, сумма = divRound(цена × г, 1000). `salePrice` — новая цена
  * продажи строки (SPEC-28 §1), за штуку, канистру или кг; пусто — текущая цена товара.
@@ -251,7 +251,7 @@ export function switchMode<L extends PriceFields & { product: Product; count: st
     if (price !== null) priceText = somInput(perCan(price, c))
   }
   // Цену за литр, введённую в канистрах, литры берут как есть; из литров в канистры она остаётся
-  // введённой — сумма строки не сдвигается на тыйын (ADR-{B6.1}).
+  // введённой — сумма строки не сдвигается на тыйын (ADR-150).
   if (to === 'l' && l.literPrice !== undefined && parseSom(l.literPrice) !== null) priceText = l.literPrice
   const base = { price: l.price, salePrice: l.salePrice, markup: l.markup }
   const prices =

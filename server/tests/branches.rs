@@ -993,7 +993,7 @@ async fn shared_price_and_own_branch_price(pool: PgPool) {
     let back = api.get(&uri, &w.owner, Some(w.b)).await;
     assert_eq!(price(&back), (55_000, false));
     assert_eq!(back["shared_sale_price_tyiyn"], 55_000);
-    // Свою цену ставит владелец или администратор с правом «Цены товаров и услуг» (ADR-{B7.1}).
+    // Свою цену ставит владелец или администратор с правом «Цены товаров и услуг» (ADR-151).
     let me_b = api.get("/api/v1/auth/me", &w.admin_b, None).await;
     let without: Vec<&str> = avtodom_server::auth::PERMISSIONS
         .iter()

@@ -227,7 +227,7 @@ test('масляная книжка: замена с пробегом, след�
   await page.goto(`/clients/${party.id}`)
   await expect(page.getByRole('heading', { name: 'Масляная книжка' })).toBeVisible()
   await expect(page.getByText(plate).first()).toBeVisible()
-  // Следующая — в строках книжки; у строки записи — та же цель, что в чеке (ADR-{B3.1}).
+  // Следующая — в строках книжки; у строки записи — та же цель, что в чеке (ADR-144).
   await expect(page.getByTestId('book-slots').getByText(/на 93\s000 км/)).toBeVisible()
   await expect(page.getByText(`Totachi книжка ${RUN} · 1 кан. × 4 л`)).toBeVisible()
   // Интервал машины 10 000 км — следующая замена пересчитывается.

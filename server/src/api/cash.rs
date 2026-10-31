@@ -593,7 +593,7 @@ pub struct ShiftOut {
     pub cashier_name: String,
     #[serde(default)]
     pub cashier_employee_id: Option<Uuid>,
-    /// Что владелец снял у кассира открытой смены (задача 003 Н10, ADR-{B8.1}): касса прячет эти
+    /// Что владелец снял у кассира открытой смены (задача 003 Н10, ADR-152): касса прячет эти
     /// кнопки у администратора; у закрытой смены — пусто.
     #[serde(default)]
     pub cashier_denied: Vec<String>,
@@ -2156,7 +2156,7 @@ async fn account_movements(
 ) -> AppResult<crate::api::paging::Paged<MovementOut>> {
     let mut conn = state.pool.acquire().await?;
     // Без раздела «Счета» администратору — только движения кассы смены (экран «Смена»),
-    // сейфы и счета — по праву (задача 003 Н8, ADR-{B7.1}).
+    // сейфы и счета — по праву (задача 003 Н8, ADR-151).
     if !crate::auth::has_permission(&mut conn, &user, "view_accounts").await? {
         let register = sqlx::query_scalar!(
             r#"select kind = 'register' as "r!" from cash_accounts where id = $1 and branch_id = $2"#,

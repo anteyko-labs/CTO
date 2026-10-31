@@ -99,7 +99,7 @@ export function ProductFormModal({
   const editing = Boolean(product)
   const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId, preset))
   // Цену заведённого товара меняет владелец или администратор с правом «Цены товаров и услуг»
-  // (ADR-032, ADR-{B7.1}); новый товар цену получает при заведении.
+  // (ADR-032, ADR-151); новый товар цену получает при заведении.
   const mayPrice = can(user, 'prices')
   // Цена филиала (SPEC-33 §2): своя — только здесь; без неё — общая для всех филиалов.
   const branchPrices = mayPrice && editing && Boolean(user.several_branches)
@@ -181,7 +181,7 @@ export function ProductFormModal({
   const shownMl = parseLiters(form.container_l)
   const pourShown = isOil && shownSale !== null && shownMl ? canisterPourPrice(shownSale, shownMl) : null
 
-  // Цена прихода нового товара (задача 003, Н7, ADR-{B6.1}): за канистру или за литр; первым
+  // Цена прихода нового товара (задача 003, Н7, ADR-150): за канистру или за литр; первым
   // открывается режим из «Настройки → Склад», из строки накладной — её единица.
   const oilModes = useOilPriceModes().modes
   const [cost, setCost] = useState<PriceEntry>(() => presetCost ?? { text: '', per: 'can' })

@@ -304,7 +304,7 @@ pub async fn reverse_payout_tx(
     let rid = new_id();
     sqlx::query!(
         // Сторно — того же вида, что и выплата: остаток по виду возвращается (ADR-122); и той же
-        // даты в расчёте: месяц и период исходной выплаты сходятся в ноль (ADR-{B9.1}).
+        // даты в расчёте: месяц и период исходной выплаты сходятся в ноль (ADR-154).
         r#"insert into payouts (id, branch_id, number, employee_id, amount_tyiyn, source,
                                 account_id, comment, reversal_of, user_id, device_id, purpose, op_id,
                                 pay_date)
@@ -414,7 +414,7 @@ struct PayoutRow {
     reversed: bool,
     user_name: String,
     created_at: DateTime<Utc>,
-    /// Дата выплаты в расчёте (ADR-{B9.1}); деньги ушли в `created_at`.
+    /// Дата выплаты в расчёте (ADR-154); деньги ушли в `created_at`.
     pay_date: NaiveDate,
 }
 
@@ -1764,7 +1764,7 @@ async fn day(
 ) -> AppResult<Json<Vec<DayRow>>> {
     let mut conn = state.pool.acquire().await?;
     // «Расчёт за день» — раздел «Расчёт» или выплаты мастерам: день нужен и закрытию смены
-    // (задача 003 Н8, ADR-{B7.1}).
+    // (задача 003 Н8, ADR-151).
     if !crate::auth::has_permission(&mut conn, &user, "view_payroll").await? {
         crate::auth::require_permission(&mut conn, &user, "payroll_pay").await?;
     }
@@ -1894,7 +1894,7 @@ async fn month(
     let mut conn = state.pool.acquire().await?;
     crate::auth::require_permission(&mut conn, &user, "view_payroll").await?;
     // Администратору — только мастера, как «За день» (ADR-122); кассиров — с правом
-    // «Заработок кассиров» (задача 003 Н8, ADR-{B7.1}).
+    // «Заработок кассиров» (задача 003 Н8, ADR-151).
     let see_cashiers = crate::auth::has_permission(&mut conn, &user, "payroll_view_all").await?;
     let month = q.month;
     Ok(Json(
@@ -2134,7 +2134,7 @@ async fn post_salary(
     Ok(Json(out))
 }
 
-/// Оклад за расчётный период работника (задача 003 Н11, ADR-{B9.2}).
+/// Оклад за расчётный период работника (задача 003 Н11, ADR-155).
 /// Одна транзакция вызывающего: экран и бот владельца (SPEC-24) проводят одной функцией.
 pub async fn post_salary_tx(
     conn: &mut PgConnection,
@@ -2244,7 +2244,7 @@ pub async fn post_salary_tx(
     Ok(out)
 }
 
-// ---------- Период оклада и «Оклад сейчас» (задача 003 Н11, ADR-{B9.2}) ----------
+// ---------- Период оклада и «Оклад сейчас» (задача 003 Н11, ADR-155) ----------
 
 fn salary_day_u32(day: i16) -> u32 {
     u32::try_from(day).unwrap_or(1)
@@ -2524,7 +2524,7 @@ struct SalaryOut {
 /// Вкладка «Оклад» (задача 003 Н11): по каждому работнику с окладом — период дня `date`
 /// (по умолчанию сегодня). Раздел «Расчёт» — по праву `view_payroll`, как «За месяц»; без права
 /// «Заработок кассиров» администратор видит только тех, кому может платить: мастеров не
-/// кассиров (SPEC-30 §6, ADR-{B7.1}), как в «За день».
+/// кассиров (SPEC-30 §6, ADR-151), как в «За день».
 async fn salary_now(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -3033,7 +3033,7 @@ pub struct PayoutReq {
     pub advance: bool,
     #[serde(default)]
     pub comment: String,
-    /// Дата выплаты в расчёте (задача 003 Н11, ADR-{B9.1}): пусто — сегодня. Другую ставит
+    /// Дата выплаты в расчёте (задача 003 Н11, ADR-154): пусто — сегодня. Другую ставит
     /// только владелец, не позже сегодня и не раньше настройки «Зарплата». Деньги уходят сейчас.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pay_date: Option<NaiveDate>,
@@ -3329,7 +3329,7 @@ pub async fn post_payouts_tx(
             "over_tyiyn": total.saturating_sub(balance.max(0)).max(0),
             "account_id": id,
             "lines": lines,
-            // Дата в расчёте; деньги ушли сегодня (ADR-{B9.1}).
+            // Дата в расчёте; деньги ушли сегодня (ADR-154).
             "pay_date": pay_date,
             "money_date": today,
         }),
@@ -3350,7 +3350,7 @@ pub async fn post_payouts_tx(
     Ok(out)
 }
 
-/// Дата выплаты в расчёте (ADR-{B9.1}): пусто — сегодня; не позже сегодня (422); другую дату
+/// Дата выплаты в расчёте (ADR-154): пусто — сегодня; не позже сегодня (422); другую дату
 /// ставит только владелец (403); не раньше `backdate_days` дней назад (422).
 pub fn check_pay_date(
     asked: Option<NaiveDate>,

@@ -172,7 +172,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const [newProductName, setNewProductName] = useState<string | null>(null)
   // «Новый товар» у строки накладной: цена и единица из неё — в карточку (задача 003, Н7).
   const [newProductCost, setNewProductCost] = useState<PriceEntry | undefined>(undefined)
-  // Режим новой строки масла — «Настройки → Склад» (ADR-{B6.1}); без связи — кан. / л, как было.
+  // Режим новой строки масла — «Настройки → Склад» (ADR-150); без связи — кан. / л, как было.
   const { modes: oilModes, loaded: oilModesLoaded } = useOilPriceModes()
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const labels = useAction()
@@ -376,7 +376,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   // «+ Оприходовать» у товара: экран открывается оприходованием с этим товаром в первой строке.
   const prefill = fix ? null : params.get('product')
   useEffect(() => {
-    // Ждём настройку склада: строка масла открывается в режиме по умолчанию (ADR-{B6.1}).
+    // Ждём настройку склада: строка масла открывается в режиме по умолчанию (ADR-150).
     if (!prefill || !oilModesLoaded) return
     let alive = true
     void get<Product>(`/products/${prefill}`)
@@ -1015,7 +1015,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                       )}
                       {oil && !tare && (
                         // Канистрами — цена за литр видна всегда и вводится: канистра посчитается сама,
-                        // сумма — от литра (задача 003, Н7, ADR-{B6.1}).
+                        // сумма — от литра (задача 003, Н7, ADR-150).
                         <label className="mt-1 flex flex-col gap-1 text-xs text-slate-500" data-testid="liters-per-l">
                           за литр, с
                           <input

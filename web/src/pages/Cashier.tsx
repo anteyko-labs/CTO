@@ -670,7 +670,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // К оплате деньгами или в долг — итог за вычетом баллов и сданного аккумулятора.
   const due = total - bonusAmount - batteryAmt
   // Скидка чека (задача 003 Н3): строки ниже прайса; у администратора — предел из «Настройки → Касса»
-  // (проверяет и сервер, ADR-{B4.2}).
+  // (проверяет и сервер, ADR-147).
   const discLines: DiscountLine[] = lines.map((l) => ({
     key: l.key,
     name: l.product ? productTitle(l.product) : (l.service?.name ?? ''),
@@ -1463,7 +1463,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const tbtn =
     'inline-flex min-h-[56px] items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1 text-center text-base leading-tight font-medium text-slate-800 shadow-sm active:bg-slate-100 disabled:text-slate-400'
   const delivering = delivery !== null
-  // Раскладка режима кассы (задача 003 Н2, ADR-{B4.1}): кнопки по местам из «Настройки → Касса»;
+  // Раскладка режима кассы (задача 003 Н2, ADR-146): кнопки по местам из «Настройки → Касса»;
   // без права у вошедшего кнопки нет нигде (`placed`). Вне режима кассы — прежний вид.
   const at = (place: Place): ButtonId[] => placed(cs, place, user)
   const moreIds = at('more')

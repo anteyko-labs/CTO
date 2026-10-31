@@ -1085,7 +1085,7 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             format!(
                 "начисление {} от оплаченного деньгами{}",
                 percent(num("rate_bp").unwrap_or(0)),
-                // Выключатель «только в чеке с заменой масла» (ADR-{B1.2}); старые записи — без него.
+                // Выключатель «только в чеке с заменой масла» (ADR-140); старые записи — без него.
                 match data.get("oil_change_only").and_then(Value::as_bool) {
                     Some(false) => ", за любые чеки",
                     Some(true) => ", только за замену масла",

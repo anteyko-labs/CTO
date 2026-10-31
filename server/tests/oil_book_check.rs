@@ -485,7 +485,7 @@ async fn top_up_is_not_a_change(pool: PgPool) {
         .await
         .expect("масло двигателя — замена");
     assert!(lines.iter().all(|l| l.0 != "gear_oil"), "{lines:?}");
-    // Цель кассир не прислал — сервер поставил пробег + интервал масла (ADR-{B3.1}).
+    // Цель кассир не прислал — сервер поставил пробег + интервал масла (ADR-144).
     assert_eq!(
         (slot(&lines, "oil").1, &slot(&lines, "oil").2),
         (true, &json!(219_000))
@@ -527,7 +527,7 @@ async fn sold_oil_is_change(pool: PgPool) {
         .sell(130_000, &[("atf", "container", 1)], &["own"], json!([]))
         .await;
     let lines = p.record(&sale).await.expect("запись книжки");
-    // Цель кассир не прислал — сервер записал пробег + интервал коробки (ADR-{B3.1}); то же число
+    // Цель кассир не прислал — сервер записал пробег + интервал коробки (ADR-144); то же число
     // в блоке книжки печатного чека.
     assert_eq!(slot(&lines, "gear_oil").2, json!(170_000), "{lines:?}");
     assert!(lines.iter().any(|l| l.0 == "oil"), "{lines:?}");
@@ -969,7 +969,7 @@ fn slot_next(b: &Value, s: &str) -> Value {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn receipt_book_next_without_cashier_target(pool: PgPool) {
     // Задача 003 Н5: кассир цель не прислал — сервер пишет пробег сейчас + интервал строки, и
-    // печатный чек, книжка клиента и чек книжки показывают одно число (ADR-{B3.1}).
+    // печатный чек, книжка клиента и чек книжки показывают одно число (ADR-144).
     let mut p = Point::new(pool).await;
     point_service(&mut p, "anti", json!({ "name": "Замена антифриза" })).await;
     let sale = p

@@ -1,4 +1,4 @@
-// «Прибыль и убытки» (задача 003 Н12, SPEC-08, ADR-{B10.1}): ответ `GET /reports/profit?detail=1`
+// «Прибыль и убытки» (задача 003 Н12, SPEC-08, ADR-157): ответ `GET /reports/profit?detail=1`
 // → дерево строк для экрана и листы для выгрузки в Excel. Только раскладка: итоги — серверные
 // `totals` (`gross_tyiyn`, `net_tyiyn`), раскрытие каждой строки складывается в её сумму.
 import { shiftDate } from './format'

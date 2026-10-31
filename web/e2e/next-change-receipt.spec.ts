@@ -192,7 +192,7 @@ for (const mode of [
       if (mode.touch) await hit(page.getByRole('button', { name: 'Выйти из режима кассы' }))
       await page.goto(`/clients/${s.party.id}`)
       // Прошлая замена (216 000) пришла без цели кассира: сервер поставил маслу 224 000, фильтр с ним — на
-      // тот же пробег (ADR-117, ADR-{B3.1}).
+      // тот же пробег (ADR-117, ADR-144).
       await expect(page.getByTestId('book-slots').getByRole('row', { name: /Фильтр воздушный/ })).toContainText(/на 224\s000 км/)
     })
 

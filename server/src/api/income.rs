@@ -1049,7 +1049,7 @@ async fn income(
 ) -> AppResult<Json<serde_json::Value>> {
     use crate::api::branches;
     let mut conn = state.pool.acquire().await?;
-    // Раздел «Поступления» — по праву (задача 003 Н8, ADR-{B7.1}).
+    // Раздел «Поступления» — по праву (задача 003 Н8, ADR-151).
     crate::auth::require_permission(&mut conn, &user, "view_income").await?;
     let (from, to) = (q.from, q.to);
     Ok(Json(

@@ -80,7 +80,7 @@ struct CategoryOut {
     book_slot: String,
     book_interval_km: Option<i32>,
     book_interval_days: Option<i32>,
-    /// Баллы товаров категории (ADR-{B1.2}): `inherit` — по общей ставке.
+    /// Баллы товаров категории (ADR-140): `inherit` — по общей ставке.
     points_mode: String,
     points_value: i64,
     /// Строка книжки фильтра — по «Типу» товара; «Тип» выключен — от категории (задача 002 П10).
@@ -384,7 +384,7 @@ struct CategoryPatch {
     name: Option<String>,
     attributes: Option<Vec<AttributeDef>>,
     book: Option<BookReq>,
-    /// Баллы товаров категории (ADR-{B1.2}) — только владелец.
+    /// Баллы товаров категории (ADR-140) — только владелец.
     points: Option<PointsReq>,
     /// «Скрыть категорию» / «Показать» (задача 003 Н10).
     archived: Option<bool>,
@@ -468,7 +468,7 @@ async fn update_category(
         .as_deref()
         .filter(|n| *n != before.name)
         .and_then(|n| book_slot_by_name(&before.kind, n));
-    // Баллы меняет владелец (ADR-{B1.2}); прислали прежнее — не правка.
+    // Баллы меняет владелец (ADR-140); прислали прежнее — не правка.
     let points = req
         .points
         .as_ref()
@@ -574,7 +574,7 @@ pub struct ProductOut {
     pub avg_cost_tyiyn: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stock_value_tyiyn: Option<i64>,
-    /// Баллы товара (ADR-{B1.2}): `inherit` — как в категории.
+    /// Баллы товара (ADR-140): `inherit` — как в категории.
     #[serde(default = "inherit")]
     pub points_mode: String,
     #[serde(default)]
@@ -1239,7 +1239,7 @@ async fn list_products(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
     let mut conn = state.pool.acquire().await?;
-    // Подытоги по категориям — это экран «Остатки»: по праву раздела (задача 003 Н8, ADR-{B7.1}).
+    // Подытоги по категориям — это экран «Остатки»: по праву раздела (задача 003 Н8, ADR-151).
     if f.group_category {
         crate::auth::require_permission(&mut conn, &user, "view_stock").await?;
     }
@@ -1477,7 +1477,7 @@ pub struct CreateProductReq {
     /// Без поля — по виду категории: масло в литрах, остальное в штуках.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// Баллы товара (ADR-{B1.2}) — только владелец.
+    /// Баллы товара (ADR-140) — только владелец.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub points: Option<PointsReq>,
 }
@@ -1593,7 +1593,7 @@ pub async fn create_product_tx(
         }));
     }
     let attrs = clean_attrs(req.attrs, &defs)?;
-    // Баллы товара задаёт владелец (ADR-{B1.2}).
+    // Баллы товара задаёт владелец (ADR-140).
     let points = req.points.as_ref().filter(|p| p.mode != "inherit");
     if let Some(p) = points {
         if !ctx.user.is_owner() {
@@ -1702,7 +1702,7 @@ struct UpdateProductReq {
     category_id: Option<Uuid>,
     attrs: Option<Value>,
     archived: Option<bool>,
-    /// Баллы товара (ADR-{B1.2}) — только владелец.
+    /// Баллы товара (ADR-140) — только владелец.
     points: Option<PointsReq>,
 }
 
@@ -1721,7 +1721,7 @@ async fn update_product(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    // Архив меняет владелец или администратор с правом «Убирать товар в архив» (ADR-{B7.1});
+    // Архив меняет владелец или администратор с правом «Убирать товар в архив» (ADR-151);
     // влитый дубль из архива не возвращается, карточку с остатком в архив не убрать — остаток
     // стал бы невидимым (ADR-044).
     if let Some(arch) = req.archived.filter(|a| *a != cur.archived) {
@@ -1963,7 +1963,7 @@ pub async fn update_prices_tx(
     // Минимальный остаток — правка карточки: право администратора `products` (ADR-097).
     crate::auth::require_permission(&mut *conn, &ctx.user, "products").await?;
     // Цену заведённого товара меняет владелец (ADR-032) или администратор с правом «Цены товаров
-    // и услуг» (задача 003 Н8, ADR-{B7.1}).
+    // и услуг» (задача 003 Н8, ADR-151).
     if req.pour_price_per_l_tyiyn.is_some()
         || req.sale_price_tyiyn.is_some()
         || req.own_price.is_some()

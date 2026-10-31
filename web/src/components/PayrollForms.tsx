@@ -157,7 +157,7 @@ function PayoutLinesForm({
   const shiftOpen = rem.data?.shift_open ?? true
   const from = usePayFrom('', shiftOpen)
   const blocked = !shiftOpen && (Boolean(rem.data?.requires_shift) || !owner)
-  // Дата выплаты в расчёте — только владелец, не позже сегодня и не раньше настройки (ADR-{B9.1}).
+  // Дата выплаты в расчёте — только владелец, не позже сегодня и не раньше настройки (ADR-154).
   const today = rem.data?.today ?? todayBishkek()
   const backDays = rem.data?.backdate_days ?? 0
   const dateField = owner && !noDate && backDays > 0

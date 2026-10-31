@@ -165,7 +165,7 @@ async fn deliveries(
     Query(q): Query<PeriodQuery>,
 ) -> AppResult<Json<DeliveriesOut>> {
     let mut conn = state.pool.acquire().await?;
-    // Раздел «Поставщики» — по праву (задача 003 Н8, ADR-{B7.1}).
+    // Раздел «Поставщики» — по праву (задача 003 Н8, ADR-151).
     crate::auth::require_permission(&mut conn, &user, "view_suppliers").await?;
     Ok(Json(
         deliveries_data(&mut conn, &user, id, q.from, q.to).await?,

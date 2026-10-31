@@ -1,7 +1,7 @@
 /**
  * «Изменить оплату» чека и «Наличные ↔ QR» за смену (SPEC-37, ADR-132, задача 003 Н1). Только при
  * связи с сервером: владелец — всё, администратор с правом «Наличные ↔ QR в открытой смене» — только
- * открытая смена (ADR-{B5.1}). «Что изменится» сервер считает пробным проведением.
+ * открытая смена (ADR-149). «Что изменится» сервер считает пробным проведением.
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -143,7 +143,7 @@ export function PayChangeModal({ saleId, onClose, onSaved }: { saleId: string; o
 }
 
 function PayChangeForm({ info, onClose, onSaved }: { info: PayChangeInfo; onClose: () => void; onSaved: (newId: string) => void }) {
-  // Администратору (ADR-{B5.1}) — только «Наличные» и «Карта / QR банка» без привязки QR.
+  // Администратору (ADR-149) — только «Наличные» и «Карта / QR банка» без привязки QR.
   const owner = useAuth().user?.role === 'owner'
   const [form, setForm] = useState<PayForm>(() => initialForm(info))
   const [party, setParty] = useState<PartyBrief | null>(info.party)
@@ -657,7 +657,7 @@ function SwapModal({
 
 /**
  * Переносы смены: когда, кто, куда, сумма, комиссия, причина, «Отменить». Владелец отменяет любой;
- * администратор с правом — только свой, пока смена открыта (ADR-{B5.1}).
+ * администратор с правом — только свой, пока смена открыта (ADR-149).
  */
 export function TransfersList({ items, open, onChanged }: { items: TransferRow[]; open: boolean; onChanged: () => void }) {
   const { user } = useAuth()

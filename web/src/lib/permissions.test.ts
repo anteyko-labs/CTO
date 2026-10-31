@@ -9,7 +9,7 @@ describe('права администратора', () => {
     expect(can({ role: 'admin', permissions: ['oil_transfer'] }, 'expenses')).toBe(false)
   })
 
-  it('по умолчанию — всё, кроме скидки, перелива, аванса, старых долгов, «Наличные ↔ QR», цен, архива и заработка кассиров (SPEC-30 §5, задача 003 Н1 и Н8, ADR-{B5.1})', () => {
+  it('по умолчанию — всё, кроме скидки, перелива, аванса, старых долгов, «Наличные ↔ QR», цен, архива и заработка кассиров (SPEC-30 §5, задача 003 Н1 и Н8, ADR-149)', () => {
     expect(PERMISSIONS).toHaveLength(33)
     expect(new Set(PERMISSIONS.map((p) => p.key)).size).toBe(33)
     expect(DEFAULT_PERMISSIONS).toHaveLength(25)
