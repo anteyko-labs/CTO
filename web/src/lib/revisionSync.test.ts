@@ -9,6 +9,7 @@ import {
   inputKey,
   LostOps,
   mergeLines,
+  createCounted,
   OwnWrites,
   patchIfNewer,
   qtyInUnits,
@@ -203,5 +204,48 @@ describe('ключ ввода поля', () => {
     expect(ops.take('p', inputKey('add', 20))).toBe(fromAsk)
     expect(inputKey('set', null)).toBe('set|')
     expect(inputKey('add', 20)).not.toBe(inputKey('set', 20))
+  })
+})
+
+describe('«Завести» товар не из программы', () => {
+  const noAnswer = (e: unknown) => e instanceof Error && e.message === 'нет связи'
+  it('прошлое нажатие завело карточку, исправление итога оборвалось — следующее «Завести» несёт те же нажатия, второй товар не заводится', async () => {
+    let n = 0
+    const ops = new InputOps(() => `op-${++n}`)
+    const lost = new LostOps()
+    const sent: { opId: string; prev: string[] }[] = []
+    let created = false
+    // Сервер: известное нажатие или прошлое из prev_op_ids — ответ «earlier», иначе — новая карточка.
+    const known = new Set<string>()
+    const send = async (opId: string, prev: string[]) => {
+      sent.push({ opId, prev })
+      if (opId === 'op-1') {
+        created = true
+        known.add(opId)
+        throw new Error('нет связи')
+      }
+      if (prev.some((x) => known.has(x)) || known.has(opId)) return { earlier: true, counted: 5 }
+      if (created) throw new Error('второй товар')
+      return { earlier: false, counted: 0 }
+    }
+    const earlierOf = (r: { earlier: boolean; counted: number }) => (r.earlier ? { productId: 'p', counted: r.counted } : null)
+    let fixFails = true
+    const fixes: string[] = []
+    const fix = async (_p: string, _expected: number, opId: string) => {
+      fixes.push(opId)
+      if (fixFails) throw new Error('нет связи')
+    }
+    const press = (count: number) => createCounted({ ops, lost, key: `body|${count}`, count, send, earlierOf, fix, noAnswer })
+    await expect(press(5)).rejects.toThrow('нет связи')
+    await expect(press(6)).rejects.toThrow('нет связи')
+    fixFails = false
+    await expect(press(6)).resolves.toEqual({ earlier: true, counted: 5 })
+    expect(sent.map((s) => s.prev)).toEqual([[], ['op-1'], ['op-1']])
+    expect(sent[2].opId).toBe(sent[1].opId)
+    // Исправление итога — тем же op_id: дошло без ответа — второй раз не запишется.
+    expect(fixes[1]).toBe(fixes[0])
+    // Записано — следующее такое же нажатие уже новое.
+    fixFails = true
+    expect(ops.take('new', 'body|6')).not.toBe(sent[2].opId)
   })
 })

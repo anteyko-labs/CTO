@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ApiError, get, newOpId, noServerAnswer, post, put } from '../lib/api'
 import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
-import { InputOps, LostOps, qtyInUnits, type ShelfInput } from '../lib/revisionCount'
+import { createCounted, InputOps, LostOps, qtyInUnits, type ShelfInput } from '../lib/revisionCount'
 import { useUser } from '../lib/auth'
 import { canisterPourPrice } from '../lib/money'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
@@ -192,40 +192,40 @@ export function RevisionNewProduct({
         initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
         ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
       }
-      const opId = ops.take('new', JSON.stringify(body))
       let r: Awaited<ReturnType<typeof createOrTaken<NewProductOut>>>
+      // Карточку завело прошлое нажатие (его ответ не дошёл) с прежним найденным; найденное
+      // исправили — записываем исправленный итог, сверяясь с записанным тогда.
+      let fixed: Product | null = null
       try {
-        r = await createOrTaken(form.barcode.trim(), () =>
-          retrySame(() =>
-            post<NewProductOut>(`/revisions/${revisionId}/new-product`, { ...body, op_id: opId, prev_op_ids: lost.before(opId) }),
-          ),
-        )
+        r = await createCounted({
+          ops,
+          lost,
+          key: JSON.stringify(body),
+          count,
+          send: (opId, prev) =>
+            createOrTaken(form.barcode.trim(), () =>
+              retrySame(() => post<NewProductOut>(`/revisions/${revisionId}/new-product`, { ...body, op_id: opId, prev_op_ids: prev })),
+            ),
+          earlierOf: (x) => {
+            if (x.taken || !x.created.earlier) return null
+            fixed = x.created.product
+            return { productId: x.created.product.id, counted: x.created.counted_qty }
+          },
+          fix: (productId, expected, opId) =>
+            retrySame(() =>
+              put(`/revisions/${revisionId}/lines`, { product_id: productId, counted_qty: count, mode: 'set', expected_qty: expected, op_id: opId }),
+            ),
+          noAnswer: noServerAnswer,
+        })
       } catch (e) {
-        // Ответа нет — записалось ли, неизвестно: следующее нажатие несёт это с собой.
-        if (noServerAnswer(e)) lost.lost(opId)
-        throw e
+        if (!(fixed && e instanceof ApiError && e.code === 'count_changed')) throw e
+        const p: Product = fixed
+        toast(`«${p.name}» уже заведён прошлым нажатием, строку с тех пор считали другие — впишите найденное в строке`)
+        onExisting(p)
+        return
       }
-      ops.done('new', opId)
-      lost.clear()
       if (!r.taken && r.created.earlier) {
-        // Карточку завело прошлое нажатие (его ответ не дошёл) с прежним найденным; найденное
-        // исправили — записываем исправленный итог, сверяясь с записанным тогда.
-        const p = r.created.product
-        if (r.created.counted_qty !== count) {
-          const fix = ops.take('fix', `${p.id}|${count}`)
-          try {
-            await retrySame(() =>
-              put(`/revisions/${revisionId}/lines`, { product_id: p.id, counted_qty: count, mode: 'set', expected_qty: r.created.counted_qty, op_id: fix }),
-            )
-          } catch (e) {
-            if (!(e instanceof ApiError && e.code === 'count_changed')) throw e
-            toast(`«${p.name}» уже заведён прошлым нажатием, строку с тех пор считали другие — впишите найденное в строке`)
-            onExisting(p)
-            return
-          }
-          ops.done('fix', fix)
-        }
-        toast(`Заведён прошлым нажатием (ответ не дошёл): ${p.name} — посчитано ${countText(p, count)}`)
+        toast(`Заведён прошлым нажатием (ответ не дошёл): ${r.created.product.name} — посчитано ${countText(r.created.product, count)}`)
         onDone()
         return
       }

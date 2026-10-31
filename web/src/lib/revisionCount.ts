@@ -182,6 +182,45 @@ export class LostOps {
   }
 }
 
+/**
+ * «Завести» товар не из программы с найденным (задача 003, Н14). Карточку завело прошлое нажатие
+ * (`earlierOf` — его товар и записанное тогда найденное), а найденное с тех пор исправили —
+ * исправляем итог. Нажатие записано только после исправления: обрыв на нём — следующее «Завести»
+ * уходит с тем же op_id и прошлыми нажатиями, сервер снова ответит «earlier», а не заведёт товар
+ * второй раз.
+ */
+export async function createCounted<R>(a: {
+  ops: InputOps
+  lost: LostOps
+  /** Ввод формы: тот же — тот же op_id. */
+  key: string
+  count: number
+  send: (opId: string, prev: string[]) => Promise<R>
+  earlierOf: (r: R) => { productId: string; counted: number } | null
+  /** Записать итог `count` строки товара, сверяясь с `expected`; ошибка — пробрасывается. */
+  fix: (productId: string, expected: number, opId: string) => Promise<unknown>
+  noAnswer: (e: unknown) => boolean
+}): Promise<R> {
+  const opId = a.ops.take('new', a.key)
+  let r: R
+  try {
+    r = await a.send(opId, a.lost.before(opId))
+  } catch (e) {
+    // Ответа нет — записалось ли, неизвестно: следующее нажатие несёт это с собой.
+    if (a.noAnswer(e)) a.lost.lost(opId)
+    throw e
+  }
+  const earlier = a.earlierOf(r)
+  if (earlier && earlier.counted !== a.count) {
+    const fix = a.ops.take('fix', `${earlier.productId}|${a.count}`)
+    await a.fix(earlier.productId, earlier.counted, fix)
+    a.ops.done('fix', fix)
+  }
+  a.ops.done('new', opId)
+  a.lost.clear()
+  return r
+}
+
 interface VersionedLine {
   product_id: string
   /** Номер последней записи строки на сервере; без него (старый сервер) — показываем как есть. */
