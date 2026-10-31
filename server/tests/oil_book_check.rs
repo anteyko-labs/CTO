@@ -1162,3 +1162,49 @@ async fn filter_type_switched_off_gives_category_slot(pool: PgPool) {
     assert!(rec.iter().any(|l| l.0 == "oil_filter"), "{rec:?}");
     assert!(rec.iter().all(|l| l.0 != "air_filter"), "{rec:?}");
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn server_target_follows_interval_changed_later(pool: PgPool) {
+    // Цель, которую поставил сервер, — расчёт по интервалу: владелец поменял интервал машины после
+    // чека — книжка пересчитывается; фильтр с маслом — на интервал масла, свой интервал фильтра —
+    // по нему. Печатный чек остаётся, каким был (I4).
+    let p = Point::new(pool.clone()).await;
+    let sale = p
+        .sell(
+            130_000,
+            &[("oil", "container", 1), ("air_f", "piece", 1)],
+            &["oil"],
+            json!([]),
+        )
+        .await;
+    let b = p.book().await;
+    assert_eq!(slot_next(&b, "oil"), json!(138_000));
+    assert_eq!(slot_next(&b, "air_filter"), json!(138_000));
+    for (slot, km) in [("oil", 10_000), ("air_filter", 12_000)] {
+        sqlx::query(
+            "insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days)
+             select id, branch_id, $2, $3, 90 from party_vehicles where id = $1",
+        )
+        .bind(Uuid::parse_str(p.vehicle["id"].as_str().unwrap()).unwrap())
+        .bind(slot)
+        .bind(km)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let b = p.book().await;
+    assert_eq!(slot_next(&b, "oil"), json!(140_000));
+    assert_eq!(slot_next(&b, "air_filter"), json!(142_000));
+    let (_, again) = call(
+        &p.app,
+        "GET",
+        &format!("/api/v1/sales/{}", sale["id"].as_str().unwrap()),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(
+        next_of(&again["book"]),
+        vec![("oil".to_string(), json!(138_000))]
+    );
+}

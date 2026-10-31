@@ -664,6 +664,23 @@ pub async fn record_from_sale(
         .cloned()
     {
         for l in lines.iter_mut().filter(|l| follows_oil(&l.slot)) {
+            // Цель масла поставил сервер, а у машины свой интервал этого фильтра — фильтр по нему:
+            // свой интервал машины точнее (как в книжке, `fill_auto_follow`).
+            if oil.target_auto
+                && let (Some(o), Some(now)) = (own.iter().find(|o| o.slot == l.slot), &mileage)
+            {
+                let value = crate::domain::mileage::from_km(o.interval_km, &now.unit)
+                    .and_then(|add| now.value.checked_add(add));
+                l.target_set = true;
+                l.target_auto = true;
+                l.next_mileage = value;
+                l.next_unit = value.map(|_| now.unit.clone());
+                l.next_km = value.and_then(|v| crate::domain::mileage::to_km(v, &now.unit));
+                l.next_date = change_date.checked_add_days(chrono::Days::new(
+                    u64::try_from(o.interval_days).unwrap_or(0),
+                ));
+                continue;
+            }
             l.target_set = true;
             l.target_auto = oil.target_auto;
             l.next_mileage = oil.next_mileage;
@@ -1162,7 +1179,7 @@ pub async fn books_with_removed(
     let record_ids: Vec<Uuid> = records.iter().map(|r| r.id).collect();
     let items = sqlx::query!(
         r#"select i.oil_change_id, i.slot, i.text, i.category_id, i.service_id, s.name as "service?",
-                  i.target_set, i.next_value, i.next_unit, i.next_km, i.next_date
+                  i.target_set, i.target_auto, i.next_value, i.next_unit, i.next_km, i.next_date
            from oil_change_items i left join services s on s.id = i.service_id
            where i.oil_change_id = any($1) order by i.oil_change_id, i.position"#,
         &record_ids
@@ -1178,7 +1195,7 @@ pub async fn books_with_removed(
             service_id: i.service_id,
             service: i.service,
             target_set: i.target_set,
-            target_auto: false,
+            target_auto: i.target_auto,
             next_mileage: i.next_value,
             next_unit: i.next_unit,
             next_km: i.next_km,
@@ -1255,6 +1272,7 @@ pub async fn books_with_removed(
             })
             .filter(|n| n.slot == "oil" || n.last_date.is_some() || n.own_interval)
             .collect();
+        fill_auto_follow(&mut slots, &recs, &v.mileage_unit);
         // «Прочее» по услугам (ADR-131): у каждой услуги — своя следующая замена с её названием,
         // свежие сверху.
         let mut other: Vec<Uuid> = Vec::new();
@@ -1547,7 +1565,12 @@ fn slot_next(
         _ => slot_label(slot).to_string(),
     };
     let in_unit = |k: Option<i32>| k.and_then(|k| crate::domain::mileage::from_km(k, unit));
-    let target = last.as_ref().map(|(_, l)| l).filter(|l| l.target_set);
+    // Цель, которую поставил сервер (ADR-{B3.1}), — тот же расчёт по интервалу: владелец поменял
+    // интервал машины или категории — следующая замена пересчитывается, как без цели.
+    let target = last
+        .as_ref()
+        .map(|(_, l)| l)
+        .filter(|l| l.target_set && !l.target_auto);
     let (next_km, next_date, next_mileage) = match target {
         // Цель кассира: пробег как вписали (в той же единице), дата — по интервалу в днях.
         Some(l) => (
@@ -1585,6 +1608,46 @@ fn slot_next(
         last_text: last.map(|(_, l)| l.text),
         next_km,
         next_date,
+    }
+}
+
+/// Масляный, воздушный и салонный фильтр, поставленный с заменой масла по серверной цели
+/// (ADR-117, ADR-{B3.1}), — на интервал масла от своей замены; свой интервал машины у фильтра —
+/// по нему (`slot_next` уже посчитал).
+fn fill_auto_follow(slots: &mut [SlotNext], recs: &[OilRecord], unit: &str) {
+    let Some(oil) = slots
+        .iter()
+        .find(|n| n.slot == "oil" && n.service_id.is_none())
+        .map(|n| (n.interval_km, n.interval_days))
+    else {
+        return;
+    };
+    for n in slots
+        .iter_mut()
+        .filter(|n| follows_oil(&n.slot) && !n.own_interval)
+    {
+        let auto = recs.iter().find_map(|r| {
+            let mine = || r.lines.iter().filter(|l| l.slot == n.slot);
+            mine()
+                .find(|l| l.target_set)
+                .or_else(|| mine().next())
+                .map(|l| l.target_set && l.target_auto)
+        });
+        if auto != Some(true) {
+            continue;
+        }
+        let (Some(km), Some(days)) = oil else {
+            continue;
+        };
+        n.interval_km = Some(km);
+        n.interval_days = Some(days);
+        n.next_km = n.last_km.map(|m| m.saturating_add(km));
+        n.next_date = n
+            .last_date
+            .and_then(|d| d.checked_add_days(chrono::Days::new(u64::try_from(days).unwrap_or(31))));
+        n.next_mileage = n
+            .next_km
+            .and_then(|k| crate::domain::mileage::from_km(k, unit));
     }
 }
 
