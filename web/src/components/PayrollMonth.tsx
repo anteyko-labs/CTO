@@ -10,6 +10,8 @@ import { useCan } from '../lib/permissions'
 import { accrualDate, lastPayout, type MonthPayout } from '../lib/payrollMonth'
 import { isCalendar, payoutDate, periodLabel } from '../lib/payrollPeriod'
 import { FixDraft } from './FixDraft'
+import { ExportButton } from './ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { PayrollEntries } from './PayrollEntries'
 import { ExtraForm, PayoutForm, SalaryForm, type PayoutDoc } from './PayrollForms'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Modal, Money, RowMenu, Table } from './ui'
@@ -131,6 +133,33 @@ export function PayrollMonth() {
         <Button variant="secondary" disabled={month >= current} onClick={() => setMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">
           →
         </Button>
+        {/* Все сотрудники месяца с итогом (задача 003 Н13). */}
+        <ExportButton
+          file={`Расчёт ${MONTHS[m - 1]} ${y}`}
+          disabled={rows.length === 0}
+          sheets={() => [
+            listSheet(`Расчёт сотрудников: ${MONTHS[m - 1]} ${y}`, MONTH_COLS, rows, {
+              sheet: 'За месяц',
+              filter: [all && 'все филиалы'],
+              total: [
+                'Итого',
+                null,
+                xl.money(total('opening_tyiyn')),
+                xl.money(total('salary_tyiyn')),
+                null,
+                xl.money(total('percent_tyiyn')),
+                xl.money(total('service_fee_tyiyn')),
+                xl.money(total('shift_fee_tyiyn')),
+                xl.money(total('bonus_tyiyn')),
+                xl.money(total('penalty_tyiyn') + total('shortage_tyiyn')),
+                xl.money(total('accrued_tyiyn')),
+                xl.money(total('paid_tyiyn') - advances),
+                xl.money(advances),
+                xl.money(total('closing_tyiyn')),
+              ],
+            }),
+          ]}
+        />
         <div className="text-xs text-slate-500">
           «На конец» — сколько ещё должны сотруднику; с минусом — выдано больше заработанного.
           {/* Кассиров администратор видит с правом «Заработок кассиров» (задача 003 Н8, ADR-122). */}
@@ -302,3 +331,25 @@ export function PayrollMonth() {
     </div>
   )
 }
+
+/** Столбцы выгрузки «За месяц» — как в таблице; неначисленный оклад — отдельным столбцом. */
+const MONTH_COLS: ExportCol<MonthRow>[] = [
+  { label: 'Сотрудник', value: (r) => r.full_name },
+  { label: 'Кто', value: (r) => [r.is_cashier && 'кассир', r.is_master && 'мастер'].filter(Boolean).join(', ') },
+  { label: 'На начало', value: (r) => xl.money(r.opening_tyiyn) },
+  { label: 'Оклад', value: (r) => (r.salary_done ? xl.money(r.salary_tyiyn) : null) },
+  {
+    label: 'Оклад не начислен',
+    value: (r) => (!r.salary_done && r.salary_rule_tyiyn ? xl.money(r.salary_rule_tyiyn) : null),
+  },
+  { label: '% с прибыли', value: (r) => xl.money(r.percent_tyiyn) },
+  { label: 'Мастеру', value: (r) => xl.money(r.service_fee_tyiyn) },
+  { label: 'За смену', value: (r) => xl.money(r.shift_fee_tyiyn) },
+  { label: 'Бонус', value: (r) => xl.money(r.bonus_tyiyn) },
+  { label: 'Удержано', value: (r) => xl.money(r.penalty_tyiyn + r.shortage_tyiyn) },
+  { label: 'Начислено', value: (r) => xl.money(r.accrued_tyiyn) },
+  { label: 'Выплачено', value: (r) => xl.money(r.paid_tyiyn - (r.advance_tyiyn ?? 0)) },
+  { label: 'Аванс', value: (r) => xl.money(r.advance_tyiyn ?? 0) },
+  { label: 'На конец', value: (r) => xl.money(r.closing_tyiyn) },
+  { label: 'Период оклада', value: (r) => (r.salary_from && r.salary_to && !isCalendar(r.salary_from, r.salary_to) ? periodLabel(r.salary_from, r.salary_to) : '') },
+]

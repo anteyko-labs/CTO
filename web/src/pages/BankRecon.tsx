@@ -3,11 +3,13 @@
 // выбранные дни (не больше 14). Только владелец; считает сервер.
 import { Link } from 'react-router-dom'
 import { PeriodPicker } from '../components/PeriodPicker'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, periodText, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, Notice, PageHeader, Table, toast } from '../components/ui'
 import { get, post, qs } from '../lib/api'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useAction, useLoad, useRangeParam } from '../lib/hooks'
-import { periodDays, RECON_KIND, type ReconOut } from '../lib/optima'
+import { periodDays, RECON_KIND, type ReconBankItem, type ReconDay, type ReconOurItem, type ReconOut } from '../lib/optima'
 
 export default function BankRecon() {
   const [range, today, setRange] = useRangeParam()
@@ -25,6 +27,23 @@ export default function BankRecon() {
           <Link to="/bank" className="text-sm text-sky-700 hover:underline">
             ← Безнал (банк)
           </Link>
+        }
+        actions={
+          // Три таблицы сверки — листами одного файла (задача 003 Н13).
+          <ExportButton
+            file="Сверка с банком"
+            period={periodText(range.from, range.to)}
+            disabled={!data}
+            sheets={() => {
+              if (!data) return []
+              const filter = [`период ${periodText(range.from, range.to)}`, data.account_name && `счёт «${data.account_name}»`]
+              return [
+                listSheet('Сверка с банком по дням', DAY_COLS, data.days, { sheet: 'По дням', filter }),
+                listSheet('В учёте, нет в банке', OURS_COLS, data.ours_unmatched, { sheet: 'Нет в банке', filter }),
+                listSheet('В банке, нет в учёте', BANK_COLS, data.bank_unmatched, { sheet: 'Нет в учёте', filter }),
+              ]
+            }}
+          />
         }
       />
       <PeriodPicker value={range} today={today} onChange={setRange} />
@@ -155,3 +174,33 @@ export default function BankRecon() {
     </div>
   )
 }
+
+const DAY_COLS: ExportCol<ReconDay>[] = [
+  { label: 'День', value: (d) => xl.date(d.date) },
+  { label: 'У нас, оплат', value: (d) => xl.int(d.ours_count) },
+  { label: 'У нас, сумма', value: (d) => xl.money(d.ours_tyiyn) },
+  { label: 'В банке, оплат', value: (d) => (d.loaded ? xl.int(d.bank_count) : null) },
+  { label: 'В банке, сумма', value: (d) => (d.loaded ? xl.money(d.bank_tyiyn) : null) },
+  { label: 'Расхождение', value: (d) => (d.loaded ? xl.money(d.diff_tyiyn) : null) },
+  { label: 'Комиссия банка', value: (d) => (d.loaded ? xl.money(d.bank_fee_tyiyn) : null) },
+  { label: 'Учтено', value: (d) => xl.money(d.our_fee_tyiyn) },
+  { label: 'Поправка', value: (d) => xl.money(d.adjusted_tyiyn) },
+  { label: 'Итог', value: (d) => (!d.loaded ? 'выписки нет' : d.unmatched > 0 ? `не совпало: ${d.unmatched}` : d.ours_count + d.bank_count > 0 ? 'сошлось' : '') },
+]
+
+const OURS_COLS: ExportCol<ReconOurItem>[] = [
+  { label: 'Когда', value: (o) => xl.dateTime(o.at) },
+  { label: 'Чек', value: (o) => (o.sale_number != null ? xl.int(o.sale_number) : null) },
+  { label: 'Что', value: (o) => RECON_KIND[o.kind] },
+  { label: 'Сумма', value: (o) => xl.money(o.amount_tyiyn) },
+]
+
+const BANK_COLS: ExportCol<ReconBankItem>[] = [
+  { label: 'Когда', value: (b) => xl.dateTime(b.at) },
+  { label: 'Что', value: (b) => RECON_KIND[b.kind] },
+  { label: 'Реквизит', value: (b) => b.requisite ?? '' },
+  { label: 'Код', value: (b) => b.auth_code ?? '' },
+  { label: 'RRN', value: (b) => b.rrn ?? '' },
+  { label: 'Комиссия', value: (b) => xl.money(b.fee_tyiyn) },
+  { label: 'Сумма', value: (b) => xl.money(b.amount_tyiyn) },
+]

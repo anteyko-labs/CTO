@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { CorrectionBadges, FixButton } from '../components/Correction'
 import { FIX_SUBMIT, FixBanner, FixDraft, type FixMode } from '../components/FixDraft'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { colsIf, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Missing, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
@@ -357,7 +359,15 @@ export default function OilTransfer() {
       )}
 
       <Card>
-        <h2 className="mb-3 font-semibold">История переливов</h2>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-semibold">История переливов</h2>
+          {/* Вся история; стоимость — только владельцу, как в таблице (задача 003 Н13, I13). */}
+          <ExportButton
+            file="Переливы"
+            disabled={(history.data ?? []).length === 0}
+            sheets={() => [listSheet('История переливов', transferCols(owner), history.data ?? [], { sheet: 'Переливы' })]}
+          />
+        </div>
         <ErrorBox error={history.error} />
         {(history.data ?? []).length === 0 ? (
           <Empty>Переливов ещё не было</Empty>
@@ -436,4 +446,19 @@ export default function OilTransfer() {
       )}
     </div>
   )
+}
+
+/** История переливов: литры числом; стоимость — только владельцу; отмена — отдельным столбцом. */
+function transferCols(owner: boolean): ExportCol<TransferRow>[] {
+  return [
+    { label: '№', value: (t) => xl.int(t.number) },
+    { label: 'Когда', value: (t) => xl.dateTime(t.created_at) },
+    { label: 'Откуда', value: (t) => t.from_name },
+    { label: 'Куда', value: (t) => t.to_name },
+    { label: 'Сколько, л', value: (t) => xl.liters(t.qty_ml) },
+    ...colsIf<TransferRow>(owner, [{ label: 'Стоимость', value: (t) => xl.money(t.value_tyiyn ?? 0) }]),
+    { label: 'Комментарий', value: (t) => t.comment },
+    { label: 'Кто', value: (t) => t.user_name },
+    { label: 'Отметка', value: (t) => (t.reversed ? 'отменён' : '') },
+  ]
 }

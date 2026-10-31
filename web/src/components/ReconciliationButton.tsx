@@ -7,6 +7,8 @@ import { ACT_PERIODS, actDocLink, actLines, actPeriod, actVerdict, printReconcil
 import { formatSom, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
+import { reconciliationSheet } from '../lib/exportCols'
+import { downloadXlsx, fileName } from '../lib/exportTable'
 import { Button, ErrorBox, Field, Loading, Modal, Table } from './ui'
 
 const dateRu = (iso: string) => {
@@ -14,7 +16,7 @@ const dateRu = (iso: string) => {
   return `${d}.${m}.${y}`
 }
 
-/** Окно акта: открывается кнопкой или из меню «⋯». `onDownload` — выгрузка акта файлом, если она есть. */
+/** Окно акта: открывается кнопкой или из меню «⋯». «Скачать» — акт в .xlsx (задача 003 Н9, Н13); `onDownload` заменяет выгрузку. */
 export function ReconciliationModal({
   partyId,
   onClose,
@@ -46,6 +48,8 @@ export function ReconciliationModal({
   const seller = settings.data?.seller
   const us = seller?.name ?? ''
   const lines = a ? actLines(a) : []
+  // Тот же акт, что на экране и в печати: строки `actLines`, деньги — числами из тыйынов (I1).
+  const download = onDownload ?? ((x: Reconciliation) => downloadXlsx(fileName(`Акт сверки ${x.name}`, `${dateRu(x.from)}–${dateRu(x.to)}`), [reconciliationSheet(x, us)]))
 
   return (
     <Modal title="Акт сверки взаимных расчётов" onClose={onClose} wide>
@@ -116,11 +120,9 @@ export function ReconciliationModal({
           <Button variant="secondary" onClick={onClose}>
             Закрыть
           </Button>
-          {onDownload && (
-            <Button variant="secondary" disabled={!a} onClick={() => a && onDownload(a)}>
-              Скачать
-            </Button>
-          )}
+          <Button variant="secondary" disabled={!a} data-testid="act-download" onClick={() => a && download(a)}>
+            Скачать
+          </Button>
           <Button disabled={!a || !seller} onClick={() => a && seller && printReconciliation(a, seller)}>
             Печать
           </Button>

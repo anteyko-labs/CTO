@@ -12,6 +12,8 @@ import { Pager, usePager } from './Pager'
 import { ExtraForm, PayoutForm, SalaryForm, type ExtraDoc, type PayoutDoc, type SalaryDoc } from './PayrollForms'
 import { Button, Empty, ErrorBox, Field, Loading, Modal, Money, toast } from './ui'
 import { PURPOSE_LABELS } from '../lib/payouts'
+import { ExportButton } from './ExportButton'
+import { listSheet, periodText, xl, type ExportCol } from '../lib/exportTable'
 
 interface AccrualRow {
   id: string
@@ -118,6 +120,21 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
   return (
     <Modal title={`${employee.full_name}: начисления и выплаты`} onClose={done} wide>
       <div className="flex flex-col gap-4 text-sm">
+        <div className="flex justify-end">
+          {/* Начисления и выплаты сотрудника за период — двумя листами (задача 003 Н13). */}
+          <ExportButton
+            file={`${employee.full_name} начисления и выплаты`}
+            period={periodText(from, to)}
+            disabled={!data.data}
+            sheets={() => {
+              const f = [`период ${periodText(from, to)}`]
+              return [
+                listSheet(`${employee.full_name}: начисления`, ACCRUAL_COLS, accruals, { sheet: 'Начисления', filter: f }),
+                listSheet(`${employee.full_name}: выплаты`, PAYOUT_COLS, payouts, { sheet: 'Выплаты', filter: f }),
+              ]
+            }}
+          />
+        </div>
         <div className="text-slate-500">
           {from === to ? formatDate(from) : `${formatDate(from)} — ${formatDate(to)}`}. Процент и замены из чеков снимаются возвратом чека, здесь
           их нет. Отмена — новая запись с минусом, исходная остаётся зачёркнутой.
@@ -275,3 +292,28 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
     </Modal>
   )
 }
+
+/** Отметка сторно — отдельным столбцом (зачёркивание в файле не видно). */
+const mark = (r: { reversal_of: string | null; reversed: boolean }) => (r.reversal_of ? 'сторно' : r.reversed ? 'отменено' : '')
+
+const ACCRUAL_COLS: ExportCol<AccrualRow>[] = [
+  { label: 'День', value: (a) => xl.date(a.business_date) },
+  { label: 'Вид', value: (a) => KIND_LABELS[a.kind] ?? a.kind },
+  { label: 'Сумма', value: (a) => xl.money(a.amount_tyiyn) },
+  { label: 'Комментарий', value: (a) => a.comment },
+  { label: 'Кто', value: (a) => a.user_name },
+  { label: 'Когда записано', value: (a) => xl.dateTime(a.created_at) },
+  { label: 'Отметка', value: mark },
+]
+
+const PAYOUT_COLS: ExportCol<PayoutRow>[] = [
+  { label: '№', value: (p) => xl.int(p.number) },
+  { label: 'Когда', value: (p) => xl.dateTime(p.created_at) },
+  { label: 'В расчёте за', value: (p) => xl.date(p.pay_date ?? bishkekDate(p.created_at)) },
+  { label: 'Сумма', value: (p) => xl.money(p.amount_tyiyn) },
+  { label: 'За что', value: (p) => PURPOSE_LABELS[p.purpose ?? 'general'] ?? p.purpose ?? '' },
+  { label: 'Откуда', value: (p) => p.account_name ?? 'мимо касс' },
+  { label: 'Комментарий', value: (p) => p.comment },
+  { label: 'Кто', value: (p) => p.user_name },
+  { label: 'Отметка', value: mark },
+]

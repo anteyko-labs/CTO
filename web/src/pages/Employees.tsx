@@ -6,6 +6,8 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { CashierRights } from '../components/CashierRights'
 import { Icon } from '../components/icons'
+import { ExportButton } from '../components/ExportButton'
+import { colsIf, listSheet, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { del, get, newOpId, patch, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -389,11 +391,19 @@ export default function Employees() {
           )
         }
         actions={
-          mayEdit && (
-            <Button onClick={() => setAdding(true)}>
-              <Icon name="plus" /> Добавить
-            </Button>
-          )
+          <>
+            {/* Все сотрудники отбора; телефон — только владельцу, как отдаёт сервер (задача 003 Н13). */}
+            <ExportButton
+              file="Сотрудники"
+              disabled={rows.length === 0}
+              sheets={() => [listSheet('Сотрудники', employeeCols(owner), rows, { filter: [q.trim() && `поиск «${q.trim()}»`] })]}
+            />
+            {mayEdit && (
+              <Button onClick={() => setAdding(true)}>
+                <Icon name="plus" /> Добавить
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -519,4 +529,15 @@ export default function Employees() {
       )}
     </div>
   )
+}
+
+/** Сотрудники: роли словами; телефон — владельцу (сервер отдаёт его только владельцу). */
+function employeeCols(owner: boolean): ExportCol<Employee>[] {
+  return [
+    { label: 'ФИО', value: (e) => e.full_name },
+    { label: 'Роли', value: (e) => [e.is_cashier && 'кассир', e.is_master && 'мастер'].filter(Boolean).join(', ') },
+    { label: 'PIN', value: (e) => (e.is_cashier ? (e.has_pin === false ? 'без PIN' : 'задан') : '') },
+    ...colsIf<Employee>(owner, [{ label: 'Телефон', value: (e) => e.phone ?? '' }]),
+    { label: 'Статус', value: (e) => (e.active ? 'активен' : 'отключён') },
+  ]
 }

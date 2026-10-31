@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { CorrectionLinks, FixButton } from '../components/Correction'
 import { PayChangeButton, PayChangeModal } from '../components/PayChange'
+import { ExportButton } from '../components/ExportButton'
+import { colsIf, exportTitle, tableSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
+import { kindQty } from '../lib/shiftReportExport'
 import { lineQtyText, printSale } from '../components/salePrint'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
@@ -358,6 +361,24 @@ export default function SaleView() {
             >
               Печать
             </Button>
+            {/* Строки чека; себестоимость — только когда она видна на экране (задача 003 Н13, Н4, I13). */}
+            <ExportButton
+              file={`Чек ${sale.number}`}
+              sheets={() => {
+                const cols = saleLineCols(showCost)
+                return [
+                  tableSheet('Чек', cols, goods, {
+                    title: exportTitle(`${sale.kind === 'return' ? 'Возврат' : 'Чек'} № ${sale.number}`, [
+                      formatDateTime(sale.created_at),
+                      sale.party_name && `клиент ${sale.party_name}`,
+                      `кассир ${sale.cashier_name}`,
+                      sale.master_name && `мастер ${sale.master_name}`,
+                    ]),
+                    total: totalBy(cols, { Наименование: 'Итого', Сумма: xl.money(sale.total_tyiyn), Себестоимость: xl.money(cost) }),
+                  }),
+                ]
+              }}
+            />
             {book.data && prefsLoad.data && bookCheck && (
               <Button
                 variant="secondary"
@@ -503,4 +524,18 @@ export default function SaleView() {
       {returning && <ReturnModal sale={sale} onClose={() => setReturning(false)} />}
     </div>
   )
+}
+
+/** Строки чека: количество числом по виду строки; себестоимость — только если она на экране (владелец, не касса). */
+function saleLineCols(showCost: boolean): ExportCol<SaleLine>[] {
+  return [
+    { label: 'Наименование', value: (l) => l.name },
+    { label: 'Кол-во', value: (l) => kindQty(l.kind, l.qty).qty },
+    { label: 'Ед.', value: (l) => kindQty(l.kind, l.qty).unit },
+    { label: 'Цена', value: (l) => xl.money(l.unit_price_tyiyn) },
+    { label: 'Прайс', value: (l) => (!l.gift && l.unit_price_tyiyn !== l.list_price_tyiyn ? xl.money(l.list_price_tyiyn) : null) },
+    { label: 'Сумма', value: (l) => xl.money(l.amount_tyiyn) },
+    ...colsIf<SaleLine>(showCost, [{ label: 'Себестоимость', value: (l) => xl.money(l.cost_tyiyn ?? 0) }]),
+    { label: 'Отметка', value: (l) => (l.gift ? 'подарок' : '') },
+  ]
 }

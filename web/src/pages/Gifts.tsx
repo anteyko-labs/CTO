@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { ProductPicker } from '../components/ProductPicker'
 import { DirSwitch } from '../components/DirSwitch'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table } from '../components/ui'
 import { get, post, patch, qs } from '../lib/api'
 import { formatLiters, formatSom, parseLiters, todayBishkek } from '../lib/format'
@@ -28,6 +30,19 @@ function GiftReport() {
     <Card className="mt-4 flex flex-col gap-3 [&_th:nth-child(4)]:text-right">
       <div className="flex flex-wrap items-end gap-3">
         <h2 className="mr-auto text-base font-semibold">Подарено за период</h2>
+        {/* Экран только владельца: себестоимость подарков (задача 003 Н13). */}
+        <ExportButton
+          file="Подарено"
+          period={periodText(from, to)}
+          disabled={rows.length === 0}
+          sheets={() => [
+            listSheet('Подарено за период', GIFT_REPORT_COLS, rows, {
+              sheet: 'Подарено',
+              filter: [`период ${periodText(from, to)}`],
+              total: totalBy(GIFT_REPORT_COLS, { Подарок: 'Итого', Себестоимость: xl.money(total) }),
+            }),
+          ]}
+        />
         <Field label="С">
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </Field>
@@ -149,7 +164,17 @@ export default function Gifts() {
       </Card>
 
       <Card>
-        <CardTitle>Правила подарков</CardTitle>
+        <CardTitle
+          actions={
+            <ExportButton
+              file="Правила подарков"
+              disabled={(list.data ?? []).length === 0}
+              sheets={() => [listSheet('Правила подарков', GIFT_RULE_COLS, list.data ?? [], { sheet: 'Правила' })]}
+            />
+          }
+        >
+          Правила подарков
+        </CardTitle>
         <ErrorBox error={list.error ?? toggle.error} />
         {list.loading && !list.data ? (
           <Loading />
@@ -180,3 +205,19 @@ export default function Gifts() {
     </div>
   )
 }
+
+const GIFT_REPORT_COLS: ExportCol<GiftReportRow>[] = [
+  { label: 'Подарок', value: (r) => r.name },
+  { label: 'Сколько', value: (r) => xl.units(r.qty, r.unit) },
+  { label: 'Ед.', value: (r) => unitName(r.unit) },
+  { label: 'В чеках', value: (r) => xl.int(r.checks) },
+  { label: 'Себестоимость', value: (r) => xl.money(r.cost_tyiyn) },
+]
+
+const GIFT_RULE_COLS: ExportCol<GiftRule>[] = [
+  { label: 'При покупке', value: (r) => r.trigger_name },
+  { label: 'От', value: (r) => (r.min_units > 0 ? xl.units(r.min_units, r.trigger_unit) : null) },
+  { label: 'Ед.', value: (r) => (r.min_units > 0 ? unitName(r.trigger_unit) : '') },
+  { label: 'Подарки', value: (r) => r.items.map((i) => `${i.name} × ${i.gift_qty}`).join(', ') },
+  { label: 'Статус', value: (r) => (r.active ? 'включено' : 'выключено') },
+]

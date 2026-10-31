@@ -9,6 +9,9 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { DefectMarkModal, DefectsTab } from '../components/Defects'
+import { ExportButton } from '../components/ExportButton'
+import { productCols } from '../lib/exportCols'
+import { cappedWarning, fetchAllProducts, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { printLabels } from '../components/labels'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
@@ -291,6 +294,36 @@ export default function Products() {
               <Button variant="secondary" disabled={verify.busy} onClick={runVerify} title="Остатки в учёте против суммы движений">
                 Сверить остатки
               </Button>
+            )}
+            {tab === 'products' && (
+              // Все товары отбора, а не страница (задача 003 Н13); закупка — только владельцу (I13).
+              <ExportButton
+                file="Товары"
+                disabled={!totals || totals.count === 0}
+                sheets={async () => {
+                  const res = all
+                    ? { items: list.data?.items ?? [], total: list.data?.items.length ?? 0, capped: false }
+                    : await fetchAllProducts<ProductRow, ProductList>(`/products/list${params}`)
+                  const cols = productCols({ owner, category: categoryName })
+                  return [
+                    listSheet('Товары', cols, res.items, {
+                      filter: [
+                        all && 'все филиалы',
+                        query && `поиск «${query}»`,
+                        category && `категория «${category.name}»`,
+                        chip !== 'all' && (CHIPS.find((c) => c.key === chip)?.label ?? ''),
+                        archived && 'архив',
+                      ],
+                      total: totalBy(cols, {
+                        Название: `Итого: ${totals?.count ?? res.items.length}`,
+                        'Сумма по закупке': xl.maybeMoney(totals?.purchase_tyiyn),
+                        'Сумма по продаже': xl.maybeMoney(totals?.sale_tyiyn),
+                      }),
+                      warning: cappedWarning(res),
+                    }),
+                  ]
+                }}
+              />
             )}
             {mayAdd && umagOn && (
               <Button variant="secondary" onClick={() => navigate('/products/umag')} title="Связать товары со строками старой базы Умаг: их коды станут кодами товаров">
@@ -703,6 +736,9 @@ function MismatchTable({ rows }: { rows: Mismatch[] }) {
   const pager = usePager(rows, 'stock.mismatches')
   return (
     <>
+      <div className="mb-2 flex justify-end">
+        <ExportButton file="Сверка остатков" sheets={() => [listSheet('Сверка остатков', MISMATCH_COLS, rows, { sheet: 'Расхождения' })]} />
+      </div>
       <Table head={['Товар', 'Остаток в учёте', 'По движениям', 'Стоимость в учёте', 'По движениям']}>
         {pager.shown.map((m) => {
           const p = m.product
@@ -828,3 +864,13 @@ function ProductTableRow({
     </tr>
   )
 }
+
+/** Сверка остатков (только владелец): количества числами в единице товара. */
+const MISMATCH_COLS: ExportCol<Mismatch>[] = [
+  { label: 'Товар', value: (m) => m.product?.name ?? m.product_id },
+  { label: 'Ед.', value: (m) => unitName(m.product?.unit) },
+  { label: 'Остаток в учёте', value: (m) => xl.units(m.cached_qty, m.product?.unit) },
+  { label: 'Остаток по движениям', value: (m) => xl.units(m.moved_qty, m.product?.unit) },
+  { label: 'Стоимость в учёте', value: (m) => xl.money(m.cached_value_tyiyn) },
+  { label: 'Стоимость по движениям', value: (m) => xl.money(m.moved_value_tyiyn) },
+]

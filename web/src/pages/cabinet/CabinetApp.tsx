@@ -5,6 +5,9 @@ import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Table, Toaster, t
 import { ApiError, get, post, qs } from '../../lib/api'
 import { OilBookList } from '../../components/OilBook'
 import { Pager, usePager } from '../../components/Pager'
+import { ExportButton } from '../../components/ExportButton'
+import { reconciliationSheet } from '../../lib/exportCols'
+import { listSheet, xl, type ExportCol } from '../../lib/exportTable'
 import { BLANK, printReconciliation, type Reconciliation, type Seller } from '../../lib/debtDocs'
 import { formatDateTime, formatKg, formatLiters, formatSom, todayBishkek } from '../../lib/format'
 import { useAction, useLoad } from '../../lib/hooks'
@@ -217,6 +220,11 @@ function Contacts() {
   const rows = list.data ?? []
   return (
     <Card className="p-0">
+      {rows.length > 0 && (
+        <div className="flex justify-end px-4 pt-3">
+          <ExportButton file="Работники" sheets={() => [listSheet('Работники', CONTACT_COLS, rows)]} />
+        </div>
+      )}
       <ErrorBox error={list.error} />
       {list.loading && !list.data ? (
         <Loading />
@@ -292,6 +300,14 @@ function Act({ me }: { me: Me }) {
         <Button variant="secondary" disabled={!a} onClick={() => a && printReconciliation(a, seller)}>
           Печать
         </Button>
+        {/* Тот же акт файлом .xlsx (задача 003 Н9, Н13). */}
+        <ExportButton
+          label="Скачать"
+          file="Акт сверки"
+          period={a ? `${dateRu(a.from)}–${dateRu(a.to)}` : undefined}
+          disabled={!a}
+          sheets={() => (a ? [reconciliationSheet(a, seller.name)] : [])}
+        />
       </Card>
       <ErrorBox error={act.error} />
       {act.loading && !a ? (
@@ -438,3 +454,13 @@ export default function CabinetApp() {
     </div>
   )
 }
+
+const CONTACT_COLS: ExportCol<Contact>[] = [
+  { label: 'Работник', value: (c) => c.full_name },
+  { label: 'Должность', value: (c) => c.position ?? '' },
+  { label: 'Телефон', value: (c) => c.phone ?? '' },
+  { label: 'Приезжал', value: (c) => xl.int(c.visits) },
+  { label: 'Последний раз', value: (c) => xl.dateTime(c.last_at) },
+  { label: 'Взял на', value: (c) => xl.money(c.total_tyiyn) },
+  { label: 'Из них в долг', value: (c) => xl.money(c.debt_tyiyn) },
+]

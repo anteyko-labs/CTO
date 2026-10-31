@@ -4,6 +4,8 @@ import { Link, useParams } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { OilBookList } from '../components/OilBook'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
 import { stockText } from '../components/ProductPicker'
 import { VehicleFormModal } from '../components/VehicleFormModal'
@@ -659,6 +661,7 @@ export default function ClientCard() {
         <OilBookList
           key={vehicles.length}
           path={`/parties/${party.id}/oil-book`}
+          name={`Масляная книжка ${party.name}`}
           editable={mayEdit}
           partyId={party.id}
           onAdd={mayEdit ? () => setAdding('vehicle') : undefined}
@@ -668,7 +671,18 @@ export default function ClientCard() {
       {party.role === 'customer' && <FrequentProducts partyId={party.id} />}
 
       <Card>
-        <CardTitle>История</CardTitle>
+        <CardTitle
+          actions={
+            // Вся история клиента, а не страница (задача 003 Н13).
+            <ExportButton
+              file={`${party.name} история`}
+              disabled={timeline.length === 0}
+              sheets={() => [listSheet(`${party.name}: история`, HISTORY_COLS, history, { sheet: 'История' })]}
+            />
+          }
+        >
+          История
+        </CardTitle>
         <ErrorBox error={card.error ?? row.error} />
         {timeline.length === 0 ? (
           <Empty>Пока ничего не было</Empty>
@@ -916,3 +930,16 @@ function FrequentProducts({ partyId }: { partyId: string }) {
     </Card>
   )
 }
+
+/** История клиента: долг чека — отдельным столбцом; номер документа — числом. */
+const HISTORY_COLS: ExportCol<{ item: PartyTimelineItem; debt: number | null }>[] = [
+  { label: 'Когда', value: ({ item }) => xl.dateTime(item.at) },
+  { label: 'Что', value: ({ item }) => item.title },
+  { label: '№', value: ({ item }) => (item.number !== null ? xl.int(item.number) : null) },
+  { label: 'Сумма', value: ({ item }) => xl.money(item.amount_tyiyn) },
+  { label: 'В долг', value: ({ debt }) => xl.maybeMoney(debt) },
+  { label: 'Комментарий', value: ({ item }) => item.comment },
+  { label: 'Долг от', value: ({ item }) => xl.date(item.debt_date) },
+  { label: 'Кто занёс', value: ({ item }) => item.user_name ?? '' },
+  { label: 'Филиал', value: ({ item }) => item.branch_name ?? '' },
+]

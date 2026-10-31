@@ -7,6 +7,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AccountMoneyModal, type AccountMoneyKind } from '../components/AccountMoneyModal'
 import { Icon } from '../components/icons'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, exportTitle, fetchAllPages, listSheet, periodText, totalBy, xl, type ExportCol } from '../lib/exportTable'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
@@ -204,6 +206,18 @@ export default function Accounts({ openMoney = false }: { openMoney?: boolean })
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <Checkbox label="Показать архивные" checked={archived} onChange={setArchived} />
           {!owner && <span className="text-xs text-slate-500">Счета «только владелец» администратору не показываются; правит счета владелец.</span>}
+          {/* Все счета списка (задача 003 Н13): администратору — только те, что отдал сервер. */}
+          <ExportButton
+            file="Счета"
+            period={formatDate(todayBishkek())}
+            disabled={rows.length === 0}
+            sheets={() => [
+              listSheet('Счета', ACCOUNT_COLS, rows, {
+                filter: [archived && 'с архивными'],
+                total: totalBy(ACCOUNT_COLS, { Счёт: 'Итого', Сумма: xl.money(rows.reduce((a, x) => a + x.balance_tyiyn, 0)) }),
+              }),
+            ]}
+          />
         </div>
         <ErrorBox error={list.error} />
         {list.loading && !list.data ? (
@@ -429,7 +443,37 @@ function AccountHistory({ account, owner, onClose }: { account: CashAccount; own
   return (
     <Modal title={`История: ${account.name}`} full onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <PeriodPicker value={range} today={today} onChange={setRange} />
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <PeriodPicker value={range} today={today} onChange={setRange} />
+          {/* Итоги по видам и все движения периода — листами одного файла (задача 003 Н13). */}
+          <ExportButton
+            file={`История ${account.name}`}
+            period={periodText(range.from, range.to)}
+            disabled={!s}
+            sheets={async () => {
+              const all = await fetchAllPages<CashMovement>(`/cash/accounts/${account.id}${period}`)
+              const name = `История счёта «${account.name}»`
+              const filter = [`период ${periodText(range.from, range.to)}`]
+              return [
+                {
+                  name: 'Итоги',
+                  columns: [{ label: 'Вид' }, { label: 'Пришло' }, { label: 'Ушло' }],
+                  title: exportTitle(name, filter),
+                  filter: false,
+                  rows: s
+                    ? [
+                        { cells: ['На начало', xl.money(s.opening_tyiyn)], bold: true },
+                        ...s.kinds.map((k) => [MOVEMENT_LABELS[k.kind] ?? k.kind, xl.money(k.in_tyiyn), xl.money(k.out_tyiyn)]),
+                        { cells: ['Всего', xl.money(s.in_tyiyn), xl.money(s.out_tyiyn)], bold: true },
+                        { cells: ['На конец', xl.money(s.closing_tyiyn)], bold: true },
+                      ]
+                    : [],
+                },
+                listSheet(name, HISTORY_COLS, all.items, { sheet: 'Движения', filter, warning: cappedWarning(all) }),
+              ]
+            }}
+          />
+        </div>
         <ErrorBox error={sum.error ?? moves.error} />
         {s && (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4" data-testid="account-history-totals">
@@ -494,3 +538,22 @@ function Stat({ label, value }: { label: string; value: number }) {
     </div>
   )
 }
+
+/** Столбцы выгрузки счетов: как в таблице, без кнопок; отметки — отдельным столбцом. */
+const ACCOUNT_COLS: ExportCol<CashAccount>[] = [
+  { label: 'Счёт', value: (a) => a.name },
+  { label: 'Тип', value: (a) => accountType(a) },
+  { label: 'Сумма', value: (a) => xl.money(a.balance_tyiyn) },
+  { label: 'Отрицательный баланс', value: (a) => (a.allow_negative ? 'Разрешён' : 'Не разрешён') },
+  { label: 'Комиссия банка', value: (a) => (isBank(a) ? formatPercentBp(a.fee_rate_bp ?? 0) : '') },
+  { label: 'Отметки', value: (a) => [accountNote(a), a.owner_only && 'только владелец', !a.active && 'в архиве'].filter(Boolean).join(', ') },
+]
+
+/** Столбцы выгрузки движений счёта за период. */
+const HISTORY_COLS: ExportCol<CashMovement>[] = [
+  { label: 'Когда', value: (m) => xl.dateTime(m.created_at) },
+  { label: 'Что', value: (m) => MOVEMENT_LABELS[m.kind] ?? m.kind },
+  { label: 'Комментарий', value: (m) => m.comment },
+  { label: 'Кто', value: (m) => m.user_name },
+  { label: 'Сумма', value: (m) => xl.money(m.amount_tyiyn) },
+]

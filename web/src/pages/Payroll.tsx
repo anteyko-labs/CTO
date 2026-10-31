@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { PayrollEntries } from '../components/PayrollEntries'
+import { ExportButton } from '../components/ExportButton'
+import { colsIf, listSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
 import { ExtraForm, PayoutForm, SalaryForm } from '../components/PayrollForms'
 import { PayrollMonth } from '../components/PayrollMonth'
 import { PayrollSalary } from '../components/PayrollSalary'
 import { Button, Card, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatSom, todayBishkek } from '../lib/format'
+import { formatDate, formatSom, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import type { PayrollRow } from '../lib/types'
@@ -71,6 +73,22 @@ export default function Payroll() {
         <Field label="День">
           <input type="date" className="w-44" value={date} onChange={(e) => setDate(e.target.value)} />
         </Field>
+        {/* Все сотрудники дня; база процента — только владельцу, как на экране (задача 003 Н13, I13). */}
+        <ExportButton
+          file="Расчёт за день"
+          period={formatDate(date)}
+          disabled={list.length === 0}
+          sheets={() => {
+            const cols = payrollDayCols(owner)
+            return [
+              listSheet('Расчёт сотрудников за день', cols, list, {
+                sheet: 'За день',
+                filter: [`день ${formatDate(date)}`],
+                total: totalBy(cols, { Сотрудник: 'Итого', 'К выплате': xl.money(toPay) }),
+              }),
+            ]
+          }}
+        />
         <div className="ml-auto text-right">
           <div className="text-xs text-slate-500">К выплате всего</div>
           <Money value={toPay} className="text-2xl font-bold" />
@@ -193,4 +211,21 @@ export default function Payroll() {
       )}
     </div>
   )
+}
+
+/** Столбцы выгрузки «За день» — как в таблице; база процента (валовая) — только владельцу (I13). */
+function payrollDayCols(owner: boolean): ExportCol<PayrollRow>[] {
+  return [
+    { label: 'Сотрудник', value: (r) => r.full_name },
+    { label: 'Не выплачено ранее', value: (r) => xl.money(r.opening_tyiyn) },
+    { label: 'Мастеру за услуги', value: (r) => xl.money(r.service_fee_tyiyn) },
+    { label: 'Процент', value: (r) => xl.money(r.percent_tyiyn) },
+    ...colsIf<PayrollRow>(owner, [{ label: 'С валовой', value: (r) => xl.maybeMoney(r.base_tyiyn) }]),
+    { label: 'Оклад', value: (r) => xl.money(r.salary_tyiyn ?? 0) },
+    { label: 'Бонус', value: (r) => xl.money(r.bonus_tyiyn ?? 0) },
+    { label: 'Удержано', value: (r) => xl.money(r.withheld_tyiyn ?? 0) },
+    { label: 'Выплачено', value: (r) => xl.money(r.paid_tyiyn - (r.advance_tyiyn ?? 0)) },
+    { label: 'Аванс', value: (r) => xl.money(r.advance_tyiyn ?? 0) },
+    { label: 'К выплате', value: (r) => xl.money(r.balance_tyiyn) },
+  ]
 }

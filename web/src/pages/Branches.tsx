@@ -5,6 +5,8 @@ import { useState, type FormEvent } from 'react'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
 import { switchBranch } from '../lib/branch'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { formatDate } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useUser } from '../lib/auth'
@@ -70,7 +72,21 @@ export default function Branches() {
       <PageHeader
         title="Филиалы"
         subtitle="Склад, деньги, смены, сотрудники и документы — у каждого филиала свои; товары, клиенты, услуги и поставщики — общие"
-        actions={<Button onClick={() => setForm({ name: '', address: '', phone: '' })}>Новый филиал</Button>}
+        actions={
+          <>
+            {/* Филиалы и расчёты между ними — листами одного файла (задача 003 Н13). */}
+            <ExportButton
+              file="Филиалы"
+              disabled={!list.data?.length}
+              sheets={() => [
+                listSheet('Филиалы', BRANCH_COLS, list.data ?? []),
+                listSheet('Расчёты между филиалами', PAIR_COLS, settlements.data?.items ?? [], { sheet: 'Расчёты' }),
+                listSheet('Расчёты между филиалами: записи', ENTRY_COLS, settlements.data?.entries ?? [], { sheet: 'Записи расчётов' }),
+              ]}
+            />
+            <Button onClick={() => setForm({ name: '', address: '', phone: '' })}>Новый филиал</Button>
+          </>
+        }
       />
       <Card>
         <ErrorBox error={list.error ?? act.error} />
@@ -188,3 +204,26 @@ export default function Branches() {
     </div>
   )
 }
+
+const BRANCH_COLS: ExportCol<Branch>[] = [
+  { label: 'Филиал', value: (b) => b.name },
+  { label: 'Адрес', value: (b) => b.address },
+  { label: 'Телефон', value: (b) => b.phone },
+  { label: 'Статус', value: (b) => (b.archived ? 'закрыт' : b.is_main ? 'главный' : 'работает') },
+]
+
+const PAIR_COLS: ExportCol<SettlementPair>[] = [
+  { label: 'Кто должен', value: (s) => s.branch_name },
+  { label: 'Кому', value: (s) => s.creditor_name },
+  { label: 'Сумма', value: (s) => xl.money(s.amount_tyiyn) },
+]
+
+const ENTRY_COLS: ExportCol<SettlementEntry>[] = [
+  { label: 'День', value: (e) => xl.date(e.business_date) },
+  { label: 'Клиент', value: (e) => e.party_name },
+  { label: 'Принял', value: (e) => e.branch_name },
+  { label: 'Чей долг', value: (e) => e.creditor_name },
+  { label: 'Сумма', value: (e) => xl.money(e.amount_tyiyn) },
+  { label: 'Кто', value: (e) => e.user_name },
+  { label: 'Отметка', value: (e) => (e.reversal ? 'сторно' : '') },
+]

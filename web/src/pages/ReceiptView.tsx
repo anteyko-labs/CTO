@@ -6,6 +6,8 @@ import { ReceiptAcceptance } from '../components/Acceptances'
 import { CorrectionLinks, FixButton } from '../components/Correction'
 import { printLabels } from '../components/labels'
 import { ReceiptPhotos } from '../components/ReceiptPhotos'
+import { ExportButton } from '../components/ExportButton'
+import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { InvoicePayments, InvoiceStatusBadge } from '../components/SupplierPayments'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
@@ -95,6 +97,20 @@ export default function ReceiptView() {
             <Button variant="secondary" onClick={() => navigate('/receipts')}>
               К списку
             </Button>
+            {/* Строки накладной (задача 003 Н13). */}
+            <ExportButton
+              file={`Приход ${r.number}`}
+              sheets={() => [
+                tableSheet('Приход', RECEIPT_LINE_COLS, r.lines, {
+                  title: exportTitle(`${isReversal ? 'Сторно прихода' : 'Приход'} № ${r.number}`, [
+                    r.supplier_name && `поставщик ${r.supplier_name}`,
+                    r.supplier_doc && `накладная ${r.supplier_doc}`,
+                    formatDateTime(r.created_at),
+                  ]),
+                  total: totalBy(RECEIPT_LINE_COLS, { Товар: 'Итого', Сумма: xl.money(r.total_tyiyn) }),
+                }),
+              ]}
+            />
             {!isReversal && (
               <Button variant="secondary" disabled={labels.busy} onClick={doPrint}>
                 Печать этикеток
@@ -264,3 +280,25 @@ export default function ReceiptView() {
     </div>
   )
 }
+
+/** Строки прихода: количество числом в единице товара, цена по накладной и наценка — как в таблице. */
+const RECEIPT_LINE_COLS: ExportCol<ReceiptLine>[] = [
+  { label: '№', value: (l) => xl.int(l.line_no) },
+  { label: 'Товар', value: (l) => l.product_name },
+  { label: 'Количество', value: (l) => xl.units(l.qty, l.unit) },
+  { label: 'Ед.', value: (l) => unitName(l.unit) },
+  { label: 'Как', value: (l) => qtyText(l) },
+  { label: 'Цена по накладной', value: (l) => xl.maybeMoney(unitCost(l)) },
+  { label: 'Цена за л', value: (l) => xl.maybeMoney(unitCostPerLiter(l)) },
+  {
+    label: 'Наценка',
+    value: (l) => {
+      const cost = unitCost(l)
+      const sale = l.sale_price_tyiyn ?? null
+      const m = cost !== null && sale !== null ? markupPermille(cost, sale) : null
+      return m === null ? '' : formatPermille(m)
+    },
+  },
+  { label: 'Цена продажи', value: (l) => xl.maybeMoney(l.sale_price_tyiyn) },
+  { label: 'Сумма', value: (l) => xl.money(l.cost_tyiyn) },
+]

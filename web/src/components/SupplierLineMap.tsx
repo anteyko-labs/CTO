@@ -6,6 +6,8 @@ import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { Button, Empty, ErrorBox, Loading, Table } from './ui'
+import { ExportButton } from './ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 
 export interface SupplierLine {
   id: string
@@ -33,7 +35,10 @@ export function SupplierLineMap({ supplierId }: { supplierId: string }) {
   const list = rows.data ?? []
   return (
     <div data-testid="supplier-line-map">
-      <h2 className="mb-1 font-semibold">Запомненные строки накладных</h2>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-semibold">Запомненные строки накладных</h2>
+        <ExportButton file="Строки накладных" disabled={list.length === 0} sheets={() => [listSheet('Запомненные строки накладных', LINE_COLS, list, { sheet: 'Строки' })]} />
+      </div>
       <p className="mb-3 text-xs text-slate-500">
         Выбор товара для строки накладной по фото запоминается: в следующий раз такая строка этого поставщика находит товар сразу.
       </p>
@@ -68,3 +73,11 @@ export function SupplierLineMap({ supplierId }: { supplierId: string }) {
     </div>
   )
 }
+
+const LINE_COLS: ExportCol<SupplierLine>[] = [
+  { label: 'В накладной', value: (r) => r.name },
+  { label: 'Товар', value: (r) => r.product_name },
+  { label: 'Артикул', value: (r) => r.product_article },
+  { label: 'Кто', value: (r) => r.user_name },
+  { label: 'Когда', value: (r) => xl.dateTime(r.updated_at) },
+]

@@ -4,14 +4,16 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
 import { AfterCloseBlock, CashToBankButton, CashToBankModal, PayChangeModal, TransfersList, useCanFixPay } from '../components/PayChange'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get } from '../lib/api'
-import { formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
+import { bishkekDate, formatDate, formatDateTime, formatKg, formatLiters, formatSom, formatSomShort, formatTime, plural } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { ShiftBank } from '../components/ShiftBank'
 import { printShift } from '../components/shiftPrint'
 import { PURPOSE_LABELS } from '../lib/payouts'
+import { shiftReportSheets } from '../lib/shiftReportExport'
 import { fixItemsFor, type AfterItem } from '../lib/payChange'
 import {
   CANCEL_REASONS,
@@ -131,6 +133,8 @@ export default function ShiftReport() {
             <Button variant="secondary" onClick={() => window.print()}>
               Печать
             </Button>
+            {/* Весь отчёт одним файлом: обзор и вкладки — листами (задача 003 Н13). */}
+            <ExportButton file={`Смена ${s.number}`} period={formatDate(bishkekDate(s.opened_at))} sheets={() => shiftReportSheets(data)} />
             {/* Чек смены 80 мм (SPEC-36 §10) — рядом с печатью отчёта на A4. */}
             <Button variant="secondary" disabled={printing.busy} onClick={() => void printing.run(() => printShift(s.id))}>
               Печать чека смены
