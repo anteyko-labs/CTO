@@ -68,3 +68,28 @@ export function offlineBookPlan(body: Record<string, unknown>, s: Pick<OilBookSe
   if (!s.auto_book) return 'none'
   return s.offline_book && visible ? 'print' : 'notice'
 }
+
+/**
+ * Что делает одна вкладка кассы с отправленным чеком (`plan` — по её видимости). Отправленный чек
+ * узнают все вкладки устройства; сама печатает только одна видимая — первая взявшая чек (`claim` —
+ * общая для вкладок запись), остальные видимые молчат. Скрытые и вкладки с выключенной печатью
+ * показывают уведомление, если книжку ещё не напечатали (`finished` — «готово» от другой вкладки).
+ * Печать не удалась — уведомление в печатавшей.
+ */
+export async function offlineBookTab(
+  plan: 'print' | 'notice' | 'none',
+  t: { claim: () => Promise<boolean>; print: () => Promise<void>; finished: () => boolean; done: () => void },
+): Promise<'printed' | 'notice' | 'skip'> {
+  if (plan === 'none') return 'skip'
+  if (plan === 'print') {
+    if (!(await t.claim())) return 'skip'
+    try {
+      await t.print()
+      t.done()
+      return 'printed'
+    } catch {
+      return t.finished() ? 'skip' : 'notice'
+    }
+  }
+  return t.finished() ? 'skip' : 'notice'
+}

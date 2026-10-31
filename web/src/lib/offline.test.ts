@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ApiError } from './api'
 import {
   afterRejection,
+  claimable,
   expiredDone,
   foreignWaiting,
   formatTempNumber,
@@ -41,6 +42,16 @@ describe('очередь чеков', () => {
   it('после перезапуска «отправляется» снова ждёт отправки, остальное не трогается', () => {
     const back = staleSending([item('a', 'sending'), item('b', 'pending'), item('c', 'done'), item('d', 'rejected')])
     expect(back).toEqual([{ ...item('a', 'sending'), status: 'pending' }])
+  })
+
+  it('чек, который сейчас отправляет соседняя вкладка, новая вкладка не возвращает в очередь и не шлёт второй раз', () => {
+    const now = Date.parse('2026-10-08T00:10:00Z')
+    const fresh: OutboxItem = { ...item('a', 'sending'), sending_at: '2026-10-08T00:09:30Z' }
+    const old: OutboxItem = { ...item('b', 'sending'), sending_at: '2026-10-08T00:05:00Z' }
+    // Касса только что пробила чек и шлёт его сама.
+    const justNow: OutboxItem = { ...item('c', 'sending'), created_at: '2026-10-08T00:09:50Z' }
+    expect(staleSending([fresh, old, justNow], now).map((i) => i.op_id)).toEqual(['b'])
+    expect([fresh, old, justNow, item('d', 'pending'), item('e', 'done')].filter((i) => claimable(i, now)).map((i) => i.op_id)).toEqual(['b', 'd'])
   })
 
   it('неотправленные перед закрытием смены — ждущие и отправляемые, но не принятые и не отклонённые', () => {

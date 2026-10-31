@@ -1,12 +1,14 @@
 // Чек книжки для чека «В сервис», пробитого без сети (задача 003, хвост Н5): книжку можно собрать
 // только из ответа сервера, поэтому её печатают, когда очередь отправила чек. Сама — по настройкам
 // «Чек книжки — печатать сам» и «Печатать книжку для чеков без сети после отправки»; окна кассы не
-// видно, печать выключена или не удалась — уведомление с кнопкой «Печать книжки».
-import { useEffect, useState } from 'react'
+// видно, печать выключена или не удалась — уведомление с кнопкой «Печать книжки». Касса открыта в
+// нескольких вкладках — чек отправляет одна, о нём узнают все: печатает одна видимая, уведомление
+// снимается во всех после печати или «✕».
+import { useEffect, useRef, useState } from 'react'
 import { get } from '../lib/api'
-import { SALE_SENT_EVENT, type SaleSent } from '../lib/offline'
+import { claimBookPrint, offlineBookDone, watchOfflineBooks, type SaleSent } from '../lib/offline'
 import { printOilBook, saleCheckOf } from '../lib/oilBookPrint'
-import { loadOilBookSettings, offlineBookPlan, type OilBookSettings } from '../lib/oilBookSettings'
+import { loadOilBookSettings, offlineBookPlan, offlineBookTab, type OilBookSettings } from '../lib/oilBookSettings'
 import type { VehicleBook } from '../lib/oilBook'
 import { Button } from './ui'
 
@@ -23,10 +25,15 @@ const print = (p: Pick<Pending, 'book' | 'sent' | 'prefs'>) =>
 
 export function OfflineBookPrints() {
   const [pending, setPending] = useState<Pending[]>([])
+  // Книжки, которые уже напечатала или закрыла какая-то вкладка: уведомление о них не показываем.
+  const finished = useRef(new Set<string>())
 
   useEffect(() => {
-    const onSent = (e: Event) => {
-      const sent = (e as CustomEvent<SaleSent>).detail
+    const onDone = (op: string) => {
+      finished.current.add(op)
+      setPending((xs) => xs.filter((x) => x.op_id !== op))
+    }
+    const onSent = (sent: SaleSent) => {
       void (async () => {
         const prefs = await loadOilBookSettings()
         const plan = offlineBookPlan(sent.body, prefs, document.visibilityState === 'visible')
@@ -36,23 +43,21 @@ export function OfflineBookPrints() {
         // как у чека при связи (ADR-130).
         if (!saleCheckOf(book, sent.sale.id, prefs)) return
         const item: Pending = { op_id: sent.op_id, number: sent.sale.number, book, sent, prefs }
-        if (plan === 'print') {
-          try {
-            await print(item)
-            return
-          } catch {
-            // Печать не удалась — остаётся кнопка.
-          }
-        }
-        setPending((xs) => (xs.some((x) => x.op_id === item.op_id) ? xs : [...xs, item]))
+        const step = await offlineBookTab(plan, {
+          claim: () => claimBookPrint(item.op_id),
+          print: () => print(item),
+          finished: () => finished.current.has(item.op_id),
+          done: () => offlineBookDone(item.op_id),
+        })
+        // Печать не удалась, окна не видно или печать выключена — остаётся кнопка.
+        if (step === 'notice') setPending((xs) => (xs.some((x) => x.op_id === item.op_id) ? xs : [...xs, item]))
       })().catch(() => undefined)
     }
-    window.addEventListener(SALE_SENT_EVENT, onSent)
-    return () => window.removeEventListener(SALE_SENT_EVENT, onSent)
+    return watchOfflineBooks(onSent, onDone)
   }, [])
 
   if (pending.length === 0) return null
-  const drop = (op: string) => setPending((xs) => xs.filter((x) => x.op_id !== op))
+  const drop = (op: string) => offlineBookDone(op)
   return (
     <div className="no-print fixed bottom-20 left-4 z-40 flex max-w-sm flex-col gap-2 md:bottom-6" data-testid="offline-book-prints">
       {pending.map((p) => (

@@ -81,6 +81,11 @@ export interface OutboxItem {
   /** Филиал, где пробили чек (SPEC-33): уходит туда, даже если владелец переключил филиал.
    *  `null` — свой филиал пользователя. */
   branch_id?: string | null
+  /** Когда чек взяли в отправку: «отправляется» дольше [`STALE_SENDING_MS`] — вкладку закрыли
+   *  посреди отправки, чек снова ждёт. Нет — с `created_at` (касса шлёт только что пробитый). */
+  sending_at?: string
+  /** Книжку по отправленному чеку уже взялась печатать одна из вкладок (задача 003, хвост Н5). */
+  book_claimed?: boolean
 }
 
 /** Запись очереди — чек (а не, например, отменённые строки). */
@@ -442,9 +447,39 @@ function tempNumber(): string {
   }
 }
 
-/** Чеки, оставшиеся «в отправке» после закрытой вкладки, снова ждут отправки. */
-export function staleSending(items: OutboxItem[]): OutboxItem[] {
-  return items.filter((i) => i.status === 'sending').map((i) => ({ ...i, status: 'pending' as const }))
+/** Дольше этого чек «отправляется», только если отправлявшую вкладку закрыли: ответа сервера
+ *  ждут 20 с. */
+export const STALE_SENDING_MS = 2 * 60_000
+
+const sendingStale = (i: OutboxItem, now: number): boolean =>
+  i.status === 'sending' && now - new Date(i.sending_at ?? i.created_at).getTime() > STALE_SENDING_MS
+
+/** Чеки, оставшиеся «в отправке» после закрытой вкладки, снова ждут отправки. Чек, который сейчас
+ *  отправляет соседняя вкладка или сама касса, не трогается. */
+export function staleSending(items: OutboxItem[], now: number = Date.now()): OutboxItem[] {
+  return items.filter((i) => sendingStale(i, now)).map((i) => ({ ...i, status: 'pending' as const }))
+}
+
+/** Очередь может взять чек в отправку: ждёт её или застрял «в отправке» закрытой вкладки. */
+export const claimable = (i: OutboxItem, now: number = Date.now()): boolean => i.status === 'pending' || sendingStale(i, now)
+
+/**
+ * Взять чек в отправку — одной записью IndexedDB, общей для вкладок: две вкладки кассы не пошлют
+ * один чек обе (и не напечатают по нему книжку дважды). `null` — чек уже взяла другая вкладка
+ * или его нет.
+ */
+async function claimForSend(op_id: string): Promise<OutboxItem | null> {
+  const tx = (await db()).transaction(OUTBOX, 'readwrite')
+  const cur: OutboxItem | undefined = await tx.store.get(op_id)
+  if (!cur || !claimable(cur)) {
+    await tx.done
+    return null
+  }
+  const next: OutboxItem = { ...cur, status: 'sending', sending_at: new Date().toISOString() }
+  await tx.store.put(next)
+  await tx.done
+  await emit()
+  return next
 }
 
 let recovered: Promise<void> | null = null
@@ -688,10 +723,76 @@ export interface SaleSent {
   body: Record<string, unknown>
 }
 
+/** Книжку по отправленному чеку напечатали или уведомление о ней закрыли — во всех вкладках. */
+export const BOOK_DONE_EVENT = 'avtodom:offline-book-done'
+
+type TabMessage = { kind: 'sent'; detail: SaleSent } | { kind: 'book_done'; op_id: string }
+
+let tabs: BroadcastChannel | null | undefined
+
+/** Сообщения между вкладками кассы: приходят в окно событиями, как свои. */
+function tabChannel(): BroadcastChannel | null {
+  if (tabs !== undefined) return tabs
+  tabs = null
+  if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return tabs
+  try {
+    tabs = new BroadcastChannel('avtodom.outbox')
+    tabs.onmessage = (e: MessageEvent<TabMessage>) => {
+      const m = e.data
+      if (m?.kind === 'sent') window.dispatchEvent(new CustomEvent<SaleSent>(SALE_SENT_EVENT, { detail: m.detail }))
+      if (m?.kind === 'book_done') window.dispatchEvent(new CustomEvent<string>(BOOK_DONE_EVENT, { detail: m.op_id }))
+    }
+  } catch {
+    tabs = null
+  }
+  return tabs
+}
+
+/** Вкладка слушает «чек отправлен» и «книжка готова» — свои и соседних вкладок. */
+export function watchOfflineBooks(onSent: (s: SaleSent) => void, onDone: (op_id: string) => void): () => void {
+  tabChannel()
+  const sent = (e: Event) => onSent((e as CustomEvent<SaleSent>).detail)
+  const done = (e: Event) => onDone((e as CustomEvent<string>).detail)
+  window.addEventListener(SALE_SENT_EVENT, sent)
+  window.addEventListener(BOOK_DONE_EVENT, done)
+  return () => {
+    window.removeEventListener(SALE_SENT_EVENT, sent)
+    window.removeEventListener(BOOK_DONE_EVENT, done)
+  }
+}
+
 function announceSent(item: OutboxItem, sale: Sale): void {
   if (typeof window === 'undefined' || !sale?.id) return
   const detail: SaleSent = { op_id: item.op_id, temp_no: item.temp_no, sale, body: (item.body ?? {}) as Record<string, unknown> }
   window.dispatchEvent(new CustomEvent<SaleSent>(SALE_SENT_EVENT, { detail }))
+  tabChannel()?.postMessage({ kind: 'sent', detail } satisfies TabMessage)
+}
+
+/** Книжку напечатали или уведомление закрыли: снять его во всех вкладках. */
+export function offlineBookDone(op_id: string): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent<string>(BOOK_DONE_EVENT, { detail: op_id }))
+  tabChannel()?.postMessage({ kind: 'book_done', op_id } satisfies TabMessage)
+}
+
+/**
+ * Печатать книжку по отправленному чеку берётся одна вкладка — одной записью IndexedDB, общей для
+ * вкладок. Записи нет или хранилище недоступно — печатает эта вкладка.
+ */
+export async function claimBookPrint(op_id: string): Promise<boolean> {
+  try {
+    const tx = (await db()).transaction(OUTBOX, 'readwrite')
+    const cur: OutboxItem | undefined = await tx.store.get(op_id)
+    if (cur?.book_claimed) {
+      await tx.done
+      return false
+    }
+    if (cur) await tx.store.put({ ...cur, book_claimed: true })
+    await tx.done
+    return true
+  } catch {
+    return true
+  }
 }
 
 /**
@@ -705,9 +806,10 @@ export async function syncOutbox(force = false): Promise<void> {
   syncing = true
   try {
     await recover()
-    for (const item of await allItems()) {
-      if (item.status !== 'pending' || !isOwnItem(item, me.id)) continue
-      if (!force && waitsRetry(item)) continue
+    for (const seen of await allItems()) {
+      if (!claimable(seen) || !isOwnItem(seen, me.id)) continue
+      if (!force && waitsRetry(seen)) continue
+      let item = seen
       if (item.path) {
         // Не чек: принят — удаляется; отказ по существу или «op_id уже был» — тоже (это след, а
         // не продажа, и повтор его не исправит); нет связи — ждёт, как чеки.
@@ -724,7 +826,10 @@ export async function syncOutbox(force = false): Promise<void> {
         }
         continue
       }
-      await put({ ...item, status: 'sending' })
+      // Снимок очереди мог устареть: чек взяла соседняя вкладка — её отправка, не наша.
+      const taken = await claimForSend(item.op_id)
+      if (!taken) continue
+      item = taken
       try {
         const sale = await api<Sale>('POST', '/sales', queuedBody(item), item.branch_id)
         await put({ ...item, status: 'done', server_number: sale.number, last_error: '', next_try_at: undefined })

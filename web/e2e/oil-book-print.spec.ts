@@ -303,3 +303,57 @@ test('«В сервис» с маслом и фильтрами: чек книж
   expect(receipt).toContain(`CU2939-${tag} (салонный) · 1 шт Следующая замена — на 138 000 км`)
   expect(receipt).toContain(`Фильтр топливный WK820-${tag} · 1 шт Следующая замена — на 170 000 км`)
 })
+
+test('чек без сети и две вкладки кассы: чек уходит один раз, книжка печатается одна, уведомления нет ни в одной', async ({ page, context }) => {
+  await context.addInitScript(PRINT_STUB)
+  await login(page)
+  const me = await api<{ id: string }>(page.request, 'GET', '/auth/me')
+  await page.goto('/')
+  await page.waitForSelector('[data-picker]')
+  const sale = await serviceBody(page.request, `${RUN}t2`)
+  const body = { ...sale.body, client_time: new Date(Date.now() - 60_000).toISOString() }
+  // Ответ на чек из очереди идёт долго: пока первая вкладка его ждёт, открывают вторую.
+  let posts = 0
+  await context.route('**/api/v1/sales', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue()
+    posts += 1
+    await new Promise((r) => setTimeout(r, 3000))
+    await route.continue()
+  })
+  await queueOffline(page, me.id, body, 'Ч-OFF-0003')
+  await expect
+    .poll(() =>
+      page.evaluate(async (op) => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const r = indexedDB.open('avtodom', 1)
+          r.onsuccess = () => resolve(r.result)
+          r.onerror = () => reject(r.error)
+        })
+        return new Promise<string>((resolve) => {
+          const g = db.transaction('outbox').objectStore('outbox').get(op)
+          g.onsuccess = () => resolve((g.result as { status?: string } | undefined)?.status ?? '')
+        })
+      }, String(body.op_id)),
+    )
+    .toBe('sending')
+  const other = await context.newPage()
+  await other.goto('/')
+  await other.waitForSelector('[data-picker]')
+  await other.evaluate(() => window.dispatchEvent(new Event('online')))
+  const books = async () => {
+    let n = 0
+    for (const p of [page, other]) n += (await prints(p)).filter((h) => h.includes('Масляная книжка') && h.includes(sale.oilName)).length
+    return n
+  }
+  await expect.poll(books, { timeout: 20_000 }).toBe(1)
+  // Вторая вкладка чек не отправила и книжку второй раз не печатает; уведомления нет ни в одной.
+  await page.waitForTimeout(4000)
+  expect(await books()).toBe(1)
+  expect(posts).toBe(1)
+  await expect(page.getByTestId('offline-book-prints')).toHaveCount(0)
+  await expect(other.getByTestId('offline-book-prints')).toHaveCount(0)
+  await context.unroute('**/api/v1/sales')
+  const sent = await api<{ number: number }>(page.request, 'GET', `/sales/by-op/${String(body.op_id)}`)
+  expect(sent.number).toBeGreaterThan(0)
+  await other.close()
+})
