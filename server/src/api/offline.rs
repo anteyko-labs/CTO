@@ -103,6 +103,8 @@ struct SnapCategory {
     book_interval_days: Option<i32>,
     /// Строка книжки фильтра — по «Типу» товара; «Тип» выключен у категории — от неё (задача 002 П10).
     by_type: bool,
+    /// Категория фильтров без выбранной строки: товар без типа — по названию (задача 003 Н5).
+    slot_by_name: bool,
 }
 
 #[derive(Serialize)]
@@ -276,7 +278,8 @@ async fn snapshot(
         SnapCategory,
         r#"select id, name, kind,
                   coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                  book_interval_km, book_interval_days, category_by_type(attributes) as "by_type!"
+                  book_interval_km, book_interval_days, category_by_type(attributes) as "by_type!",
+                  (kind = 'filter' and book_slot is null) as "slot_by_name!"
            from categories order by name"#
     )
     .fetch_all(&mut *conn)

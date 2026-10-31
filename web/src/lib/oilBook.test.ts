@@ -17,7 +17,11 @@ const rec = (over: Partial<OilRecord>): OilRecord => ({
 describe('масляная книжка по строкам', () => {
   it('старая запись без строк — масло и масляный фильтр', () => {
     expect(recordLines(rec({})).map((l) => l.slot)).toEqual(['oil', 'oil_filter'])
-    expect(recordText(rec({ lines: [{ slot: 'air_filter', text: 'A1' }] }))).toBe('A1')
+    // Подпись строк — тем же правилом, что строка книжки: фильтр без вида — с видом в скобках.
+    expect(recordText(rec({ lines: [{ slot: 'air_filter', text: 'A1' }] }))).toBe('A1 (воздушный)')
+    expect(recordText(rec({ lines: [{ slot: 'air_filter', text: 'A1', title: 'A1 · 1 шт' }] }))).toBe('A1 · 1 шт')
+    expect(recordText(rec({}))).toBe('Масло 5W-30; Фильтр W712 (масляный)')
+    expect(recordText(rec({ lines: [{ slot: 'gear_oil', text: 'Замена масла в коробке', service: 'Замена масла в коробке' }] }))).toBe('масло клиента (коробка)')
   })
 
   it('следующая замена по каждой строке', () => {

@@ -32,7 +32,7 @@ export interface Snapshot {
   services?: Service[]
   /** У категории — строка книжки и интервал: «+ ещё строку» по товарам чека (SPEC-34); у снимка до
    *  26.10.2026 их нет. */
-  categories?: { id: string; name: string; kind: CategoryKind; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null; by_type?: boolean }[]
+  categories?: { id: string; name: string; kind: CategoryKind; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null; by_type?: boolean; slot_by_name?: boolean }[]
   clients?: SnapshotClient[]
   /** Безналичные счета для карты, перевода и «По счёту» без сети (ADR-076, ADR-095); у старого
    *  снимка — нет. */

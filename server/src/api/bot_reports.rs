@@ -1421,10 +1421,11 @@ pub async fn party(
                     }
                 }
                 for r in b.records.iter().take(3) {
+                    // Подпись строки — тем же правилом, что в книжке (задача 003 Н5).
                     let what = r
                         .lines
                         .iter()
-                        .map(|l| l.text.as_str())
+                        .map(crate::api::oil_book::line_title)
                         .collect::<Vec<_>>()
                         .join("; ");
                     lines.push(format!(

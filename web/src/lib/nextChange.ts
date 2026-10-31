@@ -60,6 +60,8 @@ export interface CategoryBook {
   book_interval_days: number | null
   /** «Тип» фильтра выключен у категории — строка от категории (задача 002 П10); нет поля — по типу. */
   by_type?: boolean
+  /** Категория фильтров без выбранной строки книжки: товар без типа — по названию (задача 003 Н5). */
+  slot_by_name?: boolean
 }
 
 /** Услуга чека со строкой книжки — строка «Следующей замены» по ней; «прочее» — только «+ ещё». */
@@ -111,16 +113,30 @@ const FILTER_SLOT = new Map<string, BookSlot>([
 /** Строка книжки услуги, по которой в чеке замена: не «прочее» и не доливка на вынос (ADR-118). */
 const serviceSlot = (s: Service): BookSlot | null => (s.book_slot && s.book_slot !== 'other' && !s.takeaway ? s.book_slot : null)
 
+/** Вид фильтра по названию — как `oil_book::filter_slot_by_name` (и категория в миграции 0085):
+ *  воздушный, салонный, топливный, масляный; без подсказки — null. */
+export function filterSlotByName(name: string): BookSlot | null {
+  const n = name.toLowerCase()
+  if (n.includes('воздуш')) return 'air_filter'
+  if (n.includes('салон')) return 'cabin_filter'
+  if (n.includes('топлив')) return 'fuel_filter'
+  if (n.includes('масл')) return 'oil_filter'
+  return null
+}
+
 /**
  * Строка книжки товара — как на сервере (`oil_book::product_slot`): по категории, а у фильтров —
- * по «Типу фильтра» товара (одна категория «Фильтры» на все виды). Категория не в книжку — null.
+ * по «Типу фильтра» товара (одна категория «Фильтры» на все виды). Типа нет (или «Тип» выключен), а
+ * строку категории фильтров владелец не выбирал — по названию товара `name` (задача 003 Н5).
+ * Категория не в книжку — null.
  */
-export function productSlot(categorySlot: string | null | undefined, filterType: string | null | undefined, byType = true): BookSlot | null {
+export function productSlot(categorySlot: string | null | undefined, filterType: string | null | undefined, byType = true, name?: string | null): BookSlot | null {
   if (!categorySlot || !SLOTS.has(categorySlot)) return null
   const slot = categorySlot as BookSlot
-  // «Тип» выключен у категории (задача 002 П10) — строка от категории.
-  if (slot.endsWith('_filter') && byType) return FILTER_SLOT.get(filterType?.trim() ?? '') ?? slot
-  return slot
+  if (!slot.endsWith('_filter')) return slot
+  // «Тип» выключен у категории (задача 002 П10) — не по типу.
+  const byTypeSlot = byType ? FILTER_SLOT.get(filterType?.trim() ?? '') : undefined
+  return byTypeSlot ?? (name ? filterSlotByName(name) : null) ?? slot
 }
 
 /** Класс жидкости в названии (ADR-131) — как `oil_book::has_class_token`: слово с начала слова, после
@@ -141,22 +157,29 @@ export function nameSlot(name: string): BookSlot | null {
 
 /** Строка книжки товара чека: по категории (`productSlot`), а у категории без строки (не масла, не
  *  фильтра) — по названию товара (ADR-130). Категории нет (не загружены) — null. */
-export function goodSlot(category: Pick<CategoryBook, 'book_slot' | 'by_type'> | undefined, p: Pick<Product, 'name' | 'attrs'>): BookSlot | null {
+export function goodSlot(category: Pick<CategoryBook, 'book_slot' | 'by_type' | 'slot_by_name'> | undefined, p: Pick<Product, 'name' | 'attrs'>): BookSlot | null {
   if (!category) return null
   if (category.book_slot === 'none') return nameSlot(p.name)
-  return productSlot(category.book_slot, p.attrs?.filter_type, category.by_type !== false)
+  return productSlot(category.book_slot, p.attrs?.filter_type, category.by_type !== false, category.slot_by_name ? p.name : null)
 }
 
 /** Категории из снимка кассы — без связи. У снимка до 26.10.2026 строк книжки нет: null, как будто
  *  категории не загружены (товары не предлагаются, черновик не трогается). */
 export function snapshotCategories(
-  list: readonly { id: string; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null; by_type?: boolean }[] | undefined,
+  list: readonly { id: string; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null; by_type?: boolean; slot_by_name?: boolean }[] | undefined,
 ): CategoryBook[] | null {
   if (!list) return null
   const out: CategoryBook[] = []
   for (const c of list) {
     if (c.book_slot === undefined) return null
-    out.push({ id: c.id, book_slot: c.book_slot, book_interval_km: c.book_interval_km ?? null, book_interval_days: c.book_interval_days ?? null, by_type: c.by_type ?? true })
+    out.push({
+      id: c.id,
+      book_slot: c.book_slot,
+      book_interval_km: c.book_interval_km ?? null,
+      book_interval_days: c.book_interval_days ?? null,
+      by_type: c.by_type ?? true,
+      slot_by_name: c.slot_by_name ?? false,
+    })
   }
   return out
 }

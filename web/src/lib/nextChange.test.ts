@@ -242,8 +242,8 @@ describe('следующая замена в чеке (SPEC-34)', () => {
 
   it('снимок кассы: категории со строкой книжки; старый снимок — как не загружены', () => {
     expect(snapshotCategories([{ id: 'c1', book_slot: 'air_filter', book_interval_km: 15000, book_interval_days: 365 }, { id: 'c2', book_slot: 'none' }])).toEqual([
-      { ...cat('c1', 'air_filter', 15000, 365), by_type: true },
-      { ...cat('c2', 'none'), by_type: true },
+      { ...cat('c1', 'air_filter', 15000, 365), by_type: true, slot_by_name: false },
+      { ...cat('c2', 'none'), by_type: true, slot_by_name: false },
     ])
     // «Тип» выключен у категории (задача 002 П10) — признак из снимка.
     expect(snapshotCategories([{ id: 'c3', book_slot: 'oil_filter', by_type: false }])?.[0]?.by_type).toBe(false)
@@ -367,6 +367,17 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     expect(productSlot('oil_filter', 'воздушный', false)).toBe('oil_filter')
     expect(goodSlot({ book_slot: 'oil_filter', by_type: false }, airFilter)).toBe('oil_filter')
     expect(goodSlot({ book_slot: 'oil_filter' }, airFilter)).toBe('air_filter')
+  })
+
+  it('фильтр без типа в категории фильтров без выбранной строки — по названию товара (задача 003 Н5)', () => {
+    const fuel = { name: 'Фильтр топливный WK 820', attrs: {} }
+    expect(goodSlot({ book_slot: 'oil_filter', slot_by_name: true }, fuel)).toBe('fuel_filter')
+    expect(goodSlot({ book_slot: 'oil_filter', slot_by_name: true, by_type: false }, fuel)).toBe('fuel_filter')
+    expect(goodSlot({ book_slot: 'oil_filter', slot_by_name: true }, { name: 'Фильтр W920', attrs: {} })).toBe('oil_filter')
+    // Тип решает раньше названия; строку выбрал владелец — название не решает.
+    expect(goodSlot({ book_slot: 'oil_filter', slot_by_name: true }, { name: 'Фильтр топливный', attrs: { filter_type: 'масляный' } })).toBe('oil_filter')
+    expect(goodSlot({ book_slot: 'oil_filter', slot_by_name: false }, fuel)).toBe('oil_filter')
+    expect(goodSlot({ book_slot: 'oil_filter' }, fuel)).toBe('oil_filter')
   })
 
   it('канистра и разлив одного масла — одним товаром: «4,5 л», с разбивкой по настройке (задача 003 Н5)', () => {

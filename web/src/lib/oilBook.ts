@@ -220,11 +220,10 @@ export function bookGroupsHtml(groups: readonly BookGroup[]): string {
     .join('')
 }
 
-/** Что сделали одной строкой: «Масло 5W-30 · Фильтр W712». */
+/** Что сделали одной строкой, подписью строк (`lineTitle`, задача 003 Н5), как в боте: «Mobil 1 ·
+ *  4 л; W712 (масляный) · 1 шт» — «Прошлая замена» книжки и история в печати книжки. */
 export function recordText(r: OilRecord): string {
-  return recordLines(r)
-    .map((l) => l.text)
-    .join(' · ')
+  return recordLines(r).map(lineTitle).join('; ')
 }
 
 export const slotLabel = (slot: BookSlot): string => BOOK_SLOT_LABELS[slot] ?? slot

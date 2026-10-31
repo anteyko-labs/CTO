@@ -85,6 +85,9 @@ struct CategoryOut {
     points_value: i64,
     /// Строка книжки фильтра — по «Типу» товара; «Тип» выключен — от категории (задача 002 П10).
     by_type: bool,
+    /// Категория фильтров без выбранной строки книжки: товар без типа — по своему названию
+    /// (`oil_book::product_slot`, задача 003 Н5).
+    slot_by_name: bool,
     /// «Скрыть категорию» (задача 003 Н10): скрытая не попадает в выбор; видна в «Категориях».
     archived: bool,
 }
@@ -174,15 +177,7 @@ fn book_slot_by_name(kind: &str, name: &str) -> Option<&'static str> {
     if kind != "filter" {
         return None;
     }
-    [
-        ("воздуш", "air_filter"),
-        ("салон", "cabin_filter"),
-        ("топлив", "fuel_filter"),
-        ("масл", "oil_filter"),
-    ]
-    .into_iter()
-    .find(|(word, _)| n.contains(word))
-    .map(|(_, slot)| slot)
+    crate::api::oil_book::filter_slot_by_name(&n)
 }
 
 fn attr(key: &str, label: &str, kind: &str, options: &[&str]) -> AttributeDef {
@@ -284,7 +279,8 @@ async fn list_categories(
         CategoryOut,
         r#"select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                   c.book_interval_km, c.book_interval_days, c.points_mode, c.points_value,
-                  category_by_type(c.attributes) as "by_type!", c.archived
+                  category_by_type(c.attributes) as "by_type!",
+                  (c.kind = 'filter' and c.book_slot is null) as "slot_by_name!", c.archived
            from categories c where $1 or not c.archived order by c.archived, c.name"#,
         q.all
     )
@@ -364,6 +360,7 @@ async fn create_category(
     )
     .await?;
     tx.commit().await?;
+    let slot_by_name = req.kind == "filter" && !explicit;
     Ok(Json(CategoryOut {
         id,
         name,
@@ -375,6 +372,7 @@ async fn create_category(
         points_mode: "inherit".into(),
         points_value: 0,
         by_type: !defs.iter().any(|d| d.key == "filter_type" && !d.enabled),
+        slot_by_name,
         archived: false,
     }))
 }
@@ -421,7 +419,8 @@ async fn update_category(
     let before = sqlx::query!(
         r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days,
                   c.kind, c.name, c.points_mode, c.points_value, c.attributes,
-                  category_by_type(c.attributes) as "by_type!", c.archived
+                  category_by_type(c.attributes) as "by_type!",
+                  (c.kind = 'filter' and c.book_slot is null) as "slot_by_name!", c.archived
            from categories c where c.id = $1 for update"#,
         id
     )
@@ -488,7 +487,8 @@ async fn update_category(
            returning id, name, kind, attributes,
                      coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                      book_interval_km, book_interval_days, points_mode, points_value,
-                     category_by_type(attributes) as "by_type!", archived"#,
+                     category_by_type(attributes) as "by_type!",
+                     (kind = 'filter' and book_slot is null) as "slot_by_name!", archived"#,
         id,
         name,
         attributes,

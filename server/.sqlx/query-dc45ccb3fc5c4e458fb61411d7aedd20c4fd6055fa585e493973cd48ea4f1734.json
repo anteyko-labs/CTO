@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\", c.book_interval_km, c.book_interval_days,\n                  c.kind, c.name, c.points_mode, c.points_value, c.attributes,\n                  category_by_type(c.attributes) as \"by_type!\", c.archived\n           from categories c where c.id = $1 for update",
+  "query": "select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\", c.book_interval_km, c.book_interval_days,\n                  c.kind, c.name, c.points_mode, c.points_value, c.attributes,\n                  category_by_type(c.attributes) as \"by_type!\",\n                  (c.kind = 'filter' and c.book_slot is null) as \"slot_by_name!\", c.archived\n           from categories c where c.id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -50,6 +50,11 @@
       },
       {
         "ordinal": 9,
+        "name": "slot_by_name!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
         "name": "archived",
         "type_info": "Bool"
       }
@@ -69,8 +74,9 @@
       false,
       false,
       null,
+      null,
       false
     ]
   },
-  "hash": "1fc79a4dc27daa6780426195e86d0b1b852ed59c02bf4d403df7764139671738"
+  "hash": "dc45ccb3fc5c4e458fb61411d7aedd20c4fd6055fa585e493973cd48ea4f1734"
 }

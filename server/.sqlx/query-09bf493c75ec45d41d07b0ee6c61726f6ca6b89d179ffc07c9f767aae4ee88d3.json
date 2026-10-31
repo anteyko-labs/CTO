@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select p.id as product_id, p.name, c.id as category_id,\n                  coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                  case when category_by_type(c.attributes) then p.attrs ->> 'filter_type' end as filter_type,\n                  l.kind, l.qty, p.container_ml\n           from sale_lines l\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id\n           where l.sale_id = $1 and not l.gift\n           order by l.line_no",
+  "query": "select p.id as product_id, p.name, c.id as category_id,\n                  coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                  case when category_by_type(c.attributes) then p.attrs ->> 'filter_type' end as filter_type,\n                  (c.kind = 'filter' and c.book_slot is null) as \"slot_by_name!\",\n                  l.kind, l.qty, p.container_ml\n           from sale_lines l\n           join products p on p.id = l.product_id\n           join categories c on c.id = p.category_id\n           where l.sale_id = $1 and not l.gift\n           order by l.line_no",
   "describe": {
     "columns": [
       {
@@ -30,16 +30,21 @@
       },
       {
         "ordinal": 5,
+        "name": "slot_by_name!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
         "name": "kind",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "qty",
         "type_info": "Int8"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "container_ml",
         "type_info": "Int8"
       }
@@ -55,10 +60,11 @@
       false,
       null,
       null,
+      null,
       false,
       false,
       true
     ]
   },
-  "hash": "d9d5add9d03bd6204b71d97811662e15322fff82171b832efc5d1ccce572211f"
+  "hash": "09bf493c75ec45d41d07b0ee6c61726f6ca6b89d179ffc07c9f767aae4ee88d3"
 }

@@ -1450,7 +1450,7 @@ async fn fuel_filter_category_without_slot_gets_it_by_name(pool: PgPool) {
         .await
         .unwrap();
     }
-    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version == 80) {
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version == 85) {
         sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
     }
     assert_eq!(
@@ -1462,5 +1462,67 @@ async fn fuel_filter_category_without_slot_gets_it_by_name(pool: PgPool) {
     assert_eq!(
         stored_book_slot(&pool, chosen).await.as_deref(),
         Some("oil_filter")
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn untyped_fuel_filter_in_plain_category_by_its_name(pool: PgPool) {
+    // Задача 003 Н5: «Фильтр топливный WK 820» без «Типа» в общей категории «Фильтры» (строка
+    // книжки не выбрана) — топливный по названию товара, как категория в миграции 0085, а не
+    // масляный на срок масла. Товар без подсказки в названии — как был, масляный.
+    let mut p = Point::new(pool).await;
+    let (_, cats) = call(&p.app, "GET", "/api/v1/categories", &p.owner, None).await;
+    let filters = cats
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Фильтры")
+        .unwrap()
+        .clone();
+    assert_eq!(filters["slot_by_name"], json!(true));
+    for (key, name) in [
+        ("fuel_n", "Фильтр топливный WK 820"),
+        ("plain_n", "Фильтр W920"),
+    ] {
+        let made = ok(
+            &p.app,
+            "POST",
+            "/api/v1/products",
+            &p.owner,
+            json!({ "op_id": Uuid::now_v7(), "category_id": filters["id"], "name": name,
+                    "sale_price_tyiyn": 40_000 }),
+        )
+        .await;
+        p.goods.insert(key, (made["id"].clone(), 40_000));
+    }
+    let sale = p
+        .sell(
+            130_000,
+            &[("fuel_n", "piece", 1), ("plain_n", "piece", 1)],
+            &["oil"],
+            json!([]),
+        )
+        .await;
+    let b = p.book().await;
+    let rec = b["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["sale_id"] == sale["id"])
+        .unwrap()
+        .clone();
+    let lines: Vec<(&str, &str)> = rec["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| (l["slot"].as_str().unwrap(), l["text"].as_str().unwrap()))
+        .collect();
+    assert!(
+        lines.contains(&("fuel_filter", "Фильтр топливный WK 820 · 1 шт")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&("oil_filter", "Фильтр W920 · 1 шт")),
+        "{lines:?}"
     );
 }

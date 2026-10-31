@@ -1353,8 +1353,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           // Запись этого чека есть — панель «Записано в масляную книжку» видна всегда (задача 003 Н5).
           if (!saleRecordOf(book, sale.id)) return
           setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
-          // Печатать нечего (только «прочее», только фильтры без настройки) — чек книжки не печатается
-          // (ADR-130, ADR-131); сам — по настройке.
+          // Печатать нечего (только фильтры при выключенных фильтрах, только работы без срока) — чек
+          // книжки не печатается (ADR-130, `saleCheckOf`); «прочее» со сроком печатается (задача 003
+          // Н5); сам — по настройке.
           if (!prefs.auto_book || !saleCheckOf(book, sale.id, prefs)) return
           return printOilBook(book, { client, master: sale.master_name, saleId: sale.id, print: prefs })
         })

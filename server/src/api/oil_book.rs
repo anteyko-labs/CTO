@@ -276,9 +276,31 @@ fn follows_oil(slot: &str) -> bool {
     matches!(slot, "oil_filter" | "air_filter" | "cabin_filter")
 }
 
+/// Вид фильтра по названию — категории (`catalog::book_slot_by_name`, миграция 0085) или товара:
+/// воздушный, салонный, топливный, масляный; без подсказки — `None`. Касса — то же правило
+/// (`nextChange.ts`, `filterSlotByName`).
+pub fn filter_slot_by_name(name: &str) -> Option<&'static str> {
+    let n = name.to_lowercase();
+    [
+        ("воздуш", "air_filter"),
+        ("салон", "cabin_filter"),
+        ("топлив", "fuel_filter"),
+        ("масл", "oil_filter"),
+    ]
+    .into_iter()
+    .find(|(word, _)| n.contains(word))
+    .map(|(_, slot)| slot)
+}
+
 /// Строка книжки товара: по категории, а у фильтров — по типу фильтра товара, если он указан
-/// (одна категория «Фильтры» на все виды).
-pub fn product_slot(category_slot: &str, filter_type: Option<&str>) -> Option<&'static str> {
+/// (одна категория «Фильтры» на все виды). Типа нет (или «Тип» выключен), а строку книжки категории
+/// фильтров владелец не выбирал — по названию товара (`name`): «Фильтр топливный WK 820» в общей
+/// категории «Фильтры» — топливный, не масляный на срок масла (задача 003 Н5).
+pub fn product_slot(
+    category_slot: &str,
+    filter_type: Option<&str>,
+    name: Option<&str>,
+) -> Option<&'static str> {
     let by_category = SLOTS.iter().copied().find(|s| *s == category_slot)?;
     if by_category.ends_with("_filter") {
         let by_type = match filter_type.map(str::trim) {
@@ -288,7 +310,11 @@ pub fn product_slot(category_slot: &str, filter_type: Option<&str>) -> Option<&'
             Some("топливный") => Some("fuel_filter"),
             _ => None,
         };
-        return Some(by_type.unwrap_or(by_category));
+        return Some(
+            by_type
+                .or_else(|| name.and_then(filter_slot_by_name))
+                .unwrap_or(by_category),
+        );
     }
     Some(by_category)
 }
@@ -546,6 +572,7 @@ pub async fn record_from_sale(
         r#"select p.id as product_id, p.name, c.id as category_id,
                   coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                   case when category_by_type(c.attributes) then p.attrs ->> 'filter_type' end as filter_type,
+                  (c.kind = 'filter' and c.book_slot is null) as "slot_by_name!",
                   l.kind, l.qty, p.container_ml
            from sale_lines l
            join products p on p.id = l.product_id
@@ -564,7 +591,11 @@ pub async fn record_from_sale(
         let slot = if r.book_slot == "none" {
             slot_by_product_name(&r.name)
         } else {
-            product_slot(&r.book_slot, r.filter_type.as_deref())
+            product_slot(
+                &r.book_slot,
+                r.filter_type.as_deref(),
+                r.slot_by_name.then_some(r.name.as_str()),
+            )
         };
         let Some(slot) = slot else {
             continue;
@@ -2263,6 +2294,25 @@ async fn edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_slot_by_type_then_product_name() {
+        // Тип решает; без типа в категории без выбранной строки — название товара (задача 003 Н5).
+        let fuel = Some("Фильтр топливный WK 820");
+        assert_eq!(
+            product_slot("oil_filter", Some("воздушный"), fuel),
+            Some("air_filter")
+        );
+        assert_eq!(product_slot("oil_filter", None, fuel), Some("fuel_filter"));
+        assert_eq!(
+            product_slot("oil_filter", None, Some("Фильтр W712")),
+            Some("oil_filter")
+        );
+        // Строку выбрал владелец — название не передаётся.
+        assert_eq!(product_slot("oil_filter", None, None), Some("oil_filter"));
+        assert_eq!(product_slot("oil", None, fuel), Some("oil"));
+        assert_eq!(product_slot("none", None, fuel), None);
+    }
 
     #[test]
     fn fluid_slot_by_product_name() {
