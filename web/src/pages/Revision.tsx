@@ -35,6 +35,7 @@ import {
   type Seen,
 } from '../lib/revisionCount'
 import {
+  browserLocks,
   cleanQueues,
   closedText,
   newScan,
@@ -43,6 +44,7 @@ import {
   queueResolve,
   queueToSend,
   queueWithout,
+  queueWriter,
   readQueue,
   scansText,
   sendOutcome,
@@ -51,7 +53,7 @@ import {
   unsentCount,
   unsentFirstText,
   unsentText,
-  updateQueue,
+  withQueueLock,
   type QueuedScan,
   type SendOutcome,
 } from '../lib/revisionQueue'
@@ -306,30 +308,24 @@ function Draft({
   const revId = rev.head.id
   const user = { id: me.id, name: me.full_name }
   const [queue, setQueue] = useState<QueuedScan[]>(() => readQueue(localStorage, revId, me.id) ?? [])
-  const queueNow = useRef(queue)
+  /** Запись — слияние со свежей очередью из хранилища под блокировкой вкладок: скан другой вкладки
+   *  не затирается; на экране изменение сразу. */
+  const [writer] = useState(() => queueWriter(localStorage, revId, user, browserLocks(), setQueue))
   /** Свои сканы, которые сейчас отправляются впервые: ещё не «не отправлено». */
   const [fresh] = useState(() => new Set<string>())
-  /** Запись — слияние со свежей очередью из хранилища: скан другой вкладки не затирается. */
-  const putQueue = (f: (q: QueuedScan[]) => QueuedScan[]) => {
-    queueNow.current = updateQueue(localStorage, revId, user, f, queueNow.current)
-    setQueue(queueNow.current)
-  }
+  const putQueue = (f: (q: QueuedScan[]) => QueuedScan[]) => void writer.put(f)
   /** Неотправленные сканы этой ревизии под другими пользователями этого устройства — не отправляются. */
   const [others, setOthers] = useState(() => otherQueues(localStorage, revId, me.id))
   // Другая вкладка изменила очередь (свой скан, отправила) — отметки ⏳ здесь те же.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== null && !e.key.startsWith('avtodom.revision.unsent.')) return
-      const q = readQueue(localStorage, revId, me.id)
-      if (q) {
-        queueNow.current = q
-        setQueue(q)
-      }
+      writer.reload()
       setOthers(otherQueues(localStorage, revId, me.id))
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
-  }, [revId, me.id])
+  }, [writer, revId, me.id])
   /** Сканы из очереди, которые сервер окончательно не принял: на экране, пока не нажмут «Понятно». */
   const [closedLost, setClosedLost] = useState(0)
   const [lostNotes, setLostNotes] = useState<string[]>([])
@@ -422,13 +418,13 @@ function Draft({
     // из очереди ушла бы после итога и прибавилась к нему. Сканы уходят первыми в той же цепочке
     // записей строки и, записавшись, входят в сверку как свои (человек их видел с отметкой ⏳);
     // не ушли — итог не записывается, число остаётся в поле.
-    const before = mode === 'set' ? queueNow.current.filter((x) => x.productId === id).map((x) => x.opId) : []
-    for (const s of queueNow.current) if (before.includes(s.opId) && !inflight.current.has(s.opId)) void sendScan(s, 0)
+    const before = mode === 'set' ? writer.current.filter((x) => x.productId === id).map((x) => x.opId) : []
+    for (const s of writer.current) if (before.includes(s.opId) && !inflight.current.has(s.opId)) void sendScan(s, 0)
     const gate =
       before.length === 0
         ? undefined
         : () => {
-            const left = queueNow.current.filter((x) => before.includes(x.opId)).length
+            const left = writer.current.filter((x) => before.includes(x.opId)).length
             if (left > 0) throw new Error(unsentFirstText(left))
           }
     const write = send(id, l.counted_qty, qty, mode, opId, 2, gate)
@@ -491,7 +487,7 @@ function Draft({
     }
     fresh.delete(s.opId)
     if (outcome === 'ok' || outcome === 'refused') putQueue((q) => queueWithout(q, [s.opId]))
-    else setQueue([...queueNow.current])
+    else setQueue([...writer.current])
     if (outcome === 'ok') setNeedLogin(false)
     if (res) applySaved(productId, s.qty, 'add', res)
     return outcome
@@ -543,9 +539,9 @@ function Draft({
     if (flushing.current) return
     flushing.current = true
     try {
-      for (const s of queueToSend(queueNow.current, inflight.current)) {
+      for (const s of queueToSend(writer.current, inflight.current)) {
         // Пока шли прошлые, скан могли отправить «= итог» строки или другая вкладка.
-        if (!queueNow.current.some((x) => x.opId === s.opId)) continue
+        if (!writer.current.some((x) => x.opId === s.opId)) continue
         const r = await sendScan(s, 0)
         if (r === 'wait' || r === 'login') break
       }
@@ -577,7 +573,7 @@ function Draft({
   useEffect(() => {
     if (!draft) return
     const refresh = () => {
-      if (queueNow.current.some((x) => !fresh.has(x.opId))) void flushNow.current()
+      if (writer.current.some((x) => !fresh.has(x.opId))) void flushNow.current()
       if (document.visibilityState !== 'visible' || writes.current.size > 0) return
       void reload()
     }
@@ -592,7 +588,7 @@ function Draft({
       window.removeEventListener('online', online)
       stop()
     }
-  }, [revId, draft, reload, fresh])
+  }, [revId, draft, reload, fresh, writer])
 
   /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
@@ -606,7 +602,7 @@ function Draft({
       qty === null &&
       own.base(id, Number.MAX_SAFE_INTEGER) === null &&
       !writes.current.has(id) &&
-      !queueNow.current.some((x) => x.productId === id)
+      !writer.current.some((x) => x.productId === id)
     )
       return dropEdit(id)
     save(l, qty, mode, ops.take(id, inputKey(mode, qty)))
@@ -1242,8 +1238,9 @@ function Revision() {
         .filter((h) => h.status !== 'draft' && h.id !== openNow.current)
         .map((h) => [h.id, { number: h.number, status: h.status === 'posted' ? ('posted' as const) : ('cancelled' as const) }]),
     )
-    const lost = cleanQueues(localStorage, closed)
-    if (lost.length > 0) setLostClosed((was) => [...was.filter((x) => !lost.some((y) => y.revisionId === x.revisionId)), ...lost])
+    void withQueueLock(browserLocks(), () => cleanQueues(localStorage, closed)).then((lost) => {
+      if (lost.length > 0) setLostClosed((was) => [...was.filter((x) => !lost.some((y) => y.revisionId === x.revisionId)), ...lost])
+    })
   }, [list.data])
   const onFresh = useCallback((update: (r: RevisionOut) => RevisionOut) => setRev((r) => (r ? update(r) : r)), [setRev])
   const reloadRev = useCallback(async () => {

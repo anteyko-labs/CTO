@@ -13,6 +13,8 @@ import {
   queueResolve,
   queueToSend,
   queueWithout,
+  queueWriter,
+  QUEUE_LOCK,
   readQueue,
   scansText,
   sendOutcome,
@@ -22,6 +24,8 @@ import {
   unsentFirstText,
   unsentText,
   updateQueue,
+  withQueueLock,
+  type QueueLocks,
   type QueuedScan,
 } from './revisionQueue'
 
@@ -46,6 +50,41 @@ const byCode = (opId: string, barcode: string, at = NOW): QueuedScan => newScan(
 const AIBEK = { id: 'u1', name: 'Айбек' }
 const NURLAN = { id: 'u2', name: 'Нурлан' }
 const none = new Set<string>()
+
+/** Блокировка как `navigator.locks`: одна на имя, по очереди запросов, выдаётся не сразу. */
+function fakeLocks() {
+  const waiting: (() => void)[] = []
+  let busy = false
+  const names: string[] = []
+  const next = () => {
+    const go = waiting.shift()
+    if (go) go()
+    else busy = false
+  }
+  const locks: QueueLocks & { held: () => boolean; names: string[] } = {
+    names,
+    held: () => busy,
+    request(name, callback) {
+      names.push(name)
+      return new Promise((resolve, reject) => {
+        const go = () => {
+          busy = true
+          // Как в браузере: колбэк — в отдельной задаче, а не сразу при запросе.
+          void Promise.resolve()
+            .then(callback)
+            .then(resolve, reject)
+            .finally(next)
+        }
+        if (busy) waiting.push(go)
+        else {
+          busy = true
+          setTimeout(go, 0)
+        }
+      })
+    },
+  }
+  return locks
+}
 
 describe('очередь неотправленных сканов', () => {
   it('тот же скан второй раз не встаёт; убираются только свои отправленные', () => {
@@ -171,5 +210,83 @@ describe('очередь неотправленных сканов', () => {
     expect(scansText(5)).toBe('5 сканов')
     expect(unsentFirstText(1)).toMatch(/^Сначала отправится 1 неотправленный скан этой строки/)
     expect(unsentFirstText(3)).toMatch(/^Сначала отправятся 3 неотправленных скана этой строки/)
+  })
+
+  it('две вкладки под блокировкой: хранилище меняется только под ней, сканы обеих вкладок целы', async () => {
+    const mem = memory()
+    const locks = fakeLocks()
+    // Хранилище, которое помнит, писали ли в него без блокировки.
+    let outside = 0
+    const store = {
+      ...mem,
+      getItem: (k: string) => {
+        if (!locks.held()) outside++
+        return mem.getItem(k)
+      },
+      setItem: (k: string, v: string) => {
+        if (!locks.held()) outside++
+        mem.setItem(k, v)
+      },
+      removeItem: (k: string) => {
+        if (!locks.held()) outside++
+        mem.removeItem(k)
+      },
+    }
+    const shown1: string[][] = []
+    const tab1 = queueWriter(store, 'rev', AIBEK, locks, (q) => shown1.push(q.map((x) => x.opId)))
+    const tab2 = queueWriter(store, 'rev', AIBEK, locks, () => {})
+    outside = 0 // открытие экрана читает без блокировки — это не запись
+    const w1 = tab1.put((q) => queueAdd(q, scan('a')))
+    const w2 = tab2.put((q) => queueAdd(q, scan('b')))
+    const w3 = tab1.put((q) => queueAdd(q, scan('c')))
+    // На экране — сразу, хотя блокировка ещё не далась.
+    expect(tab1.current.map((x) => x.opId)).toEqual(['a', 'c'])
+    expect(mem.data.size).toBe(0)
+    await Promise.all([w1, w2, w3])
+    expect(outside).toBe(0)
+    expect(locks.names).toEqual([QUEUE_LOCK, QUEUE_LOCK, QUEUE_LOCK])
+    expect(readQueue(mem, 'rev', AIBEK.id)?.map((x) => x.opId)).toEqual(['a', 'b', 'c'])
+    // Запись первой вкладки дошла раньше скана «c» — на экране он не пропадал.
+    expect(shown1.slice(1).every((ids) => ids.includes('a') && ids.includes('c'))).toBe(true)
+    // Вкладка 1 узнала о скане вкладки 2 по событию `storage`.
+    tab1.reload()
+    expect(tab1.current.map((x) => x.opId)).toEqual(['a', 'b', 'c'])
+    // Отправила свои — остался только чужой.
+    await tab1.put((q) => queueWithout(q, ['a', 'c']))
+    expect(readQueue(mem, 'rev', AIBEK.id)?.map((x) => x.opId)).toEqual(['b'])
+  })
+
+  it('перечитывание при ждущей записи: своё изменение остаётся поверх', async () => {
+    const store = memory()
+    const locks = fakeLocks()
+    const tab = queueWriter(store, 'rev', AIBEK, locks, () => {})
+    const w = tab.put((q) => queueAdd(q, scan('a')))
+    updateQueue(store, 'rev', AIBEK, (q) => queueAdd(q, scan('b')), []) // другая вкладка
+    tab.reload()
+    expect(tab.current.map((x) => x.opId)).toEqual(['b', 'a'])
+    await w
+    expect(tab.current.map((x) => x.opId)).toEqual(['b', 'a'])
+    expect(readQueue(store, 'rev', AIBEK.id)?.map((x) => x.opId)).toEqual(['b', 'a'])
+  })
+
+  it('блокировки нет или она не далась — пишется сразу, один раз', async () => {
+    const store = memory()
+    const tab = queueWriter(store, 'rev', AIBEK, null, () => {})
+    void tab.put((q) => queueAdd(q, scan('a')))
+    expect(readQueue(store, 'rev', AIBEK.id)?.map((x) => x.opId)).toEqual(['a'])
+    let runs = 0
+    const broken: QueueLocks = { request: () => Promise.reject(new Error('нет блокировок')) }
+    expect(await withQueueLock(broken, () => ++runs)).toBe(1)
+    expect(runs).toBe(1)
+    // Ошибка самой записи не повторяет её.
+    const fine = fakeLocks()
+    await expect(
+      withQueueLock(fine, () => {
+        runs++
+        throw new Error('сломалось')
+      }),
+    ).rejects.toThrow('сломалось')
+    expect(runs).toBe(2)
+    expect(await withQueueLock(fine, () => 'чистка')).toBe('чистка')
   })
 })

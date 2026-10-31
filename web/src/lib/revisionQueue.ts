@@ -8,7 +8,10 @@
 // Одно устройство — несколько вкладок: каждая запись в хранилище — слияние со свежей очередью из
 // хранилища по op_id (добавить своё, убрать только свои отправленные), а не «вся очередь вкладки
 // поверх»; другие вкладки узнают об изменении по событию `storage`. Один и тот же op_id из двух
-// вкладок сервер записывает один раз.
+// вкладок сервер записывает один раз. Чтение и запись хранилища — под общей для вкладок
+// блокировкой `navigator.locks` (где она есть: только защищённая страница): две вкладки не
+// прочитают одну и ту же очередь одновременно, чтобы затем одна затёрла скан другой. Без неё —
+// пишется сразу, как раньше.
 import { ApiError, noServerAnswer } from './api'
 import { plural } from './format'
 
@@ -110,6 +113,90 @@ export function updateQueue(
     // Память устройства полна или закрыта: очередь остаётся на экране до перезагрузки.
   }
   return next
+}
+
+/** Блокировка записи очереди, общая для вкладок устройства (`navigator.locks`). */
+export interface QueueLocks {
+  request(name: string, callback: () => unknown): Promise<unknown>
+}
+
+/** Одна блокировка на все очереди ревизий: записи редкие, а чистка проходит по всем ключам. */
+export const QUEUE_LOCK = 'avtodom.revision.unsent'
+
+/** `navigator.locks` браузера; нет (старый браузер, страница не по https) — `null`. */
+export function browserLocks(): QueueLocks | null {
+  const locks = typeof navigator === 'undefined' ? undefined : (navigator as { locks?: QueueLocks }).locks
+  return locks && typeof locks.request === 'function' ? locks : null
+}
+
+/**
+ * `fn` — под блокировкой очереди; блокировки нет или она не далась — сразу. `fn` выполняется
+ * ровно один раз.
+ */
+export function withQueueLock<T>(locks: QueueLocks | null, fn: () => T): Promise<T> {
+  let done = false
+  let out: T
+  const run = () => {
+    done = true
+    out = fn()
+    return out
+  }
+  if (!locks) return new Promise<T>((resolve) => resolve(run()))
+  return locks.request(QUEUE_LOCK, run).then(
+    () => out,
+    (e: unknown) => {
+      if (done) throw e
+      return run()
+    },
+  )
+}
+
+type Change = (q: QueuedScan[]) => QueuedScan[]
+
+/** Очередь вкладки: запись — под блокировкой, а на экране изменение сразу. */
+export interface QueueWriter {
+  /** Очередь на экране: записанная и поверх — изменения, которые ждут блокировки. */
+  readonly current: QueuedScan[]
+  /** Изменить: на экране — сразу, в хранилище — слиянием со свежей очередью под блокировкой. */
+  put(change: Change): Promise<void>
+  /** Другая вкладка изменила хранилище — перечитать; свои ждущие изменения остаются поверх. */
+  reload(): void
+}
+
+export function queueWriter(
+  store: Store,
+  revisionId: string,
+  user: { id: string; name: string },
+  locks: QueueLocks | null,
+  onChange: (q: QueuedScan[]) => void,
+): QueueWriter {
+  let stored = readQueue(store, revisionId, user.id) ?? []
+  const pending: Change[] = []
+  let current = stored
+  const show = () => {
+    current = pending.reduce((q, f) => f(q), stored)
+    onChange(current)
+  }
+  return {
+    get current() {
+      return current
+    },
+    put(change) {
+      pending.push(change)
+      show()
+      return withQueueLock(locks, () => {
+        stored = updateQueue(store, revisionId, user, change, stored)
+        pending.splice(pending.indexOf(change), 1)
+        show()
+      })
+    },
+    reload() {
+      const q = readQueue(store, revisionId, user.id)
+      if (!q) return
+      stored = q
+      show()
+    },
+  }
 }
 
 /** Новый скан: товара строки с прибавкой или — без связи — кода, товар которого уточнится. */
