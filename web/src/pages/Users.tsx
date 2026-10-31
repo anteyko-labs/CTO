@@ -3,9 +3,8 @@
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { BotStartLink, startLink } from '../components/BotStartLink'
-import { del, get, newOpId, patch, post, put } from '../lib/api'
-import { formatDateTime } from '../lib/format'
+import { AdminTelegramModal, noReceiptsRight } from '../components/AdminTelegramModal'
+import { get, newOpId, patch, post, put } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import { PERMISSION_GROUPS, PERMISSIONS } from '../lib/permissions'
@@ -223,8 +222,20 @@ export default function Users() {
                     <span className="text-slate-500">{rightsText(u)}</span>
                   )}
                 </td>
-                <td className="px-2 py-2" data-testid="user-telegram">
-                  {u.telegram_linked_at ? <Badge tone="green">привязан</Badge> : <span className="text-slate-400">—</span>}
+                <td className="px-2 py-2" data-testid="user-telegram" onClick={(ev) => u.role === 'admin' && u.active && ev.stopPropagation()}>
+                  {/* Накладные в бот от администратора (задача 003, Н6): привязка — прямо в колонке. */}
+                  {u.role === 'admin' && u.active ? (
+                    <div className="flex flex-col items-start gap-0.5">
+                      <button type="button" className="text-sky-700 hover:underline" data-testid="user-telegram-btn" onClick={() => setTelegram(u)}>
+                        {u.telegram_linked_at ? 'привязан · изменить' : 'Привязать'}
+                      </button>
+                      {noReceiptsRight(u) && <span className="text-xs text-slate-500">нет права «Приход товара» — фото не примутся</span>}
+                    </div>
+                  ) : u.telegram_linked_at ? (
+                    <Badge tone="green">привязан</Badge>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
                 </td>
                 <td className="px-2 py-2">{u.active ? <Badge tone="green">активен</Badge> : <Badge>отключён</Badge>}</td>
                 <td className="overflow-visible! px-2 py-1 text-right" onClick={(ev) => ev.stopPropagation()}>
@@ -247,7 +258,7 @@ export default function Users() {
       </Card>
 
       {telegram && (
-        <TelegramModal
+        <AdminTelegramModal
           user={telegram}
           onClose={() => setTelegram(null)}
           onChanged={() => {
@@ -314,66 +325,5 @@ export default function Users() {
         />
       )}
     </div>
-  )
-}
-
-/** Телеграм администратора (ADR-135): код на 15 минут, ссылка и QR; «Отвязать». Его чат
- *  принимает только фото накладных. */
-function TelegramModal({ user, onClose, onChanged }: { user: UserRow; onClose: () => void; onChanged: () => void }) {
-  const act = useAction()
-  const bot = useLoad(() => get<{ username: string | null }>('/telegram/bot'), [])
-  const [code, setCode] = useState<{ code: string; expires_at: string } | null>(null)
-  return (
-    <Modal title={`Телеграм: ${user.full_name}`} onClose={onClose}>
-      <div className="flex flex-col gap-3 text-sm" data-testid="user-telegram-modal">
-        <div className="text-slate-600">
-          Администратор с правом «Приход товара» присылает в бот фото накладных — они становятся черновиками прихода. Остального в его чате нет.
-        </div>
-        {user.telegram_linked_at && <div>Привязан {formatDateTime(user.telegram_linked_at)}</div>}
-        {code ? (
-          <div className="flex flex-col gap-2">
-            <div className="text-3xl font-bold tracking-widest" data-testid="user-telegram-code">
-              {code.code}
-            </div>
-            <div className="text-slate-600">
-              Администратор открывает бота и отправляет: <code className="rounded bg-slate-100 px-1">/start {code.code}</code> — код действует до{' '}
-              {formatDateTime(code.expires_at)}.
-            </div>
-            {bot.data?.username && <BotStartLink link={startLink(bot.data.username, code.code)} />}
-          </div>
-        ) : (
-          <Button
-            disabled={act.busy}
-            data-testid="user-telegram-code-btn"
-            onClick={() => void act.run(async () => setCode(await post<{ code: string; expires_at: string }>(`/users/${user.id}/telegram/code`, {})))}
-          >
-            {user.telegram_linked_at ? 'Привязать заново: код' : 'Код привязки'}
-          </Button>
-        )}
-        <ErrorBox error={act.error} />
-        <div className="flex justify-between gap-2">
-          {user.telegram_linked_at ? (
-            <Button
-              variant="danger"
-              disabled={act.busy}
-              onClick={() =>
-                void act.run(async () => {
-                  await del(`/users/${user.id}/telegram`)
-                  toast('Телеграм отвязан')
-                  onChanged()
-                })
-              }
-            >
-              Отвязать
-            </Button>
-          ) : (
-            <span />
-          )}
-          <Button variant="secondary" onClick={onClose}>
-            Закрыть
-          </Button>
-        </div>
-      </div>
-    </Modal>
   )
 }

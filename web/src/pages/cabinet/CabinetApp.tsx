@@ -242,6 +242,38 @@ function Contacts() {
   )
 }
 
+interface CabinetMessage {
+  id: string
+  created_at: string
+  kind: string
+  text: string
+}
+
+/** «Сообщения» (задача 002, П7, П7б): что точка писала фирме об оплатах и долге. */
+function Messages() {
+  const list = useLoad(() => get<CabinetMessage[]>('/client/messages'), [])
+  const rows = list.data ?? []
+  return (
+    <Card className="flex flex-col gap-2">
+      <ErrorBox error={list.error} />
+      {list.loading && !list.data ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>Сообщений пока нет — здесь появятся «Получили оплату» и долг на 1-е число</Empty>
+      ) : (
+        <ul className="flex flex-col divide-y divide-slate-100" data-testid="cabinet-messages">
+          {rows.map((m) => (
+            <li key={m.id} className="py-2 text-sm">
+              <div className="text-xs text-slate-500">{formatDateTime(m.created_at)}</div>
+              <div className="whitespace-pre-wrap">{m.text}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
 function Act({ me }: { me: Me }) {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState(todayBishkek())
@@ -308,7 +340,7 @@ export default function CabinetApp() {
       }),
     [],
   )
-  const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act'>('sales')
+  const [tab, setTab] = useState<'sales' | 'contacts' | 'cars' | 'act' | 'messages'>('sales')
   useEffect(() => {
     document.title = 'Кабинет клиента — Avtodom'
   }, [])
@@ -376,13 +408,14 @@ export default function CabinetApp() {
             </div>
           )}
         </Card>
-        <div className="inline-grid grid-cols-4 overflow-hidden rounded-md border border-slate-300 text-sm">
+        <div className="inline-grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm sm:grid-cols-5">
           {(
             [
               ['sales', 'Покупки'],
               ['contacts', 'Работники'],
               ['cars', 'Машины'],
               ['act', 'Акт сверки'],
+              ['messages', 'Сообщения'],
             ] as const
           ).map(([k, label]) => (
             <button
@@ -399,6 +432,7 @@ export default function CabinetApp() {
         {tab === 'contacts' && <Contacts />}
         {tab === 'cars' && <OilBookList path="/client/oil-book" editable={false} />}
         {tab === 'act' && <Act me={m} />}
+        {tab === 'messages' && <Messages />}
       </main>
       <Toaster />
     </div>
