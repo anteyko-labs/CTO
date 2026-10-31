@@ -30,11 +30,13 @@ const ACTION: &[&str] = &["search", "total", "pay", "more", "hidden"];
 const BAR: &[&str] = &["bar", "more", "hidden"];
 /// «Выйти из режима кассы» не скрывается: без неё из режима не выйти.
 const EXIT: &[&str] = &["bar", "more"];
+/// «Наличные ↔ QR» (задача 003): и в полосе сверху, и среди действий.
+const PAY_FIX: &[&str] = &["bar", "search", "total", "pay", "more", "hidden"];
 
 /// Кнопки режима кассы: ключ, допустимые места, место по умолчанию — нынешняя раскладка
 /// (SPEC-29 «Раскладка»). Порядок списка — порядок по умолчанию. Тот же список — в
 /// `web/src/lib/cashierLayout.ts` (тест сверяет ключи и места по умолчанию).
-pub const BUTTONS: [(&str, &[&str], &str); 15] = [
+pub const BUTTONS: [(&str, &[&str], &str); 16] = [
     ("debt_payment", ACTION, "search"),
     ("expense", ACTION, "search"),
     ("battery_intake", ACTION, "search"),
@@ -52,6 +54,8 @@ pub const BUTTONS: [(&str, &[&str], &str); 15] = [
     ("keyboard", BAR, "bar"),
     ("fullscreen", BAR, "bar"),
     ("exit", EXIT, "bar"),
+    // «Наличные ↔ QR» открытой смены (задача 003 Н1): по умолчанию скрыта — экран прежний.
+    ("pay_fix", PAY_FIX, "hidden"),
 ];
 
 /// Место одной кнопки; порядок в списке — порядок на экране внутри места.
@@ -261,7 +265,14 @@ mod tests {
         assert!(
             d.buttons
                 .iter()
+                .filter(|b| b.id != "pay_fix")
                 .all(|b| b.place != "more" && b.place != "hidden")
+        );
+        // Новая кнопка «Наличные ↔ QR» скрыта: «Ещё действия…» по умолчанию не появляется.
+        assert!(
+            d.buttons
+                .iter()
+                .any(|b| b.id == "pay_fix" && b.place == "hidden")
         );
         assert!(!d.print_shift_profit);
         assert!(!d.sale_cost_on_till);

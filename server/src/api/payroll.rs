@@ -2524,26 +2524,48 @@ struct SalaryOut {
 /// Вкладка «Оклад» (задача 003 Н11): по каждому работнику с окладом — период дня `date`
 /// (по умолчанию сегодня). Раздел «Расчёт» — по праву `view_payroll`, как «За месяц»; без права
 /// «Заработок кассиров» администратор видит только тех, кому может платить: мастеров не
-/// кассиров (SPEC-30 §6, ADR-151), как в «За день».
+/// кассиров (SPEC-30 §6, ADR-151), как в «За день». Владелец с несколькими филиалами смотрит и
+/// «Все филиалы» (`branch=all`, SPEC-33 §3) — как «За месяц», только просмотр.
 async fn salary_now(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<SalaryQuery>,
-) -> AppResult<Json<SalaryOut>> {
+    Query(scope): Query<crate::api::branches::BranchQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    use crate::api::branches;
     let mut conn = state.pool.acquire().await?;
     crate::auth::require_permission(&mut conn, &user, "view_payroll").await?;
     let see_all = crate::auth::has_permission(&mut conn, &user, "payroll_view_all").await?;
-    let today = today(&mut conn).await?;
-    let date = q.date.unwrap_or(today);
-    let settings = load_settings(&mut conn, user.branch_id).await?;
+    let (date, employee) = (q.date, q.employee_id);
+    Ok(Json(
+        branches::report(&mut conn, &user, &scope, |c, u| {
+            Box::pin(async move {
+                branches::to_json(&salary_data(c, u.branch_id, date, employee, see_all).await?)
+            })
+        })
+        .await?,
+    ))
+}
+
+/// «Оклад» одного филиала на день `date` (по умолчанию сегодня).
+async fn salary_data(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    date: Option<NaiveDate>,
+    employee: Option<Uuid>,
+    see_all: bool,
+) -> AppResult<SalaryOut> {
+    let today = today(&mut *conn).await?;
+    let date = date.unwrap_or(today);
+    let settings = load_settings(&mut *conn, branch_id).await?;
     let mut rows = Vec::new();
-    for e in salary_employees(&mut conn, user.branch_id, q.employee_id).await? {
+    for e in salary_employees(&mut *conn, branch_id, employee).await? {
         if !see_all && (e.is_cashier || !e.is_master) {
             continue;
         }
         if let Some(r) = salary_row(
-            &mut conn,
-            user.branch_id,
+            &mut *conn,
+            branch_id,
             e,
             date,
             settings.salary_show_to_date && date >= today,
@@ -2553,7 +2575,7 @@ async fn salary_now(
             rows.push(r);
         }
     }
-    Ok(Json(SalaryOut { date, today, rows }))
+    Ok(SalaryOut { date, today, rows })
 }
 
 #[derive(Serialize, Deserialize)]

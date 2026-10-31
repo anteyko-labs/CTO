@@ -12,6 +12,7 @@ describe('раскладка режима кассы (задача 003 Н2)', ()
     expect(placed(s, 'total', owner)).toEqual([])
     expect(placed(s, 'bar', owner)).toEqual(['shift_print', 'keyboard', 'fullscreen', 'exit'])
     expect(placed(s, 'more', owner)).toEqual([])
+    expect(placed(s, 'hidden', owner)).toEqual(['pay_fix'])
     expect(s.tiles_dvh).toBe(24)
     expect(s.notes).toBe(1)
     expect(s.print_shift_profit).toBe(false)
@@ -24,6 +25,18 @@ describe('раскладка режима кассы (задача 003 Н2)', ()
     const moved = { ...s, buttons: setPlace(s.buttons, 'no_receipt', 'total') }
     expect(placed(moved, 'total', admin)).toEqual([])
     expect(placed(moved, 'total', owner)).toEqual(['no_receipt'])
+  })
+
+  it('«Наличные ↔ QR» — владельцу и администратору с правом, в любом месте и в полосе', () => {
+    const s = withDefaults({ buttons: [{ id: 'pay_fix', place: 'bar' }] })
+    expect(placed(s, 'bar', owner)).toEqual(['pay_fix', 'shift_print', 'keyboard', 'fullscreen', 'exit'])
+    expect(placed(s, 'bar', admin)).not.toContain('pay_fix')
+    const withRight = { role: 'admin' as const, permissions: ['till_pay_fix' as const] }
+    expect(placed(s, 'bar', withRight)).toContain('pay_fix')
+    const total = { ...s, buttons: setPlace(s.buttons, 'pay_fix', 'total') }
+    expect(placed(total, 'total', withRight)).toEqual(['pay_fix'])
+    // «Частое — у итога» её не трогает: по умолчанию скрыта.
+    expect(placeOf(frequentPreset(DEFAULT_CASHIER), 'pay_fix')).toBe('hidden')
   })
 
   it('неизвестные и повторы отброшены, недостающие — на своих местах', () => {

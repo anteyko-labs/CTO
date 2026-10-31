@@ -11,6 +11,7 @@ import { get } from '../lib/api'
 import { useCan } from '../lib/permissions'
 import { useAction } from '../lib/hooks'
 import { useShiftClose } from './ShiftClose'
+import { CashToBankModal, useCanFixPay } from './PayChange'
 import { printShift } from './shiftPrint'
 import { toast } from './ui'
 import type { Shift } from '../lib/types'
@@ -67,6 +68,9 @@ export function CashierModeBar({
   }, [mayAccept])
   const keyboard = useKeyboardOpen()
   const closer = useShiftClose(() => onShiftChanged?.())
+  // «Наличные ↔ QR» в полосе (задача 003): если владелец поставил кнопку сюда в «Настройки → Касса».
+  const canPayFix = useCanFixPay(Boolean(shift))
+  const [payFix, setPayFix] = useState(false)
   const printing = useAction()
   const printCheck = (id: string) =>
     void printing.run(async () => {
@@ -134,6 +138,18 @@ export function CashierModeBar({
             </button>
           )}
           {buttons.map((id) => {
+            if (id === 'pay_fix')
+              return shift && canPayFix ? (
+                <button
+                  key={id}
+                  type="button"
+                  data-testid="bar-pay-fix"
+                  className="rounded-lg border border-slate-500 px-4 text-base font-medium active:bg-slate-700"
+                  onClick={() => setPayFix(true)}
+                >
+                  Наличные ↔ QR
+                </button>
+              ) : null
             if (id === 'keyboard')
               return (
                 <button
@@ -178,6 +194,17 @@ export function CashierModeBar({
       </div>
       {/* Окна — вне тёмной полосы: у них свои цвета. */}
       {closer.modals}
+      {payFix && shift && (
+        <CashToBankModal
+          shiftId={shift.id}
+          onClose={() => setPayFix(false)}
+          onDone={() => {
+            setPayFix(false)
+            onShiftChanged?.()
+          }}
+          onChanged={() => onShiftChanged?.()}
+        />
+      )}
     </>
   )
 }

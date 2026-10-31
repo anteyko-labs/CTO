@@ -1,10 +1,13 @@
 // Вкладка «Оклад» (задача 003 Н11): по каждому работнику на окладе — его период (с дня расчёта по день
 // до него), ставка, начислено, авансы и оклад, выданные в периоде, долг прошлых периодов и сколько к
 // выплате в день расчёта. Всегда видно — и до «Начислить оклад». Администратор видит только тех, кому
-// платит (мастеров не кассиров); права проверяет сервер.
+// платит (мастеров не кассиров); права проверяет сервер. Владелец с несколькими филиалами смотрит и
+// «Все филиалы» (SPEC-33 §3) — как «За месяц», только просмотр: начислять и платить — в своём филиале.
 import { useState } from 'react'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { branchByRow, branchParam, useAllBranches, type AllBranches } from '../lib/branchReport'
+import { BranchScope } from './BranchScope'
 import { formatDate, somInput, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
@@ -22,14 +25,18 @@ interface SalaryOut {
 const cell = (v: number) => <Money value={v} tone="negative" zero="—" />
 
 export function PayrollSalary() {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const [all, setAll] = useAllBranches(user.role === 'owner' && Boolean(user.several_branches))
+  const owner = user.role === 'owner' && !all
   const can = useCan()
-  const mayPay = can('payroll_pay')
+  const mayPay = !all && can('payroll_pay')
   const [date, setDate] = useState(todayBishkek())
-  const data = useLoad(() => get<SalaryOut>(`/payroll/salary${qs({ date })}`), [date])
+  const data = useLoad(() => get<AllBranches<SalaryOut>>(`/payroll/salary${qs({ date, ...branchParam(all) })}`), [date, all])
+  const branchOf = all ? branchByRow(data.data?.branches, (r) => r.rows, (x) => x.employee_id) : null
   // Администратор без смены не платит: только из кассы смены (задача 003 Н11).
-  const shift = useLoad(() => (owner ? Promise.resolve({ id: 'owner' }) : get<{ id: string } | null>('/shifts/current')), [owner])
-  const noShift = !owner && shift.data === null
+  const isOwner = user.role === 'owner'
+  const shift = useLoad(() => (isOwner ? Promise.resolve({ id: 'owner' }) : get<{ id: string } | null>('/shifts/current')), [isOwner])
+  const noShift = !isOwner && shift.data === null
   const [salary, setSalary] = useState<SalaryNow | null>(null)
   const [paying, setPaying] = useState<SalaryNow | null>(null)
   const today = data.data?.today ?? todayBishkek()
@@ -45,6 +52,9 @@ export function PayrollSalary() {
 
   return (
     <div className="flex flex-col gap-4">
+      <div>
+        <BranchScope user={user} all={all} onChange={setAll} />
+      </div>
       <Card className="flex flex-wrap items-center gap-3">
         <Button variant="secondary" onClick={() => setDate(addMonths(date, -1))} aria-label="Прошлый период">
           ←
@@ -71,7 +81,10 @@ export function PayrollSalary() {
           <Table head={['Сотрудник', 'Период', 'Ставка', 'Начислено', 'Авансом', 'Выдано окладом', 'С прошлых', 'К выплате', '']}>
             {rows.map((r) => (
               <tr key={r.employee_id}>
-                <td className="min-w-36 px-2 py-2 font-medium">{r.full_name}</td>
+                <td className="min-w-36 px-2 py-2 font-medium">
+                  {r.full_name}
+                  {branchOf?.get(r.employee_id) && <div className="text-xs font-normal text-slate-500">{branchOf.get(r.employee_id)}</div>}
+                </td>
                 <td className="px-2 py-2 whitespace-nowrap md:text-right">
                   {periodLabel(r.period_from, r.period_to)}
                   {!isCalendar(r.period_from, r.period_to) && <div className="text-xs text-slate-500">день расчёта {r.salary_day}-е</div>}

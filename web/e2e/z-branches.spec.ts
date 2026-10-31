@@ -76,6 +76,17 @@ test('филиалы: завести, переключить, свои касс�
   await page.getByTestId('scope-branch').click()
   await expect(page.getByTestId('branch-breakdown')).toHaveCount(0)
 
+  // «Оклад» во «Все филиалы» (задача 003): как «За месяц» — только просмотр, без выплат.
+  await page.goto('/payroll')
+  await page.getByRole('button', { name: 'Оклад', exact: true }).click()
+  const salaryAll = page.waitForResponse((r) => r.url().includes('/api/v1/payroll/salary') && r.url().includes('branch=all'))
+  await page.getByTestId('scope-all').click()
+  expect((await salaryAll).status()).toBe(200)
+  await expect(page.getByTestId('scope-all')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Выплатить' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Начислить оклад' })).toHaveCount(0)
+  await page.getByTestId('scope-branch').click()
+
   // Закрыть филиал: история остаётся, изменения в нём недоступны.
   await page.goto('/settings/branches')
   const row = page.getByTestId('branch-row').filter({ hasText: name })

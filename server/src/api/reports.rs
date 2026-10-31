@@ -1534,7 +1534,11 @@ pub struct ServiceOil {
     pub container_ml: Option<i64>,
     pub canisters: i64,
     pub pour_ml: i64,
+    /// Литры — только строки канистрой и розливом (единица мл).
     pub total_ml: i64,
+    /// Штучный товар в категории масла (единица «шт», ADR-139) — отдельно от литров.
+    #[serde(default)]
+    pub pieces: i64,
 }
 
 /// Вид замены за период: сколько раз, сколько заплатили клиенты, сколько начислено мастерам и
@@ -1655,15 +1659,21 @@ pub async fn service_kinds_data(
                                     when d.back then -l.qty else l.qty end), 0)::bigint as "canisters!",
                   coalesce(sum(case when l.kind <> 'pour' then 0
                                     when d.back then -l.qty else l.qty end), 0)::bigint as "pour_ml!",
-                  coalesce(sum(case when d.back then -l.units else l.units end), 0)::bigint as "total_ml!"
+                  coalesce(sum(case when l.kind not in ('container', 'pour') then 0
+                                    when d.back then -l.units else l.units end), 0)::bigint as "total_ml!",
+                  coalesce(sum(case when l.kind <> 'piece' then 0
+                                    when d.back then -l.qty else l.qty end), 0)::bigint as "pieces!"
            from kinds k
            join docs d on d.orig_id = k.orig_id
            join sale_lines l on l.sale_id = d.doc_id and not l.gift and l.product_id is not null
            join products p on p.id = l.product_id
            join categories c on c.id = p.category_id and c.kind = 'oil'
            group by k.service_id, p.id, p.name, p.container_ml
-           having sum(case when d.back then -l.units else l.units end) <> 0
-           order by 7 desc, p.name"#,
+           having sum(case when l.kind not in ('container', 'pour') then 0
+                           when d.back then -l.units else l.units end) <> 0
+               or sum(case when l.kind <> 'piece' then 0
+                           when d.back then -l.qty else l.qty end) <> 0
+           order by 7 desc, 8 desc, p.name"#,
         branch_id,
         from,
         to
@@ -1680,6 +1690,7 @@ pub async fn service_kinds_data(
                 canisters: o.canisters,
                 pour_ml: o.pour_ml,
                 total_ml: o.total_ml,
+                pieces: o.pieces,
             })
             .collect()
     };

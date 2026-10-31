@@ -1132,6 +1132,8 @@ async fn check_kind_rules(
                     "по чеку уже был возврат: исправляется только чек без возвратов".into(),
                 ));
             }
+            // После чека у товара менялась единица (ADR-139): новый чек не повторить.
+            crate::api::product_units::forbid_sale_replay(conn, id).await?;
         }
         Kind::Receipt => {
             let r = sqlx::query!(

@@ -614,6 +614,20 @@ async fn create_service(
     {
         return Err(AppError::Forbidden);
     }
+    // «Цену новой услуги задаёт только владелец» (настройка «Продажи», задача 003): цену
+    // ставит владелец или администратор с правом «Цены товаров и услуг».
+    if !ctx.user.is_owner() && req.price_tyiyn != 0 {
+        let mut c = state.pool.acquire().await?;
+        if sales_settings(&mut c, ctx.user.branch_id)
+            .await?
+            .service_price_owner_only
+            && !crate::auth::has_permission(&mut c, &ctx.user, "prices").await?
+        {
+            return Err(AppError::ForbiddenWith(
+                "цену новой услуги задаёт владелец: заведите услугу с ценой 0".into(),
+            ));
+        }
+    }
     let takeaway = req.takeaway.unwrap_or_else(|| takeaway_by_name(&name));
     check_service_book(
         req.book_slot.as_deref(),
@@ -652,10 +666,17 @@ async fn create_service(
     )
     .execute(&mut *tx)
     .await?;
+    // Услугу завёл администратор — отдельным событием: владелец узнаёт о каждой с ценой
+    // (задача 003, как перелив администратора, ADR-082).
+    let action = if ctx.user.is_owner() {
+        "service.create"
+    } else {
+        "service.create_admin"
+    };
     ops::audit(
         &mut tx,
         &ctx,
-        "service.create",
+        action,
         "service",
         Some(id),
         json!({ "name": name, "price": req.price_tyiyn, "fee": fee, "free_with_oil": req.free_with_oil, "oil_category_id": oil_category_id,
@@ -1410,50 +1431,88 @@ async fn put_labels(
 
 // ---------- Настройки кассы ----------
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 struct SalesSettings {
     /// Ставка мастера за чек с заменой (ADR-027).
+    #[serde(default = "default_oil_change_fee")]
     oil_change_master_fee_tyiyn: i64,
+    /// «Цену новой услуги задаёт только владелец» (задача 003): администратор без права «Цены
+    /// товаров и услуг» заводит услугу с ценой 0, цену ставит владелец. По умолчанию — нет.
+    #[serde(default)]
+    service_price_owner_only: bool,
+}
+
+fn default_oil_change_fee() -> i64 {
+    crate::api::sales::DEFAULT_OIL_CHANGE_FEE
 }
 
 impl Default for SalesSettings {
     fn default() -> Self {
         Self {
-            oil_change_master_fee_tyiyn: crate::api::sales::DEFAULT_OIL_CHANGE_FEE,
+            oil_change_master_fee_tyiyn: default_oil_change_fee(),
+            service_price_owner_only: false,
         }
     }
+}
+
+/// Правка настроек продаж: неприсланное поле остаётся прежним.
+#[derive(Deserialize)]
+struct SalesSettingsPatch {
+    #[serde(default)]
+    oil_change_master_fee_tyiyn: Option<i64>,
+    #[serde(default)]
+    service_price_owner_only: Option<bool>,
+}
+
+async fn sales_settings(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<SalesSettings> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'sales'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(
+        v.and_then(|v| serde_json::from_value::<SalesSettings>(v).ok())
+            .unwrap_or_default(),
+    )
 }
 
 async fn get_sales_settings(
     State(state): State<AppState>,
     user: CurrentUser,
 ) -> AppResult<Json<Value>> {
-    let v = sqlx::query_scalar!(
-        "select value from settings where branch_id = $1 and key = 'sales'",
-        user.branch_id
-    )
-    .fetch_optional(&state.pool)
-    .await?;
-    let settings = v
-        .and_then(|v| serde_json::from_value::<SalesSettings>(v).ok())
-        .unwrap_or_default();
-    Ok(Json(json!(settings)))
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(json!(
+        sales_settings(&mut conn, user.branch_id).await?
+    )))
 }
 
 async fn put_sales_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<SalesSettings>,
+    Json(req): Json<SalesSettingsPatch>,
 ) -> AppResult<Json<Value>> {
     // Ставку оплаты задаёт только владелец (ADR-019).
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
     }
-    if !(0..=100_000).contains(&req.oil_change_master_fee_tyiyn) {
+    if req
+        .oil_change_master_fee_tyiyn
+        .is_some_and(|f| !(0..=100_000).contains(&f))
+    {
         return Err(invalid("ставка за замену от 0 до 1000 сом"));
     }
-    let value = json!(req);
     let mut tx = state.pool.begin().await?;
+    let before = sales_settings(&mut tx, ctx.user.branch_id).await?;
+    let after = SalesSettings {
+        oil_change_master_fee_tyiyn: req
+            .oil_change_master_fee_tyiyn
+            .unwrap_or(before.oil_change_master_fee_tyiyn),
+        service_price_owner_only: req
+            .service_price_owner_only
+            .unwrap_or(before.service_price_owner_only),
+    };
+    let value = json!(after);
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'sales', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,
@@ -1462,15 +1521,17 @@ async fn put_sales_settings(
     )
     .execute(&mut *tx)
     .await?;
-    ops::audit(
-        &mut tx,
-        &ctx,
-        "settings.sales",
-        "settings",
-        None,
-        value.clone(),
-    )
-    .await?;
+    if before != after {
+        ops::audit(
+            &mut tx,
+            &ctx,
+            "settings.sales",
+            "settings",
+            None,
+            json!({ "before": before, "after": after }),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(Json(value))
 }

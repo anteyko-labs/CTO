@@ -666,6 +666,7 @@ async fn owner_links_admin_chat_for_invoice_photos_only(pool: PgPool) {
     let photo = || avtodom_server::api::receipt_drafts::BotFile {
         data: JPEG.to_vec(),
         name: "фото из бота".into(),
+        file_key: None,
     };
     let a =
         avtodom_server::api::receipt_drafts::from_bot_answer(&w.pool, None, 7001, 7001, photo())

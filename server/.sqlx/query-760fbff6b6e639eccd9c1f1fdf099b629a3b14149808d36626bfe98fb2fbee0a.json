@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from bot_photo_seen where chat_id = $1 and file_key = $2 and draft_id is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "760fbff6b6e639eccd9c1f1fdf099b629a3b14149808d36626bfe98fb2fbee0a"
+}

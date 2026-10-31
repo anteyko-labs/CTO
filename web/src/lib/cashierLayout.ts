@@ -23,6 +23,8 @@ export const PLACE_LABELS: Record<Place, string> = {
 
 const ACTION: Place[] = ['search', 'total', 'pay', 'more', 'hidden']
 const BAR: Place[] = ['bar', 'more', 'hidden']
+/** «Наличные ↔ QR» (задача 003): и в полосе сверху, и среди действий. */
+const PAY_FIX: Place[] = ['bar', 'search', 'total', 'pay', 'more', 'hidden']
 
 export type ButtonId =
   | 'debt_payment'
@@ -40,6 +42,7 @@ export type ButtonId =
   | 'keyboard'
   | 'fullscreen'
   | 'exit'
+  | 'pay_fix'
 
 export interface ButtonDef {
   id: ButtonId
@@ -70,6 +73,9 @@ export const BUTTONS: readonly ButtonDef[] = [
   { id: 'keyboard', label: '⌨ Клавиатура', places: BAR, place: 'bar' },
   { id: 'fullscreen', label: 'Во весь экран', places: BAR, place: 'bar' },
   { id: 'exit', label: 'Выйти из режима кассы', places: ['bar', 'more'], place: 'bar' },
+  // «Наличные ↔ QR» открытой смены (задача 003 Н1): владельцу и администратору с правом; по
+  // умолчанию скрыта — экран кассы прежний, окно есть и в «Закрыть смену».
+  { id: 'pay_fix', label: 'Наличные ↔ QR', places: PAY_FIX, place: 'hidden', right: 'till_pay_fix' },
 ]
 
 export interface ButtonPlace {

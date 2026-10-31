@@ -61,7 +61,8 @@ test('настройки кассы: место кнопок, «Ещё дейс�
   await layout.getByLabel('Место: Аккумуляторы на вес').selectOption('hidden')
   await layout.getByLabel('Место: Баллы клиента').selectOption('total')
   await layout.getByLabel('Место: Мелкий расход из кассы').selectOption('more')
-  await expect(page.getByTestId('layout-preview')).toContainText('Скрыто: Аккумуляторы на вес')
+  // «Наличные ↔ QR» по умолчанию скрыта (задача 003): экран кассы прежний.
+  await expect(page.getByTestId('layout-preview')).toContainText('Скрыто: Наличные ↔ QR, Аккумуляторы на вес')
   await page.getByRole('button', { name: 'Сохранить' }).click()
   await expect(page.getByText('Настройки кассы сохранены')).toBeVisible()
   await page.reload()
@@ -183,5 +184,32 @@ test('скидка на кассе: владелец 10 % на чек, экра�
   expect(res.status(), await res.text()).toBe(403)
   expect(await res.text()).toContain('больше предела администратора (5 %)')
   await ctx.close()
+  await resetCashier(page.request)
+})
+
+test('«Наличные ↔ QR» кнопкой режима кассы: в полосе сверху по настройке, окно смены', async ({ page }) => {
+  await login(page)
+  await goodsAndShift(page.request, 'qr')
+  // По умолчанию кнопки нет нигде.
+  await resetCashier(page.request)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Режим кассы', exact: true }).tap()
+  await expect(page.getByTestId('cashier-mode-bar')).toBeVisible()
+  await expect(page.getByTestId('bar-pay-fix')).toHaveCount(0)
+  await expect(page.getByTestId('mode-pay-fix')).toHaveCount(0)
+  // Владелец ставит её в полосу сверху — после перезагрузки она там.
+  await api(page.request, 'PUT', '/settings/cashier', { op_id: crypto.randomUUID(), buttons: [{ id: 'pay_fix', place: 'bar' }] })
+  await page.reload()
+  await page.getByTestId('bar-pay-fix').tap()
+  await expect(page.getByRole('dialog', { name: /Наличные ↔ QR · смена № \d+/ })).toBeVisible()
+  await expect(page.getByTestId('cash-to-bank-tab-sales')).toBeVisible()
+  await page.getByRole('dialog', { name: /Наличные ↔ QR/ }).getByRole('button', { name: 'Закрыть' }).first().tap()
+  await expect(page.getByRole('dialog', { name: /Наличные ↔ QR/ })).toHaveCount(0)
+  // Под поиском — та же кнопка среди действий кассы.
+  await api(page.request, 'PUT', '/settings/cashier', { op_id: crypto.randomUUID(), buttons: [{ id: 'pay_fix', place: 'search' }] })
+  await page.reload()
+  await expect(page.getByTestId('mode-actions').getByTestId('mode-pay-fix')).toBeVisible()
+  await expect(page.getByTestId('bar-pay-fix')).toHaveCount(0)
+  await page.getByTestId('cashier-mode-bar').getByRole('button', { name: 'Выйти из режима кассы' }).tap()
   await resetCashier(page.request)
 })

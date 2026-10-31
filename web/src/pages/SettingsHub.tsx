@@ -11,6 +11,7 @@ import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
 const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean; permission?: Permission }[] = [
   { to: '/settings/cashier', title: 'Касса', text: 'Кнопки режима кассы и их место, скидка и её предел, прибыль в чеке смены', icon: 'cashier', ownerOnly: true },
+  { to: '/settings/sales', title: 'Продажи', text: 'Кто задаёт цену новой услуги; уведомление об услуге от администратора', icon: 'cashier', ownerOnly: true },
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/stock', title: 'Склад', text: 'Цена масла в приходе: за канистру или за литр; срок залежалости', icon: 'stock', ownerOnly: true },
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },

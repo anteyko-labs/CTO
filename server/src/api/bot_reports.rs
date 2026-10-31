@@ -1497,8 +1497,17 @@ pub async fn services_text(
     Ok(lines.join("\n"))
 }
 
-/// Сколько масла: «2 кан. по 4 л + 1,5 л розливом = 9,5 л».
+/// Сколько масла: «2 кан. по 4 л + 1,5 л розливом = 9,5 л»; штучный товар — «3 шт» отдельно.
 fn oil_amount(o: &crate::api::reports::ServiceOil) -> String {
+    let liters = oil_liters(o);
+    match (o.pieces, o.total_ml) {
+        (0, _) => liters,
+        (n, 0) => format!("{n} шт"),
+        (n, _) => format!("{liters}; {n} шт"),
+    }
+}
+
+fn oil_liters(o: &crate::api::reports::ServiceOil) -> String {
     let total = crate::domain::qty::liters(o.total_ml);
     let mut parts = Vec::new();
     if o.canisters != 0 {

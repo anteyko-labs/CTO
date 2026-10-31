@@ -45,3 +45,11 @@ export const branchParam = (all: boolean): { branch?: string } => (all ? { branc
 export function rowsOf<T>(v: T[] | { items: T[] }): T[] {
   return Array.isArray(v) ? v : v.items
 }
+
+/** Филиал каждой строки из разбивки «Все филиалы»: ключ строки → название филиала (например,
+ *  работник во вкладке «Оклад» — строки у работников разных филиалов не складываются). */
+export function branchByRow<T, R>(parts: BranchPart<T>[] | undefined, rows: (report: T) => R[], key: (row: R) => string): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const b of parts ?? []) for (const r of rows(b.report)) m.set(key(r), b.name)
+  return m
+}

@@ -805,6 +805,12 @@ pub async fn reverse_tx(
     if !matches!(d.status.as_str(), "written_off" | "returned") {
         return Err(AppError::Conflict("по браку нет решения".into()));
     }
+    // Брак и решение по нему — в прежних единицах: после пересчёта единицы отмена вернула бы
+    // нерешённый брак в старых единицах (ADR-139, задача 003). Поправка — ревизией.
+    {
+        let target = ops::live_product(conn, d.product_id).await?;
+        crate::api::product_units::forbid_after_doc(conn, target, id).await?;
+    }
     let r = sqlx::query!(
         r#"select x.id, x.kind, x.supplier_id, x.replace_qty, x.replace_tyiyn, x.refund_tyiyn,
                   x.account_id, x.writeoff_tyiyn, x.diff_tyiyn

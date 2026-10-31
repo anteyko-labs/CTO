@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.draft_id from bot_photo_seen s\n           where s.chat_id = $1 and s.file_key = $2 and s.created_at > now() - interval '1 day'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "draft_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e2147e0f2ca901ff217f5abd30904233f61b3b8e2b76a95579fe5be79e63846c"
+}
