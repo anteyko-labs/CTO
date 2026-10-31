@@ -1311,39 +1311,51 @@ pub struct CreateProductReq {
     pub old_catalog_id: Option<Uuid>,
 }
 
+/// Код уже у другого товара — 409 с его названием: экран найдёт товар по коду и продолжит с ним
+/// (задача 003, Н14).
+fn barcode_taken(code: &str, name: &str) -> AppError {
+    AppError::Conflict(format!("штрихкод {code} уже у товара «{name}»"))
+}
+
+/// Название товара, у которого этот код.
+async fn barcode_owner(conn: &mut PgConnection, code: &str) -> AppResult<Option<String>> {
+    Ok(sqlx::query_scalar!(
+        "select p.name from product_barcodes b join products p on p.id = b.product_id where b.code = $1",
+        code
+    )
+    .fetch_optional(conn)
+    .await?)
+}
+
 pub(crate) async fn insert_barcode(
     conn: &mut PgConnection,
     product_id: Uuid,
     code: &str,
     internal: bool,
 ) -> AppResult<()> {
-    let existing = sqlx::query!(
-        "select p.name from product_barcodes b join products p on p.id = b.product_id where b.code = $1",
-        code
-    )
-    .fetch_optional(&mut *conn)
-    .await?;
-    if let Some(e) = existing {
-        return Err(AppError::Conflict(format!(
-            "штрихкод {code} уже у товара «{}»",
-            e.name
-        )));
+    if let Some(name) = barcode_owner(&mut *conn, code).await? {
+        return Err(barcode_taken(code, &name));
     }
-    sqlx::query!(
+    // Тот же код в ту же долю секунды заводит другой (другой филиал — другой замок): вставка
+    // упрётся в уникальность. Точка сохранения оставляет транзакцию живой, чтобы назвать товар.
+    let mut sp = sqlx::Connection::begin(&mut *conn).await?;
+    let inserted = sqlx::query!(
         "insert into product_barcodes (code, product_id, internal) values ($1, $2, $3)",
         code,
         product_id,
         internal
     )
-    .execute(&mut *conn)
-    .await
-    .map_err(|e| {
-        if is_unique_violation(&e) {
-            AppError::Conflict(format!("штрихкод {code} уже занят"))
-        } else {
-            e.into()
+    .execute(&mut *sp)
+    .await;
+    match inserted {
+        Ok(_) => sp.commit().await?,
+        Err(e) if is_unique_violation(&e) => {
+            sp.rollback().await?;
+            let name = barcode_owner(&mut *conn, code).await?.unwrap_or_default();
+            return Err(barcode_taken(code, &name));
         }
-    })?;
+        Err(e) => return Err(e.into()),
+    }
     Ok(())
 }
 

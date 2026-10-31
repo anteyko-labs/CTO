@@ -1,7 +1,7 @@
 // Ревизия склада: пересчёт сканером по категориям, проведение владельцем (SPEC-15). Один экран с
 // «Работой с товарами» (SPEC-20): вкладки «Ревизия» и «Сканер товаров»; в ревизию вписывают и
 // товар, которого нет в программе — карточка заводится с найденным количеством (SPEC-29 §10).
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
@@ -42,6 +42,8 @@ interface Line {
   value_delta_tyiyn?: number
   /** Вязкость масла из карточки (SPEC-36 §13). */
   viscosity?: string | null
+  /** Кто записал строку последним: считают несколько человек с разных устройств (задача 003, Н14). */
+  counted_by?: string | null
 }
 
 interface RevisionOut {
@@ -86,6 +88,9 @@ function parseCount(l: Line, text: string): number | null {
 /** Посчитанное в поле: литры или кг — с запятой; граммы в поле не показываются (ошибка ×1000). */
 const countInput = (l: Line, q: number): string => (l.unit === 'ml' ? litersInput(q) : l.unit === 'g' ? kgInput(q) : String(q))
 
+/** Строки ревизии перечитываются раз в 5 с и при возврате на вкладку: каждый видит общий итог. */
+const REFRESH_MS = 5_000
+
 /** Вязкость строки: из карточки; у масла без неё — из названия, с пометкой. */
 function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string; fromName: boolean } | null {
   if (l.viscosity) return { v: l.viscosity, fromName: false }
@@ -94,8 +99,18 @@ function viscosityOf(l: Pick<Line, 'unit' | 'name' | 'viscosity'>): { v: string;
   return v ? { v, fromName: true } : null
 }
 
-function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) {
-  const owner = useUser().role === 'owner'
+function Draft({
+  rev,
+  onChanged,
+  onFresh,
+}: {
+  rev: RevisionOut
+  onChanged: () => void
+  /** Свежая ревизия с сервера (свой скан или чужие с других устройств) — показать её. */
+  onFresh: (update: (r: RevisionOut) => RevisionOut) => void
+}) {
+  const me = useUser()
+  const owner = me.role === 'owner'
   const [scan, setScan] = useState('')
   const [filter, setFilter] = useState('')
   const [edits, setEdits] = useState<Record<string, string>>({})
@@ -136,25 +151,73 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   // Записи одной строки — по очереди: вторая правка уходит после ответа на первую, иначе на
   // загруженном сервере первая могла дойти позже и затереть вторую (12,5 вместо 12,6).
   const writes = useRef(new Map<string, Promise<unknown>>())
+  /** Счётчик записей: перечитанное с сервера не показывается, если за время запроса что-то записали. */
+  const epoch = useRef(0)
 
-  const save = (l: Line, qty: number | null) => {
+  // Общий итог с других устройств: перечитываем, пока ничего не пишется; поле, которое сейчас
+  // правят, не затирается — правка живёт в `edits`, пока её не запишут.
+  const revId = rev.head.id
+  useEffect(() => {
+    if (!draft) return
+    let alive = true
+    const refresh = () => {
+      if (document.visibilityState !== 'visible' || writes.current.size > 0) return
+      const at = epoch.current
+      void get<RevisionOut>(`/revisions/${revId}`)
+        .then((r) => {
+          if (alive && at === epoch.current && writes.current.size === 0) onFresh(() => r)
+        })
+        .catch(() => undefined)
+    }
+    const t = setInterval(refresh, REFRESH_MS)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      alive = false
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [revId, draft, onFresh])
+
+  /** `add` — скан прибавляет к общему итогу строки: 4 человека отсканировали по разу — 4, а не 1
+   *  (задача 003, Н14); на экране — итог из ответа сервера. `set` — число из поля, итог строки. */
+  const save = (l: Line, qty: number | null, mode: 'set' | 'add' = 'set') => {
     // Записанный ввод убирается из правок, только если его не успели поменять, пока шёл запрос:
-    // иначе новое число пропало бы, не записавшись.
+    // иначе новое число пропало бы, не записавшись. Скан правку поля не трогает.
     const id = l.product_id
     const sent = editsNow.current[id]
     const sentOil = oilEditsNow.current[id]
     const prev = writes.current.get(id) ?? Promise.resolve()
+    // Повтор того же скана после обрыва связи не прибавит второй раз (ADR-062).
+    const opId = newOpId()
+    epoch.current++
     const write = prev
       .catch(() => undefined)
       .then(() =>
-        qty === null ? del(`/revisions/${rev.head.id}/lines/${id}`) : put(`/revisions/${rev.head.id}/lines`, { product_id: id, counted_qty: qty }),
+        qty === null
+          ? del(`/revisions/${rev.head.id}/lines/${id}`)
+          : mode === 'add'
+            ? put<{ counted_qty: number }>(`/revisions/${rev.head.id}/lines`, { product_id: id, counted_qty: qty, mode, op_id: opId })
+            : put(`/revisions/${rev.head.id}/lines`, { product_id: id, counted_qty: qty }),
       )
     writes.current.set(id, write)
     void act.run(async () => {
+      let res: unknown
       try {
-        await write
+        res = await write
       } finally {
+        epoch.current++
         if (writes.current.get(id) === write) writes.current.delete(id)
+      }
+      if (mode === 'add') {
+        const total = (res as { counted_qty: number }).counted_qty
+        const known = rev.lines.some((x) => x.product_id === id)
+        if (known)
+          onFresh((r) => ({
+            ...r,
+            lines: r.lines.map((x) => (x.product_id === id ? { ...x, counted_qty: total, counted_by: me.full_name } : x)),
+          }))
+        else onChanged()
+        return
       }
       const drop = <T,>(cur: Record<string, T>, was: T | undefined): Record<string, T> | null => {
         if (cur[id] === undefined || cur[id] !== was) return null
@@ -206,13 +269,28 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
   // Длинный склад — по страницам; поиск в списке возвращает на первую.
   const pager = usePager(lines, 'revision.lines', `${q}|${visc}`)
 
+  /** Товар этой ревизии: весь склад или её категория. */
+  const fitsRevision = (p: Pick<Product, 'category_id'>) => !rev.head.category_id || p.category_id === rev.head.category_id
+  /** Строка для товара, которого ещё нет в загруженном списке. */
+  const lineOf = (p: Product): Line => ({
+    product_id: p.id,
+    name: p.name,
+    article: p.article,
+    barcodes: p.barcodes,
+    unit: p.unit,
+    container_ml: p.container_ml,
+    expected_qty: 0,
+    counted_qty: null,
+  })
+
   /** Товар строки посчитан сканом: штучный +1, масло в таре +1 канистра — курсор остаётся в сканере;
    *  на вес и масло без тары — фокус на поле количества (на его странице). */
   const countLine = (l: Line) => {
     act.setError(null)
     const tare = oilTare(l)
-    if (l.unit === 'piece') save(l, (l.counted_qty ?? 0) + 1)
-    else if (tare) save(l, (l.counted_qty ?? 0) + tare)
+    // Прибавка, а не «своё число + 1»: другие устройства считают ту же строку (задача 003, Н14).
+    if (l.unit === 'piece') save(l, 1, 'add')
+    else if (tare) save(l, tare, 'add')
     else {
       const at = lines.indexOf(l)
       if (at >= 0) pager.setPage(Math.floor(at / pager.size))
@@ -236,6 +314,8 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
       .then((p) => {
         const mine = rev.lines.find((x) => x.product_id === p.id)
         if (mine) countLine(mine)
+        // Товар только что завёл другой (его строки здесь ещё нет): штуку и канистру считаем сразу.
+        else if (fitsRevision(p) && (p.unit === 'piece' || oilTare(p))) countLine(lineOf(p))
         else goTo(p)
       })
       .catch((e) => {
@@ -362,6 +442,11 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
                       '—'
                     ) : (
                       countText(l, l.counted_qty)
+                    )}
+                    {draft && l.counted_qty !== null && l.counted_by && (
+                      <div className="mt-0.5 text-xs text-slate-400" data-testid="counted-by">
+                        последним считал: {l.counted_by}
+                      </div>
                     )}
                   </td>
                   <td className={`whitespace-nowrap px-2 py-2 font-medium ${diff === null || diff === 0 ? 'text-slate-400' : diff < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
@@ -505,6 +590,9 @@ function Revision() {
   const [norm, setNorm] = useState<string | null>(null)
   const normBp = norm === null ? null : parsePercentBp(norm)
 
+  const setRev = rev.setData
+  const onFresh = useCallback((update: (r: RevisionOut) => RevisionOut) => setRev((r) => (r ? update(r) : r)), [setRev])
+
   const start = () =>
     void act.run(async () => {
       const r = await post<RevisionOut>('/revisions', { category_id: category || null })
@@ -536,6 +624,7 @@ function Revision() {
             rev.reload()
             list.reload()
           }}
+          onFresh={onFresh}
         />
       </div>
     )

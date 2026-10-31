@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
 import { useUser } from '../lib/auth'
+import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { can } from '../lib/permissions'
 import { POLARITY_LABELS } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
@@ -55,6 +56,7 @@ export function ProductFormModal({
   presetCategoryId,
   preset,
   umagRow,
+  continueIfTaken,
   onClose,
   onSaved,
 }: {
@@ -69,6 +71,9 @@ export function ProductFormModal({
   /** Строка старой базы Умаг, из которой заводят товар (SPEC-35): сервер в той же операции свяжет
    *  её с товаром и перенесёт её коды. */
   umagRow?: OldCatalogHit
+  /** Отсканированный незнакомый код в ту же минуту завёл другой: взять его товар (строка прихода,
+   *  чек), а не показывать ошибку (задача 003, Н14). */
+  continueIfTaken?: boolean
   onClose: () => void
   onSaved: (p: Product) => void
 }) {
@@ -167,19 +172,27 @@ export function ProductFormModal({
       const v = parsed()
       let saved: Product
       if (!product) {
-        saved = await post<Product>('/products', {
-          op_id: opId,
-          category_id: form.category_id,
-          name: form.name,
-          brand: form.brand,
-          article: form.article,
-          container_ml: v.container,
-          attrs: form.attrs,
-          barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
-          sale_price_tyiyn: v.sale,
-          min_stock: v.min,
-          ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
-        })
+        const r = await createOrTaken(continueIfTaken ? form.barcode.trim() : '', () =>
+          post<Product>('/products', {
+            op_id: opId,
+            category_id: form.category_id,
+            name: form.name,
+            brand: form.brand,
+            article: form.article,
+            container_ml: v.container,
+            attrs: form.attrs,
+            barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
+            sale_price_tyiyn: v.sale,
+            min_stock: v.min,
+            ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
+          }),
+        )
+        if (r.taken) {
+          toast(TAKEN_ADDED)
+          onSaved(r.product)
+          return
+        }
+        saved = r.created
       } else {
         await patch<Product>(`/products/${product.id}`, {
           category_id: form.category_id,

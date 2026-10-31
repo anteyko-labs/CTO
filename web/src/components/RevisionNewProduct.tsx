@@ -1,7 +1,8 @@
 // В ревизию — товар, которого нет в программе (SPEC-29 §10): карточка заводится сразу с найденным
 // количеством одной операцией; подсказки из старой программы заполняют карточку.
-import { useEffect, useMemo, useState } from 'react'
-import { get, newOpId, post } from '../lib/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { get, newOpId, post, put } from '../lib/api'
+import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { useUser } from '../lib/auth'
 import { canisterPourPrice } from '../lib/money'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
@@ -83,6 +84,8 @@ export function RevisionNewProduct({
     presetBarcode ? { ...empty(presetBarcode), categoryId: categoryId ?? '' } : null,
   )
   const [opId] = useState(newOpId)
+  /** Прибавка к товару, который в ту же минуту завёл другой: повтор того же не прибавит дважды. */
+  const addOp = useRef<{ key: string; id: string } | null>(null)
   const act = useAction()
   // Связать новую карточку со строкой Умага — право «Товары и штрихкоды» (SPEC-35 §4).
   const mayLink = can(useUser(), 'products')
@@ -148,20 +151,28 @@ export function RevisionNewProduct({
   const save = () =>
     void act.run(async () => {
       if (!form || count === null) return
-      const r = await post<{ product: Product }>(`/revisions/${revisionId}/new-product`, {
-        op_id: opId,
-        counted_qty: count,
-        category_id: form.categoryId,
-        name: form.name.trim(),
-        brand: form.brand.trim(),
-        article: form.article.trim(),
-        container_ml: oil ? ml : null,
-        barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
-        sale_price_tyiyn: parseSom(form.price) ?? 0,
-        initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
-        ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
-      })
-      toast(`Заведён и посчитан: ${r.product.name}`)
+      // Тот же код в ту же минуту завёл другой: найденное прибавляем к его товару (задача 003, Н14).
+      const r = await createOrTaken(form.barcode.trim(), () =>
+        post<{ product: Product }>(`/revisions/${revisionId}/new-product`, {
+          op_id: opId,
+          counted_qty: count,
+          category_id: form.categoryId,
+          name: form.name.trim(),
+          brand: form.brand.trim(),
+          article: form.article.trim(),
+          container_ml: oil ? ml : null,
+          barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
+          sale_price_tyiyn: parseSom(form.price) ?? 0,
+          initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+          ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
+        }),
+      )
+      if (r.taken) {
+        const key = `${r.product.id}:${count}`
+        if (addOp.current?.key !== key) addOp.current = { key, id: newOpId() }
+        await put(`/revisions/${revisionId}/lines`, { product_id: r.product.id, counted_qty: count, mode: 'add', op_id: addOp.current.id })
+        toast(TAKEN_ADDED)
+      } else toast(`Заведён и посчитан: ${r.created.product.name}`)
       onDone()
     })
 

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money, Notice, PageHeader, toast } from '../components/ui'
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
+import { createOrTaken, TAKEN_ADDED, TAKEN_EXISTS } from '../lib/barcodeTaken'
 import { useUser } from '../lib/auth'
 import { OilCountInput } from '../components/OilCountInput'
 import { stockText } from '../components/ProductPicker'
@@ -225,11 +226,12 @@ export default function ProductIntake() {
     return draft?.id ?? null
   }
 
-  /** Черновик ревизии «весь склад»: открытый — продолжаем, нет — заводим. */
+  /** Черновик ревизии «весь склад»: открытый — продолжаем, нет — заводим. Начали на нескольких
+   *  устройствах сразу — сервер отдаст всем один черновик (`reuse_draft`, задача 003, Н14). */
   const ensureRevision = async (): Promise<string> => {
     const found = await findRevision()
     if (found) return found
-    const id = (await post<{ head: { id: string } }>('/revisions', { category_id: null })).head.id
+    const id = (await post<{ head: { id: string } }>('/revisions', { category_id: null, reuse_draft: true })).head.id
     revisionId.current = id
     return id
   }
@@ -290,19 +292,32 @@ export default function ProductIntake() {
     void act.run(async () => {
       if (!form) return
       write(CAT_KEY, form.categoryId)
-      const p = await post<Product>('/products', {
-        op_id: opId,
-        category_id: form.categoryId,
-        name: form.name.trim(),
-        article: form.from?.article ?? '',
-        container_ml: isOil ? ml : null,
-        // Без кода (строка меры без заводского кода) — код выдаст программа.
-        barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
-        sale_price_tyiyn: parseSom(form.price) ?? 0,
-        initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
-        // Из старой базы Умаг: товар свяжется со строкой, её коды станут его кодами (SPEC-35).
-        ...(form.from && !form.from.product_id ? { old_catalog_id: form.from.id } : {}),
-      })
+      // Тот же код в ту же минуту завёл другой человек: продолжаем с его товаром — прибавляем
+      // посчитанное к нему, второй карточки нет (задача 003, Н14).
+      const created = await createOrTaken(form.barcode.trim(), () =>
+        post<Product>('/products', {
+          op_id: opId,
+          category_id: form.categoryId,
+          name: form.name.trim(),
+          article: form.from?.article ?? '',
+          container_ml: isOil ? ml : null,
+          // Без кода (строка меры без заводского кода) — код выдаст программа.
+          barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
+          sale_price_tyiyn: parseSom(form.price) ?? 0,
+          initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+          // Из старой базы Умаг: товар свяжется со строкой, её коды станут его кодами (SPEC-35).
+          ...(form.from && !form.from.product_id ? { old_catalog_id: form.from.id } : {}),
+        }),
+      )
+      if (created.taken) {
+        const p = created.product
+        const total = revision ? await saveCount(p.id, formQty) : null
+        setRecent((r) => [{ name: p.name, at: new Date().toISOString(), count: formCountText, isNew: false }, ...r].slice(0, 15))
+        toast(total === null ? TAKEN_EXISTS : `${TAKEN_ADDED}: всего ${countText(p, total)}`)
+        reset()
+        return
+      }
+      const p = created.created
       if (revision) await saveCount(p.id, formQty)
       setRecent((r) => [{ name: p.name, at: new Date().toISOString(), count: formCountText, isNew: true }, ...r].slice(0, 15))
       toast(`Заведён: ${p.name}`)
