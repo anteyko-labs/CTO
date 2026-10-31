@@ -131,7 +131,7 @@ export default function Products() {
 
   const categories = useLoad(() => get<Category[]>('/categories'), [])
   const category = categories.data?.find((c) => c.id === categoryId)
-  const filterDefs = category?.attributes.filter((a) => a.filterable) ?? []
+  const filterDefs = category?.attributes.filter((a) => a.filterable && a.enabled !== false) ?? []
   // Полярность аккумуляторов — и без выбранной категории, как было в «Остатках» (SPEC-27), если в
   // списке есть аккумуляторы; в категории — только у аккумуляторов (её собственный признак).
   const polarityDef = categoryId

@@ -393,25 +393,26 @@ for (const mode of [
       await scan(page, g.oil.code)
       await expect(row(page, g.oil.name)).toBeVisible()
       await expect(extra).toHaveCount(0)
-      await expect(fields).toHaveCount(1)
+      // Проданное моторное масло без услуги масла — замена, своя строка (ADR-136).
+      await expect(fields).toHaveCount(2)
 
       // Выбрали услугу — строка встала; скан добавляет товар, окно не открывается, строк столько же.
       await hit(more)
       await hit(extra.getByRole('button', { name: gur }))
       await expect(extra).toHaveCount(0)
-      await expect(fields).toHaveCount(2)
+      await expect(fields).toHaveCount(3)
       await scan(page, g.oil2.code)
       await expect(row(page, g.oil2.name)).toBeVisible()
       await expect(extra).toHaveCount(0)
-      await expect(fields).toHaveCount(2)
+      await expect(fields).toHaveCount(3)
 
       // «✕» у строки — строка ушла; скан прибавляет отсканированное, «✕» и «+ ещё» не нажимаются.
       await hit(block.getByRole('button', { name: `Убрать строку ${gur}` }))
-      await expect(fields).toHaveCount(1)
+      await expect(fields).toHaveCount(2)
       await scan(page, g.air.code)
       await expect(qty(page, g.air.name)).toHaveValue('2')
       await expect(extra).toHaveCount(0)
-      await expect(fields).toHaveCount(1)
+      await expect(fields).toHaveCount(2)
     })
 
     if (mode.touch) {

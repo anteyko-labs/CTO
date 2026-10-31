@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into product_cross_numbers (product_id, code, code_norm, auto) values ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e63d1017a64c27b8e7ea246f2ac277611dc3376f1800dc12d3342941b36483e5"
+}

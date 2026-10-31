@@ -2734,6 +2734,8 @@ async fn telegram_customer_sees_oil_book_and_gets_reminders(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // Без пробега сервер цель не ставит (ADR-{B3.1}): у такой записи срок — по интервалу.
+    clear_auto_targets(&pool, vehicle).await;
     // Через 31 день — не сегодня; ставим интервал 7 дней: напоминание «за неделю».
     assert!(due_reminders(&mut conn).await.unwrap().is_empty());
     sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) select id, branch_id, 'oil', 8000, 7 from party_vehicles where id = $1 on conflict (vehicle_id, slot) do update set interval_days = excluded.interval_days")
@@ -5545,6 +5547,8 @@ async fn bot_reminders_catch_up_inside_the_window(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // Без пробега сервер цель не ставит (ADR-{B3.1}): у такой записи срок — по интервалу.
+    clear_auto_targets(&pool, car).await;
     let mut conn = pool.acquire().await.unwrap();
     let interval = |days: i32| {
         let pool = pool.clone();
@@ -9116,13 +9120,16 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
     };
     assert_eq!(next("oil"), Some((Some(93_000), Some(31))));
     assert_eq!(next("oil_filter"), Some((Some(93_000), Some(31))));
-    assert_eq!(next("air_filter"), Some((Some(105_000), Some(60))));
+    // Воздушный с заменой масла — на срок масла и без цели кассира (ADR-117, ADR-{B3.1}).
+    assert_eq!(next("air_filter"), Some((Some(93_000), Some(31))));
     // У прочих работ интервала нет — строка есть, срока нет.
     assert_eq!(next("other"), Some((None, None)));
     assert!(next("cabin_filter").is_none());
     // Прежние поля записи заполнены, как раньше.
     assert!(r.oil_text.contains("Масло 5W-30 4л") && r.filter_text.contains("Фильтр W712"));
 
+    // Дальше — запись, как до серверных целей (ADR-{B3.1}): срок строк считается по интервалу.
+    clear_auto_targets(&pool, car).await;
     // Интервал воздушного фильтра у этой машины — 3 дня: напоминание только по нему.
     sqlx::query("insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days) values ($1, $2, 'air_filter', 10000, 3)")
         .bind(car)
@@ -9148,6 +9155,8 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // Без пробега сервер цель не ставит (ADR-{B3.1}): у такой записи срок — по интервалу.
+    clear_auto_targets(&pool, car).await;
     let due = due_reminders(&mut conn).await.unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].slots, vec!["air_filter".to_string()]);
@@ -11452,13 +11461,22 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
     );
     drop(conn);
 
-    // Без сети: опечатка в следующей замене не отменяет чек — строка по интервалу, владелец видит.
+    // Без сети: опечатка в следующей замене не отменяет чек — строка по интервалу (сервер ставит
+    // цель: пробег + интервал масла, ADR-{B3.1}), владелец видит.
     let mut req = make(vec![next_change(Some(w.service), None, Some(10))]);
     req.offline = true;
     req.client_time = Some(chrono::Utc::now());
     req.mileage_unit = Some("mi".into());
     let sale = sell(&pool, &w.owner, req).await.unwrap();
-    assert!(sale.book.unwrap().lines.is_empty());
+    let lines = sale.book.unwrap().lines;
+    let oil = lines.iter().find(|l| l.slot == "oil").unwrap();
+    assert_eq!(
+        (oil.next_mileage, oil.unit.as_str()),
+        (
+            200_000 + avtodom_server::domain::mileage::km_to_mi(8000).unwrap(),
+            "mi"
+        )
+    );
     let bypass: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'sale.offline_bypass' and entity_id = $1 and data::text like '%следующая замена%'")
         .bind(sale.id)
         .fetch_one(&pool)
@@ -11880,4 +11898,17 @@ async fn offline_clock_ahead_is_named_as_such(pool: PgPool) {
     sell(&pool, &w.admin, req).await.unwrap();
     let text = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
     assert!(text.contains("больше чем на 2 дня"), "{text}");
+}
+
+/// Цели, поставленные сервером (ADR-{B3.1}), — как у записи без пробега: срок по интервалу.
+async fn clear_auto_targets(pool: &PgPool, vehicle: Uuid) {
+    sqlx::query(
+        "update oil_change_items set target_set = false, target_auto = false, next_value = null,
+                next_unit = null, next_km = null, next_date = null
+         where target_auto and oil_change_id in (select id from oil_changes where vehicle_id = $1)",
+    )
+    .bind(vehicle)
+    .execute(pool)
+    .await
+    .unwrap();
 }

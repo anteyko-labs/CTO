@@ -175,7 +175,8 @@ test('масляная книжка по каждому фильтру: стро
   await expect(slots.getByRole('row', { name: /Масло двигателя/ })).toContainText(/на 93\s000 км/)
   await expect(slots.getByRole('row', { name: /Фильтр масляный/ })).toContainText(/на 93\s000 км/)
   const airRow = slots.getByRole('row', { name: /Фильтр воздушный/ })
-  await expect(airRow).toContainText(/на 105\s000 км/)
+  // Воздушный с заменой масла — на пробег масла (ADR-117, ADR-{B3.1}), а не на интервал своей категории.
+  await expect(airRow).toContainText(/на 93\s000 км/)
   await expect(page.getByText(`Фильтр A1 ${RUN} · 1 шт`)).toBeVisible()
 
   // Свой интервал воздушного фильтра у этой машины.

@@ -5,6 +5,7 @@ import { printInFrame } from '../lib/printFrame'
 import type { Sale, SaleLine } from '../lib/types'
 import { branchLabel } from '../lib/branch'
 import { mileageText } from '../lib/mileage'
+import { cachedOilBookSettings } from '../lib/oilBookSettings'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -24,7 +25,7 @@ export function lineQtyText(l: Pick<SaleLine, 'kind' | 'qty' | 'container_ml'>):
   }
 }
 
-export function saleHtml(sale: Sale, change: number | null): string {
+export function saleHtml(sale: Sale, change: number | null, opts: { bookBlock?: boolean } = {}): string {
   const title = sale.kind === 'return' ? (sale.no_receipt ? 'Возврат без чека' : 'Возврат') : 'Товарный чек'
   // Удержание за замену (ADR-104) — отдельной строкой после возвращённого.
   const held = sale.lines
@@ -71,7 +72,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
     ${sale.kind === 'return' && sale.comment ? `<div>Причина: ${esc(sale.comment)}</div>` : ''}
     <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
-    ${bookHtml(sale)}
+    ${opts.bookBlock === false ? '' : bookHtml(sale)}
     <div class="center">Спасибо за покупку!</div>
   </body></html>`
 }
@@ -102,6 +103,7 @@ function saleWhen(sale: Sale): string {
   return `${d}.${m}.${y}`
 }
 
-export function printSale(sale: Sale, change: number | null = null): void {
-  printInFrame(saleHtml(sale, change))
+/** `bookBlock: false` — без блока «Масляная книжка» (настройка «Масляная книжка и печать», задача 003 Н5). */
+export function printSale(sale: Sale, change: number | null = null, opts: { bookBlock?: boolean } = {}): void {
+  printInFrame(saleHtml(sale, change, { bookBlock: cachedOilBookSettings().receipt_block, ...opts }))
 }

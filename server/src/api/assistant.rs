@@ -884,6 +884,52 @@ pub async fn read_document(
     }
 }
 
+/// Один запрос без файла — ответ строго по JSON-схеме `schema` (подбор кросс-номеров, задача 002
+/// П10, ADR-{B3.2}). Модель — для накладных (точнее); не дольше минуты. Ошибки не паникуют и не
+/// выдают ключ.
+pub async fn read_text(a: &Assistant, system: &str, prompt: &str, schema: &Value) -> DocumentRead {
+    let body = json!({
+        "systemInstruction": { "parts": [{ "text": system }] },
+        "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": schema,
+            "thinkingConfig": { "thinkingLevel": "low" },
+        },
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let resp = match generate(
+        a,
+        &a.invoice_model,
+        &body,
+        deadline,
+        Duration::from_secs(45),
+        "подбор кросс-номеров",
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(f) => return DocumentRead::failed(a.redact(f.note())),
+    };
+    let input_tokens = resp.usage_metadata.input();
+    let output_tokens = resp.usage_metadata.output();
+    let result = match resp.first() {
+        Err(f) => Err(f.note().to_string()),
+        Ok((content, finish)) => match bad_finish(finish.as_deref()) {
+            Some(f) => Err(f.note().to_string()),
+            None => serde_json::from_str::<Value>(answer_text(&content).trim())
+                .ok()
+                .filter(Value::is_object)
+                .ok_or_else(|| "ответ не по схеме".to_string()),
+        },
+    };
+    DocumentRead {
+        result,
+        input_tokens,
+        output_tokens,
+    }
+}
+
 /// Base64 (стандартный алфавит, с `=`) — так сервис принимает файл в запросе.
 fn base64(data: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

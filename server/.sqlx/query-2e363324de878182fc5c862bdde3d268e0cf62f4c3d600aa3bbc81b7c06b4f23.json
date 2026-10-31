@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update categories set name = coalesce($2, name), attributes = coalesce($3, attributes),\n             book_slot = case when $4 then $5 when book_slot is null then coalesce($8, book_slot) else book_slot end,\n             book_interval_km = case when $4 then $6 else book_interval_km end,\n             book_interval_days = case when $4 then $7 else book_interval_days end,\n             points_mode = coalesce($9, points_mode), points_value = coalesce($10, points_value)\n           where id = $1\n           returning id, name, kind, attributes,\n                     coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                     book_interval_km, book_interval_days, points_mode, points_value",
+  "query": "update categories set name = coalesce($2, name), attributes = coalesce($3, attributes),\n             book_slot = case when $4 then $5 when book_slot is null then coalesce($8, book_slot) else book_slot end,\n             book_interval_km = case when $4 then $6 else book_interval_km end,\n             book_interval_days = case when $4 then $7 else book_interval_days end,\n             points_mode = coalesce($9, points_mode), points_value = coalesce($10, points_value)\n           where id = $1\n           returning id, name, kind, attributes,\n                     coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                     book_interval_km, book_interval_days, points_mode, points_value,\n                     category_by_type(attributes) as \"by_type!\"",
   "describe": {
     "columns": [
       {
@@ -47,6 +47,11 @@
         "ordinal": 8,
         "name": "points_value",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "by_type!",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -72,8 +77,9 @@
       true,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "dc9ce9612e97d4aa71d7a31dea11b30fc4aa2a23275eaf32521fc7b59140f5dd"
+  "hash": "2e363324de878182fc5c862bdde3d268e0cf62f4c3d600aa3bbc81b7c06b4f23"
 }

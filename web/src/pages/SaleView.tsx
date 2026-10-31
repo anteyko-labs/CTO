@@ -1,6 +1,6 @@
 // Просмотр чека, печать и частичный возврат (SPEC-04).
-import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { CorrectionLinks, FixButton } from '../components/Correction'
 import { PayChangeButton, PayChangeModal } from '../components/PayChange'
 import { lineQtyText, printSale } from '../components/salePrint'
@@ -15,6 +15,9 @@ import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/
 import { divRound } from '../lib/money'
 import { returnWithholds } from '../lib/serviceSale'
 import { returnDebtCap, splitReturn } from '../lib/returnSplit'
+import type { VehicleBook } from '../lib/oilBook'
+import { printOilBook, saleCheckOf } from '../lib/oilBookPrint'
+import { loadOilBookSettings, OIL_BOOK_DEFAULTS } from '../lib/oilBookSettings'
 import { PAYMENT_LABELS, type Party, type PaymentMethod, type Sale, type SaleLine } from '../lib/types'
 
 interface Returned {
@@ -286,6 +289,28 @@ export default function SaleView() {
   const [returning, setReturning] = useState(false)
   const [payChange, setPayChange] = useState(false)
   const docAct = useAction()
+  // Книжка машины чека «В сервис» — «Печать книжки» этого чека (задача 003 Н5).
+  const bookVehicle = sale && sale.kind === 'sale' && sale.sale_type === 'service' ? (sale.vehicle_id ?? null) : null
+  const book = useLoad(() => (bookVehicle ? get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`) : Promise.resolve(null)), [bookVehicle, id])
+  const prefsLoad = useLoad(loadOilBookSettings, [])
+  const prefs = prefsLoad.data ?? OIL_BOOK_DEFAULTS
+  const bookCheck = book.data && sale ? saleCheckOf(book.data, sale.id, prefs) : null
+  // Только что исправленный чек (Касса → «Исправить»): печать — как после обычного чека, один раз.
+  const location = useLocation()
+  const fixed = (location.state as { fixed?: boolean } | null)?.fixed === true
+  const printedFix = useRef<string | null>(null)
+  useEffect(() => {
+    if (!fixed || !sale || !prefsLoad.data || printedFix.current === sale.id) return
+    // Книжка машины ещё не пришла (в том числе в первый показ чека) — ждём её.
+    if (bookVehicle && !book.data && !book.error) return
+    printedFix.current = sale.id
+    navigate('.', { replace: true, state: null })
+    if (sale.sale_type !== 'service') return
+    if (prefs.auto_receipt) printSale(sale, null, { bookBlock: prefs.receipt_block })
+    if (prefs.auto_book && book.data && saleCheckOf(book.data, sale.id, prefs)) {
+      void printOilBook(book.data, { client: sale.party_name, master: sale.master_name, saleId: sale.id, print: prefs })
+    }
+  }, [fixed, sale, prefsLoad.data, prefs, bookVehicle, book.error, book.data, navigate])
 
   if (loading && !sale) return <Loading />
   if (!sale) return <ErrorBox error={error} />
@@ -319,9 +344,17 @@ export default function SaleView() {
         }
         actions={
           <>
-            <Button variant="secondary" onClick={() => printSale(sale)}>
+            <Button variant="secondary" onClick={() => printSale(sale, null, { bookBlock: prefs.receipt_block })}>
               Печать
             </Button>
+            {book.data && prefsLoad.data && bookCheck && (
+              <Button
+                variant="secondary"
+                onClick={() => book.data && void printOilBook(book.data, { client: sale.party_name, master: sale.master_name, saleId: sale.id, print: prefs })}
+              >
+                Печать книжки
+              </Button>
+            )}
             {sale.kind === 'sale' && sale.party_id && sale.payments.some((p) => p.method === 'debt') && (
               <Button variant="secondary" disabled={docAct.busy} onClick={printDoc}>
                 Документ о долге

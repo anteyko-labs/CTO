@@ -101,6 +101,8 @@ struct SnapCategory {
     book_slot: String,
     book_interval_km: Option<i32>,
     book_interval_days: Option<i32>,
+    /// Строка книжки фильтра — по «Типу» товара; «Тип» выключен у категории — от неё (задача 002 П10).
+    by_type: bool,
 }
 
 #[derive(Serialize)]
@@ -182,6 +184,8 @@ struct Snapshot {
     clients: Vec<SnapClient>,
     bank_accounts: Vec<SnapBank>,
     oil_change_master_fee_tyiyn: i64,
+    /// «Масляная книжка и печать» (задача 003 Н5): что касса печатает без сети.
+    oil_book: crate::api::book_settings::OilBookSettings,
 }
 
 /// Снимок без себестоимости и стоимости остатка: касса их не использует (SPEC-09).
@@ -270,7 +274,7 @@ async fn snapshot(
         SnapCategory,
         r#"select id, name, kind,
                   coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                  book_interval_km, book_interval_days
+                  book_interval_km, book_interval_days, category_by_type(attributes) as "by_type!"
            from categories order by name"#
     )
     .fetch_all(&mut *conn)
@@ -301,6 +305,7 @@ async fn snapshot(
             .and_then(serde_json::Value::as_i64)
     })
     .unwrap_or(crate::api::sales::DEFAULT_OIL_CHANGE_FEE);
+    let oil_book = crate::api::book_settings::load(&mut conn, user.branch_id).await?;
 
     // Версия снимка — отпечаток содержимого: не изменилось, отвечаем 304.
     let body = Snapshot {
@@ -313,6 +318,7 @@ async fn snapshot(
         clients,
         bank_accounts,
         oil_change_master_fee_tyiyn: fee,
+        oil_book: oil_book.clone(),
     };
     let payload = serde_json::to_string(&json!({
         "products": &body.products,
@@ -322,6 +328,7 @@ async fn snapshot(
         "clients": &body.clients,
         "bank_accounts": &body.bank_accounts,
         "fee": fee,
+        "oil_book": &oil_book,
     }))
     .unwrap_or_default();
     let version = format!("{:x}", seahash(&payload));

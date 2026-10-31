@@ -247,6 +247,9 @@ pub struct SaleOut {
     pub party_name: Option<String>,
     pub contact_name: Option<String>,
     pub vehicle_plate: Option<String>,
+    /// Машина чека «В сервис»: по ней экран чека открывает её книжку («Печать книжки», задача 003 Н5).
+    #[serde(default)]
+    pub vehicle_id: Option<Uuid>,
     /// Баланс клиента после чека: сколько он теперь должен.
     pub party_balance_tyiyn: Option<i64>,
     pub total_tyiyn: i64,
@@ -286,7 +289,7 @@ pub async fn load_sale(
                   s.master_id, m.full_name as "master_name?", s.total_tyiyn, s.master_fee_tyiyn,
                   s.comment, s.delivery_address, s.reversal_of, s.no_receipt,
                   s.party_id as "party_id?", pt.name as "party_name?", pt.balance_tyiyn as "party_balance_tyiyn?",
-                  pc.full_name as "contact_name?", pv.plate as "vehicle_plate?",
+                  pc.full_name as "contact_name?", pv.plate as "vehicle_plate?", pv.id as "vehicle_id?",
                   u.full_name as user_name, s.created_at, s.business_date
            from sales s
            join employees c on c.id = s.cashier_id
@@ -380,6 +383,7 @@ pub async fn load_sale(
         party_name: h.party_name,
         contact_name: h.contact_name,
         vehicle_plate: h.vehicle_plate,
+        vehicle_id: h.vehicle_id,
         party_balance_tyiyn: h.party_balance_tyiyn,
         total_tyiyn: h.total_tyiyn,
         master_fee_tyiyn: h.master_fee_tyiyn,
@@ -1954,19 +1958,8 @@ pub async fn post_sale_core(
                 Err(e) => return Err(e),
             }
         }
-        crate::api::oil_book::record_from_sale(
-            conn,
-            ctx,
-            id,
-            party_id,
-            vehicle_id,
-            business_date,
-            mileage,
-            &req.declined,
-            &targets,
-        )
-        .await?;
-        // «Через сколько менять» из чека — интервал строки у этой машины (SPEC-29 §23).
+        // «Через сколько менять» из чека — интервал строки у этой машины (SPEC-29 §23); до записи
+        // книжки: по нему же сервер ставит цель, которую кассир не прислал (ADR-{B3.1}).
         if req.book_intervals.len() > crate::api::oil_book::SLOTS.len() {
             return Err(invalid("интервалов больше, чем строк книжки"));
         }
@@ -1997,6 +1990,18 @@ pub async fn post_sale_core(
                 Err(e) => return Err(e),
             }
         }
+        crate::api::oil_book::record_from_sale(
+            conn,
+            ctx,
+            id,
+            party_id,
+            vehicle_id,
+            business_date,
+            mileage,
+            &req.declined,
+            &targets,
+        )
+        .await?;
     }
     payroll::accrue_for_sale(
         conn,

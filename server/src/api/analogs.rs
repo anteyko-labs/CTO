@@ -29,8 +29,28 @@ pub fn norm(code: &str) -> String {
 }
 
 #[derive(Serialize)]
-struct CrossOut {
-    codes: Vec<String>,
+pub struct CrossOut {
+    pub codes: Vec<String>,
+    /// Номера, подобранные сервисом разбора (задача 002 П10): «подобрано автоматически».
+    pub auto: Vec<String>,
+}
+
+/// Кросс-номера товара по порядку и подобранные сервисом.
+pub async fn load_cross(conn: &mut sqlx::PgConnection, id: Uuid) -> AppResult<CrossOut> {
+    let rows = sqlx::query!(
+        "select code, auto from product_cross_numbers where product_id = $1 order by code",
+        id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(CrossOut {
+        auto: rows
+            .iter()
+            .filter(|r| r.auto)
+            .map(|r| r.code.clone())
+            .collect(),
+        codes: rows.into_iter().map(|r| r.code).collect(),
+    })
 }
 
 async fn get_cross(
@@ -38,18 +58,18 @@ async fn get_cross(
     _user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<CrossOut>> {
-    let codes = sqlx::query_scalar!(
-        "select code from product_cross_numbers where product_id = $1 order by code",
-        id
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(CrossOut { codes }))
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(load_cross(&mut conn, id).await?))
 }
 
 #[derive(Deserialize)]
 struct CrossReq {
     codes: Vec<String>,
+    /// Номера из подбора сервисом, которые человек сохраняет (режим «предлагать»): пометка
+    /// «подобрано автоматически» в карточке и журнале. Уже подобранные сервисом номера пометку
+    /// сохраняют.
+    #[serde(default)]
+    auto: Vec<String>,
 }
 
 /// Список кросс-номеров заменяется целиком: убранный номер больше не связывает товары.
@@ -84,34 +104,46 @@ async fn put_cross(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
+    let was_auto: Vec<String> = sqlx::query_scalar!(
+        "select code_norm from product_cross_numbers where product_id = $1 and auto",
+        id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let picked: Vec<String> = req.auto.iter().map(|c| norm(c)).collect();
     sqlx::query!(
         "delete from product_cross_numbers where product_id = $1",
         id
     )
     .execute(&mut *tx)
     .await?;
+    let mut added_auto: Vec<String> = Vec::new();
     for (n, code) in &seen {
+        let auto = was_auto.contains(n) || picked.contains(n);
+        if picked.contains(n) && !was_auto.contains(n) {
+            added_auto.push(code.clone());
+        }
         sqlx::query!(
-            "insert into product_cross_numbers (product_id, code, code_norm) values ($1, $2, $3)",
+            "insert into product_cross_numbers (product_id, code, code_norm, auto) values ($1, $2, $3, $4)",
             id,
             code,
-            n
+            n,
+            auto
         )
         .execute(&mut *tx)
         .await?;
     }
     let codes: Vec<String> = seen.into_values().collect();
-    ops::audit(
-        &mut tx,
-        &ctx,
-        "product.cross",
-        "product",
-        Some(id),
-        json!({ "codes": codes }),
-    )
-    .await?;
+    let mut data = json!({ "codes": codes });
+    if !added_auto.is_empty() {
+        // Сохранено из подбора сервисом (режим «предлагать»): пометка в журнале.
+        data["auto"] = json!(added_auto);
+        data["note"] = json!("подобрано автоматически");
+    }
+    ops::audit(&mut tx, &ctx, "product.cross", "product", Some(id), data).await?;
+    let out = load_cross(&mut tx, id).await?;
     tx.commit().await?;
-    Ok(Json(CrossOut { codes }))
+    Ok(Json(out))
 }
 
 #[derive(Serialize)]

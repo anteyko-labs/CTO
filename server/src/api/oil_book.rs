@@ -249,6 +249,9 @@ pub struct BookLine {
     /// Следующую замену задал кассир (SPEC-34): пробег в единице машины, в км и дата по интервалу
     /// в днях. Задал пустой — по строке не напоминать; не задавал — по интервалу.
     pub target_set: bool,
+    /// Цель поставил сервер: кассир её не прислал (ADR-{B3.1}); «Исправить» её не переносит.
+    #[serde(skip)]
+    pub target_auto: bool,
     pub next_mileage: Option<i32>,
     pub next_unit: Option<String>,
     pub next_km: Option<i32>,
@@ -372,6 +375,45 @@ fn qty_text(kind: &str, qty: i64, container_ml: Option<i64>) -> String {
     }
 }
 
+/// Одна строка чека товара книжки: вид, количество (канистры, мл розлива или штуки) и канистра.
+#[derive(Clone, Debug)]
+pub struct QtyPart {
+    pub kind: String,
+    pub qty: i64,
+    pub container_ml: Option<i64>,
+}
+
+/// Количество товара книжки по всем его строкам чека (ADR-{B3.1}): одна строка — как было
+/// («1 кан. × 4 л»); несколько — итог: масло в литрах («4,5 л»), штуки — штуками («2 шт»); `split` —
+/// ещё и разбивка: «4,5 л (1 кан. × 4 л + 0,5 л)». Всё в целых мл (I1), литры — только в тексте.
+pub fn merged_qty_text(parts: &[QtyPart], style: &str) -> String {
+    let each = |p: &QtyPart| qty_text(&p.kind, p.qty, p.container_ml);
+    if let [one] = parts {
+        return each(one);
+    }
+    let ml = |p: &QtyPart| match (p.kind.as_str(), p.container_ml) {
+        ("container", Some(c)) => Some(p.qty.saturating_mul(c)),
+        ("pour", _) => Some(p.qty),
+        _ => None,
+    };
+    let total = if parts.iter().all(|p| ml(p).is_some()) {
+        crate::domain::qty::liters(parts.iter().filter_map(ml).fold(0i64, i64::saturating_add))
+    } else if parts.iter().all(|p| ml(p).is_none()) {
+        format!(
+            "{} шт",
+            parts.iter().map(|p| p.qty).fold(0i64, i64::saturating_add)
+        )
+    } else {
+        // Литров со штуками у одного товара не бывает — строки как есть.
+        return parts.iter().map(each).collect::<Vec<_>>().join(" + ");
+    };
+    if style == "split" {
+        let split = parts.iter().map(each).collect::<Vec<_>>().join(" + ");
+        return format!("{total} ({split})");
+    }
+    total
+}
+
 /// Запись из чека «в сервис» с машиной: строки книжки по категориям товаров (SPEC-27), по
 /// услугам со строкой книжки и следующие замены, заданные кассиром (SPEC-34); услуга «прочее»
 /// с целью — своей строкой (ADR-131). Вызывается в транзакции чека.
@@ -390,9 +432,11 @@ pub async fn record_from_sale(
     let rows = sqlx::query!(
         // Строка книжки категории; не задана — по виду: масла, фильтры (как было); категория без
         // строки — по названию товара (ADR-130).
-        r#"select p.name, c.id as category_id,
+        // «Тип» фильтра выключен у категории (задача 002 П10) — строка от категории, а не от типа.
+        r#"select p.id as product_id, p.name, c.id as category_id,
                   coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                  p.attrs ->> 'filter_type' as filter_type, l.kind, l.qty, p.container_ml
+                  case when category_by_type(c.attributes) then p.attrs ->> 'filter_type' end as filter_type,
+                  l.kind, l.qty, p.container_ml
            from sale_lines l
            join products p on p.id = l.product_id
            join categories c on c.id = p.category_id
@@ -402,21 +446,40 @@ pub async fn record_from_sale(
     )
     .fetch_all(&mut *conn)
     .await?;
-    let mut lines: Vec<BookLine> = rows
+    let settings = crate::api::book_settings::load(conn, ctx.user.branch_id).await?;
+    // Строки одного товара одной строки книжки (канистра и разлив, две строки штук) — одной
+    // строкой книжки с итогом (ADR-{B3.1}).
+    let mut goods: Vec<(&'static str, Uuid, Uuid, &str, Vec<QtyPart>)> = Vec::new();
+    for r in &rows {
+        let slot = if r.book_slot == "none" {
+            slot_by_product_name(&r.name)
+        } else {
+            product_slot(&r.book_slot, r.filter_type.as_deref())
+        };
+        let Some(slot) = slot else {
+            continue;
+        };
+        let part = QtyPart {
+            kind: r.kind.clone(),
+            qty: r.qty,
+            container_ml: r.container_ml,
+        };
+        match goods
+            .iter_mut()
+            .find(|g| g.0 == slot && g.1 == r.product_id)
+        {
+            Some(g) => g.4.push(part),
+            None => goods.push((slot, r.product_id, r.category_id, &r.name, vec![part])),
+        }
+    }
+    let mut lines: Vec<BookLine> = goods
         .iter()
-        .filter_map(|r| {
-            let slot = if r.book_slot == "none" {
-                slot_by_product_name(&r.name)
-            } else {
-                product_slot(&r.book_slot, r.filter_type.as_deref())
-            };
-            slot.map(|slot| {
-                BookLine::plain(
-                    slot,
-                    format!("{} · {}", r.name, qty_text(&r.kind, r.qty, r.container_ml)),
-                    Some(r.category_id),
-                )
-            })
+        .map(|(slot, _, category_id, name, parts)| {
+            BookLine::plain(
+                slot,
+                format!("{name} · {}", merged_qty_text(parts, &settings.qty_style)),
+                Some(*category_id),
+            )
         })
         .collect();
     // Услуги со строкой книжки (SPEC-34): масло клиента — товара-масла в чеке нет, но замена
@@ -478,18 +541,7 @@ pub async fn record_from_sale(
             lines.push(l);
         }
     }
-    let own = sqlx::query!(
-        "select slot, interval_days from vehicle_book_intervals where vehicle_id = $1",
-        vehicle_id
-    )
-    .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(|r| OwnDays {
-        slot: r.slot,
-        interval_days: r.interval_days,
-    })
-    .collect::<Vec<_>>();
+    let own = own_intervals(conn, vehicle_id).await?;
     let mut seen: Vec<&str> = Vec::new();
     let mut seen_services: Vec<Uuid> = Vec::new();
     for t in targets {
@@ -560,15 +612,77 @@ pub async fn record_from_sale(
     // Жидкость без услуги своей строки и без цели кассира — доливка: в книжку не пишется, срок не
     // сдвигает (ADR-117).
     lines.retain(|l| !is_fluid(&l.slot) || changed.contains(&l.slot));
+    // Цель по умолчанию (ADR-{B3.1}): у жидкости-замены, по которой кассир цель не прислал и не
+    // очищал, при известном пробеге — пробег сейчас + интервал строки (машины, услуги, категории,
+    // по умолчанию), как заполняет касса. Тогда печатный чек, чек книжки, бот и книжка показывают
+    // одно число и фильтры получают срок масла (ADR-117). Без пробега — без цели, по интервалу.
+    if let Some(now) = &mileage {
+        let mut done: Vec<String> = Vec::new();
+        for at in 0..lines.len() {
+            let Some(l) = lines.get(at) else {
+                continue;
+            };
+            let slot = l.slot.clone();
+            if !is_fluid(&slot)
+                || done.contains(&slot)
+                || lines.iter().any(|x| x.slot == slot && x.target_set)
+            {
+                continue;
+            }
+            done.push(slot.clone());
+            let Some((km, days)) =
+                line_interval(conn, &own, &slot, l.service_id, l.category_id).await?
+            else {
+                continue;
+            };
+            let Some(value) = crate::domain::mileage::from_km(km, &now.unit)
+                .and_then(|add| now.value.checked_add(add))
+            else {
+                continue;
+            };
+            let Some(next_km) = crate::domain::mileage::to_km(value, &now.unit) else {
+                continue;
+            };
+            if let Some(l) = lines.get_mut(at) {
+                l.target_set = true;
+                l.target_auto = true;
+                l.next_mileage = Some(value);
+                l.next_unit = Some(now.unit.clone());
+                l.next_km = Some(next_km);
+                l.next_date = change_date
+                    .checked_add_days(chrono::Days::new(u64::try_from(days).unwrap_or(0)));
+            }
+        }
+    }
     // Масляный, воздушный и салонный фильтры с заменой масла — на пробег и дату масла; у масла
-    // «не напоминать» — и у них (ADR-117). Топливный — по своему интервалу.
+    // «не напоминать» — и у них (ADR-117). Топливный — по своему интервалу. Владелец может
+    // выключить: тогда каждый фильтр — по своему интервалу.
     if let Some(oil) = lines
         .iter()
         .find(|l| l.slot == "oil" && l.target_set)
+        .filter(|_| settings.filters_follow_oil)
         .cloned()
     {
         for l in lines.iter_mut().filter(|l| follows_oil(&l.slot)) {
+            // Цель масла поставил сервер, а у машины свой интервал этого фильтра — фильтр по нему:
+            // свой интервал машины точнее (как в книжке, `fill_auto_follow`).
+            if oil.target_auto
+                && let (Some(o), Some(now)) = (own.iter().find(|o| o.slot == l.slot), &mileage)
+            {
+                let value = crate::domain::mileage::from_km(o.interval_km, &now.unit)
+                    .and_then(|add| now.value.checked_add(add));
+                l.target_set = true;
+                l.target_auto = true;
+                l.next_mileage = value;
+                l.next_unit = value.map(|_| now.unit.clone());
+                l.next_km = value.and_then(|v| crate::domain::mileage::to_km(v, &now.unit));
+                l.next_date = change_date.checked_add_days(chrono::Days::new(
+                    u64::try_from(o.interval_days).unwrap_or(0),
+                ));
+                continue;
+            }
             l.target_set = true;
+            l.target_auto = oil.target_auto;
             l.next_mileage = oil.next_mileage;
             l.next_unit = oil.next_unit.clone();
             l.next_km = oil.next_km;
@@ -610,6 +724,7 @@ pub async fn record_from_sale(
 
 struct OwnDays {
     slot: String,
+    interval_km: i32,
     interval_days: i32,
 }
 
@@ -736,7 +851,7 @@ pub async fn sale_targets(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<V
     let items = sqlx::query!(
         r#"select i.slot, i.service_id, i.next_value from oil_change_items i
            join oil_changes o on o.id = i.oil_change_id
-           where o.sale_id = $1 and i.target_set
+           where o.sale_id = $1 and i.target_set and not i.target_auto
            order by i.position"#,
         sale_id
     )
@@ -787,6 +902,51 @@ async fn interval_days(
     Ok(by_category.or_else(|| slot_default(slot)).map(|i| i.1))
 }
 
+/// Интервалы строк книжки, заданные у машины (SPEC-27).
+async fn own_intervals(conn: &mut PgConnection, vehicle_id: Uuid) -> AppResult<Vec<OwnDays>> {
+    Ok(sqlx::query!(
+        "select slot, interval_km, interval_days from vehicle_book_intervals where vehicle_id = $1",
+        vehicle_id
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|r| OwnDays {
+        slot: r.slot,
+        interval_km: r.interval_km,
+        interval_days: r.interval_days,
+    })
+    .collect())
+}
+
+/// Интервал строки (км и дни) — та же цепочка, что в книжке (`slot_next`): машины, иначе услуги
+/// строки (если у неё заданы оба числа), иначе категории строки, иначе по умолчанию. Им сервер
+/// ставит цель, которую кассир не прислал (ADR-{B3.1}), и считает срок старой записи без цели.
+async fn line_interval(
+    conn: &mut PgConnection,
+    own: &[OwnDays],
+    slot: &str,
+    service_id: Option<Uuid>,
+    category_id: Option<Uuid>,
+) -> AppResult<Option<(i32, i32)>> {
+    if let Some(o) = own.iter().find(|o| o.slot == slot) {
+        return Ok(Some((o.interval_km, o.interval_days)));
+    }
+    if let Some(id) = service_id
+        && let Some(r) = sqlx::query!(
+            "select book_interval_km, book_interval_days from services where id = $1",
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await?
+        && let (Some(km), Some(days)) = (r.book_interval_km, r.book_interval_days)
+    {
+        return Ok(Some((km, days)));
+    }
+    let categories = category_intervals(conn).await?;
+    Ok(category_interval(&categories, slot, category_id).or_else(|| slot_default(slot)))
+}
+
 /// Масляная книжка в печатном чеке (SPEC-34 §4): «чек книжки» — только этот чек и только жидкости
 /// (ADR-116).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -832,10 +992,13 @@ fn own_fluid(slot: &str) -> &'static str {
     }
 }
 
-/// Книжка чека для печати: запись замены этого чека; у чека без записи — `None`.
+/// Книжка чека для печати: запись замены этого чека; у чека без записи — `None`. Жидкости, а при
+/// настройке «с фильтрами» — и фильтры (ADR-{B3.1}). Строка без цели (запись до 31.10.2026) —
+/// срок по интервалу, как в книжке клиента (`slot_next`): записанное не меняется (I4).
 pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option<SaleBook>> {
     let Some(h) = sqlx::query!(
-        r#"select o.id, v.brand, v.model, v.plate, o.mileage_value, o.mileage_km, o.mileage_unit
+        r#"select o.id, o.branch_id, o.vehicle_id, v.brand, v.model, v.plate, o.mileage_value,
+                  o.mileage_km, o.mileage_unit
            from oil_changes o join party_vehicles v on v.id = o.vehicle_id
            where o.sale_id = $1"#,
         sale_id
@@ -845,18 +1008,26 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
     else {
         return Ok(None);
     };
+    let settings = crate::api::book_settings::load(conn, h.branch_id).await?;
     let items = sqlx::query!(
-        r#"select i.slot, i.text, i.category_id, i.target_set, i.next_value, i.next_unit, i.next_date
+        r#"select i.slot, i.text, i.category_id, i.service_id, i.target_set, i.next_value,
+                  i.next_unit, i.next_date
            from oil_change_items i
            where i.oil_change_id = $1
-             and i.slot in ('oil', 'gear_oil', 'antifreeze', 'brake_fluid')
+             and (i.slot in ('oil', 'gear_oil', 'antifreeze', 'brake_fluid')
+                  or ($2 and i.slot like '%\_filter'))
            order by i.position"#,
-        h.id
+        h.id,
+        settings.with_filters
     )
     .fetch_all(&mut *conn)
     .await?;
+    let own = own_intervals(conn, h.vehicle_id).await?;
+    // Пробег сейчас в единице записи: от него срок строки без цели.
+    let now = h.mileage_value.or(h.mileage_km);
     let mut lines: Vec<SaleBookLine> = Vec::new();
     let mut filled: Vec<SaleBookFill> = Vec::new();
+    let mut decided: Vec<String> = Vec::new();
     for i in items {
         let label = slot_label(&i.slot).to_string();
         // Строка товара — «название · количество»; строка услуги без товара — масло клиента. Услуга
@@ -864,21 +1035,42 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
         filled.push(SaleBookFill {
             slot: i.slot.clone(),
             label: label.clone(),
-            product: if i.category_id.is_some() {
+            product: if i.category_id.is_some() || i.slot.ends_with("_filter") {
                 i.text
             } else {
                 own_fluid(&i.slot).to_string()
             },
         });
-        if !i.target_set || lines.iter().any(|l| l.slot == i.slot) {
+        if decided.contains(&i.slot) {
             continue;
         }
-        if let Some(next) = i.next_value {
+        decided.push(i.slot.clone());
+        let next = if i.target_set {
+            i.next_value.map(|v| {
+                (
+                    v,
+                    i.next_unit.unwrap_or_else(|| h.mileage_unit.clone()),
+                    i.next_date,
+                )
+            })
+        } else {
+            match now {
+                None => None,
+                Some(now) => line_interval(conn, &own, &i.slot, i.service_id, i.category_id)
+                    .await?
+                    .and_then(|(km, _)| {
+                        crate::domain::mileage::from_km(km, &h.mileage_unit)
+                            .and_then(|add| now.checked_add(add))
+                    })
+                    .map(|v| (v, h.mileage_unit.clone(), None)),
+            }
+        };
+        if let Some((next_mileage, unit, next_date)) = next {
             lines.push(SaleBookLine {
                 label,
-                next_mileage: next,
-                unit: i.next_unit.unwrap_or_else(|| h.mileage_unit.clone()),
-                next_date: i.next_date,
+                next_mileage,
+                unit,
+                next_date,
                 slot: i.slot,
             });
         }
@@ -887,7 +1079,7 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
         brand: h.brand,
         model: h.model,
         plate: h.plate,
-        mileage: h.mileage_value.or(h.mileage_km),
+        mileage: now,
         mileage_unit: h.mileage_unit,
         lines,
         filled,
@@ -913,8 +1105,9 @@ async fn insert_lines(
     for (i, l) in lines.iter().enumerate() {
         sqlx::query!(
             r#"insert into oil_change_items (id, branch_id, oil_change_id, slot, text, category_id, position,
-                                             service_id, target_set, next_value, next_unit, next_km, next_date)
-               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
+                                             service_id, target_set, next_value, next_unit, next_km, next_date,
+                                             target_auto)
+               values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
             new_id(),
             branch_id,
             oil_change_id,
@@ -927,7 +1120,8 @@ async fn insert_lines(
             l.next_mileage,
             l.next_unit,
             l.next_km,
-            l.next_date
+            l.next_date,
+            l.target_auto
         )
         .execute(&mut *conn)
         .await?;
@@ -985,7 +1179,7 @@ pub async fn books_with_removed(
     let record_ids: Vec<Uuid> = records.iter().map(|r| r.id).collect();
     let items = sqlx::query!(
         r#"select i.oil_change_id, i.slot, i.text, i.category_id, i.service_id, s.name as "service?",
-                  i.target_set, i.next_value, i.next_unit, i.next_km, i.next_date
+                  i.target_set, i.target_auto, i.next_value, i.next_unit, i.next_km, i.next_date
            from oil_change_items i left join services s on s.id = i.service_id
            where i.oil_change_id = any($1) order by i.oil_change_id, i.position"#,
         &record_ids
@@ -1001,6 +1195,7 @@ pub async fn books_with_removed(
             service_id: i.service_id,
             service: i.service,
             target_set: i.target_set,
+            target_auto: i.target_auto,
             next_mileage: i.next_value,
             next_unit: i.next_unit,
             next_km: i.next_km,
@@ -1077,6 +1272,7 @@ pub async fn books_with_removed(
             })
             .filter(|n| n.slot == "oil" || n.last_date.is_some() || n.own_interval)
             .collect();
+        fill_auto_follow(&mut slots, &recs, &v.mileage_unit);
         // «Прочее» по услугам (ADR-131): у каждой услуги — своя следующая замена с её названием,
         // свежие сверху.
         let mut other: Vec<Uuid> = Vec::new();
@@ -1369,7 +1565,12 @@ fn slot_next(
         _ => slot_label(slot).to_string(),
     };
     let in_unit = |k: Option<i32>| k.and_then(|k| crate::domain::mileage::from_km(k, unit));
-    let target = last.as_ref().map(|(_, l)| l).filter(|l| l.target_set);
+    // Цель, которую поставил сервер (ADR-{B3.1}), — тот же расчёт по интервалу: владелец поменял
+    // интервал машины или категории — следующая замена пересчитывается, как без цели.
+    let target = last
+        .as_ref()
+        .map(|(_, l)| l)
+        .filter(|l| l.target_set && !l.target_auto);
     let (next_km, next_date, next_mileage) = match target {
         // Цель кассира: пробег как вписали (в той же единице), дата — по интервалу в днях.
         Some(l) => (
@@ -1407,6 +1608,46 @@ fn slot_next(
         last_text: last.map(|(_, l)| l.text),
         next_km,
         next_date,
+    }
+}
+
+/// Масляный, воздушный и салонный фильтр, поставленный с заменой масла по серверной цели
+/// (ADR-117, ADR-{B3.1}), — на интервал масла от своей замены; свой интервал машины у фильтра —
+/// по нему (`slot_next` уже посчитал).
+fn fill_auto_follow(slots: &mut [SlotNext], recs: &[OilRecord], unit: &str) {
+    let Some(oil) = slots
+        .iter()
+        .find(|n| n.slot == "oil" && n.service_id.is_none())
+        .map(|n| (n.interval_km, n.interval_days))
+    else {
+        return;
+    };
+    for n in slots
+        .iter_mut()
+        .filter(|n| follows_oil(&n.slot) && !n.own_interval)
+    {
+        let auto = recs.iter().find_map(|r| {
+            let mine = || r.lines.iter().filter(|l| l.slot == n.slot);
+            mine()
+                .find(|l| l.target_set)
+                .or_else(|| mine().next())
+                .map(|l| l.target_set && l.target_auto)
+        });
+        if auto != Some(true) {
+            continue;
+        }
+        let (Some(km), Some(days)) = oil else {
+            continue;
+        };
+        n.interval_km = Some(km);
+        n.interval_days = Some(days);
+        n.next_km = n.last_km.map(|m| m.saturating_add(km));
+        n.next_date = n
+            .last_date
+            .and_then(|d| d.checked_add_days(chrono::Days::new(u64::try_from(days).unwrap_or(31))));
+        n.next_mileage = n
+            .next_km
+            .and_then(|k| crate::domain::mileage::from_km(k, unit));
     }
 }
 

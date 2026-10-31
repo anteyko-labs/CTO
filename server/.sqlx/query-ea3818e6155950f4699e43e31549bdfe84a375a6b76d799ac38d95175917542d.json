@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\", c.book_interval_km, c.book_interval_days,\n                  c.kind, c.name, c.points_mode, c.points_value\n           from categories c where c.id = $1 for update",
+  "query": "select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\", c.book_interval_km, c.book_interval_days,\n                  c.kind, c.name, c.points_mode, c.points_value, c.attributes,\n                  category_by_type(c.attributes) as \"by_type!\"\n           from categories c where c.id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,16 @@
         "ordinal": 6,
         "name": "points_value",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "attributes",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "by_type!",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -51,8 +61,10 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      null
     ]
   },
-  "hash": "ae2205e713395e842b0f3827c6e68a30c4362f1eb8896c1488feaf081e646032"
+  "hash": "ea3818e6155950f4699e43e31549bdfe84a375a6b76d799ac38d95175917542d"
 }

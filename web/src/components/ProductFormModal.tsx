@@ -6,6 +6,7 @@ import { POLARITY_LABELS } from '../lib/battery'
 import { formatSom, litersInput, parseLiters, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
+import { addCodes, pickCross, type CrossPickResult } from '../lib/crossPick'
 import { canisterPourPrice } from '../lib/money'
 import type { CardPreset } from '../lib/oldCatalog'
 import { entryUnitPrice, type PriceEntry, type PricePer } from '../lib/purchasePrice'
@@ -125,12 +126,36 @@ export function ProductFormModal({
   const [points, setPoints] = useState<PointsDraft>(() => pointsDraft(product?.points_mode, product?.points_value))
   // Кросс-номера фильтра: по ним касса находит товар и предлагает аналоги (SPEC-17).
   const [cross, setCross] = useState<string | null>(null)
+  // Подобранные сервисом номера (задача 002 П10): «подобрано автоматически»; в режиме «предлагать» —
+  // предложения с галочками, сохраняет человек кнопкой «Сохранить».
+  const [crossAuto, setCrossAuto] = useState<string[]>([])
+  const [offered, setOffered] = useState<{ list: string[]; chosen: string[] } | null>(null)
+  const [picked, setPicked] = useState<string[]>([])
+  const pickAct = useAction()
   useEffect(() => {
     if (!product) return
-    void get<{ codes: string[] }>(`/products/${product.id}/cross`)
-      .then((r) => setCross((c) => c ?? r.codes.join(', ')))
+    void get<{ codes: string[]; auto?: string[] }>(`/products/${product.id}/cross`)
+      .then((r) => {
+        setCross((c) => c ?? r.codes.join(', '))
+        setCrossAuto(r.auto ?? [])
+      })
       .catch(() => undefined)
   }, [product])
+  const pickCrossCodes = () =>
+    void pickAct.run(async () => {
+      if (!product) return
+      const r: CrossPickResult = await pickCross(product.id)
+      if (r.error) throw new Error(r.error)
+      if (r.mode === 'auto') {
+        // Записано сразу: поле — как в карточке, плюс то, что кассир уже вписал.
+        setCross((c) => addCodes(c ?? '', r.codes))
+        setCrossAuto(r.auto)
+        toast(r.added.length ? `Подобрано и записано: ${r.added.length}` : 'Новых кросс-номеров не нашлось')
+      } else {
+        setOffered(r.found.length ? { list: r.found, chosen: r.found } : null)
+        if (!r.found.length) toast('Новых кросс-номеров не нашлось')
+      }
+    })
 
   const nameQuery = useDebounced(form.name.trim(), 300)
   const [similar, setSimilar] = useState<Product[]>([])
@@ -249,7 +274,7 @@ export function ProductFormModal({
       }
       if (isFilter && cross !== null) {
         const list = cross.split(/[,;\n]/).map((c) => c.trim()).filter(Boolean)
-        await put(`/products/${saved.id}/cross`, { codes: list })
+        await put(`/products/${saved.id}/cross`, { codes: list, auto: picked })
       }
       toast(product ? 'Товар сохранён' : 'Товар создан')
       onSaved(saved, !product && cost.text.trim() ? cost : undefined)
@@ -504,9 +529,56 @@ export function ProductFormModal({
           <input value={form.article} onChange={(e) => set('article', e.target.value)} />
         </Field>
         {isFilter && (
-          <Field label="Кросс-номера" hint="Номера других производителей через запятую: по ним найдётся товар и подскажутся аналоги">
-            <textarea rows={2} value={cross ?? ''} onChange={(e) => setCross(e.target.value)} placeholder="90915-YZZE1, W 712/75, OC 217" />
-          </Field>
+          <div className="flex flex-col gap-1">
+            <Field label="Кросс-номера" hint="Номера других производителей через запятую: по ним найдётся товар и подскажутся аналоги">
+              <textarea rows={2} value={cross ?? ''} onChange={(e) => setCross(e.target.value)} placeholder="90915-YZZE1, W 712/75, OC 217" />
+            </Field>
+            {crossAuto.length > 0 && (
+              <div className="text-xs text-slate-500" data-testid="cross-auto">
+                Подобрано автоматически: {crossAuto.join(', ')} — лишний номер уберите из поля и сохраните
+              </div>
+            )}
+            {product && mayEdit && (
+              <div>
+                <Button variant="secondary" className="px-2 py-1 text-xs" disabled={pickAct.busy} onClick={pickCrossCodes}>
+                  {pickAct.busy ? 'Подбираю…' : 'Подобрать кросс-номера'}
+                </Button>
+              </div>
+            )}
+            <ErrorBox error={pickAct.error} />
+            {offered && (
+              <div className="rounded-md border border-sky-200 bg-sky-50 p-2 text-sm" data-testid="cross-offered">
+                <div className="mb-1 font-medium">Сервис предлагает — отметьте верные:</div>
+                <div className="flex flex-wrap gap-3">
+                  {offered.list.map((c) => (
+                    <Checkbox
+                      key={c}
+                      label={c}
+                      checked={offered.chosen.includes(c)}
+                      onChange={(v) => setOffered({ ...offered, chosen: v ? [...offered.chosen, c] : offered.chosen.filter((x) => x !== c) })}
+                    />
+                  ))}
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    className="px-2 py-1 text-xs"
+                    disabled={offered.chosen.length === 0}
+                    onClick={() => {
+                      setCross((c) => addCodes(c ?? '', offered.chosen))
+                      setPicked((p) => [...p, ...offered.chosen])
+                      setOffered(null)
+                    }}
+                  >
+                    Добавить отмеченные
+                  </Button>
+                  <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setOffered(null)}>
+                    Не нужно
+                  </Button>
+                </div>
+                <div className="mt-1 text-xs text-slate-500">Номера запишутся, когда нажмёте «Сохранить».</div>
+              </div>
+            )}
+          </div>
         )}
         {!editing && category && (
           <Field label="Учитывать" hint="Масло — в литрах; что продаётся только целиком — в штуках">
@@ -548,7 +620,8 @@ export function ProductFormModal({
           </Field>
         )}
         {/* Кросс-номера фильтра — отдельным полем выше; прежний признак «cross» категории не дублируем. */}
-        {category?.attributes.filter((a) => !(isFilter && a.key === 'cross')).map((a) => (
+        {/* Выключенная у категории характеристика (задача 002 П10) в карточке не показывается. */}
+        {category?.attributes.filter((a) => a.enabled !== false && !(isFilter && a.key === 'cross')).map((a) => (
           <Field key={a.key} label={a.label}>
             {a.type === 'select' ? (
               <select value={form.attrs[a.key] ?? ''} onChange={(e) => set('attrs', { ...form.attrs, [a.key]: e.target.value })}>

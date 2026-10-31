@@ -1,4 +1,4 @@
-// Настройки одним экраном: этикетки, склад (цена масла за канистру или литр), документы, Телеграм и баллы, уведомления в бот, Optima Business, комиссия банка, статьи расходов,
+// Настройки одним экраном: этикетки, склад (цена масла за канистру или литр), документы, Телеграм и баллы, уведомления в бот, книжка и печать, кросс-номера, Optima Business, комиссия банка, статьи расходов,
 // филиалы, пользователи, категории и поставщики. Владельцу — выключатель старой базы Умаг (SPEC-36 §15).
 import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
@@ -13,6 +13,8 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },
   { to: '/settings/telegram', title: 'Телеграм и баллы', text: 'Бот владельца, процент баллов клиентам', icon: 'bell', ownerOnly: true },
   { to: '/settings/bot-feed', title: 'Уведомления в бот', text: 'Что приходит вам в Телеграм: чеки, склад, деньги, долги, зарплата, смена', icon: 'bell', ownerOnly: true },
+  { to: '/settings/oil-book', title: 'Масляная книжка и печать', text: 'Что печатать после чека «В сервис», фильтры в книжке, масло канистрой и разливом', icon: 'receipt', ownerOnly: true },
+  { to: '/settings/cross-pick', title: 'Кросс-номера', text: 'Подбор номеров аналогов фильтров: записывать сразу или предлагать, лимит в день', icon: 'products', ownerOnly: true },
   { to: '/settings/client-messages', title: 'Сообщения клиентам', text: 'Напоминания о замене и сообщения юрлицам о закупе: Телеграм и WhatsApp, журнал', icon: 'bell', ownerOnly: true },
   { to: '/settings/optima', title: 'Optima Business', text: 'QR на сумму чека и сверка с выпиской банка: компания, счёт, точка и касса', icon: 'bank', ownerOnly: true },
   { to: '/accounts', title: 'Комиссия банка', text: 'Ставка у каждого банковского счёта и история ставок — в «Обзоре счетов»', icon: 'profit', ownerOnly: true },

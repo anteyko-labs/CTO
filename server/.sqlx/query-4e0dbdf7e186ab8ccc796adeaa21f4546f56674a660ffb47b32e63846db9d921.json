@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update cross_picks set status = $2, found = $3, added = $4, error = $5,\n                  input_tokens = $6, output_tokens = $7, response = $8, finished_at = now()\n           where id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text",
+        "Int8",
+        "Int8",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4e0dbdf7e186ab8ccc796adeaa21f4546f56674a660ffb47b32e63846db9d921"
+}

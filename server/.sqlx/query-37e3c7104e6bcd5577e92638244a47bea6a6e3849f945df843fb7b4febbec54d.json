@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from cross_picks\n           where branch_id = $1\n             and created_at >= (date_trunc('day', now() at time zone 'Asia/Bishkek') at time zone 'Asia/Bishkek')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "37e3c7104e6bcd5577e92638244a47bea6a6e3849f945df843fb7b4febbec54d"
+}

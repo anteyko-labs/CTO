@@ -175,10 +175,11 @@ export function overdueSlots(b: VehicleBook, today: string): SlotNext[] {
  * (как на сервере, `product_slot`); строка категории — только для товаров без типа. Поэтому
  * «Воздушные фильтры» со строкой по умолчанию не показываются как «Фильтр масляный» (проверка 20.10.2026).
  */
-export function categorySlotText(c: { book_slot: BookSlot | 'none'; attributes: { key: string }[] }): { main: string; note: string | null } {
+export function categorySlotText(c: { book_slot: BookSlot | 'none'; attributes: { key: string; enabled?: boolean }[] }): { main: string; note: string | null } {
   if (c.book_slot === 'none') return { main: '—', note: null }
   const label = slotLabel(c.book_slot)
-  if (c.book_slot.endsWith('_filter') && c.attributes.some((a) => a.key === 'filter_type')) {
+  // «Тип» выключен у категории (задача 002 П10) — строка от категории.
+  if (c.book_slot.endsWith('_filter') && c.attributes.some((a) => a.key === 'filter_type' && a.enabled !== false)) {
     return { main: 'По типу фильтра', note: `без типа — ${label.toLowerCase()}` }
   }
   return { main: label, note: null }

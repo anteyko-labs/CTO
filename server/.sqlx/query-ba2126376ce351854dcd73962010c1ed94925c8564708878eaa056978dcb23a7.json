@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into product_cross_numbers (product_id, code, code_norm, auto)\n                   values ($1, $2, $3, true) on conflict do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ba2126376ce351854dcd73962010c1ed94925c8564708878eaa056978dcb23a7"
+}

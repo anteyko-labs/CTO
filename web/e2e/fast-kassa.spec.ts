@@ -158,7 +158,8 @@ test('книжка машины — один запрос: подсказка в
   const full = await (await page.request.get(`/api/v1/parties/${party.id}`)).json()
   const books: string[] = []
   page.on('request', (r) => {
-    if (r.url().includes('/oil-book')) books.push(r.url())
+    // Книжка машины, а не настройка «Масляная книжка и печать» (`/settings/oil-book`).
+    if (r.url().includes('/oil-book') && !r.url().includes('/settings/')) books.push(r.url())
   })
   await page.goto('/')
   await draft(page, p, { party: full, vehicleId: car.id })

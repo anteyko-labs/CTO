@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select value from settings where branch_id = $1 and key = 'oil_book'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "10c7f7ae266294cfcbcd83ce025f912ae091a0503b80c06e4cf83ed760892bd6"
+}

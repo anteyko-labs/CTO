@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, p.brand, p.article, p.attrs ->> 'filter_type' as filter_type,\n                  c.kind, c.name as category\n           from products p join categories c on c.id = p.category_id\n           where p.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "brand",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "article",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "filter_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "category",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "d4cd8ec9e919c614efd0cdd5d1c0e6d37638369751ed0ab228f78ef2aa6c8549"
+}

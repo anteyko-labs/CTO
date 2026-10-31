@@ -46,7 +46,8 @@ import {
   type OwnIntervals,
 } from '../lib/nextChange'
 import { CLIENT_NEED_LABELS, CLIENT_NEED_SHORT, isDiscount, oilEnough, serviceClientMissing, servicePrice, type OilEnough } from '../lib/serviceSale'
-import { printOilBook, saleCheckOf } from '../lib/oilBookPrint'
+import { printOilBook, saleCheckOf, saleRecordOf } from '../lib/oilBookPrint'
+import { loadOilBookSettings, OIL_BOOK_DEFAULTS, type OilBookSettings } from '../lib/oilBookSettings'
 import { ServicePicker } from '../components/ServicePicker'
 import { PersonPick } from '../components/PersonPick'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
@@ -940,6 +941,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Прошлый пробег машины: лишний ноль уйдёт в книжку, на печать и клиенту в бот.
   // Книжка грузится один раз на машину — её же показывает подсказка OilHint (SPEC-36 §16).
   const book = useLoad(() => (vehicleId ? get<VehicleBook>(`/vehicles/${vehicleId}/oil-book`) : Promise.resolve(null)), [vehicleId])
+  // «Масляная книжка и печать» (задача 003 Н5): что печатать после чека, фильтры и канистра с разливом.
+  const bookPrefs = useLoad(loadOilBookSettings, [])
+  const prefs: OilBookSettings = bookPrefs.data ?? OIL_BOOK_DEFAULTS
+  const doneRecord = done ? saleRecordOf(done.book, done.sale.id) : null
   // Пока грузится книжка другой машины, прежнюю не показываем.
   const carBook = book.data && book.data.vehicle_id === vehicleId ? book.data : null
   // Пробег — в единице машины (км или мили, ADR-084); прошлый — переведён в неё же.
@@ -983,7 +988,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Что залили по строке — под её подписью: «Антифриз — Sintec G12 × 2» (ADR-116); канистра
   // моторного масла без услуги масла — «Это замена?» (ADR-117).
   const nextGoods = nextOn ? cartGoods(lines, categories.data) : []
-  const nextList = nextOn ? nextRows({ sources: nextSources, goods: nextGoods, extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals }) : []
+  const nextList = nextOn
+    ? nextRows({ sources: nextSources, goods: nextGoods, extra: nextExtra, edits: nextEdits, mileage, unit: carUnit, own: ownIntervals, filtersFollowOil: prefs.filters_follow_oil })
+    : []
   const nextChoices = nextOn ? extraChoices(nextSources, nextList) : []
   const nextLow = nextTooLow(nextList, mileage)
   // Лишний ноль в следующей замене — подсказка «проверьте», провести можно (ADR-131).
@@ -1223,7 +1230,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       if (attempt.current?.key !== fixKey) attempt.current = { key: fixKey, opId: newOpId() }
       const res = await postCorrection({ op_id: attempt.current.opId, kind: 'sale', original_id: fix.originalId, comment: fixComment.trim(), doc })
       toast(`Чек исправлен: № ${res.new_number ?? ''}`)
-      navigate(`/sales/${res.new_id}`)
+      // Книжка исправленного чека — как у обычного: экран чека покажет и напечатает её (задача 003 Н5).
+      navigate(`/sales/${res.new_id}`, { state: { fixed: true } })
       return
     }
     const key = JSON.stringify(content)
@@ -1236,7 +1244,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     // Масляная книжка в чеке из очереди — как отдаст сервер (SPEC-34 §4); печатать нечего (ни что
     // залито, ни следующей замены) — блока нет.
     const bookCar = book.data ?? snapCar.data
-    const queuedBook = nextOn && bookCar ? receiptBook(bookCar, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods) : null
+    const queuedBook =
+      nextOn && bookCar
+        ? receiptBook(bookCar, mileage, carUnit, nextList, new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Bishkek' }), nextGoods, {
+            withFilters: prefs.with_filters,
+            qtyStyle: prefs.qty_style,
+            filtersFollowOil: prefs.filters_follow_oil,
+          })
+        : null
     const printableBook = queuedBook && (queuedBook.lines.length > 0 || (queuedBook.filled?.length ?? 0) > 0) ? queuedBook : null
     const receipt = (temp_no: string): Sale =>
       ({
@@ -1290,18 +1305,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       return
     }
     await markSent(opId, sale.number).catch(() => undefined)
-    setDone({ sale, change: payMode === 'cash' ? change : null })
+    const saleChange = payMode === 'cash' ? change : null
+    setDone({ sale, change: saleChange })
     // Замена в сервисе — запись в масляной книжке: показываем и печатаем её клиенту (SPEC-16).
     const bookVehicle = saleType === 'service' && party && vehicleId ? vehicleId : null
+    // Товарный чек сам — по настройке «Масляная книжка и печать» (по умолчанию нет).
+    if (bookVehicle && prefs.auto_receipt) printSale(sale, saleChange, { bookBlock: prefs.receipt_block })
     if (bookVehicle) {
       const client = party?.name ?? null
       void get<VehicleBook>(`/vehicles/${bookVehicle}/oil-book`)
         .then((book) => {
-          // Записи этого чека нет или в ней только «прочее» — книжку после чека не показываем и не
-          // печатаем (ADR-130, ADR-131).
-          if (!saleCheckOf(book, sale.id)) return
+          // Запись этого чека есть — панель «Записано в масляную книжку» видна всегда (задача 003 Н5).
+          if (!saleRecordOf(book, sale.id)) return
           setDone((d) => (d && d.sale.id === sale.id ? { ...d, book } : d))
-          return printOilBook(book, { client, master: sale.master_name, saleId: sale.id })
+          // Печатать нечего (только «прочее», только фильтры без настройки) — чек книжки не печатается
+          // (ADR-130, ADR-131); сам — по настройке.
+          if (!prefs.auto_book || !saleCheckOf(book, sale.id, prefs)) return
+          return printOilBook(book, { client, master: sale.master_name, saleId: sale.id, print: prefs })
         })
         .catch(() => toast('Масляная книжка не напечатана — напечатайте её из карточки клиента'))
     }
@@ -2104,11 +2124,14 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 </div>
               </div>
               <div className="flex gap-2">
-                <Button variant="secondary" onClick={() => printSale(done.sale, done.change)}>
+                <Button variant="secondary" onClick={() => printSale(done.sale, done.change, { bookBlock: prefs.receipt_block })}>
                   Печать чека
                 </Button>
-                {done.book && saleCheckOf(done.book, done.sale.id) && (
-                  <Button variant="secondary" onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id })}>
+                {done.book && saleCheckOf(done.book, done.sale.id, prefs) && (
+                  <Button
+                    variant="secondary"
+                    onClick={() => done.book && void printOilBook(done.book, { client: done.sale.party_name, master: done.sale.master_name, saleId: done.sale.id, print: prefs })}
+                  >
                     Печать книжки
                   </Button>
                 )}
@@ -2121,19 +2144,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 )}
               </div>
             </div>
-            {done.book && done.book.records[0]?.sale_id === done.sale.id && (
+            {done.book && doneRecord && (
               <div className="mt-3 rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm">
                 <div className="font-medium">Записано в масляную книжку · {done.book.plate}</div>
-                {recordMileage(done.book.records[0]) !== null && (
-                  <div className="text-slate-700">пробег {recordMileage(done.book.records[0])}</div>
+                {recordMileage(doneRecord) !== null && (
+                  <div className="text-slate-700">пробег {recordMileage(doneRecord)}</div>
                 )}
-                {recordLines(done.book.records[0]).map((l, i) => (
+                {recordLines(doneRecord).map((l, i) => (
                   <div key={i} className="text-slate-700">
                     {slotLabel(l.slot)}: {l.text}
                   </div>
                 ))}
-                {done.book.records[0].declined?.trim() && (
-                  <div className="text-amber-800">Рекомендовано: {done.book.records[0].declined}</div>
+                {doneRecord.declined?.trim() && (
+                  <div className="text-amber-800">Рекомендовано: {doneRecord.declined}</div>
                 )}
                 {/* Следующая — по строкам этого чека, не по прошлым заменам машины (ADR-111). */}
                 {slotsOfSale(done.book, done.sale.id).map((n) => (

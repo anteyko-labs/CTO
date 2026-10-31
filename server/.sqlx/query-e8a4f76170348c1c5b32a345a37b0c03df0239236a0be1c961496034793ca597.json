@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select i.oil_change_id, i.slot, i.text, i.category_id, i.service_id, s.name as \"service?\",\n                  i.target_set, i.next_value, i.next_unit, i.next_km, i.next_date\n           from oil_change_items i left join services s on s.id = i.service_id\n           where i.oil_change_id = any($1) order by i.oil_change_id, i.position",
+  "query": "select i.oil_change_id, i.slot, i.text, i.category_id, i.service_id, s.name as \"service?\",\n                  i.target_set, i.target_auto, i.next_value, i.next_unit, i.next_km, i.next_date\n           from oil_change_items i left join services s on s.id = i.service_id\n           where i.oil_change_id = any($1) order by i.oil_change_id, i.position",
   "describe": {
     "columns": [
       {
@@ -40,21 +40,26 @@
       },
       {
         "ordinal": 7,
+        "name": "target_auto",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
         "name": "next_value",
         "type_info": "Int4"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "next_unit",
         "type_info": "Text"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "next_km",
         "type_info": "Int4"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "next_date",
         "type_info": "Date"
       }
@@ -72,11 +77,12 @@
       true,
       true,
       false,
+      false,
       true,
       true,
       true,
       true
     ]
   },
-  "hash": "1e584ffda70bea41f7c8180693483b9cac46becc4668e9ea9e459d7d7ee64ea7"
+  "hash": "e8a4f76170348c1c5b32a345a37b0c03df0239236a0be1c961496034793ca597"
 }

@@ -59,6 +59,15 @@ pub struct AttributeDef {
     pub options: Vec<String>,
     #[serde(default)]
     pub filterable: bool,
+    /// Выключатель характеристики у категории (задача 002 П10): выключенная не видна в карточке
+    /// товара и в фильтрах списка, значения у товаров остаются. «Тип» фильтра выключен — строка
+    /// книжки от категории (ADR-072, `category_by_type`).
+    #[serde(default = "enabled_default")]
+    pub enabled: bool,
+}
+
+fn enabled_default() -> bool {
+    true
 }
 
 #[derive(Serialize)]
@@ -74,6 +83,8 @@ struct CategoryOut {
     /// Баллы товаров категории (ADR-{B1.2}): `inherit` — по общей ставке.
     points_mode: String,
     points_value: i64,
+    /// Строка книжки фильтра — по «Типу» товара; «Тип» выключен — от категории (задача 002 П10).
+    by_type: bool,
 }
 
 /// Правило баллов товара или категории (задача 002, П1): `inherit` — как выше (у товара —
@@ -179,6 +190,7 @@ fn attr(key: &str, label: &str, kind: &str, options: &[&str]) -> AttributeDef {
         kind: kind.into(),
         options: options.iter().map(|s| (*s).to_string()).collect(),
         filterable: true,
+        enabled: true,
     }
 }
 
@@ -261,7 +273,8 @@ async fn list_categories(
     let rows = sqlx::query_as!(
         CategoryOut,
         r#"select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                  c.book_interval_km, c.book_interval_days, c.points_mode, c.points_value
+                  c.book_interval_km, c.book_interval_days, c.points_mode, c.points_value,
+                  category_by_type(c.attributes) as "by_type!"
            from categories c order by c.name"#
     )
     .fetch_all(&state.pool)
@@ -350,6 +363,7 @@ async fn create_category(
         book_interval_days: book.interval_days,
         points_mode: "inherit".into(),
         points_value: 0,
+        by_type: !defs.iter().any(|d| d.key == "filter_type" && !d.enabled),
     }))
 }
 
@@ -392,13 +406,32 @@ async fn update_category(
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let before = sqlx::query!(
         r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days,
-                  c.kind, c.name, c.points_mode, c.points_value
+                  c.kind, c.name, c.points_mode, c.points_value, c.attributes,
+                  category_by_type(c.attributes) as "by_type!"
            from categories c where c.id = $1 for update"#,
         id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    // «Тип» фильтра решает строку книжки (ADR-072): выключить и включить его, как и строку книжки,
+    // может только владелец (задача 002 П10).
+    let by_type_after = req
+        .attributes
+        .as_ref()
+        .map(|defs| !defs.iter().any(|d| d.key == "filter_type" && !d.enabled));
+    if by_type_after.is_some_and(|t| t != before.by_type) && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
+    let off_keys = |v: &Value| -> Vec<String> {
+        serde_json::from_value::<Vec<AttributeDef>>(v.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| !d.enabled)
+            .map(|d| d.key)
+            .collect()
+    };
+    let off_before = off_keys(&before.attributes);
     // Переименованная категория без выбранной строки книжки получает её по названию (ADR-117);
     // выбранную владельцем строку название не меняет. Сохранили с прежним названием — строку по
     // названию не ставим (ADR-131): «Антифриз и жидкости» не становится целиком «Антифризом».
@@ -424,7 +457,8 @@ async fn update_category(
            where id = $1
            returning id, name, kind, attributes,
                      coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                     book_interval_km, book_interval_days, points_mode, points_value"#,
+                     book_interval_km, book_interval_days, points_mode, points_value,
+                     category_by_type(attributes) as "by_type!""#,
         id,
         name,
         attributes,
@@ -455,6 +489,11 @@ async fn update_category(
             "points": ops::changes(
                 &json!({ "mode": before.points_mode, "value": before.points_value }),
                 &json!({ "mode": out.points_mode, "value": out.points_value }),
+            ),
+            // Выключенные характеристики: что было и что стало (задача 002 П10).
+            "attributes_off": ops::changes(
+                &json!({ "off": off_before }),
+                &json!({ "off": off_keys(&out.attributes) }),
             ),
         }),
     )
@@ -2280,8 +2319,8 @@ async fn merge_product(
     crate::api::old_catalog::refresh_conflicts_of(&mut tx, &[id, req.into_product_id]).await?;
     // Кросс-номера дубля тоже переходят основной карточке: поиск по ним должен найти её (SPEC-17).
     let cross = sqlx::query_scalar!(
-        r#"insert into product_cross_numbers (product_id, code, code_norm)
-           select $2, code, code_norm from product_cross_numbers where product_id = $1
+        r#"insert into product_cross_numbers (product_id, code, code_norm, auto)
+           select $2, code, code_norm, auto from product_cross_numbers where product_id = $1
            on conflict do nothing
            returning code"#,
         id,

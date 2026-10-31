@@ -485,7 +485,11 @@ async fn top_up_is_not_a_change(pool: PgPool) {
         .await
         .expect("масло двигателя — замена");
     assert!(lines.iter().all(|l| l.0 != "gear_oil"), "{lines:?}");
-    assert!(!slot(&lines, "oil").1);
+    // Цель кассир не прислал — сервер поставил пробег + интервал масла (ADR-{B3.1}).
+    assert_eq!(
+        (slot(&lines, "oil").1, &slot(&lines, "oil").2),
+        (true, &json!(219_000))
+    );
     let b = p.book().await;
     let gear = b["slots"]
         .as_array()
@@ -523,8 +527,19 @@ async fn sold_oil_is_change(pool: PgPool) {
         .sell(130_000, &[("atf", "container", 1)], &["own"], json!([]))
         .await;
     let lines = p.record(&sale).await.expect("запись книжки");
-    assert!(!slot(&lines, "gear_oil").1, "{lines:?}");
+    // Цель кассир не прислал — сервер записал пробег + интервал коробки (ADR-{B3.1}); то же число
+    // в блоке книжки печатного чека.
+    assert_eq!(slot(&lines, "gear_oil").2, json!(170_000), "{lines:?}");
     assert!(lines.iter().any(|l| l.0 == "oil"), "{lines:?}");
+    assert!(
+        sale["book"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["slot"] == "gear_oil" && l["next_mileage"] == json!(170_000)),
+        "{}",
+        sale["book"]
+    );
     let b = p.book().await;
     let gear = b["slots"]
         .as_array()
@@ -908,4 +923,288 @@ async fn migration_moves_axle_services_to_other(pool: PgPool) {
     // Повторный запуск ничего не меняет.
     run_axle_migration(&pool).await;
     assert_eq!(services_now(&pool).await, want);
+}
+
+/// «Масляная книжка и печать» филиала (задача 003 Н5): поля поверх значений по умолчанию.
+async fn book_settings(p: &Point, patch: Value) -> Value {
+    let mut body = ok(
+        &p.app,
+        "GET",
+        "/api/v1/settings/oil-book",
+        &p.owner,
+        json!({}),
+    )
+    .await;
+    for (k, v) in patch.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    body["op_id"] = json!(Uuid::now_v7());
+    ok(&p.app, "PUT", "/api/v1/settings/oil-book", &p.owner, body).await
+}
+
+fn next_of(book: &Value) -> Vec<(String, Value)> {
+    book["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["slot"].as_str().unwrap().to_string(),
+                l["next_mileage"].clone(),
+            )
+        })
+        .collect()
+}
+
+fn slot_next(b: &Value, s: &str) -> Value {
+    b["slots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["slot"] == s)
+        .unwrap()["next_km"]
+        .clone()
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn receipt_book_next_without_cashier_target(pool: PgPool) {
+    // Задача 003 Н5: кассир цель не прислал — сервер пишет пробег сейчас + интервал строки, и
+    // печатный чек, книжка клиента и чек книжки показывают одно число (ADR-{B3.1}).
+    let mut p = Point::new(pool).await;
+    point_service(&mut p, "anti", json!({ "name": "Замена антифриза" })).await;
+    let sale = p
+        .sell(
+            130_000,
+            &[("oil", "container", 1), ("anti", "piece", 1)],
+            &["oil", "anti"],
+            json!([]),
+        )
+        .await;
+    assert_eq!(
+        next_of(&sale["book"]),
+        vec![
+            ("oil".to_string(), json!(138_000)),
+            ("antifreeze".to_string(), json!(190_000)),
+        ]
+    );
+    assert_eq!(slot_next(&p.book().await, "oil"), json!(138_000));
+    // Экран чека открывает книжку машины по `vehicle_id` чека.
+    assert_eq!(sale["vehicle_id"], p.vehicle["id"]);
+    // «Исправить» серверную цель не переносит: новый чек считает её заново.
+    ok(
+        &p.app,
+        "POST",
+        "/api/v1/shifts/open",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": p.cashier["id"], "cashier_pin": "1234" }),
+    )
+    .await;
+    let (s, draft) = call(
+        &p.app,
+        "GET",
+        &format!(
+            "/api/v1/corrections/draft/sale/{}",
+            sale["id"].as_str().unwrap()
+        ),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{draft}");
+    assert_eq!(draft["doc"]["next_changes"], json!([]));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn filters_follow_oil_without_cashier_target(pool: PgPool) {
+    // ADR-117 и без цели кассира: масляный, воздушный, салонный — на пробег масла; топливный — по
+    // своему интервалу. Владелец выключил — каждый фильтр по своему интервалу.
+    let p = Point::new(pool).await;
+    let all = [
+        ("oil", "container", 1),
+        ("oil_f", "piece", 1),
+        ("air_f", "piece", 1),
+        ("cab_f", "piece", 1),
+        ("fuel_f", "piece", 1),
+    ];
+    let sale = p.sell(130_000, &all, &["oil"], json!([])).await;
+    let rec = p.record(&sale).await.unwrap();
+    for f in ["oil", "oil_filter", "air_filter", "cabin_filter"] {
+        assert_eq!(slot(&rec, f).2, json!(138_000), "{f}");
+    }
+    assert!(!slot(&rec, "fuel_filter").1);
+    let b = p.book().await;
+    assert_eq!(slot_next(&b, "air_filter"), json!(138_000));
+    assert_eq!(slot_next(&b, "fuel_filter"), json!(160_000));
+    book_settings(&p, json!({ "filters_follow_oil": false })).await;
+    let sale = p.sell(150_000, &all, &["oil"], json!([])).await;
+    let rec = p.record(&sale).await.unwrap();
+    assert_eq!(slot(&rec, "oil").2, json!(158_000));
+    assert!(!slot(&rec, "air_filter").1);
+    assert_eq!(slot_next(&p.book().await, "air_filter"), json!(165_000));
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn container_and_pour_one_line(pool: PgPool) {
+    // Задача 003 Н5: канистра и разлив одного масла — одной строкой книжки «4,5 л»; с настройкой —
+    // «4,5 л (1 кан. × 4 л + 0,5 л)».
+    let p = Point::new(pool).await;
+    let goods = [("oil", "container", 1), ("oil", "pour", 500)];
+    let sale = p.sell(130_000, &goods, &["oil"], json!([])).await;
+    assert_eq!(
+        sale["book"]["filled"],
+        json!([{ "slot": "oil", "label": "Масло двигателя", "product": "Масло 5W-30 4л · 4,5 л" }])
+    );
+    let b = p.book().await;
+    let rec = &b["records"][0];
+    assert_eq!(rec["lines"].as_array().unwrap().len(), 1, "{rec}");
+    assert_eq!(rec["oil_text"], json!("Масло 5W-30 4л · 4,5 л"));
+    book_settings(&p, json!({ "qty_style": "split" })).await;
+    let sale = p.sell(140_000, &goods, &["oil"], json!([])).await;
+    assert_eq!(
+        sale["book"]["filled"][0]["product"],
+        json!("Масло 5W-30 4л · 4,5 л (1 кан. × 4 л + 0,5 л)")
+    );
+    // Неизвестный вид — 422.
+    let (s, _) = call(
+        &p.app,
+        "PUT",
+        "/api/v1/settings/oil-book",
+        &p.owner,
+        Some(json!({ "op_id": Uuid::now_v7(), "qty_style": "lines" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn book_with_filters_and_old_record_by_interval(pool: PgPool) {
+    // Настройка «с фильтрами» — фильтры в блоке книжки чека; запись без цели (до 31.10.2026) —
+    // срок по интервалу при показе, записанное не меняется (I4).
+    let p = Point::new(pool.clone()).await;
+    book_settings(&p, json!({ "with_filters": true })).await;
+    let sale = p
+        .sell(
+            130_000,
+            &[("oil", "container", 1), ("air_f", "piece", 1)],
+            &["oil"],
+            json!([]),
+        )
+        .await;
+    assert_eq!(
+        next_of(&sale["book"]),
+        vec![
+            ("oil".to_string(), json!(138_000)),
+            ("air_filter".to_string(), json!(138_000)),
+        ]
+    );
+    assert_eq!(
+        sale["book"]["filled"][1]["product"],
+        json!("Фильтр C-110 · 1 шт")
+    );
+    // Старая запись: целей нет.
+    sqlx::query(
+        "update oil_change_items set target_set = false, target_auto = false, next_value = null,
+                next_unit = null, next_km = null, next_date = null",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, again) = call(
+        &p.app,
+        "GET",
+        &format!("/api/v1/sales/{}", sale["id"].as_str().unwrap()),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(
+        next_of(&again["book"]),
+        vec![
+            ("oil".to_string(), json!(138_000)),
+            ("air_filter".to_string(), json!(145_000)),
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn filter_type_switched_off_gives_category_slot(pool: PgPool) {
+    // Задача 002 П10: «Тип» выключен у категории — строка книжки фильтра от категории (ADR-072).
+    let p = Point::new(pool).await;
+    let (_, cats) = call(&p.app, "GET", "/api/v1/categories", &p.owner, None).await;
+    let filters = cats
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Фильтры")
+        .unwrap()
+        .clone();
+    assert_eq!(filters["by_type"], json!(true));
+    let mut attrs = filters["attributes"].clone();
+    for a in attrs.as_array_mut().unwrap() {
+        if a["key"] == "filter_type" {
+            a["enabled"] = json!(false);
+        }
+    }
+    let saved = ok(
+        &p.app,
+        "PATCH",
+        &format!("/api/v1/categories/{}", filters["id"].as_str().unwrap()),
+        &p.owner,
+        json!({ "attributes": attrs }),
+    )
+    .await;
+    assert_eq!(saved["by_type"], json!(false));
+    let sale = p
+        .sell(130_000, &[("air_f", "piece", 1)], &["oil"], json!([]))
+        .await;
+    let rec = p.record(&sale).await.unwrap();
+    assert!(rec.iter().any(|l| l.0 == "oil_filter"), "{rec:?}");
+    assert!(rec.iter().all(|l| l.0 != "air_filter"), "{rec:?}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn server_target_follows_interval_changed_later(pool: PgPool) {
+    // Цель, которую поставил сервер, — расчёт по интервалу: владелец поменял интервал машины после
+    // чека — книжка пересчитывается; фильтр с маслом — на интервал масла, свой интервал фильтра —
+    // по нему. Печатный чек остаётся, каким был (I4).
+    let p = Point::new(pool.clone()).await;
+    let sale = p
+        .sell(
+            130_000,
+            &[("oil", "container", 1), ("air_f", "piece", 1)],
+            &["oil"],
+            json!([]),
+        )
+        .await;
+    let b = p.book().await;
+    assert_eq!(slot_next(&b, "oil"), json!(138_000));
+    assert_eq!(slot_next(&b, "air_filter"), json!(138_000));
+    for (slot, km) in [("oil", 10_000), ("air_filter", 12_000)] {
+        sqlx::query(
+            "insert into vehicle_book_intervals (vehicle_id, branch_id, slot, interval_km, interval_days)
+             select id, branch_id, $2, $3, 90 from party_vehicles where id = $1",
+        )
+        .bind(Uuid::parse_str(p.vehicle["id"].as_str().unwrap()).unwrap())
+        .bind(slot)
+        .bind(km)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let b = p.book().await;
+    assert_eq!(slot_next(&b, "oil"), json!(140_000));
+    assert_eq!(slot_next(&b, "air_filter"), json!(142_000));
+    let (_, again) = call(
+        &p.app,
+        "GET",
+        &format!("/api/v1/sales/{}", sale["id"].as_str().unwrap()),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(
+        next_of(&again["book"]),
+        vec![("oil".to_string(), json!(138_000))]
+    );
 }
