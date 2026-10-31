@@ -3217,6 +3217,11 @@ pub struct PayoutReq {
     /// только владелец, не позже сегодня и не раньше настройки «Зарплата». Деньги уходят сейчас.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pay_date: Option<NaiveDate>,
+    /// «Исправить» выплату (ADR-085): дата исходной выплаты. Её владелец оставляет и тогда, когда
+    /// она старше предела «дней назад» — предел для новых выплат (задача 003, хвост Н11). Ставит
+    /// только сервер, из запроса не читается.
+    #[serde(skip)]
+    pub original_pay_date: Option<NaiveDate>,
 }
 
 /// Строка выплаты: вид и сумма.
@@ -3362,7 +3367,13 @@ pub async fn post_payouts_tx(
     }
     let settings = load_settings(&mut *conn, branch_id).await?;
     let today = today(&mut *conn).await?;
-    let pay_date = check_pay_date(req.pay_date, today, owner, settings.payout_backdate_days)?;
+    let pay_date = check_pay_date(
+        req.pay_date,
+        today,
+        owner,
+        settings.payout_backdate_days,
+        req.original_pay_date,
+    )?;
     lock_employee(&mut *conn, branch_id, req.employee_id).await?;
     // Администратор выдаёт деньги только мастерам — за услуги и, с правом, аванс; кассиру
     // и остальным — владелец (SPEC-30 §6, ADR-122).
@@ -3531,12 +3542,14 @@ pub async fn post_payouts_tx(
 }
 
 /// Дата выплаты в расчёте (ADR-154): пусто — сегодня; не позже сегодня (422); другую дату
-/// ставит только владелец (403); не раньше `backdate_days` дней назад (422).
+/// ставит только владелец (403); не раньше `backdate_days` дней назад (422). Исправление выплаты
+/// владельцем с датой исходной (`original`) — и раньше предела: предел — для новых выплат.
 pub fn check_pay_date(
     asked: Option<NaiveDate>,
     today: NaiveDate,
     owner: bool,
     backdate_days: i32,
+    original: Option<NaiveDate>,
 ) -> AppResult<NaiveDate> {
     let Some(d) = asked else { return Ok(today) };
     if d > today {
@@ -3546,6 +3559,9 @@ pub fn check_pay_date(
         return Err(AppError::ForbiddenWith(
             "Дату выплаты меняет владелец".into(),
         ));
+    }
+    if original == Some(d) {
+        return Ok(d);
     }
     let earliest = today
         .checked_sub_days(chrono::Days::new(

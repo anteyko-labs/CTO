@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select r.id, r.trigger_product_id, p.name as \"trigger_name!\", p.unit as \"trigger_unit!\",\n                  r.min_units, r.active\n           from gift_rules r join products p on p.id = r.trigger_product_id\n           where ($1::uuid is null or r.trigger_product_id = $1)\n           order by p.name",
+  "query": "select r.id, r.trigger_product_id, p.name as \"trigger_name!\", p.unit as \"trigger_unit!\",\n                  r.min_units, r.active, r.needs_fix\n           from gift_rules r join products p on p.id = r.trigger_product_id\n           where ($1::uuid is null or r.trigger_product_id = $1)\n           order by p.name",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,11 @@
         "ordinal": 5,
         "name": "active",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "needs_fix",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -45,8 +50,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "b913b944f0958b167e8738c9db55f3c2945eaa635e4f6255a54ae167705ce83b"
+  "hash": "6cc75135214b3d6c877d4b3e5048ce565de386bfe843ce2329f76bb55bcfc602"
 }

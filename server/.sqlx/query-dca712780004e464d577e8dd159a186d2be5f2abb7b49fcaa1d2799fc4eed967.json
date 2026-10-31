@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select rule_id, gift_qty from gift_rule_items where gift_product_id = $1 for update",
+  "query": "select i.rule_id, i.gift_qty, r.active\n           from gift_rule_items i join gift_rules r on r.id = i.rule_id\n           where i.gift_product_id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "gift_qty",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "active",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -21,8 +26,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "4c8775a1c04cf7f798e6dd0d94a048b04c6b4b03f0a364579f4d2ed9a02c1b81"
+  "hash": "dca712780004e464d577e8dd159a186d2be5f2abb7b49fcaa1d2799fc4eed967"
 }

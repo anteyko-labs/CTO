@@ -887,6 +887,47 @@ async fn owner_reports_all_branches_as_the_sum_of_branches(pool: PgPool) {
         .map(|r| r["amount_tyiyn"].as_i64().unwrap())
         .sum();
     assert_eq!(expenses, num(&all, &["totals", "expenses_tyiyn"]));
+    // «Расходы» — «Все филиалы» (задача 003): строки обоих филиалов подряд с названием филиала,
+    // итог — сумма итогов филиалов; администратору — 404.
+    let spend = "/api/v1/expenses/all";
+    let a = api.get(spend, &w.owner, Some(w.a)).await;
+    let b = api.get(spend, &w.owner, Some(w.b)).await;
+    let all = api
+        .get(&format!("{spend}?branch=all"), &w.owner, Some(w.b))
+        .await;
+    let rows = |v: &Value| v.as_array().unwrap().clone();
+    assert!(!rows(&a).is_empty() && !rows(&b).is_empty(), "{a} {b}");
+    assert_eq!(rows(&all).len(), rows(&a).len() + rows(&b).len(), "{all}");
+    let names: HashSet<String> = rows(&all)
+        .iter()
+        .map(|r| r["branch_name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(
+        rows(&a)
+            .iter()
+            .all(|r| r["branch_id"] == w.a.to_string().as_str()),
+        "{a}"
+    );
+    let total = |v: &Value| v["total_tyiyn"].as_i64().unwrap();
+    let sa = api
+        .get(&format!("{spend}/summary"), &w.owner, Some(w.a))
+        .await;
+    let sb = api
+        .get(&format!("{spend}/summary"), &w.owner, Some(w.b))
+        .await;
+    let sall = api
+        .get(&format!("{spend}/summary?branch=all"), &w.owner, Some(w.b))
+        .await;
+    assert_eq!(total(&sall), total(&sa) + total(&sb), "{sall}");
+    assert!(total(&sa) > 0 && total(&sb) > 0, "{sa} {sb}");
+    for u in [
+        format!("{spend}?branch=all"),
+        format!("{spend}/summary?branch=all"),
+    ] {
+        let (s, _) = api.call("GET", &u, &w.admin_b, None, None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{u}");
+    }
     // Администратору раскрытия нет и в своём филиале (инвариант 13).
     let (s, _) = api.call("GET", uri, &w.admin_b, None, None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);

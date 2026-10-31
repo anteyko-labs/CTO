@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select needs_fix from gift_rules where id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "needs_fix",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c989304bf9301da8b388394cab6cf75451913a6bfc8170bfb212576001d92be6"
+}

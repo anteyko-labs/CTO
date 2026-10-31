@@ -676,6 +676,24 @@ const backoff = (item: OutboxItem, error: string): OutboxItem => ({
   last_error: error,
 })
 
+/** Сервер принял чек из очереди (задача 003, хвост Н5): касса печатает по нему чек книжки. */
+export const SALE_SENT_EVENT = 'avtodom:sale-sent'
+
+export interface SaleSent {
+  op_id: string
+  temp_no: string
+  /** Проведённый чек — ответ сервера. */
+  sale: Sale
+  /** Что пробил кассир: вид чека и машина. */
+  body: Record<string, unknown>
+}
+
+function announceSent(item: OutboxItem, sale: Sale): void {
+  if (typeof window === 'undefined' || !sale?.id) return
+  const detail: SaleSent = { op_id: item.op_id, temp_no: item.temp_no, sale, body: (item.body ?? {}) as Record<string, unknown> }
+  window.dispatchEvent(new CustomEvent<SaleSent>(SALE_SENT_EVENT, { detail }))
+}
+
 /**
  * Отправляет накопившиеся чеки вошедшего пользователя по одному. Повтор с тем же `op_id`
  * безопасен: сервер вернёт уже проведённый чек (ADR-013). Один чек не держит очередь: сбой
@@ -708,8 +726,9 @@ export async function syncOutbox(force = false): Promise<void> {
       }
       await put({ ...item, status: 'sending' })
       try {
-        const sale = await api<{ number: number }>('POST', '/sales', queuedBody(item), item.branch_id)
+        const sale = await api<Sale>('POST', '/sales', queuedBody(item), item.branch_id)
         await put({ ...item, status: 'done', server_number: sale.number, last_error: '', next_try_at: undefined })
+        announceSent(item, sale)
       } catch (e) {
         // «op_id уже использован»: чек мог уйти раньше от другого пользователя этой кассы —
         // тогда он проведён, а не отклонён.

@@ -22,6 +22,8 @@ export interface OilBookSettings {
   qty_style: QtyStyle
   /** Масляный, воздушный, салонный фильтр с заменой масла — на пробег масла (ADR-117). */
   filters_follow_oil: boolean
+  /** Чек «В сервис» без сети: после отправки на сервер печатать чек книжки (задача 003, хвост Н5). */
+  offline_book: boolean
 }
 
 export const OIL_BOOK_DEFAULTS: OilBookSettings = {
@@ -32,6 +34,7 @@ export const OIL_BOOK_DEFAULTS: OilBookSettings = {
   print_filters_only: false,
   qty_style: 'total',
   filters_follow_oil: true,
+  offline_book: true,
 }
 
 /** Настройка поверх значений по умолчанию: у старого снимка части полей нет. */
@@ -55,4 +58,13 @@ export async function loadOilBookSettings(): Promise<OilBookSettings> {
     last = oilBookSettingsOf((await readSnapshot())?.oil_book)
   }
   return last
+}
+
+/** Что делать с чеком книжки, когда сервер принял чек, пробитый без сети: печатать сам, показать
+ *  кнопку «Печать книжки» в уведомлении (печать выключена или окна кассы не видно) или ничего
+ *  (не «В сервис», без машины, чек книжки сам не печатается). */
+export function offlineBookPlan(body: Record<string, unknown>, s: Pick<OilBookSettings, 'auto_book' | 'offline_book'>, visible: boolean): 'print' | 'notice' | 'none' {
+  if (body.sale_type !== 'service' || typeof body.vehicle_id !== 'string' || !body.vehicle_id) return 'none'
+  if (!s.auto_book) return 'none'
+  return s.offline_book && visible ? 'print' : 'notice'
 }

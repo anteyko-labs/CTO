@@ -7,17 +7,31 @@ import type { InvoicePayment, InvoiceStatus, SupplierPayment } from '../lib/type
 import { CorrectionBadges, FixButton } from './Correction'
 import { Pager, usePager } from './Pager'
 import { ExportButton } from './ExportButton'
-import { listSheet, xl, type ExportCol } from '../lib/exportTable'
+import { listSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
+import { INVOICE_PAYMENT_COLS } from '../lib/exportCols'
 import { Badge, Table } from './ui'
 
 export function InvoiceStatusBadge({ status }: { status: InvoiceStatus }) {
   return <Badge tone={status === 'paid' ? 'green' : status === 'partial' ? 'amber' : 'rose'}>{INVOICE_STATUS_LABELS[status]}</Badge>
 }
 
-/** Платежи по одной накладной: сколько из каждого легло на неё. */
-export function InvoicePayments({ payments }: { payments: InvoicePayment[] }) {
+/** Платежи по одной накладной: сколько из каждого легло на неё. `file` — название выгрузки. */
+export function InvoicePayments({ payments, file = 'Платежи по накладной' }: { payments: InvoicePayment[]; file?: string }) {
   if (payments.length === 0) return <div className="text-sm text-slate-500">Оплат по накладной пока не было.</div>
   return (
+    <>
+    <div className="mb-2 flex justify-end">
+      {/* «В Excel» и у этой таблицы (задача 003 Н13): итог — сколько легло на накладную без сторно. */}
+      <ExportButton
+        file={file}
+        sheets={() => [
+          listSheet(file, INVOICE_PAYMENT_COLS, payments, {
+            sheet: 'Платежи',
+            total: totalBy(INVOICE_PAYMENT_COLS, { Когда: 'Итого', 'На накладную': xl.money(payments.filter((p) => !p.reversed).reduce((a, p) => a + p.amount_tyiyn, 0)) }),
+          }),
+        ]}
+      />
+    </div>
     <Table head={['Когда', 'Кто', 'На накладную', 'Весь платёж', 'Откуда']}>
       {payments.map((p) => (
         <tr key={p.ledger_id} className={p.reversed ? 'text-slate-400 line-through' : ''}>
@@ -38,6 +52,7 @@ export function InvoicePayments({ payments }: { payments: InvoicePayment[] }) {
         </tr>
       ))}
     </Table>
+    </>
   )
 }
 

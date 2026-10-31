@@ -11,7 +11,7 @@ import { FixDraft, type FixMode } from './FixDraft'
 import { Pager, usePager } from './Pager'
 import { ExtraForm, PayoutForm, SalaryForm, type ExtraDoc, type PayoutDoc, type SalaryDoc } from './PayrollForms'
 import { Button, Empty, ErrorBox, Field, Loading, Modal, Money, toast } from './ui'
-import { PURPOSE_LABELS } from '../lib/payouts'
+import { PURPOSE_LABELS, payoutReverseText } from '../lib/payouts'
 import { ExportButton } from './ExportButton'
 import { listSheet, periodText, xl, type ExportCol } from '../lib/exportTable'
 
@@ -183,7 +183,7 @@ export function PayrollEntries({ employee, from, to, onClose }: { employee: { em
                 ? target.t.row.kind === 'shortage'
                   ? `Удержание недостачи ${formatSom(-target.t.row.amount_tyiyn)} снимется с кассира. Недостача кассы останется в отчёте о прибыли и уменьшит её на эту сумму.`
                   : `${KIND_LABELS[target.t.row.kind] ?? target.t.row.kind} ${formatSom(target.t.row.amount_tyiyn)} за ${formatDate(target.t.row.business_date)} будет отменён записью с минусом.`
-                : `Выплата № ${target.t.row.number}${target.t.row.purpose && target.t.row.purpose !== 'general' ? ` (${(PURPOSE_LABELS[target.t.row.purpose] ?? target.t.row.purpose).toLowerCase()})` : ''} на ${formatSom(target.t.row.amount_tyiyn)} отменится${target.t.row.account_name ? `, деньги вернутся в «${target.t.row.account_name}» (нужна открытая смена)` : ''}.`}
+                : payoutReverseText(target.t.row)}
             </div>
             <Field label="Причина" required>
               <input autoFocus value={target.reason} onChange={(e) => setTarget({ ...target, reason: e.target.value })} />

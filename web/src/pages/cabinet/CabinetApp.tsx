@@ -6,10 +6,11 @@ import { ApiError, get, post, qs } from '../../lib/api'
 import { OilBookList } from '../../components/OilBook'
 import { Pager, usePager } from '../../components/Pager'
 import { ExportButton } from '../../components/ExportButton'
-import { reconciliationSheet } from '../../lib/exportCols'
-import { listSheet, xl, type ExportCol } from '../../lib/exportTable'
-import { BLANK, printReconciliation, type Reconciliation, type Seller } from '../../lib/debtDocs'
-import { formatDateTime, formatKg, formatLiters, formatSom, todayBishkek } from '../../lib/format'
+import { listSheet, periodText, xl, type ExportCol } from '../../lib/exportTable'
+import { PURCHASE_COLS, cabinetQtyText, purchaseRows, purchaseTotal, type CabinetSale } from '../../lib/cabinetExport'
+import { BLANK, type ActPeriod, type Seller } from '../../lib/debtDocs'
+import { ReconciliationView } from '../../components/ReconciliationButton'
+import { formatDateTime, formatSom, todayBishkek } from '../../lib/format'
 import { useAction, useLoad } from '../../lib/hooks'
 
 interface Me {
@@ -24,32 +25,8 @@ interface Me {
   /** Долг по филиалам (SPEC-33): только ненулевые. */
   branch_balances?: { branch_id: string; name: string; balance_tyiyn: number }[]
   seller: Partial<Seller>
-}
-
-interface SaleLine {
-  name: string
-  kind: string
-  qty: number
-  unit: string
-  container_ml: number | null
-  amount_tyiyn: number
-}
-
-interface ClientSale {
-  id: string
-  number: number
-  kind: 'sale' | 'return'
-  business_date: string
-  created_at: string
-  contact_name: string | null
-  vehicle_plate: string | null
-  total_tyiyn: number
-  debt_tyiyn: number
-  /** Оплачено «По счёту» — перечислением фирмы (ADR-095). */
-  invoice_tyiyn?: number
-  /** Филиал покупки (SPEC-33). */
-  branch_name?: string
-  lines: SaleLine[]
+  /** Период акта по умолчанию — как на экране точки («Документы о долге»). */
+  act_period?: ActPeriod | null
 }
 
 interface Contact {
@@ -60,16 +37,6 @@ interface Contact {
   last_at: string | null
   total_tyiyn: number
   debt_tyiyn: number
-}
-
-const dateRu = (iso: string) => iso.slice(0, 10).split('-').reverse().join('.')
-
-function qtyText(l: SaleLine): string {
-  if (l.kind === 'pour') return formatLiters(l.qty)
-  if (l.kind === 'weight') return formatKg(l.qty)
-  if (l.kind === 'container') return `${l.qty} кан.${l.container_ml ? ` × ${formatLiters(l.container_ml)}` : ''}`
-  if (l.kind === 'service') return `${l.qty} усл.`
-  return `${l.qty} шт`
 }
 
 function LoginForm({ onDone }: { onDone: () => void }) {
@@ -151,7 +118,7 @@ function Purchases() {
     return t.toISOString().slice(0, 10)
   })
   const [to, setTo] = useState(todayBishkek())
-  const list = useLoad(() => get<ClientSale[]>(`/client/sales${qs({ from, to })}`), [from, to])
+  const list = useLoad(() => get<CabinetSale[]>(`/client/sales${qs({ from, to })}`), [from, to])
   const rows = list.data ?? []
   // Итог — по всему периоду; чеки — по страницам, другой период — первая страница.
   const pager = usePager(rows, 'cabinet.sales', `${from}:${to}`)
@@ -166,6 +133,15 @@ function Purchases() {
         </Field>
         <div className="text-sm text-slate-600">
           Чеков: {rows.filter((r) => r.kind === 'sale').length} на {formatSom(rows.reduce((a, r) => a + r.total_tyiyn, 0))}
+        </div>
+        {/* Все покупки периода строками чеков (задача 003 Н13). */}
+        <div className="ml-auto">
+          <ExportButton
+            file="Покупки"
+            period={periodText(from, to)}
+            disabled={rows.length === 0}
+            sheets={() => [listSheet('Покупки', PURCHASE_COLS, purchaseRows(rows), { filter: [`период ${periodText(from, to)}`], total: purchaseTotal(rows) })]}
+          />
         </div>
       </Card>
       <ErrorBox error={list.error} />
@@ -201,7 +177,7 @@ function Purchases() {
               {s.lines.map((l, i) => (
                 <li key={i} className="flex justify-between gap-3 border-t border-slate-100 py-1">
                   <span>
-                    {l.name} <span className="text-slate-500">· {qtyText(l)}</span>
+                    {l.name} <span className="text-slate-500">· {cabinetQtyText(l)}</span>
                   </span>
                   <span className="whitespace-nowrap">{formatSom(l.amount_tyiyn)}</span>
                 </li>
@@ -282,68 +258,15 @@ function Messages() {
   )
 }
 
+/** Акт сверки — тот же экран, что в программе (задача 003): периоды, сальдо, строки, обороты,
+ *  вывод, «Печать» и «Скачать»; без ссылок на документы точки. */
 function Act({ me }: { me: Me }) {
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState(todayBishkek())
-  const act = useLoad(() => get<Reconciliation>(`/client/reconciliation${qs({ from, to })}`), [from, to])
   const seller: Seller = { name: '', inn: '', address: '', phone: '', director: '', bank: '', city: '', ...me.seller }
-  const a = act.data
   return (
-    <div className="flex flex-col gap-3">
-      <Card className="flex flex-wrap items-end gap-3">
-        <Field label="С" hint="Пусто — с первой операции">
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-        </Field>
-        <Field label="По">
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-        </Field>
-        <Button variant="secondary" disabled={!a} onClick={() => a && printReconciliation(a, seller)}>
-          Печать
-        </Button>
-        {/* Тот же акт файлом .xlsx (задача 003 Н9, Н13). */}
-        <ExportButton
-          label="Скачать"
-          file="Акт сверки"
-          period={a ? `${dateRu(a.from)}–${dateRu(a.to)}` : undefined}
-          disabled={!a}
-          sheets={() => (a ? [reconciliationSheet(a, seller.name)] : [])}
-        />
-      </Card>
-      <ErrorBox error={act.error} />
-      {act.loading && !a ? (
-        <Loading />
-      ) : a ? (
-        <Card className="p-0">
-          <Table head={['Дата', 'Документ', 'Отгружено вам', 'Оплачено вами']}>
-            <tr className="bg-slate-50 font-medium">
-              <td className="px-2 py-2" colSpan={2}>
-                Сальдо на {dateRu(a.from)}
-              </td>
-              <td className="px-2 py-2" colSpan={2}>
-                {a.opening_tyiyn > 0 ? `ваш долг ${formatSom(a.opening_tyiyn)}` : a.opening_tyiyn < 0 ? `ваш аванс ${formatSom(-a.opening_tyiyn)}` : 'долга нет'}
-              </td>
-            </tr>
-            {a.rows.map((r, i) => (
-              <tr key={i}>
-                <td className="whitespace-nowrap px-2 py-2">{dateRu(r.date)}</td>
-                <td className="px-2 py-2">{r.document}</td>
-                <td className="whitespace-nowrap px-2 py-2">{r.debit_tyiyn ? formatSom(r.debit_tyiyn) : ''}</td>
-                <td className="whitespace-nowrap px-2 py-2">{r.credit_tyiyn ? formatSom(r.credit_tyiyn) : ''}</td>
-              </tr>
-            ))}
-            <tr className="bg-slate-50 font-semibold">
-              <td className="px-2 py-2" colSpan={2}>
-                Сальдо на {dateRu(a.to)}
-              </td>
-              <td className="px-2 py-2" colSpan={2}>
-                {a.closing_tyiyn > 0 ? `ваш долг ${formatSom(a.closing_tyiyn)}` : a.closing_tyiyn < 0 ? `ваш аванс ${formatSom(-a.closing_tyiyn)}` : 'долга нет'}
-              </td>
-            </tr>
-          </Table>
-        </Card>
-      ) : null}
+    <Card className="flex flex-col gap-3">
+      <ReconciliationView source="/client/reconciliation" defaultPeriod={me.act_period ?? 'all'} seller={seller} />
       {!seller.name && <div className="text-xs text-slate-400">Реквизиты точки не заполнены — в печати будет {BLANK}.</div>}
-    </div>
+    </Card>
   )
 }
 

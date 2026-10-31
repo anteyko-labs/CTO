@@ -22,9 +22,24 @@ export function spendingKinds(may: { expenses: boolean; payroll: boolean }): [Sp
   return SPENDING_KINDS.filter(([k]) => k === (may.payroll ? 'payouts' : 'expenses'))
 }
 
-/** Адрес списка (и выгрузки) по отбору. */
-export function spendingPath(p: { from: string; to: string; kind: SpendingKind; reversals: boolean }, summary = false): string {
-  return `/expenses/all${summary ? '/summary' : ''}${qs({ from: p.from, to: p.to, kind: p.kind === 'all' ? undefined : p.kind, reversals: p.reversals ? 1 : undefined })}`
+/** Адрес списка (и выгрузки) по отбору; `all` — «Все филиалы» владельца (SPEC-33 §3). */
+export function spendingPath(p: { from: string; to: string; kind: SpendingKind; reversals: boolean; all?: boolean }, summary = false): string {
+  return `/expenses/all${summary ? '/summary' : ''}${qs({
+    from: p.from,
+    to: p.to,
+    kind: p.kind === 'all' ? undefined : p.kind,
+    reversals: p.reversals ? 1 : undefined,
+    branch: p.all ? 'all' : undefined,
+  })}`
+}
+
+/** Строка из другого филиала («Все филиалы»): исправить и сторнировать её можно только в её филиале. */
+export const foreignRow = (r: Pick<SpendingRow, 'branch_id'>, branchId: string): boolean => Boolean(r.branch_id) && r.branch_id !== branchId
+
+/** Выплата открывается в «Расчёте» на свой день у своего работника (задача 003). */
+export function payrollLink(r: Pick<SpendingRow, 'kind' | 'date' | 'employee_id'>): string | null {
+  if (r.kind === 'expense' || !r.employee_id) return null
+  return `/payroll${qs({ date: r.date, employee: r.employee_id })}`
 }
 
 /** «Что»: статья расхода, вид выплаты или «начислен бонус». */
@@ -76,7 +91,11 @@ export function summaryLines(s: SpendingSummary): SummaryLine[] {
   return out
 }
 
-/** Столбцы выгрузки — как в таблице экрана; сторно — отметкой. */
+/** Столбцы выгрузки — как в таблице экрана; сторно — отметкой; «Все филиалы» — со столбцом «Филиал». */
+export function spendingExportCols(all: boolean): ExportCol<SpendingRow>[] {
+  return all ? [{ label: 'Филиал', value: (r) => r.branch_name ?? '' }, ...SPENDING_EXPORT_COLS] : SPENDING_EXPORT_COLS
+}
+
 export const SPENDING_EXPORT_COLS: ExportCol<SpendingRow>[] = [
   { label: '№', value: (r) => (r.number === null ? '' : xl.int(r.number)) },
   { label: 'Дата', value: (r) => xl.date(r.date) },

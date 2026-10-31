@@ -56,7 +56,14 @@ async function login(page: Page) {
 
 /** Чек «В сервис» через API, как его прислало бы старое устройство: без следующей замены. */
 async function serviceSale(request: APIRequestContext) {
-  const tag = RUN
+  const { body, oilName, vehicle } = await serviceBody(request, RUN)
+  const sale = await api<{ id: string; number: number; vehicle_id: string }>(request, 'POST', '/sales', body)
+  expect(sale.vehicle_id).toBe(vehicle)
+  return { sale, oilName }
+}
+
+/** Товары, мастер, кассир, клиент с машиной и тело чека «В сервис» (оплата картой). */
+async function serviceBody(request: APIRequestContext, tag: string) {
   const safe = await ownerSafe(request)
   const oilCat = await api<{ id: string }>(request, 'POST', '/categories', { name: `Масла книжки ${tag}`, kind: 'oil' })
   const oilName = `Масло книжки ${tag} 5W-30`
@@ -69,7 +76,7 @@ async function serviceSale(request: APIRequestContext) {
   const vehicle = await api<{ id: string }>(request, 'POST', `/parties/${party.id}/vehicles`, { plate: `09KG${tag.slice(-3)}BKK`, brand: 'Toyota', model: 'Camry' })
   const total = 300_000 + 37_500 + svc.price_tyiyn
   // Картой: «Исправить» такого чека не требует открытой смены.
-  const sale = await api<{ id: string; number: number; vehicle_id: string }>(request, 'POST', '/sales', {
+  const body = {
     op_id: crypto.randomUUID(),
     client_time: new Date().toISOString(),
     sale_type: 'service',
@@ -85,10 +92,71 @@ async function serviceSale(request: APIRequestContext) {
       { kind: 'service', gift: false, service_id: svc.id, qty: 1, unit_price_tyiyn: svc.price_tyiyn },
     ],
     payments: [{ method: 'card', amount_tyiyn: total }],
-  })
-  expect(sale.vehicle_id).toBe(vehicle.id)
-  return { sale, oilName }
+  }
+  return { body, oilName, vehicle: vehicle.id }
 }
+
+/** Кладёт чек в очередь устройства, как касса без сети, и будит отправку (событие «online»). */
+async function queueOffline(page: Page, userId: string, body: Record<string, unknown>, tempNo: string) {
+  await page.evaluate(
+    async ({ uid, body, tempNo }) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const r = indexedDB.open('avtodom', 1)
+        r.onsuccess = () => resolve(r.result)
+        r.onerror = () => reject(r.error)
+      })
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('outbox', 'readwrite')
+        tx.objectStore('outbox').put({
+          op_id: body.op_id,
+          temp_no: tempNo,
+          created_at: new Date(Date.now() - 60_000).toISOString(),
+          status: 'pending',
+          attempts: 1,
+          last_error: 'нет связи',
+          user_id: uid,
+          user_name: 'Владелец',
+          body,
+        })
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+      })
+      window.dispatchEvent(new Event('online'))
+    },
+    { uid: userId, body, tempNo },
+  )
+}
+
+test('чек «В сервис» без сети: книжка печатается сама после отправки, выключено — кнопкой в уведомлении', async ({ page }) => {
+  await page.addInitScript(PRINT_STUB)
+  await login(page)
+  const initial = await api<Record<string, unknown>>(page.request, 'GET', '/settings/oil-book')
+  expect(initial.offline_book).toBe(true)
+  const me = await api<{ id: string }>(page.request, 'GET', '/auth/me')
+  try {
+    await page.goto('/')
+    await page.waitForSelector('[data-picker]')
+    const first = await serviceBody(page.request, `${RUN}o1`)
+    await queueOffline(page, me.id, { ...first.body, client_time: new Date(Date.now() - 60_000).toISOString() }, 'Ч-OFF-0001')
+    // Сервер принял чек — чек книжки ушёл на печать сам.
+    await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка') && h.includes(first.oilName)), { timeout: 20_000 }).toBe(true)
+    await expect(page.getByTestId('offline-book-prints')).toHaveCount(0)
+
+    // Выключено — книжка не печатается, в уведомлении кнопка «Печать книжки».
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, offline_book: false, op_id: crypto.randomUUID() })
+    const second = await serviceBody(page.request, `${RUN}o2`)
+    const before = (await prints(page)).length
+    await queueOffline(page, me.id, { ...second.body, client_time: new Date(Date.now() - 60_000).toISOString() }, 'Ч-OFF-0002')
+    const notice = page.getByTestId('offline-book-prints')
+    await expect(notice).toContainText('Книжка не напечатана', { timeout: 20_000 })
+    expect((await prints(page)).slice(before).some((h) => h.includes(second.oilName))).toBe(false)
+    await notice.getByRole('button', { name: 'Печать книжки' }).click()
+    await expect.poll(async () => (await prints(page)).slice(before).some((h) => h.includes('Масляная книжка') && h.includes(second.oilName))).toBe(true)
+    await expect(notice).toHaveCount(0)
+  } finally {
+    await api(page.request, 'PUT', '/settings/oil-book', { ...initial, op_id: crypto.randomUUID() })
+  }
+})
 
 test('чек без цели кассира: «Печать книжки» в экране чека, одно число и «4,5 л» одной строкой; «Исправить» печатает книжку', async ({ page }) => {
   await page.addInitScript(PRINT_STUB)

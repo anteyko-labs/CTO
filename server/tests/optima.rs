@@ -10,7 +10,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use chrono::{Duration, Utc};
+use chrono::{Duration, Timelike, Utc};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -504,12 +504,30 @@ fn paid(tx: &str, sum: &str, op: &str) -> String {
     )
 }
 
-/// Время банка — время точки без зоны.
+/// Время банка — время точки без зоны; сдвиг не переносит операцию в другой день точки (около
+/// полуночи по Бишкеку `-14` минут было вчера, и сверка за сегодня её не видела).
 fn bank_time(shift_min: i64) -> String {
-    (Utc::now() + Duration::minutes(shift_min))
-        .with_timezone(&bishkek())
+    let now = Utc::now().with_timezone(&bishkek());
+    let at = (now + Duration::minutes(shift_min)).naive_local();
+    let day = now.date_naive();
+    let first = day.and_hms_opt(0, 0, 1).unwrap();
+    let last = day.and_hms_opt(23, 59, 59).unwrap();
+    at.clamp(first, last)
         .format("%Y-%m-%dT%H:%M:%S")
         .to_string()
+}
+
+/// Тест, который сверяет «сегодня», не начинается в последние две минуты дня по Бишкеку: оплаты
+/// и сверка — в одном дне точки, в какое бы время ни шли тесты.
+async fn off_midnight() {
+    let now = Utc::now().with_timezone(&bishkek());
+    let left = 86_400 - i64::from(now.time().num_seconds_from_midnight());
+    if left <= 120 {
+        tokio::time::sleep(std::time::Duration::from_secs(
+            u64::try_from(left + 2).unwrap(),
+        ))
+        .await;
+    }
 }
 
 fn pos_op(time: &str, sum: &str, fee: &str, rrn: &str, extra: &str) -> String {
@@ -781,6 +799,7 @@ async fn paid_qr_without_sale_alerts_owner(pool: PgPool) {
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn statement_matches_and_fixes_real_fee(pool: PgPool) {
+    off_midnight().await;
     let (w, bank) = with_bank(pool).await;
     w.configure().await;
     let today = Utc::now().with_timezone(&bishkek()).date_naive();

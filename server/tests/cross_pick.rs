@@ -363,6 +363,27 @@ async fn cross_pick_rights_and_no_key(pool: PgPool) {
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, v) = call(&w.app, "GET", "/api/v1/settings/oil-book", &w.admin, None).await;
     assert_eq!((s, &v["auto_book"]), (StatusCode::OK, &json!(true)));
+    // Книжка для чека без сети — печатать после отправки (задача 003, хвост Н5): по умолчанию да,
+    // владелец выключает, и выключенное сохраняется.
+    assert_eq!(v["offline_book"], json!(true), "{v}");
+    let mut off = v.clone();
+    off["offline_book"] = json!(false);
+    off["op_id"] = json!(Uuid::now_v7());
+    let (s, saved) = call(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/oil-book",
+        &w.owner,
+        Some(off),
+    )
+    .await;
+    assert_eq!(
+        (s, &saved["offline_book"]),
+        (StatusCode::OK, &json!(false)),
+        "{saved}"
+    );
+    let (_, again) = call(&w.app, "GET", "/api/v1/settings/oil-book", &w.admin, None).await;
+    assert_eq!(again["offline_book"], json!(false), "{again}");
     // Неверный лимит — 422.
     let (s, _) = call(
         &w.app,

@@ -1128,3 +1128,69 @@ async fn settings_put_is_idempotent_by_op_id(pool: PgPool) {
         }
     }
 }
+
+/// «Исправить» выплату с датой старше предела «дней назад» (задача 003, хвост Н11): владелец
+/// исправляет с датой исходной выплаты; другая старая дата — 422, предел — для новых выплат.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn fix_of_payout_older_than_backdate_limit_keeps_its_date(pool: PgPool) {
+    let w = world(pool, true).await;
+    let till = w.account("register").await;
+    let old = w.today.checked_sub_days(Days::new(20)).unwrap();
+    let (s, out) = w
+        .pay(
+            &w.owner,
+            json!({ "employee_id": w.cashier, "account_id": till, "pay_date": old, "advance": true,
+                    "purpose": "general", "amount_tyiyn": 300_000 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let pid = out["id"].as_str().unwrap().to_string();
+    // Предел сузили: дата исходной выплаты теперь за ним.
+    w.settings(json!({ "payout_backdate_days": 5 })).await;
+    let draft = get(
+        &w.app,
+        &w.owner,
+        &format!("/api/v1/corrections/draft/payout/{pid}"),
+    )
+    .await;
+    assert_eq!(draft["doc"]["pay_date"], old.to_string(), "{draft}");
+    let fix = |doc: Value| {
+        json!({ "op_id": Uuid::now_v7(), "kind": "payout", "original_id": pid,
+                "comment": "не та сумма", "doc": doc })
+    };
+    // Другая старая дата — нельзя.
+    let mut other = draft["doc"].clone();
+    other["pay_date"] = json!(old.succ_opt().unwrap());
+    other["amount_tyiyn"] = json!(250_000);
+    let (s, _, out) = call(
+        &w.app,
+        "POST",
+        "/api/v1/corrections",
+        Some(&w.owner),
+        Some(fix(other)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert!(msg(&out).contains("не раньше"), "{out}");
+    // Дата исходной — можно.
+    let mut doc = draft["doc"].clone();
+    doc["amount_tyiyn"] = json!(250_000);
+    let fixed = ok(&w.app, &w.owner, "POST", "/api/v1/corrections", fix(doc)).await;
+    let new_id = fixed["new_id"].as_str().unwrap().to_string();
+    let (date, amount): (NaiveDate, i64) =
+        sqlx::query_as("select pay_date, amount_tyiyn from payouts where id = $1::uuid")
+            .bind(&new_id)
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    assert_eq!((date, amount), (old, 250_000));
+    // Новая выплата той датой — по-прежнему 422.
+    let (s, out) = w
+        .pay(
+            &w.owner,
+            json!({ "employee_id": w.cashier, "account_id": till, "pay_date": old, "advance": true,
+                    "purpose": "general", "amount_tyiyn": 1_000 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+}
