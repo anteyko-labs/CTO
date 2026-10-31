@@ -1,0 +1,128 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with r as (\n             select 'expense'::text as kind, e.id, e.number::bigint as number, e.expense_date as date,\n                    e.amount_tyiyn, a.name as article, null::text as purpose, e.payee,\n                    null::uuid as employee_id, e.comment, e.source::text as source,\n                    c.name::text as account_name, u.full_name as user_name, e.created_at,\n                    e.reversal_of,\n                    exists (select 1 from expenses x where x.reversal_of = e.id) as reversed\n             from expenses e\n             join expense_articles a on a.id = e.article_id\n             join users u on u.id = e.user_id\n             left join cash_accounts c on c.id = e.account_id\n             where $5 and e.branch_id = $1\n               and ($2::date is null or e.expense_date >= $2)\n               and ($3::date is null or e.expense_date <= $3)\n               -- Администратору — как в «Расходах»: из кассы, за неделю, без статей владельца.\n               and ($4 or (not a.owner_only and e.source = 'account'\n                           and c.kind = 'register' and not c.owner_only\n                           and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))\n             union all\n             select 'payout', p.id, p.number, p.pay_date, p.amount_tyiyn, 'Зарплата работникам',\n                    p.purpose, em.full_name, em.id, p.comment, p.source,\n                    -- Счёт владельца администратору не называется.\n                    case when $4 or not coalesce(c.owner_only, false) then c.name end,\n                    u.full_name, p.created_at, p.reversal_of,\n                    exists (select 1 from payouts x where x.reversal_of = p.id)\n             from payouts p\n             join employees em on em.id = p.employee_id\n             join users u on u.id = p.user_id\n             left join cash_accounts c on c.id = p.account_id\n             where $6 and p.branch_id = $1\n               and ($2::date is null or p.pay_date >= $2)\n               and ($3::date is null or p.pay_date <= $3)\n               and ($8 or (em.is_master and not em.is_cashier))\n             union all\n             select 'bonus_accrual', b.id, null, b.business_date, b.amount_tyiyn,\n                    'Зарплата работникам', 'bonus', em.full_name, em.id, b.comment, null, null,\n                    u.full_name, b.created_at, b.reversal_of,\n                    exists (select 1 from payroll_accruals x where x.reversal_of = b.id)\n             from payroll_accruals b\n             join employees em on em.id = b.employee_id\n             join users u on u.id = b.user_id\n             where $7 and b.branch_id = $1 and b.kind = 'bonus'\n               and ($2::date is null or b.business_date >= $2)\n               and ($3::date is null or b.business_date <= $3)\n               and ($8 or (em.is_master and not em.is_cashier))\n           ), f as (\n             select * from r where $9 or (r.reversal_of is null and not r.reversed)\n           )\n           select f.kind as \"kind!\", f.id as \"id!\", f.number, f.date as \"date!\",\n                  f.amount_tyiyn as \"amount_tyiyn!\", f.article as \"article!\", f.purpose,\n                  f.payee as \"payee!\", f.employee_id, f.comment as \"comment!\", f.source,\n                  f.account_name, f.user_name as \"user_name!\", f.created_at as \"created_at!\",\n                  f.reversal_of, f.reversed as \"reversed!\",\n                  count(*) over () as \"total!\"\n           from f\n           order by f.date desc, f.created_at desc, f.id\n           limit $10 offset $11",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "date!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "article!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "purpose",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "payee!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "comment!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "source",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "account_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "user_name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at!",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 15,
+        "name": "reversed!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 16,
+        "name": "total!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "e65b29201f6f0657021e2d68136bc2c1014fb8ed1c22820c2212f67b829d4c53"
+}

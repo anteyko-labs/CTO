@@ -41,6 +41,14 @@ pub struct ProfitSettings {
     /// Показывать сторно и исправления в раскрытии сразу (иначе — по переключателю).
     #[serde(default)]
     pub show_reversals: bool,
+    /// «Расходы»: начисленные бонусы — отдельной строкой «начислен бонус» и итогом «начислено,
+    /// не выдано» (задача 003 Н12б, ADR-161). По умолчанию да.
+    #[serde(default = "yes")]
+    pub expenses_bonus_accruals: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_period() -> String {
@@ -57,6 +65,7 @@ impl Default for ProfitSettings {
             default_period: default_period(),
             expense_payee: default_payee(),
             show_reversals: false,
+            expenses_bonus_accruals: true,
         }
     }
 }
@@ -302,6 +311,9 @@ pub struct PnlDetail {
     pub defects: Vec<DefectRow>,
     pub supplier_returns: Vec<SupplierReturnRow>,
     pub not_in_profit: Vec<MoneyRow>,
+    /// Оклад за незаконченный период без начисления — справочно, в чистую не входит
+    /// (задача 003 Н12б).
+    pub salary_expected: Vec<crate::api::payroll::SalaryExpected>,
 }
 
 /// Раскрытие строк отчёта. Вызывается после `reports::profit_data` (он проверил владельца и
@@ -705,6 +717,8 @@ pub async fn detail(
     })
     .collect();
 
+    let salary_expected = crate::api::payroll::expected_salaries(&mut *conn, b, from, to).await?;
+
     Ok(PnlDetail {
         products,
         services,
@@ -720,5 +734,6 @@ pub async fn detail(
         defects,
         supplier_returns,
         not_in_profit,
+        salary_expected,
     })
 }

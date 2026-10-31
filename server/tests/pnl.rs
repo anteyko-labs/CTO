@@ -607,7 +607,8 @@ async fn expense_payee_is_stored_reversed_and_set_up_by_owner(pool: PgPool) {
     let settings = ok(&app, "GET", "/api/v1/settings/profit-report", &owner, None).await;
     assert_eq!(
         settings,
-        json!({ "default_period": "month", "expense_payee": "optional", "show_reversals": false })
+        json!({ "default_period": "month", "expense_payee": "optional", "show_reversals": false,
+                "expenses_bonus_accruals": true })
     );
     let form = ok(&app, "GET", "/api/v1/expenses/payees", &admin, None).await;
     assert_eq!(form["mode"], "optional");

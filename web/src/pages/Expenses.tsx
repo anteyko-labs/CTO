@@ -2,23 +2,38 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
-import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
-import { get, newOpId, post, qs } from '../lib/api'
+import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
+import { get, newOpId, post } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { formatDate, formatDateTime, formatSom, parseSom, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { CashAccount, Expense, ExpenseArticle, ExpensePayees } from '../lib/types'
+import type { CashAccount, ExpenseArticle, ExpensePayees, SpendingRow, SpendingSummary } from '../lib/types'
 import { isTill } from '../lib/accounts'
 import { correctionMarks, loadCorrections, numberText } from '../lib/corrections'
 import { expenseDoc, expenseFields, type ExpenseDoc, type ExpenseFields } from '../lib/moneyFix'
 import { payeeHints, payeeMissing } from '../lib/expensePayee'
 import { ExportButton } from '../components/ExportButton'
-import { cappedWarning, fetchAllPages, periodText, tableSheet, xl, type ExportCol } from '../lib/exportTable'
+import { cappedWarning, fetchAllPages, periodText, tableSheet, xl } from '../lib/exportTable'
+import { useCan } from '../lib/permissions'
+import { SPENDING_EXPORT_COLS, spendingKinds, spendingMark, spendingNumber, spendingPath, spendingWhat, summaryLines, summarySheetRows, type SpendingKind } from '../lib/spending'
+import { StaffPayModal } from '../components/StaffPayModal'
 
-/** Расходы точки: из кассы, со счёта или не из денег точки (SPEC-06). */
+/**
+ * Расходы точки (SPEC-06) — все траты, кроме оплаты поставщикам за товар (задача 003 Н12б): расходы
+ * по статьям и выплаты работникам одним списком, начисленные бонусы — отдельной строкой.
+ */
 export default function Expenses() {
   const owner = useUser().role === 'owner'
+  const can = useCan()
+  // Выплаты в списке — тем, кому открыт «Расчёт»; платят — с правом «Выплаты мастерам».
+  const mayPayroll = can('view_payroll')
+  const mayPay = mayPayroll && can('payroll_pay')
+  const kinds = spendingKinds({ expenses: true, payroll: mayPayroll })
+  const [kindPick, setKind] = useState<SpendingKind>('all')
+  const kind = kinds.some(([k]) => k === kindPick) ? kindPick : kinds[0][0]
+  const [reversals, setReversals] = useState(false)
+  const [staffPay, setStaffPay] = useState<'payout' | 'bonus' | null>(null)
   const [from, setFrom] = useState(todayBishkek())
   const [to, setTo] = useState(todayBishkek())
   const [form, setForm] = useState<ExpenseFields>({ article: '', sum: '', account: '', date: todayBishkek(), comment: '', payee: '' })
@@ -28,8 +43,9 @@ export default function Expenses() {
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   // Страницу режет сервер, итог за период — отдельным запросом по всему отбору (проверка
   // 20.10.2026: раньше итог считался по первым 500 строкам).
-  const list = usePagedLoad<Expense>(`/expenses${qs({ from, to })}`, 'expenses')
-  const summary = useLoad(() => get<{ count: number; total_tyiyn: number }>(`/expenses/summary${qs({ from, to })}`), [from, to])
+  const query = { from, to, kind, reversals }
+  const list = usePagedLoad<SpendingRow>(spendingPath(query), 'expenses')
+  const summary = useLoad(() => get<SpendingSummary>(spendingPath(query, true)), [from, to, kind, reversals])
   // Отметки «исправлен → № N» / «исправление № M» — одним запросом на список.
   const corrections = useLoad(() => loadCorrections('expense'), [])
   const marks = correctionMarks(corrections.data ?? [])
@@ -72,7 +88,7 @@ export default function Expenses() {
       toast('Расход записан')
     })
 
-  const reverse = (e: Expense) =>
+  const reverse = (e: SpendingRow) =>
     void act.run(async () => {
       if (!window.confirm(`Сторнировать расход № ${e.number} на ${formatSom(e.amount_tyiyn)}?`)) return
       await post(`/expenses/${e.id}/reverse`, { op_id: newOpId(), comment: '' })
@@ -86,11 +102,23 @@ export default function Expenses() {
       <PageHeader
         title="Расходы"
         actions={
-          owner && (
-            <Link to="/settings/expense-articles" className="text-sm font-medium text-sky-700 underline">
-              Статьи расходов
-            </Link>
-          )
+          <div className="flex flex-wrap items-center gap-2">
+            {mayPay && (
+              <Button variant="secondary" onClick={() => setStaffPay('payout')}>
+                Выплатить работнику
+              </Button>
+            )}
+            {owner && (
+              <Button variant="secondary" onClick={() => setStaffPay('bonus')}>
+                Бонус
+              </Button>
+            )}
+            {owner && (
+              <Link to="/settings/expense-articles" className="text-sm font-medium text-sky-700 underline">
+                Статьи расходов
+              </Link>
+            )}
+          </div>
         }
       />
 
@@ -121,21 +149,33 @@ export default function Expenses() {
               period={periodText(from, to)}
               disabled={list.total === 0}
               sheets={async () => {
-                // Все строки отбора, а не одна страница (задача 003 Н13).
-                const all = await fetchAllPages<Expense>(`/expenses${qs({ from, to })}`)
+                // Все строки отбора, а не одна страница (задача 003 Н13); итог — по статьям.
+                const all = await fetchAllPages<SpendingRow>(spendingPath(query))
+                const sum = summary.data
                 return [
-                  tableSheet('Расходы', EXPORT_COLS, all.items, {
-                    title: ['Расходы', `Период: ${periodText(from, to)}`],
-                    total: ['Итого', null, null, null, null, xl.money(total)],
+                  tableSheet('Расходы', SPENDING_EXPORT_COLS, all.items, {
+                    title: ['Расходы — все траты, кроме оплаты поставщикам', `Период: ${periodText(from, to)}`, `Отбор: ${kinds.find(([k]) => k === kind)?.[1] ?? ''}`],
+                    total: ['Итого', null, null, null, null, null, xl.money(total)],
                     warning: cappedWarning(all),
                   }),
+                  ...(sum
+                    ? [
+                        {
+                          name: 'Итог по статьям',
+                          title: ['Итог по статьям', `Период: ${periodText(from, to)}`],
+                          columns: [{ label: 'Статья', width: 40 }, { label: 'Сумма' }],
+                          rows: summarySheetRows(sum).map((r) => ({ cells: [r.label, xl.money(r.amount)], bold: r.bold })),
+                        },
+                      ]
+                    : []),
                 ]
               }}
             />
           }
         >
-          Записанные расходы
+          Все траты
         </CardTitle>
+        <div className="mb-3 text-xs text-slate-500">Расходы по статьям и выплаты работникам. Оплата поставщикам за товар сюда не входит.</div>
         <div className="mb-4 flex flex-wrap items-end gap-3">
           <Field label="С">
             <input type="date" className="w-40" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -143,60 +183,113 @@ export default function Expenses() {
           <Field label="По">
             <input type="date" className="w-40" value={to} onChange={(e) => setTo(e.target.value)} />
           </Field>
+          {kinds.length > 1 && (
+            <div className="inline-grid grid-cols-3 overflow-hidden rounded-md border border-slate-300 text-sm" role="group" aria-label="Что показать">
+              {kinds.map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={kind === k}
+                  className={`min-h-[38px] px-3 py-2 ${kind === k ? 'bg-sky-600 text-white' : 'bg-white hover:bg-slate-50'}`}
+                  onClick={() => setKind(k)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="pb-2">
+            <Checkbox label="Показать сторно" checked={reversals} onChange={setReversals} />
+          </div>
           <div className="ml-auto text-right">
             <div className="text-xs text-slate-500">Всего за период</div>
             <Money value={total} className="text-xl font-bold" />
           </div>
         </div>
-        <ErrorBox error={list.error} />
+        <ErrorBox error={list.error ?? summary.error} />
         {list.loading && !list.data ? (
           <Loading />
         ) : list.items.length === 0 ? (
-          <Empty>Расходов за период нет</Empty>
+          <Empty>За период трат нет</Empty>
         ) : (
-          <Table head={['№', 'День', 'Статья', 'Кому', 'Из кассы', 'Сумма', 'Комментарий', '']}>
-            {list.items.map((e) => (
-              <tr key={e.id} className={e.reversal_of ? 'text-slate-400' : ''}>
-                <td className="px-2 py-2 font-medium">{e.number}</td>
-                <td className="whitespace-nowrap px-2 py-2">{formatDate(e.expense_date)}</td>
-                <td className="px-2 py-2">
-                  {e.article_name}
-                  {e.reversal_of && (
-                    <span className="ml-2">
-                      <Badge tone="rose">сторно</Badge>
-                    </span>
-                  )}
-                  <span className="ml-2 inline-flex flex-wrap gap-1">
-                    <CorrectionBadges mark={marks.get(e.id)} />
-                  </span>
-                </td>
-                <td className="px-2 py-2">{e.payee || '—'}</td>
-                <td className="px-2 py-2">{e.source === 'outside' ? 'не из денег точки' : (e.account_name ?? '—')}</td>
-                <td className="px-2 py-2 md:text-right">
-                  <Money value={e.amount_tyiyn} />
-                </td>
-                <td className="px-2 py-2 text-slate-600">
-                  {e.comment || '—'}
-                  <div className="text-xs text-slate-400">
-                    {e.user_name}, {formatDateTime(e.created_at)}
-                  </div>
-                </td>
-                <td className="px-2 py-2 text-right">
-                  {!e.reversal_of && !e.reversed && (
-                    <div className="flex justify-end gap-2">
-                      <FixButton small onClick={() => setFixing(e.id)} />
-                      <Button variant="secondary" className="px-2 py-1 text-xs" disabled={act.busy} onClick={() => reverse(e)}>
-                        Сторно
-                      </Button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
+          <Table head={['№', 'Дата', 'Что', 'Кому', 'За что', 'Касса', 'Сумма', 'Кто провёл', '']}>
+            {list.items.map((e) => {
+              const accrual = e.kind === 'bonus_accrual'
+              const m = spendingMark(e)
+              return (
+                <tr key={`${e.kind}.${e.id}`} data-kind={e.kind} className={e.reversal_of ? 'text-slate-400' : accrual ? 'text-slate-500' : ''}>
+                  <td className="px-2 py-2 font-medium">{spendingNumber(e)}</td>
+                  <td className="whitespace-nowrap px-2 py-2">{formatDate(e.date)}</td>
+                  <td className="px-2 py-2">
+                    {accrual ? <span className="italic">{spendingWhat(e)}</span> : spendingWhat(e)}
+                    {m && (
+                      <span className="ml-2">
+                        <Badge tone="rose">{m}</Badge>
+                      </span>
+                    )}
+                    {e.kind === 'expense' && (
+                      <span className="ml-2 inline-flex flex-wrap gap-1">
+                        <CorrectionBadges mark={marks.get(e.id)} />
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-2 py-2">{e.payee || '—'}</td>
+                  <td className="px-2 py-2 text-slate-600">{e.comment || '—'}</td>
+                  <td className="px-2 py-2">{e.source === 'outside' ? 'не из денег точки' : (e.account_name ?? '—')}</td>
+                  <td className="px-2 py-2 md:text-right">
+                    <Money value={e.amount_tyiyn} />
+                    {accrual && <div className="text-xs text-slate-400">в итог не входит</div>}
+                  </td>
+                  <td className="px-2 py-2 text-xs text-slate-500">
+                    {e.user_name}
+                    <div className="text-slate-400">{formatDateTime(e.created_at)}</div>
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    {e.kind === 'expense' && !e.reversal_of && !e.reversed && (
+                      <div className="flex justify-end gap-2">
+                        <FixButton small onClick={() => setFixing(e.id)} />
+                        <Button variant="secondary" className="px-2 py-1 text-xs" disabled={act.busy} onClick={() => reverse(e)}>
+                          Сторно
+                        </Button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
           </Table>
         )}
         <Pager page={list.page} size={list.size} total={list.total} onPage={list.setPage} onSize={list.setSize} label="Страницы расходов" />
+        {summary.data && (
+          <div className="mt-4 rounded-md border border-slate-200 p-3" data-testid="spending-summary">
+            <div className="mb-2 text-sm font-semibold">Итог по статьям</div>
+            <div className="divide-y divide-slate-100 text-sm">
+              {summaryLines(summary.data).map((l) => (
+                <div
+                  key={l.key}
+                  data-testid={`spending-line-${l.key}`}
+                  className={`flex items-center justify-between gap-3 py-1.5 ${l.tone === 'sub' ? 'pl-5 text-slate-600' : ''} ${l.tone === 'info' ? 'pl-5 italic text-slate-500' : ''} ${l.tone === 'group' || l.tone === 'total' ? 'font-semibold' : ''}`}
+                >
+                  <span>{l.label}</span>
+                  <Money value={l.amount} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Card>
+
+      {staffPay && (
+        <StaffPayModal
+          what={staffPay}
+          onClose={() => setStaffPay(null)}
+          onDone={() => {
+            setStaffPay(null)
+            reload()
+            accounts.reload()
+          }}
+        />
+      )}
 
       {fixing && (
         <ExpenseFix
@@ -217,20 +310,6 @@ export default function Expenses() {
     </div>
   )
 }
-
-/** Столбцы выгрузки «Расходов» — как в таблице экрана, сторно — отдельным столбцом. */
-const EXPORT_COLS: ExportCol<Expense>[] = [
-  { label: '№', value: (e) => xl.int(e.number) },
-  { label: 'День', value: (e) => xl.date(e.expense_date) },
-  { label: 'Статья', value: (e) => e.article_name },
-  { label: 'Кому', value: (e) => e.payee ?? '' },
-  { label: 'Из кассы', value: (e) => (e.source === 'outside' ? 'не из денег точки' : (e.account_name ?? '')) },
-  { label: 'Сумма', value: (e) => xl.money(e.amount_tyiyn) },
-  { label: 'Комментарий', value: (e) => e.comment },
-  { label: 'Кто провёл', value: (e) => e.user_name },
-  { label: 'Когда', value: (e) => formatDateTime(e.created_at) },
-  { label: 'Отметка', value: (e) => (e.reversal_of ? 'сторно' : e.reversed ? 'сторнирован' : '') },
-]
 
 /** Поля расхода — одни для записи и для исправления. */
 function ExpenseFormFields({

@@ -11660,7 +11660,13 @@ async fn admin_sections_keep_the_till_working(pool: PgPool) {
     let (s, _, err) = call(&app, "GET", "/api/v1/payroll/day", Some(&admin), None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     assert_eq!(err["error"]["message"], "Нет права: Выплаты мастерам");
-    for uri in ["/api/v1/expenses", "/api/v1/expenses/summary"] {
+    // «Все траты» (задача 003 Н12б): без «Расходов» и без «Расчёта» — тоже 403.
+    for uri in [
+        "/api/v1/expenses",
+        "/api/v1/expenses/summary",
+        "/api/v1/expenses/all",
+        "/api/v1/expenses/all/summary",
+    ] {
         let (s, _, err) = call(&app, "GET", uri, Some(&admin), None).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
         assert_eq!(err["error"]["message"], "Нет права: Расходы");

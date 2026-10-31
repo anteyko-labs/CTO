@@ -1,5 +1,6 @@
 // «Настройки → Отчёт о прибыли» (задача 003 Н12): период «Прибыли и убытков» по умолчанию, поле
-// «Кому» в расходе и показ сторно. Только владелец; каждое изменение — в журнал (сервер).
+// «Кому» в расходе, показ сторно и начисленные бонусы в «Расходах» (Н12б). Только владелец; каждое
+// изменение — в журнал (сервер).
 import { Link } from 'react-router-dom'
 import { Card, CardTitle, ErrorBox, Loading, PageHeader, toast } from '../components/ui'
 import { get, put } from '../lib/api'
@@ -82,6 +83,25 @@ export default function ProfitSettings() {
               Показывать сторно и исправления в раскрытии сразу
             </label>
             <p className="mt-2 text-sm text-slate-500">Пара «расход и его сторно» гасится в статье — итог от показа не меняется.</p>
+          </Card>
+          <Card data-testid="profit-settings-bonus">
+            <CardTitle>Начисленные бонусы в «Расходах»</CardTitle>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={s.expenses_bonus_accruals ?? true}
+                disabled={act.busy}
+                onChange={(e) =>
+                  save({ ...s, expenses_bonus_accruals: e.target.checked }, e.target.checked ? 'Начисленные бонусы видны в «Расходах»' : 'В «Расходах» — только выданные деньги')
+                }
+              />
+              Показывать начисленные бонусы
+            </label>
+            <p className="mt-2 text-sm text-slate-500">
+              В «Расходах» бонус без выплаты — отдельной строкой «начислен бонус», в итоге — «начислено, не выдано». В «Итого» входят только выданные деньги:
+              бонус не задваивается.
+            </p>
           </Card>
         </div>
       )}

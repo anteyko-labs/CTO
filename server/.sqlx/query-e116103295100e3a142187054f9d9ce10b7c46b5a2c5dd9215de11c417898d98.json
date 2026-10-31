@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select em.id,\n                 coalesce((select sum(a.amount_tyiyn) from payroll_accruals a\n                           where a.employee_id = em.id and a.kind = 'bonus'\n                             and ($2::date is null or a.business_date >= $2)\n                             and ($3::date is null or a.business_date <= $3)), 0)::bigint as \"accrued!\",\n                 coalesce((select sum(p.amount_tyiyn) from payouts p\n                           where p.employee_id = em.id and p.purpose = 'bonus'\n                             and ($2::date is null or p.pay_date >= $2)\n                             and ($3::date is null or p.pay_date <= $3)), 0)::bigint as \"paid!\"\n               from employees em\n               where em.branch_id = $1 and ($4 or (em.is_master and not em.is_cashier))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "paid!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "e116103295100e3a142187054f9d9ce10b7c46b5a2c5dd9215de11c417898d98"
+}

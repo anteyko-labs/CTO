@@ -34,7 +34,7 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'discount', label: 'Скидка в чеке', hint: 'Цена в чеке ниже цены по каталогу', opens: 'Изменение цены строки на кассе', group: 'Касса', default: false },
   { key: 'debt_payment', label: 'Оплата долга клиента', hint: 'Принять от клиента деньги в счёт долга', opens: 'Кнопка «Оплата долга»', group: 'Касса', default: true },
   { key: 'cash_moves', label: 'Внести, изъять, перевести деньги', hint: 'Только касса смены; сейфы и счета — владелец', opens: 'Кнопки «Внести / Изъять» и «Перевести»', group: 'Деньги', default: true },
-  { key: 'expenses', label: 'Расходы', opens: 'Меню «Расходы», расход с кассы', group: 'Деньги', default: true },
+  { key: 'expenses', label: 'Расходы', hint: 'Выплаты работникам в списке — с правом «Расчёт сотрудников»', opens: 'Меню «Расходы», расход с кассы', group: 'Деньги', default: true },
   { key: 'payroll_pay', label: 'Выплаты мастерам', hint: 'Кассирам выплачивает владелец', opens: 'Кнопка «Выплатить» в «Расчёте» и при закрытии смены', group: 'Деньги', default: true },
   { key: 'payroll_advance', label: 'Аванс мастерам', hint: 'Не больше заработанного за услуги; сверх — только вы', opens: 'Кнопка «Аванс»', group: 'Деньги', default: false },
   { key: 'payroll_view_all', label: 'Заработок кассиров', hint: 'Без права в «Расчёте» видны только мастера; выплачиваете кассирам вы', opens: 'Кассиры в «Расчёте»', group: 'Деньги', default: false },
