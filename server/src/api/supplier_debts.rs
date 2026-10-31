@@ -172,6 +172,11 @@ async fn invoices(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<SupplierInvoices>> {
     let mut conn = state.pool.acquire().await?;
+    // Накладные поставщика — раздел «Поставщики» или оплата поставщику (окно оплаты долга),
+    // задача 003 Н8, ADR-{B7.1}.
+    if !crate::auth::has_permission(&mut conn, &user, "view_suppliers").await? {
+        crate::auth::require_permission(&mut conn, &user, "receipts").await?;
+    }
     let role = sqlx::query_scalar!("select role from parties where id = $1", id)
         .fetch_optional(&mut *conn)
         .await?

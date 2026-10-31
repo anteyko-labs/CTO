@@ -24,6 +24,19 @@ export type Permission =
   | 'payroll_advance'
   | 'old_debts'
   | 'till_pay_fix'
+  | 'view_sales'
+  | 'view_debts'
+  | 'view_payroll'
+  | 'view_income'
+  | 'view_accounts'
+  | 'view_suppliers'
+  | 'view_stock'
+  | 'reconciliation'
+  | 'employees'
+  | 'services'
+  | 'prices'
+  | 'products_archive'
+  | 'payroll_view_all'
 
 /** Филиал (SPEC-33). */
 export interface Branch {

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Card, CardTitle, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
 import { get, put } from '../lib/api'
-import { DEFAULT_COMPANY, DEFAULT_PERSON, PLACEHOLDERS, renderTemplate, somInWords, type DebtDocSettings, type Seller } from '../lib/debtDocs'
+import { ACT_PERIODS, DEFAULT_COMPANY, DEFAULT_PERSON, PLACEHOLDERS, renderTemplate, somInWords, type ActPeriod, type DebtDocSettings, type Seller } from '../lib/debtDocs'
 import { formatSomExact, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 
@@ -171,6 +171,7 @@ export default function DebtDocsSettings() {
         seller: loaded.data.seller,
         person: loaded.data.person || DEFAULT_PERSON,
         company: loaded.data.company || DEFAULT_COMPANY,
+        act_period: loaded.data.act_period ?? 'all',
       })
     }
   }, [loaded.data, form])
@@ -183,6 +184,7 @@ export default function DebtDocsSettings() {
         seller: form.seller,
         person: form.person === DEFAULT_PERSON ? null : form.person,
         company: form.company === DEFAULT_COMPANY ? null : form.company,
+        act_period: form.act_period ?? 'all',
       })
       toast('Сохранено')
     })
@@ -226,6 +228,23 @@ export default function DebtDocsSettings() {
         company
         onChange={(v) => setForm({ ...form, company: v })}
       />
+
+      <Card className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold">Акт сверки</h2>
+        <Field label="Период акта по умолчанию" hint="С каким периодом открывается акт сверки в карточке клиента и поставщика; на экране его можно поменять">
+          <select
+            data-testid="act-default-period"
+            value={form.act_period ?? 'all'}
+            onChange={(e) => setForm({ ...form, act_period: e.target.value as ActPeriod })}
+          >
+            {ACT_PERIODS.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </Card>
 
       <Card>
         <CardTitle>Подстановки</CardTitle>

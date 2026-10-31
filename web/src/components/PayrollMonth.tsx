@@ -122,6 +122,8 @@ export function PayrollMonth() {
         </Button>
         <div className="text-xs text-slate-500">
           «На конец» — сколько ещё должны сотруднику; с минусом — выдано больше заработанного.
+          {/* Кассиров администратор видит с правом «Заработок кассиров» (задача 003 Н8, ADR-122). */}
+          {user.role !== 'owner' && !can('payroll_view_all') && ' Кассиров видит владелец.'}
         </div>
       </Card>
       <ErrorBox error={data.error ?? act.error} />
@@ -157,7 +159,7 @@ export function PayrollMonth() {
                 </td>
                 <td className="overflow-visible! px-2 py-2 text-right whitespace-nowrap">
                   <div className="flex items-center justify-end gap-1">
-                    {mayPay && isCurrent && (
+                    {mayPay && isCurrent && (owner || !r.is_cashier) && (
                       <Button
                         className="px-2 py-1 text-xs"
                         disabled={r.closing_tyiyn <= 0 && !owner && !mayAdvance}
@@ -166,7 +168,7 @@ export function PayrollMonth() {
                         Выплатить
                       </Button>
                     )}
-                    {mayAdvance && isCurrent && (
+                    {mayAdvance && isCurrent && (owner || !r.is_cashier) && (
                       <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setPaying({ row: r, advance: true })}>
                         Аванс
                       </Button>

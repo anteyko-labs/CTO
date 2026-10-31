@@ -644,6 +644,11 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .and_then(Value::as_bool)
                     .filter(|c| *c)
                     .map(|_| "сменён пароль".to_string()),
+                // Логин и филиал правятся (задача 003 Н8).
+                data.get("old_login")
+                    .and_then(Value::as_str)
+                    .map(|old| format!("логин был «{old}»")),
+                data.get("old_branch_id").map(|_| "переведён в другой филиал".to_string()),
                 // Право «Перелив масла» выдано или снято (ADR-082).
                 {
                     let has = |k: &str| {

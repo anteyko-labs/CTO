@@ -10,6 +10,7 @@ import { get, qs } from '../lib/api'
 import { formatSom, formatTime, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useUser } from '../lib/auth'
+import { useCan } from '../lib/permissions'
 import { divRound } from '../lib/money'
 import type { SaleListItem, SalesDay as Day } from '../lib/types'
 
@@ -50,6 +51,8 @@ export default function SalesDay() {
   const navigate = useNavigate()
   // Возврат без чека — только владелец (ADR-105).
   const owner = useUser().role === 'owner'
+  // Прошлые дни — по праву «Чеки прошлых дней» (задача 003 Н8); без него — только сегодня.
+  const pastDays = useCan()('view_sales')
   const [noReceipt, setNoReceipt] = useState(false)
   const { data, error, loading, reload } = useLoad(() => get<Day>(`/sales${qs({ date })}`), [date])
   // Исправленные чеки и исправления — одним запросом на экран.
@@ -80,19 +83,27 @@ export default function SalesDay() {
         title="Чеки за день"
         actions={
           <div className="flex items-center gap-1">
-            <Button variant="secondary" aria-label="Предыдущий день" onClick={() => setDate((d) => shiftDate(d, -1))}>
-              ←
-            </Button>
-            <input type="date" value={date} max={todayBishkek()} onChange={(e) => e.target.value && setDate(e.target.value)} />
-            <Button
-              variant="secondary"
-              aria-label="Следующий день"
-              disabled={date >= todayBishkek()}
-              onClick={() => setDate((d) => shiftDate(d, 1))}
-            >
-              →
-            </Button>
-            {date !== todayBishkek() && (
+            {pastDays ? (
+              <>
+                <Button variant="secondary" aria-label="Предыдущий день" onClick={() => setDate((d) => shiftDate(d, -1))}>
+                  ←
+                </Button>
+                <input type="date" value={date} max={todayBishkek()} onChange={(e) => e.target.value && setDate(e.target.value)} />
+                <Button
+                  variant="secondary"
+                  aria-label="Следующий день"
+                  disabled={date >= todayBishkek()}
+                  onClick={() => setDate((d) => shiftDate(d, 1))}
+                >
+                  →
+                </Button>
+              </>
+            ) : (
+              <span className="text-sm text-slate-500" data-testid="sales-today-only">
+                Сегодня; прошлые дни открывает владелец
+              </span>
+            )}
+            {pastDays && date !== todayBishkek() && (
               <Button variant="ghost" onClick={() => setDate(todayBishkek())}>
                 Сегодня
               </Button>

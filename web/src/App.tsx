@@ -92,7 +92,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/', label: 'Касса', icon: 'cashier' },
       { to: '/sales', label: 'Чеки', icon: 'receipt' },
       { to: '/shift', label: 'Смена', icon: 'shift' },
-      { to: '/debts', label: 'Долги', icon: 'debts' },
+      { to: '/debts', label: 'Долги', icon: 'debts', permission: 'view_debts' },
       { to: '/notifications', label: 'Уведомления', icon: 'bell', ownerOnly: true },
     ],
   },
@@ -100,10 +100,10 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     title: 'Деньги',
     items: [
       { to: '/expenses', label: 'Расходы', icon: 'expenses', permission: 'expenses' },
-      { to: '/payroll', label: 'Расчёт', icon: 'payroll' },
+      { to: '/payroll', label: 'Расчёт', icon: 'payroll', permission: 'view_payroll' },
       { to: '/profit', label: 'Прибыль', icon: 'profit', ownerOnly: true },
-      { to: '/income', label: 'Поступления', icon: 'income' },
-      { to: '/accounts', label: 'Счета', icon: 'wallet' },
+      { to: '/income', label: 'Поступления', icon: 'income', permission: 'view_income' },
+      { to: '/accounts', label: 'Счета', icon: 'wallet', permission: 'view_accounts' },
       { to: '/money', label: 'Внести / Изъять', icon: 'plus', permission: 'cash_moves' },
       { to: '/bank', label: 'Безнал (банк)', icon: 'bank', ownerOnly: true },
     ],
@@ -114,12 +114,12 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/receipts', label: 'Приход', icon: 'incoming', permission: ['receipts', 'stock_in'] },
       // Планшет приёмки (SPEC-39 §3): сверка накладной, PIN и подпись кассира.
       { to: '/acceptance', label: 'Приёмка', icon: 'incoming', permission: 'acceptance' },
-      { to: '/suppliers', label: 'Поставщики', icon: 'truck' },
+      { to: '/suppliers', label: 'Поставщики', icon: 'truck', permission: 'view_suppliers' },
       { to: '/supplier-returns', label: 'Возврат поставщику', icon: 'supplier-return', permission: 'supplier_returns' },
       { to: '/products', label: 'Товары', icon: 'products' },
       // «Склад → Остатки» — что лежит на складе (SPEC-36 §14); «Товары» — справочник.
-      { to: '/stock', label: 'Остатки', icon: 'stock' },
-      { to: '/top-products', label: 'Продаваемые', icon: 'star' },
+      { to: '/stock', label: 'Остатки', icon: 'stock', permission: 'view_stock' },
+      { to: '/top-products', label: 'Продаваемые', icon: 'star', permission: 'view_stock' },
       { to: '/revision', label: 'Ревизия и товары', icon: 'revision', permission: ['revision', 'products'] },
       { to: '/oil-transfer', label: 'Перелив', icon: 'transfer', permission: 'oil_transfer' },
     ],
@@ -131,6 +131,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
       { to: '/employees', label: 'Сотрудники', icon: 'employees' },
       { to: '/services', label: 'Услуги', icon: 'services' },
       { to: '/gifts', label: 'Подарки', icon: 'gifts', ownerOnly: true },
+      // Права администраторов — на виду (задача 003 Н8); экран тот же, что «Настройки → Пользователи».
+      { to: '/users', label: 'Пользователи и права', icon: 'employees', ownerOnly: true },
       { to: '/settings', label: 'Настройки', icon: 'settings' },
     ],
   },
@@ -350,29 +352,30 @@ function Shell() {
           <Route path="/receipts/new" element={<ReceiptNew />} />
           <Route path="/receipts/:id" element={<ByParam><ReceiptView /></ByParam>} />
           {owner && <Route path="/receipts/:id/correct" element={<ByParam><ReceiptCorrect /></ByParam>} />}
-          <Route path="/stock" element={<Stock />} />
+          {/* Разделы — по правам (задача 003 Н8): без права прямой адрес уводит на кассу. */}
+          {can(user, 'view_stock') && <Route path="/stock" element={<Stock />} />}
           <Route path="/products" element={<Products />} />
           {/* Связь товаров со старой базой Умаг (SPEC-35 §3): владелец и право «Товары и штрихкоды». */}
           {can(user, 'products') && <Route path="/products/umag" element={<UmagLink />} />}
-          <Route path="/top-products" element={<TopProducts />} />
+          {can(user, 'view_stock') && <Route path="/top-products" element={<TopProducts />} />}
           <Route path="/intake" element={<Navigate to="/revision?tab=scan" replace />} />
           <Route path="/shift" element={<Shift />} />
           <Route path="/shifts/:id" element={<ByParam><ShiftReport /></ByParam>} />
           {can(user, 'expenses') && <Route path="/expenses" element={<Expenses />} />}
-          <Route path="/payroll" element={<Payroll />} />
+          {can(user, 'view_payroll') && <Route path="/payroll" element={<Payroll />} />}
           {owner && <Route path="/summary" element={<OwnerDashboard />} />}
           {owner && <Route path="/profit" element={<Profit />} />}
           {owner && <Route path="/bank" element={<Bank />} />}
           {owner && <Route path="/bank/reconcile" element={<BankRecon />} />}
-          <Route path="/income" element={<Income />} />
-          <Route path="/accounts" element={<Accounts />} />
+          {can(user, 'view_income') && <Route path="/income" element={<Income />} />}
+          {can(user, 'view_accounts') && <Route path="/accounts" element={<Accounts />} />}
           {can(user, 'cash_moves') && <Route path="/money" element={<Accounts key="money" openMoney />} />}
           {/* Оприходование — вариант прихода (ADR-086): список — «Приход» с отбором. */}
           <Route path="/stock-ins" element={<Navigate to="/receipts?kind=stock_in" replace />} />
           <Route path="/stock-ins/:id" element={<ByParam><StockInView /></ByParam>} />
           {owner && <Route path="/stock-ins/:id/correct" element={<ByParam><StockInCorrect /></ByParam>} />}
           {can(user, 'supplier_returns') && <Route path="/supplier-returns" element={<SupplierReturnsPage />} />}
-          <Route path="/debts" element={<Debts />} />
+          {can(user, 'view_debts') && <Route path="/debts" element={<Debts />} />}
           {owner && <Route path="/notifications" element={<Notifications />} />}
           <Route path="/clients" element={<Clients />} />
           <Route path="/clients/:id" element={<ByParam><ClientCard /></ByParam>} />
@@ -392,8 +395,8 @@ function Shell() {
           {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
           {owner && <Route path="/settings/client-messages" element={<ClientMessages />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}
-          <Route path="/suppliers" element={<Suppliers />} />
-          <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />
+          {can(user, 'view_suppliers') && <Route path="/suppliers" element={<Suppliers />} />}
+          {can(user, 'view_suppliers') && <Route path="/suppliers/:id" element={<ByParam><SupplierCard /></ByParam>} />}
           <Route path="/settings" element={<SettingsHub />} />
           <Route path="/settings/labels" element={<LabelSettingsPage />} />
           {owner && <Route path="/users" element={<Users />} />}

@@ -143,6 +143,11 @@ async fn create_employee(
     ctx: Ctx,
     Json(req): Json<EmployeeReq>,
 ) -> AppResult<Json<EmployeeOut>> {
+    // Заводить и править сотрудников — по праву «Сотрудники» (задача 003 Н8, ADR-{B7.1}).
+    {
+        let mut conn = state.pool.acquire().await?;
+        crate::auth::require_permission(&mut conn, &ctx.user, "employees").await?;
+    }
     let full_name = required(&req.full_name, "ФИО")?;
     // Кассир сразу получает оплату (2 % и оклад) — ставки назначает только владелец (SPEC-07, ADR-059).
     if req.is_cashier && !ctx.user.is_owner() {
@@ -230,6 +235,7 @@ async fn update_employee(
     let full_name = optional_required(req.full_name, "ФИО")?;
     let phone = req.phone.as_deref().map(employee_phone).transpose()?;
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "employees").await?;
     let prev = sqlx::query!(
         "select full_name, is_cashier, is_master, active, phone from employees where id = $1 and branch_id = $2 for update",
         id,
@@ -575,6 +581,11 @@ async fn create_service(
     ctx: Ctx,
     Json(req): Json<ServiceReq>,
 ) -> AppResult<Json<ServiceOut>> {
+    // Заводить и править услуги — по праву «Услуги» (задача 003 Н8, ADR-{B7.1}).
+    {
+        let mut conn = state.pool.acquire().await?;
+        crate::auth::require_permission(&mut conn, &ctx.user, "services").await?;
+    }
     let name = required(&req.name, "название")?;
     // Ставка мастеру по умолчанию — 30 сом за каждую услугу (ADR-112, замечание заказчика
     // 26.10.2026); владелец меняет её в карточке услуги.
@@ -826,6 +837,7 @@ async fn update_service(
         req.book_interval_days,
     )?;
     let mut tx = state.pool.begin().await?;
+    crate::auth::require_permission(&mut tx, &ctx.user, "services").await?;
     // Строку книжки и интервал услуги меняет владелец (SPEC-34 §1).
     if !ctx.user.is_owner() {
         let cur = sqlx::query!(
@@ -848,8 +860,9 @@ async fn update_service(
             return Err(AppError::Forbidden);
         }
     }
-    // Цену и ставку мастера меняет только владелец (решение заказчика, ADR-047); форма
-    // администратора присылает их без изменений.
+    // Ставку мастера меняет только владелец (решение заказчика, ADR-047), цену — владелец или
+    // администратор с правом «Цены товаров и услуг» (ADR-{B7.1}); форма администратора присылает
+    // их без изменений.
     if !ctx.user.is_owner()
         && (req.master_fee_tyiyn.is_some()
             || req.price_tyiyn.is_some()
@@ -863,10 +876,12 @@ async fn update_service(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(AppError::NotFound)?;
+        if req.price_tyiyn.is_some_and(|p| p != cur.price_tyiyn) {
+            crate::auth::require_permission(&mut tx, &ctx.user, "prices").await?;
+        }
         if req
             .master_fee_tyiyn
             .is_some_and(|f| f != cur.master_fee_tyiyn)
-            || req.price_tyiyn.is_some_and(|p| p != cur.price_tyiyn)
             || req.free_with_oil.is_some_and(|f| f != cur.free_with_oil)
             || req
                 .oil_category_id
@@ -1148,6 +1163,10 @@ struct DebtDocs {
     person: Option<String>,
     #[serde(default)]
     company: Option<String>,
+    /// Период акта сверки по умолчанию на экране (задача 003 Н9): `all` — всё время (как было),
+    /// `month`, `last_month`, `year`.
+    #[serde(default)]
+    act_period: Option<String>,
 }
 
 async fn get_debt_docs(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<Value>> {
@@ -1179,6 +1198,15 @@ async fn put_debt_docs(
     if too_long {
         return Err(invalid("текст шаблона не длиннее 20 000 знаков"));
     }
+    if req
+        .act_period
+        .as_deref()
+        .is_some_and(|p| !matches!(p, "all" | "month" | "last_month" | "year"))
+    {
+        return Err(invalid(
+            "период акта: всё время, месяц, прошлый месяц или год",
+        ));
+    }
     let value = json!(req);
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
@@ -1195,7 +1223,7 @@ async fn put_debt_docs(
         "settings.debt_docs",
         "settings",
         None,
-        json!({ "seller": req.seller.name }),
+        json!({ "seller": req.seller.name, "act_period": req.act_period }),
     )
     .await?;
     tx.commit().await?;
@@ -1354,6 +1382,9 @@ async fn supplier_supplies(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<Vec<SupplyRow>>> {
+    // Раздел «Поставщики» — по праву (задача 003 Н8, ADR-{B7.1}).
+    let mut conn = state.pool.acquire().await?;
+    crate::auth::require_permission(&mut conn, &user, "view_suppliers").await?;
     let rows = sqlx::query!(
         r#"select l.product_id as "product_id!", p.name as "name!", p.unit as "unit!",
                   p.container_ml as "container_ml?",
@@ -1372,7 +1403,7 @@ async fn supplier_supplies(
         user.branch_id,
         id
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .map(|r| SupplyRow {

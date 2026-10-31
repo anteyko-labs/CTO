@@ -18,6 +18,95 @@ export interface DebtDocSettings {
   seller: Seller
   person: string | null
   company: string | null
+  /** Период акта сверки по умолчанию (задача 003 Н9); нет — «Всё время», как раньше. */
+  act_period?: ActPeriod | null
+}
+
+/** Быстрые периоды акта сверки на экране (задача 003 Н9). */
+export type ActPeriod = 'all' | 'month' | 'last_month' | 'year'
+
+export const ACT_PERIODS: readonly { key: ActPeriod; label: string }[] = [
+  { key: 'month', label: 'Этот месяц' },
+  { key: 'last_month', label: 'Прошлый месяц' },
+  { key: 'year', label: 'С начала года' },
+  { key: 'all', label: 'Всё время' },
+]
+
+/** Даты «С» и «По» периода акта по сегодняшнему дню (`YYYY-MM-DD`, Бишкек); «С» пусто — с первой операции. */
+export function actPeriod(kind: ActPeriod, today: string): { from: string; to: string } {
+  const [y, m] = today.slice(0, 10).split('-').map(Number)
+  const iso = (t: Date) => t.toISOString().slice(0, 10)
+  switch (kind) {
+    case 'month':
+      return { from: iso(new Date(Date.UTC(y, m - 1, 1))), to: today }
+    case 'last_month':
+      return { from: iso(new Date(Date.UTC(y, m - 2, 1))), to: iso(new Date(Date.UTC(y, m - 1, 0))) }
+    case 'year':
+      return { from: iso(new Date(Date.UTC(y, 0, 1))), to: today }
+    default:
+      return { from: '', to: today }
+  }
+}
+
+/** Строка акта для показа и выгрузки: сальдо, документы, обороты — как в печатном акте. */
+export interface ActLine {
+  kind: 'opening' | 'row' | 'totals' | 'closing'
+  date: string
+  document: string
+  comment: string
+  /** В пользу точки (отгрузка покупателю, оплата поставщику), тыйыны. */
+  debit_tyiyn: number
+  /** В пользу контрагента, тыйыны. */
+  credit_tyiyn: number
+  doc_type?: string
+  doc_id?: string | null
+}
+
+/** Акт строками в порядке печати: сальдо на начало (долг — в дебете, аванс — в кредите), строки,
+ *  обороты, сальдо на конец. Целые тыйыны — выгрузка пишет их числами (I1). */
+export function actLines(act: Reconciliation): ActLine[] {
+  const saldo = (kind: 'opening' | 'closing', date: string, v: number): ActLine => ({
+    kind,
+    date,
+    document: `Сальдо на ${dateRu(date)}`,
+    comment: '',
+    debit_tyiyn: v > 0 ? v : 0,
+    credit_tyiyn: v < 0 ? -v : 0,
+  })
+  return [
+    saldo('opening', act.from, act.opening_tyiyn),
+    ...act.rows.map(
+      (r): ActLine => ({
+        kind: 'row',
+        date: r.date,
+        document: r.document,
+        comment: r.comment,
+        debit_tyiyn: r.debit_tyiyn,
+        credit_tyiyn: r.credit_tyiyn,
+        doc_type: r.doc_type,
+        doc_id: r.doc_id,
+      }),
+    ),
+    { kind: 'totals', date: act.to, document: 'Обороты за период', comment: '', debit_tyiyn: act.debit_total_tyiyn, credit_tyiyn: act.credit_total_tyiyn },
+    saldo('closing', act.to, act.closing_tyiyn),
+  ]
+}
+
+/** Вывод акта простыми словами: кто кому должен на конец периода. */
+export function actVerdict(act: Reconciliation, us: string): string {
+  const c = act.closing_tyiyn
+  if (c === 0) return `На ${dateRu(act.to)} долга между сторонами нет.`
+  return c > 0
+    ? `На ${dateRu(act.to)} ${act.name} должен ${us || 'точке'} ${formatSomExact(c)}.`
+    : `На ${dateRu(act.to)} ${us || 'точка'} должна ${act.name} ${formatSomExact(-c)}.`
+}
+
+/** Ссылка на документ строки акта: чек или приход; остальное — без ссылки. */
+export function actDocLink(line: Pick<ActLine, 'doc_type' | 'doc_id'>): string | null {
+  if (!line.doc_id) return null
+  if (line.doc_type === 'sale' || line.doc_type === 'sale_return') return `/sales/${line.doc_id}`
+  if (line.doc_type === 'receipt' || line.doc_type === 'receipt_reversal') return `/receipts/${line.doc_id}`
+  return null
 }
 
 export interface ReconRow {

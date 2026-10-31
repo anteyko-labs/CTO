@@ -1203,6 +1203,10 @@ async fn list_products(
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
     let mut conn = state.pool.acquire().await?;
+    // Подытоги по категориям — это экран «Остатки»: по праву раздела (задача 003 Н8, ADR-{B7.1}).
+    if f.group_category {
+        crate::auth::require_permission(&mut conn, &user, "view_stock").await?;
+    }
     let scope = crate::api::branches::BranchQuery {
         branch: params.get("branch").cloned(),
     };
@@ -1661,12 +1665,11 @@ async fn update_product(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    // Архив меняет владелец; влитый дубль из архива не возвращается, карточку с остатком
-    // в архив не убрать — остаток стал бы невидимым (ADR-044).
+    // Архив меняет владелец или администратор с правом «Убирать товар в архив» (ADR-{B7.1});
+    // влитый дубль из архива не возвращается, карточку с остатком в архив не убрать — остаток
+    // стал бы невидимым (ADR-044).
     if let Some(arch) = req.archived.filter(|a| *a != cur.archived) {
-        if !ctx.user.is_owner() {
-            return Err(AppError::Forbidden);
-        }
+        crate::auth::require_permission(&mut tx, &ctx.user, "products_archive").await?;
         if !arch && cur.merged_into.is_some() {
             return Err(invalid(
                 "карточка влита в другую и из архива не возвращается",
@@ -1898,11 +1901,13 @@ pub async fn update_prices_tx(
 ) -> AppResult<ProductOut> {
     // Минимальный остаток — правка карточки: право администратора `products` (ADR-097).
     crate::auth::require_permission(&mut *conn, &ctx.user, "products").await?;
-    // Менять цену заведённого товара может только владелец (ADR-032).
-    if (req.pour_price_per_l_tyiyn.is_some() || req.sale_price_tyiyn.is_some())
-        && !ctx.user.is_owner()
+    // Цену заведённого товара меняет владелец (ADR-032) или администратор с правом «Цены товаров
+    // и услуг» (задача 003 Н8, ADR-{B7.1}).
+    if req.pour_price_per_l_tyiyn.is_some()
+        || req.sale_price_tyiyn.is_some()
+        || req.own_price.is_some()
     {
-        return Err(AppError::Forbidden);
+        crate::auth::require_permission(&mut *conn, &ctx.user, "prices").await?;
     }
     let product = sqlx::query!("select unit, container_ml from products where id = $1", id)
         .fetch_optional(&mut *conn)
@@ -1926,9 +1931,6 @@ pub async fn update_prices_tx(
     // Цена с потолком одной операции (ADR-045).
     if let Some(v) = req.sale_price_tyiyn {
         ops::check_amount(v)?;
-    }
-    if req.own_price.is_some() && !ctx.user.is_owner() {
-        return Err(AppError::Forbidden);
     }
     ops::lock_pool(&mut *conn, ctx.user.branch_id, id).await?;
     let old = sqlx::query!(

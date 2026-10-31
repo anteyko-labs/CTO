@@ -1,5 +1,5 @@
 // Пользователи со входом: владельцы и администраторы; экран только для владельца (SPEC-01).
-// «Что можно» — права администратора, которые выбирает владелец (SPEC-30 §5, ADR-097).
+// «Что можно» — права администратора, которые выбирает владелец (SPEC-30 §5, ADR-097, задача 003 Н8).
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
@@ -7,7 +7,8 @@ import { AdminTelegramModal, noReceiptsRight } from '../components/AdminTelegram
 import { get, newOpId, patch, post, put } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import { PERMISSION_GROUPS, PERMISSIONS } from '../lib/permissions'
+import { useUser } from '../lib/auth'
+import { OWNER_ONLY, PERMISSION_GROUPS, PERMISSION_PRESETS, PERMISSIONS, presetOf, toggleGroup } from '../lib/permissions'
 import type { Permission, Role, UserRow } from '../lib/types'
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -30,13 +31,19 @@ function RoleSelect({ value, onChange }: { value: Role; onChange: (r: Role) => v
 }
 
 function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => void; onSaved: () => void }) {
+  const me = useUser()
+  // Филиал администратора — у владельца нескольких филиалов (SPEC-33); список — открытые филиалы.
+  const branches = (me.branches ?? []).filter((b) => !b.archived)
   const [form, setForm] = useState({
+    login: user.login,
     full_name: user.full_name,
     role: user.role,
     active: user.active,
     password: '',
+    branch_id: me.branch_id,
   })
   const { busy, error, run } = useAction()
+  const moving = form.role === 'admin' && form.branch_id !== me.branch_id
 
   const save = () =>
     run(async () => {
@@ -45,20 +52,37 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
         full_name: form.full_name,
         role: form.role,
         active: form.active,
+        ...(form.login.trim() !== user.login ? { login: form.login.trim() } : {}),
         ...(form.password ? { password: form.password } : {}),
+        ...(moving ? { branch_id: form.branch_id } : {}),
       })
+      toast(moving ? 'Администратор переведён в другой филиал' : 'Сохранено')
       onSaved()
     })
 
   return (
     <Modal title={`Пользователь ${user.login}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
+        <Field label="Логин" hint="Им входят в программу; пароль прежний">
+          <input data-testid="user-edit-login" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
+        </Field>
         <Field label="Имя">
           <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
         </Field>
         <Field label="Роль">
           <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
         </Field>
+        {me.several_branches && form.role === 'admin' && branches.length > 1 && (
+          <Field label="Филиал" hint={moving ? 'Права переходят вместе с ним; Телеграм нужно привязать заново' : 'Где работает администратор'}>
+            <select data-testid="user-edit-branch" value={form.branch_id} onChange={(e) => setForm({ ...form, branch_id: e.target.value })}>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         <Field label="Новый пароль" hint="Оставьте пустым, чтобы не менять">
           <input
             type="password"
@@ -73,7 +97,7 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
           <Button variant="secondary" onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || !form.full_name.trim()} onClick={() => void save()}>
+          <Button disabled={busy || !form.full_name.trim() || !form.login.trim()} onClick={() => void save()}>
             Сохранить
           </Button>
         </div>
@@ -82,25 +106,22 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
   )
 }
 
-/** «Что можно» администратору: флажки по группам, сохраняется списком целиком (SPEC-30 §5). */
-function PermissionsModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => void; onSaved: () => void }) {
-  const [chosen, setChosen] = useState<Set<Permission>>(() => new Set(user.permissions ?? []))
+/** «Что можно» администратору (SPEC-30 §5, задача 003 Н8): готовые наборы и «Как у…», группы целиком,
+ *  что открывает каждое право, что остаётся только у владельца. Сохраняется списком целиком. */
+function PermissionsModal({ user, others, onClose, onSaved }: { user: UserRow; others: UserRow[]; onClose: () => void; onSaved: () => void }) {
+  const [chosen, setChosen] = useState<Permission[]>(() => presetOf(user.permissions ?? []))
   // Своя операция на каждый набор флажков: повтор после потерянного ответа не провёл бы другой набор.
   const [opId, setOpId] = useState(newOpId)
   const { busy, error, run } = useAction()
-  const toggle = (key: Permission, on: boolean) => {
-    const next = new Set(chosen)
-    if (on) next.add(key)
-    else next.delete(key)
-    setChosen(next)
+  const choose = (next: readonly string[]) => {
+    setChosen(presetOf(next))
     setOpId(newOpId())
   }
+  const toggle = (key: Permission, on: boolean) => choose(on ? [...chosen, key] : chosen.filter((k) => k !== key))
+  const peers = others.filter((o) => o.role === 'admin' && o.id !== user.id)
   const save = () =>
     run(async () => {
-      await put<UserRow>(`/users/${user.id}/permissions`, {
-        op_id: opId,
-        permissions: PERMISSIONS.map((p) => p.key).filter((k) => chosen.has(k)),
-      })
+      await put<UserRow>(`/users/${user.id}/permissions`, { op_id: opId, permissions: chosen })
       toast('Права сохранены')
       onSaved()
     })
@@ -109,21 +130,73 @@ function PermissionsModal({ user, onClose, onSaved }: { user: UserRow; onClose: 
     <Modal title={`Что можно: ${user.full_name}`} onClose={onClose} wide>
       <div className="flex flex-col gap-4" data-testid="permissions">
         <div className="text-sm text-slate-600">
-          Владелец может всё. Отметьте, что можно этому администратору; без права пункты меню и кнопки у него скрыты, а сервер отвечает «Нет права». Себестоимость,
-          прибыль, цены товаров, исправления документов и начисления — только у владельца.
+          Владелец может всё. Отметьте, что можно этому администратору: без права пункты меню и кнопки у него скрыты, а сервер отвечает «Нет права».
+          Изменения доходят до открытой кассы за минуту, без перезагрузки. Каждому кассиру можно завести свой вход со своими правами.
+        </div>
+        <div className="flex flex-wrap items-center gap-2" data-testid="permission-presets">
+          <span className="text-sm text-slate-500">Набор:</span>
+          {PERMISSION_PRESETS.map((p) => (
+            <Button key={p.key} variant="secondary" title={p.hint} onClick={() => choose(p.permissions)}>
+              {p.label}
+            </Button>
+          ))}
+          {peers.length > 0 && (
+            <select
+              aria-label="Как у другого администратора"
+              data-testid="permission-copy"
+              value=""
+              onChange={(e) => {
+                const peer = peers.find((o) => o.id === e.target.value)
+                if (peer) choose(peer.permissions ?? [])
+              }}
+            >
+              <option value="">Как у…</option>
+              {peers.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.full_name} ({o.login})
+                </option>
+              ))}
+            </select>
+          )}
+          <span className="ml-auto text-sm text-slate-500" data-testid="permission-count">
+            {chosen.length} из {PERMISSIONS.length}
+          </span>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          {PERMISSION_GROUPS.map((group) => (
-            <fieldset key={group} className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
-              <legend className="px-1 text-sm font-medium">{group}</legend>
-              {PERMISSIONS.filter((p) => p.group === group).map((p) => (
-                <div key={p.key} className="flex flex-col">
-                  <Checkbox label={p.label} checked={chosen.has(p.key)} onChange={(v) => toggle(p.key, v)} />
-                  {p.hint && <div className="pl-6 text-xs text-slate-500">{p.hint}</div>}
+          {PERMISSION_GROUPS.map((group) => {
+            const list = PERMISSIONS.filter((p) => p.group === group)
+            const all = list.every((p) => chosen.includes(p.key))
+            return (
+              <fieldset key={group} className="flex flex-col gap-2 rounded-md border border-slate-200 p-3">
+                <legend className="px-1 text-sm font-medium">{group}</legend>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    className="text-xs text-sky-700 hover:underline"
+                    data-testid={`permission-group-${group}`}
+                    onClick={() => choose(toggleGroup(chosen, group, !all))}
+                  >
+                    {all ? 'Выключить всё' : 'Включить всё'}
+                  </button>
                 </div>
-              ))}
-            </fieldset>
-          ))}
+                {list.map((p) => (
+                  <div key={p.key} className="flex flex-col">
+                    <Checkbox label={p.label} checked={chosen.includes(p.key)} onChange={(v) => toggle(p.key, v)} />
+                    {p.hint && <div className="pl-6 text-xs text-slate-500">{p.hint}</div>}
+                    {p.opens && <div className="pl-6 text-xs text-slate-400">Открывает: {p.opens}</div>}
+                  </div>
+                ))}
+              </fieldset>
+            )
+          })}
+          <div className="flex flex-col gap-1 rounded-md border border-slate-200 bg-slate-50 p-3 text-slate-500" data-testid="owner-only">
+            <div className="text-sm font-medium">Только у владельца — правом не выдаётся</div>
+            {OWNER_ONLY.map((o) => (
+              <div key={o.label} className="text-xs">
+                {o.label} <span className="text-slate-400">— {o.why}</span>
+              </div>
+            ))}
+          </div>
         </div>
         <ErrorBox error={error} />
         <div className="flex justify-end gap-2">
@@ -185,8 +258,8 @@ export default function Users() {
   return (
     <div>
       <PageHeader
-        title="Пользователи"
-        subtitle="Кто входит в программу: владельцы и администраторы"
+        title="Пользователи и права"
+        subtitle="Кто входит в программу и что можно каждому администратору — «Что можно» в строке"
         actions={
           <Button onClick={() => setAdding(true)}>
             <Icon name="plus" /> Добавить
@@ -286,7 +359,7 @@ export default function Users() {
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
               />
             </Field>
-            <Field label="Роль" hint={form.role === 'admin' ? 'Права — по умолчанию: всё, кроме скидки и перелива; поменять — «Что можно»' : undefined}>
+            <Field label="Роль" hint={form.role === 'admin' ? 'Права — по умолчанию; поменять — «Что можно» в строке' : undefined}>
               <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
             </Field>
             <ErrorBox error={error} />
@@ -306,6 +379,7 @@ export default function Users() {
       {rights && (
         <PermissionsModal
           user={rights}
+          others={list.data ?? []}
           onClose={() => setRights(null)}
           onSaved={() => {
             setRights(null)

@@ -98,8 +98,11 @@ export function ProductFormModal({
   const mayEdit = can(user, 'products')
   const editing = Boolean(product)
   const [form, setForm] = useState<Form>(() => initialForm(product, presetBarcode, presetName, presetCategoryId, preset))
+  // Цену заведённого товара меняет владелец или администратор с правом «Цены товаров и услуг»
+  // (ADR-032, ADR-{B7.1}); новый товар цену получает при заведении.
+  const mayPrice = can(user, 'prices')
   // Цена филиала (SPEC-33 §2): своя — только здесь; без неё — общая для всех филиалов.
-  const branchPrices = owner && editing && Boolean(user.several_branches)
+  const branchPrices = mayPrice && editing && Boolean(user.several_branches)
   const [ownPrice, setOwnPrice] = useState(Boolean(product?.own_price))
   const [opId] = useState(newOpId)
   const [codes, setCodes] = useState<string[]>(product?.barcodes ?? [])
@@ -654,6 +657,8 @@ export function ProductFormModal({
                     : 'общая для всех филиалов без своей цены'}
                 </span>
               </span>
+            ) : editing && !mayPrice ? (
+              'Цену меняет владелец'
             ) : undefined
           }
         >
@@ -661,7 +666,7 @@ export function ProductFormModal({
             id="product-price"
             inputMode="decimal"
             value={form.sale_price}
-            disabled={branchPrices && Boolean(product?.own_price) && !ownPrice}
+            disabled={(editing && !mayPrice) || (branchPrices && Boolean(product?.own_price) && !ownPrice)}
             onChange={(e) => set('sale_price', e.target.value)}
           />
         </Field>

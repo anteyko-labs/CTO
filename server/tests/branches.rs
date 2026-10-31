@@ -955,7 +955,21 @@ async fn shared_price_and_own_branch_price(pool: PgPool) {
     let back = api.get(&uri, &w.owner, Some(w.b)).await;
     assert_eq!(price(&back), (55_000, false));
     assert_eq!(back["shared_sale_price_tyiyn"], 55_000);
-    // Свою цену ставит только владелец.
+    // Свою цену ставит владелец или администратор с правом «Цены товаров и услуг» (ADR-{B7.1}).
+    let me_b = api.get("/api/v1/auth/me", &w.admin_b, None).await;
+    let without: Vec<&str> = avtodom_server::auth::PERMISSIONS
+        .iter()
+        .map(|p| p.key)
+        .filter(|k| *k != "prices")
+        .collect();
+    api.ok(
+        "PUT",
+        &format!("/api/v1/users/{}/permissions", id(&me_b)),
+        &w.owner,
+        Some(w.b),
+        json!({ "op_id": op(), "permissions": without }),
+    )
+    .await;
     let (s, _) = api
         .call(
             "PATCH",
@@ -1351,4 +1365,76 @@ async fn owner_bot_feed_and_reports_name_the_branch(pool: PgPool) {
     let msgs = pending(&mut c2).await.unwrap();
     assert_eq!(msgs.len(), 1);
     assert!(msgs[0].text.starts_with("🏬 Филиал Б"), "{}", msgs[0].text);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn owner_moves_admin_to_another_branch_with_permissions(pool: PgPool) {
+    // Задача 003 Н8: владелец переводит администратора в другой филиал — права переходят вместе
+    // с ним (I16) и действуют в новом филиале; переводит только владелец, филиал — открытый.
+    let w = world(pool.clone()).await;
+    let api = &w.api;
+    let me = api.get("/api/v1/auth/me", &w.admin_a, None).await;
+    let uid = id(&me);
+    let uri = format!("/api/v1/users/{uid}");
+    let (s, _) = api
+        .call(
+            "PATCH",
+            &uri,
+            &w.admin_a,
+            None,
+            Some(json!({ "branch_id": w.b })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, err) = api
+        .call(
+            "PATCH",
+            &uri,
+            &w.owner,
+            Some(w.a),
+            Some(json!({ "branch_id": Uuid::now_v7() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    api.ok(
+        "PATCH",
+        &uri,
+        &w.owner,
+        Some(w.a),
+        json!({ "branch_id": w.b }),
+    )
+    .await;
+    let moved = api.get("/api/v1/auth/me", &w.admin_a, None).await;
+    assert_eq!(moved["branch_id"], json!(w.b));
+    assert_eq!(moved["permissions"], me["permissions"]);
+    let left: i64 = sqlx::query_scalar(
+        "select count(*) from user_permissions where user_id = $1::uuid and branch_id <> $2",
+    )
+    .bind(&uid)
+    .bind(w.b)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 0);
+    // Права действуют в новом филиале: раздел «Долги» открыт.
+    api.get("/api/v1/debts/list", &w.admin_a, None).await;
+    let log: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'user.update' order by created_at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(log["old_branch_id"], json!(w.a));
+    assert_eq!(log["branch_id"], json!(w.b));
+    // Теперь он администратор филиала Б: из филиала А его не правят.
+    let (s, _) = api
+        .call(
+            "PATCH",
+            &uri,
+            &w.owner,
+            Some(w.a),
+            Some(json!({ "full_name": "Админ А" })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

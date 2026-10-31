@@ -4,10 +4,12 @@ import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
 import { Badge, Button, Card, ErrorBox, PageHeader, toast } from '../components/ui'
 import { useUser } from '../lib/auth'
+import { can } from '../lib/permissions'
+import type { Permission } from '../lib/types'
 import { useAction } from '../lib/hooks'
 import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
-const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean }[] = [
+const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean; permission?: Permission }[] = [
   { to: '/settings/cashier', title: 'Касса', text: 'Кнопки режима кассы и их место, скидка и её предел, прибыль в чеке смены', icon: 'cashier', ownerOnly: true },
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/stock', title: 'Склад', text: 'Цена масла в приходе: за канистру или за литр; срок залежалости', icon: 'stock', ownerOnly: true },
@@ -21,18 +23,19 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/accounts', title: 'Комиссия банка', text: 'Ставка у каждого банковского счёта и история ставок — в «Обзоре счетов»', icon: 'profit', ownerOnly: true },
   { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },
   { to: '/settings/branches', title: 'Филиалы', text: 'Филиалы на общем сервере, новый филиал, закрытие; расчёты между филиалами', icon: 'stock', ownerOnly: true },
-  { to: '/users', title: 'Пользователи', text: 'Кто входит в систему: владелец и администраторы', icon: 'employees', ownerOnly: true },
+  { to: '/users', title: 'Пользователи и права', text: 'Кто входит в систему и что можно каждому администратору', icon: 'employees', ownerOnly: true },
   { to: '/categories', title: 'Категории товаров', text: 'Масла, фильтры, аккумуляторы и их характеристики', icon: 'stock' },
-  { to: '/suppliers', title: 'Поставщики', text: 'У кого покупаем, долги поставщикам', icon: 'truck' },
+  { to: '/suppliers', title: 'Поставщики', text: 'У кого покупаем, долги поставщикам', icon: 'truck', permission: 'view_suppliers' },
 ]
 
 export default function SettingsHub() {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
   return (
     <div>
       <PageHeader title="Настройки" />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {ITEMS.filter((it) => owner || !it.ownerOnly).map((it) => (
+        {ITEMS.filter((it) => (owner || !it.ownerOnly) && (!it.permission || can(user, it.permission))).map((it) => (
           <Link
             key={it.to}
             to={it.to}

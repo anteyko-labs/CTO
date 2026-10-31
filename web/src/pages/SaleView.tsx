@@ -334,7 +334,8 @@ export default function SaleView() {
       const [party, settings, history] = await Promise.all([
         get<Party>(`/parties/${sale.party_id}`),
         get<DebtDocSettings>('/settings/debt-docs'),
-        get<Reconciliation>(`/parties/${sale.party_id}/reconciliation`),
+        // История долга — по праву «Акт сверки»; без него документ печатается без истории.
+        get<Reconciliation>(`/parties/${sale.party_id}/reconciliation`).catch(() => null),
       ])
       printDebtDoc({ sale, party, settings, history })
     })

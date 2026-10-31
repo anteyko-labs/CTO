@@ -416,7 +416,7 @@ export default function ClientCard() {
     ? { label: 'Отключить клиента', danger: true, onClick: toggleActive, disabled: row.busy }
     : { label: 'Включить клиента', onClick: toggleActive, disabled: row.busy }
   const phoneItems: MenuItem[] = [
-    { label: 'Акт сверки', onClick: () => setReconciling(true) },
+    ...(can('reconciliation') ? [{ label: 'Акт сверки', onClick: () => setReconciling(true) }] : []),
     { label: 'Правка баланса', onClick: () => setMoney('adjust'), disabled: !owner },
     ...(mayOldDebt ? [{ label: 'Занести старый долг', onClick: () => setMoney('old') }] : []),
     ...(mayEdit ? [toggleItem] : []),
