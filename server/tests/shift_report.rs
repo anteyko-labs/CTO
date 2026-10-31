@@ -1054,7 +1054,7 @@ async fn shift_print_setting(pool: PgPool) {
     let admin = login(&app, "admin", "admin-pass-1").await;
     assert_eq!(
         get(&app, &admin, "/api/v1/settings/shift").await,
-        json!({ "print_on_close": true })
+        json!({ "print_on_close": true, "pay_fix_on_close": true, "admin_pay_fix_max_tyiyn": null })
     );
     let (s, _, _) = call(
         &app,
@@ -1076,6 +1076,6 @@ async fn shift_print_setting(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{out}");
     assert_eq!(
         get(&app, &admin, "/api/v1/settings/shift").await,
-        json!({ "print_on_close": false })
+        json!({ "print_on_close": false, "pay_fix_on_close": true, "admin_pay_fix_max_tyiyn": null })
     );
 }
