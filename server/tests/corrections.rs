@@ -1077,7 +1077,13 @@ async fn goods_and_salary_corrections_are_as_if(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{fixed}");
 
     // Оклад 30 000 с, а договорились на 32 000 с; правка долга поставщику.
-    let month = chrono::Utc::now().format("%Y-%m-01").to_string();
+    // Месяц — по Бишкеку, как учётный день сервера: с 00:00 до 06:00 UTC-дата ещё вчерашняя.
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let month = today.format("%Y-%m-01").to_string();
     ok(
         &w.app,
         "POST",
