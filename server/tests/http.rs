@@ -12633,3 +12633,109 @@ async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
         assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
     }
 }
+
+/// Смена единицы товара: выключенное правило подарка с порогом, который не переходит в новую
+/// единицу целым числом, пересчёт не держит — порог округлён, правило помечено «поправьте
+/// порог» и не включается, пока его не сохранят заново (задача 003, хвост ADR-139).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn unit_change_rounds_disabled_gift_rule_and_marks_it(pool: PgPool) {
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let oil = product(&app, &owner, "Масло на подарок", 100_000, 0).await;
+    let gift = product(&app, &owner, "Брелок", 1_000, 0).await;
+    let unit = |body: Value| {
+        let app = app.clone();
+        let owner = owner.clone();
+        let oil = oil.clone();
+        async move {
+            let mut body = body;
+            body["op_id"] = json!(Uuid::now_v7());
+            call(
+                &app,
+                "POST",
+                &format!("/api/v1/products/{oil}/unit"),
+                Some(&owner),
+                Some(body),
+            )
+            .await
+        }
+    };
+    // Штуки → литры канистрой 4 л; правило «от 3 канистр» = 12 л.
+    let (s, _, v) = unit(json!({ "unit": "ml", "container_ml": 4_000 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let rule_body = |min: i64| {
+        json!({ "trigger_product_id": oil, "min_units": min,
+                "items": [{ "gift_product_id": gift, "gift_qty": 2 }] })
+    };
+    let (s, _, rule) = call(
+        &app,
+        "POST",
+        "/api/v1/gift-rules",
+        Some(&owner),
+        Some(rule_body(12_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{rule}");
+    let rid = rule["id"].as_str().unwrap().to_string();
+    let toggle = |active: bool| {
+        let app = app.clone();
+        let owner = owner.clone();
+        let rid = rid.clone();
+        async move {
+            call(
+                &app,
+                "PATCH",
+                &format!("/api/v1/gift-rules/{rid}"),
+                Some(&owner),
+                Some(json!({ "active": active })),
+            )
+            .await
+        }
+    };
+    // Включённое правило держит пересчёт, как раньше: 12 л в штуки по 5 л не делится.
+    let (s, _, v) = unit(json!({ "unit": "piece", "piece_ml": 5_000 })).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    // Выключенное — нет: порог 12 л → 2 шт (2,4), правило помечено и выключено.
+    assert_eq!(toggle(false).await.0, StatusCode::OK);
+    let (s, _, v) = unit(json!({ "unit": "piece", "piece_ml": 5_000 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, _, rules) = call(&app, "GET", "/api/v1/gift-rules", Some(&owner), None).await;
+    let r = &rules[0];
+    assert_eq!(
+        (&r["min_units"], &r["active"], &r["needs_fix"]),
+        (&json!(2), &json!(false), &json!(true)),
+        "{r}"
+    );
+    assert_eq!(r["items"][0]["gift_qty"], 2, "{r}");
+    let log: Value = sqlx::query_scalar(
+        "select data from audit_log where action = 'product.unit_change' order by created_at desc limit 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(log["gift_rules_need_fix"], json!([rid]), "{log}");
+    // Включить, не поправив, нельзя; сохранить заново — правило включено, отметки нет.
+    let (s, _, v) = toggle(true).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("поправьте порог"),
+        "{v}"
+    );
+    let (s, _, r) = call(
+        &app,
+        "POST",
+        "/api/v1/gift-rules",
+        Some(&owner),
+        Some(rule_body(3)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(
+        (&r["min_units"], &r["active"], &r["needs_fix"]),
+        (&json!(3), &json!(true), &json!(false)),
+        "{r}"
+    );
+}

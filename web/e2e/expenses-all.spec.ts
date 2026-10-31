@@ -173,3 +173,50 @@ test('расходы: выплаты и бонусы в одном списке,
   expect(denied.status()).toBe(403)
   await ctx.close()
 })
+
+test('расходы: выплата — «Открыть в Расчёте», «Исправить» и «Отменить» теми же окнами (задача 003)', async ({ page }) => {
+  await login(page, OWNER, OWNER_PASSWORD)
+  const safe = await ownerSafe(page.request)
+  const worker = `Бакыт ${RUN}`
+  const emp = await api<{ id: string }>(page, 'post', '/employees', { full_name: worker, is_master: true })
+  await api(page, 'post', '/payroll/accruals', { op_id: crypto.randomUUID(), employee_id: emp.id, kind: 'bonus', amount_tyiyn: 9_000, comment: `за план ${RUN}` })
+  await api(page, 'post', '/payouts', {
+    op_id: crypto.randomUUID(),
+    employee_id: emp.id,
+    source: 'account',
+    account_id: safe,
+    comment: `выдача ${RUN}`,
+    lines: [{ purpose: 'bonus', amount_tyiyn: 3_000 }],
+  })
+  await page.goto('/expenses')
+  const rowOf = (text: string) => page.getByRole('row').filter({ hasText: text })
+  const paid = rowOf(`выдача ${RUN}`)
+  await expect(paid).toContainText('Выплата: Бонус')
+
+  // «Открыть в Расчёте» — день выплаты, у владельца сразу начисления и выплаты работника.
+  await paid.getByTestId('spending-open-payroll').click()
+  await expect(page).toHaveURL(new RegExp(`/payroll\\?date=\\d{4}-\\d{2}-\\d{2}&employee=${emp.id}`))
+  await expect(page.getByRole('dialog')).toContainText(`${worker}: начисления и выплаты`)
+  await page.getByRole('dialog').getByRole('button', { name: 'Закрыть' }).last().click()
+  await expect(page.getByTestId('payroll-linked-row')).toContainText(worker)
+
+  // «Исправить» — форма исправления выплаты; новая сумма 25 с.
+  await page.goto('/expenses')
+  await paid.getByTestId('fix-button').click()
+  const fix = page.getByRole('dialog')
+  await expect(fix).toContainText('выплата № ')
+  await fix.locator('#correction-comment').fill('не та сумма')
+  await fix.getByLabel('Сумма, с').fill('25')
+  await fix.getByRole('button', { name: 'Сохранить исправление' }).click()
+  await expect(fix).toHaveCount(0)
+  await expect(rowOf(`выдача ${RUN}`)).toContainText(/25\s?с/)
+
+  // «Отменить» — с причиной; пара «выплата + сторно» уходит из списка.
+  await rowOf(`выдача ${RUN}`).getByRole('button', { name: 'Отменить' }).click()
+  const rev = page.getByRole('dialog')
+  await expect(rev).toContainText('отменится')
+  await rev.getByLabel('Причина').fill('ошибка')
+  await rev.getByRole('button', { name: 'Отменить выплату' }).click()
+  await expect(rev).toHaveCount(0)
+  await expect(rowOf(`выдача ${RUN}`)).toHaveCount(0)
+})

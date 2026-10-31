@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.name as \"article!\", coalesce(sum(e.amount_tyiyn), 0)::bigint as \"sum!\"\n               from expenses e\n               join expense_articles a on a.id = e.article_id\n               left join cash_accounts c on c.id = e.account_id\n               where ($5 or e.branch_id = $1)\n                 and ($2::date is null or e.expense_date >= $2)\n                 and ($3::date is null or e.expense_date <= $3)\n                 and ($4 or (not a.owner_only and e.source = 'account'\n                             and c.kind = 'register' and not c.owner_only\n                             and e.expense_date >= (now() at time zone 'Asia/Bishkek')::date - 7))\n               group by a.name\n               having coalesce(sum(e.amount_tyiyn), 0) <> 0\n               order by 2 desc, 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "article!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "6c6fb890ca0b974699581d9823b9d966df2ad8046fea4a32bb299a1dd7da5315"
+}

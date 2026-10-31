@@ -6,7 +6,8 @@ import { actLines, actVerdict, type Reconciliation } from './debtDocs'
 import { formatDate, formatSom } from './format'
 import { oilAmountText } from './serviceSale'
 import { groupQty, pricePer, rowViscosity, type StockGroup } from './stockSheet'
-import type { CategoryTotal, DebtRow, ProductRow, ServiceKind, TopProduct } from './types'
+import type { CategoryTotal, DebtRow, InvoicePayment, ProductRow, ServiceKind, TopProduct } from './types'
+import { paymentSource } from './supplierPay'
 import type { Cell, Sheet, SheetRow } from './xlsxWrite'
 
 // ---------- Товары ----------
@@ -188,3 +189,24 @@ export function reconciliationSheet(act: Reconciliation, us: string, now?: Date)
     filter: false,
   }
 }
+
+// ---------- Мелкие таблицы (задача 003 Н13, хвост) ----------
+
+/** «Что покупает чаще всего» в карточке клиента — как на экране: товар, сколько, чеков. */
+export const FREQUENT_COLS: ExportCol<TopProduct>[] = [
+  { label: 'Товар', value: (r) => r.name },
+  { label: 'Сколько', value: (r) => xl.units(r.qty, r.unit) },
+  { label: 'Ед.', value: (r) => unitName(r.unit) },
+  { label: 'Чеков', value: (r) => xl.int(r.checks) },
+]
+
+/** Платежи по накладной: сколько легло на неё и весь платёж; сторно — отдельным столбцом. */
+export const INVOICE_PAYMENT_COLS: ExportCol<InvoicePayment>[] = [
+  { label: 'Когда', value: (p) => xl.dateTime(p.at) },
+  { label: 'Кто', value: (p) => p.user_name },
+  { label: 'На накладную', value: (p) => xl.money(p.amount_tyiyn) },
+  { label: 'Весь платёж', value: (p) => xl.money(p.payment_tyiyn) },
+  { label: 'Откуда', value: (p) => paymentSource(p) },
+  { label: 'Комментарий', value: (p) => p.comment },
+  { label: 'Отметка', value: (p) => (p.reversed ? 'сторно' : '') },
+]

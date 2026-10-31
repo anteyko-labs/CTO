@@ -10,6 +10,13 @@ import { oilBookSettingsOf, type OilBookSettings, type QtyStyle } from '../lib/o
 
 const SWITCHES: { key: Exclude<keyof OilBookSettings, 'qty_style'>; title: string; on: string; off: string; group: 'print' | 'book' }[] = [
   { key: 'auto_book', group: 'print', title: 'Чек книжки после чека «В сервис» — печатать сам', on: 'Чек книжки печатается сам', off: 'Чек книжки — только кнопкой «Печать книжки»' },
+  {
+    key: 'offline_book',
+    group: 'print',
+    title: 'Чек «В сервис» без сети — печатать книжку после отправки на сервер',
+    on: 'Книжка печатается сама, когда чек ушёл на сервер',
+    off: 'Книжка — кнопкой «Печать книжки» в уведомлении',
+  },
   { key: 'auto_receipt', group: 'print', title: 'Товарный чек после чека «В сервис» — печатать сам', on: 'Товарный чек печатается сам', off: 'Товарный чек — только кнопкой «Печать чека»' },
   { key: 'receipt_block', group: 'print', title: 'Блок «Масляная книжка» в товарном чеке', on: 'В товарном чеке — блок книжки', off: 'В товарном чеке — без блока книжки' },
   { key: 'with_filters', group: 'book', title: 'В чеке книжки — и фильтры (масляный, воздушный, салонный, топливный) под видом замены', on: 'В чеке книжки — масла, жидкости и фильтры', off: 'В чеке книжки — только масла и жидкости' },

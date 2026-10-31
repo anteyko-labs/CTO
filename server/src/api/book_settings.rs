@@ -48,6 +48,10 @@ pub struct OilBookSettings {
     pub qty_style: String,
     /// Масляный, воздушный и салонный фильтр с заменой масла — на пробег масла (ADR-117).
     pub filters_follow_oil: bool,
+    /// Чек «В сервис», проведённый без сети: когда сервер его принял, касса сама печатает чек
+    /// книжки (если включено `auto_book`); выключено — только кнопкой «Печать книжки» в
+    /// уведомлении (задача 003, хвост Н5). По умолчанию — да.
+    pub offline_book: bool,
 }
 
 impl Default for OilBookSettings {
@@ -60,6 +64,7 @@ impl Default for OilBookSettings {
             print_filters_only: false,
             qty_style: "total".into(),
             filters_follow_oil: true,
+            offline_book: true,
         }
     }
 }

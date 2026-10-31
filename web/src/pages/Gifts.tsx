@@ -3,12 +3,13 @@ import { ProductPicker } from '../components/ProductPicker'
 import { DirSwitch } from '../components/DirSwitch'
 import { ExportButton } from '../components/ExportButton'
 import { listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
-import { Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table } from '../components/ui'
+import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Loading, Missing, Money, PageHeader, Table } from '../components/ui'
 import { get, post, patch, qs } from '../lib/api'
 import { formatLiters, formatSom, parseLiters, todayBishkek } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
 import type { GiftRule, Product } from '../lib/types'
+import { giftMinText, giftQtys, giftRuleStatus } from '../lib/giftRule'
 
 interface GiftReportRow {
   product_id: string
@@ -82,6 +83,8 @@ export default function Gifts() {
   const [trigger, setTrigger] = useState<Product | null>(null)
   const [items, setItems] = useState<Product[]>([])
   const [minText, setMinText] = useState('')
+  // Количество подарков правила, которое правят: при сохранении не сбрасывается в 1.
+  const [qtys, setQtys] = useState<Record<string, number>>({})
   const save = useAction()
   const toggle = useAction()
 
@@ -100,12 +103,25 @@ export default function Gifts() {
       await post('/gift-rules', {
         trigger_product_id: trigger.id,
         min_units: minUnits ?? 0,
-        items: items.map((p) => ({ gift_product_id: p.id, gift_qty: 1 })),
+        items: items.map((p) => ({ gift_product_id: p.id, gift_qty: qtys[p.id] ?? 1 })),
       })
       setTrigger(null)
       setItems([])
       setMinText('')
+      setQtys({})
       list.reload()
+    })
+
+  // «Поправить» правило (порог округлён при смене единицы): форма заполняется правилом,
+  // сохранение заменяет его и включает.
+  const edit = (r: GiftRule) =>
+    void toggle.run(async () => {
+      const [t, ...gifts] = await Promise.all([r.trigger_product_id, ...r.items.map((i) => i.gift_product_id)].map((id) => get<Product>(`/products/${id}`)))
+      setTrigger(t)
+      setItems(gifts)
+      setMinText(giftMinText(r))
+      setQtys(giftQtys(r))
+      window.scrollTo({ top: 0, behavior: 'smooth' })
     })
 
   const setActive = (r: GiftRule, active: boolean) =>
@@ -194,7 +210,17 @@ export default function Gifts() {
                 </td>
                 <td className="px-2 py-2">{r.items.map((i) => `${i.name} × ${i.gift_qty}`).join(', ') || '—'}</td>
                 <td className="px-2 py-2">
-                  <DirSwitch checked={r.active} label={`Подарок к «${r.trigger_name}»`} disabled={toggle.busy} onChange={(v) => setActive(r, v)} />
+                  {r.needs_fix ? (
+                    <div className="flex flex-wrap items-center gap-2" data-testid="gift-rule-fix">
+                      <Badge tone="amber">поправьте порог</Badge>
+                      <Button variant="secondary" className="px-2 py-1 text-xs" disabled={toggle.busy} onClick={() => edit(r)}>
+                        Поправить
+                      </Button>
+                      <div className="w-full text-xs text-slate-500">Единица товара сменилась, порог округлён. Проверьте и сохраните — правило включится.</div>
+                    </div>
+                  ) : (
+                    <DirSwitch checked={r.active} label={`Подарок к «${r.trigger_name}»`} disabled={toggle.busy} onChange={(v) => setActive(r, v)} />
+                  )}
                 </td>
               </tr>
             ))}
@@ -219,5 +245,5 @@ const GIFT_RULE_COLS: ExportCol<GiftRule>[] = [
   { label: 'От', value: (r) => (r.min_units > 0 ? xl.units(r.min_units, r.trigger_unit) : null) },
   { label: 'Ед.', value: (r) => (r.min_units > 0 ? unitName(r.trigger_unit) : '') },
   { label: 'Подарки', value: (r) => r.items.map((i) => `${i.name} × ${i.gift_qty}`).join(', ') },
-  { label: 'Статус', value: (r) => (r.active ? 'включено' : 'выключено') },
+  { label: 'Статус', value: (r) => giftRuleStatus(r) },
 ]

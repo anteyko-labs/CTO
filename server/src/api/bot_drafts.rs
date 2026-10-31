@@ -1558,6 +1558,7 @@ async fn staff(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input: 
                     advance,
                     comment: text,
                     pay_date: None,
+                    original_pay_date: None,
                 },
                 lines,
                 purpose: None,

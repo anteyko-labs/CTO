@@ -6,6 +6,9 @@
 //! Права (I12): расходы — по праву `expenses` (администратору — как в `GET /expenses`: из кассы,
 //! за неделю, без статей владельца); выплаты и бонусы — по праву `view_payroll`, кассиры — с
 //! `payroll_view_all`, как в «Расчёте» (ADR-151). Ни себестоимости, ни прибыли здесь нет (I13).
+//!
+//! «Все филиалы» (`?branch=all`, SPEC-33 §3) — только владельцу: строки всех филиалов подряд с
+//! названием филиала, итог — по всем; администратору — 404, как чужие данные.
 
 use axum::extract::{Query, State};
 use axum::{Json, Router, routing};
@@ -14,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::branches::BranchQuery;
 use crate::api::paging::{self, PageQuery, Paged};
 use crate::auth::CurrentUser;
 use crate::error::{AppResult, invalid};
@@ -52,6 +56,9 @@ pub struct SpendingRow {
     pub created_at: DateTime<Utc>,
     pub reversal_of: Option<Uuid>,
     pub reversed: bool,
+    /// Филиал строки: в «Все филиалы» — столбец «Филиал», действия — только в своём филиале.
+    pub branch_id: Uuid,
+    pub branch_name: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -69,12 +76,22 @@ struct Scope {
     owner: bool,
     expenses: bool,
     payouts: bool,
-    bonuses: bool,
+    /// Филиалы, где начисленные бонусы идут строками (настройка «Отчёт о прибыли» филиала).
+    bonus_branches: Vec<Uuid>,
     cashiers: bool,
     reversals: bool,
+    /// «Все филиалы» (только владелец).
+    all: bool,
 }
 
-async fn scope(conn: &mut PgConnection, user: &CurrentUser, q: &SpendingQuery) -> AppResult<Scope> {
+async fn scope(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    q: &SpendingQuery,
+    branch: &BranchQuery,
+) -> AppResult<Scope> {
+    let all = branch.all()?;
+    let branches = crate::api::branches::report_scope(&mut *conn, user, all).await?;
     let kind = q.kind.as_deref().unwrap_or("all");
     if !matches!(kind, "all" | "expenses" | "payouts") {
         return Err(invalid("отбор: всё, расходы или выплаты работникам"));
@@ -96,10 +113,17 @@ async fn scope(conn: &mut PgConnection, user: &CurrentUser, q: &SpendingQuery) -
     }
     let expenses = may_expenses && kind != "payouts";
     let payouts = may_payroll && kind != "expenses";
-    let bonuses = payouts
-        && crate::api::pnl::profit_settings(&mut *conn, user.branch_id)
-            .await?
-            .expenses_bonus_accruals;
+    let mut bonus_branches = Vec::new();
+    if payouts {
+        for b in &branches {
+            if crate::api::pnl::profit_settings(&mut *conn, b.id)
+                .await?
+                .expenses_bonus_accruals
+            {
+                bonus_branches.push(b.id);
+            }
+        }
+    }
     let cashiers = crate::auth::has_permission(&mut *conn, user, "payroll_view_all").await?;
     if let (Some(f), Some(t)) = (q.from, q.to)
         && f > t
@@ -110,9 +134,10 @@ async fn scope(conn: &mut PgConnection, user: &CurrentUser, q: &SpendingQuery) -
         owner: user.is_owner(),
         expenses,
         payouts,
-        bonuses,
+        bonus_branches,
         cashiers,
         reversals: matches!(q.reversals.as_deref(), Some("1" | "true")),
+        all,
     })
 }
 
@@ -122,9 +147,10 @@ async fn list(
     user: CurrentUser,
     Query(q): Query<SpendingQuery>,
     Query(page): Query<PageQuery>,
+    Query(branch): Query<BranchQuery>,
 ) -> AppResult<Paged<SpendingRow>> {
     let mut conn = state.pool.acquire().await?;
-    let s = scope(&mut conn, &user, &q).await?;
+    let s = scope(&mut conn, &user, &q, &branch).await?;
     let (rows, total) = rows(&mut conn, &user, &q, &s, page).await?;
     Ok(paging::paged(rows, total))
 }
@@ -145,12 +171,13 @@ async fn rows(
                     null::uuid as employee_id, e.comment, e.source::text as source,
                     c.name::text as account_name, u.full_name as user_name, e.created_at,
                     e.reversal_of,
-                    exists (select 1 from expenses x where x.reversal_of = e.id) as reversed
+                    exists (select 1 from expenses x where x.reversal_of = e.id) as reversed,
+                    e.branch_id
              from expenses e
              join expense_articles a on a.id = e.article_id
              join users u on u.id = e.user_id
              left join cash_accounts c on c.id = e.account_id
-             where $5 and e.branch_id = $1
+             where $5 and ($12 or e.branch_id = $1)
                and ($2::date is null or e.expense_date >= $2)
                and ($3::date is null or e.expense_date <= $3)
                -- Администратору — как в «Расходах»: из кассы, за неделю, без статей владельца.
@@ -163,12 +190,13 @@ async fn rows(
                     -- Счёт владельца администратору не называется.
                     case when $4 or not coalesce(c.owner_only, false) then c.name end,
                     u.full_name, p.created_at, p.reversal_of,
-                    exists (select 1 from payouts x where x.reversal_of = p.id)
+                    exists (select 1 from payouts x where x.reversal_of = p.id),
+                    p.branch_id
              from payouts p
              join employees em on em.id = p.employee_id
              join users u on u.id = p.user_id
              left join cash_accounts c on c.id = p.account_id
-             where $6 and p.branch_id = $1
+             where $6 and ($12 or p.branch_id = $1)
                and ($2::date is null or p.pay_date >= $2)
                and ($3::date is null or p.pay_date <= $3)
                and ($8 or (em.is_master and not em.is_cashier))
@@ -176,11 +204,12 @@ async fn rows(
              select 'bonus_accrual', b.id, null, b.business_date, b.amount_tyiyn,
                     'Зарплата работникам', 'bonus', em.full_name, em.id, b.comment, null, null,
                     u.full_name, b.created_at, b.reversal_of,
-                    exists (select 1 from payroll_accruals x where x.reversal_of = b.id)
+                    exists (select 1 from payroll_accruals x where x.reversal_of = b.id),
+                    b.branch_id
              from payroll_accruals b
              join employees em on em.id = b.employee_id
              join users u on u.id = b.user_id
-             where $7 and b.branch_id = $1 and b.kind = 'bonus'
+             where b.branch_id = any($7) and b.kind = 'bonus'
                and ($2::date is null or b.business_date >= $2)
                and ($3::date is null or b.business_date <= $3)
                and ($8 or (em.is_master and not em.is_cashier))
@@ -192,8 +221,9 @@ async fn rows(
                   f.payee as "payee!", f.employee_id, f.comment as "comment!", f.source,
                   f.account_name, f.user_name as "user_name!", f.created_at as "created_at!",
                   f.reversal_of, f.reversed as "reversed!",
+                  f.branch_id as "branch_id!", br.name as "branch_name!",
                   count(*) over () as "total!"
-           from f
+           from f join branches br on br.id = f.branch_id
            order by f.date desc, f.created_at desc, f.id
            limit $10 offset $11"#,
         user.branch_id,
@@ -202,11 +232,12 @@ async fn rows(
         s.owner,
         s.expenses,
         s.payouts,
-        s.bonuses,
+        &s.bonus_branches,
         s.cashiers,
         s.reversals,
         limit,
-        offset
+        offset,
+        s.all
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -235,6 +266,8 @@ async fn rows(
             created_at: r.created_at,
             reversal_of: r.reversal_of,
             reversed: r.reversed,
+            branch_id: r.branch_id,
+            branch_name: r.branch_name,
         })
         .collect();
     Ok((rows, total))
@@ -293,9 +326,10 @@ async fn summary(
     State(state): State<AppState>,
     user: CurrentUser,
     Query(q): Query<SpendingQuery>,
+    Query(branch): Query<BranchQuery>,
 ) -> AppResult<Json<SpendingSummary>> {
     let mut conn = state.pool.acquire().await?;
-    let s = scope(&mut conn, &user, &q).await?;
+    let s = scope(&mut conn, &user, &q, &branch).await?;
     let b = user.branch_id;
     let mut out = SpendingSummary {
         expenses: s.expenses,
@@ -308,7 +342,7 @@ async fn summary(
                from expenses e
                join expense_articles a on a.id = e.article_id
                left join cash_accounts c on c.id = e.account_id
-               where e.branch_id = $1
+               where ($5 or e.branch_id = $1)
                  and ($2::date is null or e.expense_date >= $2)
                  and ($3::date is null or e.expense_date <= $3)
                  and ($4 or (not a.owner_only and e.source = 'account'
@@ -320,7 +354,8 @@ async fn summary(
             b,
             q.from,
             q.to,
-            s.owner
+            s.owner,
+            s.all
         )
         .fetch_all(&mut *conn)
         .await?
@@ -336,7 +371,7 @@ async fn summary(
         out.purposes = sqlx::query!(
             r#"select p.purpose as "purpose!", coalesce(sum(p.amount_tyiyn), 0)::bigint as "sum!"
                from payouts p join employees em on em.id = p.employee_id
-               where p.branch_id = $1
+               where ($5 or p.branch_id = $1)
                  and ($2::date is null or p.pay_date >= $2)
                  and ($3::date is null or p.pay_date <= $3)
                  and ($4 or (em.is_master and not em.is_cashier))
@@ -346,7 +381,8 @@ async fn summary(
             b,
             q.from,
             q.to,
-            s.cashiers
+            s.cashiers,
+            s.all
         )
         .fetch_all(&mut *conn)
         .await?
@@ -364,7 +400,7 @@ async fn summary(
             .map(|p| p.amount_tyiyn)
             .sum();
     }
-    if s.bonuses {
+    if !s.bonus_branches.is_empty() {
         let by = sqlx::query!(
             r#"select em.id,
                  coalesce((select sum(a.amount_tyiyn) from payroll_accruals a
@@ -376,8 +412,8 @@ async fn summary(
                              and ($2::date is null or p.pay_date >= $2)
                              and ($3::date is null or p.pay_date <= $3)), 0)::bigint as "paid!"
                from employees em
-               where em.branch_id = $1 and ($4 or (em.is_master and not em.is_cashier))"#,
-            b,
+               where em.branch_id = any($1) and ($4 or (em.is_master and not em.is_cashier))"#,
+            &s.bonus_branches,
             q.from,
             q.to,
             s.cashiers

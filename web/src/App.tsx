@@ -9,6 +9,7 @@ import { logoutWarning, outboxItems, startOfflineLoop } from './lib/offline'
 import { useAcceptanceMode, useTouchMode } from './lib/cashierMode'
 import { Keypad } from './components/Keypad'
 import { OfflineBar } from './components/OfflineBar'
+import { OfflineBookPrints } from './components/OfflineBookPrints'
 import { BranchSwitch } from './components/BranchSwitch'
 import { setBranchLabel } from './lib/branch'
 import { UpdateBanner } from './components/UpdateBanner'
@@ -320,6 +321,7 @@ function Shell() {
       <main className={`min-w-0 flex-1 ${touch ? 'pb-3 lg:flex lg:h-dvh lg:flex-col lg:overflow-hidden lg:pb-0' : 'pb-24'}`}>
         <UpdateBanner />
         <OfflineBar />
+        <OfflineBookPrints />
         {logoutAsk && (
           <Modal title="Выйти из программы?" onClose={() => setLogoutAsk(null)}>
             <div className="flex flex-col gap-4" data-testid="logout-warning">

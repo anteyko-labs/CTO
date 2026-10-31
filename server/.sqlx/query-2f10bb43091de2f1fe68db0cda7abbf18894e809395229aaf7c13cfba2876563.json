@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, min_units from gift_rules where trigger_product_id = $1 for update",
+  "query": "select id, min_units, active from gift_rules where trigger_product_id = $1 for update",
   "describe": {
     "columns": [
       {
@@ -12,6 +12,11 @@
         "ordinal": 1,
         "name": "min_units",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "active",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -21,8 +26,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "bcbd9297bda215d564ed96ea8c6586692d18e7bd440f4f9ad57651fb21d2be5d"
+  "hash": "2f10bb43091de2f1fe68db0cda7abbf18894e809395229aaf7c13cfba2876563"
 }

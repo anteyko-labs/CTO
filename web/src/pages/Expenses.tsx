@@ -14,17 +14,24 @@ import { correctionMarks, loadCorrections, numberText } from '../lib/corrections
 import { expenseDoc, expenseFields, type ExpenseDoc, type ExpenseFields } from '../lib/moneyFix'
 import { payeeHints, payeeMissing } from '../lib/expensePayee'
 import { ExportButton } from '../components/ExportButton'
-import { cappedWarning, exportTitle, fetchAllPages, listSheet, periodText, xl } from '../lib/exportTable'
+import { cappedWarning, exportTitle, fetchAllPages, listSheet, periodText, totalBy, xl } from '../lib/exportTable'
 import { useCan } from '../lib/permissions'
-import { SPENDING_EXPORT_COLS, spendingKinds, spendingMark, spendingNumber, spendingPath, spendingWhat, summaryLines, summarySheetRows, type SpendingKind } from '../lib/spending'
+import { foreignRow, payrollLink, spendingExportCols, spendingKinds, spendingMark, spendingNumber, spendingPath, spendingWhat, summaryLines, summarySheetRows, type SpendingKind } from '../lib/spending'
 import { StaffPayModal } from '../components/StaffPayModal'
+import { BranchScope } from '../components/BranchScope'
+import { PayoutFixModal, PayoutReverseModal, type PayoutRef } from '../components/PayoutActions'
+import { useAllBranches } from '../lib/branchReport'
 
 /**
  * Расходы точки (SPEC-06) — все траты, кроме оплаты поставщикам за товар (задача 003 Н12б): расходы
  * по статьям и выплаты работникам одним списком, начисленные бонусы — отдельной строкой.
  */
 export default function Expenses() {
-  const owner = useUser().role === 'owner'
+  const user = useUser()
+  const owner = user.role === 'owner'
+  // «Все филиалы» — как в других отчётах владельца (SPEC-33 §3): столбец «Филиал», действия —
+  // только у строк своего филиала.
+  const [all, setAll] = useAllBranches(owner && Boolean(user.several_branches))
   const can = useCan()
   // Выплаты в списке — тем, кому открыт «Расчёт»; платят — с правом «Выплаты мастерам».
   const mayPayroll = can('view_payroll')
@@ -43,13 +50,18 @@ export default function Expenses() {
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   // Страницу режет сервер, итог за период — отдельным запросом по всему отбору (проверка
   // 20.10.2026: раньше итог считался по первым 500 строкам).
-  const query = { from, to, kind, reversals }
+  const query = { from, to, kind, reversals, all }
   const list = usePagedLoad<SpendingRow>(spendingPath(query), 'expenses')
-  const summary = useLoad(() => get<SpendingSummary>(spendingPath(query, true)), [from, to, kind, reversals])
+  const summary = useLoad(() => get<SpendingSummary>(spendingPath(query, true)), [from, to, kind, reversals, all])
   // Отметки «исправлен → № N» / «исправление № M» — одним запросом на список.
   const corrections = useLoad(() => loadCorrections('expense'), [])
   const marks = correctionMarks(corrections.data ?? [])
   const [fixing, setFixing] = useState<string | null>(null)
+  // Выплата: «Исправить» и «Отменить» — те же окна, что в «Расчёте» (ADR-085), только владелец.
+  const [payoutFix, setPayoutFix] = useState<PayoutRef | null>(null)
+  const [payoutReverse, setPayoutReverse] = useState<PayoutRef | null>(null)
+  const payoutMarks = useLoad(() => loadCorrections('payout'), [])
+  const pMarks = correctionMarks(payoutMarks.data ?? [])
   const act = useAction()
   // op_id формы: повтор после потерянного ответа не задвоит расход, после успеха — новый.
   const [opId, setOpId] = useState(newOpId)
@@ -150,20 +162,21 @@ export default function Expenses() {
               disabled={list.total === 0}
               sheets={async () => {
                 // Все строки отбора, а не одна страница (задача 003 Н13); итог — по статьям.
-                const all = await fetchAllPages<SpendingRow>(spendingPath(query))
+                const rows = await fetchAllPages<SpendingRow>(spendingPath(query))
                 const sum = summary.data
+                const cols = spendingExportCols(all)
                 return [
-                  listSheet('Расходы — все траты, кроме оплаты поставщикам', SPENDING_EXPORT_COLS, all.items, {
+                  listSheet('Расходы — все траты, кроме оплаты поставщикам', cols, rows.items, {
                     sheet: 'Расходы',
-                    filter: [`период ${periodText(from, to)}`, kinds.find(([k]) => k === kind)?.[1], reversals && 'со сторно'],
-                    total: ['Итого', null, null, null, null, null, xl.money(total)],
-                    warning: cappedWarning(all),
+                    filter: [`период ${periodText(from, to)}`, kinds.find(([k]) => k === kind)?.[1], reversals && 'со сторно', all && 'все филиалы'],
+                    total: totalBy(cols, { [all ? 'Филиал' : '№']: 'Итого', Сумма: xl.money(total) }),
+                    warning: cappedWarning(rows),
                   }),
                   ...(sum
                     ? [
                         {
                           name: 'Итог по статьям',
-                          title: exportTitle('Итог по статьям', [`период ${periodText(from, to)}`]),
+                          title: exportTitle('Итог по статьям', [`период ${periodText(from, to)}`, all && 'все филиалы']),
                           columns: [{ label: 'Статья', width: 40 }, { label: 'Сумма' }],
                           rows: summarySheetRows(sum).map((r) => ({ cells: [r.label, xl.money(r.amount)], bold: r.bold })),
                         },
@@ -177,6 +190,7 @@ export default function Expenses() {
           Все траты
         </CardTitle>
         <div className="mb-3 text-xs text-slate-500">Расходы по статьям и выплаты работникам. Оплата поставщикам за товар сюда не входит.</div>
+        <BranchScope user={user} all={all} onChange={setAll} />
         <div className="mb-4 flex flex-wrap items-end gap-3">
           <Field label="С">
             <input type="date" className="w-40" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -213,12 +227,21 @@ export default function Expenses() {
         ) : list.items.length === 0 ? (
           <Empty>За период трат нет</Empty>
         ) : (
-          <Table head={['№', 'Дата', 'Что', 'Кому', 'За что', 'Касса', 'Сумма', 'Кто провёл', '']}>
+          <Table head={[...(all ? ['Филиал'] : []), '№', 'Дата', 'Что', 'Кому', 'За что', 'Касса', 'Сумма', 'Кто провёл', '']}>
             {list.items.map((e) => {
               const accrual = e.kind === 'bonus_accrual'
               const m = spendingMark(e)
+              // Исправить и сторнировать — в своём филиале; строку другого видно в «Все филиалы».
+              const mine = !foreignRow(e, user.branch_id)
+              const live = !e.reversal_of && !e.reversed
+              const link = payrollLink(e)
+              const payout: PayoutRef | null =
+                e.kind === 'payout' && e.employee_id
+                  ? { id: e.id, number: e.number, employee_id: e.employee_id, payee: e.payee, amount_tyiyn: e.amount_tyiyn, purpose: e.purpose, account_name: e.account_name }
+                  : null
               return (
                 <tr key={`${e.kind}.${e.id}`} data-kind={e.kind} className={e.reversal_of ? 'text-slate-400' : accrual ? 'text-slate-500' : ''}>
+                  {all && <td className="px-2 py-2 text-slate-600" data-testid="spending-branch">{e.branch_name ?? '—'}</td>}
                   <td className="px-2 py-2 font-medium">{spendingNumber(e)}</td>
                   <td className="whitespace-nowrap px-2 py-2">{formatDate(e.date)}</td>
                   <td className="px-2 py-2">
@@ -228,9 +251,9 @@ export default function Expenses() {
                         <Badge tone="rose">{m}</Badge>
                       </span>
                     )}
-                    {e.kind === 'expense' && (
+                    {(e.kind === 'expense' || e.kind === 'payout') && (
                       <span className="ml-2 inline-flex flex-wrap gap-1">
-                        <CorrectionBadges mark={marks.get(e.id)} />
+                        <CorrectionBadges mark={(e.kind === 'expense' ? marks : pMarks).get(e.id)} />
                       </span>
                     )}
                   </td>
@@ -246,12 +269,29 @@ export default function Expenses() {
                     <div className="text-slate-400">{formatDateTime(e.created_at)}</div>
                   </td>
                   <td className="px-2 py-2 text-right">
-                    {e.kind === 'expense' && !e.reversal_of && !e.reversed && (
+                    {e.kind === 'expense' && live && mine && (
                       <div className="flex justify-end gap-2">
                         <FixButton small onClick={() => setFixing(e.id)} />
                         <Button variant="secondary" className="px-2 py-1 text-xs" disabled={act.busy} onClick={() => reverse(e)}>
                           Сторно
                         </Button>
+                      </div>
+                    )}
+                    {e.kind !== 'expense' && (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {link && mine && (
+                          <Link to={link} className="whitespace-nowrap text-xs font-medium text-sky-700 underline" data-testid="spending-open-payroll">
+                            Открыть в Расчёте
+                          </Link>
+                        )}
+                        {owner && payout && live && mine && (
+                          <>
+                            <FixButton small onClick={() => setPayoutFix(payout)} />
+                            <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setPayoutReverse(payout)}>
+                              Отменить
+                            </Button>
+                          </>
+                        )}
                       </div>
                     )}
                   </td>
@@ -286,6 +326,33 @@ export default function Expenses() {
           onClose={() => setStaffPay(null)}
           onDone={() => {
             setStaffPay(null)
+            reload()
+            accounts.reload()
+          }}
+        />
+      )}
+
+      {payoutFix && (
+        <PayoutFixModal
+          key={payoutFix.id}
+          payout={payoutFix}
+          onClose={() => setPayoutFix(null)}
+          onDone={() => {
+            setPayoutFix(null)
+            reload()
+            accounts.reload()
+            payoutMarks.reload()
+          }}
+        />
+      )}
+
+      {payoutReverse && (
+        <PayoutReverseModal
+          key={payoutReverse.id}
+          payout={payoutReverse}
+          onClose={() => setPayoutReverse(null)}
+          onDone={() => {
+            setPayoutReverse(null)
             reload()
             accounts.reload()
           }}

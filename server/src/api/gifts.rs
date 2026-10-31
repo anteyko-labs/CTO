@@ -33,6 +33,9 @@ struct GiftRuleOut {
     trigger_unit: String,
     min_units: i64,
     active: bool,
+    /// Порог или количество подарка округлены при смене единицы товара: правило выключено,
+    /// пока владелец его не сохранит заново (задача 003, хвост ADR-139).
+    needs_fix: bool,
     items: Vec<GiftItem>,
 }
 
@@ -49,7 +52,7 @@ async fn list(
 ) -> AppResult<Json<Vec<GiftRuleOut>>> {
     let rules = sqlx::query!(
         r#"select r.id, r.trigger_product_id, p.name as "trigger_name!", p.unit as "trigger_unit!",
-                  r.min_units, r.active
+                  r.min_units, r.active, r.needs_fix
            from gift_rules r join products p on p.id = r.trigger_product_id
            where ($1::uuid is null or r.trigger_product_id = $1)
            order by p.name"#,
@@ -75,6 +78,7 @@ async fn list(
             trigger_unit: r.trigger_unit,
             min_units: r.min_units,
             active: r.active,
+            needs_fix: r.needs_fix,
             items: items
                 .iter()
                 .filter(|i| i.rule_id == r.id)
@@ -139,7 +143,8 @@ async fn create(
         r#"insert into gift_rules (id, branch_id, trigger_product_id, user_id, min_units)
            values ($1, $2, $3, $4, $5)
            on conflict (trigger_product_id)
-           do update set active = true, min_units = excluded.min_units returning id"#,
+           do update set active = true, needs_fix = false, min_units = excluded.min_units
+           returning id"#,
         id,
         ctx.user.branch_id,
         req.trigger_product_id,
@@ -214,6 +219,20 @@ async fn update(
         return Err(AppError::Forbidden);
     }
     let mut tx = state.pool.begin().await?;
+    // Правило с округлённым порогом включается только после правки (сохранить заново).
+    let marked = sqlx::query_scalar!(
+        "select needs_fix from gift_rules where id = $1 for update",
+        id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if marked && req.active == Some(true) {
+        return Err(invalid(
+            "порог правила округлён при смене единицы товара: поправьте порог и сохраните \
+             правило — оно включится",
+        ));
+    }
     let found = sqlx::query!(
         "update gift_rules set active = coalesce($2, active) where id = $1 returning trigger_product_id, active",
         id,

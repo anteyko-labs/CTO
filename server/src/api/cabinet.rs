@@ -307,19 +307,29 @@ struct MeOut {
     branch_balances: Value,
     /// Реквизиты точки — для шапки акта сверки при печати.
     seller: Value,
+    /// Период акта сверки по умолчанию — тот же, что на экране точки («Документы о долге»,
+    /// задача 003 Н9); нет — всё время.
+    act_period: Option<String>,
 }
 
 async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeOut>> {
     let mut conn = state.pool.acquire().await?;
     let p = load_party(&mut conn, client.branch_id, client.party_id).await?;
-    let seller = sqlx::query_scalar!(
+    let docs = sqlx::query_scalar!(
         "select value from settings where branch_id = $1 and key = 'debt_docs'",
         client.branch_id
     )
     .fetch_optional(&mut *conn)
-    .await?
-    .and_then(|v| v.get("seller").cloned())
-    .unwrap_or_else(|| json!({}));
+    .await?;
+    let seller = docs
+        .as_ref()
+        .and_then(|v| v.get("seller").cloned())
+        .unwrap_or_else(|| json!({}));
+    let act_period = docs
+        .as_ref()
+        .and_then(|v| v.get("act_period"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     Ok(Json(MeOut {
         name: p.name,
         inn: p.inn,
@@ -331,6 +341,7 @@ async fn me(State(state): State<AppState>, client: Client) -> AppResult<Json<MeO
         credit_limit_tyiyn: p.credit_limit_tyiyn,
         branch_balances: p.branch_balances,
         seller,
+        act_period,
     }))
 }
 

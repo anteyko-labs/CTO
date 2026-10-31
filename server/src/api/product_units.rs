@@ -80,6 +80,12 @@ pub fn exact(qty: i64, mul: i64, div: i64) -> Option<i64> {
         .flatten()
 }
 
+/// Количество в новой единице с одним округлением (I2) — для выключенного правила подарка, у
+/// которого значение не переходит целым числом.
+fn rounded(qty: i64, mul: i64, div: i64) -> AppResult<i64> {
+    div_round(i128::from(qty) * i128::from(mul), i128::from(div)).ok_or_else(overflow)
+}
+
 /// Дробь `a / b` с перемножением и сокращением: цена за единицу и «последняя закупочная»
 /// хранятся парой (стоимость, количество).
 fn reduce(a: i128, b: i128) -> AppResult<(i64, i64)> {
@@ -311,22 +317,32 @@ pub async fn change_unit_tx(
         });
     }
     // Подарок по правилу — в единицах учёта (SPEC-11): переводится так же, целым числом.
+    // Выключенное правило пересчёт не держит: количество округляется (не меньше одного), правило
+    // помечается «поправьте порог» и остаётся выключенным (задача 003, хвост ADR-139).
     let gifts = sqlx::query!(
-        "select rule_id, gift_qty from gift_rule_items where gift_product_id = $1 for update",
+        r#"select i.rule_id, i.gift_qty, r.active
+           from gift_rule_items i join gift_rules r on r.id = i.rule_id
+           where i.gift_product_id = $1 for update"#,
         id
     )
     .fetch_all(&mut *conn)
     .await?;
     let mut gift_log = Vec::new();
+    let mut needs_fix: Vec<Uuid> = Vec::new();
     for g in &gifts {
-        let qty = exact(g.gift_qty, p.mul, p.div)
-            .filter(|q| *q > 0)
-            .ok_or_else(|| {
-                invalid(
+        let qty = match exact(g.gift_qty, p.mul, p.div).filter(|q| *q > 0) {
+            Some(q) => q,
+            None if !g.active => {
+                needs_fix.push(g.rule_id);
+                rounded(g.gift_qty, p.mul, p.div)?.max(1)
+            }
+            None => {
+                return Err(invalid(
                     "товар — подарок в правиле, и его количество не переходит целым числом: \
                      поправьте правило подарка",
-                )
-            })?;
+                ));
+            }
+        };
         sqlx::query!(
             "update gift_rule_items set gift_qty = $3 where rule_id = $1 and gift_product_id = $2",
             g.rule_id,
@@ -339,21 +355,29 @@ pub async fn change_unit_tx(
     }
     // Порог правила, где товар — условие («от 8 л»), — в единицах учёта товара-условия
     // (SPEC-11): переводится так же, целым числом, иначе ничего не меняем.
+    // Выключенное правило — так же, как подарок: округляется и помечается.
     let thresholds = sqlx::query!(
-        "select id, min_units from gift_rules where trigger_product_id = $1 for update",
+        "select id, min_units, active from gift_rules where trigger_product_id = $1 for update",
         id
     )
     .fetch_all(&mut *conn)
     .await?;
     let mut threshold_log = Vec::new();
     for t in &thresholds {
-        let to = exact(t.min_units, p.mul, p.div).ok_or_else(|| {
-            invalid(format!(
-                "товар — условие правила подарка «от {}»: порог не переходит в новую единицу \
-                 целым числом: поправьте порог правила подарка, потом меняйте единицу",
-                stock_text(t.min_units, &cur.unit, cur.container_ml)
-            ))
-        })?;
+        let to = match exact(t.min_units, p.mul, p.div) {
+            Some(to) => to,
+            None if !t.active => {
+                needs_fix.push(t.id);
+                rounded(t.min_units, p.mul, p.div)?
+            }
+            None => {
+                return Err(invalid(format!(
+                    "товар — условие правила подарка «от {}»: порог не переходит в новую единицу \
+                     целым числом: поправьте порог правила подарка, потом меняйте единицу",
+                    stock_text(t.min_units, &cur.unit, cur.container_ml)
+                )));
+            }
+        };
         if to == t.min_units {
             continue;
         }
@@ -365,6 +389,16 @@ pub async fn change_unit_tx(
         .execute(&mut *conn)
         .await?;
         threshold_log.push(json!({ "rule_id": t.id, "from": t.min_units, "to": to }));
+    }
+    needs_fix.sort();
+    needs_fix.dedup();
+    if !needs_fix.is_empty() {
+        sqlx::query!(
+            "update gift_rules set needs_fix = true where id = any($1)",
+            &needs_fix
+        )
+        .execute(&mut *conn)
+        .await?;
     }
     // Баллы «за единицу» товара (ADR-140) — ставка за штуку, литр или кг: в новую единицу
     // переводится обратно количеству, чтобы за тот же товар начислялось столько же; одно
@@ -509,6 +543,8 @@ pub async fn change_unit_tx(
             "prices": prices,
             "gift_qty": gift_log,
             "gift_thresholds": threshold_log,
+            // Выключенные правила, у которых значение округлено: «поправьте порог».
+            "gift_rules_need_fix": needs_fix,
             "points": points,
         }),
     )

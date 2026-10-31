@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { PayrollEntries } from '../components/PayrollEntries'
 import { ExportButton } from '../components/ExportButton'
 import { colsIf, listSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
@@ -22,7 +23,11 @@ export default function Payroll() {
   const mayPay = can('payroll_pay')
   const mayAdvance = can('payroll_advance')
   const [view, setView] = useState<'day' | 'month' | 'salary'>('day')
-  const [date, setDate] = useState(todayBishkek())
+  // «Открыть в Расчёте» из «Расходов» (задача 003): `?date=` — день выплаты, `?employee=` — чей.
+  const [params] = useSearchParams()
+  const linkedDate = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') ?? '') ? (params.get('date') as string) : null
+  const linkedEmployee = params.get('employee')
+  const [date, setDate] = useState(linkedDate ?? todayBishkek())
   const [paying, setPaying] = useState<PayrollRow | null>(null)
   const [extra, setExtra] = useState<{ row: PayrollRow; kind: 'bonus' | 'penalty' } | null>(null)
   const [salary, setSalary] = useState<PayrollRow | null>(null)
@@ -40,6 +45,11 @@ export default function Payroll() {
   }
 
   const list = rows.data ?? []
+  // Пришли по ссылке: строка работника подсвечена, владельцу сразу открыты его начисления и
+  // выплаты за день — там «Исправить» и «Отменить» (ADR-085). Закрыл — больше не открываются.
+  const [linkClosed, setLinkClosed] = useState(false)
+  const linkedRow = !linkClosed && owner && linkedEmployee && date === linkedDate ? (list.find((x) => x.employee_id === linkedEmployee) ?? null) : null
+  const shownEntries = entries ?? linkedRow
   const toPay = list.reduce((acc, r) => acc + Math.max(0, r.balance_tyiyn), 0)
 
   return (
@@ -106,7 +116,11 @@ export default function Payroll() {
           <div className="[&_th:not(:first-child)]:text-right">
             <Table head={['Сотрудник', 'Не выплачено ранее', 'Мастеру за услуги', 'Процент', 'Оклад', 'Бонус', 'Удержано', 'Выплачено', 'Аванс', 'К выплате', '']}>
               {list.map((r) => (
-                <tr key={r.employee_id}>
+                <tr
+                  key={r.employee_id}
+                  data-testid={r.employee_id === linkedEmployee ? 'payroll-linked-row' : undefined}
+                  className={r.employee_id === linkedEmployee && date === linkedDate ? 'bg-sky-50' : undefined}
+                >
                   <td className="px-2 py-2 font-medium">{r.full_name}</td>
                   <td className="px-2 py-2 md:text-right">
                     <Money value={r.opening_tyiyn} tone="negative" zero="—" />
@@ -183,13 +197,14 @@ export default function Payroll() {
         </Modal>
       )}
 
-      {entries && (
+      {shownEntries && (
         <PayrollEntries
-          employee={entries}
+          employee={shownEntries}
           from={date}
           to={date}
           onClose={(changed) => {
             setEntries(null)
+            setLinkClosed(true)
             if (changed) rows.reload()
           }}
         />

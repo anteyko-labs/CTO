@@ -1,7 +1,7 @@
 // Столбцы выгрузки в Excel (задача 003 Н13): у администратора нет закупки, себестоимости и прибыли
 // (I13); количества и деньги — числами из целых, коды — текстом, сторно — отдельным столбцом.
 import { describe, expect, it } from 'vitest'
-import { debtSheet, productCols, reconciliationSheet, stockSheet, topProductCols } from './exportCols'
+import { FREQUENT_COLS, INVOICE_PAYMENT_COLS, debtSheet, productCols, reconciliationSheet, stockSheet, topProductCols } from './exportCols'
 import { exportTitle, totalBy, xl } from './exportTable'
 import { kindQty, shiftReportSheets } from './shiftReportExport'
 import type { ShiftReport } from './shiftReport'
@@ -221,5 +221,21 @@ describe('Подпись отбора', () => {
 
   it('граммы — килограммами с тремя знаками', () => {
     expect(xl.units(2350, 'g')).toEqual({ qty: 2350, scale: 3 })
+  })
+})
+
+describe('Мелкие таблицы (задача 003, хвост Н13)', () => {
+  it('частые товары клиента: литры с тремя знаками, чеки числом', () => {
+    const r = { product_id: 'p', name: 'Масло', unit: 'ml' as const, container_ml: 4000, category_id: 'c', qty: 12_500, amount_tyiyn: 1, checks: 3 }
+    expect(labels(FREQUENT_COLS)).toEqual(['Товар', 'Сколько', 'Ед.', 'Чеков'])
+    expect(FREQUENT_COLS.map((c) => c.value(r))).toEqual(['Масло', { qty: 12_500, scale: 3 }, 'л', { int: 3 }])
+  })
+
+  it('платежи по накладной: на накладную и весь платёж — деньгами, сторно — отметкой', () => {
+    const p = { ledger_id: 'l', at: '2026-10-30T05:00:00Z', user_name: 'Владелец', kind: 'payment' as const, source: 'Касса', amount_tyiyn: 50_000, payment_tyiyn: 80_000, reversed: true, comment: 'часть' }
+    expect(labels(INVOICE_PAYMENT_COLS)).toEqual(['Когда', 'Кто', 'На накладную', 'Весь платёж', 'Откуда', 'Комментарий', 'Отметка'])
+    const v = INVOICE_PAYMENT_COLS.map((c) => c.value(p))
+    expect(v.slice(1)).toEqual(['Владелец', { money: 50_000 }, { money: 80_000 }, 'Касса', 'часть', 'сторно'])
+    expect(INVOICE_PAYMENT_COLS[4].value({ ...p, kind: 'defect' })).toBe('зачёт брака (скидка)')
   })
 })

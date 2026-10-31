@@ -1224,6 +1224,7 @@ async fn close_shift(
                         advance: false,
                         comment: comment.clone(),
                         pay_date: None,
+                        original_pay_date: None,
                     },
                     lines: p.lines.clone(),
                     purpose: None,

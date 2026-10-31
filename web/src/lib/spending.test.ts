@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SPENDING_EXPORT_COLS, spendingKinds, spendingMark, spendingPath, spendingWhat, summaryLines, summarySheetRows } from './spending'
+import { SPENDING_EXPORT_COLS, foreignRow, payrollLink, spendingExportCols, spendingKinds, spendingMark, spendingPath, spendingWhat, summaryLines, summarySheetRows } from './spending'
 import type { SpendingRow, SpendingSummary } from './types'
 
 const row = (patch: Partial<SpendingRow>): SpendingRow => ({
@@ -65,6 +65,26 @@ describe('«Расходы» — все траты', () => {
     expect(spendingPath({ from: '2026-10-01', to: '2026-10-31', kind: 'payouts', reversals: true }, true)).toBe(
       '/expenses/all/summary?from=2026-10-01&to=2026-10-31&kind=payouts&reversals=1',
     )
+    // «Все филиалы» владельца (задача 003).
+    expect(spendingPath({ from: '2026-10-01', to: '2026-10-31', kind: 'all', reversals: false, all: true })).toBe(
+      '/expenses/all?from=2026-10-01&to=2026-10-31&branch=all',
+    )
+  })
+
+  it('«Все филиалы»: столбец «Филиал» в выгрузке, действия — только у строк своего филиала', () => {
+    const cols = spendingExportCols(true)
+    expect(cols[0].label).toBe('Филиал')
+    expect(cols[0].value(row({ branch_id: 'b2', branch_name: 'Филиал Б' }))).toBe('Филиал Б')
+    expect(spendingExportCols(false)).toBe(SPENDING_EXPORT_COLS)
+    expect(foreignRow(row({ branch_id: 'b2' }), 'b1')).toBe(true)
+    expect(foreignRow(row({ branch_id: 'b1' }), 'b1')).toBe(false)
+    expect(foreignRow(row({}), 'b1')).toBe(false)
+  })
+
+  it('«Открыть в Расчёте»: выплата и бонус — на свой день у своего работника, расход — нет', () => {
+    expect(payrollLink(row({ kind: 'payout', employee_id: 'e1', date: '2026-10-20' }))).toBe('/payroll?date=2026-10-20&employee=e1')
+    expect(payrollLink(row({ kind: 'bonus_accrual', employee_id: 'e1', date: '2026-10-21' }))).toBe('/payroll?date=2026-10-21&employee=e1')
+    expect(payrollLink(row({}))).toBeNull()
   })
 
   it('итог: статьи, «Зарплата работникам» с «в т. ч. бонусы», невыданное — отдельно, итог не задваивает', () => {

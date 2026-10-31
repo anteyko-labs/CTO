@@ -1,4 +1,5 @@
 // Выплата сотруднику по видам и аванс (SPEC-36 §11, ADR-122): строки окна «Выплата».
+import { formatSom } from './format'
 import type { PayoutPurpose, PayoutRemains } from './types'
 
 /** Виды в окне «Выплата» по порядку; аванс — последним. */
@@ -87,4 +88,11 @@ export function payoutLines(
   }
   if (!error && out.length === 0) error = 'Отметьте, за что выплатить'
   return { lines: out, total, error }
+}
+
+/** Что будет при отмене выплаты — одна подпись для «Расчёта» и «Расходов» (ADR-064, I4). */
+export function payoutReverseText(p: { number: number | null; purpose?: string | null; amount_tyiyn: number; account_name: string | null }): string {
+  const kind = p.purpose && p.purpose !== 'general' ? ` (${(PURPOSE_LABELS[p.purpose] ?? p.purpose).toLowerCase()})` : ''
+  const back = p.account_name ? `, деньги вернутся в «${p.account_name}» (нужна открытая смена)` : ''
+  return `Выплата № ${p.number ?? ''}${kind} на ${formatSom(p.amount_tyiyn)} отменится${back}.`
 }

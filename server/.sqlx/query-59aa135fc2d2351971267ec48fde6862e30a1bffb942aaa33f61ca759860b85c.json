@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.purpose as \"purpose!\", coalesce(sum(p.amount_tyiyn), 0)::bigint as \"sum!\"\n               from payouts p join employees em on em.id = p.employee_id\n               where ($5 or p.branch_id = $1)\n                 and ($2::date is null or p.pay_date >= $2)\n                 and ($3::date is null or p.pay_date <= $3)\n                 and ($4 or (em.is_master and not em.is_cashier))\n               group by p.purpose\n               having coalesce(sum(p.amount_tyiyn), 0) <> 0\n               order by 2 desc, 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "purpose!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "59aa135fc2d2351971267ec48fde6862e30a1bffb942aaa33f61ca759860b85c"
+}

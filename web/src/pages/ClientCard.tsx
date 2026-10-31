@@ -6,6 +6,7 @@ import { OilBookList } from '../components/OilBook'
 import { Pager, usePager } from '../components/Pager'
 import { ExportButton } from '../components/ExportButton'
 import { listSheet, xl, type ExportCol } from '../lib/exportTable'
+import { FREQUENT_COLS } from '../lib/exportCols'
 import { ReconciliationButton, ReconciliationModal } from '../components/ReconciliationButton'
 import { stockText } from '../components/ProductPicker'
 import { VehicleFormModal } from '../components/VehicleFormModal'
@@ -668,7 +669,7 @@ export default function ClientCard() {
         />
       </section>
 
-      {party.role === 'customer' && <FrequentProducts partyId={party.id} />}
+      {party.role === 'customer' && <FrequentProducts partyId={party.id} name={party.name} />}
 
       <Card>
         <CardTitle
@@ -909,13 +910,15 @@ export default function ClientCard() {
 }
 
 /** Что клиент покупает чаще всего — за всё время, по числу чеков (SPEC-27 §4). */
-function FrequentProducts({ partyId }: { partyId: string }) {
+function FrequentProducts({ partyId, name }: { partyId: string; name: string }) {
   const top = useLoad(() => get<TopProducts>(`/reports/top-products${qs({ party_id: partyId, sort: 'checks', limit: 5 })}`), [partyId])
   const items = top.data?.items ?? []
   if (!top.error && items.length === 0) return null
   return (
     <Card>
-      <CardTitle>Что покупает чаще всего</CardTitle>
+      <CardTitle actions={<ExportButton file="Что покупает чаще всего" disabled={items.length === 0} sheets={() => [listSheet('Что покупает чаще всего', FREQUENT_COLS, items, { sheet: 'Частые товары', filter: [name] })]} />}>
+        Что покупает чаще всего
+      </CardTitle>
       <ErrorBox error={top.error} />
       <ul className="divide-y divide-slate-100 text-sm">
         {items.map((r) => (

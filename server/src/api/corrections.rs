@@ -1693,7 +1693,14 @@ async fn post_new(
             (out.id.ok_or_else(|| invalid("сумма больше нуля"))?, None)
         }
         Kind::Payout => {
-            let out = crate::api::payroll::post_payouts_tx(conn, ctx, req_of(doc)?).await?;
+            let mut req: crate::api::payroll::PayoutsReq = req_of(doc)?;
+            // Дата исходной выплаты остаётся и старше предела «дней назад» (задача 003, хвост Н11).
+            req.base.original_pay_date = original
+                .draft
+                .get("pay_date")
+                .and_then(Value::as_str)
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+            let out = crate::api::payroll::post_payouts_tx(conn, ctx, req).await?;
             (out.id, Some(out.number))
         }
         Kind::StockIn => {

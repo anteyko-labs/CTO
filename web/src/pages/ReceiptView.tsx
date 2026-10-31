@@ -200,7 +200,7 @@ export default function ReceiptView() {
             </div>
             {r.debt.left_tyiyn > 0 && r.supplier_id && mayReceipts && <Button onClick={() => setPaying(true)}>Оплатить</Button>}
           </div>
-          <InvoicePayments payments={r.debt.payments} />
+          <InvoicePayments payments={r.debt.payments} file={`Платежи по накладной № ${r.number}`} />
         </Card>
       )}
       {can('receipts') && <ReceiptAcceptance receiptId={r.id} />}

@@ -715,6 +715,9 @@ export interface GiftRule {
   trigger_unit: string
   min_units: number
   active: boolean
+  /** Порог или количество подарка округлены при смене единицы товара: правило выключено, пока
+   *  его не сохранят заново (задача 003). */
+  needs_fix?: boolean
   items: { gift_product_id: string; name: string; gift_qty: number }[]
 }
 
@@ -1126,6 +1129,9 @@ export interface SpendingRow {
   created_at: string
   reversal_of: string | null
   reversed: boolean
+  /** Филиал строки (в «Все филиалы» — столбец «Филиал»). */
+  branch_id?: string
+  branch_name?: string
 }
 
 /** Итог «Расходов» (`GET /expenses/all/summary`). */
