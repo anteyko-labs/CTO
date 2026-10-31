@@ -8,7 +8,12 @@ import {
   switchMode,
   unitCost,
   lineCalc,
+  literPriceText,
+  defaultMode,
+  unitCostPerLiter,
   withCost,
+  withEntry,
+  withLiterPrice,
   withMarkup,
   withSalePrice,
 } from './receiptLines'
@@ -163,5 +168,90 @@ describe('масло литрами и товар на вес (SPEC-36 §13)', (
     expect(nb(lastText({ receipt_id: 'r', number: 1, price_tyiyn: 180_000, created_at: '2026-10-12T05:00:00Z', supplier_name: null }, 'за канистру'))).toBe(
       'в прошлый раз: 1 800 с за канистру, 12.10',
     )
+  })
+})
+
+describe('цена за литр в строке канистрами (задача 003, Н7)', () => {
+  const oil = product({ unit: 'ml', container_ml: 4000, sale_price_tyiyn: 200_000, last_purchase_price_tyiyn: 180_000 })
+  const quart = product({ unit: 'ml', container_ml: 946, sale_price_tyiyn: 60_000 })
+
+  it('5 кан. по 4 л, ввели 450 с/л → канистра 1 800 с, сумма 9 000 с', () => {
+    const base = { product: oil, count: '5', mode: 'can' as const, ...initialPrices(oil) }
+    const l = { ...base, ...withLiterPrice(base, '450', 4000) }
+    expect(l.price).toBe('1800')
+    expect(literPriceText(l, 4000)).toBe('450')
+    const c = lineCalc(l)
+    expect(typeof c !== 'string' && [c.cost, c.unitPrice, c.qty]).toEqual([900_000, 180_000, 20_000])
+  })
+
+  it('канистра 0,946 л: сумма от литра — одно округление, не канистры × округлённая цена', () => {
+    const base = { product: quart, count: '3', mode: 'can' as const, price: '', markup: '', salePrice: '600' }
+    const even = { ...base, ...withLiterPrice(base, '500', 946) }
+    const ec = lineCalc(even)
+    expect(typeof ec !== 'string' && ec.cost).toBe(141_900)
+    // 28 кан. по 333,33 с/л: divRound(33 333 × 26 488, 1000) = 882 925; через канистру 28 × 315,33 = 882 924.
+    const b28 = { ...base, count: '28' }
+    const many = { ...b28, ...withLiterPrice(b28, '333,33', 946) }
+    expect(many.price).toBe('315,33')
+    const mc = lineCalc(many)
+    expect(typeof mc !== 'string' && mc.cost).toBe(882_925)
+    const viaCan = lineCalc({ ...many, ...withCost(many, many.price) })
+    expect(typeof viaCan !== 'string' && viaCan.cost).toBe(882_924)
+  })
+
+  it('ввели цену канистры — поле «за литр» считается из неё', () => {
+    const base = { product: oil, count: '2', mode: 'can' as const, ...initialPrices(oil) }
+    const l = { ...base, ...withLiterPrice(base, '450', 4000) }
+    const back = { ...l, ...withCost(l, '1700') }
+    expect(back.literPrice).toBeUndefined()
+    expect(literPriceText(back, 4000)).toBe('425')
+    const c = lineCalc(back)
+    expect(typeof c !== 'string' && c.cost).toBe(340_000)
+  })
+
+  it('оприходование канистрами с ценой литра — сервер считает от канистры', () => {
+    const base = { product: oil, count: '2', mode: 'can' as const, ...initialPrices(oil) }
+    const l = { ...base, ...withLiterPrice(base, '450', 4000) }
+    const c = lineCalc(l, true)
+    expect(typeof c !== 'string' && [c.cost, c.unitPrice]).toEqual([360_000, 180_000])
+  })
+
+  it('переключение «кан. → л» сохраняет введённую цену за литр', () => {
+    const base = { product: quart, count: '3', mode: 'can' as const, price: '', markup: '', salePrice: '600' }
+    const l = { ...base, ...withLiterPrice(base, '333,33', 946) }
+    const liters = switchMode(l, 'l')
+    expect([liters.mode, liters.count, liters.price]).toEqual(['l', '2,838', '333,33'])
+    const cans = switchMode(liters, 'can')
+    expect([cans.mode, cans.count, cans.price, cans.literPrice]).toEqual(['can', '3', '315,33', '333,33'])
+    const c = lineCalc(cans)
+    expect(typeof c !== 'string' && c.cost).toBe(94_599)
+  })
+
+  it('прошлая закупка — с ценой за литр', () => {
+    expect(nb(lastText({ receipt_id: 'r', number: 1, price_tyiyn: 180_000, created_at: '2026-10-12T05:00:00Z', supplier_name: 'Автоснаб' }, 'за канистру', 4000))).toBe(
+      'в прошлый раз: 1 800 с за канистру (450 с за л), 12.10, Автоснаб',
+    )
+  })
+
+  it('цена прихода из карточки нового товара — в строку', () => {
+    const prices = initialPrices(product({ unit: 'ml', container_ml: 4000 }))
+    const p = product({ unit: 'ml', container_ml: 4000 })
+    expect(withEntry(prices, { text: '450', per: 'l' }, p, 'can')).toMatchObject({ price: '1800', literPrice: '450' })
+    expect(withEntry(prices, { text: '450', per: 'l' }, p, 'l')).toMatchObject({ price: '450' })
+    expect(withEntry(prices, { text: '1800', per: 'can' }, p, 'l')).toMatchObject({ price: '450' })
+    expect(withEntry(prices, { text: '350', per: 'l' }, product({}), undefined)).toMatchObject({ price: '350' })
+  })
+
+  it('режим новой строки — из настройки склада', () => {
+    expect(defaultMode(false)).toBe('can')
+    expect(defaultMode(true)).toBe('l')
+    expect(defaultMode(false, { receipt: 'l', stockIn: 'can' })).toBe('l')
+    expect(defaultMode(true, { receipt: 'l', stockIn: 'can' })).toBe('can')
+  })
+
+  it('проведённая строка масла — цена за литр для показа', () => {
+    expect(unitCostPerLiter({ unit: 'ml', container_ml: 4000, qty: 8000, cost_tyiyn: 360_000 })).toBe(45_000)
+    expect(unitCostPerLiter({ unit: 'piece', container_ml: null, qty: 2, cost_tyiyn: 1000 })).toBeNull()
+    expect(unitCostPerLiter({ unit: 'ml', container_ml: 4000, qty: -8000, cost_tyiyn: -360_000 })).toBeNull()
   })
 })

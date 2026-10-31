@@ -335,3 +335,62 @@ test('ещё фото, варианты товара, запомненный в�
     invoice = INVOICE
   }
 })
+
+// Задача 003, Н7: «Новый товар» у строки накладной — карточка с ценой прихода из накладной
+// (литры → «за л», вторая цена считается сама); после сохранения строка прихода получает её.
+test('новый товар из строки накладной: цена прихода и единица — из накладной', async ({ page }) => {
+  await login(page)
+  const enabled = (await apiGet<{ enabled: boolean }>(page.request, '/receipt-drafts')).enabled
+  test.skip(!enabled, 'распознавание накладных не настроено на сервере (ASSISTANT_API_KEY, ASSISTANT_API_URL)')
+  const oils = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла новые фото ${RUN}`, kind: 'oil' })
+  // Название без цифр прогона и общих слов: похожим на товары других проверок оно не окажется.
+  const novel = `Новинка ${[...RUN].map((d) => 'qwzrtyuxop'[Number(d)]).join('')}`
+  invoice = {
+    ...INVOICE,
+    supplier_name: `Поставщик нового масла ${RUN}`,
+    lines: [{ name: novel, code: '', barcode: '', quantity: '8', unit: 'л', price: '450', sum: '3600' }],
+    total: '3600',
+  }
+  try {
+    const res = await page.request.post(`/api/v1/receipt-drafts?op_id=${crypto.randomUUID()}&name=novoe.png`, {
+      data: PNG,
+      headers: { ...DEVICE, 'Content-Type': 'image/png' },
+    })
+    expect(res.ok(), await res.text()).toBeTruthy()
+    const draft = (await res.json()) as { id: string }
+    await page.goto(`/receipts/new?draft=${draft.id}`)
+    const unmatched = page.getByTestId('draft-unmatched-line')
+    await expect(unmatched).toHaveCount(1)
+    await unmatched.getByRole('button', { name: 'Новый товар' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Новый товар' })
+    await expect(dialog.locator('#product-name')).toHaveValue(novel)
+    await dialog.locator('#product-category').selectOption(oils.id)
+    await dialog.locator('#product-container').fill('4')
+    await dialog.locator('#product-price').fill('2000')
+    // Цена из накладной — за литр; канистра считается сама, рядом наценка.
+    await expect(dialog.getByTestId('product-cost-per-l')).toHaveAttribute('aria-checked', 'true')
+    await expect(dialog.locator('#product-cost')).toHaveValue('450')
+    await expect(dialog.getByTestId('product-cost-hint')).toContainText(money('= 1 800 с за канистру 4 л'))
+    await expect(dialog.getByTestId('product-cost-hint')).toContainText(money('наценка к цене продажи: 11,1 %'))
+    await dialog.getByTestId('product-cost-per-can').click()
+    await expect(dialog.locator('#product-cost')).toHaveValue('1800')
+    await dialog.getByRole('button', { name: 'Сохранить' }).click()
+    await expect(dialog).toBeHidden()
+    // 8 л = 2 канистры: строка канистрами, цена канистры и введённая цена литра.
+    await expect(page.getByTestId('draft-unmatched')).toBeHidden()
+    await expect(page.getByTestId('line-1-mode-can')).toHaveAttribute('aria-checked', 'true')
+    await expect(page.locator('#line-1-count')).toHaveValue('2')
+    await expect(page.locator('#line-1-price')).toHaveValue('1800')
+    await expect(page.locator('#line-1-price-l')).toHaveValue('450')
+    await expect(page.getByTestId('receipt-total')).toHaveText(money('3 600 с'))
+    const found = await apiGet<{ last_purchase_price_tyiyn: number | null }[]>(page.request, `/products?q=${encodeURIComponent(novel)}`)
+    expect(found[0]?.last_purchase_price_tyiyn).toBe(180_000)
+    await page.goto('/receipts')
+    const row = page.getByTestId('receipt-draft').filter({ hasText: `Поставщик нового масла ${RUN}` })
+    page.once('dialog', (d) => void d.accept())
+    await row.getByRole('button', { name: 'Убрать' }).click()
+    await expect(row).toHaveCount(0)
+  } finally {
+    invoice = INVOICE
+  }
+})

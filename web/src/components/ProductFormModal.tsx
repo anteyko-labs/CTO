@@ -8,6 +8,8 @@ import { missingWithFocus } from '../lib/forms'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { canisterPourPrice } from '../lib/money'
 import type { CardPreset } from '../lib/oldCatalog'
+import { entryUnitPrice, type PriceEntry, type PricePer } from '../lib/purchasePrice'
+import { useOilPriceModes } from '../lib/stockSettings'
 import { KIND_LABELS, type Category, type CategoryKind, type OldCatalogHit, type Product } from '../lib/types'
 import { hitMeasureCodes, hitProductCodes, umagUnitWord } from '../lib/umagLink'
 import { Badge, Button, Checkbox, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
@@ -16,6 +18,8 @@ import { PointsRuleField } from './PointsRuleField'
 import { ProductUnitModal } from './ProductUnitModal'
 import { parsePointsRule, pointsChanged, pointsDraft, type PointsDraft } from '../lib/points'
 import { unitText } from '../lib/unitChange'
+import { ProductCostBlock } from './ProductCostBlock'
+import { PurchasePriceInput } from './PurchasePriceInput'
 
 interface Form {
   category_id: string
@@ -60,6 +64,8 @@ export function ProductFormModal({
   preset,
   umagRow,
   inRevision,
+  presetCost,
+  stockIn,
   onClose,
   onSaved,
 }: {
@@ -77,8 +83,13 @@ export function ProductFormModal({
   /** Открыта из строки ревизии (задача 002, П5): остаток меняет только ревизия (I6), поэтому
    *  «Объединить дубли» (перенос остатка) скрыто — сервер его во время ревизии и так не примет. */
   inRevision?: boolean
+  /** Цена прихода из строки накладной (задача 003, Н7): цена и за что — за канистру или за литр. */
+  presetCost?: PriceEntry
+  /** Заводят из оприходования: режим цены масла по умолчанию — оприходования («Настройки → Склад»). */
+  stockIn?: boolean
   onClose: () => void
-  onSaved: (p: Product) => void
+  /** `cost` — введённая цена прихода нового товара: приход ставит её в строку. */
+  onSaved: (p: Product, cost?: PriceEntry) => void
 }) {
   const user = useUser()
   const owner = user.role === 'owner'
@@ -142,6 +153,14 @@ export function ProductFormModal({
   const shownMl = parseLiters(form.container_l)
   const pourShown = isOil && shownSale !== null && shownMl ? canisterPourPrice(shownSale, shownMl) : null
 
+  // Цена прихода нового товара (задача 003, Н7, ADR-{B6.1}): за канистру или за литр; первым
+  // открывается режим из «Настройки → Склад», из строки накладной — её единица.
+  const oilModes = useOilPriceModes().modes
+  const [cost, setCost] = useState<PriceEntry>(() => presetCost ?? { text: '', per: 'can' })
+  const [costShown, setCostShown] = useState<PricePer | null>(presetCost?.per ?? null)
+  const costPer: PricePer = costShown ?? (stockIn ? oilModes.stockIn : oilModes.receipt)
+  const costTare = isOil && shownMl ? shownMl : null
+
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const parsed = () => {
@@ -175,6 +194,7 @@ export function ProductFormModal({
     [Boolean(form.name.trim()), 'название', '#product-name'],
     [!isOil || Boolean(form.container_l.trim()), 'объём канистры', '#product-container'],
     [Boolean(form.sale_price.trim()), 'цену продажи', '#product-price'],
+    [editing || entryUnitPrice(cost, costTare) !== null, 'цену прихода числом', '#product-cost'],
   )
 
   const save = () =>
@@ -183,6 +203,8 @@ export function ProductFormModal({
       const v = parsed()
       let saved: Product
       if (!product) {
+        const unitCost = entryUnitPrice(cost, isOil ? v.container : null)
+        if (unitCost === null) throw new Error('Неверная цена прихода')
         saved = await post<Product>('/products', {
           op_id: opId,
           category_id: form.category_id,
@@ -194,6 +216,7 @@ export function ProductFormModal({
           barcodes: [...new Set([...newCodes, form.barcode.trim()].filter(Boolean))],
           sale_price_tyiyn: v.sale,
           min_stock: v.min,
+          ...(typeof unitCost === 'number' ? { initial_cost_tyiyn: unitCost } : {}),
           ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
           ...(unitChoice ? { unit: unitChoice } : {}),
           ...(owner && v.rule.mode !== 'inherit' ? { points: v.rule } : {}),
@@ -229,7 +252,7 @@ export function ProductFormModal({
         await put(`/products/${saved.id}/cross`, { codes: list })
       }
       toast(product ? 'Товар сохранён' : 'Товар создан')
-      onSaved(saved)
+      onSaved(saved, !product && cost.text.trim() ? cost : undefined)
     })
 
   const removeCode = (code: string) =>
@@ -575,6 +598,19 @@ export function ProductFormModal({
             {pourShown !== null ? `на розлив: ${formatSom(pourShown)} за л` : 'на розлив: от цены канистры'}
           </div>
         )}
+        {!editing && (
+          <PurchasePriceInput
+            id="product-cost"
+            entry={cost}
+            shown={costPer}
+            containerMl={costTare}
+            unitWord={isOil ? 'за канистру' : 'за шт'}
+            sale={shownSale}
+            hint="Необязательно: по ней продажа без остатка возьмёт себестоимость; с первым приходом — средняя"
+            onChange={setCost}
+            onShown={setCostShown}
+          />
+        )}
         <Field label={isOil ? 'Минимальный остаток, л' : 'Минимальный остаток, шт'}>
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
@@ -589,6 +625,7 @@ export function ProductFormModal({
       </div>
       </fieldset>
       {/* Связанная строка старой базы Умаг (SPEC-35 §3): после связывания у товара новые коды. */}
+      {product && <ProductCostBlock productId={product.id} />}
       {product && <UmagCard productId={product.id} codes={codes} mayEdit={mayEdit} onProduct={(p) => setCodes(p.barcodes)} />}
       <div className="mt-4 flex flex-col gap-3">
         <ErrorBox error={error} />

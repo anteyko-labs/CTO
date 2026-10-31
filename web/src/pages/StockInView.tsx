@@ -9,6 +9,7 @@ import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatKg, formatLiters, formatPermille, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { markupPermille } from '../lib/money'
+import { unitCostPerLiter } from '../lib/receiptLines'
 import { useCan } from '../lib/permissions'
 import type { Product, StockIn, StockInLine } from '../lib/types'
 
@@ -131,6 +132,12 @@ export default function StockInView() {
                 <td className="whitespace-nowrap px-2 py-2">{qtyText(l)}</td>
                 <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
                   {formatSom(l.price_tyiyn)} <span className="text-xs text-slate-500">{perText(l)}</span>
+                  {/* Масло: и цена за литр — только показ (задача 003, Н7). */}
+                  {unitCostPerLiter(l) !== null && (
+                    <div className="text-xs text-slate-500" data-testid="line-per-l">
+                      за л {formatSom(unitCostPerLiter(l) ?? 0)}
+                    </div>
+                  )}
                 </td>
                 <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{markup === null ? '—' : formatPermille(markup)}</td>
                 <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{sale === null ? '—' : formatSom(sale)}</td>

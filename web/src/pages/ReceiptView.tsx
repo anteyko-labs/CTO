@@ -12,7 +12,7 @@ import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table
 import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatLiters, formatPermille, formatSom } from '../lib/format'
 import { markupPermille } from '../lib/money'
-import { unitCost } from '../lib/receiptLines'
+import { unitCost, unitCostPerLiter } from '../lib/receiptLines'
 import { useAction, useLoad } from '../lib/hooks'
 import { paidFromText } from '../lib/receiptPay'
 import { useCan } from '../lib/permissions'
@@ -193,6 +193,7 @@ export default function ReceiptView() {
         <Table head={['№', 'Товар', 'Количество', 'Цена по накладной', 'Наценка', 'Цена продажи', 'Сумма']}>
           {r.lines.map((l) => {
             const cost = unitCost(l)
+            const perL = unitCostPerLiter(l)
             const sale = l.sale_price_tyiyn ?? null
             const markup = cost !== null && sale !== null ? markupPermille(cost, sale) : null
             return (
@@ -200,7 +201,15 @@ export default function ReceiptView() {
                 <td className="px-2 py-2">{l.line_no}</td>
                 <td className="px-2 py-2">{l.product_name}</td>
                 <td className="whitespace-nowrap px-2 py-2">{qtyText(l)}</td>
-                <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{cost === null ? '—' : formatSom(cost)}</td>
+                <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                  {cost === null ? '—' : formatSom(cost)}
+                  {/* Масло: и цена за литр — только показ (задача 003, Н7). */}
+                  {perL !== null && (
+                    <div className="text-xs text-slate-500" data-testid="line-per-l">
+                      за л {formatSom(perL)}
+                    </div>
+                  )}
+                </td>
                 <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{markup === null ? '—' : formatPermille(markup)}</td>
                 <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{sale === null ? '—' : formatSom(sale)}</td>
                 <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(l.cost_tyiyn)}</td>

@@ -264,6 +264,60 @@ test('оприходование масла — по умолчанию литр
   expect((await apiGet<{ stock_qty: number }>(page.request, `/products/${p.id}`)).stock_qty).toBe(6000)
 })
 
+// Задача 003, Н7: в строке канистрами цена за литр видна всегда и вводится (связанные поля);
+// просмотр накладной — «за л»; «Настройки → Склад» — режим новой строки.
+test('приход канистрами: цена за литр видна и вводится; настройка «за литр» открывает строку литрами', async ({ page }) => {
+  await login(page)
+  const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла цены литра ${RUN}`, kind: 'oil' })
+  const code = `36${RUN}01`
+  const p = await oil(page.request, cat.id, `Масло цена литра ${RUN}`, code, 4000)
+  const supplier = await apiPost<{ id: string }>(page.request, '/suppliers', { name: `Поставщик цены литра ${RUN}` })
+
+  await page.goto('/receipts/new')
+  await page.locator('#receipt-picker').fill(code)
+  await page.locator('#receipt-picker').press('Enter')
+  await expect(page.getByTestId('line-1-mode-can')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.locator('#line-1-price')).toHaveValue('1800')
+  await expect(page.locator('#line-1-price-l')).toHaveValue('450')
+  await expect(page.getByTestId('last-receipt')).toContainText(money('в прошлый раз: 1 800 с за канистру (450 с за л)'))
+  await expect(page.getByTestId('line-pour')).toHaveText(money('розлив: 625 с за л'))
+  // Ввели цену литра — канистра и сумма считаются сами.
+  await page.locator('#line-1-count').fill('2')
+  await page.locator('#line-1-price-l').fill('475')
+  await expect(page.locator('#line-1-price')).toHaveValue('1900')
+  await expect(page.getByTestId('receipt-total')).toHaveText(money('3 800 с'))
+  await page.locator('#receipt-supplier').selectOption(supplier.id)
+  await page.getByLabel('Вся в долг').check()
+  const print = page.getByLabel('Печатать этикетки')
+  if (await print.isChecked()) await print.uncheck()
+  await page.getByRole('button', { name: 'Провести приход' }).first().click()
+  await expect(page).toHaveURL(/\/receipts\/[0-9a-f-]{36}$/)
+  const id = page.url().split('/').pop()!
+  const receipt = await apiGet<{ lines: { qty: number; cost_tyiyn: number }[] }>(page.request, `/receipts/${id}`)
+  expect(receipt.lines[0]).toMatchObject({ qty: 8000, cost_tyiyn: 380_000 })
+  await expect(page.getByTestId('line-per-l')).toHaveText(money('за л 475 с'))
+
+  // Владелец: «Настройки → Склад» → цена масла в приходе «за литр».
+  try {
+    await page.goto('/settings')
+    await page.getByRole('link', { name: /Склад/ }).click()
+    await page.getByTestId('stock-oil_price_mode_receipt').getByLabel('За литр — количество литрами').check()
+    await expect(page.getByText('Цена масла в приходе: за литр')).toBeVisible()
+    const st = await apiGet<{ oil_price_mode_receipt: string }>(page.request, '/settings/stock')
+    expect(st.oil_price_mode_receipt).toBe('l')
+    await page.goto('/receipts/new')
+    await page.locator('#receipt-picker').fill(code)
+    await page.locator('#receipt-picker').press('Enter')
+    await expect(page.getByTestId('line-1-mode-l')).toHaveAttribute('aria-checked', 'true')
+    await expect(page.locator('#line-1-count')).toHaveValue('4')
+    await expect(page.locator('#line-1-price')).toHaveValue('475')
+  } finally {
+    const res = await page.request.put('/api/v1/settings/stock', { data: { oil_price_mode_receipt: 'can' }, headers: DEVICE })
+    expect(res.ok()).toBeTruthy()
+  }
+  expect(p.id).toBeTruthy()
+})
+
 test('«Сканер товаров» в пересчёте: масло — «кан. + л», итог в ревизии', async ({ page }) => {
   await login(page)
   const cat = await apiPost<{ id: string }>(page.request, '/categories', { name: `Масла сканера ${RUN}`, kind: 'oil' })

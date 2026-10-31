@@ -12,7 +12,9 @@ import { can } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { searchUmag, umagStep } from '../lib/umagLink'
 import { parseOil } from '../lib/units'
+import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
 import { OilCountInput } from './OilCountInput'
+import { PurchasePriceInput } from './PurchasePriceInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
 
@@ -25,6 +27,8 @@ interface Form {
   liters: string
   price: string
   cost: string
+  /** За что введена закупка масла: за канистру (по умолчанию) или за литр (задача 003, Н7). */
+  costPer?: PricePer
   /** На полке: штуки, у масла — канистры. */
   count: string
   /** У масла — «+ л» початой тары. */
@@ -132,6 +136,8 @@ export function RevisionNewProduct({
   }
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f))
+  // Закупка масла — за канистру или за литр, вторая считается сама (задача 003, Н7).
+  const [costShown, setCostShown] = useState<PricePer>('can')
   const count = form ? countOf(oil ? (ml ?? 0) : null, form.count, form.countL) : null
   const missing = form
     ? missingWithFocus(
@@ -140,7 +146,7 @@ export function RevisionNewProduct({
         [!oil || (ml !== null && ml > 0), 'объём тары, л', '#revnew-liters'],
         // Без цены товар продался бы за 0 с (проверка 20.10.2026): цена обязательна, как в «Товарах».
         [(parseSom(form.price) ?? 0) > 0, 'цену продажи', '#revnew-price'],
-        [!form.cost.trim() || parseSom(form.cost) !== null, 'закупку числом', '#revnew-cost'],
+        [entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null) !== null, 'закупку числом', '#revnew-cost'],
         [count !== null, oil ? 'сколько на полке — канистры и литры' : 'сколько штук на полке', '#revnew-count'],
       )
     : []
@@ -158,7 +164,7 @@ export function RevisionNewProduct({
         container_ml: oil ? ml : null,
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
-        initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+        initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, oil ? ml : null)),
         ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
       })
       toast(`Заведён и посчитан: ${r.product.name}`)
@@ -214,9 +220,18 @@ export function RevisionNewProduct({
               <Field label={oil ? 'Цена канистры, с' : 'Цена продажи, с'} hint={pour !== null ? `на розлив: ${formatSom(pour)} за л` : undefined}>
                 <input id="revnew-price" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
               </Field>
-              <Field label={oil ? 'Закупка канистры, с' : 'Закупка, с'} hint="По ней ревизия оценит найденное">
-                <input id="revnew-cost" inputMode="decimal" value={form.cost} onChange={(e) => set('cost', e.target.value)} />
-              </Field>
+              <PurchasePriceInput
+                id="revnew-cost"
+                label="Закупка"
+                entry={{ text: form.cost, per: form.costPer ?? 'can' }}
+                shown={costShown}
+                containerMl={oil ? ml : null}
+                unitWord={oil ? 'за канистру' : 'за шт'}
+                sale={parseSom(form.price)}
+                hint="По ней ревизия оценит найденное"
+                onChange={(e) => setForm((f) => (f ? { ...f, cost: e.text, costPer: e.per } : f))}
+                onShown={setCostShown}
+              />
               {oil && ml !== null && ml > 0 ? (
                 <div className="sm:col-span-2">
                   <Field label="На полке" required>

@@ -3,6 +3,7 @@
 // килограммами. Только целые тыйыны, мл и граммы; деление — одно, с округлением (divRound).
 import { formatLiters, formatSom, litersInput, parseLiters, parsePermille, parseSom, somInput } from './format'
 import { divRound, markupPermille, saleFromMarkup } from './money'
+import type { PriceEntry } from './purchasePrice'
 import type { LastReceipt, Product } from './types'
 import { byThousandths, kgInput, oilCountText, parseKg, perCan, perLiter } from './units'
 
@@ -12,8 +13,18 @@ export const isOil = (p: Pick<Product, 'unit' | 'container_ml'>): p is Product &
 /** Масло в строке: канистрами (цена за канистру) или литрами (цена за литр). */
 export type QtyMode = 'can' | 'l'
 
-/** Режим новой строки масла: в приходе — канистры, в оприходовании — литры (SPEC-36 §13). */
-export const defaultMode = (stockIn: boolean): QtyMode => (stockIn ? 'l' : 'can')
+/** Режим цены масла по умолчанию — «Настройки → Склад» (задача 003, Н7, ADR-{B6.1}). */
+export interface OilPriceModes {
+  receipt: QtyMode
+  stockIn: QtyMode
+}
+
+/** Как было до настройки: в приходе — канистры, в оприходовании — литры (SPEC-36 §13). */
+export const DEFAULT_OIL_PRICE_MODES: OilPriceModes = { receipt: 'can', stockIn: 'l' }
+
+/** Режим новой строки масла: из настройки склада, без неё — канистры в приходе, литры в оприходовании. */
+export const defaultMode = (stockIn: boolean, modes: OilPriceModes = DEFAULT_OIL_PRICE_MODES): QtyMode =>
+  stockIn ? modes.stockIn : modes.receipt
 
 /** Строка масла в литрах: цена в ней — за литр. */
 export const inLiters = (p: Pick<Product, 'unit' | 'container_ml'>, mode: QtyMode | undefined): boolean => isOil(p) && mode === 'l'
@@ -50,12 +61,16 @@ export interface LineInput {
   price: string
   salePrice?: string
   mode?: QtyMode
+  /** Масло канистрами, а вводили цену за литр (задача 003, Н7): сумма — от неё. */
+  literPrice?: string
 }
 
 /**
  * Расчёт строки прихода (`stockIn = false`) или оприходования (`true`); текст ошибки, если ввод неверен.
  * Масло канистрами: сумма = канистры × цена канистры. Литрами: сумма = divRound(цена за л × мл, 1000);
  * оприходование сервер считает от цены канистры, поэтому и здесь — от неё (одно округление).
+ * Канистрами, но вводили цену за литр (`literPrice`, ADR-{B6.1}): в приходе сумма = divRound(цена за л ×
+ * мл, 1000) — одно округление, без округлённой цены канистры; в оприходовании — от цены канистры.
  * На вес: кг до 3 знаков, цена за кг, сумма = divRound(цена × г, 1000). `salePrice` — новая цена
  * продажи строки (SPEC-28 §1), за штуку, канистру или кг; пусто — текущая цена товара.
  */
@@ -89,6 +104,14 @@ export function lineCalc(l: LineInput, stockIn = false): LineCalc | string {
     cost = stockIn ? divRound(unitPrice * qty, c) : byThousandths(price, qty)
     sale = divRound(salePrice * qty, c)
     n = Math.trunc(qty / c)
+  } else if (isOil(p) && l.literPrice !== undefined) {
+    const perL = parseSom(l.literPrice)
+    if (perL === null) return 'укажите цену'
+    const c = p.container_ml
+    n = qty / c
+    unitPrice = perCan(perL, c)
+    cost = stockIn ? n * unitPrice : byThousandths(perL, qty)
+    sale = n * salePrice
   } else {
     // Штуки и целые канистры: суммы — умножением, без деления.
     n = isOil(p) ? qty / p.container_ml : qty
@@ -127,6 +150,8 @@ export interface PriceFields {
   price: string
   markup: string
   salePrice: string
+  /** Строка масла канистрами: введённая цена за литр; не задана — вводили цену канистры. */
+  literPrice?: string
 }
 
 /** Закупка в единицах цены продажи: в режиме «л» цена литра × тара = цена канистры (ADR-074/075). */
@@ -153,8 +178,42 @@ export function initialPrices(p: Product, tare?: number): PriceFields {
   return { price, salePrice, markup: markupOf(price, salePrice, tare) }
 }
 
-/** Поменяли цену по накладной: цена продажи остаётся, наценка пересчитывается. */
-export const withCost = (l: PriceFields, price: string, tare?: number): PriceFields => ({ ...l, price, markup: markupOf(price, l.salePrice, tare) })
+/** Поменяли цену по накладной: цена продажи остаётся, наценка пересчитывается; цена за литр — от неё. */
+export const withCost = (l: PriceFields, price: string, tare?: number): PriceFields => ({
+  ...l,
+  price,
+  markup: markupOf(price, l.salePrice, tare),
+  literPrice: undefined,
+})
+
+/**
+ * Строка масла канистрами — ввели цену за литр (задача 003, Н7): цена канистры = perCan, наценка — к ней;
+ * введённый литр хранится, сумма строки считается от него (`lineCalc`).
+ */
+export function withLiterPrice(l: PriceFields, literPrice: string, containerMl: number): PriceFields {
+  const v = parseSom(literPrice)
+  const price = v === null ? '' : somInput(perCan(v, containerMl))
+  return { ...l, price, literPrice, markup: markupOf(price, l.salePrice, undefined) }
+}
+
+/**
+ * Цена прихода, введённая в карточке нового товара (задача 003, Н7), — в строку: за литр в строке
+ * канистрами — связанным полем «за литр», в строке литрами — как есть; иначе пересчёт perCan/perLiter.
+ */
+export function withEntry(l: PriceFields, e: PriceEntry, p: Pick<Product, 'unit' | 'container_ml'>, mode: QtyMode | undefined): PriceFields {
+  const v = parseSom(e.text)
+  if (!isOil(p) || v === null) return withCost(l, e.text)
+  const c = p.container_ml
+  if (mode === 'l') return withCost(l, e.per === 'l' ? e.text : somInput(perLiter(v, c)), c)
+  return e.per === 'l' ? withLiterPrice(l, e.text, c) : withCost(l, e.text)
+}
+
+/** Поле «за литр» строки масла канистрами: введённое, иначе — из цены канистры (perLiter). */
+export function literPriceText(l: Pick<PriceFields, 'price' | 'literPrice'>, containerMl: number): string {
+  if (l.literPrice !== undefined) return l.literPrice
+  const v = parseSom(l.price)
+  return v === null ? '' : somInput(perLiter(v, containerMl))
+}
 
 /** Поменяли цену продажи: наценка пересчитывается от цены по накладной. */
 export const withSalePrice = (l: PriceFields, salePrice: string, tare?: number): PriceFields => ({
@@ -191,7 +250,12 @@ export function switchMode<L extends PriceFields & { product: Product; count: st
     if (ml !== null && ml % c === 0) count = String(ml / c)
     if (price !== null) priceText = somInput(perCan(price, c))
   }
-  const prices = withCost({ price: l.price, salePrice: l.salePrice, markup: l.markup }, priceText, to === 'l' ? c : undefined)
+  // Цену за литр, введённую в канистрах, литры берут как есть; из литров в канистры она остаётся
+  // введённой — сумма строки не сдвигается на тыйын (ADR-{B6.1}).
+  if (to === 'l' && l.literPrice !== undefined && parseSom(l.literPrice) !== null) priceText = l.literPrice
+  const base = { price: l.price, salePrice: l.salePrice, markup: l.markup }
+  const prices =
+    to === 'can' && price !== null ? withLiterPrice(base, l.price, c) : withCost(base, priceText, to === 'l' ? c : undefined)
   return { ...l, ...prices, mode: to, count }
 }
 
@@ -208,11 +272,15 @@ export function literHints(l: LineInput): { split: string; perCan: string } | nu
   }
 }
 
-/** «в прошлый раз: 350 с, 12.10, Автоснаб»; `per` — «за канистру», «за кг». */
-export function lastText(r: LastReceipt, per?: string): string {
+/**
+ * «в прошлый раз: 350 с, 12.10, Автоснаб»; `per` — «за канистру», «за кг». У масла в таре
+ * (`containerMl`) — и цена за литр: «1 800 с за канистру (450 с за л)» (задача 003, Н7).
+ */
+export function lastText(r: LastReceipt, per?: string, containerMl?: number | null): string {
   // День и месяц по Бишкеку: приход в 01:00 по Бишкеку — ещё вчера по UTC.
   const d = new Date(r.created_at).toLocaleDateString('ru-RU', { timeZone: 'Asia/Bishkek', day: '2-digit', month: '2-digit' })
-  return ['в прошлый раз: ' + formatSom(r.price_tyiyn) + (per ? ` ${per}` : ''), d, r.supplier_name].filter(Boolean).join(', ')
+  const liter = containerMl ? ` (${formatSom(perLiter(r.price_tyiyn, containerMl))} за л)` : ''
+  return ['в прошлый раз: ' + formatSom(r.price_tyiyn) + (per ? ` ${per}` : '') + liter, d, r.supplier_name].filter(Boolean).join(', ')
 }
 
 /** Единица прошлой закупки рядом с ценой: у масла — канистра, на вес — кг (SPEC-36 §13). */
@@ -243,4 +311,14 @@ export function unitCost(l: { unit: string; container_ml: number | null; qty: nu
   const per = l.unit === 'ml' && l.container_ml ? l.container_ml : l.unit === 'ml' || l.unit === 'g' ? 1000 : 1
   const n = l.cost_tyiyn * per
   return l.qty > 0 && Number.isSafeInteger(n) ? divRound(n, l.qty) : null
+}
+
+/**
+ * Цена за литр проведённой строки масла в таре — только показ (задача 003, Н7): сумма × 1000 / мл,
+ * до тыйына. Не масло или нет количества — null.
+ */
+export function unitCostPerLiter(l: { unit: string; container_ml: number | null; qty: number; cost_tyiyn: number }): number | null {
+  if (l.unit !== 'ml' || !l.container_ml || l.qty <= 0) return null
+  const n = l.cost_tyiyn * 1000
+  return Number.isSafeInteger(n) ? divRound(n, l.qty) : null
 }

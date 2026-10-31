@@ -1477,6 +1477,10 @@ pub async fn create_product_tx(
         return Err(invalid("цены и минимальный остаток не отрицательны"));
     }
     ops::check_amount(req.sale_price_tyiyn)?;
+    // Цена прихода нового товара (задача 003, Н7): отрицательная — ошибка ввода, а не пропуск.
+    if req.initial_cost_tyiyn.is_some_and(|c| c < 0) {
+        return Err(invalid("цена закупки не отрицательна"));
+    }
     // У масла одна цена — цена канистры; розлив за литр считается от неё (ADR-074).
     // Цены задаёт владелец (ADR-032): администратору — 403, как раньше.
     if req.pour_price_per_l_tyiyn.is_some() {

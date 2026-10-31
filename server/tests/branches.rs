@@ -967,6 +967,58 @@ async fn shared_price_and_own_branch_price(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn new_product_purchase_price_and_oil_price_mode_stay_in_branch(pool: PgPool) {
+    // Цена прихода нового товара и режим цены масла — свои у филиала (I16, задача 003, Н7).
+    let w = world(pool.clone()).await;
+    let api = &w.api;
+    let cat = api
+        .ok(
+            "POST",
+            "/api/v1/categories",
+            &w.owner,
+            Some(w.a),
+            json!({ "name": "Фильтры А", "kind": "filter" }),
+        )
+        .await;
+    let p = id(&api
+        .ok(
+            "POST",
+            "/api/v1/products",
+            &w.admin_a,
+            None,
+            json!({ "op_id": op(), "category_id": id(&cat), "name": "Фильтр с закупкой",
+                    "sale_price_tyiyn": 50_000, "initial_cost_tyiyn": 30_000 }),
+        )
+        .await);
+    let uri = format!("/api/v1/products/{p}");
+    assert_eq!(
+        api.get(&uri, &w.admin_a, None).await["last_purchase_price_tyiyn"],
+        30_000
+    );
+    assert_eq!(
+        api.get(&uri, &w.admin_b, None).await["last_purchase_price_tyiyn"],
+        Value::Null
+    );
+    assert_eq!(
+        api.get(&uri, &w.owner, Some(w.b)).await["last_purchase_price_tyiyn"],
+        Value::Null
+    );
+    api.ok(
+        "PUT",
+        "/api/v1/settings/stock",
+        &w.owner,
+        Some(w.a),
+        json!({ "oil_price_mode_receipt": "l" }),
+    )
+    .await;
+    let a = api.get("/api/v1/settings/stock", &w.admin_a, None).await;
+    let b = api.get("/api/v1/settings/stock", &w.admin_b, None).await;
+    assert_eq!(a["oil_price_mode_receipt"], "l");
+    assert_eq!(b["oil_price_mode_receipt"], "can");
+    assert_eq!(b["oil_price_mode_stock_in"], "l");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn client_debt_repaid_in_another_branch_is_settled_between_branches(pool: PgPool) {
     let w = world(pool.clone()).await;
     fill_branch(&w, w.a, &w.admin_a, SECRET).await;

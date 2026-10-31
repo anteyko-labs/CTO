@@ -1246,6 +1246,172 @@ async fn offline_snapshot_has_no_cost(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn new_product_purchase_price_and_cost_in_card(pool: PgPool) {
+    // Цена прихода нового товара и себестоимость в карточке (задача 003, Н7, ADR-{B6.1}):
+    // закупку при заведении вводит и администратор; средняя и стоимость остатка — только владельцу
+    // (I13), последний приход — обеим ролям (ADR-040).
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let cashier = cashier_employee(&app, &owner).await;
+    let (_, _, cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&admin),
+        Some(json!({ "name": "Фильтры", "kind": "filter" })),
+    )
+    .await;
+    let body = |cost: i64| {
+        json!({
+            "op_id": Uuid::now_v7(), "category_id": cat["id"], "name": "Фильтр с ценой прихода",
+            "sale_price_tyiyn": 50_000, "initial_cost_tyiyn": cost
+        })
+    };
+    let (s, _, err) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(body(-1)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["error"]["message"], "цена закупки не отрицательна");
+    let (s, _, p) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&admin),
+        Some(body(30_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert!(p.get("avg_cost_tyiyn").is_none());
+    let pid = p["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/products/{pid}");
+    let (_, _, card) = call(&app, "GET", &uri, Some(&admin), None).await;
+    assert_eq!(card["last_purchase_price_tyiyn"], 30_000);
+    assert!(card.get("avg_cost_tyiyn").is_none());
+    assert!(card.get("stock_value_tyiyn").is_none());
+    let (_, _, card) = call(&app, "GET", &uri, Some(&owner), None).await;
+    assert_eq!(card["last_purchase_price_tyiyn"], 30_000);
+    assert_eq!(card["stock_value_tyiyn"], 0);
+
+    // Продажа без остатка берёт себестоимость по цене прихода: процент кассира не ждёт цену.
+    let (s, _, sale) = call(
+        &app,
+        "POST",
+        "/api/v1/sales",
+        Some(&admin),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": cashier,
+            "lines": [{ "kind": "piece", "product_id": pid, "qty": 1, "unit_price_tyiyn": 50_000 }],
+            "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sale}");
+    let unknown: Vec<bool> =
+        sqlx::query_scalar("select cost_unknown from sale_lines where sale_id = $1::uuid")
+            .bind(sale["id"].as_str().unwrap())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(unknown, vec![false]);
+
+    // Масло: приход двух канистр — средняя и стоимость остатка только владельцу.
+    let (_, _, oil_cat) = call(
+        &app,
+        "POST",
+        "/api/v1/categories",
+        Some(&owner),
+        Some(json!({ "name": "Масла", "kind": "oil" })),
+    )
+    .await;
+    let (_, _, oil) = call(
+        &app,
+        "POST",
+        "/api/v1/products",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "category_id": oil_cat["id"], "name": "Масло 5W-30 4L",
+            "container_ml": 4000, "sale_price_tyiyn": 200_000, "initial_cost_tyiyn": 170_000
+        })),
+    )
+    .await;
+    let oil_id = oil["id"].as_str().unwrap().to_string();
+    assert_eq!(oil["last_purchase_price_tyiyn"], 170_000);
+    let (s, _, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/receipts",
+        Some(&owner),
+        Some(json!({
+            "op_id": Uuid::now_v7(), "paid_from": owner_safe(&app, &owner).await,
+            "lines": [{ "product_id": oil_id, "qty": 8000, "cost_tyiyn": 360_000 }]
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{receipt}");
+    let uri = format!("/api/v1/products/{oil_id}");
+    let (_, _, card) = call(&app, "GET", &uri, Some(&owner), None).await;
+    assert_eq!(card["avg_cost_tyiyn"], 180_000);
+    assert_eq!(card["stock_value_tyiyn"], 360_000);
+    assert_eq!(card["last_purchase_price_tyiyn"], 180_000);
+    let (_, _, card) = call(&app, "GET", &uri, Some(&admin), None).await;
+    assert!(card.get("avg_cost_tyiyn").is_none());
+    assert!(card.get("stock_value_tyiyn").is_none());
+    assert_eq!(card["last_purchase_price_tyiyn"], 180_000);
+    let (s, _, last) = call(
+        &app,
+        "GET",
+        &format!("{uri}/last-receipt"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(last["price_tyiyn"], 180_000);
+    assert_eq!(last["receipt_id"], receipt["id"]);
+
+    // Режим цены масла по умолчанию: приход — за канистру, оприходование — за литр;
+    // меняет только владелец, неверное значение — 422, изменение — в журнал.
+    let (_, _, st) = call(&app, "GET", "/api/v1/settings/stock", Some(&admin), None).await;
+    assert_eq!(st["oil_price_mode_receipt"], "can");
+    assert_eq!(st["oil_price_mode_stock_in"], "l");
+    let put = |v: Value| call(&app, "PUT", "/api/v1/settings/stock", Some(&owner), Some(v));
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/stock",
+        Some(&admin),
+        Some(json!({ "oil_price_mode_receipt": "l" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = put(json!({ "oil_price_mode_stock_in": "litre" })).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = put(json!({ "stale_days": 45 })).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _, st) =
+        put(json!({ "oil_price_mode_receipt": "l", "oil_price_mode_stock_in": "can" })).await;
+    assert_eq!(s, StatusCode::OK, "{st}");
+    assert_eq!(st["stale_days"], 45);
+    let (_, _, st) = call(&app, "GET", "/api/v1/settings/stock", Some(&admin), None).await;
+    assert_eq!(
+        (
+            &st["oil_price_mode_receipt"],
+            &st["oil_price_mode_stock_in"],
+            &st["stale_days"]
+        ),
+        (&json!("l"), &json!("can"), &json!(45))
+    );
+    let log = actions(&pool, "settings.stock").await;
+    assert_eq!(log.last().unwrap()["oil_price_mode_receipt"], "l");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn brute_force_is_locked_out(pool: PgPool) {
     let app = setup(pool).await;
     let attempt = |login: &'static str, password: &'static str| {

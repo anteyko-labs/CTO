@@ -12,14 +12,15 @@ import { DefectMarkModal, DefectsTab } from '../components/Defects'
 import { printLabels } from '../components/labels'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { ProductFormModal } from '../components/ProductFormModal'
+import { PurchasePriceModal } from '../components/PurchasePriceModal'
 import { stockText } from '../components/ProductPicker'
 import { UmagHitModal, UmagSearchBlock } from '../components/Umag'
 import { UnknownCodeModal } from '../components/UnknownCodeModal'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
-import { ApiError, get, newOpId, patch, post, put, qs } from '../lib/api'
+import { ApiError, get, patch, post, put, qs } from '../lib/api'
 import { POLARITY_LABELS, productTitle } from '../lib/battery'
 import { useUser } from '../lib/auth'
-import { formatLiters, formatSom, parseSom } from '../lib/format'
+import { formatLiters, formatSom } from '../lib/format'
 import { useAction, useDebounced, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { pourPricePerL } from '../lib/money'
@@ -121,8 +122,7 @@ export default function Products() {
   const { busy, error, run } = useAction()
   const [marking, setMarking] = useState<Product | null>(null)
   // Цена закупки товара, проданного без неё: 2 % кассира начислятся после неё (ADR-062).
-  const [pricing, setPricing] = useState<{ product: Product; text: string; opId: string } | null>(null)
-  const priceAct = useAction()
+  const [pricing, setPricing] = useState<Product | null>(null)
   const review = useAction()
   const [mismatches, setMismatches] = useState<Mismatch[] | null>(null)
   const verify = useAction()
@@ -276,24 +276,6 @@ export default function Products() {
       list.reload()
     })
 
-  const savePrice = () => {
-    if (!pricing) return
-    const price = parseSom(pricing.text)
-    if (price === null || price <= 0) {
-      priceAct.setError('Укажите цену закупки')
-      return
-    }
-    void priceAct.run(async () => {
-      const r = await post<{ lines: number; accrued_tyiyn: number }>(`/stock/${pricing.product.id}/purchase-price`, {
-        op_id: pricing.opId,
-        price_tyiyn: price,
-      })
-      setPricing(null)
-      list.reload()
-      toast(`Цена закупки указана: строк чеков ${r.lines}, кассирам начислено ${formatSom(r.accrued_tyiyn)}`)
-    })
-  }
-  const priceUnit = (p: Product) => (p.unit === 'g' ? 'за кг' : p.container_ml ? 'за канистру' : 'за штуку')
   const emptyText = CHIPS.find((c) => c.key === chip)?.empty ?? 'Товары не найдены'
   const sortValue = `${sort.key}:${sort.desc ? 'desc' : 'asc'}`
 
@@ -586,10 +568,7 @@ export default function Products() {
                           <Button
                             variant="secondary"
                             className="min-h-[32px] px-2 py-1 text-xs"
-                            onClick={() => {
-                              priceAct.setError(null)
-                              setPricing({ product: p, text: '', opId: newOpId() })
-                            }}
+                            onClick={() => setPricing(p)}
                           >
                             Цена закупки
                           </Button>
@@ -701,34 +680,14 @@ export default function Products() {
         />
       )}
       {pricing && (
-        <Modal title={`Цена закупки · ${pricing.product.name}`} onClose={() => setPricing(null)}>
-          <div className="flex flex-col gap-3">
-            <p className="text-sm text-slate-600">
-              Товар продали без цены закупки: себестоимость этих строк неизвестна, и 2 % кассиру с них ещё не начислены. Укажите, почём товар
-              закупается, — процент начислится сегодня, прошлые дни не изменятся.
-            </p>
-            <Field label={`Цена закупки ${priceUnit(pricing.product)}, с`} required>
-              <input
-                autoFocus
-                inputMode="decimal"
-                value={pricing.text}
-                onChange={(e) => setPricing({ ...pricing, text: e.target.value })}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') savePrice()
-                }}
-              />
-            </Field>
-            <ErrorBox error={priceAct.error} />
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setPricing(null)}>
-                Отмена
-              </Button>
-              <Button disabled={priceAct.busy || !pricing.text.trim()} onClick={savePrice}>
-                Сохранить
-              </Button>
-            </div>
-          </div>
-        </Modal>
+        <PurchasePriceModal
+          product={pricing}
+          onClose={() => setPricing(null)}
+          onDone={() => {
+            setPricing(null)
+            list.reload()
+          }}
+        />
       )}
       {mismatches && (
         <Modal title="Сверка остатков" wide onClose={() => setMismatches(null)}>

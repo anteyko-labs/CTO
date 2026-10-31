@@ -15,6 +15,8 @@ import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { canisterPourPrice } from '../lib/money'
 import { presetFromHit } from '../lib/oldCatalog'
+import { entryUnitPrice, unitCostOrNull, type PricePer } from '../lib/purchasePrice'
+import { PurchasePriceInput } from '../components/PurchasePriceInput'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { mapUmagRows } from '../lib/umag'
 import { isMeasureUnit } from '../lib/umagCodes'
@@ -30,6 +32,8 @@ interface Form {
   liters: string
   price: string
   cost: string
+  /** За что введена закупка масла: за канистру (по умолчанию) или за литр (задача 003, Н7). */
+  costPer?: PricePer
   /** На полке: штуки, у масла — канистры (SPEC-36 §13). */
   count: string
   /** У масла — «+ л» початой тары. */
@@ -101,6 +105,8 @@ export default function ProductIntake() {
   /** Сколько этого товара уже посчитано в черновике (вторая полка): null — ещё не считали. */
   const [already, setAlready] = useState<number | null>(null)
   const [form, setForm] = useState<Form | null>(null)
+  // Закупка масла — за канистру или за литр, вторая считается сама (задача 003, Н7).
+  const [costShown, setCostShown] = useState<PricePer>('can')
   const [similar, setSimilar] = useState<Product[]>([])
   const [recent, setRecent] = useState<{ name: string; at: string; count: string; isNew: boolean }[]>([])
   const [opId, setOpId] = useState(newOpId)
@@ -281,7 +287,7 @@ export default function ProductIntake() {
         [Boolean(form.categoryId), 'категорию', '#intake-category'],
         [!isOil || (ml !== null && ml > 0), 'объём тары, л', '#intake-liters'],
         [!form.price.trim() || parseSom(form.price) !== null, 'цену числом', '#intake-price'],
-        [!form.cost.trim() || parseSom(form.cost) !== null, 'закупку числом', '#intake-cost'],
+        [entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, ml) !== null, 'закупку числом', '#intake-cost'],
         [formCount !== 'bad', 'количество числом', '#intake-count'],
       )
     : []
@@ -299,7 +305,7 @@ export default function ProductIntake() {
         // Без кода (строка меры без заводского кода) — код выдаст программа.
         barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
         sale_price_tyiyn: parseSom(form.price) ?? 0,
-        initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+        initial_cost_tyiyn: unitCostOrNull(entryUnitPrice({ text: form.cost, per: form.costPer ?? 'can' }, ml)),
         // Из старой базы Умаг: товар свяжется со строкой, её коды станут его кодами (SPEC-35).
         ...(form.from && !form.from.product_id ? { old_catalog_id: form.from.id } : {}),
       })
@@ -568,9 +574,18 @@ export default function ProductIntake() {
                 <Field label={isOil ? 'Цена канистры, с' : 'Цена, с'}>
                   <input id="intake-price" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
                 </Field>
-                <Field label={isOil ? 'Закупка канистры, с' : 'Закупка, с'} hint="По ней ревизия оценит остаток">
-                  <input id="intake-cost" inputMode="decimal" value={form.cost} onChange={(e) => setForm({ ...form, cost: e.target.value })} />
-                </Field>
+                <PurchasePriceInput
+                  id="intake-cost"
+                  label="Закупка"
+                  entry={{ text: form.cost, per: form.costPer ?? 'can' }}
+                  shown={costShown}
+                  containerMl={ml}
+                  unitWord={isOil ? 'за канистру' : 'за шт'}
+                  sale={shownPrice}
+                  hint="По ней ревизия оценит остаток"
+                  onChange={(e) => setForm({ ...form, cost: e.text, costPer: e.per })}
+                  onShown={setCostShown}
+                />
                 {isOil && (
                   // Одна цена масла — цена канистры (бочки); розлив за литр считается от неё (ADR-074).
                   <div className="self-end pb-2 text-sm text-slate-600" data-testid="intake-pour-derived">
