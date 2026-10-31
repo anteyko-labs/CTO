@@ -11413,6 +11413,13 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
             "/api/v1/products/list?stock=in_stock&group=category".into(),
             Box::new(|| json!({})),
         ),
+        // «Продаваемые → Замены» — тот же раздел.
+        (
+            "view_stock",
+            "GET",
+            "/api/v1/reports/service-kinds".into(),
+            Box::new(|| json!({})),
+        ),
         (
             "reconciliation",
             "GET",

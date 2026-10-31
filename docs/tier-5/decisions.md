@@ -1659,6 +1659,7 @@ updated: 2026-10-06
   - миграция `0081`: ключи дописываются в проверку списка прав (как 0074), существующим администраторам — права «да» по умолчанию; всего прав 32, по умолчанию 25 (с `till_pay_fix` задачи 003 Н1 — 33).
 - **Причина:** владелец сам решает, что видит и делает каждый вход; по умолчанию ничего не меняется, кроме исправленной ошибки «За месяц» (кассиры) и закрытого без права списка расходов.
 - **Последствие:** `server/src/auth.rs` (PERMISSIONS), проверки в `income.rs`, `parties.rs`, `payroll.rs`, `cash.rs`, `catalog.rs`, `receipts.rs`, `reports.rs`, `deliveries.rs`, `refs.rs`, `supplier_debts.rs`, `sales.rs`, `expenses.rs`, `api/auth.rs` (логин, филиал); `web/src/lib/permissions.ts` (группа, `opens`, наборы, `OWNER_ONLY`), `lib/auth.tsx` и `lib/api.ts` (перечитывание прав), `App.tsx` (меню и маршруты), `pages/Users.tsx`; акт сверки на экране — `components/ReconciliationButton.tsx`, `lib/debtDocs.ts`, настройка периода в `settings.debt_docs` (SPEC-10). Новых библиотек, маршрутов и событий нет.
+- **Дополнено (перекрёстная проверка задачи 003, 31.10.2026):** `GET /reports/service-kinds` («Продаваемые → Замены») — тоже по праву `view_stock`, как `top-products`; бот владельца берёт данные напрямую и не меняется. Проверка — обход `every_admin_permission_closes_its_actions`.
 
 ## ADR-152. Права кассира без входа: пересечение с правами входа на время его смены
 

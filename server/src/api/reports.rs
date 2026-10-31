@@ -1572,6 +1572,8 @@ async fn service_kinds(
     Query(scope): Query<BranchQuery>,
 ) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
+    // «Продаваемые → Замены» — раздел «Остатки и продаваемые», как `top_products` (ADR-151).
+    crate::auth::require_permission(&mut conn, &user, "view_stock").await?;
     let (from, to) = (q.from, q.to);
     Ok(Json(
         branches::report(&mut conn, &user, &scope, |c, u| {
