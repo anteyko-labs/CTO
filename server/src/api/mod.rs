@@ -21,6 +21,7 @@ pub mod cabinet;
 pub mod cancelled_lines;
 pub mod cars;
 pub mod cash;
+pub mod cashier_rights;
 pub mod cashier_settings;
 pub mod catalog;
 pub mod client_messages;
@@ -78,6 +79,7 @@ pub fn routes() -> Router<AppState> {
         .merge(cancelled_lines::routes())
         .merge(cash::routes())
         .merge(cashier_settings::routes())
+        .merge(cashier_rights::routes())
         .merge(cars::routes())
         .merge(catalog::routes())
         .merge(product_units::routes())

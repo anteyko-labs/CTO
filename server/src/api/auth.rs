@@ -659,7 +659,7 @@ struct UpdateUserReq {
     role: Option<String>,
     active: Option<bool>,
     password: Option<String>,
-    /// Новый логин (задача 003 Н8): занят — 409.
+    /// Новый логин (задача 003 Н8 и Н10): занят — 409, вход по прежним сессиям сохраняется.
     login: Option<String>,
     /// Филиал администратора (задача 003 Н8, SPEC-33): права переходят вместе с ним.
     branch_id: Option<Uuid>,

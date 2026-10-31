@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, name, phone, comment, active from suppliers order by name",
+  "query": "select id, name, role, active from parties where id = any($1) order by id for update",
   "describe": {
     "columns": [
       {
@@ -15,30 +15,26 @@
       },
       {
         "ordinal": 2,
-        "name": "phone",
+        "name": "role",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "comment",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 4,
         "name": "active",
         "type_info": "Bool"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "UuidArray"
+      ]
     },
     "nullable": [
-      false,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "294cb5b924b1f5fb37f8dba8aa2cef7ec22c0d98c10c8ef6ff2c27c07c17ec6c"
+  "hash": "e9e794d59955cb5539a83a636863887a8a8817cde90fcedd388e20b4bdf75b3b"
 }

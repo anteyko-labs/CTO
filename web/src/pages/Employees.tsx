@@ -4,6 +4,7 @@
 // работник видит свой заработок в Телеграм-боте (SPEC-23).
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { CashierRights } from '../components/CashierRights'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { del, get, newOpId, patch, post } from '../lib/api'
@@ -288,6 +289,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
           </Button>
         </div>
         {owner && employee.is_cashier && <PinBox employee={employee} pin={pin} setPin={setPin} />}
+        {owner && employee.is_cashier && <CashierRights employee={employee} />}
         {owner && <PayRules employee={employee} />}
       </div>
     </Modal>

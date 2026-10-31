@@ -85,6 +85,8 @@ struct CategoryOut {
     points_value: i64,
     /// Строка книжки фильтра — по «Типу» товара; «Тип» выключен — от категории (задача 002 П10).
     by_type: bool,
+    /// «Скрыть категорию» (задача 003 Н10): скрытая не попадает в выбор; видна в «Категориях».
+    archived: bool,
 }
 
 /// Правило баллов товара или категории (задача 002, П1): `inherit` — как выше (у товара —
@@ -266,16 +268,25 @@ fn to_json<T: Serialize>(v: &T) -> AppResult<Value> {
     serde_json::to_value(v).map_err(|e| AppError::Internal(e.to_string()))
 }
 
+#[derive(Deserialize)]
+struct CategoryListQuery {
+    /// Со скрытыми — экран «Категории товаров»; без него скрытые не попадают в выбор.
+    #[serde(default)]
+    all: bool,
+}
+
 async fn list_categories(
     State(state): State<AppState>,
     _user: CurrentUser,
+    Query(q): Query<CategoryListQuery>,
 ) -> AppResult<Json<Vec<CategoryOut>>> {
     let rows = sqlx::query_as!(
         CategoryOut,
         r#"select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                   c.book_interval_km, c.book_interval_days, c.points_mode, c.points_value,
-                  category_by_type(c.attributes) as "by_type!"
-           from categories c order by c.name"#
+                  category_by_type(c.attributes) as "by_type!", c.archived
+           from categories c where $1 or not c.archived order by c.archived, c.name"#,
+        q.all
     )
     .fetch_all(&state.pool)
     .await?;
@@ -364,6 +375,7 @@ async fn create_category(
         points_mode: "inherit".into(),
         points_value: 0,
         by_type: !defs.iter().any(|d| d.key == "filter_type" && !d.enabled),
+        archived: false,
     }))
 }
 
@@ -374,6 +386,8 @@ struct CategoryPatch {
     book: Option<BookReq>,
     /// Баллы товаров категории (ADR-{B1.2}) — только владелец.
     points: Option<PointsReq>,
+    /// «Скрыть категорию» / «Показать» (задача 003 Н10).
+    archived: Option<bool>,
 }
 
 async fn update_category(
@@ -407,7 +421,7 @@ async fn update_category(
     let before = sqlx::query!(
         r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days,
                   c.kind, c.name, c.points_mode, c.points_value, c.attributes,
-                  category_by_type(c.attributes) as "by_type!"
+                  category_by_type(c.attributes) as "by_type!", c.archived
            from categories c where c.id = $1 for update"#,
         id
     )
@@ -432,6 +446,21 @@ async fn update_category(
             .collect()
     };
     let off_before = off_keys(&before.attributes);
+    // Скрыть можно только категорию без товаров в продаже: иначе они пропали бы из выбора
+    // вместе с ней. Товары в архиве не мешают (задача 003 Н10).
+    if req.archived == Some(true) && !before.archived {
+        let live = sqlx::query_scalar!(
+            r#"select count(*) as "n!" from products where category_id = $1 and not archived"#,
+            id
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if live > 0 {
+            return Err(invalid(format!(
+                "в категории товаров в продаже: {live} — перенесите их в другую категорию или уберите в архив"
+            )));
+        }
+    }
     // Переименованная категория без выбранной строки книжки получает её по названию (ADR-117);
     // выбранную владельцем строку название не меняет. Сохранили с прежним названием — строку по
     // названию не ставим (ADR-131): «Антифриз и жидкости» не становится целиком «Антифризом».
@@ -453,12 +482,13 @@ async fn update_category(
              book_slot = case when $4 then $5 when book_slot is null then coalesce($8, book_slot) else book_slot end,
              book_interval_km = case when $4 then $6 else book_interval_km end,
              book_interval_days = case when $4 then $7 else book_interval_days end,
-             points_mode = coalesce($9, points_mode), points_value = coalesce($10, points_value)
+             points_mode = coalesce($9, points_mode), points_value = coalesce($10, points_value),
+             archived = coalesce($11, archived)
            where id = $1
            returning id, name, kind, attributes,
                      coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
                      book_interval_km, book_interval_days, points_mode, points_value,
-                     category_by_type(attributes) as "by_type!""#,
+                     category_by_type(attributes) as "by_type!", archived"#,
         id,
         name,
         attributes,
@@ -468,7 +498,8 @@ async fn update_category(
         req.book.as_ref().and_then(|b| b.interval_days),
         by_name,
         points.map(|p| p.mode.as_str()),
-        points.map(points_value)
+        points.map(points_value),
+        req.archived
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -481,6 +512,11 @@ async fn update_category(
         Some(id),
         json!({
             "name": out.name,
+            // Скрыта или показана: было → стало (пусто — не менялось).
+            "archived": ops::changes(
+                &json!({ "archived": before.archived }),
+                &json!({ "archived": out.archived }),
+            ),
             // Строка книжки и интервал: что было и что стало.
             "book": ops::changes(
                 &json!({ "slot": before.book_slot, "km": before.book_interval_km, "days": before.book_interval_days }),
@@ -1344,6 +1380,25 @@ async fn similar_products(
     Ok(Json(found))
 }
 
+/// Товар в продаже не кладётся в скрытую категорию (задача 003 Н10): её нет в выборе.
+/// Блокировка строки категории — чтобы её не скрыли в ту же минуту.
+async fn check_category_shown(conn: &mut PgConnection, id: Uuid) -> AppResult<()> {
+    let hidden = sqlx::query!(
+        "select name, archived from categories where id = $1 for share",
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .filter(|c| c.archived);
+    match hidden {
+        Some(c) => Err(invalid(format!(
+            "категория «{}» скрыта: покажите её в «Категориях товаров» или выберите другую",
+            c.name
+        ))),
+        None => Ok(()),
+    }
+}
+
 async fn category_info(
     conn: &mut PgConnection,
     id: Uuid,
@@ -1496,6 +1551,7 @@ pub async fn create_product_tx(
     // Замок списка Умага — до записи кодов: связывание и перенос кодов не перебивают друг друга.
     crate::api::old_catalog::lock_branch(&mut *tx, ctx.user.branch_id).await?;
     let (kind, defs) = category_info(&mut *tx, req.category_id).await?;
+    check_category_shown(&mut *tx, req.category_id).await?;
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(invalid("название обязательно"));
@@ -1718,6 +1774,11 @@ async fn update_product(
     // Единица — у товара, а не у вида категории (задача 002, П4): товар в литрах переносится и в
     // категорию штучных, и наоборот; сама единица меняется `POST /products/{id}/unit`.
     let (_, defs) = category_info(&mut tx, category_id).await?;
+    // В скрытую категорию — только товар в архиве: перенос и возврат из архива — 422.
+    let archived_after = req.archived.unwrap_or(cur.archived);
+    if !archived_after && (category_id != cur.category_id || cur.archived) {
+        check_category_shown(&mut tx, category_id).await?;
+    }
     if let Some(p) = &req.points {
         check_points(p)?;
     }

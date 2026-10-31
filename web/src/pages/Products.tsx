@@ -129,7 +129,8 @@ export default function Products() {
   const [staleDays, setStaleDays] = useState('')
   const staleSave = useAction()
 
-  const categories = useLoad(() => get<Category[]>('/categories'), [])
+  // Со скрытыми: у товаров в архиве может быть скрытая категория (задача 003 Н10).
+  const categories = useLoad(() => get<Category[]>('/categories?all=true'), [])
   const category = categories.data?.find((c) => c.id === categoryId)
   const filterDefs = category?.attributes.filter((a) => a.filterable && a.enabled !== false) ?? []
   // Полярность аккумуляторов — и без выбранной категории, как было в «Остатках» (SPEC-27), если в
@@ -369,7 +370,7 @@ export default function Products() {
               <option value="">Все</option>
               {categories.data?.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}
+                  {c.archived ? `${c.name} (скрыта)` : c.name}
                 </option>
               ))}
             </select>

@@ -143,6 +143,15 @@ export default function SupplierCard() {
         )}
         {!s.active && <Badge tone="rose">не работаем</Badge>}
         {s.comment && <div className="w-full text-slate-600">{s.comment}</div>}
+        {(s.inn || s.address || s.bank || s.bank_account || s.due_days != null) && (
+          <div className="flex w-full flex-wrap gap-x-8 gap-y-1 text-slate-600" data-testid="supplier-requisites">
+            <span>{s.kind === 'person' ? 'Человек' : 'Фирма'}</span>
+            {s.inn && <span>ИНН {s.inn}</span>}
+            {s.address && <span>{s.address}</span>}
+            {(s.bank || s.bank_account) && <span>{[s.bank, s.bank_account && `р/с ${s.bank_account}`].filter(Boolean).join(', ')}</span>}
+            {s.due_days != null && <span>Срок оплаты: {s.due_days} дн.</span>}
+          </div>
+        )}
       </Card>
 
       <div className="-mx-1 flex gap-2 overflow-x-auto px-1" role="tablist">

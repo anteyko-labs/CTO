@@ -768,7 +768,10 @@ async fn check_discounts(
         }
         None => ctx.user.clone(),
     };
-    if crate::auth::has_permission(conn, &user, "discount").await? {
+    // Право входа есть, а у кассира открытой смены владелец его снял — отказ с именем кассира
+    // (задача 003 Н10, ADR-{B8.1}); без сети чек проводится с причиной владельцу (I10).
+    let access = crate::auth::access(conn, &user, "discount").await?;
+    if matches!(access, crate::auth::Access::Allowed) {
         if user.is_owner() {
             return Ok(());
         }
@@ -813,9 +816,21 @@ async fn check_discounts(
         ));
         return Ok(());
     }
+    let cashier = match access {
+        crate::auth::Access::Allowed => return Ok(()),
+        crate::auth::Access::NoRight => None,
+        crate::auth::Access::Cashier(name) => Some(name),
+    };
     if !offline {
-        return Err(AppError::ForbiddenWith("Скидку ставит владелец".into()));
+        return Err(match &cashier {
+            Some(name) => crate::auth::no_cashier_permission(name, "discount"),
+            None => AppError::ForbiddenWith("Скидку ставит владелец".into()),
+        });
     }
+    let why = cashier.map_or_else(
+        || "скидка без права".to_string(),
+        |name| format!("скидка без права у кассира {name}"),
+    );
     for (p, list) in lines {
         let name = sqlx::query_scalar!(
             r#"select coalesce((select name from products where id = $1),
@@ -831,7 +846,7 @@ async fn check_discounts(
             _ => "",
         };
         bypass.push(format!(
-            "скидка без права: {name}, {}{per}, цена по каталогу {}{per}",
+            "{why}: {name}, {}{per}, цена по каталогу {}{per}",
             crate::domain::money::format_som(p.unit_price),
             crate::domain::money::format_som(list)
         ));
@@ -1375,11 +1390,17 @@ pub async fn post_sale_core(
         .ok_or_else(overflow)?;
     // Продажа в долг — владелец или администратор с правом (ADR-097). Чек без сети уже
     // состоялся: проводится, а владелец получает причину (инвариант 5).
-    if debt_total > 0 && !crate::auth::has_permission(conn, &ctx.user, "sale_debt").await? {
-        if !offline {
-            return Err(crate::auth::no_permission("sale_debt"));
+    // Право снято у кассира открытой смены — отказ с его именем (задача 003 Н10, ADR-{B8.1}).
+    if debt_total > 0 {
+        use crate::auth::Access;
+        match crate::auth::access(conn, &ctx.user, "sale_debt").await? {
+            Access::Allowed => {}
+            a if !offline => a.check("sale_debt")?,
+            Access::Cashier(name) => {
+                bypass.push(format!("продажа в долг без права у кассира {name}"));
+            }
+            Access::NoRight => bypass.push("продажа в долг без права".into()),
         }
-        bypass.push("продажа в долг без права".into());
     }
     match req.party_id {
         // Клиент исходного чека при «Изменить оплату» уже проверен при продаже: отключённый клиент

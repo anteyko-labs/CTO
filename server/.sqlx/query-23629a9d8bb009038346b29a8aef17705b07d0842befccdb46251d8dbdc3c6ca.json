@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, is_cashier, cashier_denied from employees\n           where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "is_cashier",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "cashier_denied",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "23629a9d8bb009038346b29a8aef17705b07d0842befccdb46251d8dbdc3c6ca"
+}

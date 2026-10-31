@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { can, DEFAULT_PERMISSIONS, OWNER_ONLY, PERMISSION_GROUPS, PERMISSION_PRESETS, PERMISSIONS, presetOf, toggleGroup } from './permissions'
+import { can, cashierDenied, CASHIER_PERMISSIONS, DEFAULT_PERMISSIONS, OWNER_ONLY, PERMISSION_GROUPS, PERMISSION_PRESETS, PERMISSIONS, presetOf, rememberShiftCashier, toggleGroup } from './permissions'
 
 describe('права администратора', () => {
   it('владелец может всё, администратор — только выданное', () => {
@@ -59,5 +59,41 @@ describe('права администратора', () => {
     const on = toggleGroup(off, 'Деньги', true)
     expect(money.every((k) => on.includes(k))).toBe(true)
     expect(on).toContain('payroll_view_all')
+  })
+})
+
+describe('права кассира без входа (задача 003 Н10)', () => {
+  const admin = { role: 'admin' as const, permissions: ['discount', 'sale_debt', 'expenses', 'receipts'] as const }
+
+  it('снимаются только права кассы и денег', () => {
+    expect(CASHIER_PERMISSIONS.every((p) => p.group === 'Касса' || p.group === 'Деньги')).toBe(true)
+    expect(CASHIER_PERMISSIONS.map((p) => p.key)).toContain('discount')
+    expect(CASHIER_PERMISSIONS.map((p) => p.key)).not.toContain('receipts')
+  })
+
+  it('пересечение прав входа и кассира открытой смены; владельца не ограничивает', () => {
+    const nurlan = { name: 'Нурлан', denied: ['discount'] }
+    const user = { ...admin, permissions: [...admin.permissions] }
+    expect(can(user, 'discount', nurlan)).toBe(false)
+    expect(cashierDenied(user, 'discount', nurlan)).toBe('Нурлан')
+    expect(can(user, 'sale_debt', nurlan)).toBe(true)
+    // Ограничение кассира не добавляет того, чего нет у входа.
+    expect(can(user, 'oil_transfer', null)).toBe(false)
+    expect(can({ role: 'owner' }, 'discount', nurlan)).toBe(true)
+    expect(cashierDenied({ role: 'owner' }, 'discount', nurlan)).toBeNull()
+  })
+
+  it('смена с ограничением запоминается, закрытая или без ограничений — снимает его', () => {
+    const user = { ...admin, permissions: [...admin.permissions] }
+    rememberShiftCashier({ cashier_name: 'Нурлан', cashier_denied: ['expenses'], closed_at: null })
+    expect(can(user, 'expenses')).toBe(false)
+    rememberShiftCashier({ cashier_name: 'Нурлан', cashier_denied: ['expenses'], closed_at: '2026-10-31T10:00:00Z' })
+    expect(can(user, 'expenses')).toBe(true)
+    rememberShiftCashier({ cashier_name: 'Нурлан', cashier_denied: ['expenses'] })
+    expect(can(user, 'expenses')).toBe(false)
+    rememberShiftCashier({ cashier_name: 'Айбек', cashier_denied: [] })
+    expect(can(user, 'expenses')).toBe(true)
+    rememberShiftCashier(null)
+    expect(can(user, 'expenses')).toBe(true)
   })
 })

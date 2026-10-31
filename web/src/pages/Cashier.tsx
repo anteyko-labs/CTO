@@ -63,7 +63,7 @@ import { enqueueSale, keepInQueue, knownShift, markPending, markSent, readSnapsh
 import { bankChoices, defaultBankId, isTill, payCaption, type NoncashMethod } from '../lib/accounts'
 import { forServer, removedLine, sendCancelled, unremove, type CancelReason, type RemovedLine } from '../lib/cancelledLines'
 import { useUser } from '../lib/auth'
-import { can } from '../lib/permissions'
+import { can, rememberShiftCashier } from '../lib/permissions'
 import { enterFullscreen, exitFullscreen, setCashierMode, setKeyboardOpen, useKeyboardOpen, useNumField, useTouchMode } from '../lib/cashierMode'
 import { DEFAULT_CASHIER, loadCashierSettings, placed, type ButtonId, type Place } from '../lib/cashierLayout'
 import { checkDiscount, overLimit as discountOverLimit } from '../lib/discount'
@@ -389,7 +389,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           if (!fix) saveKnownShift(s)
           return (lastShift.current = s)
         })
-        .catch(() => lastShift.current),
+        .catch(() => lastShift.current)
+        // Что владелец снял у кассира смены — кнопки прячутся сразу (задача 003 Н10).
+        .then((s) => {
+          rememberShiftCashier(s)
+          return s
+        }),
     [],
   )
   // Смену могли открыть или закрыть на другом устройстве: кассир чека меняется вместе с ней.

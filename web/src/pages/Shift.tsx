@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table, toast } from '../components/ui'
 import { Icon } from '../components/icons'
@@ -6,7 +6,7 @@ import { Pager, usePageState, usePager } from '../components/Pager'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { get, getPage, newOpId, post, put } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { useCan } from '../lib/permissions'
+import { rememberShiftCashier, useCan } from '../lib/permissions'
 import { ShiftOpenModal } from '../components/ShiftOpen'
 import { StaffPayList } from '../components/StaffPayList'
 import { ShiftBank } from '../components/ShiftBank'
@@ -67,6 +67,10 @@ export default function Shift() {
   // Внести, изъять, перевести и выплатить — права администратора (ADR-097).
   const can = useCan()
   const current = useLoad(() => get<ShiftRow | null>('/shifts/current'), [])
+  // Кассир открытой смены с ограничениями владельца — кнопки «Внести/Изъять» и выплаты по ним (задача 003 Н10).
+  useEffect(() => {
+    if (current.data !== undefined) rememberShiftCashier(current.data)
+  }, [current.data])
   const accounts = useLoad(() => get<CashAccount[]>('/cash/accounts'), [])
   const employees = useLoad(() => get<Employee[]>('/employees'), [])
   const past = useLoad(() => get<ShiftRow[]>('/shifts'), [])

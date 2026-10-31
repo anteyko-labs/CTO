@@ -52,6 +52,7 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
         full_name: form.full_name,
         role: form.role,
         active: form.active,
+        // Логин меняется (задача 003 Н8 и Н10): занятый — ошибка «логин занят».
         ...(form.login.trim() !== user.login ? { login: form.login.trim() } : {}),
         ...(form.password ? { password: form.password } : {}),
         ...(moving ? { branch_id: form.branch_id } : {}),
@@ -63,8 +64,8 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
   return (
     <Modal title={`Пользователь ${user.login}`} onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <Field label="Логин" hint="Им входят в программу; пароль прежний">
-          <input data-testid="user-edit-login" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
+        <Field label="Логин" hint="Новым логином входят со следующего входа; пароль прежний">
+          <input id="user-edit-login" data-testid="user-edit-login" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
         </Field>
         <Field label="Имя">
           <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />

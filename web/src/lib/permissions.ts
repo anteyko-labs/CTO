@@ -1,4 +1,5 @@
 // Права администратора выбирает владелец (SPEC-30 §5, ADR-097, задача 003 Н8). Список на сервере — auth::PERMISSIONS.
+import { useSyncExternalStore } from 'react'
 import { useUser } from './auth'
 import type { Permission, User } from './types'
 
@@ -108,14 +109,61 @@ export function toggleGroup(current: readonly Permission[], group: PermissionDef
   return presetOf(on ? [...rest, ...inGroup] : rest)
 }
 
-/** Может ли пользователь: владелец — всё, администратор — если владелец выдал право.
- *  Проверяет сервер; здесь — только какие пункты меню и кнопки показать. */
-export function can(user: Pick<User, 'role' | 'permissions'>, permission: Permission): boolean {
-  return user.role === 'owner' || (user.permissions ?? []).includes(permission)
+/** Группы прав, которые владелец снимает у кассира без входа (задача 003 Н10, ADR-{B8.1}). */
+export const CASHIER_GROUPS: readonly PermissionDef['group'][] = ['Касса', 'Деньги']
+
+/** Права, которые можно снять у кассира: группы «Касса» и «Деньги». */
+export const CASHIER_PERMISSIONS: readonly PermissionDef[] = PERMISSIONS.filter((p) => CASHIER_GROUPS.includes(p.group))
+
+/** Кассир открытой смены и что владелец у него снял (`cashier_denied` смены). */
+export interface ShiftCashier {
+  name: string
+  denied: readonly string[]
 }
 
-/** Проверка права текущего пользователя для экранов за входом. */
+let shiftCashier: ShiftCashier | null = null
+const listeners = new Set<() => void>()
+
+/** Касса узнала открытую смену (или что её нет): кнопки администратора — пересечение прав входа
+ *  и кассира смены. Закрытая смена ограничений не несёт. */
+export function rememberShiftCashier(
+  shift: { cashier_name: string; cashier_denied?: readonly string[]; closed_at?: string | null } | null | undefined,
+): void {
+  const next = shift && !shift.closed_at && (shift.cashier_denied ?? []).length > 0 ? { name: shift.cashier_name, denied: shift.cashier_denied ?? [] } : null
+  if (JSON.stringify(next) === JSON.stringify(shiftCashier)) return
+  shiftCashier = next
+  listeners.forEach((l) => l())
+}
+
+/** Право снято у кассира открытой смены — его имя (для подписи «Нет права у кассира …»). */
+export function cashierDenied(
+  user: Pick<User, 'role'>,
+  permission: Permission,
+  cashier: ShiftCashier | null = shiftCashier,
+): string | null {
+  return user.role !== 'owner' && cashier?.denied.includes(permission) ? cashier.name : null
+}
+
+/** Может ли пользователь: владелец — всё, администратор — если владелец выдал право и не снял
+ *  его у кассира открытой смены (ADR-{B8.1}). Проверяет сервер; здесь — только какие пункты меню
+ *  и кнопки показать. */
+export function can(
+  user: Pick<User, 'role' | 'permissions'>,
+  permission: Permission,
+  cashier: ShiftCashier | null = shiftCashier,
+): boolean {
+  return user.role === 'owner' || ((user.permissions ?? []).includes(permission) && !cashierDenied(user, permission, cashier))
+}
+
+/** Проверка права текущего пользователя для экранов за входом; смена кассира меняет ответ сразу. */
 export function useCan(): (permission: Permission) => boolean {
   const user = useUser()
-  return (permission) => can(user, permission)
+  const cashier = useSyncExternalStore(
+    (l) => {
+      listeners.add(l)
+      return () => listeners.delete(l)
+    },
+    () => shiftCashier,
+  )
+  return (permission) => can(user, permission, cashier)
 }
