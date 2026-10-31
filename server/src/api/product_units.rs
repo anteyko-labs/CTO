@@ -616,6 +616,68 @@ fn unit_words(unit: &str, container_ml: Option<i64>) -> String {
     }
 }
 
+/// «в штуки», «в литры (канистра 4 л)».
+fn unit_into(unit: &str, container_ml: Option<i64>) -> String {
+    match (unit, container_ml) {
+        ("ml", Some(c)) => format!("литры (канистра {})", crate::domain::qty::liters(c)),
+        ("ml", None) => "литры".into(),
+        ("g", _) => "килограммы".into(),
+        _ => "штуки".into(),
+    }
+}
+
+/// Строка документа, открытого до пересчёта единицы (ADR-139, дополнено): форма прислала
+/// единицу и объём канистры, какими видела товар; вызывается после блокировки товара
+/// (`receipts::lock_products`) — товар в другой единице, 409 «обновите строку». Пусто — не
+/// сверяется (прежний клиент).
+pub async fn ensure_seen_unit(
+    conn: &mut PgConnection,
+    product_id: Uuid,
+    unit: Option<&str>,
+    container_ml: Option<i64>,
+) -> AppResult<()> {
+    let Some(unit) = unit else {
+        return Ok(());
+    };
+    let p = sqlx::query!(
+        "select name, unit, container_ml from products where id = $1",
+        product_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("товар не найден"))?;
+    let same = p.unit == unit && (p.unit != "ml" || p.container_ml == container_ml);
+    if same {
+        return Ok(());
+    }
+    Err(stale_line(&p.name, &p.unit, p.container_ml))
+}
+
+/// «Товар «…» только что переведён в штуки, обновите строку» — 409.
+pub fn stale_line(name: &str, unit: &str, container_ml: Option<i64>) -> AppError {
+    AppError::Conflict(format!(
+        "Товар «{name}» только что переведён в {}, обновите строку",
+        unit_into(unit, container_ml)
+    ))
+}
+
+/// Строка чека с видом прежней единицы (канистра у товара, который перевели в штуки): после
+/// пересчёта единицы — 409 «обновите строку» вместо «вид строки не подходит товару».
+pub async fn changed_from(
+    conn: &mut PgConnection,
+    product_id: Uuid,
+    unit: &str,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists (select 1 from product_unit_changes
+                          where product_id = $1 and from_unit = $2) as "e!""#,
+        product_id,
+        unit
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// «Изменить оплату» и «Исправить» чека повторяют его строки в прежних единицах: если после
 /// чека у товара менялись единица или объём канистры, новый чек не сложится. Понятный отказ
 /// 422 вместо «вид строки не подходит товару» (ADR-139, задача 003): чек исправляют возвратом

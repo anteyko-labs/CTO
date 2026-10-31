@@ -479,7 +479,9 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       save.setError('Добавьте хотя бы один товар')
       return null
     }
-    const body: { product_id: string; qty: number; cost_tyiyn: number; sale_price_tyiyn?: number }[] = []
+    // Единица и объём канистры, какими форма видела товар: перевели в другую единицу — сервер
+    // ответит 409 «обновите строку» (ADR-139), количество в прежних единицах не пройдёт.
+    const body: { product_id: string; qty: number; cost_tyiyn: number; sale_price_tyiyn?: number; unit: string; container_ml: number | null }[] = []
     const copies: { product: Product; copies: number }[] = []
     for (let i = 0; i < lines.length; i++) {
       const c = calcs[i]
@@ -489,7 +491,14 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       }
       // Новая цена продажи уходит, только если её поменяли: товар получит её при проведении.
       const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
-      body.push({ product_id: lines[i].product.id, qty: c.qty, cost_tyiyn: c.cost, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
+      body.push({
+        product_id: lines[i].product.id,
+        qty: c.qty,
+        cost_tyiyn: c.cost,
+        ...(changed ? { sale_price_tyiyn: c.salePrice } : {}),
+        unit: lines[i].product.unit,
+        container_ml: lines[i].product.container_ml,
+      })
       copies.push({ product: { ...lines[i].product, sale_price_tyiyn: c.salePrice }, copies: c.n })
     }
     if (total === null) {
@@ -566,13 +575,20 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
 
   /** Оприходование: одна операция, один документ строками; цена — за штуку, канистру или кг. */
   const submitStockIn = (copies: { product: Product; copies: number }[]) => {
-    const body: { product_id: string; qty: number; price_tyiyn: number; sale_price_tyiyn?: number }[] = []
+    const body: { product_id: string; qty: number; price_tyiyn: number; sale_price_tyiyn?: number; unit: string; container_ml: number | null }[] = []
     for (let i = 0; i < lines.length; i++) {
       const c = calcs[i]
       if (typeof c === 'string') return
       const changed = c.salePrice !== lines[i].product.sale_price_tyiyn
       // Цена — за штуку, канистру или кг: в режиме «л» строка переводит цену литра в цену канистры.
-      body.push({ product_id: lines[i].product.id, qty: c.qty, price_tyiyn: c.unitPrice, ...(changed ? { sale_price_tyiyn: c.salePrice } : {}) })
+      body.push({
+        product_id: lines[i].product.id,
+        qty: c.qty,
+        price_tyiyn: c.unitPrice,
+        ...(changed ? { sale_price_tyiyn: c.salePrice } : {}),
+        unit: lines[i].product.unit,
+        container_ml: lines[i].product.container_ml,
+      })
     }
     void save.run(async () => {
       const doc = { comment: comment.trim(), lines: body }

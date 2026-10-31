@@ -498,7 +498,8 @@ async fn prepare_line(
     let p = sqlx::query!(
         r#"select p.name, p.unit, p.container_ml, p.archived, coalesce(bp.sale_price_tyiyn, 0) as "sale_price!"
            from products p left join branch_products bp on bp.product_id = p.id and bp.branch_id = $2
-           where p.id = $1"#,
+           where p.id = $1
+           for key share of p"#,
         pid,
         branch_id
     )
@@ -532,6 +533,20 @@ async fn prepare_line(
             p.sale_price,
         ),
         ("piece" | "container" | "pour" | "weight", _, _) => {
+            // Касса видела товар до пересчёта единицы (ADR-139): понятная подсказка. Чек из
+            // очереди без сети отклоняется, как раньше (ADR-059).
+            let was = match l.kind.as_str() {
+                "piece" => "piece",
+                "weight" => "g",
+                _ => "ml",
+            };
+            if !offline && crate::api::product_units::changed_from(conn, pid, was).await? {
+                return Err(crate::api::product_units::stale_line(
+                    &p.name,
+                    &p.unit,
+                    p.container_ml,
+                ));
+            }
             return Err(invalid("вид строки не подходит товару"));
         }
         _ => return Err(invalid("неизвестный вид строки")),

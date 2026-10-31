@@ -1661,6 +1661,8 @@ pub fn exact_from(d: &DraftOut) -> Option<ExactInvoice> {
             qty,
             cost_tyiyn: cost,
             sale_price_tyiyn: None,
+            unit: None,
+            container_ml: None,
         });
     }
     Some(ExactInvoice {

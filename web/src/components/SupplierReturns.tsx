@@ -103,7 +103,14 @@ export function SupplierReturnModal({
         settle,
         account_id: settle === 'money' ? account : null,
         comment: comment.trim(),
-        lines: parsed.map((x) => ({ product_id: x.l.product.id, qty: x.q ?? 0, ...(x.a !== null ? { amount_tyiyn: x.a } : {}) })),
+        // Единица, какой форма видела товар: перевели в другую — 409 «обновите строку» (ADR-139).
+        lines: parsed.map((x) => ({
+          product_id: x.l.product.id,
+          qty: x.q ?? 0,
+          ...(x.a !== null ? { amount_tyiyn: x.a } : {}),
+          unit: x.l.product.unit,
+          container_ml: x.l.product.container_ml,
+        })),
       }
       if (fix) {
         const fixed = await fix.save({ ...fix.doc, ...doc })

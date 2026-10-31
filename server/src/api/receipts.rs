@@ -49,6 +49,12 @@ pub struct ReceiptLineReq {
     /// (SPEC-28 §1). Пусто — цена не меняется. Ставят владелец и администратор (ADR-075).
     #[serde(default)]
     pub sale_price_tyiyn: Option<i64>,
+    /// Единица и объём канистры товара, какими их видела форма (ADR-139, дополнено): товар
+    /// с тех пор перевели в другую единицу — 409 «обновите строку». Пусто — не сверяется.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_ml: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -389,6 +395,16 @@ pub async fn lock_products(
     ids: impl IntoIterator<Item = Uuid>,
 ) -> AppResult<()> {
     let sorted: BTreeSet<Uuid> = ids.into_iter().collect();
+    // Товар — до остатка, в порядке id, как смена единицы (`product_units::change_unit_tx`
+    // берёт товар `for update`): пересчёт ждёт документ, документ после пересчёта читает
+    // нынешнюю единицу (ADR-139). `key share` не мешает правке карточки и объединению.
+    let list: Vec<Uuid> = sorted.iter().copied().collect();
+    sqlx::query!(
+        "select id from products where id = any($1) order by id for key share",
+        &list
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     for id in sorted {
         ops::lock_pool(conn, branch_id, id).await?;
     }
@@ -536,6 +552,15 @@ pub async fn post_receipt_tx(
         return Err(AppError::Conflict(
             "товар только что объединили с другой карточкой — проведите приход ещё раз".into(),
         ));
+    }
+    for l in &req.lines {
+        crate::api::product_units::ensure_seen_unit(
+            conn,
+            l.product_id,
+            l.unit.as_deref(),
+            l.container_ml,
+        )
+        .await?;
     }
     let number = ops::next_counter(conn, branch_id, "receipt").await?;
     let id = new_id();

@@ -1208,6 +1208,8 @@ async fn accept_tx(
                 cost_tyiyn: cost,
                 // Новая цена продажи — товару накладной; другому товару её не ставим.
                 sale_price_tyiyn: if swap.is_none() { l.sale_price } else { None },
+                unit: None,
+                container_ml: None,
             });
         }
         if accepted != l.invoice_qty || swap.is_some() || !comment.is_empty() {

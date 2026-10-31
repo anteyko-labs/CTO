@@ -267,6 +267,11 @@ pub struct ReturnLineReq {
     /// а без прихода от него — себестоимость (разницы нет).
     #[serde(default)]
     pub amount_tyiyn: Option<i64>,
+    /// Единица и объём канистры, какими их видела форма — как у строки прихода (ADR-139).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_ml: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -368,6 +373,15 @@ pub async fn post_tx(
     }
     crate::api::receipts::lock_products(conn, branch_id, distinct.iter().copied()).await?;
     ops::ensure_not_merged(conn, &targets).await?;
+    for (l, target) in req.lines.iter().zip(&targets) {
+        crate::api::product_units::ensure_seen_unit(
+            conn,
+            *target,
+            l.unit.as_deref(),
+            l.container_ml,
+        )
+        .await?;
+    }
     let number = ops::next_counter(conn, branch_id, "supplier_return").await?;
     let id = new_id();
     let mut rows = Vec::with_capacity(req.lines.len());

@@ -183,6 +183,8 @@ async fn receive(pool: &PgPool, w: &World, product: Uuid, qty: i64, cost: i64) -
                 qty,
                 cost_tyiyn: cost,
                 sale_price_tyiyn: None,
+                unit: None,
+                container_ml: None,
             }],
         },
     )
@@ -1246,5 +1248,158 @@ async fn unit_change_moves_gift_threshold_and_points_rate(pool: PgPool) {
         .unwrap();
     assert_eq!(threshold().await, 6);
     assert_eq!(rate().await, 501);
+    assert_consistent(&pool, &w).await;
+}
+
+/// Смена единицы параллельно с документами (перекрёстная проверка задачи 003; ADR-139):
+/// продажа и документы склада держат товар (`for key share`) до конца транзакции — пересчёт
+/// ждёт их; строка формы, открытой до пересчёта, с прежней единицей — 409 «обновите строку».
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn unit_change_waits_for_documents_and_rejects_stale_lines(pool: PgPool) {
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w, w.oil, 12_000, 600_000).await;
+    let locked = |pool: PgPool| async move {
+        let mut other = pool.begin().await.unwrap();
+        let r = sqlx::query("select id from products where id = $1 for update nowait")
+            .bind(w.oil)
+            .execute(&mut *other)
+            .await;
+        r.is_err()
+    };
+    // Чек не проведён до конца — товар занят, смена единицы его подождёт.
+    let mut tx = pool.begin().await.unwrap();
+    post_sale_tx(
+        &mut tx,
+        &w.owner,
+        takeaway(
+            &w,
+            None,
+            vec![line("container", w.oil, 1, 200_000)],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(locked(pool.clone()).await, "чек держит товар");
+    tx.commit().await.unwrap();
+    // Приход — так же.
+    let safe = owner_safe(&pool, w.owner.user.branch_id).await;
+    let receipt = |unit: Option<&str>, container_ml: Option<i64>| ReceiptReq {
+        op_id: Uuid::now_v7(),
+        payment: None,
+        paid_from: Some(safe.to_string()),
+        paid_now_tyiyn: None,
+        supplier_id: None,
+        supplier_doc: String::new(),
+        comment: String::new(),
+        lines: vec![ReceiptLineReq {
+            product_id: w.oil,
+            qty: 4_000,
+            cost_tyiyn: 200_000,
+            sale_price_tyiyn: None,
+            unit: unit.map(Into::into),
+            container_ml,
+        }],
+    };
+    let mut tx = pool.begin().await.unwrap();
+    post_receipt_tx(&mut tx, &w.owner, receipt(Some("ml"), Some(4_000)))
+        .await
+        .unwrap();
+    assert!(locked(pool.clone()).await, "приход держит товар");
+    tx.commit().await.unwrap();
+
+    // Литры → штуки по 4 л.
+    change(&pool, &w.owner, w.oil, unit_req("piece", None, Some(4_000)))
+        .await
+        .unwrap();
+    let stale = |r: Result<(), AppError>| match r {
+        Err(AppError::Conflict(m)) => assert!(
+            m.contains("Товар «Масло 5W-30 4л» только что переведён в штуки, обновите строку"),
+            "{m}"
+        ),
+        Err(e) => panic!("{e:?}"),
+        Ok(()) => panic!("проведено в прежних единицах"),
+    };
+    // Приход из формы, открытой до пересчёта, — 409; из обновлённой — проходит.
+    let mut tx = pool.begin().await.unwrap();
+    stale(
+        post_receipt_tx(&mut tx, &w.owner, receipt(Some("ml"), Some(4_000)))
+            .await
+            .map(|_| ()),
+    );
+    drop(tx);
+    let mut tx = pool.begin().await.unwrap();
+    let mut fresh = receipt(Some("piece"), None);
+    fresh.lines[0].qty = 1;
+    post_receipt_tx(&mut tx, &w.owner, fresh).await.unwrap();
+    tx.commit().await.unwrap();
+    // Оприходование и возврат поставщику — так же.
+    let mut tx = pool.begin().await.unwrap();
+    stale(
+        avtodom_server::api::stock_in::post_tx(
+            &mut tx,
+            &w.owner,
+            serde_json::from_value(json!({
+                "op_id": Uuid::now_v7(), "comment": "нашли",
+                "lines": [{ "product_id": w.oil, "qty": 4000, "price_tyiyn": 200000,
+                            "unit": "ml", "container_ml": 4000 }]
+            }))
+            .unwrap(),
+        )
+        .await
+        .map(|_| ()),
+    );
+    drop(tx);
+    let supplier = Uuid::now_v7();
+    sqlx::query("insert into suppliers (id, name) values ($1, 'Поставщик')")
+        .bind(supplier)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    stale(
+        avtodom_server::api::supplier_returns::post_tx(
+            &mut tx,
+            &w.owner,
+            serde_json::from_value(json!({
+                "op_id": Uuid::now_v7(), "supplier_id": supplier, "settle": "debt",
+                "lines": [{ "product_id": w.oil, "qty": 4000, "unit": "ml", "container_ml": 4000 }]
+            }))
+            .unwrap(),
+        )
+        .await
+        .map(|_| ()),
+    );
+    drop(tx);
+    // Чек кассы с канистрой — та же подсказка; из очереди без сети — отклоняется, как раньше.
+    stale(
+        sell(
+            &pool,
+            &w.owner,
+            takeaway(
+                &w,
+                None,
+                vec![line("container", w.oil, 1, 200_000)],
+                200_000,
+            ),
+        )
+        .await
+        .map(|_| ()),
+    );
+    let mut offline = takeaway(
+        &w,
+        None,
+        vec![line("container", w.oil, 1, 200_000)],
+        200_000,
+    );
+    offline.offline = true;
+    offline.client_time = Some(chrono::Utc::now());
+    let r = sell(&pool, &w.owner, offline).await;
+    assert!(
+        matches!(r, Err(AppError::Validation(_))),
+        "{:?}",
+        r.map(|s| s.number)
+    );
     assert_consistent(&pool, &w).await;
 }

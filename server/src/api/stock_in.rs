@@ -193,6 +193,11 @@ pub struct StockInLineReq {
     /// Новая цена продажи товара — как у строки прихода (SPEC-28 §1); пусто — не меняется.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sale_price_tyiyn: Option<i64>,
+    /// Единица и объём канистры, какими их видела форма — как у строки прихода (ADR-139).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_ml: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -221,6 +226,8 @@ impl StockInReq {
                 qty: self.qty.unwrap_or(0),
                 price_tyiyn: self.price_tyiyn.unwrap_or(-1),
                 sale_price_tyiyn: None,
+                unit: None,
+                container_ml: None,
             }]),
             (Some(_), false) => Err(invalid("товар — либо строками, либо одним товаром")),
         }
@@ -328,6 +335,20 @@ pub async fn post_tx(conn: &mut PgConnection, ctx: &Ctx, req: StockInReq) -> App
     crate::api::receipts::lock_products(conn, branch_id, distinct.iter().copied()).await?;
     let ids: Vec<Uuid> = distinct.iter().copied().collect();
     ops::ensure_not_merged(conn, &ids).await?;
+    // Единицу товара читали до блокировки: пересчёт мог пройти между — та же проверка, что
+    // у строки формы.
+    for l in &lines {
+        let p = products
+            .get(&l.product_id)
+            .ok_or_else(|| AppError::Internal("нет товара строки".into()))?;
+        let seen = l.unit.as_deref().unwrap_or(p.unit.as_str());
+        let seen_c = if l.unit.is_some() {
+            l.container_ml
+        } else {
+            p.container_ml
+        };
+        crate::api::product_units::ensure_seen_unit(conn, l.product_id, Some(seen), seen_c).await?;
+    }
     let number = ops::next_counter(conn, branch_id, "stock_in").await?;
     let id = new_id();
     sqlx::query!(

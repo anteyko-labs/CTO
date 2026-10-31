@@ -173,6 +173,8 @@ async fn receive(
                 qty,
                 cost_tyiyn: cost,
                 sale_price_tyiyn: None,
+                unit: None,
+                container_ml: None,
             }],
         },
     )
@@ -219,6 +221,8 @@ async fn receive_on_debt(
                 qty,
                 cost_tyiyn: cost,
                 sale_price_tyiyn: None,
+                unit: None,
+                container_ml: None,
             }],
         },
     )
@@ -7117,12 +7121,16 @@ async fn bot_receipt_totals_by_server_and_daily_cap(pool: PgPool) {
                     qty: 10,
                     cost_tyiyn: 350_000,
                     sale_price_tyiyn: None,
+                    unit: None,
+                    container_ml: None,
                 },
                 ReceiptLineReq {
                     product_id: w.oil,
                     qty: 8000,
                     cost_tyiyn: 360_100,
                     sale_price_tyiyn: None,
+                    unit: None,
+                    container_ml: None,
                 },
             ],
             paid_from: None,
@@ -7615,6 +7623,8 @@ async fn receive_from(
                 qty,
                 cost_tyiyn: cost,
                 sale_price_tyiyn: None,
+                unit: None,
+                container_ml: None,
             }],
         },
     )

@@ -1741,6 +1741,8 @@ async fn receipt(conn: &mut PgConnection, user: &CurrentUser, op_id: Uuid, input
             qty,
             cost_tyiyn: sum,
             sale_price_tyiyn: None,
+            unit: None,
+            container_ml: None,
         });
     }
     let doc = comment(input, "supplier_doc");
