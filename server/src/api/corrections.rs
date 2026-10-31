@@ -1805,6 +1805,9 @@ pub async fn correct_tx(
     } else {
         Vec::new()
     };
+    // Оплаты поставщику, освобождённые сторно, распределяются после верного документа: иначе
+    // они ушли бы на более новые долги раньше него (ADR-073).
+    crate::api::supplier_debts::defer_allocation(&mut *conn).await?;
     let reversal_id = reverse(
         &mut *conn,
         ctx,
@@ -1813,7 +1816,9 @@ pub async fn correct_tx(
         &format!("исправление: {comment}"),
     )
     .await?;
+    let deferred = crate::api::supplier_debts::end_deferral(&mut *conn).await?;
     let (new_doc_id, new_number) = post_new(&mut *conn, ctx, kind, &req.doc, &before).await?;
+    crate::api::supplier_debts::allocate_deferred(&mut *conn, &deferred).await?;
     if kind == Kind::Receipt {
         let mut lines = Vec::new();
         for (id, name, unit, was) in &stock_before {

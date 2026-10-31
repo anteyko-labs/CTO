@@ -30,9 +30,82 @@ pub fn routes() -> Router<AppState> {
 /// Распределяет долг поставщика: снятые записи теряют свои распределения, открытые оплаты
 /// ложатся на самые старые долги. В транзакции записи долга, под блокировкой контрагента.
 pub async fn allocate(conn: &mut PgConnection, party_id: Uuid) -> AppResult<()> {
+    let later = sqlx::query_scalar!(
+        r#"select coalesce(current_setting('avtodom.allocate_later', true), '') <> '' as "b!""#
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if later {
+        // Сторно внутри «Исправить»: распределения снятых записей отменяются сразу, а свободные
+        // оплаты ждут верного документа (см. [`defer_allocation`]).
+        sqlx::query!(
+            r#"insert into supplier_allocations (id, branch_id, party_id, credit_id, debit_id,
+                                                 amount_tyiyn, reversal_of)
+               select gen_random_uuid(), s.branch_id, s.party_id, s.credit_id, s.debit_id,
+                      -s.amount_tyiyn, s.id
+               from supplier_allocations s
+               join party_ledger cr on cr.id = s.credit_id
+               join party_ledger db on db.id = s.debit_id
+               where s.party_id = $1 and s.reversal_of is null
+                 and not exists (select 1 from supplier_allocations y where y.reversal_of = s.id)
+                 and not (supplier_ledger_live(cr) and supplier_ledger_live(db))
+               order by s.created_at, s.id"#,
+            party_id
+        )
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query_scalar!(
+            r#"select set_config('avtodom.allocate_later',
+                                 current_setting('avtodom.allocate_later') || $1::text || ',',
+                                 true) as "s!""#,
+            party_id.to_string()
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        return Ok(());
+    }
     sqlx::query_scalar!(r#"select supplier_allocate($1) as "n!""#, party_id)
         .fetch_one(&mut *conn)
         .await?;
+    Ok(())
+}
+
+/// «Исправить» сначала сторнирует исходный документ: без отсрочки освободившиеся оплаты сразу
+/// ушли бы на более новые долги, и верный документ остался бы неоплаченным (ADR-073: самые старые
+/// первыми). До [`allocate_deferred`] в этой транзакции [`allocate`] только снимает распределения
+/// сторнированных записей и запоминает поставщика.
+pub async fn defer_allocation(conn: &mut PgConnection) -> AppResult<()> {
+    sqlx::query_scalar!(r#"select set_config('avtodom.allocate_later', ',', true) as "s!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Конец отсрочки: дальше [`allocate`] распределяет сразу. Возвращает поставщиков, чьё
+/// распределение ждало, — их распределить после проведения верного документа.
+pub async fn end_deferral(conn: &mut PgConnection) -> AppResult<Vec<Uuid>> {
+    let list = sqlx::query_scalar!(
+        r#"select coalesce(current_setting('avtodom.allocate_later', true), '') as "s!""#
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    sqlx::query_scalar!(r#"select set_config('avtodom.allocate_later', '', true) as "s!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    let mut out: Vec<Uuid> = Vec::new();
+    for id in list.split(',').filter_map(|s| s.parse().ok()) {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+/// Распределяет отложенных поставщиков (после [`end_deferral`] и проведения верного документа).
+pub async fn allocate_deferred(conn: &mut PgConnection, parties: &[Uuid]) -> AppResult<()> {
+    for id in parties {
+        allocate(conn, *id).await?;
+    }
     Ok(())
 }
 

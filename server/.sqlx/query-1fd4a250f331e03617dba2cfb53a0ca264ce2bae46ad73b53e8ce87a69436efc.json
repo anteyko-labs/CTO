@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into supplier_allocations (id, branch_id, party_id, credit_id, debit_id,\n                                                 amount_tyiyn, reversal_of)\n               select gen_random_uuid(), s.branch_id, s.party_id, s.credit_id, s.debit_id,\n                      -s.amount_tyiyn, s.id\n               from supplier_allocations s\n               join party_ledger cr on cr.id = s.credit_id\n               join party_ledger db on db.id = s.debit_id\n               where s.party_id = $1 and s.reversal_of is null\n                 and not exists (select 1 from supplier_allocations y where y.reversal_of = s.id)\n                 and not (supplier_ledger_live(cr) and supplier_ledger_live(db))\n               order by s.created_at, s.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1fd4a250f331e03617dba2cfb53a0ca264ce2bae46ad73b53e8ce87a69436efc"
+}

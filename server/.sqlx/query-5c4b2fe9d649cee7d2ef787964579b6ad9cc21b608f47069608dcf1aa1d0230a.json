@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select set_config('avtodom.allocate_later', ',', true) as \"s!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "s!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5c4b2fe9d649cee7d2ef787964579b6ad9cc21b608f47069608dcf1aa1d0230a"
+}

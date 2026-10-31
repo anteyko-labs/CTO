@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(current_setting('avtodom.allocate_later', true), '') <> '' as \"b!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "b!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "98dd7937b97ff7a8c6b6ba3a3ed6088328e02583fe8d23572a4c3993f3c816be"
+}

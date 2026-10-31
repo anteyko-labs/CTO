@@ -672,6 +672,54 @@ async fn owner_corrects_supplier_old_debt(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn correcting_paid_old_supplier_debt_keeps_its_payment(pool: PgPool) {
+    let w = World::new(pool).await;
+    // Старый долг от 01.02 оплачен, приход сегодня в долг не оплачен. «Исправить» старого долга
+    // (только номер накладной) — оплата остаётся на старейшем долге (ADR-073), а не уходит на
+    // приход во время сторно.
+    let old = w.owner_old_debt(1_000_000, FEB1, "457", "").await;
+    let id = old["ledger_id"].as_str().unwrap().to_string();
+    let receipt = w.receipt_on_debt(1_500_000).await;
+    w.pay(1_000_000).await;
+    let fixed = ok(
+        &w.app,
+        "POST",
+        "/api/v1/corrections",
+        &w.owner,
+        json!({ "op_id": Uuid::now_v7(), "kind": "ledger", "original_id": id, "comment": "не тот номер",
+                "doc": { "type": "supplier_old_debt", "party_id": w.supplier, "amount_tyiyn": 1_000_000,
+                         "date": FEB1, "supplier_doc": "458", "comment": "" } }),
+    )
+    .await;
+    let new_id = fixed["new_id"].as_str().unwrap().to_string();
+    assert_eq!(w.balance().await, -1_500_000);
+    let inv = w.invoices().await;
+    let rows: Vec<(Value, Value, Value)> = inv["invoices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                if r["receipt_id"].is_null() {
+                    r["ledger_id"].clone()
+                } else {
+                    r["receipt_id"].clone()
+                },
+                r["left_tyiyn"].clone(),
+                r["status"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (json!(new_id), json!(0), json!("paid")),
+            (json!(receipt), json!(1_500_000), json!("unpaid")),
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn other_branch_neither_sees_nor_pays_it(pool: PgPool) {
     let w = World::new(pool).await;
     let nb = ok(
