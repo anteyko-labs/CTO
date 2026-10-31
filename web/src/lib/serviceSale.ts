@@ -167,13 +167,19 @@ export function isDiscount(price: number | null, list: number, gift = false): bo
   return !gift && price !== null && price < list
 }
 
-/** Сколько масла залито в чеках вида замены: «2 кан. по 4 л + 1,5 л розливом = 9,5 л». */
-export function oilAmountText(o: Pick<ServiceOil, 'canisters' | 'pour_ml' | 'total_ml' | 'container_ml'>): string {
+/** Сколько масла залито в чеках вида замены: «2 кан. по 4 л + 1,5 л розливом = 9,5 л».
+ *  Штучный товар в категории масла (единица «шт», ADR-139) — отдельно: «3 шт». */
+export function oilAmountText(
+  o: Pick<ServiceOil, 'canisters' | 'pour_ml' | 'total_ml' | 'container_ml'> & { pieces?: number },
+): string {
   const parts: string[] = []
   if (o.canisters !== 0) parts.push(`${o.canisters} кан.${o.container_ml ? ` по ${formatLiters(o.container_ml)}` : ''}`)
   if (o.pour_ml !== 0) parts.push(`${formatLiters(o.pour_ml)} розливом`)
   const total = formatLiters(o.total_ml)
-  return parts.length ? `${parts.join(' + ')} = ${total}` : total
+  const liters = parts.length ? `${parts.join(' + ')} = ${total}` : total
+  const pieces = o.pieces ?? 0
+  if (pieces === 0) return liters
+  return o.total_ml === 0 ? `${pieces}\u00a0шт` : `${liters}; ${pieces}\u00a0шт`
 }
 
 /** Поиск клиента похож на госномер: есть цифры, не телефон и не ПИН/ИНН (те — одни цифры, от 9).

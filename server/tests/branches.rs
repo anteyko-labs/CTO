@@ -818,6 +818,7 @@ async fn owner_reports_all_branches_as_the_sum_of_branches(pool: PgPool) {
         ("/api/v1/reports/profit", vec!["totals", "net_tyiyn"]),
         ("/api/v1/reports/income", vec!["goods_tyiyn"]),
         ("/api/v1/payroll/month", vec!["rows", "*accrued_tyiyn"]),
+        ("/api/v1/payroll/salary", vec!["rows", "*rule_tyiyn"]),
         ("/api/v1/products/list", vec!["totals", "sale_tyiyn"]),
     ] {
         let a = api.get(uri, &w.owner, Some(w.a)).await;
@@ -833,6 +834,12 @@ async fn owner_reports_all_branches_as_the_sum_of_branches(pool: PgPool) {
         );
         assert_eq!(all["branches"].as_array().unwrap().len(), 2, "{uri}");
         assert_eq!(all["all_branches"], true);
+        // «Оклад»: работники обоих филиалов строками подряд (у каждого свой филиал).
+        if uri == "/api/v1/payroll/salary" {
+            let len = |v: &Value| v["rows"].as_array().unwrap().len();
+            assert!(len(&a) > 0 && len(&b) > 0, "{all}");
+            assert_eq!(len(&all), len(&a) + len(&b), "{all}");
+        }
         // Администратору «Все филиалы» нет — как чужих данных.
         let (s, _) = api
             .call(

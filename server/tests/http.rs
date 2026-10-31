@@ -497,6 +497,119 @@ async fn oil_change_fee_is_a_setting(pool: PgPool) {
     );
     let (_, _, v) = call(&app, "GET", "/api/v1/settings/sales", Some(&admin), None).await;
     assert_eq!(v["oil_change_master_fee_tyiyn"], 5000);
+    assert_eq!(v["service_price_owner_only"], false);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn new_service_price_can_be_owner_only(pool: PgPool) {
+    // «Настройки → Продажи» (задача 003): «Цену новой услуги задаёт только владелец», по
+    // умолчанию — нет; о каждой услуге администратора владельцу — уведомление с ценой.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let service = |name: &str, price: i64| json!({ "name": name, "price_tyiyn": price });
+    // По умолчанию администратор с правом «Услуги» задаёт цену сам — владельцу уведомление.
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&admin),
+        Some(service("Мойка радиатора", 50_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (_, _, list) = call(&app, "GET", "/api/v1/notifications", Some(&owner), None).await;
+    let first = &list["items"][0];
+    assert_eq!(
+        first["title"],
+        "Администратор завёл услугу «Мойка радиатора»"
+    );
+    assert!(
+        first["details"].as_str().unwrap().starts_with("цена 500"),
+        "{first}"
+    );
+    // Включить может только владелец; правка без поля ставки её не сбрасывает.
+    let on = json!({ "service_price_owner_only": true });
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/sales",
+        Some(&admin),
+        Some(on.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, v) = call(
+        &app,
+        "PUT",
+        "/api/v1/settings/sales",
+        Some(&owner),
+        Some(on),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["service_price_owner_only"], true);
+    assert_eq!(v["oil_change_master_fee_tyiyn"], 3000);
+    let logged: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'settings.sales'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(logged, 1);
+    // Теперь администратор без права «Цены» — только с ценой 0.
+    let (s, _, err) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&admin),
+        Some(service("Промывка", 30_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("цену новой услуги задаёт владелец"),
+        "{err}"
+    );
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&admin),
+        Some(service("Промывка", 0)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // С правом «Цены товаров и услуг» — с ценой; владельцу настройка не мешает и не уведомляет.
+    grant_admin(&pool, "prices").await;
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&admin),
+        Some(service("Чистка форсунок", 80_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, _, out) = call(
+        &app,
+        "POST",
+        "/api/v1/services",
+        Some(&owner),
+        Some(service("Замена антифриза", 60_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (admin_made, owner_made): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where action = 'service.create_admin'),
+                count(*) filter (where action = 'service.create') from audit_log",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((admin_made, owner_made), (3, 1));
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -11030,6 +11143,34 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
     .await;
     assert_eq!(s, StatusCode::OK, "{wash}");
     let wash = wash["id"].as_str().unwrap().to_string();
+    // Документы склада: списки и карточки — по праву своего пункта меню (задача 003).
+    let receipt = r["id"].as_str().unwrap().to_string();
+    let (s, _, si) = call(
+        &app,
+        "POST",
+        "/api/v1/stock-ins",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "product_id": item, "qty": 1,
+                      "price_tyiyn": 10_000, "comment": "нашли на складе" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{si}");
+    let stock_in = si["id"].as_str().unwrap().to_string();
+    let (s, _, sr) = call(
+        &app,
+        "POST",
+        "/api/v1/supplier-returns",
+        Some(&owner),
+        Some(
+            json!({ "op_id": Uuid::now_v7(), "supplier_id": sup, "settle": "debt",
+                      "lines": [{ "product_id": item, "qty": 1 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sr}");
+    let supplier_return = sr["id"].as_str().unwrap().to_string();
 
     // Право, метод, адрес и тело запроса (каждый раз со своим `op_id`).
     type Case = (&'static str, &'static str, String, Box<dyn Fn() -> Value>);
@@ -11324,6 +11465,49 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
             "PATCH",
             format!("/api/v1/products/{spare}"),
             Box::new(|| json!({ "archived": true })),
+        ),
+        // Списки и карточки документов склада (задача 003).
+        (
+            "receipts",
+            "GET",
+            "/api/v1/receipts".into(),
+            Box::new(|| json!({})),
+        ),
+        (
+            "receipts",
+            "GET",
+            format!("/api/v1/receipts/{receipt}"),
+            Box::new(|| json!({})),
+        ),
+        (
+            "stock_in",
+            "GET",
+            "/api/v1/stock-ins".into(),
+            Box::new(|| json!({})),
+        ),
+        (
+            "stock_in",
+            "GET",
+            "/api/v1/receipts?kind=stock_in".into(),
+            Box::new(|| json!({})),
+        ),
+        (
+            "stock_in",
+            "GET",
+            format!("/api/v1/stock-ins/{stock_in}"),
+            Box::new(|| json!({})),
+        ),
+        (
+            "supplier_returns",
+            "GET",
+            "/api/v1/supplier-returns".into(),
+            Box::new(|| json!({})),
+        ),
+        (
+            "supplier_returns",
+            "GET",
+            format!("/api/v1/supplier-returns/{supplier_return}"),
+            Box::new(|| json!({})),
         ),
     ];
     let all = avtodom_server::auth::default_permissions();

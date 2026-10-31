@@ -8,7 +8,7 @@
 
 use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
@@ -516,6 +516,47 @@ pub async fn forbid_after_doc(
         Some(n) => Err(AppError::Conflict(format!(
             "после документа у товара «{n}» изменилась единица или объём канистры: \
              отменить документ нельзя, поправьте остаток ревизией"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Как товар учитывается после пересчёта: «литрах (канистра 5 л)» или «штуках».
+fn unit_words(unit: &str, container_ml: Option<i64>) -> String {
+    match (unit, container_ml) {
+        ("ml", Some(c)) => format!("литрах (канистра {})", crate::domain::qty::liters(c)),
+        ("ml", None) => "литрах".into(),
+        _ => "штуках".into(),
+    }
+}
+
+/// «Изменить оплату» и «Исправить» чека повторяют его строки в прежних единицах: если после
+/// чека у товара менялись единица или объём канистры, новый чек не сложится. Понятный отказ
+/// 422 вместо «вид строки не подходит товару» (ADR-139, задача 003): чек исправляют возвратом
+/// (он переводит количество в нынешние единицы) и новым чеком.
+pub async fn forbid_sale_replay(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<()> {
+    let hit = sqlx::query!(
+        r#"select p.name, c.to_unit, c.to_container_ml,
+                  (c.created_at at time zone 'Asia/Bishkek')::date as "day!"
+           from sales s
+           join sale_lines l on l.sale_id = s.id
+           join products p on p.id = l.product_id
+           join product_unit_changes c on c.product_id = l.product_id and c.created_at > s.created_at
+           where s.id = $1
+           order by l.line_no, c.created_at desc, c.id desc
+           limit 1"#,
+        sale_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match hit {
+        Some(h) => Err(AppError::Validation(format!(
+            "Товар «{}» с {:02}.{:02}.{} учитывается в {}; исправьте чек через возврат и новый чек",
+            h.name,
+            h.day.day(),
+            h.day.month(),
+            h.day.year(),
+            unit_words(&h.to_unit, h.to_container_ml)
         ))),
         None => Ok(()),
     }

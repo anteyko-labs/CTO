@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select d.created_at, d.status, d.recognized, r.number as \"receipt_number?\"\n           from receipt_drafts x\n           join receipt_drafts d on d.id = coalesce(x.parent_id, x.id)\n           left join receipts r on r.id = d.receipt_id\n           where x.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "recognized",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "receipt_number?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "5dbe781245bda6e3429e7a96d9d9f109004eeb33372633898ab11f4106955947"
+}

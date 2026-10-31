@@ -923,3 +923,170 @@ async fn points_and_units_are_owner_only(pool: PgPool) {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(st["oil_change_only"], false);
 }
+
+// ---------- Задача 003: хвосты единицы товара (ADR-139) ----------
+
+/// «Исправить» и «Изменить оплату» чека, проведённого до смены единицы, — понятный 422; отмена
+/// решения по браку после пересчёта — 409.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn unit_change_blocks_replay_and_defect_reversal(pool: PgPool) {
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    receive(&pool, &w, w.oil, 12_000, 600_000).await;
+    let sold = sell(
+        &pool,
+        &w.owner,
+        takeaway(
+            &w,
+            None,
+            vec![line("container", w.oil, 1, 200_000)],
+            200_000,
+        ),
+    )
+    .await
+    .unwrap();
+    // Брак одной канистры и решение «списать» — до пересчёта.
+    let mut tx = pool.begin().await.unwrap();
+    let defect = avtodom_server::api::defects::mark_tx(
+        &mut tx,
+        &w.owner,
+        serde_json::from_value(json!({
+            "op_id": Uuid::now_v7(), "product_id": w.oil, "qty": 4000, "reason": "течёт",
+            "no_supplier": true
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    avtodom_server::api::defects::resolve_tx(
+        &mut tx,
+        &w.owner,
+        defect.id,
+        serde_json::from_value(json!({ "op_id": Uuid::now_v7(), "kind": "write_off" })).unwrap(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Литры → штуки по 4 л: остаток 4 л → 1 шт.
+    change(&pool, &w.owner, w.oil, unit_req("piece", None, Some(4_000)))
+        .await
+        .unwrap();
+
+    // «Исправить» — понятный отказ вместо «вид строки не подходит товару».
+    let mut tx = pool.begin().await.unwrap();
+    let r = avtodom_server::api::corrections::correct_tx(
+        &mut tx,
+        &w.owner,
+        serde_json::from_value(json!({
+            "op_id": Uuid::now_v7(), "kind": "sale", "original_id": sold.id,
+            "comment": "не та цена", "doc": {}
+        }))
+        .unwrap(),
+    )
+    .await;
+    match r {
+        Err(AppError::Validation(m)) => {
+            assert!(m.starts_with("Товар «Масло 5W-30 4л» с "), "{m}");
+            assert!(
+                m.contains("учитывается в штуках; исправьте чек через возврат и новый чек"),
+                "{m}"
+            );
+        }
+        other => panic!("{:?}", other.map(|o| o.new_number)),
+    }
+    drop(tx);
+    // «Изменить оплату» — тот же отказ.
+    let mut tx = pool.begin().await.unwrap();
+    let r = avtodom_server::api::pay_fix::pay_change_tx(
+        &mut tx,
+        &w.owner,
+        sold.id,
+        serde_json::from_value(json!({
+            "op_id": Uuid::now_v7(), "comment": "в QR",
+            "payments": [{ "method": "cash", "amount_tyiyn": 200000 }], "dry_run": true
+        }))
+        .unwrap(),
+    )
+    .await;
+    match r {
+        Err(AppError::Validation(m)) => assert!(m.contains("учитывается в штуках"), "{m}"),
+        other => panic!("{:?}", other.map(|o| o.new_number)),
+    }
+    drop(tx);
+    // Возврат по чеку проходит — он переводит количество в нынешние единицы.
+    give_back(&pool, &w, sold.id, 1, 1, 200_000).await.unwrap();
+    assert_eq!(stock(&pool, w.oil).await.0, 2);
+
+    // Отмена решения по браку после пересчёта — 409 с подсказкой.
+    let mut tx = pool.begin().await.unwrap();
+    let r = avtodom_server::api::defects::reverse_tx(
+        &mut tx,
+        &w.owner,
+        defect.id,
+        serde_json::from_value(json!({ "op_id": Uuid::now_v7(), "comment": "ошибся" })).unwrap(),
+    )
+    .await;
+    match r {
+        Err(AppError::Conflict(m)) => {
+            assert!(m.contains("изменилась единица"), "{m}");
+            assert!(m.contains("ревизией"), "{m}");
+        }
+        other => panic!("{:?}", other.map(|d| d.status)),
+    }
+    drop(tx);
+    assert_consistent(&pool, &w).await;
+}
+
+/// Отчёт «Замены»: литры — только строки канистрой и розливом; штучный товар категории масла —
+/// отдельно (задача 003).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn service_kinds_count_liters_only_from_ml_lines(pool: PgPool) {
+    let w = seed(&pool).await;
+    open_till(&pool, &w).await;
+    let cat_oil: Uuid = sqlx::query_scalar("select category_id from products where id = $1")
+        .bind(w.oil)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    // Штучный товар в категории масла: банка присадки.
+    let can = Uuid::now_v7();
+    sqlx::query("insert into products (id, category_id, name, unit) values ($1, $2, 'Присадка банка', 'piece')")
+        .bind(can)
+        .bind(cat_oil)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into branch_products (branch_id, product_id, sale_price_tyiyn) values ($1, $2, 30000)")
+        .bind(w.owner.user.branch_id)
+        .bind(can)
+        .execute(&pool)
+        .await
+        .unwrap();
+    receive(&pool, &w, w.oil, 12_000, 600_000).await;
+    receive(&pool, &w, can, 5, 50_000).await;
+    let m = member(&pool, &w).await;
+    let mut req = oil_change(&w, m, 0);
+    req.lines.insert(1, line("piece", can, 2, 30_000));
+    req.payments = cash(260_000);
+    sell(&pool, &w.owner, req).await.unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let out =
+        avtodom_server::api::reports::service_kinds_data(&mut conn, &w.owner.user, None, None)
+            .await
+            .unwrap();
+    let kind = out
+        .kinds
+        .iter()
+        .find(|k| k.service_id == Some(w.service))
+        .unwrap();
+    let oil = kind.oils.iter().find(|o| o.product_id == w.oil).unwrap();
+    assert_eq!((oil.total_ml, oil.pieces, oil.canisters), (4_000, 0, 1));
+    let piece = kind.oils.iter().find(|o| o.product_id == can).unwrap();
+    assert_eq!(
+        (piece.total_ml, piece.pieces),
+        (0, 2),
+        "штуки не идут в литры"
+    );
+}

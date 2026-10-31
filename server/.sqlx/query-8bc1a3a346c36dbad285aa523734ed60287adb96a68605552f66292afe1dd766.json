@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update bot_photo_seen set draft_id = $3 where chat_id = $1 and file_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8bc1a3a346c36dbad285aa523734ed60287adb96a68605552f66292afe1dd766"
+}

@@ -179,6 +179,8 @@ async fn list(
     Query(page): Query<PageQuery>,
 ) -> AppResult<Paged<SupplierReturnOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Возвраты поставщику — по праву «Возврат поставщику», как пункт меню (I12, задача 003).
+    crate::auth::require_permission(&mut conn, &user, "supplier_returns").await?;
     let (items, total) = page.slice(load(&mut conn, &user, None, q).await?, 500);
     Ok(paged(items, total))
 }
@@ -189,6 +191,8 @@ async fn get_one(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<SupplierReturnOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Возвраты поставщику — по праву «Возврат поставщику», как пункт меню (I12, задача 003).
+    crate::auth::require_permission(&mut conn, &user, "supplier_returns").await?;
     Ok(Json(load_one(&mut conn, &user, id).await?))
 }
 
@@ -246,6 +250,8 @@ async fn price_hint(
     Query(q): Query<PriceQuery>,
 ) -> AppResult<Json<PriceOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Возвраты поставщику — по праву «Возврат поставщику», как пункт меню (I12, задача 003).
+    crate::auth::require_permission(&mut conn, &user, "supplier_returns").await?;
     Ok(Json(PriceOut {
         price_tyiyn: last_supplier_price(&mut conn, user.branch_id, q.supplier_id, q.product_id)
             .await?,

@@ -86,6 +86,11 @@ describe('масло в заменах', () => {
     expect(oilAmountText({ canisters: 2, pour_ml: 1_500, total_ml: 9_500, container_ml: 4_000 })).toBe('2 кан. по 4 л + 1,5 л розливом = 9,5 л')
     expect(oilAmountText({ canisters: 0, pour_ml: 3_000, total_ml: 3_000, container_ml: 4_000 })).toBe('3 л розливом = 3 л')
   })
+  it('штучный товар в категории масла — отдельно от литров', () => {
+    expect(oilAmountText({ canisters: 0, pour_ml: 0, total_ml: 0, container_ml: null, pieces: 3 })).toBe('3\u00a0шт')
+    expect(oilAmountText({ canisters: 1, pour_ml: 0, total_ml: 4_000, container_ml: 4_000, pieces: 2 }))
+      .toBe('1 кан. по 4\u00a0л = 4\u00a0л; 2\u00a0шт')
+  })
 })
 
 describe('looksLikePlate', () => {

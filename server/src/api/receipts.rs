@@ -1123,6 +1123,8 @@ async fn get_receipt(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<ReceiptOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Накладная — по праву «Приход товара», как пункт меню (I12, задача 003).
+    crate::auth::require_permission(&mut conn, &user, "receipts").await?;
     Ok(Json(load_receipt(&mut conn, user.branch_id, id).await?))
 }
 
@@ -1268,6 +1270,19 @@ async fn list_receipts(
         Some(_) => return Err(invalid("вид: all, receipt или stock_in")),
     };
     let mut conn = state.pool.acquire().await?;
+    // Накладные — по праву «Приход товара», оприходования — «Оприходование» (как пункты меню,
+    // I12, задача 003). «Все» показывает то, на что есть право; без обоих — 403.
+    let may_receipts = crate::auth::has_permission(&mut conn, &user, "receipts").await?;
+    let may_stock_in = crate::auth::has_permission(&mut conn, &user, "stock_in").await?;
+    let missing = match k.kind.as_deref() {
+        Some("stock_in") => (!may_stock_in).then_some("stock_in"),
+        Some("all") => (!may_receipts && !may_stock_in).then_some("receipts"),
+        _ => (!may_receipts).then_some("receipts"),
+    };
+    if let Some(p) = missing {
+        crate::auth::require_permission(&mut conn, &user, p).await?;
+    }
+    let (receipts, stock_ins) = (receipts && may_receipts, stock_ins && may_stock_in);
     let mut rows = Vec::new();
     // Фото бывают только у накладных поставщика: с отбором «с фото» оприходований нет.
     let stock_ins = stock_ins && !q.photo;

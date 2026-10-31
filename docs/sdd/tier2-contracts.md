@@ -16,14 +16,14 @@
 - Новый маршрут попадает в обход филиалов `server/tests/branches.rs`.
 
 ## Данные
-- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0085). Применённые не правятся; номер — следующий за последним в main.
+- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0086). Применённые не правятся; номер — следующий за последним в main.
 - Деньги — `*_tyiyn BIGINT`; объёмы — мл; пробег — `mileage_km` + как вписан (`mileage_value`, `mileage_unit`).
 - Долги — `party_ledger` (append-only, сторно — `reversal_of`); касса/счета — движения; склад — движения.
 - Книжка ТО: `oil_changes` + `oil_change_items` (строка = `slot`, `next_km`/`next_date`); фильтры масляный/воздушный/салонный идут на срок масла (ADR-117); итог чека — только строки этого чека (ADR-111); цель, которую кассир не прислал, ставит сервер — пробег + интервал, `target_auto` (ADR-144).
 - SQL в Rust — макросы `sqlx::query!`; после правки SQL — `cargo sqlx prepare -- --all-targets` на базе `avtodom_e2e*`, коммит `server/.sqlx`.
 
 ## Уведомления владельцу
-- `WATCHED` в `server/src/api/notifications.rs` (длина массива = число событий) + текст в `describe`; уходят и в бот владельца. Новое событие — SPEC-13 и выключатель в `server/src/api/bot_feed.rs` (`EVENTS`, тест сверяет); что приходит в бот, каждый владелец выбирает сам, чеки по умолчанию не приходят (ADR-138). Сейчас событий 77; последнее — `payroll.salary_due` «Сегодня расчёт оклада» (ADR-155).
+- `WATCHED` в `server/src/api/notifications.rs` (длина массива = число событий) + текст в `describe`; уходят и в бот владельца. Новое событие — SPEC-13 и выключатель в `server/src/api/bot_feed.rs` (`EVENTS`, тест сверяет); что приходит в бот, каждый владелец выбирает сам, чеки по умолчанию не приходят (ADR-138). Сейчас событий 78; последнее — `service.create_admin` «Администратор завёл услугу» (ADR-160).
 
 ## Проверки (команда — `scripts/sdd-review.sh`)
 - Быстрый набор (каждая задача): сервер — `cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test`; клиент — `tsc -b`, `oxlint src`, `npm test`, `vite build`.

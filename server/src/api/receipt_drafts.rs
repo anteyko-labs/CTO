@@ -1698,6 +1698,103 @@ pub const BAD_KIND_BOT: &str = "Пришлите накладную фотогр
 pub struct BotFile {
     pub data: Vec<u8>,
     pub name: String,
+    /// Ключ фото в Телеграме (`file_unique_id`, без него — `file_id`): повтор того же фото в том
+    /// же чате в течение суток — не новый черновик (задача 003). Пусто — без проверки.
+    pub file_key: Option<String>,
+}
+
+/// Ключ фото не длиннее строки таблицы; пустой — без проверки повтора.
+fn photo_key(key: Option<&str>) -> Option<&str> {
+    key.map(str::trim)
+        .filter(|k| !k.is_empty() && k.chars().count() <= 256)
+}
+
+/// Это фото уже приходило в этот чат за сутки: ответ «уже принято» с черновиком, куда оно легло
+/// (задача 003). Не приходило — `None`.
+pub async fn seen_photo(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    key: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(key) = photo_key(key) else {
+        return Ok(None);
+    };
+    let row = sqlx::query!(
+        r#"select s.draft_id from bot_photo_seen s
+           where s.chat_id = $1 and s.file_key = $2 and s.created_at > now() - interval '1 day'"#,
+        chat_id,
+        key
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let Some(draft) = row.draft_id else {
+        return Ok(Some(
+            "Это фото уже принято и сохраняется — второй раз не нужно.".into(),
+        ));
+    };
+    let d = sqlx::query!(
+        r#"select d.created_at, d.status, d.recognized, r.number as "receipt_number?"
+           from receipt_drafts x
+           join receipt_drafts d on d.id = coalesce(x.parent_id, x.id)
+           left join receipts r on r.id = d.receipt_id
+           where x.id = $1"#,
+        draft
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let inv = d.recognized.as_ref().and_then(parse_invoice);
+    let what = inv
+        .as_ref()
+        .map(|i| {
+            let mut t = i.supplier_name.trim().to_string();
+            if !i.doc_number.trim().is_empty() {
+                if !t.is_empty() {
+                    t.push_str(", ");
+                }
+                t.push_str(&format!("№ {}", i.doc_number.trim()));
+            }
+            t
+        })
+        .filter(|t| !t.is_empty())
+        .map(|t| format!(" ({t})"))
+        .unwrap_or_default();
+    let at = (d.created_at + chrono::Duration::hours(6)).format("%d.%m %H:%M");
+    let state = match (d.status.as_str(), d.receipt_number) {
+        ("used", Some(n)) => format!("принята: приход № {n}"),
+        ("used", None) => "принята".to_string(),
+        ("acceptance", _) => "на приёмке".to_string(),
+        ("removed", _) => "убрана".to_string(),
+        _ => "ждёт проверки".to_string(),
+    };
+    Ok(Some(format!(
+        "Это фото уже принято: черновик от {at}{what} — {state}. Второй раз не сохраняю. {WHERE}"
+    )))
+}
+
+/// Занять фото до сохранения черновика: `false` — то же фото уже пришло за сутки (или
+/// сохраняется прямо сейчас). Через сутки запись переходит к новому черновику.
+async fn claim_photo(
+    conn: &mut PgConnection,
+    chat_id: i64,
+    key: &str,
+    branch_id: Uuid,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"insert into bot_photo_seen (chat_id, file_key, branch_id) values ($1, $2, $3)
+           on conflict (chat_id, file_key) do update
+             set branch_id = excluded.branch_id, draft_id = null, created_at = now()
+             where bot_photo_seen.created_at <= now() - interval '1 day'
+           returning chat_id"#,
+        chat_id,
+        key,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .is_some())
 }
 
 /// Кто привязал чат: активный владелец или администратор (ADR-063, ADR-070, ADR-135) и кто в
@@ -2122,6 +2219,17 @@ pub async fn from_bot_answer(
     let Some(kind) = sniff(&file.data) else {
         return Ok(BotAnswer::text(BAD_KIND_BOT));
     };
+    // То же фото в этот чат за сутки — не новый черновик (задача 003).
+    let key = photo_key(file.file_key.as_deref()).map(str::to_string);
+    if let Some(k) = &key {
+        let mut conn = pool.acquire().await?;
+        if !claim_photo(&mut conn, chat_id, k, user.branch_id).await? {
+            let text = seen_photo(&mut conn, chat_id, Some(k))
+                .await?
+                .unwrap_or_else(|| "Это фото уже принято — второй раз не нужно.".to_string());
+            return Ok(BotAnswer::text(text));
+        }
+    }
     let ctx = Ctx::bot(user, chat_id);
     let new = |parent_id| NewDraft {
         source: "bot",
@@ -2137,13 +2245,46 @@ pub async fn from_bot_answer(
     // Накладную за это время провели или отправили на приёмку — фото становится новой.
     let started = match start(pool, &ctx, new(parent)).await {
         Err(AppError::Conflict(_) | AppError::Validation(_)) if parent.is_some() => {
-            start(pool, &ctx, new(None)).await?
+            start(pool, &ctx, new(None)).await
         }
-        r => r?,
+        r => r,
+    };
+    // Черновик не сохранился — фото снова можно прислать.
+    let release = |key: Option<String>| async move {
+        if let Some(k) = key {
+            let mut conn = pool.acquire().await?;
+            sqlx::query!(
+                "delete from bot_photo_seen where chat_id = $1 and file_key = $2 and draft_id is null",
+                chat_id,
+                k
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+        AppResult::Ok(())
+    };
+    let started = match started {
+        Ok(s) => s,
+        Err(e) => {
+            release(key).await?;
+            return Err(e);
+        }
     };
     let Start::New { id, recognition } = started else {
+        release(key).await?;
         return Ok(BotAnswer::text(format!("{FAILED}: {WHERE}")));
     };
+    if let Some(k) = &key {
+        let mut conn = pool.acquire().await?;
+        sqlx::query!(
+            "update bot_photo_seen set draft_id = $3 where chat_id = $1 and file_key = $2",
+            chat_id,
+            k,
+            id
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
     if let ("pending", Some(a)) = (recognition, a) {
         recognize(pool, a, &ctx, id, &file.data, kind).await?;
     }

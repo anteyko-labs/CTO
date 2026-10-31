@@ -320,14 +320,21 @@ function ImportModal({ candidates, onClose, onDone }: { candidates: ServiceCandi
 export default function Services() {
   const owner = useUser().role === 'owner'
   // Заводить и править — по праву «Услуги» (задача 003 Н8); без него список только для чтения.
-  const mayEdit = useCan()('services')
+  const can = useCan()
+  const mayEdit = can('services')
   const list = useLoad(() => get<Service[]>('/services'), [])
   // Флажок доливки: пока владелец его не трогал (null) — по названию услуги, как на сервере.
   const [form, setForm] = useState<{ name: string; price: string; fee: string; free: boolean; oilCat: string; takeaway: boolean | null }>({ name: '', price: '', fee: '', free: false, oilCat: '', takeaway: null })
   const takeawayShown = form.takeaway ?? /долив/i.test(form.name)
   // Ставка мастеру по умолчанию — за каждую услугу (ADR-112): подсказка в пустом поле.
-  const salesSettings = useLoad(() => get<{ oil_change_master_fee_tyiyn: number }>('/settings/sales'), [])
+  const salesSettings = useLoad(
+    () => get<{ oil_change_master_fee_tyiyn: number; service_price_owner_only?: boolean }>('/settings/sales'),
+    [],
+  )
   const defaultFee = salesSettings.data?.oil_change_master_fee_tyiyn
+  // «Цену новой услуги задаёт только владелец» («Настройки → Продажи», задача 003): администратор
+  // без права «Цены товаров и услуг» заводит услугу с ценой 0.
+  const priceLocked = !owner && Boolean(salesSettings.data?.service_price_owner_only) && !can('prices')
   const [book, setBook] = useState<BookForm>({ slot: '', km: '', days: '' })
   const categories = useOilCategories()
   const catName = (id: string | null | undefined) => categories.data?.find((c) => c.id === id)?.name
@@ -351,7 +358,7 @@ export default function Services() {
     void run(async () => {
       await post<Service>('/services', {
         name: form.name,
-        ...amounts(form.price, form.fee),
+        ...amounts(priceLocked ? '0' : form.price, form.fee),
         free_with_oil: owner && form.free,
         ...(owner && form.free && form.oilCat ? { oil_category_id: form.oilCat } : {}),
         ...(owner ? bookPayload(book, false) : {}),
@@ -373,7 +380,7 @@ export default function Services() {
 
   const notFilled = missingWithFocus(
     [Boolean(form.name.trim()), 'название', '#service-name'],
-    [Boolean(form.price.trim()), 'цену', '#service-price'],
+    [priceLocked || Boolean(form.price.trim()), 'цену', '#service-price'],
     [!form.free || Boolean(form.oilCat), 'категорию масла', '#service-oil'],
   )
   const needle = q.trim().toLowerCase()
@@ -511,8 +518,15 @@ export default function Services() {
               <input id="service-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </Field>
             <div className="flex flex-wrap gap-3">
-              <Field label="Цена клиенту, с" required hint="Со своим маслом">
-                <input id="service-price" className="w-40" inputMode="decimal" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+              <Field label="Цена клиенту, с" required={!priceLocked} hint={priceLocked ? 'Цену задаёт владелец' : 'Со своим маслом'}>
+                <input
+                  id="service-price"
+                  className="w-40"
+                  inputMode="decimal"
+                  disabled={priceLocked}
+                  value={priceLocked ? '0' : form.price}
+                  onChange={(e) => setForm({ ...form, price: e.target.value })}
+                />
               </Field>
               <label className="flex flex-col gap-1 text-sm">
                 <span className="font-medium text-slate-700">

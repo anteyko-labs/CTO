@@ -696,6 +696,7 @@ async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
     let file = || BotFile {
         data: JPEG.to_vec(),
         name: "фото из бота".into(),
+        file_key: None,
     };
     let text = receipt_drafts::from_bot(&w.pool, None, chat, chat, file())
         .await
@@ -764,6 +765,7 @@ async fn without_key_failure_retries_and_hour_limit(pool: PgPool) {
         BotFile {
             data: b"<html>".to_vec(),
             name: String::new(),
+            file_key: None,
         },
     )
     .await
@@ -1467,10 +1469,18 @@ async fn receipts_search_by_doc_goods_amount_and_photo(pool: PgPool) {
         .await
         .unwrap();
     let hash = hash_password("admin2-pass-1".into()).await.unwrap();
+    let admin2_id = Uuid::now_v7();
     sqlx::query("insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, 'admin2', $3, 'admin', 'Админ 2')")
-        .bind(Uuid::now_v7())
+        .bind(admin2_id)
         .bind(other)
         .bind(hash)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    // Право «Приход товара» есть (список — по праву, задача 003): чужих накладных всё равно не видно.
+    sqlx::query("insert into user_permissions (user_id, branch_id, permission) values ($1, $2, 'receipts'), ($1, $2, 'stock_in')")
+        .bind(admin2_id)
+        .bind(other)
         .execute(&w.pool)
         .await
         .unwrap();
@@ -1518,6 +1528,7 @@ async fn bot_photos_merge_into_one_invoice_when_set(pool: PgPool) {
     let file = || BotFile {
         data: JPEG.to_vec(),
         name: "фото из бота".into(),
+        file_key: None,
     };
     // По умолчанию — как раньше: два фото — две накладные, кнопки «другая накладная» нет.
     let (_, st) = call(
@@ -1655,4 +1666,83 @@ async fn bot_photos_merge_into_one_invoice_when_set(pool: PgPool) {
         .execute(&w.pool)
         .await;
     assert!(r.is_err());
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn same_bot_photo_within_a_day_is_not_a_new_draft(pool: PgPool) {
+    // Задача 003: то же фото (тот же ключ Телеграма) в тот же чат за сутки — ответ «уже принято»,
+    // второго черновика нет; другое фото — новый черновик; через сутки — снова новый.
+    let w = setup(pool, None).await;
+    let chat = 950_101i64;
+    link_owner_chat(&w, chat).await;
+    let photo = |key: &str| BotFile {
+        data: JPEG.to_vec(),
+        name: "фото из бота".into(),
+        file_key: Some(key.into()),
+    };
+    let pool = w.pool.clone();
+    let drafts = move || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("select count(*) from receipt_drafts where source = 'bot'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let text = receipt_drafts::from_bot(&w.pool, None, chat, chat, photo("AQADuniq1"))
+        .await
+        .unwrap();
+    assert!(text.contains("Фото сохранено"), "{text}");
+    assert_eq!(drafts().await, 1);
+    let text = receipt_drafts::from_bot(&w.pool, None, chat, chat, photo("AQADuniq1"))
+        .await
+        .unwrap();
+    assert!(
+        text.starts_with("Это фото уже принято: черновик от "),
+        "{text}"
+    );
+    assert!(text.contains("ждёт проверки"), "{text}");
+    assert_eq!(drafts().await, 1);
+    // Проверка до скачивания — тот же ответ; другое фото не встречалось.
+    let mut conn = w.pool.acquire().await.unwrap();
+    let seen = receipt_drafts::seen_photo(&mut conn, chat, Some("AQADuniq1"))
+        .await
+        .unwrap();
+    assert!(seen.is_some());
+    assert!(
+        receipt_drafts::seen_photo(&mut conn, chat, Some("AQADother"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(conn);
+    // Другое фото — новый черновик.
+    receipt_drafts::from_bot(&w.pool, None, chat, chat, photo("AQADother"))
+        .await
+        .unwrap();
+    assert_eq!(drafts().await, 2);
+    // Через сутки то же фото — снова черновик.
+    sqlx::query(
+        "update bot_photo_seen set created_at = now() - interval '25 hours' where file_key = 'AQADuniq1'",
+    )
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let text = receipt_drafts::from_bot(&w.pool, None, chat, chat, photo("AQADuniq1"))
+        .await
+        .unwrap();
+    assert!(text.contains("Фото сохранено"), "{text}");
+    assert_eq!(drafts().await, 3);
+    // Не из чата владельца — фото не занимается: отказ, как раньше.
+    let text = receipt_drafts::from_bot(&w.pool, None, 950_102, 950_102, photo("AQADuniq9"))
+        .await
+        .unwrap();
+    assert_eq!(text, receipt_drafts::NOT_OWNER);
+    let held: i64 =
+        sqlx::query_scalar("select count(*) from bot_photo_seen where file_key = 'AQADuniq9'")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    assert_eq!(held, 0);
 }

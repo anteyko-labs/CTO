@@ -132,3 +132,7 @@ updated: 2026-10-31
 - [x] Чек в ленте — с себестоимостью и прибылью; выключатель — без них (`telegram_bot_links_owner_and_forwards_events`, e2e `bot-feed-settings`).
 - [x] «Цена изменена прямо в чеке» — № чека, товар, цены и скидка (`price_override_names_check_line_and_discount`, `admin_discount_limit_is_checked_by_server`).
 
+
+## Дополнено задачей 003 (31.10.2026): «Администратор завёл услугу» (ADR-160)
+
+`service.create_admin` «Администратор завёл услугу «{название}»» — «цена N с, ставка мастеру M с». Пишется вместо `service.create`, когда услугу заводит администратор (право «Услуги»); услуга владельца — `service.create`, без уведомления. В `WATCHED` (длина 78) и в «Уведомлениях в бот» (группа «Касса», по умолчанию включено, выключается у каждого владельца). Проверка — `describe_texts` (`notifications.rs`), `every_bot_event_has_a_switch` (`bot_feed.rs`), `new_service_price_can_be_owner_only` (`server/tests/http.rs`), e2e `sales-settings.spec.ts`.

@@ -166,6 +166,8 @@ async fn list(
     Query(page): Query<PageQuery>,
 ) -> AppResult<Paged<StockInOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Оприходования — по праву «Оприходование», как пункт меню (I12, задача 003).
+    crate::auth::require_permission(&mut conn, &user, "stock_in").await?;
     let (items, total) = page.slice(load(&mut conn, user.branch_id, None, f).await?, 500);
     Ok(paged(items, total))
 }
@@ -176,6 +178,8 @@ async fn get_one(
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<StockInOut>> {
     let mut conn = state.pool.acquire().await?;
+    // Оприходования — по праву «Оприходование», как пункт меню (I12, задача 003).
+    crate::auth::require_permission(&mut conn, &user, "stock_in").await?;
     Ok(Json(load_one(&mut conn, user.branch_id, id).await?))
 }
 

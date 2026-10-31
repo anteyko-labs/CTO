@@ -1549,7 +1549,10 @@ export interface ServiceOil {
   container_ml: number | null
   canisters: number
   pour_ml: number
+  /** Литры — только строки канистрой и розливом. */
   total_ml: number
+  /** Штучный товар в категории масла — отдельно от литров (задача 003). */
+  pieces?: number
 }
 
 /** Вид замены за период; без `service_id` — чеки «в сервис» без вида замены (ставка за чек). */

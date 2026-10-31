@@ -138,7 +138,8 @@ export default function Receipts() {
           </Field>
           <Field label="Показать">
             <select id="receipts-kind" value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
-              {KINDS.map(([k, label]) => (
+              {/* Накладные — по праву «Приход товара», оприходования — «Оприходование» (задача 003). */}
+              {KINDS.filter(([k]) => k === 'all' || can(k === 'receipt' ? 'receipts' : 'stock_in')).map(([k, label]) => (
                 <option key={k} value={k}>
                   {label}
                 </option>

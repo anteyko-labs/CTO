@@ -3742,12 +3742,17 @@ struct Message {
 #[derive(Deserialize)]
 struct PhotoSize {
     file_id: String,
+    /// Один и тот же у того же файла в разных сообщениях (`file_id` может отличаться).
+    #[serde(default)]
+    file_unique_id: Option<String>,
     file_size: Option<i64>,
 }
 
 #[derive(Deserialize)]
 struct Document {
     file_id: String,
+    #[serde(default)]
+    file_unique_id: Option<String>,
     file_name: Option<String>,
     mime_type: Option<String>,
     file_size: Option<i64>,
@@ -3757,6 +3762,8 @@ struct Document {
 #[derive(Debug, Clone)]
 pub struct IncomingFile {
     pub file_id: String,
+    /// Ключ повтора того же фото (задача 003): `file_unique_id`, без него — `file_id`.
+    pub key: String,
     /// Размер по словам Телеграма; `None` — неизвестен.
     pub size: Option<i64>,
     pub name: String,
@@ -3840,12 +3847,20 @@ fn incoming(u: Update) -> Option<Incoming> {
     let file = match (pick_photo(&m.photo), &m.document) {
         (Some(p), _) => Some(IncomingFile {
             file_id: p.file_id.clone(),
+            key: p
+                .file_unique_id
+                .clone()
+                .unwrap_or_else(|| p.file_id.clone()),
             size: p.file_size,
             name: "фото из бота".into(),
             mime: "image/jpeg".into(),
         }),
         (None, Some(d)) => Some(IncomingFile {
             file_id: d.file_id.clone(),
+            key: d
+                .file_unique_id
+                .clone()
+                .unwrap_or_else(|| d.file_id.clone()),
             size: d.file_size,
             name: d.file_name.clone().unwrap_or_default(),
             mime: d.mime_type.clone().unwrap_or_default(),
@@ -3975,6 +3990,10 @@ pub async fn file_reply(
     if !file.mime.is_empty() && !known.contains(&file.mime.as_str()) {
         return Ok((Reply::new(drafts::BAD_KIND_BOT, keys), false));
     }
+    // То же фото за сутки (повтор обновления Телеграма или пересылка) — не новый черновик.
+    if let Some(text) = drafts::seen_photo(conn, chat_id, Some(&file.key)).await? {
+        return Ok((Reply::new(text, keys), false));
+    }
     let text = if assistant.is_some() {
         drafts::ACCEPTED
     } else {
@@ -4018,6 +4037,7 @@ async fn file_task(
             let f = drafts::BotFile {
                 data,
                 name: file.name.clone(),
+                file_key: Some(file.key.clone()),
             };
             drafts::from_bot_answer(&pool, assistant.as_ref(), chat_id, from_id, f)
                 .await

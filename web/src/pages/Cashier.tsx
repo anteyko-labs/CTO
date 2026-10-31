@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { Link, useNavigate } from 'react-router-dom'
 import { CashierFavorites } from '../components/CashierFavorites'
 import { CashierModeBar } from '../components/CashierModeBar'
+import { CashToBankModal, useCanFixPay } from '../components/PayChange'
 import { DiscountModal, type DiscountLine } from '../components/DiscountModal'
 import { printShift } from '../components/shiftPrint'
 import { NoReceiptReturn } from '../components/NoReceiptReturn'
@@ -397,6 +398,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         }),
     [],
   )
+  // «Наличные ↔ QR» кнопкой режима кассы: владелец при связи, администратор с правом в открытой смене.
+  const canPayFix = useCanFixPay(Boolean(shift.data))
   // Смену могли открыть или закрыть на другом устройстве: кассир чека меняется вместе с ней.
   usePolling(shift.reload, 30_000)
   // Исправление начинает с исходного чека и не трогает незавершённый чек кассы.
@@ -442,6 +445,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Окно «Скидка» (задача 003 Н3) и «Ещё действия…» режима кассы (Н2).
   const [discountOpen, setDiscountOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
+  // «Наличные ↔ QR» кнопкой режима кассы (задача 003): место — «Настройки → Касса».
+  const [payFixOpen, setPayFixOpen] = useState(false)
   // Старый аккумулятор в оплату: вес × цена приёма за кг; сумму считает сервер (SPEC-27).
   const [batteryPay, setBatteryPay] = useState<{ kgText: string; perKgText: string } | null>(fix?.state.battery ?? null)
   const batteryLoad = useAction()
@@ -1576,6 +1581,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             Баллы клиента
           </button>
         )
+      // «Наличные ↔ QR» открытой смены (задача 003 Н1): владелец при связи, администратор с правом.
+      case 'pay_fix':
+        return shift.data && canPayFix ? (
+          <button key={id} type="button" data-testid="mode-pay-fix" className={cls} onClick={act(() => setPayFixOpen(true))}>
+            Наличные ↔ QR
+          </button>
+        ) : null
       // Кнопки полосы, перенесённые в «Ещё действия…».
       case 'shift_print':
         return shift.data ? (
@@ -3356,6 +3368,17 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             setLines((ls) => ls.map((l) => (prices.has(l.key) ? { ...l, priceText: somInput(prices.get(l.key) ?? 0) } : l)))
             setDiscountOpen(false)
           }}
+        />
+      )}
+      {payFixOpen && shift.data && (
+        <CashToBankModal
+          shiftId={shift.data.id}
+          onClose={() => setPayFixOpen(false)}
+          onDone={() => {
+            setPayFixOpen(false)
+            shift.reload()
+          }}
+          onChanged={shift.reload}
         />
       )}
       {moreOpen && (

@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 77] = [
+pub(crate) const WATCHED: [&str; 78] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -99,6 +99,8 @@ pub(crate) const WATCHED: [&str; 77] = [
     "shift.cash_to_bank_reverse",
     // День расчёта оклада (задача 003 Н11).
     "payroll.salary_due",
+    // Услугу завёл администратор (задача 003).
+    "service.create_admin",
 ];
 
 #[derive(Serialize)]
@@ -619,6 +621,14 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 "Долг клиента — {}{}",
                 money(num("balance_tyiyn")),
                 comment(data)
+            ),
+        ),
+        "service.create_admin" => (
+            format!("Администратор завёл услугу «{}»", text("name")),
+            format!(
+                "цена {}, ставка мастеру {}",
+                money(num("price")),
+                money(num("fee"))
             ),
         ),
         "user.create" => (
@@ -1572,6 +1582,12 @@ mod tests {
             text,
             "300 с из «Сейф» сразу при приходе, остаток 900 с — в долг"
         );
+        let (title, text) = describe(
+            "service.create_admin",
+            &json!({ "name": "Мойка радиатора", "price": 50_000, "fee": 3_000 }),
+        );
+        assert_eq!(title, "Администратор завёл услугу «Мойка радиатора»");
+        assert_eq!(text, "цена 500 с, ставка мастеру 30 с");
         let (_, text) = describe(
             "oil.transfer_admin",
             &json!({ "number": 1, "from_name": "Бочка", "to_name": "Розлив", "qty_ml": 2000, "value": 100_000 }),

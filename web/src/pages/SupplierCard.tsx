@@ -99,10 +99,12 @@ export default function SupplierCard() {
           <div className="text-xs text-slate-500">Телефон</div>
           <div className="font-medium">{s.phone || '—'}</div>
         </div>
-        <div>
-          <div className="text-xs text-slate-500">Поставок</div>
-          <div className="font-medium">{receipts.total}</div>
-        </div>
+        {can('receipts') && (
+          <div>
+            <div className="text-xs text-slate-500">Поставок</div>
+            <div className="font-medium">{receipts.total}</div>
+          </div>
+        )}
         <div>
           <div className="text-xs text-slate-500">Привезено на сумму{from || to ? ' за период' : ''}</div>
           <div className="font-medium">{formatSom(deliveries.data?.amount_tyiyn ?? 0)}</div>
@@ -163,7 +165,10 @@ export default function SupplierCard() {
             ['returns', 'Возвраты'],
             ['lines', 'Строки накладных'],
           ] as const
-        ).map(([key, label]) => (
+        )
+          // Накладные и возвраты — по праву своего пункта меню (задача 003; проверяет и сервер).
+          .filter(([key]) => (key !== 'receipts' || can('receipts')) && (key !== 'returns' || can('supplier_returns')))
+          .map(([key, label]) => (
           <button
             key={key}
             type="button"

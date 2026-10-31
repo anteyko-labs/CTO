@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into bot_photo_seen (chat_id, file_key, branch_id) values ($1, $2, $3)\n           on conflict (chat_id, file_key) do update\n             set branch_id = excluded.branch_id, draft_id = null, created_at = now()\n             where bot_photo_seen.created_at <= now() - interval '1 day'\n           returning chat_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a55ba425b9fc44d129054df9e0c2799295a5a7d0b1552719fb6d009f32850400"
+}
