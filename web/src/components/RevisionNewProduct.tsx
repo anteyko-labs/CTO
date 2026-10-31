@@ -1,9 +1,10 @@
 // В ревизию — товар, которого нет в программе (SPEC-29 §10): карточка заводится сразу с найденным
 // количеством одной операцией; подсказки из старой программы заполняют карточку.
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { get, newOpId, post, put } from '../lib/api'
 import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
+import { InputOps, qtyInUnits, type ShelfInput } from '../lib/revisionCount'
 import { useUser } from '../lib/auth'
 import { canisterPourPrice } from '../lib/money'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
@@ -51,6 +52,15 @@ const empty = (barcode = '', name = ''): Form => ({
   umagId: null,
 })
 
+/** Найденное как ввели: целые штуки (канистры) и литры початой тары; неверно — null. */
+function shelfOf(cans: string, liters: string): ShelfInput | null {
+  const c = cans.trim()
+  const l = liters.trim()
+  if (c && !/^\d+$/.test(c)) return null
+  const ml = l ? parseLiters(l) : 0
+  return ml === null ? null : { cans: c ? Number(c) : 0, ml }
+}
+
 /** Количество на полке: штуки целым; масло — «кан. + л» по объёму тары (SPEC-36 §13). */
 function countOf(tare: number | null, cans: string, liters: string): number | null {
   if (tare !== null) {
@@ -85,8 +95,9 @@ export function RevisionNewProduct({
     presetBarcode ? { ...empty(presetBarcode), categoryId: categoryId ?? '' } : null,
   )
   const [opId] = useState(newOpId)
-  /** Прибавка к товару, который в ту же минуту завёл другой: повтор того же не прибавит дважды. */
-  const addOp = useRef<{ key: string; id: string } | null>(null)
+  /** Прибавка к товару, который в ту же минуту завёл другой: тот же не записанный ввод — тот же
+   *  op_id, повтор после обрыва не прибавит дважды (правило ввода, как в строке ревизии). */
+  const [ops] = useState(() => new InputOps(newOpId))
   const act = useAction()
   // Связать новую карточку со строкой Умага — право «Товары и штрихкоды» (SPEC-35 §4).
   const mayLink = can(useUser(), 'products')
@@ -172,11 +183,19 @@ export function RevisionNewProduct({
         // Товар с этим кодом — из другой категории: в эту ревизию он не входит, прибавлять некуда.
         if (categoryId && r.product.category_id !== categoryId)
           throw new Error(`Код ${form.barcode.trim()} уже у товара «${r.product.name}» из другой категории — в эту ревизию он не входит`)
-        // Тот же товар в этом окне — тот же op_id: повторное «Завести» после обрыва не прибавит дважды.
-        const key = `${r.product.id}:${count}`
-        if (addOp.current?.key !== key) addOp.current = { key, id: newOpId() }
-        const body = { product_id: r.product.id, counted_qty: count, mode: 'add', op_id: addOp.current.id }
+        // Найденное — в единицах его товара (у него может быть другая тара или штуки вместо литров).
+        const raw = shelfOf(form.count, oil ? form.countL : '')
+        const qty = raw === null ? null : qtyInUnits(raw, r.product)
+        if (qty === null) {
+          toast(`Этот товар только что завёл другой, у него другие единицы — впишите найденное в строке «${r.product.name}»`)
+          onExisting(r.product)
+          return
+        }
+        // Тот же не записанный ввод в этом окне — тот же op_id: повторное «Завести» после обрыва не прибавит дважды.
+        const opId = ops.take('taken', `${r.product.id}|${qty}`)
+        const body = { product_id: r.product.id, counted_qty: qty, mode: 'add', op_id: opId }
         await retrySame(() => put(`/revisions/${revisionId}/lines`, body))
+        ops.done('taken', opId)
         toast(TAKEN_ADDED)
       } else toast(`Заведён и посчитан: ${r.created.product.name}`)
       onDone()

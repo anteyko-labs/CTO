@@ -73,6 +73,10 @@ pub struct RevisionLine {
     /// подряд идущие прибавки одного человека — одной записью (задача 003, Н14).
     #[serde(default)]
     pub counted_log: Vec<CountEntry>,
+    /// Номер последней записи строки (`revision_line_adds.seq`, 0 — не трогали): экран показывает
+    /// ответ записи или перечитывания, только если он новее показанного (задача 003, Н14).
+    #[serde(default)]
+    pub version: i64,
 }
 
 /// Запись журнала пересчёта строки: `add` — прибавил, `set` — записал итог, `clear` — убрал строку.
@@ -83,22 +87,32 @@ pub struct CountEntry {
     pub qty: i64,
 }
 
-/// Журнал пересчёта ревизии по товарам; прибавки одного человека подряд складываются.
+/// Журнал строки и её версия (номер последней записи).
+#[derive(Default)]
+struct LineLog {
+    entries: Vec<CountEntry>,
+    version: i64,
+}
+
+/// Журнал пересчёта ревизии по товарам — в порядке записи (`seq`: вставка под замком черновика,
+/// а не время начала транзакции); прибавки одного человека подряд складываются.
 async fn count_log(
     conn: &mut PgConnection,
     id: Uuid,
-) -> AppResult<std::collections::HashMap<Uuid, Vec<CountEntry>>> {
+) -> AppResult<std::collections::HashMap<Uuid, LineLog>> {
     let rows = sqlx::query!(
-        r#"select a.product_id, a.mode, a.qty, u.full_name
+        r#"select a.product_id, a.mode, a.qty, a.seq, u.full_name
            from revision_line_adds a join users u on u.id = a.user_id
-           where a.revision_id = $1 order by a.created_at, a.id"#,
+           where a.revision_id = $1 order by a.seq"#,
         id
     )
     .fetch_all(&mut *conn)
     .await?;
-    let mut out: std::collections::HashMap<Uuid, Vec<CountEntry>> = Default::default();
+    let mut out: std::collections::HashMap<Uuid, LineLog> = Default::default();
     for r in rows {
-        let log = out.entry(r.product_id).or_default();
+        let line = out.entry(r.product_id).or_default();
+        line.version = r.seq;
+        let log = &mut line.entries;
         match log.last_mut() {
             Some(last) if r.mode == "add" && last.mode == "add" && last.by == r.full_name => {
                 last.qty = last.qty.saturating_add(r.qty);
@@ -113,7 +127,7 @@ async fn count_log(
     Ok(out)
 }
 
-/// Запись в журнал пересчёта строки (только пополняется, I5).
+/// Запись в журнал пересчёта строки (только пополняется, I5); номер записи — новая версия строки.
 async fn log_count(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -122,10 +136,10 @@ async fn log_count(
     mode: &str,
     qty: i64,
     op_id: Option<Uuid>,
-) -> AppResult<()> {
-    sqlx::query!(
+) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
         r#"insert into revision_line_adds (id, revision_id, product_id, mode, qty, user_id, device_id, op_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
+           values ($1, $2, $3, $4, $5, $6, $7, $8) returning seq"#,
         new_id(),
         revision_id,
         product_id,
@@ -135,9 +149,20 @@ async fn log_count(
         ctx.device_id,
         op_id
     )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Версия строки сейчас: номер последней записи журнала (0 — не трогали).
+async fn line_version(conn: &mut PgConnection, id: Uuid, product_id: Uuid) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce(max(seq), 0) as "v!" from revision_line_adds
+           where revision_id = $1 and product_id = $2"#,
+        id,
+        product_id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -147,6 +172,10 @@ pub struct RevisionOut {
     /// Норма расхождения по маслу, сотые доли процента от «должно быть».
     #[serde(default)]
     pub oil_norm_bp: i32,
+    /// Номер последней записи пересчёта ревизии: строка, показанная на экране новее, при
+    /// перечитывании не заменяется старой (задача 003, Н14).
+    #[serde(default)]
+    pub version: i64,
 }
 
 /// Расхождение по маслу больше нормы: |пересчитано − должно| > должно × норма.
@@ -182,6 +211,7 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
     let owner = user.is_owner();
     let norm = crate::api::receipts::oil_norm_bp(conn, user.branch_id).await?;
     let mut log = count_log(conn, id).await?;
+    let version = log.values().map(|l| l.version).max().unwrap_or(0);
     let lines = if h.status == "posted" {
         sqlx::query!(
             r#"select p.id, p.name, p.article, p.unit, p.container_ml,
@@ -198,7 +228,9 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|r| RevisionLine {
+        .map(|r| {
+            let lg = log.remove(&r.id).unwrap_or_default();
+            RevisionLine {
             product_id: r.id,
             name: r.name,
             article: r.article,
@@ -211,8 +243,9 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             unit: r.unit,
             viscosity: r.viscosity,
             counted_by: r.counted_by,
-            counted_log: log.remove(&r.id).unwrap_or_default(),
-        })
+            counted_log: lg.entries,
+            version: lg.version,
+        }})
         .collect()
     } else {
         // Черновик: товары категории (или все) и пересчитанное, сверху — уже посчитанные.
@@ -239,7 +272,9 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|r| RevisionLine {
+        .map(|r| {
+            let lg = log.remove(&r.id).unwrap_or_default();
+            RevisionLine {
             product_id: r.id,
             name: r.name,
             article: r.article,
@@ -252,14 +287,16 @@ async fn load(conn: &mut PgConnection, user: &CurrentUser, id: Uuid) -> AppResul
             value_delta_tyiyn: None,
             viscosity: r.viscosity,
             counted_by: r.counted_by,
-            counted_log: log.remove(&r.id).unwrap_or_default(),
-        })
+            counted_log: lg.entries,
+            version: lg.version,
+        }})
         .collect()
     };
     Ok(RevisionOut {
         head: h,
         lines,
         oil_norm_bp: norm,
+        version,
     })
 }
 
@@ -307,11 +344,8 @@ struct CreateReq {
     category_id: Option<Uuid>,
     #[serde(default)]
     comment: String,
-    /// Открытый черновик того же охвата (весь склад или категория) — продолжить его, а не завести
-    /// второй: «Сканер товаров» в пересчёте на нескольких устройствах сразу пишет в один
-    /// черновик (SPEC-20, задача 003, Н14). Без флага — новый черновик, как раньше.
-    #[serde(default)]
-    reuse_draft: bool,
+    // Прежний флаг `reuse_draft` («продолжить открытый черновик того же охвата») не читается:
+    // так теперь всегда — две ревизии одного товара вычли бы его остаток дважды (задача 003, Н14).
 }
 
 async fn create(
@@ -328,45 +362,43 @@ async fn create(
             .await?
             .ok_or_else(|| invalid("категория не найдена"))?;
     }
-    if req.reuse_draft {
-        // Замок «черновик филиала»: устройства, начавшие одновременно, ждут друг друга и
-        // находят черновик первого.
-        sqlx::query!(
-            "select pg_advisory_xact_lock(hashtextextended('revision.draft:' || $1::text, 0))",
-            ctx.user.branch_id.to_string()
-        )
-        .execute(&mut *tx)
-        .await?;
-        // Охваты пересекаются: «весь склад» включает любую категорию. Две ревизии одного товара
-        // вычли бы его остаток дважды — открытый черновик того же охвата или «весь склад»
-        // продолжаем; «весь склад» при открытой категории — 409 «закончите или присоединитесь».
-        let open = sqlx::query!(
-            r#"select r.id, r.category_id, c.name as "category_name?"
-               from revisions r left join categories c on c.id = r.category_id
-               where r.branch_id = $1 and r.status = 'draft'
-                 and (r.category_id is null or $2::uuid is null or r.category_id = $2)
-               order by (r.category_id is not distinct from $2) desc, (r.category_id is null) desc,
-                        r.created_at desc
-               limit 1"#,
-            ctx.user.branch_id,
-            req.category_id
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(o) = open {
-            if o.category_id.is_some() && o.category_id != req.category_id {
-                return Err(AppError::ConflictCode(
-                    "revision_open",
-                    format!(
-                        "Идёт ревизия «{}» — закончите или присоединитесь",
-                        o.category_name.unwrap_or_default()
-                    ),
-                ));
-            }
-            let out = load(&mut tx, &ctx.user, o.id).await?;
-            tx.commit().await?;
-            return Ok(Json(out));
+    // Замок «черновик филиала» — при любом начале ревизии (и со старой версии экрана):
+    // устройства, начавшие одновременно, ждут друг друга и находят черновик первого.
+    sqlx::query!(
+        "select pg_advisory_xact_lock(hashtextextended('revision.draft:' || $1::text, 0))",
+        ctx.user.branch_id.to_string()
+    )
+    .execute(&mut *tx)
+    .await?;
+    // Охваты пересекаются: «весь склад» включает любую категорию. Две ревизии одного товара
+    // вычли бы его остаток дважды — открытый черновик того же охвата или «весь склад»
+    // продолжаем; «весь склад» при открытой категории — 409 «закончите или присоединитесь».
+    let open = sqlx::query!(
+        r#"select r.id, r.category_id, c.name as "category_name?"
+           from revisions r left join categories c on c.id = r.category_id
+           where r.branch_id = $1 and r.status = 'draft'
+             and (r.category_id is null or $2::uuid is null or r.category_id = $2)
+           order by (r.category_id is not distinct from $2) desc, (r.category_id is null) desc,
+                    r.created_at desc
+           limit 1"#,
+        ctx.user.branch_id,
+        req.category_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(o) = open {
+        if o.category_id.is_some() && o.category_id != req.category_id {
+            return Err(AppError::ConflictCode(
+                "revision_open",
+                format!(
+                    "Идёт ревизия «{}» — закончите или присоединитесь",
+                    o.category_name.unwrap_or_default()
+                ),
+            ));
         }
+        let out = load(&mut tx, &ctx.user, o.id).await?;
+        tx.commit().await?;
+        return Ok(Json(out));
     }
     let number = ops::next_counter(&mut tx, ctx.user.branch_id, "revision").await?;
     let id = new_id();
@@ -415,6 +447,39 @@ async fn lock_draft(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppRe
     Ok(())
 }
 
+/// Черновик для записи пересчёта: ревизию провели или отменили, пока на устройстве считали, —
+/// 409 `revision_closed` с тем, кто провёл, и что делать с отсканированным (задача 003, Н14).
+async fn lock_draft_for_count(conn: &mut PgConnection, branch_id: Uuid, id: Uuid) -> AppResult<()> {
+    let r = sqlx::query!(
+        r#"select r.status, r.number, u.full_name as "posted_by?"
+           from revisions r left join users u on u.id = r.posted_by
+           where r.id = $1 and r.branch_id = $2 for update of r"#,
+        id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    if r.status == "draft" {
+        return Ok(());
+    }
+    let what = if r.status == "posted" {
+        match r.posted_by {
+            Some(who) => format!("уже проведена ({who})"),
+            None => "уже проведена".into(),
+        }
+    } else {
+        "отменена".into()
+    };
+    Err(AppError::ConflictCode(
+        "revision_closed",
+        format!(
+            "Ревизия № {} {what}; ваш скан не учтён — проведите оприходование или новую ревизию",
+            r.number
+        ),
+    ))
+}
+
 #[derive(Deserialize)]
 struct LineReq {
     product_id: Uuid,
@@ -427,11 +492,49 @@ struct LineReq {
     /// сервер вернёт прежний ответ (ADR-013, ADR-062). Без `op_id` — как раньше.
     #[serde(default)]
     op_id: Option<Uuid>,
-    /// `set`: итог строки, который человек видел на экране, когда начал ввод (не посчитана — 0).
-    /// Пока он вводил, другие прибавили — 409 `count_changed` «сейчас N», а не затирание чужих
-    /// сканов (задача 003, Н14). Без поля — запись без проверки, как раньше.
+    /// `set`: итог строки, который человек видел на экране, когда начал ввод, плюс его
+    /// собственные записи после этого. Пока он вводил, другие прибавили — 409 `count_changed`
+    /// «сейчас N», а не затирание чужих сканов (задача 003, Н14).
     #[serde(default)]
     expected_qty: Option<i64>,
+    /// `set`: человек видел строку непосчитанной — строки быть не должно. «Не посчитана» и
+    /// «посчитано 0» («не нашли») — разное: 0 другого человека не затирается молча.
+    #[serde(default)]
+    expected_empty: bool,
+}
+
+/// Что человек видел в строке, когда начал ввод: `None` — без проверки (старая версия экрана),
+/// `Some(None)` — строки не было, `Some(Some(n))` — посчитано n.
+fn expected_of(qty: Option<i64>, empty: bool) -> Option<Option<i64>> {
+    if empty { Some(None) } else { qty.map(Some) }
+}
+
+/// «= итог» без `expected_qty` шлёт только экран до обновления: строку, которую за последние
+/// 10 минут прибавляли с других устройств, он затёр бы — 409 «обновите страницу».
+async fn outdated_screen(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    product_id: Uuid,
+) -> AppResult<()> {
+    let fresh = sqlx::query_scalar!(
+        r#"select exists(select 1 from revision_line_adds
+                         where revision_id = $1 and product_id = $2 and mode = 'add'
+                           and device_id <> $3
+                           and created_at > clock_timestamp() - interval '10 minutes') as "fresh!""#,
+        id,
+        product_id,
+        ctx.device_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if fresh {
+        return Err(AppError::ConflictCode(
+            "client_outdated",
+            "Обновите страницу: на кассе старая версия программы — строку сейчас считают с других устройств".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
@@ -449,43 +552,51 @@ async fn get_line(
     user: CurrentUser,
     Path((id, product_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let counted = sqlx::query_scalar!(
-        r#"select l.counted_qty from revision_lines l
-           join revisions r on r.id = l.revision_id
-           where l.revision_id = $1 and l.product_id = $2 and r.branch_id = $3"#,
+    let mut conn = state.pool.acquire().await?;
+    // Чужой филиал — как будто строки нет.
+    let mine = sqlx::query_scalar!(
+        "select id from revisions where id = $1 and branch_id = $2",
         id,
-        product_id,
         user.branch_id
     )
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *conn)
     .await?;
-    Ok(Json(json!({ "counted_qty": counted })))
+    if mine.is_none() {
+        return Ok(Json(json!({ "counted_qty": null, "version": 0 })));
+    }
+    let counted = counted_now(&mut conn, id, product_id).await?;
+    let version = line_version(&mut conn, id, product_id).await?;
+    Ok(Json(json!({ "counted_qty": counted, "version": version })))
 }
 
-/// Посчитано по строке сейчас; не посчитана — 0.
-async fn counted_now(conn: &mut PgConnection, id: Uuid, product_id: Uuid) -> AppResult<i64> {
+/// Посчитано по строке сейчас; строки нет — `None` (не путать с посчитанным 0).
+async fn counted_now(
+    conn: &mut PgConnection,
+    id: Uuid,
+    product_id: Uuid,
+) -> AppResult<Option<i64>> {
     Ok(sqlx::query_scalar!(
         "select counted_qty from revision_lines where revision_id = $1 and product_id = $2",
         id,
         product_id
     )
     .fetch_optional(&mut *conn)
-    .await?
-    .unwrap_or(0))
+    .await?)
 }
 
 /// Итог строки изменился, пока человек вводил: экран перечитает строку и переспросит.
-fn count_changed(now: i64, total: Option<i64>, unit: &str) -> AppError {
+fn count_changed(now: Option<i64>, total: Option<i64>, unit: &str) -> AppError {
     let ask = match total {
         Some(t) => format!("Записать итог {}?", qty_text(t, unit)),
         None => "Всё равно убрать строку?".into(),
     };
+    let now = match now {
+        Some(n) => format!("сейчас {}", qty_text(n, unit)),
+        None => "сейчас строка не посчитана".into(),
+    };
     AppError::ConflictCode(
         "count_changed",
-        format!(
-            "Пока вы вводили, добавили ещё: сейчас {}. {ask}",
-            qty_text(now, unit)
-        ),
+        format!("Пока вы вводили, итог строки изменили: {now}. {ask}"),
     )
 }
 
@@ -506,7 +617,7 @@ async fn put_line(
     {
         return Ok(Json(done));
     }
-    lock_draft(&mut tx, ctx.user.branch_id, id).await?;
+    lock_draft_for_count(&mut tx, ctx.user.branch_id, id).await?;
     let product = sqlx::query!(
         "select archived, unit from products where id = $1",
         req.product_id
@@ -520,10 +631,15 @@ async fn put_line(
     let add = req.mode == CountMode::Add;
     // Записи строк одной ревизии идут по очереди (замок черновика выше): посчитанное сейчас —
     // точное, проверка итога на экране не гоняется с чужой прибавкой.
-    if !add && let Some(seen) = req.expected_qty {
-        let now = counted_now(&mut tx, id, req.product_id).await?;
-        if now != seen {
-            return Err(count_changed(now, Some(req.counted_qty), &product.unit));
+    if !add {
+        match expected_of(req.expected_qty, req.expected_empty) {
+            Some(seen) => {
+                let now = counted_now(&mut tx, id, req.product_id).await?;
+                if now != seen {
+                    return Err(count_changed(now, Some(req.counted_qty), &product.unit));
+                }
+            }
+            None => outdated_screen(&mut tx, &ctx, id, req.product_id).await?,
         }
     }
     // Остаток в момент пересчёта: продажи между пересчётом и проведением не станут «излишком».
@@ -566,7 +682,7 @@ async fn put_line(
     if counted > 1_000_000_000 {
         return Err(invalid("пересчитано слишком много"));
     }
-    log_count(
+    let version = log_count(
         &mut tx,
         &ctx,
         id,
@@ -576,7 +692,7 @@ async fn put_line(
         req.op_id,
     )
     .await?;
-    let out = json!({ "ok": true, "counted_qty": counted });
+    let out = json!({ "ok": true, "counted_qty": counted, "version": version });
     if let Some(op_id) = req.op_id {
         ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
     }
@@ -616,7 +732,7 @@ async fn new_product(
     if let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await? {
         return Ok(Json(done));
     }
-    lock_draft(&mut tx, ctx.user.branch_id, id).await?;
+    lock_draft_for_count(&mut tx, ctx.user.branch_id, id).await?;
     let mut product = req.product;
     // Своя операция карточки: повтор всей операции отсекает `op_id` выше.
     product.op_id = new_id();
@@ -631,7 +747,7 @@ async fn new_product(
     )
     .execute(&mut *tx)
     .await?;
-    log_count(&mut tx, &ctx, id, p.id, "add", req.counted_qty, Some(op_id)).await?;
+    let version = log_count(&mut tx, &ctx, id, p.id, "add", req.counted_qty, Some(op_id)).await?;
     ops::audit(
         &mut tx,
         &ctx,
@@ -641,7 +757,8 @@ async fn new_product(
         json!({ "product_id": p.id, "name": p.name, "counted_qty": req.counted_qty }),
     )
     .await?;
-    let out = json!({ "ok": true, "product": p, "counted_qty": req.counted_qty });
+    let out =
+        json!({ "ok": true, "product": p, "counted_qty": req.counted_qty, "version": version });
     ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -649,8 +766,15 @@ async fn new_product(
 
 #[derive(Deserialize)]
 struct DeleteLineQuery {
-    /// Итог строки на экране, когда поле очистили: пока очищали, другие прибавили — 409.
+    /// Итог строки на экране, когда поле очистили (плюс свои записи после): пока очищали, другие
+    /// прибавили или записали 0 — 409.
     expected_qty: Option<i64>,
+    /// Человек видел строку непосчитанной: её успели посчитать — не убирать молча.
+    #[serde(default)]
+    expected_empty: bool,
+    /// Повтор того же «убрать строку» (обрыв связи) — прежний ответ, а не 409 по чужой свежей
+    /// прибавке (ADR-062, задача 003, Н14).
+    op_id: Option<Uuid>,
 }
 
 async fn delete_line(
@@ -659,18 +783,26 @@ async fn delete_line(
     Path((id, product_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<DeleteLineQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
+    const KIND: &str = "revision.line_delete";
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
-    lock_draft(&mut tx, ctx.user.branch_id, id).await?;
-    if let Some(seen) = q.expected_qty {
-        let now = counted_now(&mut tx, id, product_id).await?;
-        // Строки уже нет (повтор после обрыва) — убирать нечего, не ошибка.
-        if now != seen && now != 0 {
+    if let Some(op_id) = q.op_id
+        && let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await?
+    {
+        return Ok(Json(done));
+    }
+    lock_draft_for_count(&mut tx, ctx.user.branch_id, id).await?;
+    if let Some(seen) = expected_of(q.expected_qty, q.expected_empty) {
+        // Строки уже нет — убирать нечего, не ошибка. Есть, но не та, что видели (и посчитанный
+        // другим 0 — тоже строка) — переспросить.
+        if let Some(now) = counted_now(&mut tx, id, product_id).await?
+            && seen != Some(now)
+        {
             let unit = sqlx::query_scalar!("select unit from products where id = $1", product_id)
                 .fetch_optional(&mut *tx)
                 .await?
                 .unwrap_or_default();
-            return Err(count_changed(now, None, &unit));
+            return Err(count_changed(Some(now), None, &unit));
         }
     }
     let removed = sqlx::query_scalar!(
@@ -681,20 +813,27 @@ async fn delete_line(
     .fetch_optional(&mut *tx)
     .await?;
     // Черновик правится, но кто и что убрал из пересчёта — в журнал (инвариант 5).
-    if let Some(counted) = removed {
-        log_count(&mut tx, &ctx, id, product_id, "clear", 0, None).await?;
+    let version = if let Some(counted) = removed {
+        let v = log_count(&mut tx, &ctx, id, product_id, "clear", 0, q.op_id).await?;
         ops::audit(
             &mut tx,
             &ctx,
-            "revision.line_delete",
+            KIND,
             "revision",
             Some(id),
             json!({ "product_id": product_id, "counted_qty": counted }),
         )
         .await?;
+        v
+    } else {
+        line_version(&mut tx, id, product_id).await?
+    };
+    let out = json!({ "ok": true, "counted_qty": null, "version": version });
+    if let Some(op_id) = q.op_id {
+        ops::finish_op(&mut tx, &ctx, op_id, KIND, &out).await?;
     }
     tx.commit().await?;
-    Ok(Json(json!({ "ok": true, "counted_qty": null })))
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
@@ -702,6 +841,10 @@ pub struct PostReq {
     pub op_id: Uuid,
     #[serde(default)]
     pub comment: String,
+    /// Провести, хотя другие ещё считают (за последние 60 с были записи строк): владелец
+    /// подтвердил предупреждение «Ещё считают: …» (задача 003, Н14).
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Проведение: остатки выравниваются по пересчитанному, расхождение — в себестоимость (SPEC-15).
@@ -732,12 +875,61 @@ pub async fn post_revision_tx(
     if lines.is_empty() {
         return Err(invalid("ничего не пересчитано"));
     }
-    lock_products(conn, branch_id, lines.iter().map(|l| l.product_id)).await?;
+    let ids: Vec<Uuid> = lines.iter().map(|l| l.product_id).collect();
+    // Товар посчитан и в другом открытом черновике (заведён до проверки охватов или товар
+    // перенесли в другую категорию): проведение обоих вычло бы его остаток дважды.
+    let twice = sqlx::query!(
+        r#"select p.name, r.number from revision_lines l
+           join revisions r on r.id = l.revision_id
+           join products p on p.id = l.product_id
+           where r.branch_id = $1 and r.status = 'draft' and r.id <> $2 and l.product_id = any($3)
+           order by p.name, r.number limit 1"#,
+        branch_id,
+        id,
+        &ids[..]
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(t) = twice {
+        return Err(AppError::ConflictCode(
+            "revision_overlap",
+            format!(
+                "«{}» посчитан и в открытой ревизии № {} — проведите или отмените одну из них, иначе остаток вычтется дважды",
+                t.name, t.number
+            ),
+        ));
+    }
+    // Другие ещё считают (за последние 60 с были записи строк) — спросить владельца: скан,
+    // пришедший после проведения, не учтётся.
+    if !req.force {
+        let busy = sqlx::query!(
+            r#"select u.full_name, extract(epoch from clock_timestamp() - max(a.created_at))::bigint as "ago!"
+               from revision_line_adds a join users u on u.id = a.user_id
+               where a.revision_id = $1 and a.user_id <> $2
+                 and a.created_at > clock_timestamp() - interval '60 seconds'
+               group by u.full_name order by max(a.created_at) desc"#,
+            id,
+            ctx.user.id
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        if !busy.is_empty() {
+            let who: Vec<String> = busy
+                .iter()
+                .map(|b| format!("{} {} с назад", b.full_name, b.ago.max(1)))
+                .collect();
+            return Err(AppError::ConflictCode(
+                "still_counting",
+                format!("Ещё считают: {}. Провести?", who.join(", ")),
+            ));
+        }
+    }
+    lock_products(conn, branch_id, ids.iter().copied()).await?;
     // Карточку могли объединить или убрать в архив после пересчёта: её остаток уже на основной,
     // и «излишек» по дублю удвоил бы склад.
     let gone = sqlx::query_scalar!(
         r#"select name from products where id = any($1) and archived order by name limit 1"#,
-        &lines.iter().map(|l| l.product_id).collect::<Vec<_>>()[..]
+        &ids[..]
     )
     .fetch_optional(&mut *conn)
     .await?;

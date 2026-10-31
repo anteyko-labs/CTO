@@ -22,10 +22,23 @@ async fn call(
     branch: Option<Uuid>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    call_from(app, method, uri, cookie, branch, body, Uuid::now_v7()).await
+}
+
+/// Запрос с устройства `device` (без него каждый запрос — с нового устройства).
+async fn call_from(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+    branch: Option<Uuid>,
+    body: Option<Value>,
+    device: Uuid,
+) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method(method)
         .uri(uri)
-        .header("x-device-id", Uuid::now_v7().to_string());
+        .header("x-device-id", device.to_string());
     if let Some(c) = cookie {
         req = req.header(header::COOKIE, c);
     }
@@ -316,9 +329,9 @@ async fn four_people_open_one_whole_warehouse_draft(pool: PgPool) {
     )
     .await;
     assert_eq!(by_cat["head"]["id"], json!(ids[0]));
-    // Без флага — как раньше: новый черновик.
+    // Без флага (старая версия экрана) — тот же черновик: второго «весь склад» не бывает.
     let plain = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
-    assert_ne!(plain["head"]["id"], json!(ids[0]));
+    assert_eq!(plain["head"]["id"], json!(ids[0]));
 }
 
 /// Четыре человека одновременно заводят незнакомый товар с одним штрихкодом: товар один,
@@ -527,7 +540,7 @@ async fn set_with_stale_expected_qty_does_not_wipe_scans(pool: PgPool) {
         Some(w.owner()),
         None,
         Some(
-            json!({ "product_id": item, "counted_qty": 5, "mode": "set", "expected_qty": 0, "op_id": Uuid::now_v7() }),
+            json!({ "product_id": item, "counted_qty": 5, "mode": "set", "expected_empty": true, "op_id": Uuid::now_v7() }),
         ),
     )
     .await;
@@ -713,4 +726,435 @@ async fn overlapping_revision_starts_share_one_draft(pool: PgPool) {
         );
     }
     assert_eq!(drafts(&w).await, 1, "{res:?}");
+}
+
+/// Черновик со строкой одного товара: ревизия «весь склад», товар, путь строк.
+async fn draft_with_item(w: &World, name: &str) -> (String, String, String) {
+    let item = w.product(name).await;
+    let rev = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/revisions/{rid}/lines");
+    (rid, item, uri)
+}
+
+/// Записать строку от человека `who`; ответ — статус и тело.
+async fn put_line(w: &World, uri: &str, who: usize, body: Value) -> (StatusCode, Value) {
+    call(&w.app, "PUT", uri, Some(&w.people[who]), None, Some(body)).await
+}
+
+/// Строка ревизии, как её видит сервер сейчас: `None` — строки нет.
+async fn counted(w: &World, rid: &str, item: &str) -> Option<i64> {
+    get(
+        &w.app,
+        &format!("/api/v1/revisions/{rid}/lines/{item}"),
+        w.owner(),
+    )
+    .await["counted_qty"]
+        .as_i64()
+}
+
+/// «Строки нет» и «посчитано 0» — разное: человек видел пустую строку и вписывает итог, а другой
+/// тем временем записал «не нашли — 0» — 409, а не затирание; очистка строки, которую видели с
+/// 5, когда другой записал 0, — тоже 409 (товар не выпадет из проведения).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn empty_line_differs_from_counted_zero(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча пустая").await;
+    let set = |qty: i64, expected: Value| {
+        let mut b = json!({ "product_id": item, "counted_qty": qty, "mode": "set", "op_id": Uuid::now_v7() });
+        match expected {
+            Value::Null => b["expected_empty"] = json!(true),
+            v => b["expected_qty"] = v,
+        }
+        b
+    };
+    // Нурлан не нашёл товар — «= 0» по пустой строке.
+    let (s, v) = put_line(&w, &uri, 2, set(0, Value::Null)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Владелец тоже видел пустую строку и вписывает 5: строка уже есть (0) — 409.
+    let (s, v) = put_line(&w, &uri, 0, set(5, Value::Null)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "count_changed", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("сейчас 0 шт"),
+        "{v}"
+    );
+    assert_eq!(counted(&w, &rid, &item).await, Some(0));
+    // Видел 0 — записал 5; Нурлан видел 5 — записал 0.
+    let (s, v) = put_line(&w, &uri, 0, set(5, json!(0))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = put_line(&w, &uri, 2, set(0, json!(5))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Владелец видел 5 и очищает поле: сейчас 0 — это посчитанный ноль, не «строки нет».
+    let one = format!("/api/v1/revisions/{rid}/lines/{item}");
+    let (s, v) = call(
+        &w.app,
+        "DELETE",
+        &format!("{one}?expected_qty=5"),
+        Some(w.owner()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "count_changed", "{v}");
+    assert_eq!(counted(&w, &rid, &item).await, Some(0), "ноль Нурлана цел");
+    // Видел 0 — убирает.
+    ok(
+        &w.app,
+        "DELETE",
+        &format!("{one}?expected_qty=0"),
+        w.owner(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(counted(&w, &rid, &item).await, None);
+    // Строки нет, а итог сверяют с «посчитано 0» — тоже 409.
+    let (s, v) = put_line(&w, &uri, 1, set(3, json!(0))).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(counted(&w, &rid, &item).await, None);
+    // Видел пустую и очистил поле, а строку тем временем посчитали — 409, посчитанное цело.
+    let (s, v) = put_line(&w, &uri, 2, set(2, Value::Null)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = call(
+        &w.app,
+        "DELETE",
+        &format!("{one}?expected_empty=true"),
+        Some(w.owner()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(counted(&w, &rid, &item).await, Some(2));
+}
+
+/// Повтор того же «убрать строку» (`op_id`, ответ потерялся) — прежний ответ, а не 409 по чужой
+/// свежей прибавке: чужой скан не удаляется переспрашиванием.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn repeated_line_delete_returns_same_answer(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча убрать").await;
+    let (s, v) = put_line(
+        &w,
+        &uri,
+        0,
+        json!({ "product_id": item, "counted_qty": 3, "mode": "set", "expected_empty": true, "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let del = format!(
+        "/api/v1/revisions/{rid}/lines/{item}?expected_qty=3&op_id={}",
+        Uuid::now_v7()
+    );
+    let first = ok(&w.app, "DELETE", &del, w.owner(), Value::Null).await;
+    // Айбек сканирует тот же товар после того, как строку убрали.
+    let (s, v) = put_line(
+        &w,
+        &uri,
+        1,
+        json!({ "product_id": item, "counted_qty": 1, "mode": "add", "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Повтор удаления (обрыв связи) — прежний ответ, скан Айбека цел.
+    let (s, again) = call(&w.app, "DELETE", &del, Some(w.owner()), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(again, first);
+    assert_eq!(counted(&w, &rid, &item).await, Some(1));
+}
+
+/// Охваты ревизий пересекаются: замок филиала и проверка — при любом `POST /revisions`, а не
+/// только с `reuse_draft` (вкладка со старой версией экрана). Проведение не вычтет остаток дважды:
+/// товар, посчитанный и в другом открытом черновике, — 409.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn revision_scopes_never_overlap(pool: PgPool) {
+    let w = World::new(pool).await;
+    let cat = w.category("filter").await;
+    let whole = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
+    let wid = whole["head"]["id"].as_str().unwrap().to_string();
+    let again = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
+    assert_eq!(again["head"]["id"], json!(wid), "второго «весь склад» нет");
+    let by_cat = ok(
+        &w.app,
+        "POST",
+        "/api/v1/revisions",
+        w.owner(),
+        json!({ "category_id": cat }),
+    )
+    .await;
+    assert_eq!(
+        by_cat["head"]["id"],
+        json!(wid),
+        "категория — в «весь склад»"
+    );
+    ok(
+        &w.app,
+        "POST",
+        &format!("/api/v1/revisions/{wid}/cancel"),
+        w.owner(),
+        json!({}),
+    )
+    .await;
+    let c1 = ok(
+        &w.app,
+        "POST",
+        "/api/v1/revisions",
+        w.owner(),
+        json!({ "category_id": cat }),
+    )
+    .await;
+    let c2 = ok(
+        &w.app,
+        "POST",
+        "/api/v1/revisions",
+        w.owner(),
+        json!({ "category_id": cat }),
+    )
+    .await;
+    assert_eq!(c1["head"]["id"], c2["head"]["id"], "одна ревизия категории");
+    let (s, v) = call(
+        &w.app,
+        "POST",
+        "/api/v1/revisions",
+        Some(w.owner()),
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "revision_open", "{v}");
+    assert_eq!(drafts(&w).await, 1);
+
+    // Черновик, заведённый до этой проверки (или товар перенесли в другую категорию): товар
+    // посчитан в двух открытых черновиках — проведение одного из них — 409 с названием и номером.
+    let cid = c1["head"]["id"].as_str().unwrap().to_string();
+    let item = w.product("Фильтр двойной").await;
+    let uri = format!("/api/v1/revisions/{cid}/lines");
+    let (s, v) = put_line(
+        &w,
+        &uri,
+        0,
+        json!({ "product_id": item, "counted_qty": 2, "mode": "add", "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let old = Uuid::now_v7();
+    sqlx::query(
+        r#"insert into revisions (id, branch_id, number, category_id, comment, user_id, device_id)
+           select $1, $2, 990, null, '', id, $1 from users where login = 'owner'"#,
+    )
+    .bind(old)
+    .bind(w.branch)
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
+           select $1, $2, 1, id, 0 from users where login = 'owner'"#,
+    )
+    .bind(old)
+    .bind(Uuid::parse_str(&item).unwrap())
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let (s, v) = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/revisions/{cid}/post"),
+        Some(w.owner()),
+        None,
+        Some(json!({ "op_id": Uuid::now_v7(), "comment": "пересчёт" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "revision_overlap", "{v}");
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(m.contains("Фильтр двойной") && m.contains("№ 990"), "{m}");
+}
+
+/// Старая версия экрана шлёт «записать итог» без `expected_qty`: если строку в последние 10 минут
+/// прибавляли с других устройств — 409 «обновите страницу», чужие сканы не затираются. Без чужих
+/// прибавок — как раньше.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn old_screen_set_does_not_wipe_fresh_adds(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча старый экран").await;
+    let tablet = Uuid::now_v7();
+    let add =
+        json!({ "product_id": item, "counted_qty": 1, "mode": "add", "op_id": Uuid::now_v7() });
+    let (s, v) = put_line(&w, &uri, 1, add).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = call_from(
+        &w.app,
+        "PUT",
+        &uri,
+        Some(w.owner()),
+        None,
+        Some(json!({ "product_id": item, "counted_qty": 5 })),
+        tablet,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "client_outdated", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Обновите страницу"),
+        "{v}"
+    );
+    assert_eq!(counted(&w, &rid, &item).await, Some(1));
+    // Строку без чужих прибавок старый экран пишет как раньше.
+    let other = w.product("Свеча без прибавок").await;
+    let (s, v) = call_from(
+        &w.app,
+        "PUT",
+        &uri,
+        Some(w.owner()),
+        None,
+        Some(json!({ "product_id": other, "counted_qty": 5 })),
+        tablet,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+/// Журнал строки — в порядке записи (под замком черновика), а не по времени начала транзакции:
+/// транзакция, ждавшая замок, не окажется в журнале раньше прибавки, после которой записана.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn count_log_follows_write_order(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, _) = draft_with_item(&w, "Свеча журнал").await;
+    // Итог «= 5» начат раньше (время начала транзакции меньше), а записан после прибавки.
+    for (login, mode, qty, ago) in [("admin1", "add", 2_i64, 0), ("owner", "set", 5, 30)] {
+        sqlx::query(
+            r#"insert into revision_line_adds (id, revision_id, product_id, mode, qty, user_id, device_id, created_at)
+               select $1, $2, $3, $4, $5, id, $1, now() - make_interval(secs => $6) from users where login = $7"#,
+        )
+        .bind(Uuid::now_v7())
+        .bind(Uuid::parse_str(&rid).unwrap())
+        .bind(Uuid::parse_str(&item).unwrap())
+        .bind(mode)
+        .bind(qty)
+        .bind(f64::from(ago))
+        .bind(login)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        r#"insert into revision_lines (revision_id, product_id, counted_qty, user_id, stock_at_count)
+           select $1, $2, 5, id, 0 from users where login = 'owner'"#,
+    )
+    .bind(Uuid::parse_str(&rid).unwrap())
+    .bind(Uuid::parse_str(&item).unwrap())
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let full = get(&w.app, &format!("/api/v1/revisions/{rid}"), w.owner()).await;
+    let log: Vec<String> = line(&full, &item)["counted_log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {} {}",
+                e["by"].as_str().unwrap(),
+                e["mode"].as_str().unwrap(),
+                e["qty"]
+            )
+        })
+        .collect();
+    assert_eq!(log, vec!["Айбек add 2", "Владелец set 5"]);
+}
+
+/// Версия строки: каждый ответ записи и перечитывания несёт номер последней записи строки —
+/// экран показывает ответ, только если он новее показанного (старый итог не возвращается).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn line_version_grows_with_every_write(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча версия").await;
+    let add =
+        || json!({ "product_id": item, "counted_qty": 1, "mode": "add", "op_id": Uuid::now_v7() });
+    let (_, a) = put_line(&w, &uri, 1, add()).await;
+    let (_, b) = put_line(&w, &uri, 2, add()).await;
+    let va = a["version"].as_i64().expect("версия в ответе записи");
+    let vb = b["version"].as_i64().unwrap();
+    assert!(vb > va, "{a} {b}");
+    let full = get(&w.app, &format!("/api/v1/revisions/{rid}"), w.owner()).await;
+    assert_eq!(line(&full, &item)["version"], json!(vb));
+    let one = get(
+        &w.app,
+        &format!("/api/v1/revisions/{rid}/lines/{item}"),
+        w.owner(),
+    )
+    .await;
+    assert_eq!(one["version"], json!(vb));
+    let d = ok(
+        &w.app,
+        "DELETE",
+        &format!("/api/v1/revisions/{rid}/lines/{item}?expected_qty=2"),
+        w.owner(),
+        Value::Null,
+    )
+    .await;
+    assert!(d["version"].as_i64().unwrap() > vb, "{d}");
+    let one = get(
+        &w.app,
+        &format!("/api/v1/revisions/{rid}/lines/{item}"),
+        w.owner(),
+    )
+    .await;
+    assert_eq!(one, json!({ "counted_qty": null, "version": d["version"] }));
+}
+
+/// Проведение, пока другие ещё считают: прибавки за последние 60 с — 409 «Ещё считают: Нурлан
+/// N с назад. Провести?»; подтвердил — проводится. Скан после проведения — понятный отказ.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn posting_while_others_count_asks_first(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча проведение").await;
+    let add =
+        || json!({ "product_id": item, "counted_qty": 1, "mode": "add", "op_id": Uuid::now_v7() });
+    let (s, v) = put_line(&w, &uri, 2, add()).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let post = format!("/api/v1/revisions/{rid}/post");
+    let op = Uuid::now_v7();
+    let (s, v) = call(
+        &w.app,
+        "POST",
+        &post,
+        Some(w.owner()),
+        None,
+        Some(json!({ "op_id": op, "comment": "пересчёт" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "still_counting", "{v}");
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(
+        m.starts_with("Ещё считают: Нурлан") && m.contains(" с назад") && m.ends_with("Провести?"),
+        "{m}"
+    );
+    // Подтвердил — проводится тем же op_id.
+    ok(
+        &w.app,
+        "POST",
+        &post,
+        w.owner(),
+        json!({ "op_id": op, "comment": "пересчёт", "force": true }),
+    )
+    .await;
+    let (s, v) = put_line(&w, &uri, 1, add()).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "revision_closed", "{v}");
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(
+        m.contains("уже проведена") && m.contains("Владелец") && m.contains("ваш скан не учтён"),
+        "{m}"
+    );
 }

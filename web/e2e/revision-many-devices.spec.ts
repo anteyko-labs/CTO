@@ -60,7 +60,7 @@ test('ревизия: два устройства сканируют один т
     barcodes: [code],
     sale_price_tyiyn: 30_000,
   })
-  await apiPost(a.request, '/revisions', { category_id: cat.id, reuse_draft: true })
+  await apiPost(a.request, '/revisions', { category_id: cat.id })
   await openRevision(a, category)
   await openRevision(b, category)
 
@@ -105,13 +105,81 @@ test('ревизия: два устройства сканируют один т
   await cancelDraft(a.request, cat.id)
 })
 
+test('ревизия: обрыв связи после того, как сервер записал, и повторное нажатие — итог не задвоился', async ({ browser }) => {
+  const a = await device(browser)
+  const category = `Кат обрыв ${RUN}`
+  const code = `27${RUN}405`
+  const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'other' })
+  const p = await apiPost<{ id: string }>(a.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Свеча обрыв ${RUN}`,
+    barcodes: [code],
+    sale_price_tyiyn: 30_000,
+  })
+  const rev = await apiPost<{ head: { id: string } }>(a.request, '/revisions', { category_id: cat.id })
+  const counted = async () =>
+    ((await (await a.request.get(`/api/v1/revisions/${rev.head.id}/lines/${p.id}`)).json()) as { counted_qty: number | null }).counted_qty
+  await openRevision(a, category)
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 1 шт'))
+
+  // Сервер принимает запись, а ответ до планшета не доходит (обрыв после записи): `drops` первых
+  // записей строки обрываются так, остальные проходят.
+  const lines = /\/api\/v1\/revisions\/[0-9a-f-]+\/lines$/
+  let drops = 0
+  let reached = 0
+  await a.route(lines, async (route) => {
+    if (route.request().method() !== 'PUT') return route.continue()
+    reached++
+    if (drops > 0) {
+      drops--
+      await route.fetch()
+      return route.abort('connectionreset')
+    }
+    return route.continue()
+  })
+
+  // Скан: первый ответ потерян — экран сам повторяет тот же запрос с тем же op_id, +1 один раз.
+  drops = 1
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 2 шт'), { timeout: 10_000 })
+  expect(reached).toBe(2)
+  expect(await counted()).toBe(2)
+
+  // «+ добавить 3»: все три попытки дошли до сервера, ответы потеряны — на экране «нет связи»,
+  // в поле остаётся 3.
+  const field = a.locator(`[data-count="${p.id}"]`)
+  drops = 3
+  reached = 0
+  await field.fill('3')
+  await field.press('Enter')
+  await expect(a.getByText('Нет связи с сервером', { exact: true })).toBeVisible({ timeout: 10_000 })
+  expect(reached).toBe(3)
+  await expect(field).toHaveValue('3')
+  expect(await counted()).toBe(5)
+  // Связь вернулась, человек нажимает ещё раз — тот же ввод уходит с тем же op_id: 5, а не 8.
+  await field.focus()
+  await field.press('Enter')
+  await expect(total(a, p.id)).toHaveText(text('итого 5 шт'))
+  await expect(field).toHaveValue('')
+  expect(await counted()).toBe(5)
+  // Новый ввод того же числа — новая прибавка.
+  await field.fill('3')
+  await field.press('Enter')
+  await expect(total(a, p.id)).toHaveText(text('итого 8 шт'))
+  expect(await counted()).toBe(8)
+  await a.unroute(lines)
+  await cancelDraft(a.request, cat.id)
+})
+
 test('ревизия: незнакомый код завёл другой — второй прибавляет к его товару', async ({ browser }) => {
   const a = await device(browser)
   const b = await device(browser)
   const category = `Кат новый код ${RUN}`
   const code = `27${RUN}402`
   const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'other' })
-  await apiPost(a.request, '/revisions', { category_id: cat.id, reuse_draft: true })
+  await apiPost(a.request, '/revisions', { category_id: cat.id })
   await openRevision(a, category)
   await openRevision(b, category)
 
@@ -152,7 +220,7 @@ test('ревизия масла: один сканирует канистры, �
     barcodes: [code],
     sale_price_tyiyn: 250_000,
   })
-  await apiPost(a.request, '/revisions', { category_id: cat.id, reuse_draft: true })
+  await apiPost(a.request, '/revisions', { category_id: cat.id })
   await openRevision(a, category)
   await openRevision(b, category)
 

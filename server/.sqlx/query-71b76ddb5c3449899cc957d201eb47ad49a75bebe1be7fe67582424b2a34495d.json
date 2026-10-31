@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into revision_line_adds (id, revision_id, product_id, mode, qty, user_id, device_id, op_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8) returning seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "71b76ddb5c3449899cc957d201eb47ad49a75bebe1be7fe67582424b2a34495d"
+}

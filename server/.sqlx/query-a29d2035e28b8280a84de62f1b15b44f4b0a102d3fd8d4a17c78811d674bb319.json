@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.name, r.number from revision_lines l\n           join revisions r on r.id = l.revision_id\n           join products p on p.id = l.product_id\n           where r.branch_id = $1 and r.status = 'draft' and r.id <> $2 and l.product_id = any($3)\n           order by p.name, r.number limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a29d2035e28b8280a84de62f1b15b44f4b0a102d3fd8d4a17c78811d674bb319"
+}

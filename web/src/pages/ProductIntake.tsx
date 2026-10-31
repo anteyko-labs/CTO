@@ -7,6 +7,7 @@ import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money,
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
 import { createOrTaken, TAKEN_ADDED, TAKEN_EXISTS } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
+import { expectedBody, InputOps, qtyInUnits, type Seen, type ShelfInput } from '../lib/revisionCount'
 import { useUser } from '../lib/auth'
 import { OilCountInput } from '../components/OilCountInput'
 import { stockText } from '../components/ProductPicker'
@@ -70,6 +71,19 @@ const emptyForm = (barcode: string, categoryId: string): Form => ({
   from: null,
 })
 
+/** Найденное на полке как ввели: целые штуки (канистры) и литры початой тары; неверно — null. */
+function shelfInput(count: string, liters: string): ShelfInput | null {
+  const c = count.trim()
+  const l = liters.trim()
+  if (c && !/^\d+$/.test(c)) return null
+  const ml = l ? parseLiters(l) : 0
+  return ml === null ? null : { cans: c ? Number(c) : 0, ml }
+}
+
+/** Единицы товара словами — для подсказки, когда найденное не перевести в его единицы. */
+const unitWord = (p: Pick<Product, 'unit' | 'container_ml'>): string =>
+  p.unit === 'piece' ? 'штуки' : p.unit === 'g' ? 'кг' : p.container_ml ? 'канистры и литры' : 'литры'
+
 /**
  * Сколько на полке: штуки целым; масло (`tare` — объём тары в мл) — «кан. + л» → мл; на вес — кг.
  * Пусто — null (не считали), неверно — 'bad'. Масло без объёма тары посчитать нельзя.
@@ -106,6 +120,10 @@ export default function ProductIntake() {
   const [similar, setSimilar] = useState<Product[]>([])
   const [recent, setRecent] = useState<{ name: string; at: string; count: string; isNew: boolean }[]>([])
   const [opId, setOpId] = useState(newOpId)
+  /** op_id пересчёта: тот же не записанный ввод (после обрыва в форме то же число) — тот же op_id. */
+  const [countOps] = useState(() => new InputOps(newOpId))
+  /** Найденный товар показан с подсказкой: найденное не перевести в его единицы. */
+  const [foundHint, setFoundHint] = useState<string | null>(null)
   const revisionId = useRef<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scanRef = useRef<HTMLInputElement>(null)
@@ -125,6 +143,9 @@ export default function ProductIntake() {
     setForm(null)
     setSimilar([])
     setOpId(newOpId())
+    setFoundHint(null)
+    // Новая форма — новый ввод: прежний op_id пересчёта больше не повторяется.
+    countOps.clear()
     focusScan()
   }
 
@@ -145,6 +166,7 @@ export default function ProductIntake() {
 
   /** Товар уже заведён: показываем; в пересчёте спросим, прибавить ли к посчитанному. */
   const showFound = async (p: Product) => {
+    setFoundHint(null)
     // Товар мог лежать на другой полке и уже быть посчитан — покажем и спросим, прибавить ли.
     setAlready(revision ? await countedBefore(p.id) : null)
     setFound({ ...p })
@@ -228,11 +250,11 @@ export default function ProductIntake() {
   }
 
   /** Черновик ревизии «весь склад»: открытый — продолжаем, нет — заводим. Начали на нескольких
-   *  устройствах сразу — сервер отдаст всем один черновик (`reuse_draft`, задача 003, Н14). */
+   *  устройствах сразу — сервер отдаст всем один черновик (задача 003, Н14). */
   const ensureRevision = async (): Promise<string> => {
     const found = await findRevision()
     if (found) return found
-    const id = (await post<{ head: { id: string } }>('/revisions', { category_id: null, reuse_draft: true })).head.id
+    const id = (await post<{ head: { id: string } }>('/revisions', { category_id: null })).head.id
     revisionId.current = id
     return id
   }
@@ -246,18 +268,44 @@ export default function ProductIntake() {
 
   /**
    * Записывает пересчёт в ревизию. По умолчанию прибавляет: товар на двух полках — 5 и 3 — это 8,
-   * а не 3 (ADR-059). «Заменить» — только явным выбором, с итогом, который был на экране
-   * (`expected`): пока выбирали, другие прибавили — сервер ответит 409, чужое не затрётся.
+   * а не 3 (ADR-059). «Заменить» — только явным выбором, с тем, что было на экране (`seen`, null —
+   * не считали): пока выбирали, другие прибавили — сервер ответит 409, чужое не затрётся.
+   * op_id — по правилу ввода (`InputOps`): после неудачи то же число в форме уходит с тем же op_id
+   * и не прибавится дважды, если первый раз дошёл; записано или форма новая — новый (ADR-062, Н14).
    * Возвращает итог строки.
    */
-  const saveCount = async (productId: string, qty: number | null, mode: 'add' | 'set' = 'add', expected = 0): Promise<number | null> => {
+  const saveCount = async (productId: string, qty: number | null, mode: 'add' | 'set' = 'add', seen: Seen = null): Promise<number | null> => {
     if (qty === null) return null
     const id = await ensureRevision()
-    // Каждый ввод — свой op_id: следующий настоящий скан того же товара с тем же числом — новая
-    // прибавка. Тем же op_id уходит только автоматический повтор после обрыва (ADR-062, Н14).
-    const body = { product_id: productId, counted_qty: qty, mode, op_id: newOpId(), ...(mode === 'set' ? { expected_qty: expected } : {}) }
-    const r = await retrySame(() => put<{ counted_qty: number }>(`/revisions/${id}/lines`, body))
-    return r.counted_qty
+    const opId = countOps.take('count', `${id}|${productId}|${mode}|${qty}|${mode === 'set' ? String(seen) : ''}`)
+    const body = { product_id: productId, counted_qty: qty, mode, op_id: opId, ...(mode === 'set' ? expectedBody(seen) : {}) }
+    try {
+      const r = await retrySame(() => put<{ counted_qty: number }>(`/revisions/${id}/lines`, body))
+      countOps.done('count', opId)
+      return r.counted_qty
+    } catch (e) {
+      // Ревизию провели или отменили: следующий пересчёт откроет новую; сообщение — с сервера.
+      if (e instanceof ApiError && e.code === 'revision_closed') revisionId.current = null
+      throw e
+    }
+  }
+
+  /**
+   * Найденное в форме — товару, который уже есть (его в ту же минуту завёл другой или выбрали
+   * похожий): количество — в единицах этого товара. Не перевести (литры к штучному, штуки к маслу
+   * без тары) — не прибавляем молча, а показываем товар с полем количества и подсказкой.
+   * Возвращает итог строки или `undefined` — показан товар.
+   */
+  const countForExisting = async (p: Product): Promise<number | null | undefined> => {
+    if (!revision || !form || formQty === null) return null
+    const raw = shelfInput(form.count, isOil ? form.countL : '')
+    const qty = raw === null ? null : qtyInUnits(raw, p)
+    if (qty === null) {
+      await showFound(p)
+      setFoundHint(`У «${p.name}» другие единицы — ${unitWord(p)}. Впишите, сколько на полке, в его единицах.`)
+      return undefined
+    }
+    return saveCount(p.id, qty)
   }
 
   const ml = isOil && form ? parseLiters(form.liters) : null
@@ -306,7 +354,8 @@ export default function ProductIntake() {
       )
       if (created.taken) {
         const p = created.product
-        const total = revision ? await saveCount(p.id, formQty) : null
+        const total = await countForExisting(p)
+        if (total === undefined) return
         setRecent((r) => [{ name: p.name, at: new Date().toISOString(), count: formCountText, isNew: false }, ...r].slice(0, 15))
         toast(total === null ? TAKEN_EXISTS : `${TAKEN_ADDED}: всего ${countText(p, total)}`)
         reset()
@@ -329,7 +378,8 @@ export default function ProductIntake() {
       // Данные из строки Умага — связываем её с этим товаром: остальные её коды тоже станут его (SPEC-35).
       if (form.from && !form.from.product_id) await linkUmag(form.from.id, p.id, newOpId())
       // Карточка уже была — её могли посчитать под другим кодом: прибавляем и показываем итог.
-      const total = revision ? await saveCount(p.id, formQty) : null
+      const total = await countForExisting(p)
+      if (total === undefined) return
       if (total !== null) toast(`В ревизии теперь ${countText(p, total)}`)
       setRecent((r) => [{ name: `${p.name} (+ ${code ? 'код' : 'Умаг'})`, at: new Date().toISOString(), count: formCountText, isNew: false }, ...r].slice(0, 15))
       toast(code ? `Код привязан к «${p.name}»` : `Строка Умага связана с «${p.name}»`)
@@ -341,7 +391,7 @@ export default function ProductIntake() {
       if (!found) return
       let total: number | null
       try {
-        total = await saveCount(found.id, qty, mode, already ?? 0)
+        total = await saveCount(found.id, qty, mode, already)
       } catch (e) {
         // Пока выбирали «Заменить», другие прибавили: показываем новый итог и переспрашиваем.
         if (e instanceof ApiError && e.code === 'count_changed') setAlready(await countedBefore(found.id))
@@ -503,6 +553,11 @@ export default function ProductIntake() {
                   {found.barcodes.length > 0 && ` · коды: ${found.barcodes.join(', ')}`}
                 </div>
               </div>
+              {foundHint && (
+                <Notice tone="sky">
+                  <span data-testid="intake-found-hint">{foundHint}</span>
+                </Notice>
+              )}
               {revision ? (
                 <FoundCount product={found} already={already} busy={act.busy} onSave={saveFoundCount} onSkip={reset} />
               ) : (

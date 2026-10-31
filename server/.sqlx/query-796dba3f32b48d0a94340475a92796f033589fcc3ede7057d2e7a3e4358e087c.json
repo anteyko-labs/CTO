@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.status, r.number, u.full_name as \"posted_by?\"\n           from revisions r left join users u on u.id = r.posted_by\n           where r.id = $1 and r.branch_id = $2 for update of r",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "posted_by?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "796dba3f32b48d0a94340475a92796f033589fcc3ede7057d2e7a3e4358e087c"
+}
