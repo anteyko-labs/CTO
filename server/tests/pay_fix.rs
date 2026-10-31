@@ -1247,3 +1247,53 @@ async fn shift_sales_tab_and_items_per_change(pool: PgPool) {
             .contains(&format!("№ {na}"))
     );
 }
+
+/// Администратор с `till_pay_fix` меняет оплату чека со скидкой (перекрёстная проверка задачи
+/// 003): цены повтора те же, их проверили при продаже — право «Скидка» и предел администратора
+/// не нужны; сторно повтора не требует «Возврат по чеку» — право проверено как `till_pay_fix`.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_changes_payment_of_discounted_sale(pool: PgPool) {
+    let w = W::new(pool).await;
+    w.open_shift().await;
+    // Владелец продал со скидкой: 1000 с по прайсу → 800 с.
+    let sale = w
+        .ok(
+            "/api/v1/sales",
+            json!({ "op_id": Uuid::now_v7(), "sale_type": "takeaway", "cashier_id": w.cashier,
+                    "lines": [{ "kind": "piece", "product_id": w.item, "qty": 1, "unit_price_tyiyn": 80_000 }],
+                    "payments": [cash(80_000)] }),
+        )
+        .await;
+    let id = sale["id"].as_str().unwrap().to_string();
+    // У администратора нет «Скидки» (по умолчанию) и снят «Возврат по чеку».
+    w.grant_admin("till_pay_fix").await;
+    sqlx::query(
+        "delete from user_permissions where permission in ('discount', 'sale_return')
+           and user_id = (select id from users where login = 'admin')",
+    )
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    let (s, out) = w
+        .pay_change(
+            &w.admin,
+            &id,
+            Uuid::now_v7(),
+            json!({ "payments": [card(80_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Обычный возврат без права — по-прежнему 403.
+    let (s, _) = w
+        .post(
+            &w.admin,
+            &format!(
+                "/api/v1/sales/{}/return",
+                out["new_sale_id"].as_str().unwrap()
+            ),
+            json!({ "op_id": Uuid::now_v7(), "lines": [{ "line_no": 1, "qty": 1 }],
+                    "payments": [card(80_000, &w.bank)] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

@@ -1514,15 +1514,18 @@ pub async fn post_sale_core(
             ));
         }
     }
-    check_discounts(
-        conn,
-        ctx,
-        &prepared,
-        claimed_user.as_ref().and(req.claimed_user_id),
-        offline,
-        &mut bypass,
-    )
-    .await?;
+    // Повтор чека «Изменить оплату» — те же цены: скидку проверили при продаже (SPEC-37 §2).
+    if replay.is_none() {
+        check_discounts(
+            conn,
+            ctx,
+            &prepared,
+            claimed_user.as_ref().and(req.claimed_user_id),
+            offline,
+            &mut bypass,
+        )
+        .await?;
+    }
     let gifts: Vec<Uuid> = prepared
         .iter()
         .filter(|p| p.gift)
@@ -2457,7 +2460,10 @@ pub async fn return_sale_core(
     mode: ReturnMode<'_>,
 ) -> AppResult<SaleOut> {
     const KIND: &str = "sale.return";
-    crate::auth::require_permission(conn, &ctx.user, "sale_return").await?;
+    // Сторно «Изменить оплату» — право уже проверено как `till_pay_fix` (ADR-149).
+    if !mode.pay_change {
+        crate::auth::require_permission(conn, &ctx.user, "sale_return").await?;
+    }
     if let Some(done) = ops::begin_op(conn, ctx, req.op_id, KIND).await? {
         return Ok(done);
     }
