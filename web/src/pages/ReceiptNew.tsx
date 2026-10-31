@@ -48,15 +48,21 @@ import {
   lastText,
   lineCalc,
   literHints,
+  literPriceText,
   literTare,
   nextCount,
   priceJumpText,
   switchMode,
   withCost,
+  withEntry,
+  withLiterPrice,
   withMarkup,
   withSalePrice,
   type QtyMode,
 } from '../lib/receiptLines'
+import { invoiceEntry, type PriceEntry } from '../lib/purchasePrice'
+import { useOilPriceModes } from '../lib/stockSettings'
+import { canisterPourPrice } from '../lib/money'
 import { kgInput, perLiter } from '../lib/units'
 import { missingWithFocus } from '../lib/forms'
 import { useFocusAfterRender } from '../lib/focus'
@@ -163,6 +169,10 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   const [unknownCode, setUnknownCode] = useState<string | null>(null)
   const [newProductCode, setNewProductCode] = useState<string | null>(null)
   const [newProductName, setNewProductName] = useState<string | null>(null)
+  // «Новый товар» у строки накладной: цена и единица из неё — в карточку (задача 003, Н7).
+  const [newProductCost, setNewProductCost] = useState<PriceEntry | undefined>(undefined)
+  // Режим новой строки масла — «Настройки → Склад» (ADR-{B6.1}); без связи — кан. / л, как было.
+  const { modes: oilModes, loaded: oilModesLoaded } = useOilPriceModes()
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const labels = useAction()
   const [newSupplier, setNewSupplier] = useState<{ name: string; phone: string } | null>(null)
@@ -313,8 +323,9 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /** Товар для строки накладной без товара: количество и цена — из накладной (литры — в канистры). */
-  const assign = (no: number, p: Product) => {
+  /** Товар для строки накладной без товара: количество и цена — из накладной (литры — в канистры);
+   *  новый товар — цена прихода из его карточки (`cost`, задача 003, Н7). */
+  const assign = (no: number, p: Product, cost?: PriceEntry) => {
     const src = unmatched.find((l) => l.no === no)
     setTarget(null)
     if (!src) return
@@ -322,17 +333,19 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     setUnmatched((us) => us.filter((l) => l.no !== no))
     setLines((ls) => {
       const hint: Line['hint'] = { invoice: src.name, check: false, note: s.note, src, dup: duplicateOf(ls, p.id) !== null }
-      return [...ls, draftLine(p, s.count, s.each, hint, s.measure)]
+      const line = draftLine(p, s.count, s.each, hint, s.measure)
+      return [...ls, cost ? { ...line, ...withEntry(line, cost, p, line.mode) } : line]
     })
     loadLast(p)
     remember(src.name, p)
     focusId(`line-${lines.length + 1}-count`)
   }
 
-  const addProduct = (p: Product, how: PickHow = 'search', cost?: string) => {
+  /** `cost` — закупка из Умага за канистру; `entry` — цена прихода из карточки нового товара. */
+  const addProduct = (p: Product, how: PickHow = 'search', cost?: string, entry?: PriceEntry) => {
     // Выбирают товар для строки накладной по фото — он становится этой строкой.
     if (target !== null) {
-      assign(target, p)
+      assign(target, p, entry)
       return
     }
     // Скан — фокус остаётся в поиске (сканируют подряд); выбор из списка — сразу к количеству строки.
@@ -345,12 +358,13 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
         // Цена подставляется из прошлого прихода, цена продажи — текущая; их можно изменить.
         // Карточка из старой программы — закупка оттуда, пока своих приходов нет.
         // Масло: в приходе — канистрами, в оприходовании — литрами (SPEC-36 §13).
-        const mode = isOil(p) ? defaultMode(stockIn) : undefined
+        // Новый товар с ценой прихода — режим строки тот, в котором её ввели (задача 003, Н7).
+        const mode = isOil(p) ? (entry?.per ?? defaultMode(stockIn, oilModes)) : undefined
         const tare = literTare(p, mode)
         const prices = initialPrices(p, tare)
         // Закупка из Умага — за канистру; в режиме «л» — за литр.
         const umagCost = cost && tare ? somInput(perLiter(parseSom(cost) ?? 0, tare)) : cost
-        const priced = umagCost && !prices.price ? withCost(prices, umagCost, tare) : prices
+        const priced = entry ? withEntry(prices, entry, p, mode) : umagCost && !prices.price ? withCost(prices, umagCost, tare) : prices
         return [...ls, { key: randomId(), product: p, count: firstCount(p, mode), ...(mode ? { mode } : {}), ...priced }]
       }
       // Повторный скан: ещё штука, канистра (в литрах — её объём) или килограмм.
@@ -361,7 +375,8 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
   // «+ Оприходовать» у товара: экран открывается оприходованием с этим товаром в первой строке.
   const prefill = fix ? null : params.get('product')
   useEffect(() => {
-    if (!prefill) return
+    // Ждём настройку склада: строка масла открывается в режиме по умолчанию (ADR-{B6.1}).
+    if (!prefill || !oilModesLoaded) return
     let alive = true
     void get<Product>(`/products/${prefill}`)
       .then((p) => {
@@ -373,7 +388,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
     }
     // Только при открытии экрана: товар из адреса добавляется один раз.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefill])
+  }, [prefill, oilModesLoaded])
 
   /** Смена вида: строки остаются как есть — у масла свой режим «кан. | л» (SPEC-36 §13). */
   const switchKind = (k: ReceiptKind) => {
@@ -815,6 +830,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                       variant="secondary"
                       onClick={() => {
                         setTarget(l.no)
+                        setNewProductCost(invoiceEntry(l))
                         setNewProductName(l.name)
                       }}
                     >
@@ -976,9 +992,24 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                           {hints.perCan}
                         </div>
                       )}
+                      {oil && !tare && (
+                        // Канистрами — цена за литр видна всегда и вводится: канистра посчитается сама,
+                        // сумма — от литра (задача 003, Н7, ADR-{B6.1}).
+                        <label className="mt-1 flex flex-col gap-1 text-xs text-slate-500" data-testid="liters-per-l">
+                          за литр, с
+                          <input
+                            id={`line-${i + 1}-price-l`}
+                            className="w-28"
+                            inputMode="decimal"
+                            value={literPriceText(l, l.product.container_ml ?? 0)}
+                            onKeyDown={onFieldKey(i + 1, 'price')}
+                            onChange={(e) => updateLine(l.key, withLiterPrice(l, e.target.value, l.product.container_ml ?? 0))}
+                          />
+                        </label>
+                      )}
                       {l.last && (
                         <div className="mt-1 text-xs text-slate-500" data-testid="last-receipt">
-                          {lastText(l.last, lastPer(l.product))}
+                          {lastText(l.last, lastPer(l.product), oil ? l.product.container_ml : null)}
                         </div>
                       )}
                       {priceJumpText(l.price, l.last, tare) && (
@@ -1017,6 +1048,12 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
                       {typeof c !== 'string' && c.salePrice !== l.product.sale_price_tyiyn && (
                         <div className="mt-1 text-xs text-amber-700" data-testid="new-sale-price">
                           было {formatSom(l.product.sale_price_tyiyn)} — новая цена с проведением
+                        </div>
+                      )}
+                      {oil && typeof c !== 'string' && l.product.container_ml && (
+                        // Розлив — от цены канистры, как в карточке (ADR-074).
+                        <div className="mt-1 text-xs text-slate-500" data-testid="line-pour">
+                          розлив: {formatSom(canisterPourPrice(c.salePrice, l.product.container_ml) ?? 0)} за л
                         </div>
                       )}
                     </td>
@@ -1218,20 +1255,27 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
       {newProductName !== null && (
         <ProductFormModal
           presetName={newProductName}
-          onClose={() => setNewProductName(null)}
-          onSaved={(p) => {
+          presetCost={newProductCost}
+          stockIn={stockIn}
+          onClose={() => {
             setNewProductName(null)
-            addProduct(p)
+            setNewProductCost(undefined)
+          }}
+          onSaved={(p, cost) => {
+            setNewProductName(null)
+            setNewProductCost(undefined)
+            addProduct(p, 'search', undefined, cost)
           }}
         />
       )}
       {newProductCode !== null && (
         <ProductFormModal
           presetBarcode={newProductCode}
+          stockIn={stockIn}
           onClose={() => setNewProductCode(null)}
-          onSaved={(p) => {
+          onSaved={(p, cost) => {
             setNewProductCode(null)
-            addProduct(p)
+            addProduct(p, 'search', undefined, cost)
           }}
         />
       )}

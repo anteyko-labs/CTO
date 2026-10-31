@@ -255,6 +255,11 @@ async fn stale_stock(
 struct StockSettings {
     stale_days: i32,
     oil_norm_bp: i32,
+    /// Какая цена масла открывается первой в новой строке прихода и в карточке нового товара:
+    /// `can` — за канистру, `l` — за литр (задача 003, Н7, ADR-{B6.1}). По умолчанию `can`.
+    oil_price_mode_receipt: String,
+    /// То же для оприходования; по умолчанию `l` (SPEC-36 §13).
+    oil_price_mode_stock_in: String,
 }
 
 /// Что поменять: пустое поле остаётся как было.
@@ -262,6 +267,42 @@ struct StockSettings {
 struct StockSettingsReq {
     stale_days: Option<i32>,
     oil_norm_bp: Option<i32>,
+    oil_price_mode_receipt: Option<String>,
+    oil_price_mode_stock_in: Option<String>,
+}
+
+/// Режим цены масла: за канистру или за литр.
+const OIL_PRICE_MODES: [&str; 2] = ["can", "l"];
+
+/// Режимы цены масла по умолчанию: (приход, оприходование) — ADR-{B6.1}. Неизвестное значение —
+/// как по умолчанию: «кан.» в приходе, «л» в оприходовании.
+async fn oil_price_modes(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<(String, String)> {
+    let v = sqlx::query_scalar!(
+        "select value from settings where branch_id = $1 and key = 'stock'",
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let mode = |key: &str, default: &str| {
+        v.as_ref()
+            .and_then(|v| v.get(key).and_then(serde_json::Value::as_str))
+            .filter(|m| OIL_PRICE_MODES.contains(m))
+            .unwrap_or(default)
+            .to_string()
+    };
+    Ok((
+        mode("oil_price_mode_receipt", "can"),
+        mode("oil_price_mode_stock_in", "l"),
+    ))
+}
+
+/// Новое значение режима цены масла: пусто — прежнее, неизвестное — 422.
+fn oil_price_mode(req: Option<String>, was: String) -> AppResult<String> {
+    match req {
+        None => Ok(was),
+        Some(m) if OIL_PRICE_MODES.contains(&m.as_str()) => Ok(m),
+        Some(_) => Err(invalid("цена масла: за канистру (can) или за литр (l)")),
+    }
 }
 
 /// Норма расхождения по маслу на ревизии, в сотых долях процента (вопрос 32, ADR-052). По умолчанию 0,5 %.
@@ -285,13 +326,17 @@ async fn get_stock_settings(
     user: CurrentUser,
 ) -> AppResult<Json<StockSettings>> {
     let mut conn = state.pool.acquire().await?;
+    let (receipt_mode, stock_in_mode) = oil_price_modes(&mut conn, user.branch_id).await?;
     Ok(Json(StockSettings {
         stale_days: stale_days(&mut conn, user.branch_id).await?,
         oil_norm_bp: oil_norm_bp(&mut conn, user.branch_id).await?,
+        oil_price_mode_receipt: receipt_mode,
+        oil_price_mode_stock_in: stock_in_mode,
     }))
 }
 
-/// Срок залежалости и норму по маслу правит владелец (ADR-039, ADR-052).
+/// Срок залежалости, норму по маслу и режим цены масла правит владелец (ADR-039, ADR-052,
+/// ADR-{B6.1}); изменение — в журнал действий (I5).
 async fn put_stock_settings(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -311,7 +356,15 @@ async fn put_stock_settings(
         Some(n) => n,
         None => oil_norm_bp(&mut tx, ctx.user.branch_id).await?,
     };
-    let value = serde_json::json!({ "stale_days": stale, "oil_norm_bp": norm });
+    let (receipt_was, stock_in_was) = oil_price_modes(&mut tx, ctx.user.branch_id).await?;
+    let receipt_mode = oil_price_mode(req.oil_price_mode_receipt, receipt_was)?;
+    let stock_in_mode = oil_price_mode(req.oil_price_mode_stock_in, stock_in_was)?;
+    let value = serde_json::json!({
+        "stale_days": stale,
+        "oil_norm_bp": norm,
+        "oil_price_mode_receipt": receipt_mode,
+        "oil_price_mode_stock_in": stock_in_mode,
+    });
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'stock', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,
@@ -325,6 +378,8 @@ async fn put_stock_settings(
     Ok(Json(StockSettings {
         stale_days: stale,
         oil_norm_bp: norm,
+        oil_price_mode_receipt: receipt_mode,
+        oil_price_mode_stock_in: stock_in_mode,
     }))
 }
 
