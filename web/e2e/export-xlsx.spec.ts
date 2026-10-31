@@ -72,7 +72,10 @@ test('выгрузка: приход больше страницы, товары
 
   // «Приход»: поиск по поставщику, страница 25 — в файле все 30 строк, суммы числами.
   await page.goto('/receipts')
+  // Поиск применяется через 400 мс: на чистой базе «/ 30» видно и до него — ждём ответ на поиск.
+  const searched = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/receipts') && new URL(r.url()).searchParams.get('q') === supplierName)
   await page.locator('#receipts-search').fill(supplierName)
+  await searched
   const pager = page.getByRole('navigation', { name: 'Страницы приходов' })
   await expect(pager.getByTestId('pager-range')).toHaveText(/\/ 30$/)
   await pager.getByLabel('Строк на странице').selectOption('25')
