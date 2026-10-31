@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into products (id, category_id, name, brand, article, unit, container_ml, attrs,\n                                 sale_price_tyiyn, points_mode, points_value)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10, 'inherit'), coalesce($11::bigint, 0))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Jsonb",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f75b9f3dfab1889b468d70718da4ddc1e80faefef38cac73f43e79384e312163"
+}

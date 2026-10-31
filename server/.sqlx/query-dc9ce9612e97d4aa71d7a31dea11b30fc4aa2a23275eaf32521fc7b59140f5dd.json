@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update categories set name = coalesce($2, name), attributes = coalesce($3, attributes),\n             book_slot = case when $4 then $5 when book_slot is null then coalesce($8, book_slot) else book_slot end,\n             book_interval_km = case when $4 then $6 else book_interval_km end,\n             book_interval_days = case when $4 then $7 else book_interval_days end,\n             points_mode = coalesce($9, points_mode), points_value = coalesce($10, points_value)\n           where id = $1\n           returning id, name, kind, attributes,\n                     coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                     book_interval_km, book_interval_days, points_mode, points_value",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "attributes",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "book_slot!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "book_interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "book_interval_days",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "points_mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "points_value",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Bool",
+        "Text",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "dc9ce9612e97d4aa71d7a31dea11b30fc4aa2a23275eaf32521fc7b59140f5dd"
+}

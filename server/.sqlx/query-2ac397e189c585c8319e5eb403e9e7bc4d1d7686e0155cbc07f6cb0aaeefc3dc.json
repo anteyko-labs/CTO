@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into product_unit_changes (id, product_id, from_unit, from_container_ml, to_unit,\n                                             to_container_ml, qty_mul, qty_div, user_id, device_id)\n           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2ac397e189c585c8319e5eb403e9e7bc4d1d7686e0155cbc07f6cb0aaeefc3dc"
+}

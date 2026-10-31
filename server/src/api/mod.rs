@@ -40,6 +40,7 @@ pub mod paging;
 pub mod parties;
 pub mod pay_fix;
 pub mod payroll;
+pub mod product_units;
 pub mod receipt_drafts;
 pub mod receipt_files;
 pub mod receipts;
@@ -73,6 +74,7 @@ pub fn routes() -> Router<AppState> {
         .merge(cash::routes())
         .merge(cars::routes())
         .merge(catalog::routes())
+        .merge(product_units::routes())
         .merge(client_messages::routes())
         .merge(corrections::routes())
         .merge(defects::routes())

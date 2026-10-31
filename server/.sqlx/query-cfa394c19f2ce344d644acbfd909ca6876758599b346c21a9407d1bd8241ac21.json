@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn, business_date,\n                  party_id as \"party_id?\", contact_id as \"contact_id?\", vehicle_id as \"vehicle_id?\"\n           from sales where id = $1 and branch_id = $2",
+  "query": "select kind, sale_type, cashier_id, master_id, master_fee_tyiyn, business_date, created_at,\n                  party_id as \"party_id?\", contact_id as \"contact_id?\", vehicle_id as \"vehicle_id?\"\n           from sales where id = $1 and branch_id = $2",
   "describe": {
     "columns": [
       {
@@ -35,16 +35,21 @@
       },
       {
         "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
         "name": "party_id?",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "contact_id?",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "vehicle_id?",
         "type_info": "Uuid"
       }
@@ -62,10 +67,11 @@
       true,
       false,
       false,
+      false,
       true,
       true,
       true
     ]
   },
-  "hash": "9ed9c6c7b7ccfa7230cfe62b4afc97d5764fc646b58827eba5c321ca0e0eb388"
+  "hash": "cfa394c19f2ce344d644acbfd909ca6876758599b346c21a9407d1bd8241ac21"
 }

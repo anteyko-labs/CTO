@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                  c.book_interval_km, c.book_interval_days\n           from categories c order by c.name",
+  "query": "select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as \"book_slot!\",\n                  c.book_interval_km, c.book_interval_days, c.points_mode, c.points_value\n           from categories c order by c.name",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,16 @@
         "ordinal": 6,
         "name": "book_interval_days",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "points_mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "points_value",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -49,8 +59,10 @@
       false,
       null,
       true,
-      true
+      true,
+      false,
+      false
     ]
   },
-  "hash": "757f96cdcdeb79014d53d7fe890f5efc0ee246899c333c381378c7beddef8a6b"
+  "hash": "71793aa414b269d36bdc85db52e7924489490e009924c5bbb8916247181b819d"
 }

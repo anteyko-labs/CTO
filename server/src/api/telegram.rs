@@ -1582,12 +1582,30 @@ pub(crate) fn points(v: i64) -> String {
 
 /// За что начисляются баллы (ADR-124): строка в ответе «⭐ Баллы».
 pub const BONUS_RULE: &str = "За каждую замену масла — бонусные баллы.";
+/// Владелец выключил «только в чеке с заменой масла» (ADR-{B1.2}).
+pub const BONUS_RULE_ANY: &str = "За покупки — бонусные баллы.";
+
+/// За что начисляются баллы — по настройке главного филиала.
+pub async fn bonus_rule(conn: &mut PgConnection) -> AppResult<&'static str> {
+    let main = crate::api::branches::main_branch(conn).await?;
+    Ok(
+        if crate::api::loyalty::settings(conn, main)
+            .await?
+            .oil_change_only
+        {
+            BONUS_RULE
+        } else {
+            BONUS_RULE_ANY
+        },
+    )
+}
 
 /// Баллы клиента и последние операции (SPEC-19).
 pub async fn bonus_history(conn: &mut PgConnection, party_id: Uuid) -> AppResult<String> {
     let h = crate::api::loyalty::history(conn, party_id, 10).await?;
+    let rule = bonus_rule(conn).await?;
     let mut lines = vec![format!(
-        "Баллов: {} (1 балл = 1 сом, списать — назовите номер на кассе)\n{BONUS_RULE}",
+        "Баллов: {} (1 балл = 1 сом, списать — назовите номер на кассе)\n{rule}",
         points(h.balance_tyiyn)
     )];
     for r in &h.rows {
@@ -1635,7 +1653,7 @@ pub async fn bonus_notices(conn: &mut PgConnection) -> AppResult<Vec<BonusNotice
         doc_id: Uuid,
         party_id: Uuid,
         number: Option<i64>,
-        ops: Vec<(String, i64)>,
+        ops: Vec<(String, i64, Uuid)>,
         ids: Vec<Uuid>,
     }
     let mut out: Vec<Group> = Vec::new();
@@ -1645,7 +1663,7 @@ pub async fn bonus_notices(conn: &mut PgConnection) -> AppResult<Vec<BonusNotice
             .find(|x| x.chat_id == r.chat_id && x.doc_id == r.doc_id)
         {
             Some(x) => {
-                x.ops.push((r.kind, r.amount_tyiyn));
+                x.ops.push((r.kind, r.amount_tyiyn, r.id));
                 x.ids.push(r.id);
             }
             None => out.push(Group {
@@ -1653,23 +1671,23 @@ pub async fn bonus_notices(conn: &mut PgConnection) -> AppResult<Vec<BonusNotice
                 doc_id: r.doc_id,
                 party_id: r.party_id,
                 number: r.sale_number,
-                ops: vec![(r.kind, r.amount_tyiyn)],
+                ops: vec![(r.kind, r.amount_tyiyn, r.id)],
                 ids: vec![r.id],
             }),
         }
     }
     let mut notices = Vec::new();
     for g in out {
-        let parts: Vec<String> = g
-            .ops
-            .iter()
-            .map(|(kind, v)| match kind.as_str() {
-                "accrual" => format!("начислено {}", points(*v)),
+        let mut parts: Vec<String> = Vec::new();
+        for (kind, v, id) in &g.ops {
+            parts.push(match kind.as_str() {
+                // За что начислено — строки чека (задача 002, П1).
+                "accrual" => format!("начислено {}{}", points(*v), accrued_for(conn, *id).await?),
                 "redeem" => format!("списано {}", points(-v)),
                 "refund" => format!("возвращено {}", points(*v)),
                 _ => format!("снято {}", points(-v)),
-            })
-            .collect();
+            });
+        }
         let balance = crate::api::loyalty::balance(conn, g.party_id).await?;
         let (chat_id, number, ids) = (g.chat_id, g.number, g.ids);
         notices.push(BonusNotice {
@@ -1686,6 +1704,32 @@ pub async fn bonus_notices(conn: &mut PgConnection) -> AppResult<Vec<BonusNotice
         });
     }
     Ok(notices)
+}
+
+/// «за Масло 5W-30, Фильтр MANN»: строки чека, за которые начислены баллы (до трёх).
+async fn accrued_for(conn: &mut PgConnection, ledger_id: Uuid) -> AppResult<String> {
+    let names = sqlx::query_scalar!(
+        r#"select coalesce(p.name, sv.name, '') as "name!"
+           from loyalty_lines x
+           join sale_lines sl on sl.sale_id = x.sale_id and sl.line_no = x.line_no
+           left join products p on p.id = sl.product_id
+           left join services sv on sv.id = sl.service_id
+           where x.ledger_id = $1 and x.amount_tyiyn > 0 order by x.line_no"#,
+        ledger_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let names: Vec<&String> = names.iter().filter(|n| !n.is_empty()).collect();
+    if names.is_empty() {
+        return Ok(String::new());
+    }
+    let shown: Vec<&str> = names.iter().take(3).map(|n| n.as_str()).collect();
+    let more = names.len().saturating_sub(3);
+    Ok(if more > 0 {
+        format!(" за {} и ещё {more}", shown.join(", "))
+    } else {
+        format!(" за {}", shown.join(", "))
+    })
 }
 
 pub async fn mark_bonus_notice(conn: &mut PgConnection, n: &BonusNotice) -> AppResult<()> {

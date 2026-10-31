@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(p.name, sv.name, '') as \"name!\"\n           from loyalty_lines x\n           join sale_lines sl on sl.sale_id = x.sale_id and sl.line_no = x.line_no\n           left join products p on p.id = sl.product_id\n           left join services sv on sv.id = sl.service_id\n           where x.ledger_id = $1 and x.amount_tyiyn > 0 order by x.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c754948fd93ef4020773ac7c32387f301cc7a305519b5075f5a1a80095ed5d3b"
+}

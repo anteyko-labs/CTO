@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select jsonb_build_object('name', name, 'brand', brand, 'article', article,\n                                     'category_id', category_id, 'attrs', attrs, 'archived', archived,\n                                     'points_mode', points_mode, 'points_value', points_value) as \"v!\"\n           from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ef3172387014012c87a0271b7bf06bb76e1d98f532fd450ecfee454719e55d88"
+}

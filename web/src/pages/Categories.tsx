@@ -4,6 +4,8 @@ import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { StockBackLink } from '../components/StockBackLink'
 import { ProductFormModal } from '../components/ProductFormModal'
+import { PointsRuleField } from '../components/PointsRuleField'
+import { parsePointsRule, pointsChanged, pointsDraft } from '../lib/points'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -70,6 +72,8 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
     book.km !== (category.book_interval_km !== null ? String(category.book_interval_km) : '') ||
     book.days !== (category.book_interval_days !== null ? String(category.book_interval_days) : '')
   const bookValid = (book.km === '' && book.days === '') || (/^\d+$/.test(book.km) && /^\d+$/.test(book.days))
+  // Баллы товаров категории (задача 002, П1) — владелец.
+  const [points, setPoints] = useState(() => pointsDraft(category.points_mode, category.points_value))
   const { busy, error, run } = useAction()
 
   const setRow = (i: number, patchRow: Partial<AttrRow>) =>
@@ -77,9 +81,12 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
 
   const save = () =>
     run(async () => {
+      const rule = parsePointsRule(points.mode, points.text)
+      if (typeof rule === 'string') throw new Error(rule)
       await patch<Category>(`/categories/${category.id}`, {
         name,
         attributes: rows.map(toDef),
+        ...(owner && pointsChanged(points, category.points_mode, category.points_value) ? { points: rule } : {}),
         ...(owner && bookChanged
           ? {
               book: {
@@ -139,6 +146,16 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
               onChange={(e) => setBook({ ...book, days: e.target.value.replace(/\D/g, '') })}
             />
           </Field>
+        </div>
+
+        <div className="sm:max-w-md">
+          <PointsRuleField
+            inheritLabel="по общей ставке"
+            draft={points}
+            onChange={setPoints}
+            disabled={!owner}
+            hint={owner ? 'Для товаров категории без своего правила; общая ставка — в «Телеграм и баллы»' : 'Баллы задаёт владелец'}
+          />
         </div>
 
         <div>
@@ -296,7 +313,7 @@ export default function Categories() {
             <Field label="Название" required>
               <input id="category-name" autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </Field>
-            <Field label="Вид" hint="Масло учитывается в литрах, остальное — в штуках. Стандартные характеристики добавляются автоматически.">
+            <Field label="Вид" hint="Масло по умолчанию в литрах, остальное — в штуках (у товара можно выбрать другое). Стандартные характеристики добавляются автоматически.">
               <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as CategoryKind })}>
                 {KINDS.map((k) => (
                   <option key={k} value={k}>

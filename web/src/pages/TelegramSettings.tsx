@@ -1,7 +1,7 @@
 // Телеграм-бот владельца: привязка чата одноразовым кодом (SPEC-18, ADR-050); ссылкой и QR (ADR-121).
 import { BotStartLink, startLink } from '../components/BotStartLink'
 import { useState } from 'react'
-import { Button, Card, CardTitle, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
+import { Button, Card, CardTitle, Checkbox, ErrorBox, Field, Loading, PageHeader, toast } from '../components/ui'
 import { del, get, post, put } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
@@ -12,50 +12,72 @@ interface Status {
   linked_at: string | null
 }
 
-/** Процент баллов за замену масла (ADR-124): «0,5» ↔ 50 сотых процента (SPEC-19). */
+interface LoyaltySettings {
+  rate_bp: number
+  /** «Только в чеке с заменой масла» — по умолчанию да (ADR-124, задача 002, П1). */
+  oil_change_only: boolean
+}
+
+/** Общая ставка баллов и выключатель «только в чеке с заменой масла» (SPEC-19, задача 002, П1):
+ *  «0,5» ↔ 50 сотых процента. Своё правило — в карточке товара и в категории. */
 function LoyaltyRate() {
-  const st = useLoad(() => get<{ rate_bp: number }>('/settings/loyalty'), [])
+  const st = useLoad(() => get<LoyaltySettings>('/settings/loyalty'), [])
   const [text, setText] = useState<string | null>(null)
   const act = useAction()
   const m = text === null ? null : /^(\d{1,2})(?:[.,](\d{1,2}))?$/.exec(text.trim())
   const bp = m ? Number(m[1]) * 100 + Number((m[2] ?? '').padEnd(2, '0')) : null
   const shown = (v: number) => String(v / 100).replace('.', ',')
   if (!st.data) return <ErrorBox error={st.error} />
+  const s = st.data
+  const save = (next: LoyaltySettings, done: string) =>
+    void act.run(async () => {
+      await put('/settings/loyalty', next)
+      setText(null)
+      st.reload()
+      toast(done)
+    })
   return (
-    <Card className="flex flex-wrap items-end gap-3 text-sm">
-      <div className="min-w-0 flex-1 text-slate-700">
-        <CardTitle>Баллы клиентам</CardTitle>
-        За каждую замену масла — бонусные баллы: клиенты, подключившиеся к боту по номеру, получают {shown(st.data.rate_bp)} % от
-        оплаченного деньгами по чеку «В сервис» с услугой замены масла (1 балл = 1 сом); другие покупки баллов не дают. Списать
-        баллы можно в любом чеке — на кассе «Услуги → Скидка баллами». Списанные баллы уменьшают чистую прибыль.
+    <Card className="flex flex-col gap-3 text-sm">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-0 flex-1 text-slate-700">
+          <CardTitle>Баллы клиентам</CardTitle>
+          {s.oil_change_only ? 'За каждую замену масла — бонусные баллы' : 'За покупки — бонусные баллы'}: клиенты, подключившиеся к боту
+          по номеру, получают {shown(s.rate_bp)} % от оплаченного деньгами
+          {s.oil_change_only ? ' по чеку «В сервис» с услугой замены масла; другие покупки баллов не дают' : ' по любому чеку'} (1 балл = 1
+          сом). Баллы считаются по строкам чека: своё правило можно задать в карточке товара и в категории (порядок: товар → категория →
+          общая ставка); возврат строки снимает её баллы. Списать баллы можно в любом чеке — на кассе «Услуги → Скидка баллами».
+          Списанные баллы уменьшают чистую прибыль.
+        </div>
+        {text === null ? (
+          <Button variant="secondary" onClick={() => setText(shown(s.rate_bp))}>
+            Изменить процент
+          </Button>
+        ) : (
+          <>
+            <Field label="Процент, %" hint="От 0 до 10">
+              <input autoFocus inputMode="decimal" className="w-24" value={text} onChange={(e) => setText(e.target.value)} />
+            </Field>
+            <Button variant="secondary" onClick={() => setText(null)}>
+              Отмена
+            </Button>
+            <Button
+              disabled={act.busy || bp === null || bp > 1000}
+              onClick={() => bp !== null && save({ ...s, rate_bp: bp }, 'Процент сохранён')}
+            >
+              Сохранить
+            </Button>
+          </>
+        )}
       </div>
-      {text === null ? (
-        <Button variant="secondary" onClick={() => setText(shown(st.data!.rate_bp))}>
-          Изменить процент
-        </Button>
-      ) : (
-        <>
-          <Field label="Процент, %" hint="От 0 до 10">
-            <input autoFocus inputMode="decimal" className="w-24" value={text} onChange={(e) => setText(e.target.value)} />
-          </Field>
-          <Button variant="secondary" onClick={() => setText(null)}>
-            Отмена
-          </Button>
-          <Button
-            disabled={act.busy || bp === null || bp > 1000}
-            onClick={() =>
-              void act.run(async () => {
-                await put('/settings/loyalty', { rate_bp: bp })
-                setText(null)
-                st.reload()
-                toast('Процент сохранён')
-              })
-            }
-          >
-            Сохранить
-          </Button>
-        </>
-      )}
+      <div data-testid="loyalty-oil-only">
+        <Checkbox
+          label="Начислять только в чеке с заменой масла"
+          checked={s.oil_change_only}
+          onChange={(v) =>
+            !act.busy && save({ ...s, oil_change_only: v }, v ? 'Баллы — только за замену масла' : 'Баллы — за любые чеки')
+          }
+        />
+      </div>
       <ErrorBox error={act.error} />
     </Card>
   )

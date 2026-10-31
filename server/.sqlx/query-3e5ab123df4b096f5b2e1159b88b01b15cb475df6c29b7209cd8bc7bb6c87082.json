@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update gift_rule_items set gift_qty = $3 where rule_id = $1 and gift_product_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3e5ab123df4b096f5b2e1159b88b01b15cb475df6c29b7209cd8bc7bb6c87082"
+}

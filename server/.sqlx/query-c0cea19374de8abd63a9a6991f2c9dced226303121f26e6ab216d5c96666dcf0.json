@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select qty_mul, qty_div from product_unit_changes\n           where product_id = $1 and created_at > $2 order by created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "qty_mul",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "qty_div",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c0cea19374de8abd63a9a6991f2c9dced226303121f26e6ab216d5c96666dcf0"
+}

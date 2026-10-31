@@ -560,6 +560,8 @@ pub async fn reverse_tx(
         )
         .execute(&mut *conn)
         .await?;
+        // Единица товара менялась после документа — его количества в прежних единицах (ADR-{B1.1}).
+        crate::api::product_units::forbid_after_doc(conn, *target, id).await?;
         ops::apply_movement(
             conn,
             Movement {

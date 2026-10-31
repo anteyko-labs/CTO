@@ -953,6 +953,8 @@ pub async fn reverse_receipt_tx(
         )
         .await?;
         let target = live.get(&l.product_id).copied().unwrap_or(l.product_id);
+        // Единица товара менялась после прихода — его количества в прежних единицах (ADR-{B1.1}).
+        crate::api::product_units::forbid_after_doc(conn, target, id).await?;
         ops::apply_movement(
             conn,
             Movement {

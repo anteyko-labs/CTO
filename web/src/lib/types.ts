@@ -104,7 +104,13 @@ export interface Category {
   book_slot: BookSlot | 'none'
   book_interval_km: number | null
   book_interval_days: number | null
+  /** Баллы товаров категории (задача 002, П1): `inherit` — по общей ставке. */
+  points_mode?: PointsMode
+  points_value?: number
 }
+
+/** Правило баллов: как выше, не начислять, процент, баллы за единицу (lib/points.ts). */
+export type PointsMode = 'inherit' | 'none' | 'percent' | 'fixed'
 
 export interface Product {
   id: string
@@ -138,6 +144,9 @@ export interface Product {
   umag?: ProductUmag | null
   /** Остальные связанные строки Умага филиала (их бывает несколько). */
   umag_more?: ProductUmag[]
+  /** Баллы товара (задача 002, П1): `inherit` — как в категории. */
+  points_mode?: PointsMode
+  points_value?: number
 }
 
 export interface Employee {

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from receipt_acceptance_lines l\n                          join receipt_acceptances a on a.id = l.acceptance_id\n                          where a.status = 'waiting' and l.product_id = $1) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2ef45d2d7e65f6e081b027f8dec3e7b3bfe5d521ebb76662f12d0377dd950510"
+}
