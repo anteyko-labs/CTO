@@ -93,7 +93,8 @@ test('владелец открывает карточку из строки р�
   const scanner = page.getByPlaceholder('Сканируйте штрихкод')
   await scanner.fill(extra)
   await scanner.press('Enter')
-  await expect(page.locator(`[data-count="${w.id}"]`)).toHaveValue('1')
+  // Скан прибавляет к общему итогу строки (задача 003, Н14): итог — рядом с полем.
+  await expect(page.locator(`[data-total="${w.id}"]`)).toHaveText(/итого 1\sшт/)
   await expect(renamed.getByTestId('expected')).toHaveText('3 шт')
   const product = await api<{ stock_qty: number }>(page.request, 'get', `/products/${w.id}`)
   expect(product.stock_qty).toBe(3)
