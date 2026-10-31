@@ -11220,6 +11220,15 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                         "date": "2026-01-15", "comment": "стр. 3" })
             })
         }),
+        // Старый долг поставщику из тетради (задача 003 Н15) — то же право.
+        ("old_debts", "POST", "/api/v1/debts/old-supplier".into(), {
+            let sup = sup.clone();
+            Box::new(move || {
+                let amount = 1_000 + i64::try_from(op().as_u128() % 100_000).unwrap();
+                json!({ "op_id": op(), "party_id": sup, "amount_tyiyn": amount,
+                        "date": "2026-01-15", "supplier_doc": "№ 7" })
+            })
+        }),
         (
             "cash_moves",
             "POST",

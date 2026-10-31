@@ -1,10 +1,11 @@
 // Долги: кто должен нам и кому должны мы, с оплатой и погашением (SPEC-10). Экран на всю
 // ширину: таблица с сортировкой и страницами, срок и последняя оплата — с сервера (SPEC-27 §6).
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { ExportButton } from '../components/ExportButton'
 import { OldDebtModal } from '../components/OldDebtModal'
+import { SupplierOldDebtModal } from '../components/SupplierOldDebtModal'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Button, Card, Empty, ErrorBox, Loading, Money, PageHeader } from '../components/ui'
 import { get } from '../lib/api'
@@ -46,6 +47,7 @@ function Side({
   actionLabel,
   onOpen,
   onPay,
+  action,
 }: {
   title: string
   /** Ключ размера страницы этого списка. */
@@ -60,6 +62,8 @@ function Side({
   onOpen: (p: DebtRow) => void
   /** Без права на оплату (ADR-097) кнопки нет. */
   onPay?: (p: DebtRow) => void
+  /** Кнопка в заголовке списка: «Занести долг поставщику» (задача 003 Н15). */
+  action?: ReactNode
 }) {
   // Крупные долги сверху; щелчок по заголовку — своя сортировка.
   const [sort, setSort] = useState<{ key: DebtSortKey; desc: boolean }>({ key: 'debt', desc: true })
@@ -78,6 +82,7 @@ function Side({
         <h2 className="font-semibold">
           {title} <span className="text-sm font-normal text-slate-500">· {rows.length}</span>
         </h2>
+        {action}
         <div className="text-right">
           <div className={`text-2xl font-bold tabular-nums ${owedToUs ? 'text-amber-700' : 'text-slate-900'}`}>{formatSom(total)}</div>
           {overdue > 0 && <div className="text-xs font-medium text-rose-700">просрочено {formatSom(overdue)}</div>}
@@ -203,6 +208,8 @@ export default function Debts() {
   // «Занести старый долг» из тетради (SPEC-38): владелец или администратор с правом; в «Все
   // филиалы» кнопки нет — долг заносится в филиал (ADR-108).
   const [oldDebt, setOldDebt] = useState(false)
+  // Старый долг Автодома поставщику (задача 003 Н15): то же право, кнопка у «Должны мы».
+  const [supplierDebt, setSupplierDebt] = useState(false)
   const mayOldDebt = can('old_debts') && !all
   const list = useLoad(() => get<DebtRow[]>(`/debts/list${qs(branchParam(all))}`), [all])
   const { reload } = list
@@ -269,14 +276,22 @@ export default function Debts() {
             rows={fromUs}
             totals={totals}
             owedToUs={false}
-            empty="Мы никому не должны. Долг появляется, когда приход проводят с расчётом «В долг»."
+            empty="Мы никому не должны. Долг появляется, когда приход проводят с расчётом «В долг» или заносят старый долг поставщику."
             actionLabel="Оплатить"
             onOpen={open}
             onPay={can('receipts') && !all ? pay : undefined}
+            action={
+              mayOldDebt && (
+                <Button variant="secondary" className="ml-auto" onClick={() => setSupplierDebt(true)}>
+                  Занести долг поставщику
+                </Button>
+              )
+            }
           />
         </>
       )}
       {oldDebt && <OldDebtModal onClose={() => setOldDebt(false)} onSaved={reload} />}
+      {supplierDebt && <SupplierOldDebtModal onClose={() => setSupplierDebt(false)} onSaved={reload} />}
       {paying && (
         <RepaymentModal
           party={paying}

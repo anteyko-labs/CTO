@@ -1142,17 +1142,19 @@ pub async fn add_ledger_to(
     e: LedgerEntry<'_>,
     target: Option<(Uuid, i64)>,
 ) -> AppResult<(i64, Uuid)> {
-    add_ledger_at(conn, ctx, e, target, None).await
+    add_ledger_at(conn, ctx, e, target, None, "").await
 }
 
 /// То же, что [`add_ledger_to`], с учётным днём записи: `day` — старый долг из тетради ложится в
-/// день долга (SPEC-38); без него — день чека или сегодня.
-async fn add_ledger_at(
+/// день долга (SPEC-38); без него — день чека или сегодня. `supplier_doc` — номер накладной
+/// поставщика у старого долга поставщику (задача 003 Н15), у остальных записей пусто.
+pub(crate) async fn add_ledger_at(
     conn: &mut PgConnection,
     ctx: &Ctx,
     e: LedgerEntry<'_>,
     target: Option<(Uuid, i64)>,
     day: Option<NaiveDate>,
+    supplier_doc: &str,
 ) -> AppResult<(i64, Uuid)> {
     let LedgerEntry {
         party_id,
@@ -1177,14 +1179,14 @@ async fn add_ledger_at(
     let id = new_id();
     sqlx::query!(
         r#"insert into party_ledger (id, branch_id, party_id, kind, amount_tyiyn, business_date,
-                                     doc_type, doc_id, comment, user_id, device_id)
+                                     doc_type, doc_id, comment, user_id, device_id, supplier_doc)
            values ($1, $2, $3, $4, $5,
                    -- Долг по чеку — в учётный день чека: офлайн-чек вчерашнего дня в акте сверки вчера.
                    coalesce($11::date,
                             (select s.business_date from sales s
                              where s.id = $7 and $6 in ('sale', 'sale_return')),
                             (now() at time zone 'Asia/Bishkek')::date),
-                   $6, $7, $8, $9, $10)"#,
+                   $6, $7, $8, $9, $10, $12)"#,
         id,
         ctx.user.branch_id,
         party_id,
@@ -1195,7 +1197,8 @@ async fn add_ledger_at(
         comment,
         ctx.user.id,
         ctx.device_id,
-        day
+        day,
+        supplier_doc
     )
     .execute(&mut *conn)
     .await?;
@@ -1400,6 +1403,7 @@ pub(crate) async fn reconciliation_data(
     .await?;
     let raw = sqlx::query!(
         r#"select l.business_date, l.kind, l.amount_tyiyn, l.doc_type, l.doc_id, l.comment,
+                  l.supplier_doc as "ledger_doc",
                   s.number as "sale_number?", r.number as "receipt_number?",
                   r.supplier_doc as "supplier_doc?",
                   (select a.kind from cash_movements m join cash_accounts a on a.id = m.account_id
@@ -1444,7 +1448,11 @@ pub(crate) async fn reconciliation_data(
             ("supplier_return", _) => "Возврат товара поставщику".to_string(),
             ("supplier_return_reversal", _) => "Сторно возврата поставщику".to_string(),
             ("defect_reversal", _) => "Отмена возврата брака".to_string(),
-            // Старый долг — в день долга из тетради, с текстом владельца (SPEC-38).
+            // Старый долг — в день долга из тетради, с текстом владельца (SPEC-38); у поставщика —
+            // и номер его накладной (задача 003 Н15).
+            (OLD_DEBT_DOC, _) if !r.ledger_doc.is_empty() => {
+                format!("{OLD_DEBT_TITLE} (док. поставщика {})", r.ledger_doc)
+            }
             (OLD_DEBT_DOC, _) => OLD_DEBT_TITLE.to_string(),
             ("reversal", _) if r.reversed_doc.as_deref() == Some(OLD_DEBT_DOC) => {
                 "Сторно старого долга (из тетради)".to_string()
@@ -2053,7 +2061,7 @@ pub struct OldDebtOut {
 }
 
 /// Комментарий записи старого долга: подпись и текст владельца.
-fn old_debt_comment(text: &str) -> String {
+pub(crate) fn old_debt_comment(text: &str) -> String {
     if text.is_empty() {
         OLD_DEBT_TITLE.to_string()
     } else {
@@ -2083,12 +2091,14 @@ pub(crate) fn check_old_debt_date(date: NaiveDate, today: NaiveDate) -> AppResul
 }
 
 /// Не сторнированный старый долг клиента на ту же сумму с той же датой: «Такой долг уже занесён
-/// 28.10 (Эрбол)» — для второго подтверждения; нет такого — `None`.
+/// 28.10 (Эрбол)» — для второго подтверждения; нет такого — `None`. `branch` — только в этом
+/// филиале: долг поставщику у каждого филиала свой (задача 003 Н15); у клиента — `None`.
 pub(crate) async fn old_debt_duplicate(
     conn: &mut PgConnection,
     party_id: Uuid,
     amount: i64,
     date: NaiveDate,
+    branch: Option<Uuid>,
 ) -> AppResult<Option<String>> {
     let same = sqlx::query!(
         r#"select to_char(l.created_at at time zone 'Asia/Bishkek', 'DD.MM') as "day!",
@@ -2096,12 +2106,14 @@ pub(crate) async fn old_debt_duplicate(
            from party_ledger l join users u on u.id = l.user_id
            where l.party_id = $1 and l.kind = 'debt' and l.doc_type = $4
              and l.amount_tyiyn = $2 and l.business_date = $3 and l.reversal_of is null
+             and ($5::uuid is null or l.branch_id = $5)
              and not exists (select 1 from party_ledger r where r.reversal_of = l.id)
            order by l.created_at desc limit 1"#,
         party_id,
         amount,
         date,
-        OLD_DEBT_DOC
+        OLD_DEBT_DOC,
+        branch
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -2183,7 +2195,7 @@ pub async fn post_old_debt_tx(
     .ok_or_else(|| invalid("клиент не найден"))?;
     if p.role != "customer" {
         return Err(invalid(
-            "старый долг заносится клиенту; долг поставщику — «Правкой баланса» в его карточке",
+            "старый долг заносится клиенту; долг поставщику — «Занести старый долг» в его карточке",
         ));
     }
     if !p.active {
@@ -2193,7 +2205,7 @@ pub async fn post_old_debt_tx(
     if !created
         && !req.confirm_duplicate
         && let Some(same) =
-            old_debt_duplicate(&mut *conn, party_id, req.amount_tyiyn, req.date).await?
+            old_debt_duplicate(&mut *conn, party_id, req.amount_tyiyn, req.date, None).await?
     {
         return Err(AppError::Conflict(format!("{same}. Занести ещё раз?")));
     }
@@ -2210,6 +2222,7 @@ pub async fn post_old_debt_tx(
         },
         None,
         Some(req.date),
+        "",
     )
     .await?;
     let due = debt_dues(&mut *conn, &[(party_id, balance, p.due_days)])

@@ -486,7 +486,11 @@ async fn new_client_and_old_debt_are_one_transaction(pool: PgPool) {
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
-    assert!(message(&v).contains("Правкой баланса"), "{v}");
+    // Долг поставщику — своим окном в его карточке (задача 003 Н15).
+    assert!(
+        message(&v).contains("«Занести старый долг» в его карточке"),
+        "{v}"
+    );
 
     // Администратор со «Старыми долгами», но без «Клиентов и машин»: нового клиента не заводит.
     w.grant(&["old_debts"], false).await;

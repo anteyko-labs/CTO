@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 78] = [
+pub(crate) const WATCHED: [&str; 79] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -101,6 +101,8 @@ pub(crate) const WATCHED: [&str; 78] = [
     "payroll.salary_due",
     // Услугу завёл администратор (задача 003).
     "service.create_admin",
+    // Старый долг поставщику из тетради (задача 003 Н15).
+    "debt.old_supplier",
 ];
 
 #[derive(Serialize)]
@@ -620,6 +622,24 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             format!(
                 "Долг клиента — {}{}",
                 money(num("balance_tyiyn")),
+                comment(data)
+            ),
+        ),
+        // Старый долг поставщику (задача 003 Н15): наш долг; номер его накладной — подписью.
+        "debt.old_supplier" => (
+            format!(
+                "Старый долг поставщику: {} — {} от {} (из тетради)",
+                text("name"),
+                money(num("amount_tyiyn")),
+                ru_date(&text("date"))
+            ),
+            format!(
+                "Мы должны поставщику — {}{}{}",
+                money(num("balance_tyiyn").map(|b| b.saturating_neg().max(0))),
+                Some(text("supplier_doc"))
+                    .filter(|d| !d.is_empty())
+                    .map(|d| format!(", накладная {d}"))
+                    .unwrap_or_default(),
                 comment(data)
             ),
         ),
@@ -1664,5 +1684,19 @@ mod tests {
             "Старый долг: Иванов Пётр — 5 000 с от 15.03.2026 (из тетради)"
         );
         assert_eq!(text, "Долг клиента — 7 000 с — стр. 12");
+        // Задача 003 Н15: наш старый долг поставщику — с номером его накладной.
+        let (title, text) = describe(
+            "debt.old_supplier",
+            &json!({ "name": "Автоснаб", "amount_tyiyn": 1_200_000, "date": "2026-02-01",
+                     "supplier_doc": "№ 457", "balance_tyiyn": -1_500_000, "comment": "масло" }),
+        );
+        assert_eq!(
+            title,
+            "Старый долг поставщику: Автоснаб — 12 000 с от 01.02.2026 (из тетради)"
+        );
+        assert_eq!(
+            text,
+            "Мы должны поставщику — 15 000 с, накладная № 457 — масло"
+        );
     }
 }

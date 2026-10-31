@@ -1,6 +1,9 @@
 //! Накладные поставщика в долг: оплачено, осталось, статус и история платежей (SPEC-27 §5,
 //! SPEC-10, ADR-073). Что чем закрыто, хранит `supplier_allocations`; распределяет функция базы
 //! `supplier_allocate` — одна и для проведения, и для миграции старых оплат.
+//!
+//! Старый долг поставщику из тетради (задача 003 Н15, ADR-163) — `POST /debts/old-supplier`:
+//! запись долга с датой долга и номером накладной поставщика; гасится оплатой, как накладная.
 
 use std::collections::HashMap;
 
@@ -8,16 +11,20 @@ use axum::extract::{Path, State};
 use axum::{Json, Router, routing};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::api::parties::{OLD_DEBT_DOC, old_debt_text};
 use crate::auth::{Ctx, CurrentUser};
 use crate::error::{AppError, AppResult, invalid};
-use crate::ops::new_id;
+use crate::ops::{self, new_id};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/parties/{id}/invoices", routing::get(invoices))
+    Router::new()
+        .route("/parties/{id}/invoices", routing::get(invoices))
+        .route("/debts/old-supplier", routing::post(post_old_debt))
 }
 
 /// Распределяет долг поставщика: снятые записи теряют свои распределения, открытые оплаты
@@ -107,10 +114,17 @@ pub fn status(total: i64, paid: i64) -> &'static str {
     }
 }
 
-/// Долг перед поставщиком: накладная в долг или правка владельца (старый долг).
+/// Долг перед поставщиком: накладная в долг, старый долг из тетради или правка владельца.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InvoiceOut {
     pub ledger_id: Uuid,
+    /// `receipt` — накладная в долг, `old_debt` — старый долг из тетради (задача 003 Н15),
+    /// `adjust` — правка владельца.
+    #[serde(default)]
+    pub kind: String,
+    /// Кто занёс старый долг; у накладной и правки — пусто.
+    #[serde(default)]
+    pub user_name: String,
     pub receipt_id: Option<Uuid>,
     pub number: Option<i64>,
     pub supplier_doc: String,
@@ -196,12 +210,14 @@ pub async fn supplier_invoices(
     party_id: Uuid,
 ) -> AppResult<SupplierInvoices> {
     let debts = sqlx::query!(
-        r#"select l.id, l.doc_type, l.business_date, l.created_at, l.comment,
+        r#"select l.id, l.doc_type, l.business_date, l.created_at, l.comment, l.supplier_doc as ledger_doc,
+                  u.full_name as user_name,
                   -l.amount_tyiyn as "total!",
                   coalesce((select sum(s.amount_tyiyn) from supplier_allocations s
                             where s.debit_id = l.id), 0)::bigint as "paid!",
                   r.id as "receipt_id?", r.number as "number?", r.supplier_doc as "supplier_doc?"
            from party_ledger l
+           join users u on u.id = l.user_id
            left join receipts r on l.doc_type = 'receipt' and r.id = l.doc_id
            where l.branch_id = $1 and l.party_id = $2 and l.amount_tyiyn < 0
              and supplier_ledger_live(l)
@@ -217,18 +233,31 @@ pub async fn supplier_invoices(
         .map(|d| {
             let left = d.total.saturating_sub(d.paid);
             debt = debt.saturating_add(left);
+            let old = d.doc_type == OLD_DEBT_DOC;
             InvoiceOut {
                 ledger_id: d.id,
+                kind: match d.doc_type.as_str() {
+                    "receipt" => "receipt",
+                    OLD_DEBT_DOC => OLD_DEBT_DOC,
+                    _ => "adjust",
+                }
+                .into(),
+                user_name: if old { d.user_name } else { String::new() },
                 receipt_id: d.receipt_id,
                 number: d.number,
-                supplier_doc: d.supplier_doc.unwrap_or_default(),
+                // Номер накладной поставщика: у прихода — из прихода, у старого долга — свой.
+                supplier_doc: d.supplier_doc.unwrap_or(d.ledger_doc),
                 business_date: d.business_date,
                 created_at: d.created_at,
                 total_tyiyn: d.total,
                 paid_tyiyn: d.paid,
                 left_tyiyn: left,
                 status: status(d.total, d.paid).into(),
-                comment: d.comment,
+                comment: if old {
+                    old_debt_text(&d.comment).to_string()
+                } else {
+                    d.comment
+                },
             }
         })
         .collect();
@@ -427,6 +456,162 @@ pub async fn receipt_debt(
         status: status(inv.total, inv.paid).into(),
         payments,
     }))
+}
+
+// ---------- Старый долг поставщику из тетради (задача 003 Н15, ADR-163) ----------
+
+/// Номер накладной поставщика у старого долга — не длиннее (проверка базы — та же).
+const SUPPLIER_DOC_MAX: usize = 100;
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct SupplierOldDebtReq {
+    pub op_id: Uuid,
+    pub party_id: Uuid,
+    /// Сколько мы должны поставщику, больше нуля.
+    pub amount_tyiyn: i64,
+    /// Когда остался долг: учётный день записи — от него идёт очередь погашения.
+    pub date: NaiveDate,
+    /// Номер накладной поставщика, по желанию.
+    #[serde(default)]
+    pub supplier_doc: String,
+    /// Что брали, страница тетради.
+    #[serde(default)]
+    pub comment: String,
+    /// Такой же старый долг (сумма и дата) у поставщика в этом филиале уже есть — занести ещё раз.
+    #[serde(default)]
+    pub confirm_duplicate: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SupplierOldDebtOut {
+    pub party_id: Uuid,
+    pub ledger_id: Uuid,
+    /// Баланс поставщика в филиале после записи: меньше нуля — мы должны.
+    pub balance_tyiyn: i64,
+}
+
+async fn post_old_debt(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<SupplierOldDebtReq>,
+) -> AppResult<Json<SupplierOldDebtOut>> {
+    let mut tx = state.pool.begin().await?;
+    let out = post_supplier_old_debt_tx(&mut tx, &ctx, req).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Старый долг поставщику из тетради: запись «долг» с минусом (мы должны) в филиале, учётный
+/// день — дата долга. Деньги, склад, себестоимость и прибыль не меняются: товар получен до
+/// программы. Оплата поставщику гасит его, как накладную, — самые старые долги первыми
+/// (`supplier_allocate`). Экран, «Исправить» и бот владельца проводят одной функцией.
+pub async fn post_supplier_old_debt_tx(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: SupplierOldDebtReq,
+) -> AppResult<SupplierOldDebtOut> {
+    const KIND: &str = "debt.old_supplier";
+    if req.amount_tyiyn <= 0 {
+        return Err(invalid("сумма долга больше нуля"));
+    }
+    ops::check_amount(req.amount_tyiyn)?;
+    let text = req.comment.trim();
+    if text.chars().count() > 500 {
+        return Err(invalid("комментарий — не длиннее 500 знаков"));
+    }
+    let doc = crate::api::bot_drafts::one_line(req.supplier_doc.trim());
+    if doc.chars().count() > SUPPLIER_DOC_MAX {
+        return Err(invalid("номер накладной — не длиннее 100 знаков"));
+    }
+    let today = crate::api::fees::today(&mut *conn).await?;
+    crate::api::parties::check_old_debt_date(req.date, today)?;
+    if let Some(done) = ops::begin_op(&mut *conn, ctx, req.op_id, KIND).await? {
+        return Ok(done);
+    }
+    crate::auth::require_permission(&mut *conn, &ctx.user, "old_debts").await?;
+    let p = sqlx::query!(
+        "select name, role from parties where id = $1 for update",
+        req.party_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("поставщик не найден"))?;
+    if p.role != "supplier" {
+        return Err(invalid(
+            "долг поставщику заносится поставщику; старый долг клиента — «Занести старый долг» на «Долгах»",
+        ));
+    }
+    // Долг поставщику у каждого филиала свой (SPEC-33): повтор ищется в этом филиале.
+    let amount = -req.amount_tyiyn;
+    if !req.confirm_duplicate
+        && let Some(same) = crate::api::parties::old_debt_duplicate(
+            &mut *conn,
+            req.party_id,
+            amount,
+            req.date,
+            Some(ctx.user.branch_id),
+        )
+        .await?
+    {
+        return Err(AppError::Conflict(format!("{same}. Занести ещё раз?")));
+    }
+    let (_, ledger_id) = crate::api::parties::add_ledger_at(
+        &mut *conn,
+        ctx,
+        crate::api::parties::LedgerEntry {
+            party_id: req.party_id,
+            kind: "debt",
+            amount,
+            doc_type: OLD_DEBT_DOC,
+            doc_id: None,
+            comment: &crate::api::parties::old_debt_comment(text),
+        },
+        None,
+        Some(req.date),
+        &doc,
+    )
+    .await?;
+    let balance = branch_balance(&mut *conn, ctx.user.branch_id, req.party_id).await?;
+    ops::audit(
+        &mut *conn,
+        ctx,
+        KIND,
+        "party",
+        Some(req.party_id),
+        json!({
+            "name": p.name,
+            "amount_tyiyn": req.amount_tyiyn,
+            "date": req.date,
+            "supplier_doc": doc,
+            "comment": text,
+            "balance_tyiyn": balance,
+            "ledger_id": ledger_id,
+        }),
+    )
+    .await?;
+    let out = SupplierOldDebtOut {
+        party_id: req.party_id,
+        ledger_id,
+        balance_tyiyn: balance,
+    };
+    ops::finish_op(&mut *conn, ctx, req.op_id, KIND, &out).await?;
+    Ok(out)
+}
+
+/// Баланс поставщика в филиале: меньше нуля — мы должны (SPEC-33 §2).
+pub async fn branch_balance(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    party_id: Uuid,
+) -> AppResult<i64> {
+    Ok(sqlx::query_scalar!(
+        r#"select coalesce((select balance_tyiyn from party_balances
+                            where party_id = $1 and branch_id = $2), 0)::bigint as "v!""#,
+        party_id,
+        branch_id
+    )
+    .fetch_one(&mut *conn)
+    .await?)
 }
 
 #[cfg(test)]

@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select l.id, l.doc_type, l.business_date, l.created_at, l.comment, l.supplier_doc as ledger_doc,\n                  u.full_name as user_name,\n                  -l.amount_tyiyn as \"total!\",\n                  coalesce((select sum(s.amount_tyiyn) from supplier_allocations s\n                            where s.debit_id = l.id), 0)::bigint as \"paid!\",\n                  r.id as \"receipt_id?\", r.number as \"number?\", r.supplier_doc as \"supplier_doc?\"\n           from party_ledger l\n           join users u on u.id = l.user_id\n           left join receipts r on l.doc_type = 'receipt' and r.id = l.doc_id\n           where l.branch_id = $1 and l.party_id = $2 and l.amount_tyiyn < 0\n             and supplier_ledger_live(l)\n           order by l.business_date, l.created_at, l.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "doc_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "business_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "ledger_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "total!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "paid!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 9,
+        "name": "receipt_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "supplier_doc?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "be63b9a7b3b096327e316740ce75200db40c38841cd632a71c6f5025bd3d8734"
+}

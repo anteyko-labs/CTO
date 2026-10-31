@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { earliestOldDebtDate, oldDebtDateError, oldDebtDue, oldDebtPreview, olderThanYear } from './oldDebt'
+import { earliestOldDebtDate, oldDebtDateError, oldDebtDue, oldDebtPreview, olderThanYear, supplierDocError, supplierOldDebtPreview } from './oldDebt'
 
 const nb = (s: string) => s.replace(/ /g, ' ')
 
@@ -32,5 +32,22 @@ describe('старый долг из тетради', () => {
     ])
     expect(oldDebtPreview(0, null, '2026-03-15', null, '2026-10-28')).toEqual([])
     expect(nb(oldDebtPreview(-10_000, 50_000, '2026-03-15', null, '2026-10-28')[0])).toBe('Долг клиента сейчас аванс 100 с → станет 400 с')
+  })
+})
+
+describe('старый долг поставщику (задача 003 Н15)', () => {
+  it('подсказка: наш долг сейчас → станет', () => {
+    expect(supplierOldDebtPreview(-300_000, 1_200_000).map(nb)).toEqual(['Наш долг поставщику сейчас 3 000 с → станет 15 000 с'])
+    expect(supplierOldDebtPreview(0, 50_000).map(nb)).toEqual(['Наш долг поставщику сейчас 0 с → станет 500 с'])
+    // Был аванс поставщику: долг сначала съедает его.
+    expect(supplierOldDebtPreview(100_000, 30_000).map(nb)).toEqual(['Наш долг поставщику сейчас аванс 1 000 с → станет аванс 700 с'])
+    expect(supplierOldDebtPreview(-1, null)).toEqual([])
+    expect(supplierOldDebtPreview(-1, 0)).toEqual([])
+  })
+
+  it('номер накладной — до 100 знаков', () => {
+    expect(supplierDocError('№ 457')).toBeNull()
+    expect(supplierDocError('1'.repeat(100))).toBeNull()
+    expect(supplierDocError('1'.repeat(101))).toMatch(/100 знаков/)
   })
 })

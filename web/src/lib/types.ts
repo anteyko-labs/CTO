@@ -295,6 +295,10 @@ export interface ReceiptDebt {
 /** Долг поставщику: накладная в долг или правка владельца. */
 export interface SupplierInvoice {
   ledger_id: string
+  /** Накладная в долг, старый долг из тетради (задача 003 Н15) или правка владельца. */
+  kind?: 'receipt' | 'old_debt' | 'adjust'
+  /** Кто занёс старый долг. */
+  user_name?: string
   receipt_id: string | null
   number: number | null
   supplier_doc: string

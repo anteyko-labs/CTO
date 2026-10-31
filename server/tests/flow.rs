@@ -7311,6 +7311,23 @@ async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
         serde_json::json!({ "operation": "оплата поставщику", "party": "Автоснаб", "amount": "1 000" })).await;
     assert_eq!(party_balance(supplier).await, 100_000);
     assert_eq!(till_balance(&pool, till).await, 1_600_000);
+    // Долг поставщику из тетради с датой — старый долг поставщику (задача 003 Н15).
+    let text = post_via_bot(&mut conn, &a, &fake, chat, "draft_debt",
+        serde_json::json!({ "operation": "перенос долга из тетради", "party": "Автоснаб", "amount": "3 000", "date": "2026-03-15", "supplier_doc": "457" })).await;
+    assert!(
+        text.contains("старый долг поставщику от 15.03.2026 занесён"),
+        "{text}"
+    );
+    assert_eq!(party_balance(supplier).await, -200_000);
+    let (doc, sdoc): (String, String) = sqlx::query_as(
+        "select doc_type, supplier_doc from party_ledger where party_id = $1 and doc_type = 'old_debt'",
+    )
+    .bind(supplier)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((doc.as_str(), sdoc.as_str()), ("old_debt", "457"));
+    assert_eq!(till_balance(&pool, till).await, 1_600_000);
 
     // Премия, удержание, аванс сверх заработанного, выплата сверх — отказ, оклад.
     post_via_bot(&mut conn, &a, &fake, chat, "draft_staff",
@@ -7403,6 +7420,7 @@ async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
     for want in [
         "cash.transfer",
         "debt.old",
+        "debt.old_supplier",
         "debt.repayment",
         "payroll.accrual",
         "payout.post",
@@ -7423,7 +7441,7 @@ async fn bot_drafts_cover_every_operation_group(pool: PgPool) {
             "select count(*) from bot_drafts where status = 'posted'"
         )
         .await,
-        12
+        13
     );
 }
 
