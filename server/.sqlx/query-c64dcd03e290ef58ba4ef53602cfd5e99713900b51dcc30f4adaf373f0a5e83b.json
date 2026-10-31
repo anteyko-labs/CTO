@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.total_tyiyn,\n                  coalesce(sum(l.cost_tyiyn), 0)::bigint as \"cost!\",\n                  count(l.line_no) filter (where l.cost_unknown) as \"unknown!\"\n           from sales s left join sale_lines l on l.sale_id = s.id\n           where s.id = $1 group by s.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "cost!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "unknown!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "c64dcd03e290ef58ba4ef53602cfd5e99713900b51dcc30f4adaf373f0a5e83b"
+}

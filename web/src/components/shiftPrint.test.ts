@@ -121,6 +121,16 @@ describe('чек смены (SPEC-36 §10)', () => {
     expect(t).toContain('без оклада')
   })
 
+  it('владельцу без настройки «Печатать прибыль» — без раздела «Прибыль» (задача 003 Н4)', () => {
+    const t = plain(shiftHtml(report(true), { profit: false }))
+    expect(t).not.toContain('Себестоимость')
+    expect(t).not.toContain('Валовая прибыль')
+    expect(t).not.toContain('Чистая прибыль')
+    expect(t).not.toContain('без оклада')
+    expect(t).toContain('Выручка 1 500,00 с')
+    expect(plain(shiftHtml(report(true), { profit: true }))).toContain('Чистая прибыль 1 407,50 с')
+  })
+
   it('администратору — без себестоимости и прибыли', () => {
     const t = plain(shiftHtml(report(false)))
     expect(t).not.toContain('Себестоимость')

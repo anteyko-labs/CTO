@@ -11,6 +11,8 @@ import { can } from '../lib/permissions'
 import { batteryShare, paymentLabel } from '../lib/battery'
 import { formatDateTime, formatKg, formatLiters, formatSom, parseLiters, parseSom, somInput } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
+import { useCashierMode } from '../lib/cashierMode'
+import { DEFAULT_CASHIER, loadCashierSettings } from '../lib/cashierLayout'
 import { printDebtDoc, type DebtDocSettings, type Reconciliation } from '../lib/debtDocs'
 import { divRound } from '../lib/money'
 import { returnWithholds } from '../lib/serviceSale'
@@ -286,6 +288,11 @@ export default function SaleView() {
   const [returning, setReturning] = useState(false)
   const [payChange, setPayChange] = useState(false)
   const docAct = useAction()
+  // На устройстве в режиме кассы себестоимость и прибыль не видны (задача 003 Н4): экран чека
+  // открывают у кассы при клиенте и мастерах. Показать — «Настройки → Касса».
+  const till = useCashierMode()
+  const cfg = useLoad(loadCashierSettings, [])
+  const showCost = owner && (!till || (cfg.data ?? DEFAULT_CASHIER).sale_cost_on_till)
 
   if (loading && !sale) return <Loading />
   if (!sale) return <ErrorBox error={error} />
@@ -319,7 +326,7 @@ export default function SaleView() {
         }
         actions={
           <>
-            <Button variant="secondary" onClick={() => printSale(sale)}>
+            <Button variant="secondary" onClick={() => printSale(sale, null, { discount: (cfg.data ?? DEFAULT_CASHIER).print_discount })}>
               Печать
             </Button>
             {sale.kind === 'sale' && sale.party_id && sale.payments.some((p) => p.method === 'debt') && (
@@ -412,7 +419,7 @@ export default function SaleView() {
         )}
       </Card>
       <Card>
-        <Table head={['Наименование', 'Кол-во', 'Цена', 'Сумма', ...(owner ? ['Себестоимость'] : [])]}>
+        <Table head={['Наименование', 'Кол-во', 'Цена', 'Сумма', ...(showCost ? ['Себестоимость'] : [])]}>
           {goods.map((l) => (
             <tr key={l.line_no}>
               <td className="px-2 py-2">
@@ -434,7 +441,7 @@ export default function SaleView() {
                 {l.kind === 'pour' && '/л'}
               </td>
               <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{formatSom(l.amount_tyiyn)}</td>
-              {owner && <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-500">{formatSom(l.cost_tyiyn ?? 0)}</td>}
+              {showCost && <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums text-slate-500">{formatSom(l.cost_tyiyn ?? 0)}</td>}
             </tr>
           ))}
         </Table>
@@ -453,7 +460,7 @@ export default function SaleView() {
               {p.account_name && <span className="text-slate-500"> · {p.account_name}</span>}: {formatSom(p.amount_tyiyn)}
             </div>
           ))}
-          {owner && <div className="text-slate-500">Валовая прибыль: {formatSom(sale.total_tyiyn - cost)}</div>}
+          {showCost && <div className="text-slate-500">Валовая прибыль: {formatSom(sale.total_tyiyn - cost)}</div>}
         </div>
       </Card>
       {returning && <ReturnModal sale={sale} onClose={() => setReturning(false)} />}

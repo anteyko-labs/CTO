@@ -82,3 +82,18 @@ describe('строки товарного чека (ADR-130)', () => {
     expect(t).toContain(`Фильтр W712 1 шт × ${som(70000)} ${som(70000)}`)
   })
 })
+
+describe('строка «Скидка» в печатном чеке (задача 003 Н3)', () => {
+  const l = (over: Record<string, unknown>) => ({ name: '', kind: 'piece', qty: 1, gift: false, unit_price_tyiyn: 0, list_price_tyiyn: 0, amount_tyiyn: 0, container_ml: null, withheld_for: null, ...over })
+  const lines = [
+    l({ name: 'Фильтр', qty: 2, unit_price_tyiyn: 60000, list_price_tyiyn: 65000, amount_tyiyn: 120000 }),
+    l({ name: 'Розлив', kind: 'pour', qty: 1500, unit_price_tyiyn: 55000, list_price_tyiyn: 61000, amount_tyiyn: 82500 }),
+    l({ name: 'Подарок', gift: true, list_price_tyiyn: 20000 }),
+    l({ name: 'Дороже прайса', unit_price_tyiyn: 31000, list_price_tyiyn: 30000, amount_tyiyn: 31000 }),
+  ]
+  it('по настройке — на сколько строки дешевле прайса; по умолчанию строки нет', () => {
+    const s = sale({ lines } as unknown as Partial<Sale>)
+    expect(plain(saleHtml(s, null, { discount: true }))).toContain(`Скидка −${plain(formatSomExact(19000))}`)
+    expect(plain(saleHtml(s, null))).not.toContain('Скидка')
+  })
+})

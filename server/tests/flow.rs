@@ -2844,6 +2844,7 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
         avtodom_server::api::bot_feed::Feed {
             off: Vec::new(),
             sales: "all".into(),
+            profit: true,
         },
     )
     .await
@@ -2863,6 +2864,45 @@ async fn telegram_bot_links_owner_and_forwards_events(pool: PgPool) {
         .expect("сообщение о чеке");
     assert!(
         sale_msg.text.contains("наличными 500 с") && sale_msg.text.contains("кассир"),
+        "{}",
+        sale_msg.text
+    );
+    // Себестоимость и прибыль чека — в бот владельцу (задача 003 Н4); по умолчанию включено.
+    assert!(
+        sale_msg.text.contains("💹 себестоимость ") && sale_msg.text.contains(" · прибыль "),
+        "{}",
+        sale_msg.text
+    );
+    for m in &msgs {
+        mark_sent(&mut conn, m).await.unwrap();
+    }
+    // Выключатель «Себестоимость и прибыль в сообщениях о чеках» — без них.
+    avtodom_server::api::bot_feed::save_tx(
+        &mut conn,
+        &w.owner,
+        Uuid::now_v7(),
+        avtodom_server::api::bot_feed::Feed {
+            off: Vec::new(),
+            sales: "all".into(),
+            profit: false,
+        },
+    )
+    .await
+    .unwrap();
+    sell(
+        &pool,
+        &w.owner,
+        takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000)),
+    )
+    .await
+    .unwrap();
+    let msgs = pending(&mut conn).await.unwrap();
+    let sale_msg = msgs
+        .iter()
+        .find(|m| m.text.contains("🧾 Чек №"))
+        .expect("сообщение о чеке");
+    assert!(
+        !sale_msg.text.contains("себестоимость"),
         "{}",
         sale_msg.text
     );
@@ -4903,6 +4943,7 @@ async fn bot_feed_follows_each_owner_settings(pool: PgPool) {
     let feed = Feed {
         off: vec!["receipt.reverse".into()],
         sales: "debt_returns".into(),
+        profit: true,
     };
     save_tx(&mut conn, &w.owner, Uuid::now_v7(), feed)
         .await
@@ -10785,6 +10826,77 @@ async fn discount_needs_right(pool: PgPool) {
     // С правом администратор ставит скидку сам.
     grant(&pool, &w, "discount").await;
     sell(&pool, &w.admin, cheap()).await.unwrap();
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn admin_discount_limit_is_checked_by_server(pool: PgPool) {
+    // Предел скидки администратора (задача 003 Н3, ADR-{B4.2}): процент от суммы чека по прайсу
+    // или сумма; свыше онлайн — 403, без сети — проведено с причиной владельцу; владельцу предела
+    // нет; ниже закупки администратору — без суммы закупки. Сообщение владельцу — подробное.
+    let w = seed(&pool).await;
+    let branch = w.owner.user.branch_id;
+    receive(&pool, &w.admin, w.filter, 20, 20_000).await;
+    grant(&pool, &w, "discount").await;
+    let limit = |v: serde_json::Value| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "insert into settings (branch_id, key, value) values ($1, 'cashier', $2)
+                 on conflict (branch_id, key) do update set value = excluded.value",
+            )
+            .bind(branch)
+            .bind(v)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    limit(serde_json::json!({ "admin_limit_pct": 10 })).await;
+    // Два фильтра по прайсу 500 с — 1 000 с.
+    let check = |price: i64| takeaway(&w, vec![line("piece", w.filter, 2, price)], cash(price * 2));
+    match sell(&pool, &w.admin, check(42_500)).await {
+        Err(AppError::ForbiddenWith(m)) => assert!(
+            m.contains("Скидка 150 с больше предела администратора (10 %)"),
+            "{m}"
+        ),
+        other => panic!("ждали 403, получили {:?}", other.map(|s| s.number)),
+    }
+    // Ровно 10 % — можно; владельцу предела нет.
+    sell(&pool, &w.admin, check(45_000)).await.unwrap();
+    sell(&pool, &w.owner, check(42_500)).await.unwrap();
+    // Без сети — проведено, у владельца причина.
+    let mut offline = check(42_500);
+    offline.offline = true;
+    offline.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(2));
+    sell(&pool, &w.admin, offline).await.unwrap();
+    let reasons = serde_json::to_string(&audit_data(&pool, "sale.offline_bypass").await).unwrap();
+    assert!(
+        reasons.contains("скидка 150 с больше предела администратора (10 %)"),
+        "{reasons}"
+    );
+    // Предел суммой: 50 с на чек.
+    limit(serde_json::json!({ "admin_limit_tyiyn": 5_000 })).await;
+    assert!(matches!(
+        sell(&pool, &w.admin, check(47_400)).await,
+        Err(AppError::ForbiddenWith(_))
+    ));
+    sell(&pool, &w.admin, check(47_500)).await.unwrap();
+    // Без предела — дешевле закупки всё равно нельзя; администратору — без суммы закупки.
+    limit(serde_json::json!({})).await;
+    // Закупка — 10 с за штуку.
+    match sell(&pool, &w.admin, check(500)).await {
+        Err(AppError::Validation(m)) => {
+            assert!(m.contains("уменьшите скидку"), "{m}");
+            assert!(!m.contains('('), "без суммы закупки: {m}");
+        }
+        other => panic!("ждали 422, получили {:?}", other.map(|s| s.number)),
+    }
+    // Владельцу в «Цена изменена прямо в чеке» — № чека, товар и цены.
+    let last = audit_data(&pool, "sale.price_override").await;
+    let data = last.last().expect("событие о цене");
+    assert!(data["number"].as_i64().is_some(), "{data}");
+    assert_eq!(data["lines"][0]["name"], "Фильтр W712");
+    assert_eq!(data["lines"][0]["off"], 2 * (50_000 - 47_500));
 }
 
 // ---------- SPEC-30 §15–16: замена по виду масла, удержание, возврат без чека ----------

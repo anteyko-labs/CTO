@@ -1,4 +1,4 @@
-// Настройки одним экраном: этикетки, документы, Телеграм и баллы, уведомления в бот, Optima Business, комиссия банка, статьи расходов,
+// Настройки одним экраном: касса (задача 003 Н2–Н4), этикетки, документы, Телеграм и баллы, уведомления в бот, Optima Business, комиссия банка, статьи расходов,
 // филиалы, пользователи, категории и поставщики. Владельцу — выключатель старой базы Умаг (SPEC-36 §15).
 import { Link } from 'react-router-dom'
 import { Icon, type IconName } from '../components/icons'
@@ -8,6 +8,7 @@ import { useAction } from '../lib/hooks'
 import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
 const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean }[] = [
+  { to: '/settings/cashier', title: 'Касса', text: 'Кнопки режима кассы и их место, скидка и её предел, прибыль в чеке смены', icon: 'cashier', ownerOnly: true },
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },
   { to: '/settings/documents', title: 'Документы о долге', text: 'Тексты расписки, накладной и акта сверки', icon: 'receipt', ownerOnly: true },
   { to: '/settings/telegram', title: 'Телеграм и баллы', text: 'Бот владельца, процент баллов клиентам', icon: 'bell', ownerOnly: true },

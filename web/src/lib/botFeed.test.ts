@@ -29,6 +29,9 @@ describe('уведомления в бот', () => {
     }
     const next = applyFeed(feed, ['shift.open'], 'all')
     expect(next.sales).toBe('all')
+    // Прибыль в чеках — по умолчанию да, выключатель сохраняется (задача 003 Н4).
+    expect(next.profit).toBe(true)
+    expect(applyFeed(next, [], 'all', false).profit).toBe(false)
     expect(next.groups[0].events[0].on).toBe(false)
     expect(feed.groups[0].events[0].on).toBe(true)
   })

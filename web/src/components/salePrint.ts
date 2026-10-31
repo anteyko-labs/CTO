@@ -2,6 +2,7 @@
 import { formatDateTime, formatKg, formatLiters, formatSomExact } from '../lib/format'
 import { paymentLabel } from '../lib/battery'
 import { printInFrame } from '../lib/printFrame'
+import { lineSum } from '../lib/discount'
 import type { Sale, SaleLine } from '../lib/types'
 import { branchLabel } from '../lib/branch'
 import { mileageText } from '../lib/mileage'
@@ -24,7 +25,15 @@ export function lineQtyText(l: Pick<SaleLine, 'kind' | 'qty' | 'container_ml'>):
   }
 }
 
-export function saleHtml(sale: Sale, change: number | null): string {
+/** Скидка чека для печати (задача 003 Н3): на сколько строки дешевле прайса, без подарков. */
+export function saleDiscount(sale: Pick<Sale, 'lines'>): number {
+  return sale.lines
+    .filter((l) => !l.gift && l.withheld_for == null && l.unit_price_tyiyn < l.list_price_tyiyn)
+    .reduce((acc, l) => acc + lineSum(l.kind, l.qty, l.list_price_tyiyn) - l.amount_tyiyn, 0)
+}
+
+/** `discount` — строка «Скидка» перед «Итого» (настройка «Печатать строку «Скидка» в чеке»). */
+export function saleHtml(sale: Sale, change: number | null, opts: { discount?: boolean } = {}): string {
   const title = sale.kind === 'return' ? (sale.no_receipt ? 'Возврат без чека' : 'Возврат') : 'Товарный чек'
   // Удержание за замену (ADR-104) — отдельной строкой после возвращённого.
   const held = sale.lines
@@ -48,6 +57,8 @@ export function saleHtml(sale: Sale, change: number | null): string {
     .map((p) => `<tr><td>${esc(paymentLabel(p))}</td><td class="r">${esc(formatSomExact(p.amount_tyiyn))}</td></tr>`)
     .join('')
   const changeRow = change && change > 0 ? `<tr><td>Сдача</td><td class="r">${esc(formatSomExact(change))}</td></tr>` : ''
+  const off = opts.discount && sale.kind !== 'return' ? saleDiscount(sale) : 0
+  const discountRow = off > 0 ? `<tr><td>Скидка</td><td class="r">−${esc(formatSomExact(off))}</td></tr>` : ''
   const master = sale.master_name ? `<div>Мастер: ${esc(sale.master_name)}</div>` : ''
   return `<!doctype html><html><head><meta charset="utf-8"><title>Чек ${sale.number}</title><style>
     @page { size: 80mm auto; margin: 3mm; }
@@ -70,7 +81,7 @@ export function saleHtml(sale: Sale, change: number | null): string {
     <div>Кассир: ${esc(sale.cashier_name)}</div>${master}
     ${sale.delivery_address ? `<div>Доставка: ${esc(sale.delivery_address)}</div>` : ''}
     ${sale.kind === 'return' && sale.comment ? `<div>Причина: ${esc(sale.comment)}</div>` : ''}
-    <table>${rows}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
+    <table>${rows}${discountRow}<tr class="total"><td>Итого</td><td class="r">${esc(formatSomExact(sale.total_tyiyn))}</td></tr>${pays}${changeRow}</table>
     ${bookHtml(sale)}
     <div class="center">Спасибо за покупку!</div>
   </body></html>`
@@ -102,6 +113,6 @@ function saleWhen(sale: Sale): string {
   return `${d}.${m}.${y}`
 }
 
-export function printSale(sale: Sale, change: number | null = null): void {
-  printInFrame(saleHtml(sale, change))
+export function printSale(sale: Sale, change: number | null = null, opts: { discount?: boolean } = {}): void {
+  printInFrame(saleHtml(sale, change, opts))
 }

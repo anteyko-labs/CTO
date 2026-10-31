@@ -182,6 +182,8 @@ struct Snapshot {
     clients: Vec<SnapClient>,
     bank_accounts: Vec<SnapBank>,
     oil_change_master_fee_tyiyn: i64,
+    /// «Настройки → Касса» (задача 003 Н2–Н4): раскладка режима кассы и скидка без сети.
+    cashier: crate::api::cashier_settings::CashierSettings,
 }
 
 /// Снимок без себестоимости и стоимости остатка: касса их не использует (SPEC-09).
@@ -301,6 +303,7 @@ async fn snapshot(
             .and_then(serde_json::Value::as_i64)
     })
     .unwrap_or(crate::api::sales::DEFAULT_OIL_CHANGE_FEE);
+    let cashier = crate::api::cashier_settings::load(&mut conn, user.branch_id).await?;
 
     // Версия снимка — отпечаток содержимого: не изменилось, отвечаем 304.
     let body = Snapshot {
@@ -313,6 +316,7 @@ async fn snapshot(
         clients,
         bank_accounts,
         oil_change_master_fee_tyiyn: fee,
+        cashier,
     };
     let payload = serde_json::to_string(&json!({
         "products": &body.products,
@@ -322,6 +326,7 @@ async fn snapshot(
         "clients": &body.clients,
         "bank_accounts": &body.bank_accounts,
         "fee": fee,
+        "cashier": &body.cashier,
     }))
     .unwrap_or_default();
     let version = format!("{:x}", seahash(&payload));

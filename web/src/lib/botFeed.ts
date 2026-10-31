@@ -26,6 +26,9 @@ export interface BotFeedGroup {
 export interface BotFeed {
   off: string[]
   sales: SalesMode
+  /** Себестоимость и прибыль в сообщениях о чеках и возвратах (задача 003 Н4); у старого ответа
+   *  сервера поля нет — значит, да. */
+  profit?: boolean
   groups: BotFeedGroup[]
 }
 
@@ -35,11 +38,13 @@ export function switchEvent(off: string[], action: string, on: boolean): string[
   return on ? rest : [...rest, action]
 }
 
-/** Настройка с новым списком выключенных и режимом чеков: выключатели групп — по списку. */
-export function applyFeed(feed: BotFeed, off: string[], sales: SalesMode): BotFeed {
+/** Настройка с новым списком выключенных, режимом чеков и прибылью в чеках: выключатели групп — по
+ *  списку. */
+export function applyFeed(feed: BotFeed, off: string[], sales: SalesMode, profit: boolean = feed.profit ?? true): BotFeed {
   return {
     off,
     sales,
+    profit,
     groups: feed.groups.map((g) => ({ ...g, events: g.events.map((e) => ({ ...e, on: !off.includes(e.action) })) })),
   }
 }

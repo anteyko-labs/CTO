@@ -9,6 +9,7 @@ import { cartIsEmpty } from './cartDraft'
 import { searchRank } from './pickerResults'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 import { sameCode } from './umagLink'
+import type { CashierSettings } from './cashierLayout'
 
 export interface SnapshotProduct extends Product {
   barcodes: string[]
@@ -36,6 +37,9 @@ export interface Snapshot {
    *  снимка — нет. */
   bank_accounts?: { id: string; name: string; default_card?: boolean; default_transfer?: boolean; default_invoice?: boolean; fee_rate_bp?: number }[]
   oil_change_master_fee_tyiyn: number
+  /** «Настройки → Касса» (задача 003 Н2–Н4): раскладка режима кассы и скидка без сети; у снимка
+   *  до 31.10.2026 — нет. */
+  cashier?: Partial<CashierSettings>
   saved_at: string
 }
 

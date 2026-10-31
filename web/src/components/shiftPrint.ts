@@ -6,6 +6,7 @@ import { get } from '../lib/api'
 import { branchLabel } from '../lib/branch'
 import { formatDateTime, formatSomExact } from '../lib/format'
 import { printInFrame } from '../lib/printFrame'
+import { loadCashierSettings } from '../lib/cashierLayout'
 import { bankParts, bankTotals, debtTotals, methodName, type ShiftReport } from '../lib/shiftReport'
 
 const esc = (s: string) =>
@@ -22,8 +23,9 @@ function row(label: string, value: number, opts: { sub?: boolean; deep?: boolean
 
 const section = (title: string, rows: string) => (rows ? `<h2>${esc(title)}</h2><table>${rows}</table>` : '')
 
-/** HTML чека смены. */
-export function shiftHtml(r: ShiftReport): string {
+/** HTML чека смены. `profit` — печатать раздел «Прибыль» (у владельца; по умолчанию касса его не
+ *  печатает — настройка «Печатать прибыль в чеке смены», задача 003 Н4). */
+export function shiftHtml(r: ShiftReport, opts: { profit?: boolean } = { profit: true }): string {
   const s = r.shift
   const c = r.cash
   const v = r.revenue
@@ -104,7 +106,7 @@ export function shiftHtml(r: ShiftReport): string {
       : ''
 
   // Прибыль — только владельцу: администратору сервер её не присылает, и шаблон её не печатает.
-  const owner = r.owner_view && v.gross_tyiyn !== undefined
+  const owner = r.owner_view && v.gross_tyiyn !== undefined && opts.profit === true
   const profit = owner
     ? row('Себестоимость', v.cost_tyiyn ?? 0) +
       row('Валовая прибыль', v.gross_tyiyn ?? 0, { strong: true }) +
@@ -131,7 +133,7 @@ export function shiftHtml(r: ShiftReport): string {
       row('Расхождение было', a.before.diff_tyiyn, { sign: true }) +
       row('Расхождение сейчас', a.after.diff_tyiyn, { sign: true, strong: true }) +
       row('Удержано с кассира', a.after.withheld_tyiyn) +
-      (a.after.net_profit_tyiyn !== undefined ? row('Чистая прибыль сейчас', a.after.net_profit_tyiyn, { strong: true }) : '')
+      (owner && a.after.net_profit_tyiyn !== undefined ? row('Чистая прибыль сейчас', a.after.net_profit_tyiyn, { strong: true }) : '')
     : ''
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Чек смены ${s.number}</title><style>
@@ -164,8 +166,9 @@ export function shiftHtml(r: ShiftReport): string {
   </body></html>`
 }
 
-/** Напечатать чек смены: свежий отчёт с сервера. */
+/** Напечатать чек смены: свежий отчёт с сервера; раздел «Прибыль» — по настройке кассы (по
+ *  умолчанию не печатается: прибыль владельцу — в Телеграм, задача 003 Н4). */
 export async function printShift(id: string): Promise<void> {
-  const r = await get<ShiftReport>(`/shifts/${id}/report`)
-  printInFrame(shiftHtml(r))
+  const [r, cfg] = await Promise.all([get<ShiftReport>(`/shifts/${id}/report`), loadCashierSettings()])
+  printInFrame(shiftHtml(r, { profit: cfg.print_shift_profit }))
 }

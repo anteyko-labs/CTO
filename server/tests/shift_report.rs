@@ -608,7 +608,42 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
         .unwrap();
     let mut conn = pool.acquire().await.unwrap();
     let shift_id: Uuid = sid.parse().unwrap();
-    let text = report_text(&load(&mut conn, branch, true, shift_id).await.unwrap(), &[]);
+    let owner_view = load(&mut conn, branch, true, shift_id).await.unwrap();
+    let text = report_text(&owner_view, &[]);
+    // Прибыль — не на бумаге, а в Телеграм (задача 003 Н4): себестоимость, слагаемые без нулевых,
+    // их сумма с валовой — чистая прибыль.
+    let v = &owner_view.revenue;
+    assert!(
+        text.contains(&format!(
+            "себестоимость: {}",
+            avtodom_server::domain::money::format_som(v.cost_tyiyn.unwrap())
+        )),
+        "{text}"
+    );
+    let parts = v.profit.as_ref().unwrap();
+    assert_eq!(
+        parts.iter().map(|l| l.amount_tyiyn).sum::<i64>(),
+        v.net_profit_tyiyn.unwrap()
+    );
+    for l in parts.iter().filter(|l| l.key != "gross") {
+        assert_ne!(l.amount_tyiyn, 0, "нулевые слагаемые не показываются");
+        assert!(
+            text.contains(&format!(
+                "{}: {}",
+                l.label.to_lowercase(),
+                avtodom_server::domain::money::format_som_signed(l.amount_tyiyn)
+            )),
+            "{}\n{text}",
+            l.label
+        );
+    }
+    assert!(
+        text.contains(&format!(
+            "чистая прибыль: {} (без оклада)",
+            avtodom_server::domain::money::format_som(v.net_profit_tyiyn.unwrap())
+        )),
+        "{text}"
+    );
     for part in [
         "на начало: 100 с",
         "должно быть: 2 450 с",
@@ -629,6 +664,7 @@ async fn shift_report_adds_up_and_hides_cost_from_admin(pool: PgPool) {
         &[],
     );
     assert!(!text.contains("валовая"), "{text}");
+    assert!(!text.contains("себестоимость"), "{text}");
     drop(conn);
 
     // Следующая смена: только свои документы и сравнение с прошлой.

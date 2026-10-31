@@ -261,17 +261,25 @@ const EVENTS: [(&str, &str, &str); 89] = [
     ("backup.size", "other", "Копии базы занимают много места"),
 ];
 
-/// Настройка ленты владельца: выключенные события и режим чеков.
+/// Настройка ленты владельца: выключенные события, режим чеков и прибыль в сообщениях о чеках.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Feed {
     #[serde(default)]
     pub off: Vec<String>,
     #[serde(default = "no_sales")]
     pub sales: String,
+    /// Себестоимость и прибыль в сообщениях о чеках и возвратах (задача 003 Н4, ADR-{B4.3});
+    /// по умолчанию — да. Чтение в `telegram::pending`.
+    #[serde(default = "yes")]
+    pub profit: bool,
 }
 
 fn no_sales() -> String {
     "none".into()
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Feed {
@@ -279,6 +287,7 @@ impl Default for Feed {
         Self {
             off: Vec::new(),
             sales: no_sales(),
+            profit: true,
         }
     }
 }
@@ -437,6 +446,8 @@ pub async fn save_tx(
                 "on": turned(&feed, &before),
                 "sales_before": before.sales,
                 "sales": feed.sales,
+                "profit_before": before.profit,
+                "profit": feed.profit,
             }),
         )
         .await?;
@@ -485,24 +496,28 @@ mod tests {
                 "shift.open".into(),
             ],
             sales: "debt_returns".into(),
+            profit: true,
         })
         .unwrap();
         assert_eq!(f.off, vec!["receipt.post", "shift.open"]);
         assert!(
             normalize(Feed {
                 off: vec!["shift.close".into()],
-                sales: "none".into()
+                sales: "none".into(),
+                profit: true,
             })
             .is_err()
         );
         assert!(
             normalize(Feed {
                 off: vec![],
-                sales: "some".into()
+                sales: "some".into(),
+                profit: true,
             })
             .is_err()
         );
         assert_eq!(Feed::default().sales, "none");
+        assert!(Feed::default().profit);
         let parsed: Feed = serde_json::from_value(json!({})).unwrap();
         assert_eq!(parsed, Feed::default());
     }
