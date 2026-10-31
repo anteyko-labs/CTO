@@ -1242,10 +1242,17 @@ async fn admin_bot_debts_need_old_debts_right(pool: PgPool) {
     let w = World::new(pool).await;
     let chat = 95_002i64;
     w.link_bot(chat, "admin").await;
-    // Без права — кнопок долгов нет, на «Должники» — отказ.
+    // Без права «Старые долги из тетради» — «📋 Должники» есть (право раздела «Долги», SPEC-40),
+    // «➕ Занести долг» нет: на кнопку и нажатие — отказ, в списке нет кнопки занести.
     let r = w.say(chat, "привет").await;
-    assert_eq!(r.keys, Keys::Admin);
+    let Keys::Admin(menu) = r.keys else {
+        panic!("{:?}", r.keys)
+    };
+    assert!(menu.has("debtors") && !menu.has("add_debt"), "{menu:?}");
     let r = w.say(chat, BTN_DEBTORS).await;
+    assert!(r.text.starts_with("📋 Должников нет"), "{}", r.text);
+    assert!(r.inline.is_empty(), "без права занести — без кнопки");
+    let r = w.say(chat, BTN_ADD_DEBT).await;
     assert!(
         r.text.starts_with("Нет права «Старые долги из тетради»"),
         "{}",
@@ -1253,11 +1260,24 @@ async fn admin_bot_debts_need_old_debts_right(pool: PgPool) {
     );
     let r = w.press(chat, chat, "od:start").await;
     assert!(r.text.starts_with("Нет права"), "{}", r.text);
+    // Без права раздела «Долги» — и списка нет.
+    w.grant(&[], false).await;
+    let r = w.say(chat, BTN_DEBTORS).await;
+    assert!(
+        r.text.starts_with("Нет права: Долги: должники"),
+        "{}",
+        r.text
+    );
+    let r = w.press(chat, chat, "dl:0").await;
+    assert!(r.text.starts_with("Нет права"), "{}", r.text);
     // С правом — список и ввод долга от его имени, в его филиал; владельцу — уведомление.
     w.grant(&["old_debts"], true).await;
     let p = w.client("person", "Сыдыков Марат", None).await;
     let r = w.say(chat, BTN_DEBTORS).await;
-    assert_eq!(r.keys, Keys::AdminDebts);
+    let Keys::Admin(menu) = r.keys else {
+        panic!("{:?}", r.keys)
+    };
+    assert!(menu.has("debtors") && menu.has("add_debt"), "{menu:?}");
     assert!(r.text.starts_with("📋 Должников нет"), "{}", r.text);
     w.say(chat, BTN_ADD_DEBT).await;
     let r = w.say(chat, "Сыдыков").await;

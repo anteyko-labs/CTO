@@ -40,6 +40,8 @@ const ASK_COMMENT: &str =
     "Примечание: что брал, страница тетради (до 500 знаков) — или «Пропустить».";
 const STALE: &str = "Кнопка устарела. Начать заново — «➕ Занести долг».";
 const NO_RIGHT: &str = "Нет права «Старые долги из тетради» — его выдаёт владелец.";
+/// Список должников администратору — по праву раздела «Долги» (SPEC-40 §1).
+const NO_VIEW: &str = "Нет права: Долги: должники и долги поставщикам — его выдаёт владелец.";
 
 /// Шаги ввода: что бот ждёт следующим.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -98,6 +100,21 @@ pub async fn chat_user(
     Ok(None)
 }
 
+/// Кто смотрит список должников: владелец или администратор с правом раздела «Долги»
+/// (SPEC-40 §1: «📋 Должники» — без права «Старые долги из тетради»).
+pub async fn chat_viewer(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<CurrentUser>> {
+    let Some((user, _)) = crate::api::receipt_drafts::chat_sender(&mut *conn, chat_id).await?
+    else {
+        return Ok(None);
+    };
+    if user.role == Role::Owner
+        || crate::auth::has_permission(&mut *conn, &user, "view_debts").await?
+    {
+        return Ok(Some(user));
+    }
+    Ok(None)
+}
+
 async fn pending(conn: &mut PgConnection, chat_id: i64) -> AppResult<Option<Dialog>> {
     let v = sqlx::query_scalar!(
         "select data from bot_input where chat_id = $1 and kind = 'old_debt' and expires_at > now()",
@@ -144,8 +161,13 @@ pub async fn clear(conn: &mut PgConnection, chat_id: i64) -> AppResult<()> {
 // ---------- «📋 Должники» ----------
 
 /// Страница списка должников филиала: имя, долг в филиале, просрочка; кнопки «◀ ▶» и
-/// «➕ Занести долг».
-pub async fn list(conn: &mut PgConnection, user: &CurrentUser, page: usize) -> AppResult<Reply> {
+/// «➕ Занести долг» (`add` — у того, кто может занести долг).
+pub async fn list(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    page: usize,
+    add: bool,
+) -> AppResult<Reply> {
     let rows = crate::api::parties::debts_list_in(&mut *conn, user.branch_id, false).await?;
     let mut debtors: Vec<_> = rows
         .into_iter()
@@ -157,9 +179,13 @@ pub async fn list(conn: &mut PgConnection, user: &CurrentUser, page: usize) -> A
             .cmp(&a.party.branch_balance_tyiyn)
             .then_with(|| a.party.name.cmp(&b.party.name))
     });
-    let add = vec![button(BTN_ADD_DEBT, "od:start")];
+    let add: Vec<Vec<Button>> = if add {
+        vec![vec![button(BTN_ADD_DEBT, "od:start")]]
+    } else {
+        Vec::new()
+    };
     if debtors.is_empty() {
-        return Ok(reply("📋 Должников нет — нам никто не должен.", vec![add]));
+        return Ok(reply("📋 Должников нет — нам никто не должен.", add));
     }
     let total = debtors.iter().fold(0i64, |acc, r| {
         acc.saturating_add(r.party.branch_balance_tyiyn)
@@ -203,7 +229,7 @@ pub async fn list(conn: &mut PgConnection, user: &CurrentUser, page: usize) -> A
     if !nav.is_empty() {
         rows.push(nav);
     }
-    rows.push(add);
+    rows.extend(add);
     Ok(reply(lines.join("\n"), rows))
 }
 
@@ -378,16 +404,20 @@ pub async fn on_message(
     menu: bool,
 ) -> AppResult<Option<Reply>> {
     let t = text.map(str::trim).unwrap_or("");
-    if t == BTN_DEBTORS || t == BTN_ADD_DEBT || t == "/должники" {
+    if t == BTN_ADD_DEBT {
         let Some((user, _)) = chat_user(conn, chat_id).await? else {
             return Ok(Some(Reply::new(NO_RIGHT, Keys::Owner)));
         };
         clear(conn, chat_id).await?;
-        return Ok(Some(if t == BTN_ADD_DEBT {
-            start(conn, &user, chat_id).await?
-        } else {
-            list(conn, &user, 0).await?
-        }));
+        return Ok(Some(start(conn, &user, chat_id).await?));
+    }
+    if t == BTN_DEBTORS || t == "/должники" {
+        let Some(user) = chat_viewer(conn, chat_id).await? else {
+            return Ok(Some(Reply::new(NO_VIEW, Keys::Owner)));
+        };
+        clear(conn, chat_id).await?;
+        let add = chat_user(conn, chat_id).await?.is_some();
+        return Ok(Some(list(conn, &user, 0, add).await?));
     }
     let Some(mut d) = pending(conn, chat_id).await? else {
         return Ok(None);
@@ -503,12 +533,16 @@ pub async fn callback(
     from_id: i64,
     data: &str,
 ) -> AppResult<Reply> {
+    if let Some(p) = data.strip_prefix("dl:") {
+        let Some(user) = chat_viewer(conn, chat_id).await? else {
+            return Ok(Reply::new(NO_VIEW, Keys::Owner));
+        };
+        let add = chat_user(conn, chat_id).await?.is_some();
+        return list(conn, &user, p.parse().unwrap_or(0), add).await;
+    }
     let Some((user, tg)) = chat_user(conn, chat_id).await? else {
         return Ok(Reply::new(NO_RIGHT, Keys::Owner));
     };
-    if let Some(p) = data.strip_prefix("dl:") {
-        return list(conn, &user, p.parse().unwrap_or(0)).await;
-    }
     if data == "od:start" {
         clear(conn, chat_id).await?;
         return start(conn, &user, chat_id).await;

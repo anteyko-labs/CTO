@@ -858,6 +858,45 @@ pub async fn prepare(
         Ok(b) => b,
         Err(why) => return Ok(Prepared::Refused(why)),
     };
+    check_and_store(conn, user, chat_id, op_id, built).await
+}
+
+/// Черновик расхода администратора из кассы смены (SPEC-40 §4): тот же путь, что у черновика
+/// владельца, — предел операций за день, проверка той же функцией и «✅ Провести».
+pub async fn store_draft(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    chat_id: i64,
+    op_id: Uuid,
+    op: DraftOp,
+    kind: &'static str,
+    summary: String,
+) -> AppResult<Prepared> {
+    if user.role != Role::Owner && !matches!(op, DraftOp::Expense(_)) {
+        return Ok(Prepared::Refused(
+            "Администратору через бот — только расход из кассы смены.".into(),
+        ));
+    }
+    if posted_today(conn, user.branch_id).await? >= DAILY_LIMIT {
+        return Ok(Prepared::Refused(LIMIT_TEXT.into()));
+    }
+    let built = Built {
+        op,
+        kind,
+        summary,
+        hint: String::new(),
+    };
+    check_and_store(conn, user, chat_id, op_id, built).await
+}
+
+/// Проверка черновика той же функцией, что проводит, и запись его в `bot_drafts`.
+async fn check_and_store(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    chat_id: i64,
+    op_id: Uuid,
+    built: Built,
+) -> AppResult<Prepared> {
     // Проверка той же функцией, что проводит, — в транзакции, которая всегда откатывается.
     let ctx = Ctx::bot(user.clone(), chat_id);
     let mut tx = conn.begin().await?;
@@ -1808,14 +1847,21 @@ pub async fn press(
     ) else {
         return Ok("Кнопка устарела.".into());
     };
-    let Some((owner, tg_user)) = linked_owner(conn, chat_id).await? else {
+    // Владелец (филиал чата) или администратор со своим черновиком расхода (SPEC-40 §4).
+    let linked = match linked_owner(conn, chat_id).await? {
+        Some(o) => Some(o),
+        None => crate::api::bot_admin::chat_user(conn, chat_id).await?,
+    };
+    let Some((owner, tg_user)) = linked else {
         return Ok(NOT_YOURS.into());
     };
     if tg_user != Some(from_id) {
-        return Ok(
+        return Ok(if owner.role == Role::Owner {
             "Провести или отменить черновик может только владелец, который подключил этот чат. Ничего не проведено."
-                .into(),
-        );
+        } else {
+            "Провести или отменить черновик может только тот, кто подключил этот чат. Ничего не проведено."
+        }
+        .into());
     }
     // Транзакция завершается явно в любом случае: брошенная держала бы блокировку черновика.
     let mut tx = conn.begin().await?;
@@ -1907,6 +1953,10 @@ async fn decide(
     }
     let op: DraftOp =
         serde_json::from_value(d.payload).map_err(|e| AppError::Internal(e.to_string()))?;
+    // Администратору — только расход (черновики других видов готовятся только владельцу).
+    if owner.role != Role::Owner && !matches!(op, DraftOp::Expense(_)) {
+        return Ok(NOT_YOURS.into());
+    }
     // За 10 минут сотрудника или клиента могли отключить, товар — убрать в архив: такой черновик
     // не проводится (ADR-070).
     if let Some(why) = stale_refs(&mut *conn, owner.branch_id, &op).await? {

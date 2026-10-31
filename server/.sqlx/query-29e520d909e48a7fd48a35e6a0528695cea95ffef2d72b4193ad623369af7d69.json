@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from bot_input where chat_id = $1 and kind = any($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "29e520d909e48a7fd48a35e6a0528695cea95ffef2d72b4193ad623369af7d69"
+}

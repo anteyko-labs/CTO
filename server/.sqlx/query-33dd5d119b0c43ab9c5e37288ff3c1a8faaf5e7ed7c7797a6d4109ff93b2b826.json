@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select linked_at from telegram_links where user_id = $1 order by linked_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "linked_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "33dd5d119b0c43ab9c5e37288ff3c1a8faaf5e7ed7c7797a6d4109ff93b2b826"
+}

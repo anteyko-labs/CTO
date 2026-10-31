@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.number, r.supplier_doc, sp.name as \"supplier?\",\n                          (select count(*) from receipt_lines l where l.receipt_id = r.id) as \"lines!\",\n                          exists (select 1 from receipt_acceptances x where x.receipt_id = r.id) as \"accepted!\"\n                   from receipts r left join suppliers sp on sp.id = r.supplier_id\n                   where r.id = $1 and r.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_doc",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "lines!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "accepted!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "02d3b5ab5faaa52a89ebb5bdfa662267830899df6f997778356430b4f1111dc4"
+}

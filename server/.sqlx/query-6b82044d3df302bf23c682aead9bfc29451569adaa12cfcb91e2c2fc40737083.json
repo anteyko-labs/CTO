@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.number, e.amount_tyiyn, e.comment, e.payee, x.name as article,\n                          x.owner_only as article_owner, c.name as \"account?\",\n                          coalesce(c.kind = 'register' and c.is_default and not c.owner_only, false) as \"till!\"\n                   from expenses e\n                   join expense_articles x on x.id = e.article_id\n                   left join cash_accounts c on c.id = e.account_id\n                   where e.id = $1 and e.branch_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "payee",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "article",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "article_owner",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "account?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "till!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "6b82044d3df302bf23c682aead9bfc29451569adaa12cfcb91e2c2fc40737083"
+}
