@@ -1,6 +1,8 @@
 // Брак (SPEC-25): отметка из остатков, вкладка «Брак» с решением владельца и сторно.
 import { useState } from 'react'
 import { Pager, usePagedLoad } from './Pager'
+import { ExportButton } from './ExportButton'
+import { cappedWarning, colsIf, fetchAllPages, listSheet, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, Table, toast } from './ui'
 import { get, newOpId, post, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -263,6 +265,17 @@ export function DefectsTab() {
           </button>
         ))}
       </div>
+      <div className="mb-2 flex justify-end">
+        {/* Все записи брака вкладки; стоимость — только владельцу, как в таблице (задача 003 Н13, I13). */}
+        <ExportButton
+          file={view === 'pending' ? 'Брак ждёт решения' : 'Брак решённый'}
+          disabled={list.total === 0}
+          sheets={async () => {
+            const all = await fetchAllPages<Defect>(`/defects${qs({ status: view })}`)
+            return [listSheet(view === 'pending' ? 'Брак: ожидают решения' : 'Брак: решённые', defectCols(owner, view === 'resolved'), all.items, { sheet: 'Брак', warning: cappedWarning(all) })]
+          }}
+        />
+      </div>
       <ErrorBox error={list.error ?? act.error} />
       {list.loading && !list.data ? (
         <Loading />
@@ -330,4 +343,23 @@ export function DefectsTab() {
       )}
     </Card>
   )
+}
+
+/** Брак: количество числом в единице товара; стоимость — только владельцу; решение — текстом. */
+function defectCols(owner: boolean, resolved: boolean): ExportCol<Defect>[] {
+  return [
+    { label: '№', value: (d) => xl.int(d.number) },
+    { label: 'Когда', value: (d) => xl.dateTime(d.created_at) },
+    { label: 'Товар', value: (d) => d.product_name },
+    { label: 'Количество', value: (d) => xl.units(d.qty, d.unit) },
+    { label: 'Ед.', value: (d) => unitName(d.unit) },
+    ...colsIf<Defect>(owner, [{ label: 'Стоимость', value: (d) => xl.money(d.cost_tyiyn ?? 0) }]),
+    { label: 'Причина', value: (d) => d.reason },
+    { label: 'Поставщик', value: (d) => d.resolution?.supplier_name ?? d.supplier_name ?? '' },
+    { label: 'Отметил', value: (d) => d.user_name },
+    ...colsIf<Defect>(resolved, [
+      { label: 'Решение', value: (d) => (d.status === 'cancelled' ? 'отметка снята' : resolutionText(d)) },
+      { label: 'Комментарий', value: (d) => d.resolution?.comment ?? '' },
+    ]),
+  ]
 }

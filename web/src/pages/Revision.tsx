@@ -4,6 +4,8 @@
 import { useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { colsIf, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Table, toast } from '../components/ui'
@@ -299,6 +301,23 @@ function Draft({ rev, onChanged }: { rev: RevisionOut; onChanged: () => void }) 
           </select>
         </label>
       )}
+      <div className="flex justify-end">
+        {/* Все строки ревизии по отбору; «В деньгах» — только владельцу, как в таблице (задача 003 Н13, I13). */}
+        <ExportButton
+          file={`Ревизия ${rev.head.number}`}
+          disabled={lines.length === 0}
+          sheets={() => {
+            const cols = revisionCols(owner && !draft, rev.oil_norm_bp)
+            return [
+              listSheet(`Ревизия № ${rev.head.number}: ${rev.head.category_name ?? 'весь склад'}`, cols, lines, {
+                sheet: 'Ревизия',
+                filter: [q && `поиск «${filter.trim()}»`, visc && `вязкость ${viscs.get(visc) ?? visc}`, `статус: ${STATUS[rev.head.status][0]}`],
+                total: owner && !draft ? totalBy(cols, { Товар: 'Итого', 'В деньгах': xl.money(valueTotal) }) : undefined,
+              }),
+            ]
+          }}
+        />
+      </div>
       <ErrorBox error={act.error} />
       <Card className="p-0">
         {lines.length === 0 ? (
@@ -637,6 +656,9 @@ function Revision() {
             </Button>
           </Card>
         ))}
+      <div className="flex justify-end">
+        <ExportButton file="Ревизии" disabled={(list.data ?? []).length === 0} sheets={() => [listSheet('Ревизии', REVISION_LIST_COLS, list.data ?? [])]} />
+      </div>
       <ErrorBox error={list.error ?? act.error ?? rev.error} />
       <Card className="p-0">
         {list.loading && !list.data ? (
@@ -677,3 +699,32 @@ function Revision() {
     </div>
   )
 }
+
+/** Строки ревизии: количества числами в единице товара; «В деньгах» — только владельцу после проведения. */
+function revisionCols(money: boolean, normBp: number): ExportCol<Line>[] {
+  return [
+    { label: 'Товар', value: (l) => l.name },
+    { label: 'Артикул', value: (l) => l.article },
+    { label: 'Вязкость', value: (l) => viscosityOf(l)?.v ?? '' },
+    { label: 'Ед.', value: (l) => unitName(l.unit) },
+    { label: 'Должно быть', value: (l) => xl.units(l.expected_qty, l.unit) },
+    { label: 'Пересчитано', value: (l) => (l.counted_qty === null ? null : xl.units(l.counted_qty, l.unit)) },
+    { label: 'Разница', value: (l) => (l.counted_qty === null ? null : xl.units(l.counted_qty - l.expected_qty, l.unit)) },
+    {
+      label: 'Норма',
+      value: (l) => (l.unit === 'ml' && l.counted_qty !== null && l.counted_qty !== l.expected_qty ? (overNorm(l, normBp) ? 'сверх нормы' : 'в норме') : ''),
+    },
+    ...colsIf<Line>(money, [{ label: 'В деньгах', value: (l) => xl.money(l.value_delta_tyiyn ?? 0) }]),
+  ]
+}
+
+const REVISION_LIST_COLS: ExportCol<Head>[] = [
+  { label: '№', value: (h) => xl.int(h.number) },
+  { label: 'Что', value: (h) => h.category_name ?? 'Весь склад' },
+  { label: 'Начал', value: (h) => h.user_name },
+  { label: 'Когда', value: (h) => xl.dateTime(h.created_at) },
+  { label: 'Проведена', value: (h) => xl.dateTime(h.posted_at) },
+  { label: 'Пересчитано', value: (h) => xl.int(h.counted) },
+  { label: 'Статус', value: (h) => STATUS[h.status][0] },
+  { label: 'Комментарий', value: (h) => h.comment },
+]

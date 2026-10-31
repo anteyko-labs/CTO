@@ -2,6 +2,8 @@
 import { useState, type FormEvent } from 'react'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, type ExportCol } from '../lib/exportTable'
 import { PAYROLL_ARTICLE_WARNING, payrollLikeArticle } from '../lib/expensePayee'
 import { useAction, useLoad } from '../lib/hooks'
 import type { ExpenseArticle } from '../lib/types'
@@ -37,7 +39,12 @@ export default function ExpenseArticles() {
       <PageHeader
         title="Статьи расходов"
         subtitle="Скрытая статья пропадает из выбора, прошлые расходы по ней остаются в отчётах"
-        actions={<Button onClick={() => setAdding(true)}>Добавить статью</Button>}
+        actions={
+          <>
+            <ExportButton file="Статьи расходов" disabled={!list.data?.length} sheets={() => [listSheet('Статьи расходов', ARTICLE_COLS, list.data ?? [], { sheet: 'Статьи' })]} />
+            <Button onClick={() => setAdding(true)}>Добавить статью</Button>
+          </>
+        }
       />
       <Card>
         <ErrorBox error={list.error ?? act.error} />
@@ -122,3 +129,9 @@ export default function ExpenseArticles() {
     </div>
   )
 }
+
+const ARTICLE_COLS: ExportCol<ExpenseArticle>[] = [
+  { label: 'Статья', value: (a) => a.name },
+  { label: 'Кто видит', value: (a) => (a.owner_only ? 'только владелец' : 'все') },
+  { label: 'Статус', value: (a) => (a.active ? 'в выборе' : 'скрыта') },
+]

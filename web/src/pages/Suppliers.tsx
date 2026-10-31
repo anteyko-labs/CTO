@@ -5,6 +5,8 @@ import { SupplierEditModal, SupplierFields } from '../components/SupplierFormMod
 import { dueDaysOk, EMPTY_SUPPLIER, innOk, supplierBody } from '../lib/supplierForm'
 import { Icon } from '../components/icons'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { StockBackLink } from '../components/StockBackLink'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, post } from '../lib/api'
@@ -48,12 +50,16 @@ export default function Suppliers() {
         title="Поставщики"
         back={<StockBackLink />}
         actions={
-          mayAdd && (
-            <Button onClick={openAdd}>
-              <Icon name="plus" className="h-4 w-4" />
-              Добавить
-            </Button>
-          )
+          <>
+            {/* Весь справочник с реквизитами (задача 003 Н13). */}
+            <ExportButton file="Поставщики" disabled={!list.data?.length} sheets={() => [listSheet('Поставщики', SUPPLIER_COLS, list.data ?? [])]} />
+            {mayAdd && (
+              <Button onClick={openAdd}>
+                <Icon name="plus" className="h-4 w-4" />
+                Добавить
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -124,3 +130,17 @@ export default function Suppliers() {
     </div>
   )
 }
+
+/** Поставщики с реквизитами: ИНН, телефон, счёт — текстом. */
+const SUPPLIER_COLS: ExportCol<Supplier>[] = [
+  { label: 'Название', value: (s) => s.name },
+  { label: 'Вид', value: (s) => (s.kind === 'person' ? 'Человек' : 'Фирма') },
+  { label: 'ИНН', value: (s) => s.inn ?? '' },
+  { label: 'Телефон', value: (s) => s.phone },
+  { label: 'Адрес', value: (s) => s.address ?? '' },
+  { label: 'Банк', value: (s) => s.bank ?? '' },
+  { label: 'Расчётный счёт', value: (s) => s.bank_account ?? '' },
+  { label: 'Срок оплаты, дн.', value: (s) => (s.due_days != null ? xl.int(s.due_days) : null) },
+  { label: 'Комментарий', value: (s) => s.comment },
+  { label: 'Статус', value: (s) => (s.active ? 'активен' : 'отключён') },
+]

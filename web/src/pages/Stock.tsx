@@ -4,16 +4,18 @@
 // считает сервер (`GET /products/list?stock=in_stock&group=category`). «Товары» остаются справочником.
 import { useState } from 'react'
 import { Navigate, useLocation, useSearchParams } from 'react-router-dom'
+import { ExportButton } from '../components/ExportButton'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { useUser } from '../lib/auth'
-import { formatSom } from '../lib/format'
+import { formatDate, formatSom, todayBishkek } from '../lib/format'
 import { useDebounced, useLoad } from '../lib/hooks'
 import { printInFrame } from '../lib/printFrame'
 import { isOldStockLink, stockToProducts } from '../lib/stockLink'
 import { groupQty, groupRows, pricePer, rowQty, rowViscosity, stockSheetHtml, stockTotal } from '../lib/stockSheet'
 import type { Category, ProductList } from '../lib/types'
 import { qtyText } from '../lib/units'
+import { stockSheet } from '../lib/exportCols'
 
 /** Сколько строк берём за раз: склад точки — сотни позиций; подытоги — по всему отбору. */
 const LIMIT = 2000
@@ -56,9 +58,27 @@ function StockPage() {
         title="Остатки"
         subtitle="Что лежит на складе: только товары с остатком, по категориям. Справочник всех товаров — «Товары»."
         actions={
-          <Button variant="secondary" onClick={print} disabled={!totals || totals.count === 0} data-testid="stock-print">
-            Печать
-          </Button>
+          <>
+            <Button variant="secondary" onClick={print} disabled={!totals || totals.count === 0} data-testid="stock-print">
+              Печать
+            </Button>
+            {/* Как на экране и в печати: группы, подытоги; закупка — только владельцу (задача 003 Н13). */}
+            <ExportButton
+              file="Остатки"
+              period={formatDate(todayBishkek())}
+              disabled={!totals || totals.count === 0}
+              sheets={() =>
+                totals
+                  ? [
+                      {
+                        ...stockSheet({ groups, total: totals, owner, filter: [category && `категория «${category.name}»`, query && `поиск «${query}»`] }),
+                        warning: shown < totals.count ? `Выгружены первые ${shown} позиций из ${totals.count} — уточните поиск; подытоги — по всем` : undefined,
+                      },
+                    ]
+                  : []
+              }
+            />
+          </>
         }
       />
       <Card className="mb-4">

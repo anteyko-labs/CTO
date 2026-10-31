@@ -4,6 +4,9 @@ import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { AdminTelegramModal, noReceiptsRight } from '../components/AdminTelegramModal'
+import { ExportButton } from '../components/ExportButton'
+import { exportTitle, listSheet, type ExportCol } from '../lib/exportTable'
+import type { Sheet } from '../lib/xlsxWrite'
 import { get, newOpId, patch, post, put } from '../lib/api'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
@@ -263,9 +266,13 @@ export default function Users() {
         title="Пользователи и права"
         subtitle="Кто входит в программу и что можно каждому администратору — «Что можно» в строке"
         actions={
-          <Button onClick={() => setAdding(true)}>
-            <Icon name="plus" /> Добавить
-          </Button>
+          <>
+            {/* Пользователи и права администраторов по каждому праву (задача 003 Н13). */}
+            <ExportButton file="Пользователи и права" disabled={!list.data?.length} sheets={() => usersSheets(list.data ?? [])} />
+            <Button onClick={() => setAdding(true)}>
+              <Icon name="plus" /> Добавить
+            </Button>
+          </>
         }
       />
 
@@ -402,4 +409,27 @@ export default function Users() {
       )}
     </div>
   )
+}
+
+const USER_COLS: ExportCol<UserRow>[] = [
+  { label: 'Логин', value: (u) => u.login },
+  { label: 'Имя', value: (u) => u.full_name },
+  { label: 'Роль', value: (u) => ROLE_LABELS[u.role] },
+  { label: 'Что можно', value: (u) => rightsText(u) },
+  { label: 'Телеграм', value: (u) => (u.telegram_linked_at ? 'привязан' : '') },
+  { label: 'Статус', value: (u) => (u.active ? 'активен' : 'отключён') },
+]
+
+/** Пользователи и таблица прав: строка — право, столбец — администратор, «да» — разрешено. */
+function usersSheets(users: UserRow[]): Sheet[] {
+  const admins = users.filter((u) => u.role === 'admin')
+  return [
+    listSheet('Пользователи', USER_COLS, users),
+    {
+      name: 'Права',
+      columns: [{ label: 'Группа' }, { label: 'Право' }, ...admins.map((u) => ({ label: u.login }))],
+      rows: PERMISSIONS.map((p) => [p.group, p.label, ...admins.map((u) => ((u.permissions ?? []).includes(p.key) ? 'да' : ''))]),
+      title: exportTitle('Права администраторов'),
+    },
+  ]
 }

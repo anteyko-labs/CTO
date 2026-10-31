@@ -14,7 +14,7 @@ import { correctionMarks, loadCorrections, numberText } from '../lib/corrections
 import { expenseDoc, expenseFields, type ExpenseDoc, type ExpenseFields } from '../lib/moneyFix'
 import { payeeHints, payeeMissing } from '../lib/expensePayee'
 import { ExportButton } from '../components/ExportButton'
-import { cappedWarning, fetchAllPages, periodText, tableSheet, xl } from '../lib/exportTable'
+import { cappedWarning, exportTitle, fetchAllPages, listSheet, periodText, xl } from '../lib/exportTable'
 import { useCan } from '../lib/permissions'
 import { SPENDING_EXPORT_COLS, spendingKinds, spendingMark, spendingNumber, spendingPath, spendingWhat, summaryLines, summarySheetRows, type SpendingKind } from '../lib/spending'
 import { StaffPayModal } from '../components/StaffPayModal'
@@ -153,8 +153,9 @@ export default function Expenses() {
                 const all = await fetchAllPages<SpendingRow>(spendingPath(query))
                 const sum = summary.data
                 return [
-                  tableSheet('Расходы', SPENDING_EXPORT_COLS, all.items, {
-                    title: ['Расходы — все траты, кроме оплаты поставщикам', `Период: ${periodText(from, to)}`, `Отбор: ${kinds.find(([k]) => k === kind)?.[1] ?? ''}`],
+                  listSheet('Расходы — все траты, кроме оплаты поставщикам', SPENDING_EXPORT_COLS, all.items, {
+                    sheet: 'Расходы',
+                    filter: [`период ${periodText(from, to)}`, kinds.find(([k]) => k === kind)?.[1], reversals && 'со сторно'],
                     total: ['Итого', null, null, null, null, null, xl.money(total)],
                     warning: cappedWarning(all),
                   }),
@@ -162,7 +163,7 @@ export default function Expenses() {
                     ? [
                         {
                           name: 'Итог по статьям',
-                          title: ['Итог по статьям', `Период: ${periodText(from, to)}`],
+                          title: exportTitle('Итог по статьям', [`период ${periodText(from, to)}`]),
                           columns: [{ label: 'Статья', width: 40 }, { label: 'Сумма' }],
                           rows: summarySheetRows(sum).map((r) => ({ cells: [r.label, xl.money(r.amount)], bold: r.bold })),
                         },

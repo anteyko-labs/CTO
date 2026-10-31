@@ -6,6 +6,7 @@
 // по каждому виду замены — сколько раз, сколько заплатили клиенты, сколько начислено мастерам и
 // какие масла залиты в этих чеках; без себестоимости — видит и администратор.
 import { useState } from 'react'
+import { ExportButton } from '../components/ExportButton'
 import { Card, Empty, ErrorBox, Field, Loading, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { formatSom, shiftDate, todayBishkek } from '../lib/format'
@@ -16,6 +17,8 @@ import { qtyText } from '../lib/units'
 import type { Category, ServiceKinds, TopProducts as TopProductsOut } from '../lib/types'
 import { BranchScope } from '../components/BranchScope'
 import { branchParam, useAllBranches } from '../lib/branchReport'
+import { SERVICE_KIND_COLS, topProductCols } from '../lib/exportCols'
+import { listSheet, periodText, totalBy, xl } from '../lib/exportTable'
 
 /** Вкладка «Замены»: виды замены за период и масла в их чеках. */
 function ServiceKindsTab({ from, to, all }: { from: string; to: string; all: boolean }) {
@@ -30,6 +33,22 @@ function ServiceKindsTab({ from, to, all }: { from: string; to: string; all: boo
         <Empty>Замен за период не было</Empty>
       ) : (
         <>
+          <div className="mb-2 flex justify-end">
+            <ExportButton
+              file="Замены"
+              period={periodText(from, to)}
+              sheets={() => [
+                listSheet('Замены', SERVICE_KIND_COLS, kinds, {
+                  filter: [`период ${periodText(from, to)}`, all && 'все филиалы'],
+                  total: totalBy(SERVICE_KIND_COLS, {
+                    'Вид замены': 'Итого',
+                    'Заплатили клиенты': xl.money(kinds.reduce((a, k) => a + k.clients_tyiyn, 0)),
+                    Мастерам: xl.money(kinds.reduce((a, k) => a + k.masters_tyiyn, 0)),
+                  }),
+                }),
+              ]}
+            />
+          </div>
           <Table head={['Вид замены', 'Раз', 'Заплатили клиенты', 'Мастерам', 'Масла в этих чеках']}>
             {kinds.map((k) => (
               <tr key={k.service_id ?? 'none'} data-testid="service-kind-row">
@@ -98,7 +117,34 @@ export default function TopProducts() {
 
   return (
     <div>
-      <PageHeader title="Продаваемые товары" />
+      <PageHeader
+        title="Продаваемые товары"
+        actions={
+          !services && (
+            // Столбцы — как в таблице; прибыль — только если её отдал сервер (владельцу, I13).
+            <ExportButton
+              file={byProfit ? 'Больше приносят' : 'Чаще берут'}
+              period={periodText(from, to)}
+              disabled={items.length === 0}
+              sheets={() => {
+                const cols = topProductCols(showProfit)
+                return [
+                  listSheet(byProfit ? 'Больше приносят' : 'Чаще берут', cols, items.map((r, i) => ({ ...r, rank: i + 1 })), {
+                    sheet: 'Товары',
+                    filter: [
+                      `период ${periodText(from, to)}`,
+                      categoryId && `категория «${categories.data?.find((c) => c.id === categoryId)?.name ?? ''}»`,
+                      byProfit ? 'по прибыли' : sort === 'checks' ? 'по числу чеков' : 'по выручке',
+                      all && 'все филиалы',
+                    ],
+                    total: totalBy(cols, { Товар: 'Итого', Выручка: xl.money(total), Прибыль: xl.money(profit) }),
+                  }),
+                ]
+              }}
+            />
+          )
+        }
+      />
       <BranchScope user={user} all={all} onChange={setAll} />
       <Card>
         <div role="tablist" aria-label="Рейтинг товаров" className="mb-3 flex flex-wrap gap-2">

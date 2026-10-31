@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom'
 import { balanceText } from '../components/ClientPicker'
 import { Icon } from '../components/icons'
 import { Pager, usePagedLoad } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, fetchAllPages, listSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, Table } from '../components/ui'
 import { get, post, qs } from '../lib/api'
 import { formatPoints, formatSom, pointsClients } from '../lib/format'
@@ -80,11 +82,28 @@ export default function Clients() {
       <PageHeader
         title="Клиенты"
         actions={
-          mayAdd && (
-            <Button onClick={() => setAdding(true)}>
-              <Icon name="plus" /> Добавить
-            </Button>
-          )
+          <>
+            {/* Все клиенты отбора, а не страница (задача 003 Н13). */}
+            <ExportButton
+              file="Клиенты"
+              disabled={list.total === 0}
+              sheets={async () => {
+                const all = await fetchAllPages<Party>(`/parties${filter}`)
+                return [
+                  listSheet('Клиенты', CLIENT_COLS, all.items, {
+                    filter: [query && `поиск «${query}»`, kind === 'company' ? 'юрлица' : kind === 'person' ? 'физлица' : '', onlyDebtors && 'только должники'],
+                    total: totalBy(CLIENT_COLS, { Клиент: 'Итого', 'Должен нам': xl.money(owe), Аванс: xl.money(advance) }),
+                    warning: cappedWarning(all),
+                  }),
+                ]
+              }}
+            />
+            {mayAdd && (
+              <Button onClick={() => setAdding(true)}>
+                <Icon name="plus" /> Добавить
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -245,3 +264,16 @@ export default function Clients() {
     </div>
   )
 }
+
+/** Столбцы выгрузки клиентов: телефон и ИНН — текстом; долг и аванс — числами в своих столбцах. */
+const CLIENT_COLS: ExportCol<Party>[] = [
+  { label: 'Клиент', value: (p) => p.name },
+  { label: 'Вид', value: (p) => (p.kind === 'company' ? 'Юрлицо' : 'Физлицо') },
+  { label: 'Телефон', value: (p) => p.phone },
+  { label: 'ИНН / ПИН', value: (p) => p.inn },
+  { label: 'Должен нам', value: (p) => (p.balance_tyiyn > 0 ? xl.money(p.balance_tyiyn) : null) },
+  { label: 'Аванс', value: (p) => (p.balance_tyiyn < 0 ? xl.money(-p.balance_tyiyn) : null) },
+  { label: 'Просрочено', value: (p) => (p.overdue_tyiyn > 0 ? xl.money(p.overdue_tyiyn) : null) },
+  { label: 'Комментарий', value: (p) => p.comment },
+  { label: 'Статус', value: (p) => (p.active ? '' : 'в архиве') },
+]

@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { CorrectionLinks, FixButton } from '../components/Correction'
 import { printLabels } from '../components/labels'
+import { ExportButton } from '../components/ExportButton'
+import { exportTitle, tableSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, ErrorBox, Field, Loading, Modal, PageHeader, Table } from '../components/ui'
 import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatKg, formatLiters, formatPermille, formatSom } from '../lib/format'
@@ -72,6 +74,16 @@ export default function StockInView() {
             <Button variant="secondary" onClick={() => navigate('/receipts?kind=stock_in')}>
               К списку
             </Button>
+            {/* Строки оприходования (задача 003 Н13). */}
+            <ExportButton
+              file={`Оприходование ${d.number}`}
+              sheets={() => [
+                tableSheet('Оприходование', STOCK_IN_COLS, d.lines, {
+                  title: exportTitle(`${isReversal ? 'Сторно оприходования' : 'Оприходование'} № ${d.number}`, [formatDateTime(d.created_at), d.comment]),
+                  total: totalBy(STOCK_IN_COLS, { Товар: 'Итого', Сумма: xl.money(d.cost_tyiyn) }),
+                }),
+              ]}
+            />
             {!isReversal && (
               <Button variant="secondary" disabled={labels.busy} onClick={doPrint}>
                 Печать этикеток
@@ -175,3 +187,23 @@ export default function StockInView() {
     </div>
   )
 }
+
+/** Строки оприходования: количество числом в единице товара; цена закупки — как в таблице. */
+const STOCK_IN_COLS: ExportCol<StockInLine>[] = [
+  { label: '№', value: (l) => xl.int(l.line_no) },
+  { label: 'Товар', value: (l) => l.product_name },
+  { label: 'Количество', value: (l) => xl.units(l.qty, l.unit) },
+  { label: 'Ед.', value: (l) => unitName(l.unit) },
+  { label: 'Цена закупки', value: (l) => xl.money(l.price_tyiyn) },
+  { label: 'Цена за', value: (l) => perText(l) },
+  { label: 'Цена за л', value: (l) => xl.maybeMoney(unitCostPerLiter(l)) },
+  {
+    label: 'Наценка',
+    value: (l) => {
+      const m = l.sale_price_tyiyn !== null ? markupPermille(l.price_tyiyn, l.sale_price_tyiyn) : null
+      return m === null ? '' : formatPermille(m)
+    },
+  },
+  { label: 'Цена продажи', value: (l) => xl.maybeMoney(l.sale_price_tyiyn) },
+  { label: 'Сумма', value: (l) => xl.money(l.cost_tyiyn) },
+]

@@ -7,6 +7,8 @@ import { get, newOpId, post } from '../lib/api'
 import { formatDateTime, formatSom } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { Badge, Button, Card, CardTitle, ErrorBox, Field, Loading, Modal, Table, toast } from './ui'
+import { ExportButton } from './ExportButton'
+import { colsIf, exportTitle, tableSheet, unitName, xl, type ExportCol } from '../lib/exportTable'
 
 /** Блок «Ждут приёмки: N». Пустой список — блока нет. */
 export function AcceptancesWaitingBlock({ list, onChanged }: { list: AcceptanceList | null; onChanged: () => void }) {
@@ -113,6 +115,18 @@ export function AcceptanceDetails({ a }: { a: Acceptance }) {
         {a.total_tyiyn !== null && ` · по накладной ${formatSom(a.total_tyiyn)}`}
       </div>
       {a.comment && <div className="text-slate-600">Комментарий: {a.comment}</div>}
+      <div className="flex justify-end">
+        {/* Строки приёмки; суммы — только если сервер их отдал (право «Приход товара»), как в таблице (задача 003 Н13). */}
+        <ExportButton
+          file={`Приёмка ${a.supplier_doc || a.supplier_name}`}
+          sheets={() => [
+            tableSheet('Приёмка', acceptanceCols(closed, a.total_tyiyn !== null), a.lines, {
+              title: exportTitle(`Приёмка: ${a.supplier_name}${a.supplier_doc ? `, накладная № ${a.supplier_doc}` : ''}`, [`отправил ${a.sent_by_name} ${formatDateTime(a.sent_at)}`]),
+              footer: a.extras.length > 0 ? [`Не по накладной: ${a.extras.map((x) => `${x.name || x.barcode} — ${x.qty} шт`).join('; ')}`] : undefined,
+            }),
+          ]}
+        />
+      </div>
       <Table head={['Товар', 'По накладной', ...(closed ? ['Принято'] : []), ...(a.total_tyiyn !== null ? ['Сумма строки'] : [])]}>
         {a.lines.map((l) => (
           <tr key={l.line_no}>
@@ -173,4 +187,21 @@ export function ReceiptAcceptance({ receiptId }: { receiptId: string }) {
       </div>
     </Card>
   )
+}
+
+/** Строки приёмки: количества числами в единице товара; сумма строки — если её видно. */
+function acceptanceCols(closed: boolean, money: boolean): ExportCol<AcceptanceLine>[] {
+  return [
+    { label: 'Товар', value: (l) => l.name },
+    { label: 'Артикул', value: (l) => l.article },
+    { label: 'Ед.', value: (l) => unitName(l.unit) },
+    { label: 'По накладной', value: (l) => xl.units(l.invoice_qty, l.unit) },
+    ...colsIf<AcceptanceLine>(closed, [
+      { label: 'Принято', value: (l) => (l.accepted_qty === null ? null : xl.units(l.accepted_qty, l.unit)) },
+      { label: 'Принят вместо', value: (l) => l.accepted_name ?? '' },
+      { label: 'Причина', value: (l) => (l.reason ? reasonLabel(l.reason) : '') },
+      { label: 'Комментарий', value: (l) => l.comment },
+    ]),
+    ...colsIf<AcceptanceLine>(money, [{ label: 'Сумма строки', value: (l) => xl.money(l.line_cost_tyiyn ?? 0) }]),
+  ]
 }

@@ -2,6 +2,9 @@ import { useCallback, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { Card, ErrorBox, Field, Loading, Money, PageHeader } from '../components/ui'
 import { Icon } from '../components/icons'
+import { ExportButton } from '../components/ExportButton'
+import { exportTitle, periodText, xl } from '../lib/exportTable'
+import type { Cell, Sheet } from '../lib/xlsxWrite'
 import { get, qs } from '../lib/api'
 import { formatDate, formatPoints, formatSom, hourBishkek, pointsClients, todayBishkek } from '../lib/format'
 import { productsLink } from '../lib/stockLink'
@@ -261,7 +264,20 @@ export function OwnerDashboard() {
 
   return (
     <div>
-      <PageHeader title={`Сводка ${word}`} actions={picker} />
+      <PageHeader
+        title={`Сводка ${word}`}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {picker}
+            {/* Сводка одним файлом: итоги, кто заработал, по дням или часам (задача 003 Н13). Экран — только владельцу. */}
+            <ExportButton
+              file={`Сводка${all ? ' все филиалы' : ''}`}
+              period={periodText(from, to)}
+              sheets={() => ownerSheets(data, r.data ?? null, { title: `Сводка ${word}`, filter: [`период ${periodText(from, to)}`, all && 'все филиалы'], single })}
+            />
+          </div>
+        }
+      />
       <BranchScope user={user} all={all} onChange={setAll} />
       <div className="flex flex-col gap-4">
         <BranchBreakdown
@@ -479,4 +495,65 @@ export function OwnerDashboard() {
       </div>
     </div>
   )
+}
+
+/** Сводка владельца в Excel: «Откуда прибыль» и деньги сейчас, кто сколько заработал, по дням (или по часам за день). */
+function ownerSheets(data: Dashboard, report: ProfitReport | null, o: { title: string; filter: (string | false)[]; single: boolean }): Sheet[] {
+  const t = data.totals
+  const title = exportTitle(o.title, o.filter)
+  const line = (label: string, v: number, bold = false, level = 0) => ({ cells: [label, xl.money(v)] as Cell[], bold, level })
+  const opt = (label: string, v: number | undefined, level = 1) => (v ? [line(label, v, false, level)] : [])
+  const summary = [
+    line('Товары', t.goods_tyiyn),
+    line('Работы (услуги)', t.services_tyiyn),
+    line('Выручка', t.goods_tyiyn + t.services_tyiyn, true),
+    line('Закупка проданного товара', -t.cost_tyiyn),
+    line('Валовая прибыль', t.gross_tyiyn, true),
+    line('Зарплата сотрудникам', -t.payroll_tyiyn),
+    ...opt('в т.ч. оклады за месяц', t.salary_tyiyn ? -t.salary_tyiyn : 0, 1),
+    ...opt('Комиссия банка (карта, QR)', -t.bank_fee_tyiyn, 0),
+    ...opt('Расходы', -t.expenses_tyiyn, 0),
+    ...opt('Скидки баллами', -t.bonus_tyiyn, 0),
+    ...opt('Недостача / излишек кассы', t.cash_diff_tyiyn, 0),
+    ...opt('Списание брака', t.defect_writeoff_tyiyn ? -t.defect_writeoff_tyiyn : 0, 0),
+    ...opt('Брак: разница возмещения', t.defect_diff_tyiyn, 0),
+    ...opt('Возврат поставщику: разница', t.return_diff_tyiyn, 0),
+    line('Чистая прибыль', t.net_tyiyn, true),
+    { cells: ['Чеков', xl.int(t.sales_count)] as Cell[] },
+    line('Средний чек', data.average_check_tyiyn),
+    line('Возвраты', data.returns_tyiyn),
+    { cells: ['Деньги сейчас'] as Cell[], bold: true },
+    ...data.accounts.map((a) => line(a.name, a.balance_tyiyn, false, 1)),
+    line('Всего денег', data.money_total_tyiyn, true),
+    line('Безнал за период', data.noncash.total_tyiyn),
+    line('Нам должны', data.debts_in_tyiyn),
+    line('Мы должны поставщикам', data.debts_out_tyiyn),
+    ...(data.points ? [line('Баллы у клиентов', data.points.points_tyiyn)] : []),
+    line('К выплате сотрудникам за все дни', data.to_pay_tyiyn),
+  ]
+  const sheets: Sheet[] = [
+    { name: 'Итоги', columns: [{ label: 'Показатель' }, { label: 'Сумма' }], rows: summary, title, filter: false },
+    {
+      name: 'Заработали',
+      columns: [{ label: 'Сотрудник' }, { label: 'За что' }, { label: 'Сумма' }],
+      rows: earnedList(data.staff).map((p) => [p.name, payReason(p.items), xl.money(p.total_tyiyn)]),
+      title,
+    },
+  ]
+  if (o.single) {
+    sheets.push({
+      name: 'По часам',
+      columns: ['Час', 'Выручка', 'Валовая прибыль', 'Чеков'].map((label) => ({ label })),
+      rows: (report?.hours ?? []).map((h) => [`${h.hour}:00–${h.hour + 1}:00`, xl.money(h.revenue_tyiyn), xl.money(h.gross_tyiyn), xl.int(h.sales_count)]),
+      title,
+    })
+  } else {
+    sheets.push({
+      name: 'По дням',
+      columns: ['День', 'Выручка', 'Валовая прибыль', 'Зарплата', 'Расходы', 'Чистая прибыль'].map((label) => ({ label })),
+      rows: (report?.days ?? []).map((x) => [xl.date(x.date), xl.money(x.revenue_tyiyn), xl.money(x.gross_tyiyn), xl.money(x.payroll_tyiyn), xl.money(x.expenses_tyiyn), xl.money(x.net_tyiyn)]),
+      title,
+    })
+  }
+  return sheets
 }

@@ -5,6 +5,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, fetchAllPages, listSheet, periodText, totalBy, xl, type ExportCol } from '../lib/exportTable'
 import { CorrectionBadges } from '../components/Correction'
 import { ReceiptDraftsBlock } from '../components/ReceiptDrafts'
 import { AcceptancesWaitingBlock } from '../components/Acceptances'
@@ -98,7 +100,34 @@ export default function Receipts() {
 
   return (
     <div>
-      <PageHeader title="Приход" actions={mayAdd && <Button onClick={newReceipt}>Новый приход</Button>} />
+      <PageHeader
+        title="Приход"
+        actions={
+          <>
+            {/* Все строки отбора, а не страница (задача 003 Н13). */}
+            <ExportButton
+              file={kind === 'stock_in' ? 'Оприходования' : 'Приход'}
+              period={q ? undefined : periodText(from, to)}
+              disabled={list.total === 0}
+              sheets={async () => {
+                const all = await fetchAllPages<ReceiptListItem>(`/receipts${qs(receiptsQuery({ from, to, kind, q, photo: withPhoto }))}`)
+                return [
+                  listSheet('Приход', RECEIPT_COLS, all.items, {
+                    filter: [
+                      q ? `поиск «${q}» за всё время` : `период ${periodText(from, to)}`,
+                      kind !== 'all' && (KINDS.find(([k]) => k === kind)?.[1] ?? ''),
+                      withPhoto && 'с фото',
+                    ],
+                    total: totalBy(RECEIPT_COLS, { '№': 'Итого', Сумма: xl.money(all.items.reduce((a, r) => a + (r.reversal_of || r.reversed ? 0 : r.total_tyiyn), 0)) }),
+                    warning: cappedWarning(all),
+                  }),
+                ]
+              }}
+            />
+            {mayAdd && <Button onClick={newReceipt}>Новый приход</Button>}
+          </>
+        }
+      />
       <div className="mb-4 flex flex-col gap-2">
         <ErrorBox error={drafts.error ?? acceptances.error} />
         <AcceptancesWaitingBlock
@@ -225,3 +254,28 @@ function PhotoMark({ r, onOpen }: { r: ReceiptListItem; onOpen: () => void }) {
     </button>
   )
 }
+
+/** Оплата накладной словами — как значок в строке. */
+function payState(r: ReceiptListItem): string {
+  if (r.kind === 'stock_in' || r.reversal_of || r.reversed) return ''
+  const onDebt = r.on_debt_tyiyn ?? 0
+  const left = r.debt_left_tyiyn ?? 0
+  return onDebt <= 0 || left <= 0 ? 'оплачен' : left < onDebt ? 'частично' : 'не оплачен'
+}
+
+/** Столбцы выгрузки «Прихода»: как в таблице; вид, оплата и сторно — отдельными столбцами. */
+const RECEIPT_COLS: ExportCol<ReceiptListItem>[] = [
+  { label: '№', value: (r) => xl.int(r.number) },
+  { label: 'Дата', value: (r) => xl.dateTime(r.created_at) },
+  { label: 'Вид', value: (r) => (r.kind === 'stock_in' ? 'Оприходование' : 'От поставщика') },
+  { label: 'Поставщик / откуда', value: (r) => (r.kind === 'stock_in' ? (r.goods ?? '') : (r.supplier_name ?? '')) },
+  { label: 'Документ поставщика', value: (r) => (r.kind === 'stock_in' ? '' : r.supplier_doc) },
+  { label: 'Комментарий', value: (r) => r.comment ?? '' },
+  { label: 'Сумма', value: (r) => xl.money(r.total_tyiyn) },
+  { label: 'В долг', value: (r) => (r.kind === 'stock_in' ? null : xl.money(r.on_debt_tyiyn ?? 0)) },
+  { label: 'Осталось оплатить', value: (r) => (r.kind === 'stock_in' ? null : xl.money(r.debt_left_tyiyn ?? 0)) },
+  { label: 'Оплата', value: payState },
+  { label: 'Принял', value: (r) => r.user_name },
+  { label: 'Фото', value: (r) => (r.files > 0 ? xl.int(r.files) : null) },
+  { label: 'Отметка', value: (r) => (r.reversal_of ? 'сторно' : r.reversed ? (r.kind === 'stock_in' ? 'сторнировано' : 'сторнирован') : '') },
+]

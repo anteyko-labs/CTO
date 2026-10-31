@@ -6,6 +6,8 @@ import { INVOICE_STATUS_LABELS, paymentSource } from '../lib/supplierPay'
 import type { InvoicePayment, InvoiceStatus, SupplierPayment } from '../lib/types'
 import { CorrectionBadges, FixButton } from './Correction'
 import { Pager, usePager } from './Pager'
+import { ExportButton } from './ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Table } from './ui'
 
 export function InvoiceStatusBadge({ status }: { status: InvoiceStatus }) {
@@ -45,8 +47,11 @@ export function SupplierPaymentHistory({
   payments,
   marks,
   onFix,
+  name = 'Платежи поставщику',
 }: {
   payments: SupplierPayment[]
+  /** Название файла выгрузки: «<поставщик> платежи». */
+  name?: string
   marks?: Map<string, CorrectionMark>
   onFix?: (p: SupplierPayment) => void
 }) {
@@ -54,6 +59,10 @@ export function SupplierPaymentHistory({
   if (payments.length === 0) return <div className="text-sm text-slate-500">Платежей поставщику не было.</div>
   return (
     <>
+      <div className="mb-2 flex justify-end">
+        {/* Все платежи, а не страница (задача 003 Н13). */}
+        <ExportButton file={name} sheets={() => [listSheet(name, PAYMENT_COLS, payments, { sheet: 'Платежи' })]} />
+      </div>
       <Table head={['Когда', 'Кто', 'Сумма', 'Откуда', 'Закрыло']}>
         {pager.shown.map((p) => {
           const applied = p.applied.filter((a) => (p.reversed ? a.gross_tyiyn : a.amount_tyiyn) > 0)
@@ -107,3 +116,21 @@ export function SupplierPaymentHistory({
     </>
   )
 }
+
+/** Платежи поставщику: на какие накладные легли — текстом, сторно — отдельным столбцом. */
+const PAYMENT_COLS: ExportCol<SupplierPayment>[] = [
+  { label: 'Когда', value: (p) => xl.dateTime(p.at) },
+  { label: 'Кто', value: (p) => p.user_name },
+  { label: 'Сумма', value: (p) => xl.money(p.amount_tyiyn) },
+  { label: 'Откуда', value: (p) => paymentSource(p) },
+  {
+    label: 'Закрыло',
+    value: (p) => {
+      const applied = p.applied.filter((a) => (p.reversed ? a.gross_tyiyn : a.amount_tyiyn) > 0)
+      if (applied.length === 0) return p.reversed ? '' : 'аванс'
+      return applied.map((a) => `${a.receipt_id ? `№ ${a.number}` : 'старый долг'} — ${formatSom(p.reversed ? a.gross_tyiyn : a.amount_tyiyn)}`).join('; ')
+    },
+  },
+  { label: 'Комментарий', value: (p) => p.comment },
+  { label: 'Отметка', value: (p) => (p.reversed ? 'сторно' : '') },
+]

@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
 import { OldDebtModal } from '../components/OldDebtModal'
 import { RepaymentModal } from '../components/RepaymentModal'
 import { Button, Card, Empty, ErrorBox, Loading, Money, PageHeader } from '../components/ui'
 import { get } from '../lib/api'
-import { formatDate, formatDateTime, formatSom } from '../lib/format'
+import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { sortDebts, type DebtSortKey } from '../lib/income'
@@ -16,6 +17,7 @@ import { BranchScope } from '../components/BranchScope'
 import { useUser } from '../lib/auth'
 import { branchParam, useAllBranches } from '../lib/branchReport'
 import { qs } from '../lib/api'
+import { debtSheet } from '../lib/exportCols'
 
 /** Долги обновляются сами, пока экран открыт (ADR-028). */
 const REFRESH_MS = 10_000
@@ -224,7 +226,21 @@ export default function Debts() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader title="Долги" />
+      <PageHeader
+        title="Долги"
+        actions={
+          // Обе стороны одним файлом, крупные долги сверху (задача 003 Н13).
+          <ExportButton
+            file="Долги"
+            period={formatDate(todayBishkek())}
+            disabled={!list.data}
+            sheets={() => {
+              const f = all ? ['все филиалы'] : []
+              return [debtSheet('Должны нам', sortDebts(toUs, 'debt', true), f), debtSheet('Должны мы', sortDebts(fromUs, 'debt', true), f)]
+            }}
+          />
+        }
+      />
       <BranchScope user={user} all={all} onChange={setAll} />
       <ErrorBox error={list.error} />
       {list.loading && !list.data ? (

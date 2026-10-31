@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pager, usePageState, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, EXPORT_MAX_ROWS, EXPORT_PAGE, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Card, Empty, ErrorBox, Loading, PageHeader } from '../components/ui'
 import { get, post, qs } from '../lib/api'
 import { formatDateTime } from '../lib/format'
@@ -95,7 +97,30 @@ export default function Notifications() {
 
   return (
     <div>
-      <PageHeader title="Уведомления" subtitle={data.data && data.data.unseen > 0 ? `Новых: ${data.data.unseen}` : undefined} />
+      <PageHeader
+        title="Уведомления"
+        subtitle={data.data && data.data.unseen > 0 ? `Новых: ${data.data.unseen}` : undefined}
+        actions={
+          // Весь журнал или раздел (среди последних 500) — не одна страница (задача 003 Н13).
+          <ExportButton
+            file="Уведомления"
+            disabled={total === 0}
+            sheets={async () => {
+              const label = FILTERS.find(([k]) => k === filter)?.[1] ?? ''
+              if (grouped) return [listSheet('Уведомления', NOTE_COLS, filtered, { filter: [`раздел «${label}» среди последних 500`] })]
+              const items: NotificationItem[] = []
+              let all = 0
+              while (items.length < EXPORT_MAX_ROWS) {
+                const page = await get<NotificationsOut & { total?: number }>(`/notifications${qs({ limit: EXPORT_PAGE, offset: items.length })}`)
+                all = page.total ?? items.length + page.items.length
+                items.push(...page.items)
+                if (page.items.length === 0 || items.length >= all) break
+              }
+              return [listSheet('Уведомления', NOTE_COLS, items, { warning: cappedWarning({ total: all, capped: all > EXPORT_MAX_ROWS }) })]
+            }}
+          />
+        }
+      />
       <div className="mb-3 flex flex-wrap gap-2">
         {FILTERS.map(([key, label]) => (
           <button
@@ -156,3 +181,12 @@ export default function Notifications() {
     </div>
   )
 }
+
+/** Журнал уведомлений: что, подробности, кто, когда. */
+const NOTE_COLS: ExportCol<NotificationItem>[] = [
+  { label: 'Когда', value: (n) => xl.dateTime(n.at) },
+  { label: 'Что', value: (n) => n.title },
+  { label: 'Подробности', value: (n) => n.details },
+  { label: 'Кто', value: (n) => n.user_name ?? '' },
+  { label: 'Новое', value: (n) => (n.new ? 'да' : '') },
+]

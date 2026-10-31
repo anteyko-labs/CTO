@@ -14,6 +14,8 @@ import { useCan } from '../lib/permissions'
 import { addMonths, isCalendar, periodLabel, shortDate } from '../lib/payrollPeriod'
 import type { SalaryNow } from '../lib/types'
 import { PayoutForm, SalaryForm } from './PayrollForms'
+import { ExportButton } from './ExportButton'
+import { colsIf, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Modal, Money, Table } from './ui'
 
 interface SalaryOut {
@@ -63,6 +65,20 @@ export function PayrollSalary() {
         <Button variant="secondary" disabled={date >= today} onClick={() => setDate(addMonths(date, 1) > today ? today : addMonths(date, 1))} aria-label="Следующий период">
           →
         </Button>
+        {/* Все работники на окладе (задача 003 Н13). */}
+        <ExportButton
+          file="Оклад"
+          period={formatDate(date)}
+          disabled={rows.length === 0}
+          sheets={() => [
+            listSheet(
+              `Оклад на ${formatDate(date)}`,
+              [...colsIf<SalaryNow>(Boolean(branchOf), [{ label: 'Филиал', value: (r) => branchOf?.get(r.employee_id) ?? '' }]), ...SALARY_COLS],
+              rows,
+              { sheet: 'Оклад', filter: [all && 'все филиалы'] },
+            ),
+          ]}
+        />
         <div className="text-xs text-slate-500">
           У каждого — свой период: с дня расчёта по день до него. «К выплате» — начислено (пока не начислено — ставка) минус авансы и выданный
           оклад плюс долг прошлых периодов.
@@ -151,3 +167,19 @@ export function PayrollSalary() {
     </div>
   )
 }
+
+/** Столбцы выгрузки вкладки «Оклад» — как в таблице, без кнопок. */
+const SALARY_COLS: ExportCol<SalaryNow>[] = [
+  { label: 'Сотрудник', value: (r) => r.full_name },
+  { label: 'С', value: (r) => xl.date(r.period_from) },
+  { label: 'По', value: (r) => xl.date(r.period_to) },
+  { label: 'День расчёта', value: (r) => (r.salary_day ? xl.int(r.salary_day) : null) },
+  { label: 'Ставка', value: (r) => xl.maybeMoney(r.rule_tyiyn) },
+  { label: 'Начислено', value: (r) => (r.accrued_tyiyn !== null ? xl.money(r.accrued_tyiyn) : 'не начислен') },
+  { label: 'Авансом', value: (r) => xl.money(r.advance_tyiyn) },
+  { label: 'Выдано окладом', value: (r) => xl.money(r.paid_salary_tyiyn) },
+  { label: 'С прошлых', value: (r) => xl.money(r.carry_tyiyn) },
+  { label: 'К выплате', value: (r) => xl.money(r.expected_tyiyn) },
+  { label: 'Дата выплаты', value: (r) => xl.date(r.pay_date) },
+  { label: 'На сегодня', value: (r) => xl.maybeMoney(r.to_date_tyiyn) },
+]

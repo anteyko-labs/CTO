@@ -16,6 +16,8 @@ import { correctionMarks, loadCorrections } from '../lib/corrections'
 import { SupplierEditModal } from '../components/SupplierFormModal'
 import { SupplierReturnList, SupplierReturnModal } from '../components/SupplierReturns'
 import { SupplierLineMap } from '../components/SupplierLineMap'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, colsIf, fetchAllPages, listSheet, periodText, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 
 /** За что последняя цена: канистра масла, килограмм или штука. */
 const perText = (r: { unit: string; container_ml: number | null }): string =>
@@ -202,6 +204,23 @@ export default function SupplierCard() {
                 За всё время
               </Button>
             )}
+            {/* Все поставки периода; себестоимость оценки — только владельцу (задача 003 Н13, I13). */}
+            <ExportButton
+              className="ml-auto"
+              file={`${s.name} поставки`}
+              period={from || to ? periodText(from || to, to || from) : undefined}
+              disabled={rows.length === 0}
+              sheets={() => {
+                const cols = deliveryCols(owner)
+                return [
+                  listSheet(`${s.name}: поставки`, cols, rows, {
+                    sheet: 'Поставки',
+                    filter: [from || to ? `период ${periodText(from || to, to || from)}` : 'за всё время'],
+                    total: totalBy(cols, { Товар: 'Итого', 'Сумма поставок': xl.money(deliveries.data?.amount_tyiyn ?? 0) }),
+                  }),
+                ]
+              }}
+            />
           </div>
           <ErrorBox error={deliveries.error} />
           {deliveries.loading && !deliveries.data ? (
@@ -256,7 +275,18 @@ export default function SupplierCard() {
 
       {tab === 'receipts' && (
       <Card>
-        <h2 className="mb-3 font-semibold">Накладные</h2>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-semibold">Накладные</h2>
+          {/* Все накладные поставщика, а не страница (задача 003 Н13). */}
+          <ExportButton
+            file={`${s.name} накладные`}
+            disabled={receipts.total === 0}
+            sheets={async () => {
+              const all = await fetchAllPages<ReceiptListItem>(`/receipts${qs({ supplier_id: id })}`)
+              return [listSheet(`${s.name}: накладные`, INVOICE_COLS, all.items, { sheet: 'Накладные', warning: cappedWarning(all) })]
+            }}
+          />
+        </div>
         <ErrorBox error={receipts.error} />
         {receipts.loading && !receipts.data ? (
           <Loading />
@@ -323,7 +353,7 @@ export default function SupplierCard() {
             Оплата без выбора накладной и зачёт брака закрывают самые старые неоплаченные накладные. Сторно платежа возвращает долг на те же накладные.
           </p>
           <ErrorBox error={invoices.error} />
-          {invoices.loading && !invoices.data ? <Loading /> : <SupplierPaymentHistory payments={invoices.data?.payments ?? []} marks={marks} onFix={(p) => setFixing(p.ledger_id)} />}
+          {invoices.loading && !invoices.data ? <Loading /> : <SupplierPaymentHistory name={`${s.name} платежи`} payments={invoices.data?.payments ?? []} marks={marks} onFix={(p) => setFixing(p.ledger_id)} />}
         </Card>
       )}
 
@@ -420,6 +450,13 @@ function ProductReceipts({ supplierId, row, from, to, onClose }: { supplierId: s
       ) : pager.total === 0 ? (
         <Empty>Накладных нет</Empty>
       ) : (
+        <>
+        <div className="mb-2 flex justify-end">
+          <ExportButton
+            file={`${row.name} накладные`}
+            sheets={() => [listSheet(`${row.name}: накладные поставщика`, productReceiptCols(row), list.data ?? [], { sheet: 'Накладные' })]}
+          />
+        </div>
         <Table head={['Дата', 'Номер', 'Количество', 'Цена', 'Сумма', '']}>
           {items.map((r) => (
             <tr key={`${r.receipt_id}-${r.qty}`} className={r.reversed ? 'text-slate-400' : ''}>
@@ -441,8 +478,55 @@ function ProductReceipts({ supplierId, row, from, to, onClose }: { supplierId: s
             </tr>
           ))}
         </Table>
+        </>
       )}
       <Pager page={pager.page} size={pager.size} total={pager.total} onPage={pager.setPage} onSize={pager.setSize} label="Страницы накладных товара" />
     </Modal>
   )
+}
+
+/** Поставки по товарам: количества числами в единице товара; себестоимость оценки — только владельцу. */
+function deliveryCols(owner: boolean): ExportCol<DeliveryRow>[] {
+  return [
+    { label: 'Товар', value: (r) => r.name },
+    { label: 'Ед.', value: (r) => unitName(r.unit) },
+    { label: 'Привёз', value: (r) => xl.units(r.delivered_qty, r.unit) },
+    { label: 'Вернули', value: (r) => (r.returned_qty ? xl.units(r.returned_qty, r.unit) : null) },
+    { label: 'Сумма поставок', value: (r) => xl.money(r.amount_tyiyn) },
+    { label: 'Последняя цена', value: (r) => xl.maybeMoney(r.last_price_tyiyn) },
+    { label: 'Цена за', value: (r) => perText(r).replace(/^ \/ /, '') },
+    { label: 'Последняя поставка', value: (r) => xl.dateTime(r.last_at) },
+    { label: 'На складе сейчас', value: (r) => xl.units(r.stock_qty, r.unit) },
+    { label: 'Из его поставок (оценка)', value: (r) => xl.units(r.estimate_qty, r.unit) },
+    ...colsIf<DeliveryRow>(owner, [{ label: 'Себестоимость оценки', value: (r) => xl.money(r.estimate_value_tyiyn ?? 0) }]),
+  ]
+}
+
+/** Накладные поставщика: оплата и сторно — отдельными столбцами. */
+const INVOICE_COLS: ExportCol<ReceiptListItem>[] = [
+  { label: 'Номер', value: (d) => xl.int(d.number) },
+  { label: 'Дата', value: (d) => xl.dateTime(d.created_at) },
+  { label: 'Документ', value: (d) => d.supplier_doc },
+  { label: 'Сумма', value: (d) => xl.money(d.total_tyiyn) },
+  { label: 'В долг', value: (d) => (invoiceStatus(d) ? xl.money(d.on_debt_tyiyn ?? 0) : null) },
+  { label: 'Оплачено', value: (d) => (invoiceStatus(d) ? xl.money((d.on_debt_tyiyn ?? 0) - (d.debt_left_tyiyn ?? 0)) : d.reversal_of || d.reversed ? null : 'сразу') },
+  { label: 'Осталось', value: (d) => (invoiceStatus(d) ? xl.money(d.debt_left_tyiyn ?? 0) : null) },
+  { label: 'Статус', value: (d) => ({ paid: 'оплачена', partial: 'частично', unpaid: 'не оплачена' } as Record<string, string>)[invoiceStatus(d) ?? ''] ?? '' },
+  { label: 'Принял', value: (d) => d.user_name },
+  { label: 'Отметка', value: (d) => (d.reversal_of ? 'сторно' : d.reversed ? 'отменён' : '') },
+]
+
+/** Накладные с одним товаром. */
+function productReceiptCols(row: DeliveryRow): ExportCol<DeliveryReceipt>[] {
+  return [
+    { label: 'Дата', value: (r) => xl.dateTime(r.created_at) },
+    { label: 'Номер', value: (r) => xl.int(r.number) },
+    { label: 'Документ', value: (r) => r.supplier_doc },
+    { label: 'Количество', value: (r) => xl.units(r.qty, row.unit) },
+    { label: 'Ед.', value: () => unitName(row.unit) },
+    { label: 'Цена', value: (r) => xl.maybeMoney(r.price_tyiyn) },
+    { label: 'Цена за', value: () => perText(row).replace(/^ \/ /, '') },
+    { label: 'Сумма', value: (r) => xl.money(r.cost_tyiyn) },
+    { label: 'Отметка', value: (r) => (r.reversed ? 'отменена' : '') },
+  ]
 }

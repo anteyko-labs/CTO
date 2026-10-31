@@ -5,6 +5,8 @@ import { Icon } from '../components/icons'
 import { Pager, usePageState, usePager } from '../components/Pager'
 import { CorrectionBadges, CorrectionBanner, FixButton, useCorrection } from '../components/Correction'
 import { get, getPage, newOpId, post, put } from '../lib/api'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, fetchAllPages, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { useUser } from '../lib/auth'
 import { rememberShiftCashier, useCan } from '../lib/permissions'
 import { ShiftOpenModal } from '../components/ShiftOpen'
@@ -424,6 +426,7 @@ export default function Shift() {
         {history && (
           <AccountMoves
             id={history}
+            name={accs.find((a) => a.id === history)?.name ?? ''}
             tick={movesTick}
             onReverse={(m) => {
               closeDialogs()
@@ -436,7 +439,11 @@ export default function Shift() {
 
       <Card>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-semibold">Прошлые смены</h2>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="font-semibold">Прошлые смены</h2>
+            {/* Все смены списка, а не страница (задача 003 Н13). */}
+            <ExportButton file="Смены" disabled={(past.data ?? []).length === 0} sheets={() => [listSheet('Смены', SHIFT_COLS, past.data ?? [])]} />
+          </div>
           {owner && settings.data && (
             <div className="flex flex-col gap-1">
               <div data-testid="print-on-close">
@@ -712,7 +719,7 @@ export default function Shift() {
 }
 
 /** Движения выбранной кассы, новые сверху; страницу режет сервер. `tick` — перечитать после операции. */
-function AccountMoves({ id, tick, onReverse, onFix }: { id: string; tick: number; onReverse: (m: CashMovement) => void; onFix: (m: CashMovement) => void }) {
+function AccountMoves({ id, name, tick, onReverse, onFix }: { id: string; name: string; tick: number; onReverse: (m: CashMovement) => void; onFix: (m: CashMovement) => void }) {
   const pager = usePageState('shift.movements', id)
   const moves = useLoad(() => getPage<CashMovement>(`/cash/accounts/${id}`, { limit: pager.size, offset: pager.page * pager.size }), [id, pager.page, pager.size, tick])
   // Отметки исправлений: внесения и изъятия — по id движения, переводы — по id перевода.
@@ -729,6 +736,16 @@ function AccountMoves({ id, tick, onReverse, onFix }: { id: string; tick: number
         <Empty>Движений ещё не было</Empty>
       ) : (
         <>
+          <div className="mb-2 flex justify-end">
+            {/* Все движения кассы, а не страница (задача 003 Н13). */}
+            <ExportButton
+              file={`Движения ${name}`}
+              sheets={async () => {
+                const all = await fetchAllPages<CashMovement>(`/cash/accounts/${id}`)
+                return [listSheet(`Движения кассы «${name}»`, MOVE_COLS, all.items, { sheet: 'Движения', warning: cappedWarning(all) })]
+              }}
+            />
+          </div>
           <Table head={['Когда', 'Что', 'Сумма', 'Комментарий', 'Кто', '']}>
             {rows.map((m) => (
               <tr key={m.id}>
@@ -785,3 +802,25 @@ function AdminPayFixMax({ value, onSave }: { value: number | null; onSave: (v: n
     </div>
   )
 }
+
+/** Столбцы выгрузки прошлых смен: как в таблице, без кнопок. */
+const SHIFT_COLS: ExportCol<ShiftRow>[] = [
+  { label: '№', value: (s) => xl.int(s.number) },
+  { label: 'День', value: (s) => xl.date(s.business_date) },
+  { label: 'Кассир', value: (s) => s.cashier_name },
+  { label: 'Касса', value: (s) => s.account_name },
+  { label: 'Ожидали', value: (s) => (s.counted_tyiyn === null ? null : xl.money(s.expected_tyiyn)) },
+  { label: 'Факт', value: (s) => xl.maybeMoney(s.counted_tyiyn) },
+  { label: 'Расхождение', value: (s) => (s.diff_tyiyn === null ? null : xl.money(s.diff_tyiyn + (s.diff_fix_tyiyn ?? 0))) },
+  { label: 'Сдано', value: (s) => xl.maybeMoney(s.to_safe_tyiyn) },
+  { label: 'Состояние', value: (s) => [s.counted_tyiyn === null && 'открыта', s.handover_pending && 'не сдана', s.has_after_close && 'изменения после закрытия'].filter(Boolean).join(', ') },
+]
+
+/** Столбцы выгрузки движений кассы. */
+const MOVE_COLS: ExportCol<CashMovement>[] = [
+  { label: 'Когда', value: (m) => xl.dateTime(m.created_at) },
+  { label: 'Что', value: (m) => KIND_LABELS[m.kind] ?? m.kind },
+  { label: 'Сумма', value: (m) => xl.money(m.amount_tyiyn) },
+  { label: 'Комментарий', value: (m) => m.comment },
+  { label: 'Кто', value: (m) => m.user_name },
+]

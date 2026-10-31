@@ -19,6 +19,8 @@ import type { CashAccount, Product, SupplierReturn } from '../lib/types'
 import { CorrectionBadges, FixButton } from './Correction'
 import { FIX_SUBMIT, FixBanner, FixDraft, type FixMode } from './FixDraft'
 import { Pager, usePagedLoad } from './Pager'
+import { ExportButton } from './ExportButton'
+import { cappedWarning, colsIf, fetchAllPages, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { ProductPicker } from './ProductPicker'
 import { Badge, Button, Empty, ErrorBox, Field, Loading, Missing, Modal, Table, toast } from './ui'
 
@@ -258,6 +260,17 @@ export function SupplierReturnList({ supplierId, from, to, onChanged }: { suppli
   const rows = list.items
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        {/* Все возвраты отбора; «Разница» — только владельцу, как в таблице (задача 003 Н13, I13). */}
+        <ExportButton
+          file="Возвраты поставщику"
+          disabled={list.total === 0}
+          sheets={async () => {
+            const all = await fetchAllPages<SupplierReturn>(`/supplier-returns${qs({ supplier_id: supplierId, from, to })}`)
+            return [listSheet('Возвраты поставщику', supplierReturnCols(owner, !supplierId), all.items, { sheet: 'Возвраты', warning: cappedWarning(all) })]
+          }}
+        />
+      </div>
       <ErrorBox error={list.error ?? act.error} />
       {list.loading && !list.data ? (
         <Loading />
@@ -347,4 +360,20 @@ export function SupplierReturnList({ supplierId, from, to, onChanged }: { suppli
       )}
     </div>
   )
+}
+
+/** Возвраты поставщику: как в таблице; «Разница» — только владельцу; сторно — отдельным столбцом. */
+function supplierReturnCols(owner: boolean, withSupplier: boolean): ExportCol<SupplierReturn>[] {
+  return [
+    { label: '№', value: (r) => xl.int(r.number) },
+    { label: 'Дата', value: (r) => xl.dateTime(r.created_at) },
+    ...colsIf<SupplierReturn>(withSupplier, [{ label: 'Поставщик', value: (r) => r.supplier_name }]),
+    { label: 'Товары', value: (r) => r.lines.map((l) => `${l.product_name} × ${qtyText(Math.abs(l.qty), l.unit)}`).join(', ') },
+    { label: 'Сумма', value: (r) => xl.money(r.amount_tyiyn) },
+    { label: 'Итог', value: (r) => (r.settle === 'debt' ? 'в счёт долга' : `деньгами на «${r.account_name ?? ''}»`) },
+    ...colsIf<SupplierReturn>(owner, [{ label: 'Разница', value: (r) => xl.maybeMoney(r.diff_tyiyn) }]),
+    { label: 'Комментарий', value: (r) => r.comment },
+    { label: 'Кто', value: (r) => r.user_name },
+    { label: 'Отметка', value: (r) => (r.reversal_of ? 'сторно' : r.reversed_by ? 'отменён' : '') },
+  ]
 }

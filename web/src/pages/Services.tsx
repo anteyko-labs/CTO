@@ -3,6 +3,8 @@
 // загружает услуги из выгрузки товаров старой программы (Excel) — отмеченные строки разом.
 import { useState, type FormEvent } from 'react'
 import { DirHint } from '../components/DirHint'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, Money, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, newOpId, patch, post } from '../lib/api'
@@ -422,9 +424,16 @@ export default function Services() {
       <Card className="[&_th:nth-child(2)]:text-right [&_th:nth-child(4)]:text-right">
         <CardTitle
           actions={
-            (list.data?.length ?? 0) > 5 && (
-              <input aria-label="Поиск услуги" className="w-full sm:w-64" placeholder="Поиск" value={q} onChange={(e) => setQ(e.target.value)} />
-            )
+            <div className="flex flex-wrap items-center gap-2">
+              {(list.data?.length ?? 0) > 5 && (
+                <input aria-label="Поиск услуги" className="w-full sm:w-64" placeholder="Поиск" value={q} onChange={(e) => setQ(e.target.value)} />
+              )}
+              <ExportButton
+                file="Услуги"
+                disabled={rows.length === 0}
+                sheets={() => [listSheet('Услуги в кассе', serviceCols((id) => catName(id) ?? ''), rows, { sheet: 'Услуги', filter: [q.trim() && `поиск «${q.trim()}»`] })]}
+              />
+            </div>
           }
         >
           Услуги в кассе
@@ -592,4 +601,18 @@ export default function Services() {
       )}
     </div>
   )
+}
+
+/** Услуги: цены числами; «с нашим маслом» и книжка — словами, как в таблице. */
+function serviceCols(category: (id: string) => string): ExportCol<Service>[] {
+  return [
+    { label: 'Название', value: (s) => s.name },
+    { label: 'Цена клиенту', value: (s) => xl.money(s.price_tyiyn) },
+    { label: 'С нашим маслом', value: (s) => (!s.free_with_oil ? 'цена клиенту' : s.oil_category_id ? `бесплатно: ${category(s.oil_category_id)}` : 'выберите категорию масла') },
+    { label: 'Мастеру', value: (s) => xl.money(s.master_fee_tyiyn) },
+    { label: 'Книжка', value: (s) => (!s.book_slot || s.book_slot === 'other' ? 'без напоминания' : BOOK_SLOT_LABELS[s.book_slot]) },
+    { label: 'Интервал, км', value: (s) => (s.interval_km != null && s.book_slot && s.book_slot !== 'other' ? xl.int(s.interval_km) : null) },
+    { label: 'На вынос', value: (s) => (s.takeaway ? 'да' : '') },
+    { label: 'Статус', value: (s) => (s.active ? 'активна' : 'отключена') },
+  ]
 }

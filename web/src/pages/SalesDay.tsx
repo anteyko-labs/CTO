@@ -3,11 +3,13 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { NoReceiptReturn } from '../components/NoReceiptReturn'
 import { Pager, usePager } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, tableSheet, totalBy, xl, type ExportCol } from '../lib/exportTable'
 import { CorrectionBadges } from '../components/Correction'
 import { Badge, Button, Card, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { correctionMarks, loadCorrections, type CorrectionMark } from '../lib/corrections'
 import { get, qs } from '../lib/api'
-import { formatSom, formatTime, shiftDate, todayBishkek } from '../lib/format'
+import { formatDate, formatSom, formatTime, shiftDate, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useUser } from '../lib/auth'
 import { useCan } from '../lib/permissions'
@@ -108,6 +110,25 @@ export default function SalesDay() {
                 Сегодня
               </Button>
             )}
+            {/* Все чеки дня, а не страница; способы оплаты — вторым листом (задача 003 Н13). */}
+            <ExportButton
+              file="Чеки"
+              period={formatDate(date)}
+              className="ml-2"
+              disabled={!data || data.sales.length === 0}
+              sheets={() =>
+                data
+                  ? [
+                      listSheet('Чеки за день', SALE_COLS, data.sales, {
+                        sheet: 'Чеки',
+                        filter: [`день ${formatDate(date)}`],
+                        total: totalBy(SALE_COLS, { '№': 'Итого', Сумма: xl.money(data.totals.total_tyiyn) }),
+                      }),
+                      tableSheet('Способы оплаты', [{ label: 'Способ', value: (r: [string, number]) => r[0] }, { label: 'Сумма', value: (r) => xl.money(r[1]) }], payments),
+                    ]
+                  : []
+              }
+            />
             {owner && (
               <Button variant="danger-outline" className="ml-2" onClick={() => setNoReceipt(true)}>
                 Возврат без чека
@@ -214,3 +235,16 @@ export default function SalesDay() {
     </div>
   )
 }
+
+/** Столбцы выгрузки чеков дня: как в таблице; возврат и долг — отдельными столбцами. */
+const SALE_COLS: ExportCol<SaleListItem>[] = [
+  { label: '№', value: (s) => xl.int(s.number) },
+  { label: 'Время', value: (s) => formatTime(s.created_at) },
+  { label: 'Тип', value: (s) => (s.kind === 'return' ? (s.no_receipt ? 'возврат без чека' : 'возврат') : s.sale_type === 'service' ? 'В сервис' : 'На вынос') },
+  { label: 'Клиент', value: (s) => s.party_name ?? '' },
+  { label: 'Телефон', value: (s) => s.party_phone ?? '' },
+  { label: 'Кассир', value: (s) => s.cashier_name },
+  { label: 'Мастер', value: (s) => s.master_name ?? '' },
+  { label: 'Сумма', value: (s) => xl.money(s.total_tyiyn) },
+  { label: 'В долг', value: (s) => (s.debt_tyiyn !== 0 ? xl.money(s.debt_tyiyn) : null) },
+]

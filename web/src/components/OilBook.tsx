@@ -6,10 +6,12 @@ import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNot
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { lineNextText, lineTitle, nextText, overdueSlots, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, lineTitle, nextText, overdueSlots, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type OilRecord, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
+import { ExportButton } from './ExportButton'
+import { exportTitle, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, toast } from './ui'
 import { VehicleFormModal } from './VehicleFormModal'
 
@@ -392,7 +394,20 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
  * В карточке клиента (`partyId`) можно показать и машины, которые клиент убрал в боте,
  * с их историей, и вернуть их (ADR-062).
  */
-export function OilBookList({ path, editable, partyId, onAdd }: { path: string; editable: boolean; partyId?: string; onAdd?: () => void }) {
+export function OilBookList({
+  path,
+  editable,
+  partyId,
+  onAdd,
+  name = 'Масляная книжка',
+}: {
+  path: string
+  editable: boolean
+  partyId?: string
+  onAdd?: () => void
+  /** Название файла выгрузки: «Масляная книжка <клиент>». */
+  name?: string
+}) {
   const [showRemoved, setShowRemoved] = useState(false)
   const url = partyId && showRemoved ? `${path}?removed=true` : path
   const books = useLoad(() => get<VehicleBook[]>(url), [url])
@@ -431,6 +446,10 @@ export function OilBookList({ path, editable, partyId, onAdd }: { path: string; 
     )
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        {/* Машины и все записи книжки — двумя листами (задача 003 Н13). */}
+        <ExportButton file={name} sheets={() => oilBookSheets(name, list)} />
+      </div>
       {pager.shown.map((b) => (
         <VehicleCard key={b.vehicle_id} b={b} editable={editable} partyId={partyId} onChanged={books.reload} />
       ))}
@@ -438,4 +457,37 @@ export function OilBookList({ path, editable, partyId, onAdd }: { path: string; 
       {toggle}
     </div>
   )
+}
+
+const VEHICLE_COLS: ExportCol<VehicleBook>[] = [
+  { label: 'Госномер', value: (b) => b.plate },
+  { label: 'Марка', value: (b) => b.brand },
+  { label: 'Модель', value: (b) => b.model },
+  { label: 'Следующая замена масла', value: (b) => nextText(b) },
+  { label: 'Следующая, км', value: (b) => (b.next_km !== null ? xl.int(b.next_km) : null) },
+  { label: 'Следующая, дата', value: (b) => xl.date(b.next_date) },
+  { label: 'Интервал, км', value: (b) => xl.int(b.interval_km) },
+  { label: 'Интервал, дней', value: (b) => xl.int(b.interval_days) },
+  { label: 'Пометка', value: (b) => b.comment ?? '' },
+  { label: 'Состояние', value: (b) => (b.active === false ? 'убрана клиентом' : '') },
+]
+
+type RecordRow = { b: VehicleBook; r: OilRecord }
+
+const RECORD_COLS: ExportCol<RecordRow>[] = [
+  { label: 'Госномер', value: ({ b }) => b.plate },
+  { label: 'Дата', value: ({ r }) => xl.date(r.change_date) },
+  { label: 'Пробег', value: ({ r }) => recordMileage(r) ?? '' },
+  { label: 'Пробег, км', value: ({ r }) => (r.mileage_km !== null ? xl.int(r.mileage_km) : null) },
+  { label: 'Что меняли', value: ({ r }) => recordLines(r).map((l) => [`${slotLabel(l.slot)}: ${l.text}`, lineNextText(l)].filter(Boolean).join(', ')).join('; ') },
+  { label: 'Чек', value: ({ r }) => (r.sale_number !== null ? xl.int(r.sale_number) : null) },
+  { label: 'Сумма чека', value: ({ r }) => xl.maybeMoney(r.sale_total_tyiyn) },
+  { label: 'Комментарий', value: ({ r }) => r.comment },
+  { label: 'Отказался', value: ({ r }) => r.declined ?? '' },
+]
+
+/** Книжка в Excel: машины со следующей заменой и все записи замен. */
+function oilBookSheets(name: string, list: VehicleBook[]) {
+  const records = list.flatMap((b) => b.records.map((r) => ({ b, r })))
+  return [listSheet(name, VEHICLE_COLS, list, { sheet: 'Машины' }), { ...listSheet(name, RECORD_COLS, records, { sheet: 'Замены' }), title: exportTitle(`${name}: замены`) }]
 }

@@ -3,6 +3,8 @@
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { StockBackLink } from '../components/StockBackLink'
+import { ExportButton } from '../components/ExportButton'
+import { listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { CrossPickCategory } from '../components/CrossPickCategory'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { PointsRuleField } from '../components/PointsRuleField'
@@ -284,12 +286,15 @@ export default function Categories() {
         title="Категории"
         back={<StockBackLink />}
         actions={
-          mayEdit && (
-            <Button onClick={openAdd}>
-              <Icon name="plus" className="h-4 w-4" />
-              Добавить
-            </Button>
-          )
+          <>
+            <ExportButton file="Категории" disabled={!list.data?.length} sheets={() => [listSheet('Категории', CATEGORY_COLS, list.data ?? [])]} />
+            {mayEdit && (
+              <Button onClick={openAdd}>
+                <Icon name="plus" className="h-4 w-4" />
+                Добавить
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -427,3 +432,15 @@ export default function Categories() {
     </div>
   )
 }
+
+/** Категории: строка книжки и интервал — как в таблице; характеристики — списком. */
+const CATEGORY_COLS: ExportCol<Category>[] = [
+  { label: 'Название', value: (c) => c.name },
+  { label: 'Вид', value: (c) => KIND_LABELS[c.kind] },
+  { label: 'Строка книжки', value: (c) => [categorySlotText(c).main, categorySlotText(c).note].filter(Boolean).join(', ') },
+  { label: 'Интервал, км', value: (c) => (c.book_interval_km !== null ? xl.int(c.book_interval_km) : null) },
+  { label: 'Интервал, дней', value: (c) => (c.book_interval_days !== null ? xl.int(c.book_interval_days) : null) },
+  { label: 'Характеристик', value: (c) => xl.int(c.attributes.length) },
+  { label: 'Характеристики', value: (c) => c.attributes.map((a) => a.label).join(', ') },
+  { label: 'Статус', value: (c) => (c.archived ? 'скрыта' : '') },
+]

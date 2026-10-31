@@ -6,6 +6,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pager, usePagedLoad } from '../components/Pager'
+import { ExportButton } from '../components/ExportButton'
+import { cappedWarning, fetchAllPages, listSheet, xl, type ExportCol } from '../lib/exportTable'
 import { Badge, Button, Card, CardTitle, Checkbox, Empty, ErrorBox, Field, Loading, Notice, PageHeader, Table, toast } from '../components/ui'
 import { get, post, put, qs } from '../lib/api'
 import {
@@ -426,7 +428,24 @@ function Journal() {
   const list = usePagedLoad<ClientMessage>('/client-messages', 'client-messages')
   return (
     <Card>
-      <CardTitle actions={<Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={list.reload}>Обновить</Button>}>
+      <CardTitle
+        actions={
+          <div className="flex flex-wrap gap-2">
+            {/* Весь журнал, а не страница (задача 003 Н13). */}
+            <ExportButton
+              file="Журнал сообщений"
+              disabled={list.total === 0}
+              sheets={async () => {
+                const all = await fetchAllPages<ClientMessage>('/client-messages')
+                return [listSheet('Журнал сообщений', MESSAGE_COLS, all.items, { sheet: 'Сообщения', warning: cappedWarning(all) })]
+              }}
+            />
+            <Button variant="secondary" className="min-h-[34px] px-3 py-1 text-xs" onClick={list.reload}>
+              Обновить
+            </Button>
+          </div>
+        }
+      >
         Журнал сообщений
       </CardTitle>
       <ErrorBox error={list.error} />
@@ -472,3 +491,19 @@ function Journal() {
     </Card>
   )
 }
+
+/** Журнал сообщений: телефон получателя — текстом, пробное — отдельным столбцом. */
+const MESSAGE_COLS: ExportCol<ClientMessage>[] = [
+  { label: 'Когда', value: (m) => xl.dateTime(m.created_at) },
+  { label: 'Кому', value: (m) => m.party_name ?? '' },
+  { label: 'Получатель', value: (m) => recipientText(m) },
+  { label: 'Вид', value: (m) => KIND_LABELS[m.kind] },
+  { label: 'Чек', value: (m) => (m.sale_number !== null ? xl.int(m.sale_number) : null) },
+  { label: 'Канал', value: (m) => CHANNEL_LABELS[m.channel] },
+  { label: 'Шаблон', value: (m) => m.template ?? '' },
+  { label: 'Текст', value: (m) => m.text },
+  { label: 'Итог', value: (m) => STATUS_LABELS[m.status] },
+  { label: 'Отправлено', value: (m) => xl.dateTime(m.sent_at) },
+  { label: 'Ошибка', value: (m) => m.error ?? '' },
+  { label: 'Пробное', value: (m) => (m.test ? 'да' : '') },
+]

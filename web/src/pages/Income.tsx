@@ -5,6 +5,9 @@ import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
+import { ExportButton } from '../components/ExportButton'
+import { exportTitle, periodText, unitName, xl } from '../lib/exportTable'
+import type { Sheet, SheetRow } from '../lib/xlsxWrite'
 import { stockText } from '../components/ProductPicker'
 import { Card, CardTitle, Empty, ErrorBox, Loading, Money, Notice, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
@@ -41,7 +44,19 @@ export default function Income() {
 
   return (
     <div>
-      <PageHeader title="Куда сколько поступило" subtitle={subtitle} />
+      <PageHeader
+        title="Куда сколько поступило"
+        subtitle={subtitle}
+        actions={
+          // Все таблицы экрана листами одного файла; накладные с закупкой — только если их отдал сервер (I13).
+          <ExportButton
+            file="Куда сколько поступило"
+            period={periodText(range.from, range.to)}
+            disabled={!data}
+            sheets={() => (data ? incomeSheets(data, [`период ${periodText(range.from, range.to)}`, all && 'все филиалы']) : [])}
+          />
+        }
+      />
       <PeriodPicker value={range} today={today} onChange={setRange} />
       <BranchScope user={user} all={all} onChange={setAll} />
       <ErrorBox error={r.error} />
@@ -289,4 +304,76 @@ export default function Income() {
       ) : null}
     </div>
   )
+}
+
+/** «Куда сколько поступило» в Excel: способы оплаты, кассы с видами движений, категории, все товары и — владельцу — накладные. */
+function incomeSheets(d: IncomeReport, filter: (string | false)[]): Sheet[] {
+  const title = (part: string) => exportTitle(`Куда сколько поступило — ${part}`, filter)
+  const money = xl.money
+  const accounts: SheetRow[] = d.accounts.flatMap((a) => [
+    { cells: [a.name, money(a.opening_tyiyn), money(a.in_tyiyn), money(a.out_tyiyn), money(a.closing_tyiyn)], bold: true },
+    ...a.kinds.map((k) => ({ cells: [MOVEMENT_LABELS[k.kind] ?? k.kind, null, money(k.in_tyiyn), money(k.out_tyiyn)], level: 1 })),
+  ])
+  const sheets: Sheet[] = [
+    {
+      name: 'Способы оплаты',
+      columns: ['Способ', 'Продажи', 'Возвраты', 'Итого', 'Комиссия банка'].map((label) => ({ label })),
+      title: title('оплаты чеков по способам'),
+      rows: [
+        ...d.methods
+          .filter((m) => m.sales_tyiyn !== 0 || m.returns_tyiyn !== 0)
+          .map((m) => [METHOD_LABELS[m.method] ?? m.method, money(m.sales_tyiyn), money(m.returns_tyiyn), money(m.net_tyiyn), money(m.fee_tyiyn)]),
+        { cells: ['Выручка', money(d.sales_tyiyn), money(d.returns_tyiyn), money(d.revenue_tyiyn), money(d.fee_tyiyn)], bold: true },
+        ['в т. ч. товары', null, null, money(d.goods_tyiyn)],
+        ['в т. ч. работы', null, null, money(d.services_tyiyn)],
+      ],
+    },
+    { name: 'Кассы', columns: ['Касса', 'На начало', 'Пришло', 'Ушло', 'На конец'].map((label) => ({ label })), title: title('деньги по кассам'), rows: accounts, filter: false },
+    {
+      name: 'Категории',
+      columns: [{ label: 'Категория' }, { label: 'Выручка' }],
+      title: title('выручка по категориям'),
+      rows: [...d.categories.map((c) => [c.name, money(c.revenue_tyiyn)]), ...(d.services_tyiyn !== 0 ? [['Работы (услуги)', money(d.services_tyiyn)]] : [])],
+    },
+    {
+      name: 'Товары',
+      columns: ['Товар', 'Продано', 'Ед.', 'Выручка'].map((label) => ({ label })),
+      title: title('выручка по товарам'),
+      rows: d.products.map((p) => [p.name, xl.units(p.qty, p.unit), unitName(p.unit), money(p.amount_tyiyn)]),
+    },
+  ]
+  // Накладные с закупкой и заработком сервер отдаёт только владельцу (ADR-008, I13).
+  if (d.receipts) {
+    sheets.push({
+      name: 'Накладные',
+      columns: ['Накладная', 'Дата', 'Поставщик', 'Товар', 'Привезли', 'Продано', 'Осталось', 'Ед.', 'Закупка', 'Продано (по закупке)', 'Осталось (по закупке)', 'Выручка', 'Заработано'].map((label) => ({ label })),
+      title: title('по накладным: продано, осталось, заработано (оценка)'),
+      filter: false,
+      rows: d.receipts.flatMap((x) => [
+        {
+          cells: [`№ ${x.number}`, xl.dateTime(x.created_at), x.supplier_name ?? '', null, null, null, null, null, money(x.cost_tyiyn), money(x.sold_cost_tyiyn), money(x.left_cost_tyiyn), money(x.revenue_tyiyn), money(x.earned_tyiyn)],
+          bold: true,
+        },
+        ...x.items.map((i) => ({
+          cells: [
+            `№ ${x.number}`,
+            null,
+            null,
+            i.name,
+            xl.units(i.qty, i.unit),
+            xl.units(i.sold_qty, i.unit),
+            xl.units(i.left_qty, i.unit),
+            unitName(i.unit),
+            money(i.cost_tyiyn),
+            money(i.sold_cost_tyiyn),
+            money(i.left_cost_tyiyn),
+            money(i.revenue_tyiyn),
+            money(i.earned_tyiyn),
+          ],
+          level: 1,
+        })),
+      ]),
+    })
+  }
+  return sheets
 }

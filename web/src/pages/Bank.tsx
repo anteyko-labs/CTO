@@ -4,12 +4,14 @@ import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { PeriodPicker } from '../components/PeriodPicker'
+import { ExportButton } from '../components/ExportButton'
+import { exportTitle, listSheet, periodText, xl, type ExportCol } from '../lib/exportTable'
 import { Card, CardTitle, Empty, ErrorBox, Loading, Money, PageHeader, Table } from '../components/ui'
 import { get, qs } from '../lib/api'
 import { formatDate, formatDateTime, formatSom } from '../lib/format'
 import { useLoad, useRangeParam } from '../lib/hooks'
 import { MOVEMENT_LABELS } from '../lib/income'
-import type { BankReport, CashAccount } from '../lib/types'
+import type { BankReport, CashAccount, CashMovement } from '../lib/types'
 import { BranchBreakdown, BranchScope } from '../components/BranchScope'
 import { useUser } from '../lib/auth'
 import { branchParam, useAllBranches, type AllBranches } from '../lib/branchReport'
@@ -51,10 +53,19 @@ export default function Bank() {
         title={data?.name ?? 'Счёт'}
         subtitle={`Безнал ${subtitle}: карта / QR банка, QR владельцу, комиссия банка и списания`}
         actions={
-          // Сверка с выпиской Optima Business (SPEC-31): по дням и поправка комиссии.
+          <>
+          {/* Итоги, по видам, по дням и движения — листами одного файла (задача 003 Н13). */}
+          <ExportButton
+            file={data?.name ?? 'Счёт'}
+            period={periodText(range.from, range.to)}
+            disabled={!data}
+            sheets={() => (data ? bankSheets(data, [`период ${periodText(range.from, range.to)}`, all && 'все филиалы']) : [])}
+          />
+          {/* Сверка с выпиской Optima Business (SPEC-31): по дням и поправка комиссии. */}
           <Link to={`/bank/reconcile${qs({ from: range.from, to: range.to })}`} className="inline-flex min-h-[42px] items-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" data-testid="bank-recon-link">
             Сверка с банком
           </Link>
+          </>
         }
       />
       <BranchScope user={user} all={all} onChange={setAll} />
@@ -200,4 +211,63 @@ export default function Bank() {
       ) : null}
     </div>
   )
+}
+
+type BankDay = BankReport['days'][number]
+
+const DAY_COLS: ExportCol<BankDay>[] = [
+  { label: 'День', value: (d) => xl.date(d.date) },
+  { label: 'Картой', value: (d) => xl.money(d.card_tyiyn) },
+  { label: 'Переводом', value: (d) => xl.money(d.transfer_tyiyn) },
+  { label: 'По счёту', value: (d) => xl.money(d.invoice_tyiyn ?? 0) },
+  { label: 'Наличные ↔ QR', value: (d) => xl.money(d.cash_to_bank_tyiyn ?? 0) },
+  { label: 'Комиссия', value: (d) => xl.money(d.fee_tyiyn) },
+  { label: 'Прочее', value: (d) => xl.money(d.other_tyiyn) },
+  { label: 'Итог дня', value: (d) => xl.money(d.net_tyiyn) },
+]
+
+const MOVE_COLS: ExportCol<CashMovement>[] = [
+  { label: 'Когда', value: (m) => xl.dateTime(m.created_at) },
+  { label: 'Что', value: (m) => MOVEMENT_LABELS[m.kind] ?? m.kind },
+  { label: 'Комментарий', value: (m) => m.comment },
+  { label: 'Кто', value: (m) => m.user_name },
+  { label: 'Сумма', value: (m) => xl.money(m.amount_tyiyn) },
+]
+
+/** Экран «Счёт» в Excel: итоги, по видам движений, по дням и движения периода. */
+function bankSheets(d: BankReport, filter: (string | false)[]) {
+  const name = `Безнал: ${d.name}`
+  const money = (label: string, v: number) => [label, xl.money(v)]
+  return [
+    {
+      name: 'Итоги',
+      columns: [{ label: 'Показатель' }, { label: 'Сумма' }],
+      title: exportTitle(name, filter),
+      filter: false,
+      rows: [
+        money('На начало', d.opening_tyiyn),
+        money('Карта / QR банка', d.card.total_tyiyn),
+        money('QR владельцу', d.transfer.total_tyiyn),
+        money('По счёту', d.invoice?.total_tyiyn ?? 0),
+        money('Наличные ↔ QR', d.cash_to_bank_tyiyn ?? 0),
+        money('Комиссия банка', d.fee_tyiyn),
+        money('Прочие поступления', d.other_in_tyiyn),
+        money('Списания', d.outgoing_tyiyn),
+        money('На конец', d.closing_tyiyn),
+        money('Остаток сейчас', d.balance_tyiyn),
+      ],
+    },
+    {
+      name: 'По видам',
+      columns: [{ label: 'Вид' }, { label: 'Пришло' }, { label: 'Ушло' }],
+      title: exportTitle(name, filter),
+      rows: d.kinds.map((k) => [MOVEMENT_LABELS[k.kind] ?? k.kind, xl.money(k.in_tyiyn), xl.money(k.out_tyiyn)]),
+    },
+    listSheet(name, DAY_COLS, d.days, { sheet: 'По дням', filter }),
+    listSheet(name, MOVE_COLS, d.movements, {
+      sheet: 'Движения',
+      filter,
+      warning: d.movements_count > d.movements.length ? `Выгружены последние ${d.movements.length} движений из ${d.movements_count} — сузьте период` : undefined,
+    }),
+  ]
 }
