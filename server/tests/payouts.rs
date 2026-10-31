@@ -390,10 +390,13 @@ async fn advance_is_taken_from_salary_not_percent(pool: PgPool) {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{out}");
-    let month = chrono::Utc::now()
-        .date_naive()
-        .format("%Y-%m-01")
-        .to_string();
+    // Месяц — по Бишкеку, как учётный день сервера: с 00:00 до 06:00 UTC-дата ещё вчерашняя.
+    let today: chrono::NaiveDate =
+        sqlx::query_scalar("select (now() at time zone 'Asia/Bishkek')::date")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let month = today.format("%Y-%m-01").to_string();
     ok(
         &w.app,
         &w.owner,
