@@ -225,6 +225,12 @@ struct Period {
     to: Option<NaiveDate>,
 }
 
+/// `detail=1` — раскрытие строк «Прибыли и убытков» до документов (задача 003 Н12).
+#[derive(Deserialize, Default)]
+struct DetailQuery {
+    detail: Option<String>,
+}
+
 pub(crate) async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
     Ok(
         sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
@@ -721,12 +727,23 @@ async fn profit(
     user: CurrentUser,
     Query(q): Query<Period>,
     Query(scope): Query<BranchQuery>,
+    Query(d): Query<DetailQuery>,
 ) -> AppResult<Json<Value>> {
     let mut conn = state.pool.acquire().await?;
     let (from, to) = (q.from, q.to);
+    let detail = matches!(d.detail.as_deref(), Some("1" | "true"));
     Ok(Json(
         branches::report(&mut conn, &user, &scope, |c, u| {
-            Box::pin(async move { branches::to_json(&profit_data(c, &u, from, to).await?) })
+            Box::pin(async move {
+                let out = profit_data(&mut *c, &u, from, to).await?;
+                let mut v = branches::to_json(&out)?;
+                // Без `detail` ответ прежний: бот, сводка и смена его не ждут.
+                if detail && let Some(obj) = v.as_object_mut() {
+                    let more = crate::api::pnl::detail(&mut *c, &u, out.from, out.to).await?;
+                    obj.insert("detail".into(), branches::to_json(&more)?);
+                }
+                Ok(v)
+            })
         })
         .await?,
     ))

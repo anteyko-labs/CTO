@@ -40,6 +40,7 @@ pub mod paging;
 pub mod parties;
 pub mod pay_fix;
 pub mod payroll;
+pub mod pnl;
 pub mod receipt_drafts;
 pub mod receipt_files;
 pub mod receipts;
@@ -91,6 +92,7 @@ pub fn routes() -> Router<AppState> {
         .merge(optima::routes())
         .merge(parties::routes())
         .merge(pay_fix::routes())
+        .merge(pnl::routes())
         .merge(payroll::routes())
         .merge(refs::routes())
         .merge(receipts::routes())

@@ -843,6 +843,44 @@ async fn owner_reports_all_branches_as_the_sum_of_branches(pool: PgPool) {
             .await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{uri}");
     }
+    // «Прибыль и убытки» с раскрытием (задача 003 Н12): строки-документы обоих филиалов идут
+    // подряд, не складываются; сумма раскрытия — итог «Все филиалы».
+    let uri = "/api/v1/reports/profit?detail=1";
+    let a = api.get(uri, &w.owner, Some(w.a)).await;
+    let b = api.get(uri, &w.owner, Some(w.b)).await;
+    let all = api
+        .get(&format!("{uri}&branch=all"), &w.owner, Some(w.b))
+        .await;
+    for list in ["expenses", "payouts"] {
+        let rows = |v: &Value| v["detail"][list].as_array().unwrap().clone();
+        assert!(!rows(&a).is_empty(), "{list}: {a}");
+        assert_eq!(rows(&all).len(), rows(&a).len() + rows(&b).len(), "{list}");
+        let total: i64 = rows(&all)
+            .iter()
+            .map(|r| r["amount_tyiyn"].as_i64().unwrap())
+            .sum();
+        let own: i64 = rows(&a)
+            .iter()
+            .chain(rows(&b).iter())
+            .map(|r| r["amount_tyiyn"].as_i64().unwrap())
+            .sum();
+        assert_eq!(total, own, "{list}");
+        let branches: HashSet<String> = rows(&all)
+            .iter()
+            .map(|r| r["branch"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(branches.len(), 2, "{list}: {branches:?}");
+    }
+    let expenses: i64 = all["detail"]["expenses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["amount_tyiyn"].as_i64().unwrap())
+        .sum();
+    assert_eq!(expenses, num(&all, &["totals", "expenses_tyiyn"]));
+    // Администратору раскрытия нет и в своём филиале (инвариант 13).
+    let (s, _) = api.call("GET", uri, &w.admin_b, None, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
     // Остаток товара во всех филиалах — сумма остатков филиалов.
     let stock = |v: &Value| {
         v["items"]

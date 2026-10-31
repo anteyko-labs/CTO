@@ -15,6 +15,7 @@ const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnl
   { to: '/settings/client-messages', title: 'Сообщения клиентам', text: 'Напоминания о замене и сообщения юрлицам о закупе: Телеграм и WhatsApp, журнал', icon: 'bell', ownerOnly: true },
   { to: '/settings/optima', title: 'Optima Business', text: 'QR на сумму чека и сверка с выпиской банка: компания, счёт, точка и касса', icon: 'bank', ownerOnly: true },
   { to: '/accounts', title: 'Комиссия банка', text: 'Ставка у каждого банковского счёта и история ставок — в «Обзоре счетов»', icon: 'profit', ownerOnly: true },
+  { to: '/settings/profit-report', title: 'Отчёт о прибыли', text: 'Период «Прибыли и убытков» по умолчанию, поле «Кому» в расходе, показ сторно', icon: 'profit', ownerOnly: true },
   { to: '/settings/expense-articles', title: 'Статьи расходов', text: 'Добавить, переименовать, скрыть; личные — только владельцу', icon: 'expenses', ownerOnly: true },
   { to: '/settings/branches', title: 'Филиалы', text: 'Филиалы на общем сервере, новый филиал, закрытие; расчёты между филиалами', icon: 'stock', ownerOnly: true },
   { to: '/users', title: 'Пользователи', text: 'Кто входит в систему: владелец и администраторы', icon: 'employees', ownerOnly: true },

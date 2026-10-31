@@ -1,7 +1,8 @@
 // Статьи расходов: добавить, переименовать, «только владелец», скрыть (SPEC-06). Только владелец.
 import { useState, type FormEvent } from 'react'
-import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, PageHeader, RowMenu, Table, toast } from '../components/ui'
+import { Badge, Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, RowMenu, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
+import { PAYROLL_ARTICLE_WARNING, payrollLikeArticle } from '../lib/expensePayee'
 import { useAction, useLoad } from '../lib/hooks'
 import type { ExpenseArticle } from '../lib/types'
 
@@ -81,6 +82,8 @@ export default function ExpenseArticles() {
               <input autoFocus maxLength={100} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </Field>
             <Checkbox label="Только владелец" checked={form.owner_only} onChange={(v) => setForm({ ...form, owner_only: v })} />
+            {/* Зарплата статьёй не проводится (ADR-023) — предупреждение, решает владелец. */}
+            {payrollLikeArticle(form.name) && <Notice tone="amber">{PAYROLL_ARTICLE_WARNING}</Notice>}
             <ErrorBox error={act.error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setAdding(false)}>
@@ -100,6 +103,7 @@ export default function ExpenseArticles() {
             <Field label="Название" required>
               <input autoFocus maxLength={100} value={renaming.name} onChange={(e) => setRenaming({ ...renaming, name: e.target.value })} />
             </Field>
+            {payrollLikeArticle(renaming.name) && <Notice tone="amber">{PAYROLL_ARTICLE_WARNING}</Notice>}
             <ErrorBox error={act.error} />
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setRenaming(null)}>

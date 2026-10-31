@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m.doc_id as \"id!\", r.number as \"number?\",\n                  (coalesce(r.posted_at, max(m.created_at)) at time zone 'Asia/Bishkek')::date as \"date!\",\n                  u.full_name as \"user_name?\",\n                  (-sum(m.value_delta_tyiyn))::bigint as \"amount!\"\n           from stock_movements m\n           left join revisions r on r.id = m.doc_id\n           left join users u on u.id = coalesce(r.posted_by, r.user_id)\n           where m.branch_id = $1 and m.doc_type = 'revision' and m.doc_id is not null\n             and (m.created_at at time zone 'Asia/Bishkek')::date between $2 and $3\n           group by m.doc_id, r.number, r.posted_at, u.full_name\n           having sum(m.value_delta_tyiyn) <> 0\n           order by 3, 2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "date!",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "user_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "d277c8bb78b0b56425e4d690889774a4f3ea19ef00cbe98f441820a47f8cdd59"
+}

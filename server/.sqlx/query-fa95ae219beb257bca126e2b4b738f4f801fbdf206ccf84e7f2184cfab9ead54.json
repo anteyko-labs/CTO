@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.id, e.number, a.name as article, e.expense_date, e.amount_tyiyn, e.payee,\n                  e.comment, c.name as \"account_name?\", u.full_name as user_name, e.created_at,\n                  e.reversal_of,\n                  exists (select 1 from expenses x where x.reversal_of = e.id) as \"reversed!\"\n           from expenses e\n           join expense_articles a on a.id = e.article_id\n           join users u on u.id = e.user_id\n           left join cash_accounts c on c.id = e.account_id\n           where e.branch_id = $1 and e.expense_date between $2 and $3\n           order by a.name, e.expense_date, e.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "article",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "expense_date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "payee",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "comment",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "user_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "reversal_of",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "reversed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "fa95ae219beb257bca126e2b4b738f4f801fbdf206ccf84e7f2184cfab9ead54"
+}

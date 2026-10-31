@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/expense-articles/{id}", routing::patch(update_article))
         .route("/expenses", routing::get(list).post(post_expense))
         .route("/expenses/summary", routing::get(summary))
+        .route("/expenses/payees", routing::get(payees))
         .route("/expenses/{id}/reverse", routing::post(reverse))
 }
 
@@ -223,6 +224,9 @@ pub struct ExpenseOut {
     pub account_name: Option<String>,
     pub expense_date: NaiveDate,
     pub comment: String,
+    /// «Кому» отдали деньги (задача 003 Н12); пусто — не указано.
+    #[serde(default)]
+    pub payee: String,
     pub reversal_of: Option<Uuid>,
     pub reversed: bool,
     pub user_name: String,
@@ -264,6 +268,50 @@ async fn summary(
     ))
 }
 
+#[derive(Serialize)]
+struct PayeesOut {
+    /// Поле «Кому» в форме: `off` — не спрашивать, `optional`, `required`.
+    mode: String,
+    /// Подсказки: прежние «Кому» филиала (последние сначала), работники и поставщики.
+    names: Vec<String>,
+}
+
+/// Поле «Кому» в форме расхода (задача 003 Н12): как его показывать и подсказки. Прежние
+/// значения — только по статьям, которые видны этому пользователю (инвариант 13).
+async fn payees(State(state): State<AppState>, user: CurrentUser) -> AppResult<Json<PayeesOut>> {
+    let mut conn = state.pool.acquire().await?;
+    let mode = crate::api::pnl::profit_settings(&mut conn, user.branch_id)
+        .await?
+        .expense_payee;
+    let mut names = sqlx::query_scalar!(
+        r#"select e.payee as "payee!" from expenses e
+           join expense_articles a on a.id = e.article_id
+           where e.branch_id = $1 and e.payee <> '' and e.reversal_of is null
+             and (not a.owner_only or $2)
+           group by e.payee order by max(e.created_at) desc limit 30"#,
+        user.branch_id,
+        user.is_owner()
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let others = sqlx::query_scalar!(
+        r#"select name as "name!" from (
+             select full_name as name from employees where branch_id = $1 and active
+             union
+             select name from suppliers where active
+           ) x order by 1 limit 200"#,
+        user.branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for n in others {
+        if !names.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+            names.push(n);
+        }
+    }
+    Ok(Json(PayeesOut { mode, names }))
+}
+
 /// Список расходов экрана «Расходы» — и для отчёта бота владельцу (SPEC-24).
 pub(crate) async fn list_data(
     conn: &mut PgConnection,
@@ -275,7 +323,7 @@ pub(crate) async fn list_data(
     let rows = sqlx::query_as!(
         ExpenseOut,
         r#"select e.id, e.number, e.article_id, a.name as article_name, e.amount_tyiyn, e.source,
-                  c.name as "account_name?", e.expense_date, e.comment, e.reversal_of,
+                  c.name as "account_name?", e.expense_date, e.comment, e.payee, e.reversal_of,
                   exists (select 1 from expenses x where x.reversal_of = e.id) as "reversed!",
                   u.full_name as user_name, e.created_at
            from expenses e
@@ -315,7 +363,14 @@ pub struct ExpenseReq {
     pub expense_date: Option<NaiveDate>,
     #[serde(default)]
     pub comment: String,
+    /// «Кому» (задача 003 Н12): не длиннее 100 знаков; обязательно ли — настройка «Отчёт о
+    /// прибыли» (`expense_payee`).
+    #[serde(default)]
+    pub payee: String,
 }
+
+/// «Кому» не длиннее этого (задача 003 Н12).
+const MAX_PAYEE: usize = 100;
 
 pub(crate) async fn load_expense(
     conn: &mut PgConnection,
@@ -325,7 +380,7 @@ pub(crate) async fn load_expense(
     sqlx::query_as!(
         ExpenseOut,
         r#"select e.id, e.number, e.article_id, a.name as article_name, e.amount_tyiyn, e.source,
-                  c.name as "account_name?", e.expense_date, e.comment, e.reversal_of,
+                  c.name as "account_name?", e.expense_date, e.comment, e.payee, e.reversal_of,
                   exists (select 1 from expenses x where x.reversal_of = e.id) as "reversed!",
                   u.full_name as user_name, e.created_at
            from expenses e
@@ -396,6 +451,18 @@ pub async fn post_expense_tx(
     if article.name == "Прочее" && req.comment.trim().is_empty() {
         return Err(invalid("по статье «Прочее» нужен комментарий"));
     }
+    let payee = req.payee.trim();
+    if payee.chars().count() > MAX_PAYEE {
+        return Err(invalid("«Кому» не длиннее 100 знаков"));
+    }
+    if payee.is_empty()
+        && crate::api::pnl::profit_settings(&mut *conn, branch_id)
+            .await?
+            .expense_payee
+            == "required"
+    {
+        return Err(invalid("укажите, кому отдали деньги"));
+    }
     let today = sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
         .fetch_one(&mut *conn)
         .await?;
@@ -420,8 +487,8 @@ pub async fn post_expense_tx(
     let id = new_id();
     sqlx::query!(
         r#"insert into expenses (id, branch_id, number, article_id, amount_tyiyn, source,
-                                 account_id, expense_date, comment, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                                 account_id, expense_date, comment, payee, user_id, device_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
         id,
         branch_id,
         number,
@@ -431,6 +498,7 @@ pub async fn post_expense_tx(
         account_id,
         date,
         req.comment.trim(),
+        payee,
         ctx.user.id,
         ctx.device_id
     )
@@ -458,7 +526,8 @@ pub async fn post_expense_tx(
         KIND,
         "expense",
         Some(id),
-        json!({ "article": article.name, "amount_tyiyn": req.amount_tyiyn, "from": source }),
+        json!({ "article": article.name, "amount_tyiyn": req.amount_tyiyn, "from": source,
+                "payee": payee }),
     )
     .await?;
     let out = load_expense(&mut *conn, branch_id, id).await?;
@@ -501,7 +570,7 @@ pub async fn reverse_expense_tx(
     }
     let orig = sqlx::query!(
         r#"select e.article_id, e.amount_tyiyn, e.source, e.account_id, e.expense_date, e.user_id,
-                  e.reversal_of, a.owner_only,
+                  e.payee, e.reversal_of, a.owner_only,
                   exists (select 1 from expenses x where x.reversal_of = e.id) as "reversed!"
            from expenses e join expense_articles a on a.id = e.article_id
            where e.id = $1 and e.branch_id = $2
@@ -541,8 +610,9 @@ pub async fn reverse_expense_tx(
     let rid = new_id();
     sqlx::query!(
         r#"insert into expenses (id, branch_id, number, article_id, amount_tyiyn, source,
-                                 account_id, expense_date, comment, reversal_of, user_id, device_id)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
+                                 account_id, expense_date, comment, payee, reversal_of, user_id,
+                                 device_id)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
         rid,
         branch_id,
         number,
@@ -552,6 +622,8 @@ pub async fn reverse_expense_tx(
         orig.account_id,
         orig.expense_date,
         req.comment.trim(),
+        // Сторно — та же статья, тот же день и тот же «Кому»: пара гасится в одной строке отчёта.
+        orig.payee,
         id,
         ctx.user.id,
         ctx.device_id

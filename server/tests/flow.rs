@@ -6719,6 +6719,7 @@ async fn bot_expense_posts_only_by_button_like_the_program(pool: PgPool) {
             account_id: Some(till),
             expense_date: Some(today),
             comment: "ведро и тряпки".into(),
+            payee: String::new(),
         },
     )
     .await

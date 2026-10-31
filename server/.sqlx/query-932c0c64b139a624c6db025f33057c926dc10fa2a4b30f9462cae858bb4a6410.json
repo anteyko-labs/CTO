@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name as \"name!\" from (\n             select full_name as name from employees where branch_id = $1 and active\n             union\n             select name from suppliers where active\n           ) x order by 1 limit 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "932c0c64b139a624c6db025f33057c926dc10fa2a4b30f9462cae858bb4a6410"
+}

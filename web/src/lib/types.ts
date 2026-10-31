@@ -785,10 +785,18 @@ export interface Expense {
   account_name: string | null
   expense_date: string
   comment: string
+  /** «Кому» отдали деньги (задача 003 Н12); пусто — не указано. */
+  payee?: string
   reversal_of: string | null
   reversed: boolean
   user_name: string
   created_at: string
+}
+
+/** Поле «Кому» в форме расхода: как спрашивать и подсказки (`GET /expenses/payees`). */
+export interface ExpensePayees {
+  mode: 'off' | 'optional' | 'required'
+  names: string[]
 }
 
 // ---------- Расчёт сотрудников (SPEC-07) ----------
@@ -888,6 +896,86 @@ export interface ProfitReport {
   warnings: string[]
   staff?: StaffPay[]
   hours?: { hour: number; revenue_tyiyn: number; gross_tyiyn: number; sales_count: number }[]
+  /** Раскрытие до документов — только с `detail=1` (задача 003 Н12). */
+  detail?: ProfitDetail
+  all_branches?: boolean
+}
+
+/** Строки-документы «Прибыли и убытков» (`server/src/api/pnl.rs`). Суммы — в тыйынах. */
+export interface ProfitDetail {
+  products: { product_id: string | null; name: string; category: string; unit: string; units: number; revenue_tyiyn: number; cost_tyiyn: number }[]
+  services: { service_id: string | null; name: string; count: number; revenue_tyiyn: number; master_fee_tyiyn: number }[]
+  returns_tyiyn: number
+  revision_tyiyn: number
+  revaluation_only_tyiyn: number
+  revisions: { id: string; number: number | null; date: string; user_name: string | null; amount_tyiyn: number; branch: string }[]
+  revaluations: { id: string; date: string; product_id: string | null; name: string; amount_tyiyn: number }[]
+  expenses: {
+    id: string
+    number: number
+    article: string
+    date: string
+    amount_tyiyn: number
+    payee: string
+    comment: string
+    account_name: string | null
+    user_name: string
+    created_at: string
+    reversal_of: string | null
+    reversed: boolean
+    branch: string
+  }[]
+  payouts: {
+    id: string
+    number: number
+    employee_id: string
+    employee_name: string
+    date: string
+    amount_tyiyn: number
+    purpose: string
+    account_name: string | null
+    comment: string
+    user_name: string
+    created_at: string
+    reversal_of: string | null
+    reversed: boolean
+    branch: string
+  }[]
+  fees: { id: string | null; name: string; amount_tyiyn: number; branch: string }[]
+  cash_diffs: { id: string; number: number; date: string; cashier: string | null; amount_tyiyn: number; branch: string }[]
+  defects: {
+    id: string
+    number: number
+    date: string
+    product: string
+    kind: string
+    writeoff_tyiyn: number
+    diff_tyiyn: number
+    reversal_of: string | null
+    user_name: string
+    branch: string
+  }[]
+  supplier_returns: { id: string; number: number; date: string; supplier: string | null; diff_tyiyn: number; reversal_of: string | null; user_name: string; branch: string }[]
+  not_in_profit: {
+    id: string
+    kind: 'supplier_payment' | 'cash_out' | 'transfer_out'
+    date: string
+    amount_tyiyn: number
+    account_name: string
+    payee: string | null
+    comment: string
+    user_name: string
+    created_at: string
+    reversed: boolean
+    branch: string
+  }[]
+}
+
+/** Настройки «Отчёт о прибыли» (`/settings/profit-report`, только владелец). */
+export interface ProfitSettings {
+  default_period: 'month' | 'today' | 'week'
+  expense_payee: 'off' | 'optional' | 'required'
+  show_reversals: boolean
 }
 
 export interface Dashboard {

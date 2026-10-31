@@ -2922,9 +2922,16 @@ async fn event_text(conn: &mut PgConnection, ev: &Event<'_>) -> AppResult<(Strin
                     "из кассы".into()
                 }
             });
+            // «Кому» (задача 003 Н12) — если указали.
+            let payee = txt("payee");
+            let to_whom = if payee.is_empty() {
+                String::new()
+            } else {
+                format!(" · кому: {payee}")
+            };
             (
                 format!("💸 Расход: {}", txt("article")),
-                format!("{} · {source}", money_of(data, "amount_tyiyn")),
+                format!("{} · {source}{to_whom}", money_of(data, "amount_tyiyn")),
             )
         }
         "debt.repayment" => repayment_text(conn, ev).await?,

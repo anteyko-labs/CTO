@@ -3,13 +3,17 @@ import { get, newOpId, post } from '../lib/api'
 import { parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { ExpenseArticle } from '../lib/types'
+import { payeeHints, payeeMissing } from '../lib/expensePayee'
+import type { ExpenseArticle, ExpensePayees } from '../lib/types'
 import { Button, ErrorBox, Field, Missing, Modal, toast } from './ui'
 
 /** Мелкий расход прямо с кассы: деньги уходят из кассы сразу (SPEC-06). */
 export function QuickExpense({ onClose }: { onClose: () => void }) {
   const articles = useLoad(() => get<ExpenseArticle[]>('/expense-articles'), [])
-  const [form, setForm] = useState({ article: '', sum: '', comment: '' })
+  // «Кому» (задача 003 Н12): спрашивать ли — настройка «Отчёт о прибыли».
+  const payees = useLoad(() => get<ExpensePayees>('/expenses/payees'), [])
+  const mode = payees.data?.mode ?? 'optional'
+  const [form, setForm] = useState({ article: '', sum: '', comment: '', payee: '' })
   const { busy, error, run } = useAction()
   // Один op_id на открытую форму: повтор после потерянного ответа не задвоит расход.
   const [opId] = useState(newOpId)
@@ -17,6 +21,7 @@ export function QuickExpense({ onClose }: { onClose: () => void }) {
   const notFilled = missingWithFocus(
     [Boolean(form.article), 'статью', '#quick-article'],
     [Boolean(form.sum.trim()), 'сумму', '#quick-sum'],
+    [!payeeMissing(mode, form.payee), 'кому', '#quick-payee'],
   )
 
   const save = () =>
@@ -29,6 +34,7 @@ export function QuickExpense({ onClose }: { onClose: () => void }) {
         amount_tyiyn: sum,
         source: 'account',
         comment: form.comment,
+        payee: form.payee.trim(),
       })
       toast('Расход записан, деньги ушли из кассы')
       onClose()
@@ -50,6 +56,16 @@ export function QuickExpense({ onClose }: { onClose: () => void }) {
         <Field label="Сумма, с" required>
           <input id="quick-sum" autoFocus inputMode="decimal" value={form.sum} onChange={(e) => setForm({ ...form, sum: e.target.value })} />
         </Field>
+        {mode !== 'off' && (
+          <Field label="Кому" required={mode === 'required'} hint="Кому отдали деньги">
+            <input id="quick-payee" maxLength={100} list="quick-payees" value={form.payee} onChange={(e) => setForm({ ...form, payee: e.target.value })} />
+            <datalist id="quick-payees">
+              {payeeHints(payees.data?.names ?? []).map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+          </Field>
+        )}
         <Field label="Комментарий" hint="По статье «Прочее» обязателен">
           <input value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </Field>
