@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select i.slot, i.text, i.category_id, i.service_id, i.target_set, i.next_value,\n                  i.next_unit, i.next_date\n           from oil_change_items i\n           where i.oil_change_id = $1\n             and (i.slot in ('oil', 'gear_oil', 'antifreeze', 'brake_fluid')\n                  or ($2 and i.slot like '%\\_filter'))\n           order by i.position",
+  "query": "select i.slot, i.text, i.category_id, i.service_id, s.name as \"service?\", i.target_set,\n                  i.next_value, i.next_unit, i.next_km, i.next_date\n           from oil_change_items i left join services s on s.id = i.service_id\n           where i.oil_change_id = $1\n           order by i.position",
   "describe": {
     "columns": [
       {
@@ -25,29 +25,38 @@
       },
       {
         "ordinal": 4,
+        "name": "service?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "target_set",
         "type_info": "Bool"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "next_value",
         "type_info": "Int4"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "next_unit",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
+        "name": "next_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
         "name": "next_date",
         "type_info": "Date"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -56,10 +65,12 @@
       true,
       true,
       false,
+      false,
+      true,
       true,
       true,
       true
     ]
   },
-  "hash": "3dfde528710bc29710e5df0133188853314ec5897c942591503325e6a97c7de6"
+  "hash": "c6536dd34774047d469be5d93470893adf986f795896393d882ce3e01feff434"
 }

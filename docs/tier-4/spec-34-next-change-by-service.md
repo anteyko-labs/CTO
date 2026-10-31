@@ -103,3 +103,10 @@ updated: 2026-10-27
 - §2: фильтры за маслом (ADR-117) получают цель масла и тогда, когда её поставил сервер; настройка «на пробег масла» выключена — у фильтров на кассе свои строки, в книжке — свой интервал.
 - §4: блок книжки печатного чека — жидкости, при настройке «с фильтрами» — и фильтры; у записи без цели срок — по интервалу при показе. Канистра и разлив одного товара — одной строкой «· 4,5 л» (касса без сети — так же).
 - Проверки: `server/tests/oil_book_check.rs` (`receipt_book_next_without_cashier_target`, `filters_follow_oil_without_cashier_target`, `container_and_pour_one_line`, `book_with_filters_and_old_record_by_interval`), `web/src/lib/nextChange.test.ts`, `oilBook.test.ts`, `salePrint.test.ts`, e2e `oil-book-print.spec.ts`.
+
+## Дополнено задачей 003 (31.10.2026, Н5): подпись строки — товар
+
+- §2: на кассе в углу поля «Следующей замены» — что залито товаром («Mobil ATF 3309 × 1 л»), без товара — строка книжки; строка по проданному маслу без услуги подписана товаром, а не «Масло в коробке»; приписка под строкой масла — «Замена масла в моторе — и фильтры: W712 (масляный), Фильтр воздушный C2201 на тот же пробег».
+- §4: чек книжки и блок книжки товарного чека — по видам замены (услугам чека), подпись — товар (SPEC-16, «Дополнено задачей 003 … подпись строки — товар»); фильтры — по умолчанию да; работы «прочее» со сроком — названием услуги. Чек из очереди без сети (`receiptBook`) — так же: фильтр без своей строки «Следующей замены» и не за маслом (топливный) — по интервалу машины, категории, по умолчанию 30 000 км.
+- Проверки: `server/tests/oil_book_check.rs` (`sale_check_has_goods_and_filters_follow_oil`, `titles_are_goods_and_fuel_filter_keeps_its_term`, `fuel_filter_category_without_slot_gets_it_by_name`), `server/tests/flow.rs`, `server/tests/bot_book.rs`, `web/src/lib/oilBook.test.ts`, `nextChange.test.ts`, `salePrint.test.ts`, e2e `oil-book-print.spec.ts` (чек «В сервис» с маслом и тремя фильтрами печатает чек книжки сам), `next-change-receipt.spec.ts`.
+

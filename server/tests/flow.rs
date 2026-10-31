@@ -3498,8 +3498,9 @@ async fn bot_car_card_now_in_car_and_past_visits(pool: PgPool) {
     let text = &card.text;
     assert!(
         text.contains("Сейчас в машине:")
-            && text.contains("Масло двигателя: Масло 5W-30 4л")
-            && text.contains("Фильтр масляный: Фильтр W712"),
+            && text.contains("  Масло 5W-30 4л · 1 кан. × 4 л — ")
+            && text.contains("  Фильтр W712 (масляный) · 1 шт — ")
+            && !text.contains("Масло двигателя:"),
         "{text}"
     );
     assert!(
@@ -3652,8 +3653,8 @@ async fn bot_book_shows_master_and_services(pool: PgPool) {
     );
     // «Сейчас в машине»: что залито и поставлено — товар и количество, дата, пробег (SPEC-36 §6).
     assert!(
-        book.contains("  Масло двигателя: Масло 5W-30 4л · 1 кан. × 4 л — ")
-            && book.contains("  Фильтр масляный: Фильтр W712 · 1 шт — ")
+        book.contains("  Масло 5W-30 4л · 1 кан. × 4 л — ")
+            && book.contains("  Фильтр W712 (масляный) · 1 шт — ")
             && book.contains(", 91 000 км → следующая на 99 000 км"),
         "{book}"
     );
@@ -3673,8 +3674,8 @@ async fn bot_book_shows_master_and_services(pool: PgPool) {
     let visit = bot_book::past_visit(&b, day, &x).text;
     assert!(visit.contains("91 000 км"), "{visit}");
     assert!(
-        visit.contains("  Масло двигателя: Масло 5W-30 4л · 1 кан. × 4 л")
-            && visit.contains("  Фильтр масляный: Фильтр W712 · 1 шт"),
+        visit.contains("  Масло 5W-30 4л · 1 кан. × 4 л")
+            && visit.contains("  Фильтр W712 (масляный) · 1 шт"),
         "{visit}"
     );
     assert!(visit.contains("  Услуги: Замена масла"), "{visit}");
@@ -9223,7 +9224,10 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
         vec!["oil".to_string(), "oil_filter".to_string()]
     );
     assert!(
-        due[0].text.contains("замена масла, масляного фильтра"),
+        // Задача 003 Н5: товар последней замены — в скобках.
+        due[0]
+            .text
+            .contains("замена масла (Масло 5W-30 4л), масляного фильтра (Фильтр W712)"),
         "{}",
         due[0].text
     );
@@ -9239,10 +9243,10 @@ async fn oil_book_lines_by_filter_with_own_intervals(pool: PgPool) {
     // Бот: карточка машины — что стоит по каждой строке и следующая замена (только пробег).
     let card = press(&mut conn, chat, &format!("car:{car}")).await.text;
     assert!(
-        card.contains("Фильтр воздушный: Фильтр воздушный A1")
+        card.contains("  Фильтр воздушный A1 · 1 шт — ")
             && card.contains(", 85 000 км → следующая на 95 000 км")
             && !card.contains(" или до")
-            && card.contains("Прочие работы: Антифриз G12")
+            && card.contains("  Антифриз G12 · 1 шт — ")
             && !card.contains("Щётка"),
         "{card}"
     );
@@ -11444,12 +11448,14 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
         .iter()
         .map(|l| (l.label.clone(), l.next_mileage))
         .collect();
-    // Строкой книжки, а не услугой (ADR-116).
+    // Подписью строки — что залито (задача 003 Н5): без товара — своё у клиента; работа «прочее» —
+    // названием услуги со своим сроком.
     assert_eq!(
         printed,
         vec![
-            ("Масло двигателя".to_string(), 225_000),
-            ("Антифриз".to_string(), 250_000)
+            ("масло клиента (двигатель)".to_string(), 225_000),
+            ("жидкость клиента (антифриз)".to_string(), 250_000),
+            ("Мойка двигателя".to_string(), 260_000)
         ]
     );
     assert_eq!(
@@ -11481,7 +11487,7 @@ async fn next_change_by_service_goes_to_book_and_receipt(pool: PgPool) {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("Антифриз: Замена антифриза — следующая замена на 250 000 км")),
+            .any(|l| l == "жидкость клиента (антифриз) — следующая замена на 250 000 км"),
         "{lines:?}"
     );
     // Напоминание берёт цель кассира: при 50 км в день до 225 000 — 500 дней.
@@ -11691,14 +11697,21 @@ async fn next_change_only_by_services_of_this_sale(pool: PgPool) {
             .await
             .unwrap();
     let year = day.checked_add_days(chrono::Days::new(730));
-    // Печатный чек — только жидкости (ADR-116): фильтр в книжке, но не в чеке.
+    // Печатный чек — масло и фильтр (задача 003 Н5: фильтры по умолчанию в чеке), подпись — товар;
+    // топливный фильтр — на свой срок (217 000 + 30 000), не на пробег масла.
     let book = sale.book.unwrap();
     let printed: Vec<(&str, i32)> = book
         .lines
         .iter()
         .map(|l| (l.label.as_str(), l.next_mileage))
         .collect();
-    assert_eq!(printed, vec![("Масло двигателя", 225_000)]);
+    assert_eq!(
+        printed,
+        vec![
+            ("Масло 5W-30 4л · 1 кан. × 4 л", 225_000),
+            ("Фильтр топливный MANN WK-842 · 1 шт", 247_000)
+        ]
+    );
     // Книжка: цель масла — кассира; топливный фильтр — без цели, по сроку строки (30 000 км или
     // два года); ни антифриза, ни «прочего».
     let mut conn = pool.acquire().await.unwrap();
@@ -11735,7 +11748,7 @@ async fn next_change_only_by_services_of_this_sale(pool: PgPool) {
     assert!(
         lines
             .iter()
-            .any(|l| l == "Фильтр топливный: Фильтр топливный MANN WK-842 · 1 шт"),
+            .any(|l| l == "Фильтр топливный MANN WK-842 · 1 шт"),
         "{lines:?}"
     );
 }
@@ -11810,7 +11823,7 @@ async fn other_services_each_get_own_line_and_reminder(pool: PgPool) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    // Печатный чек — только масло (ADR-116).
+    // Печатный чек — масло и работы «прочее» своими названиями и сроками (задача 003 Н5).
     let printed: Vec<String> = sale
         .book
         .unwrap()
@@ -11818,7 +11831,14 @@ async fn other_services_each_get_own_line_and_reminder(pool: PgPool) {
         .iter()
         .map(|l| l.label.clone())
         .collect();
-    assert_eq!(printed, vec!["Масло двигателя".to_string()]);
+    assert_eq!(
+        printed,
+        vec![
+            "масло клиента (двигатель)".to_string(),
+            "Замена ГУР".to_string(),
+            "Смазка кардана".to_string()
+        ]
+    );
     let mut conn = pool.acquire().await.unwrap();
     let b = books(&mut conn, Some(client.0), None)
         .await

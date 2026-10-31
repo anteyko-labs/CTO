@@ -1,8 +1,9 @@
 // Итог чека «В сервис» и книжка, которая печатается после него: «Следующая замена» — только по
 // строкам этого чека (ADR-111). 26.10.2026 заказчик: «в чеке постоянно добавляет воздушный фильтр» —
 // после каждого чека машины касса писала «Следующая · Фильтр воздушный» из прошлой замены.
-// 27.10.2026 (SPEC-36 §2–3): чек книжки — только жидкости этого чека с товаром и следующей заменой по
-// пробегу; фильтры с заменой масла — на пробег масла; канистра без услуги масла — «Это замена?».
+// 27.10.2026 (SPEC-36 §2–3): чек книжки — этот чек с товаром и следующей заменой по пробегу; фильтры с
+// заменой масла — на пробег масла; канистра без услуги масла — «Это замена?». 31.10.2026 (задача 003
+// Н5): подпись — товар, а не строка книжки; по видам замены; фильтры в чеке книжки по умолчанию.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
 import { choosePerson, pickMaster } from './cashier'
@@ -59,7 +60,8 @@ async function setup(request: APIRequestContext) {
   const oilName = `Масло итог ${tag} 5W-30`
   const oil =await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: oilCat.id, name: oilName, container_ml: 4000, barcodes: [oilCode], sale_price_tyiyn: 300_000 })
   const airCode = `45${tag}2`
-  const air = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: airCat.id, name: `Фильтр воздушный итог ${tag}`, barcodes: [airCode], sale_price_tyiyn: 60_000 })
+  const airName = `Фильтр воздушный итог ${tag}`
+  const air = await api<{ id: string }>(request, '/products', { op_id: crypto.randomUUID(), category_id: airCat.id, name: airName, barcodes: [airCode], sale_price_tyiyn: 60_000 })
   // Антифриз: строка книжки — по названию категории (ADR-117).
   const antiCat = await api<{ id: string; book_slot: string }>(request, '/categories', { name: `Антифризы итог ${tag}`, kind: 'other' })
   expect(antiCat.book_slot).toBe('antifreeze')
@@ -108,7 +110,7 @@ async function setup(request: APIRequestContext) {
     ],
     payments: [{ method: 'cash', amount_tyiyn: 300_000 + 60_000 + svc.price_tyiyn }],
   })
-  return { oilCode, oilName, airCode, antiCode, antiName, service, antiService, topup, master, cashier, last, plate, party, vehicle }
+  return { oilCode, oilName, airCode, airName, antiCode, antiName, service, antiService, topup, master, cashier, last, plate, party, vehicle }
 }
 
 for (const mode of [
@@ -165,9 +167,10 @@ for (const mode of [
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()
 
-      // Итог чека: что записано в книжку — масло; воздушного фильтра нет.
+      // Итог чека: что записано в книжку — масло (товаром, задача 003 Н5); воздушного фильтра нет.
       const written = page.getByText(/Записано в масляную книжку/).locator('..')
-      await expect(written).toContainText('Следующая · Масло двигателя')
+      await expect(written).toContainText(`Следующая · ${s.oilName} · 1 кан. × 4 л`)
+      await expect(written).not.toContainText('Масло двигателя')
       await expect(written).not.toContainText('Фильтр воздушный')
 
       // Чек книжки, напечатанный сам: только этот чек — масло; фильтра из прошлой замены нет (ADR-116).
@@ -182,8 +185,8 @@ for (const mode of [
         await view.screenshot({ path: `${SHOTS}/next-change-receipt-book.png`, fullPage: true })
         await view.close()
       }
-      expect(book.split('Следующая замена:')[1] ?? '').toContain('Масло двигателя на 228 000 км')
-      for (const no of ['Фильтр воздушный', 'По прошлым заменам', 'Прошлые замены', 'или до', s.master]) expect(book).not.toContain(no)
+      expect(book).toContain(`${s.service} ${s.oilName} · 1 кан. × 4 л Следующая замена — на 228 000 км`)
+      for (const no of ['Фильтр воздушный', 'Масло двигателя', 'По прошлым заменам', 'Прошлые замены', 'или до', s.master]) expect(book).not.toContain(no)
 
       // Товарный чек — без фильтра; в карточке клиента строка фильтра на месте.
       await hit(page.getByRole('button', { name: 'Печать чека' }))
@@ -196,7 +199,7 @@ for (const mode of [
       await expect(page.getByTestId('book-slots').getByRole('row', { name: /Фильтр воздушный/ })).toContainText(/на 224\s000 км/)
     })
 
-    test('чек книжки: только жидкости с товаром; фильтр — на пробег масла; доливка — не замена; без сети — то же', async ({ page }) => {
+    test('чек книжки: по виду замены, товаром; фильтр — под заменой масла и на её пробег; доливка — не замена; без сети — то же', async ({ page }) => {
       test.setTimeout(150_000)
       await page.addInitScript(PRINT_STUB)
       await page.addInitScript((touch) => {
@@ -249,7 +252,7 @@ for (const mode of [
       const fillChange = async (mileage: string) => {
         await fill([s.service, s.antiService], [s.oilCode, s.airCode, s.antiCode], mileage)
         // Фильтр своей строки не даёт: он — на пробег масла; товары в «+ ещё» не предлагаются.
-        await expect(page.getByTestId('next-filters')).toHaveText('Масло двигателя — и фильтр: воздушный на тот же пробег')
+        await expect(page.getByTestId('next-filters')).toHaveText(`${s.service} — и фильтр: ${s.airName} на тот же пробег`)
         await expect(block.locator('input[id^="next-"]')).toHaveCount(2)
         await expect(block.getByRole('button', { name: '+ ещё строку' })).toHaveCount(0)
         await expect(block.locator('[data-next-goods]').first()).toContainText(`${s.oilName} × 1 кан.`)
@@ -261,10 +264,10 @@ for (const mode of [
       }
       const lastPrint = async (what: string) => plain((await prints(page)).filter((h) => h.includes(what)).at(-1) ?? '')
       const receiptBlock = (text: string) => {
-        expect(text).toContain(`Залито: Масло двигателя: ${s.oilName} · 1 кан. × 4 л Антифриз: ${s.antiName} · 1 шт`)
-        expect(text).toMatch(/Следующая замена: Масло двигателя: на 2\d\d 000 км Антифриз: на 280 000 км/)
-        expect(text).not.toContain('Фильтр воздушный:')
-        expect(text).not.toContain('или до')
+        // Задача 003 Н5: по видам замены, товаром; фильтр — под заменой масла (фильтры в чеке по умолчанию).
+        expect(text).toMatch(new RegExp(`${s.service} ${s.oilName} · 1 кан\\. × 4 л ${s.airName} · 1 шт Следующая замена — на 2\\d\\d 000 км`))
+        expect(text).toContain(`${s.antiService} ${s.antiName} · 1 шт Следующая замена — на 280 000 км`)
+        for (const no of ['Масло двигателя', 'Фильтр воздушный:', 'Антифриз:', 'или до']) expect(text).not.toContain(no)
       }
 
       await fillChange('250000')
@@ -273,9 +276,9 @@ for (const mode of [
       const book = plain((await prints(page)).find((h) => h.includes('Масляная книжка') && !h.includes('Товарный чек')) ?? '')
       expect(book).toContain(`${s.plate} · Toyota Camry`)
       expect(book).toContain('Пробег 250 000 км')
-      expect(book).toContain(`Залито: Масло двигателя ${s.oilName} · 1 кан. × 4 л Антифриз ${s.antiName} · 1 шт`)
-      expect(book).toContain('Следующая замена: Масло двигателя на 258 000 км Антифриз на 280 000 км')
-      for (const no of ['Фильтр', 'Мастер', s.master, 'Рекомендовано', 'Прошлые замены', 'По прошлым заменам', 'или до']) expect(book).not.toContain(no)
+      expect(book).toContain(`${s.service} ${s.oilName} · 1 кан. × 4 л ${s.airName} · 1 шт Следующая замена — на 258 000 км`)
+      expect(book).toContain(`${s.antiService} ${s.antiName} · 1 шт Следующая замена — на 280 000 км`)
+      for (const no of ['Масло двигателя', 'Мастер', s.master, 'Рекомендовано', 'Прошлые замены', 'По прошлым заменам', 'или до']) expect(book).not.toContain(no)
       // Товарный чек — то же правило.
       await hit(page.getByRole('button', { name: 'Печать чека' }))
       await expect.poll(async () => (await lastPrint('Товарный чек')).length).toBeGreaterThan(0)
@@ -293,7 +296,7 @@ for (const mode of [
       // масла с этой целью (ADR-136).
       await fill([s.topup], [s.oilCode], '251000')
       await expect(page.getByTestId('oil-change-hint')).toHaveText('Это замена? Добавьте услугу замены масла двигателя')
-      await expect(page.getByLabel('Следующая замена: Масло двигателя')).toHaveValue('259000')
+      await expect(page.getByLabel(`Следующая замена: ${s.oilName}`)).toHaveValue('259000')
       await hit(page.getByRole('button', { name: 'Без сдачи' }))
       await hit(page.getByRole('button', { name: /Провести чек/ }).first())
       await expect(page.getByText(/Чек № .+ проведён/)).toBeVisible()

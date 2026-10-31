@@ -1854,10 +1854,15 @@ pub struct Reminder {
 /// Что менять в напоминании по дням: «замена масла, масляного фильтра»; услуга «прочее» — своим
 /// названием со строчной буквы: «замена масла, смазка кардана» (ADR-131).
 fn reminder_what(slots: &[&crate::api::oil_book::SlotNext]) -> String {
-    let genitives: Vec<&str> = slots
+    // Товар последней замены известен — он в скобках: «масла в коробке (Mobil ATF 3309)» (задача
+    // 003 Н5).
+    let genitives: Vec<String> = slots
         .iter()
         .filter(|n| n.service_id.is_none())
-        .map(|n| slot_genitive(&n.slot))
+        .map(|n| match n.products.as_slice() {
+            [] => slot_genitive(&n.slot).to_string(),
+            p => format!("{} ({})", slot_genitive(&n.slot), p.join(", ")),
+        })
         .collect();
     let mut parts: Vec<String> = Vec::new();
     if !genitives.is_empty() {
@@ -5010,6 +5015,8 @@ mod tests {
                 slot: slot.into(),
                 service_id,
                 label: label.into(),
+                title: label.into(),
+                products: Vec::new(),
                 interval_km: None,
                 interval_days: None,
                 own_interval: false,
@@ -5031,6 +5038,15 @@ mod tests {
             "замена масла, масляного фильтра, замена ГУР"
         );
         assert_eq!(reminder_what(&[&other]), "замена ГУР");
+        // Задача 003 Н5: товар последней замены известен — он в скобках.
+        let gear = crate::api::oil_book::SlotNext {
+            products: vec!["Mobil ATF 3309".into()],
+            ..slot("gear_oil", None, "Масло в коробке")
+        };
+        assert_eq!(
+            reminder_what(&[&gear]),
+            "замена масла в коробке (Mobil ATF 3309)"
+        );
         assert_eq!(
             crate::api::oil_book::slot_key(&other),
             format!("other:{gur}")

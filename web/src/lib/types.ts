@@ -509,16 +509,29 @@ export interface SaleBook {
   plate: string
   mileage: number | null
   mileage_unit: 'km' | 'mi'
-  lines: { label: string; next_mileage: number; unit: 'km' | 'mi'; next_date: string | null; slot?: BookSlot }[]
-  /** «Залито» — жидкости чека с товаром и количеством (ADR-116); у старого чека нет. */
+  /** Следующая замена по строке: `label` — что залито или поставлено («Mobil ATF 3309 · 1 л»,
+   *  задача 003 Н5), `group` — вид замены (услуга); у «прочего» — своя у каждой услуги. */
+  lines: {
+    label: string
+    next_mileage: number
+    unit: 'km' | 'mi'
+    next_date: string | null
+    slot?: BookSlot
+    service_id?: string | null
+    group?: string | null
+  }[]
+  /** Что залито и поставлено (ADR-116); у старого чека нет. */
   filled?: SaleBookFill[]
 }
 
-/** Жидкость чека в чеке книжки: «Антифриз» — «Sintec G12 · 2 шт» или «масло клиента» (ADR-116). */
+/** Строка чека в чеке книжки: подпись товаром — «Sintec G12 · 2 шт», «масло клиента (коробка)» —
+ *  и вид замены (задача 003 Н5). */
 export interface SaleBookFill {
   slot: BookSlot
   label: string
   product: string
+  service_id?: string | null
+  group?: string | null
 }
 
 export interface SaleListItem {

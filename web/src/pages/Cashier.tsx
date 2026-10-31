@@ -22,7 +22,7 @@ import { BankQrPanel, useBankQr, useOpenQrs } from '../components/BankQrPanel'
 import { qrForCard, qrPaidSum, strayQr, type OptimaStatus } from '../lib/optima'
 import { batteryAmount, productTitle } from '../lib/battery'
 import { OilHint } from '../components/OilBook'
-import { recordLines, recordMileage, slotKey, slotLabel, slotNextText, slotsOfSale, type VehicleBook } from '../lib/oilBook'
+import { lineTitle, recordLines, recordMileage, slotKey, slotLabel, slotNextText, slotsOfSale, slotTitle, type VehicleBook } from '../lib/oilBook'
 import { fromKm, mileageText, unitLabel, type MileageUnit } from '../lib/mileage'
 import { askOilChange, hasServiceWork, hasTopup } from '../lib/oilChange'
 import {
@@ -1284,6 +1284,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             withFilters: prefs.with_filters,
             qtyStyle: prefs.qty_style,
             filtersFollowOil: prefs.filters_follow_oil,
+            own: ownIntervals,
           })
         : null
     const printableBook = queuedBook && (queuedBook.lines.length > 0 || (queuedBook.filled?.length ?? 0) > 0) ? queuedBook : null
@@ -1670,12 +1671,13 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     </span>
   )
   // Под строками: фильтры на пробег масла и «Это замена?» (ADR-117).
-  const nextFilters = nextList.map(filtersNote).find(Boolean)
+  const nextFiltersRow = nextList.find((r) => filtersNote(r))
+  const nextFilters = nextFiltersRow && filtersNote(nextFiltersRow)
   const nextNotes = (nextFilters || oilHint) && (
     <>
       {nextFilters && (
         <span className="text-xs text-slate-600" data-testid="next-filters">
-          Масло двигателя — {nextFilters}
+          {nextFiltersRow.label} — {nextFilters}
         </span>
       )}
       {oilHint && (
@@ -1722,12 +1724,11 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             <span className="relative flex gap-1">
               {nextInput(r)}
               {!r.extra && (
-                // Строка книжки видна первой, что залито — в оставшемся месте (целиком — в подсказке).
+                // Что залито или поставлено — товаром (задача 003 Н5); товара нет — строка книжки.
                 <span className="pointer-events-none absolute top-1 right-1 left-1 flex text-[0.6rem] leading-none text-slate-500">
-                  <span className="max-w-full shrink-0 truncate">{slotLabel(r.slot)}</span>
+                  {!goodsOf(r.slot) && <span className="max-w-full shrink-0 truncate">{slotLabel(r.slot)}</span>}
                   {goodsOf(r.slot) && (
                     <span className="min-w-0 truncate" data-next-goods>
-                      {' · '}
                       {goodsOf(r.slot)}
                     </span>
                   )}
@@ -1777,7 +1778,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <span className="text-slate-500"> — следующая на пробеге</span>
               {goodsOf(r.slot) && !r.extra && (
                 <span className="block text-xs text-slate-500" data-next-goods>
-                  {slotLabel(r.slot)} — {goodsOf(r.slot)}
+                  {goodsOf(r.slot)}
                 </span>
               )}
             </label>
@@ -2344,7 +2345,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 )}
                 {recordLines(doneRecord).map((l, i) => (
                   <div key={i} className="text-slate-700">
-                    {slotLabel(l.slot)}: {l.text}
+                    {lineTitle(l)}
                   </div>
                 ))}
                 {doneRecord.declined?.trim() && (
@@ -2353,7 +2354,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 {/* Следующая — по строкам этого чека, не по прошлым заменам машины (ADR-111). */}
                 {slotsOfSale(done.book, done.sale.id).map((n) => (
                   <div key={slotKey(n)} className="text-slate-700">
-                    Следующая · {n.label}: <b>{slotNextText(n)}</b>
+                    Следующая · {slotTitle(n)}: <b>{slotNextText(n)}</b>
                   </div>
                 ))}
               </div>

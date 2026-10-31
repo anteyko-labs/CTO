@@ -57,6 +57,106 @@ pub fn slot_label(slot: &str) -> &'static str {
     }
 }
 
+/// Короткая пометка строки книжки — в скобках после того, что залито или поставлено, когда без неё
+/// непонятно (задача 003 Н5): «масло клиента (коробка)», «W712 (масляный) · 1 шт».
+fn slot_note(slot: &str) -> &'static str {
+    match slot {
+        "oil" => "двигатель",
+        "gear_oil" => "коробка",
+        "oil_filter" => "масляный",
+        "air_filter" => "воздушный",
+        "cabin_filter" => "салонный",
+        "fuel_filter" => "топливный",
+        "antifreeze" => "антифриз",
+        "brake_fluid" => "тормозная",
+        _ => "",
+    }
+}
+
+/// Вид фильтра в названии товара или услуги: «Фильтр топливный WK 820», «Замена топливного
+/// фильтра» — пометка не нужна.
+fn names_filter_kind(slot: &str, text: &str) -> bool {
+    let stem = match slot {
+        "oil_filter" => "масл",
+        "air_filter" => "воздуш",
+        "cabin_filter" => "салон",
+        "fuel_filter" => "топлив",
+        _ => return true,
+    };
+    text.to_lowercase().contains(stem)
+}
+
+/// Подпись строки книжки — что залито или поставлено (задача 003 Н5), одно правило для книжки,
+/// чеков, бота и напоминаний: товар с количеством («Mobil ATF 3309 · 1 л»); фильтр, в названии
+/// которого нет вида, — с видом в скобках («W712 (масляный) · 1 шт»); жидкость по услуге без товара —
+/// «масло клиента (коробка)»; работа без товара — название услуги. Название строки книжки («Масло в
+/// коробке») вместо товара не пишется. Записанное не меняется (I4): подпись строится при показе.
+/// Касса — то же правило (`oilBook.ts`, `titleOf`).
+pub fn title_of(slot: &str, text: &str, service: Option<&str>) -> String {
+    if is_fluid(slot) && service == Some(text) {
+        return format!("{} ({})", own_fluid(slot), slot_note(slot));
+    }
+    if !names_filter_kind(slot, text) {
+        let note = slot_note(slot);
+        return match text.rsplit_once(" · ") {
+            Some((name, qty)) => format!("{name} ({note}) · {qty}"),
+            None => format!("{text} ({note})"),
+        };
+    }
+    text.to_string()
+}
+
+/// Подпись строки замены (`title_of`).
+pub fn line_title(l: &BookLine) -> String {
+    title_of(&l.slot, &l.text, l.service.as_deref())
+}
+
+/// Подпись нескольких строк одной строки книжки (два товара — оба): «Mobil ATF 3309 · 1 л, Shell
+/// ATF · 1 л».
+fn titles<'a>(lines: impl Iterator<Item = &'a BookLine>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for t in lines.map(line_title) {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out.join(", ")
+}
+
+/// Товар строки замены без количества: «Mobil ATF 3309»; строка без товара (услуга, запись из
+/// тетради) — `None`.
+fn product_name(l: &BookLine) -> Option<String> {
+    l.category_id?;
+    let name = l.text.rsplit_once(" · ").map_or(l.text.as_str(), |x| x.0);
+    (!name.trim().is_empty()).then(|| name.trim().to_string())
+}
+
+/// Вид замены строки — под ним она в чеке книжки и в блоке книжки товарного чека (задача 003 Н5):
+/// услуга строки; масляный, воздушный и салонный фильтр без своей услуги — услуга масла двигателя
+/// той же записи (их меняют с маслом, ADR-117). Нет услуги — без вида.
+fn line_group(l: &BookLine, all: &[BookLine]) -> Option<String> {
+    if let Some(s) = &l.service {
+        return Some(s.clone());
+    }
+    if follows_oil(&l.slot) {
+        return all
+            .iter()
+            .find(|o| o.slot == "oil" && o.service.is_some())
+            .and_then(|o| o.service.clone());
+    }
+    None
+}
+
+/// Подпись и вид замены у каждой строки записи — для показа (задача 003 Н5).
+fn with_titles(mut lines: Vec<BookLine>) -> Vec<BookLine> {
+    let groups: Vec<Option<String>> = lines.iter().map(|l| line_group(l, &lines)).collect();
+    for (l, group) in lines.iter_mut().zip(groups) {
+        l.title = line_title(l);
+        l.group = group;
+    }
+    lines
+}
+
 /// Интервал строки, если его не задали ни у категории, ни у машины: масло и масляный фильтр —
 /// 8 000 км или 31 день (решение заказчика), воздушный и салонный — 15 000 км или год,
 /// топливный — 30 000 км или два года. У прочих работ интервала по умолчанию нет.
@@ -256,6 +356,10 @@ pub struct BookLine {
     pub next_unit: Option<String>,
     pub next_km: Option<i32>,
     pub next_date: Option<NaiveDate>,
+    /// Подпись строки — что залито или поставлено (`line_title`, задача 003 Н5); строится при показе.
+    pub title: String,
+    /// Вид замены строки (`line_group`): под ним она в чеке книжки.
+    pub group: Option<String>,
 }
 
 impl BookLine {
@@ -290,7 +394,13 @@ pub struct SlotNext {
     pub slot: String,
     /// Услуга «прочее», чья это следующая замена; у остальных строк — нет.
     pub service_id: Option<Uuid>,
+    /// Название строки книжки («Масло в коробке»), у «прочего» — услуги: для интервала и выбора строки.
     pub label: String,
+    /// Что залито или поставлено в последнюю замену строки (задача 003 Н5): «Mobil ATF 3309 · 1 л»;
+    /// под этой подписью — следующая замена в книжке, чеках и боте. Замен не было — `label`.
+    pub title: String,
+    /// Товары последней замены строки без количества: «Mobil ATF 3309» — в напоминании.
+    pub products: Vec<String>,
     pub interval_km: Option<i32>,
     pub interval_days: Option<i32>,
     /// Интервал задан у этой машины.
@@ -947,8 +1057,9 @@ async fn line_interval(
     Ok(category_interval(&categories, slot, category_id).or_else(|| slot_default(slot)))
 }
 
-/// Масляная книжка в печатном чеке (SPEC-34 §4): «чек книжки» — только этот чек и только жидкости
-/// (ADR-116).
+/// Масляная книжка в печатном чеке (SPEC-34 §4): «чек книжки» — только этот чек: жидкости,
+/// фильтры (по настройке, по умолчанию — с ними) и работы «прочее» со сроком, по видам замены
+/// (задача 003 Н5).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SaleBook {
     pub brand: String,
@@ -957,16 +1068,16 @@ pub struct SaleBook {
     /// Пробег сейчас, как вписали, и единица.
     pub mileage: Option<i32>,
     pub mileage_unit: String,
-    /// Следующие замены жидкостей чека; пустые (без напоминания) не печатаются.
+    /// Следующие замены строк чека; пустые (без напоминания) не печатаются.
     pub lines: Vec<SaleBookLine>,
-    /// «Залито»: жидкости чека — товар с количеством, у масла клиента — «масло клиента» (ADR-116).
+    /// Что залито и поставлено: товар с количеством, у масла клиента — «масло клиента» (ADR-116).
     #[serde(default)]
     pub filled: Vec<SaleBookFill>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SaleBookLine {
-    /// Строка книжки: «Антифриз».
+    /// Что залито или поставлено по строке (`title_of`): «Mobil ATF 3309 · 1 л» (задача 003 Н5).
     pub label: String,
     pub next_mileage: i32,
     pub unit: String,
@@ -974,14 +1085,27 @@ pub struct SaleBookLine {
     pub next_date: Option<NaiveDate>,
     #[serde(default)]
     pub slot: String,
+    /// Услуга «прочее» строки: у каждой своя следующая замена (ADR-131).
+    #[serde(default)]
+    pub service_id: Option<Uuid>,
+    /// Вид замены (`line_group`): «Замена масла в моторе».
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SaleBookFill {
     pub slot: String,
+    /// Подпись (`title_of`): «Mobil ATF 3309 · 1 л», «W712 (масляный) · 1 шт», «масло клиента
+    /// (коробка)» (задача 003 Н5).
     pub label: String,
-    /// Товар и количество: «Sintec G12 красный 5 кг · 2 шт».
+    /// Товар и количество, как записано: «Sintec G12 красный 5 кг · 2 шт».
     pub product: String,
+    #[serde(default)]
+    pub service_id: Option<Uuid>,
+    /// Вид замены (`line_group`).
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// Чем залили строку, когда товара в чеке нет: своё у клиента.
@@ -992,8 +1116,9 @@ fn own_fluid(slot: &str) -> &'static str {
     }
 }
 
-/// Книжка чека для печати: запись замены этого чека; у чека без записи — `None`. Жидкости, а при
-/// настройке «с фильтрами» — и фильтры (ADR-144). Строка без цели (запись до 31.10.2026) —
+/// Книжка чека для печати: запись замены этого чека; у чека без записи — `None`. Жидкости, фильтры
+/// (настройка «с фильтрами», ADR-144; по умолчанию — да) и работы «прочее» со сроком; у каждой
+/// строки — подпись товаром и вид замены (задача 003 Н5). Строка без цели (запись до 31.10.2026) —
 /// срок по интервалу, как в книжке клиента (`slot_next`): записанное не меняется (I4).
 pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Option<SaleBook>> {
     let Some(h) = sqlx::query!(
@@ -1010,46 +1135,74 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
     };
     let settings = crate::api::book_settings::load(conn, h.branch_id).await?;
     let items = sqlx::query!(
-        r#"select i.slot, i.text, i.category_id, i.service_id, i.target_set, i.next_value,
-                  i.next_unit, i.next_date
-           from oil_change_items i
+        r#"select i.slot, i.text, i.category_id, i.service_id, s.name as "service?", i.target_set,
+                  i.next_value, i.next_unit, i.next_km, i.next_date
+           from oil_change_items i left join services s on s.id = i.service_id
            where i.oil_change_id = $1
-             and (i.slot in ('oil', 'gear_oil', 'antifreeze', 'brake_fluid')
-                  or ($2 and i.slot like '%\_filter'))
            order by i.position"#,
-        h.id,
-        settings.with_filters
+        h.id
     )
     .fetch_all(&mut *conn)
     .await?;
+    let all = with_titles(
+        items
+            .into_iter()
+            .map(|i| BookLine {
+                slot: i.slot,
+                text: i.text,
+                category_id: i.category_id,
+                service_id: i.service_id,
+                service: i.service,
+                target_set: i.target_set,
+                next_mileage: i.next_value,
+                next_unit: i.next_unit,
+                next_km: i.next_km,
+                next_date: i.next_date,
+                ..BookLine::default()
+            })
+            .collect(),
+    );
+    // Что идёт в чек: жидкости, фильтры — по настройке, «прочее» — по услуге (срок у него всегда от
+    // кассира, ADR-131).
+    let printed = |l: &BookLine| {
+        is_fluid(&l.slot)
+            || (settings.with_filters && l.slot.ends_with("_filter"))
+            || (l.slot == "other" && l.service_id.is_some())
+    };
     let own = own_intervals(conn, h.vehicle_id).await?;
     // Пробег сейчас в единице записи: от него срок строки без цели.
     let now = h.mileage_value.or(h.mileage_km);
     let mut lines: Vec<SaleBookLine> = Vec::new();
     let mut filled: Vec<SaleBookFill> = Vec::new();
-    let mut decided: Vec<String> = Vec::new();
-    for i in items {
-        let label = slot_label(&i.slot).to_string();
+    let mut decided: Vec<(String, Option<Uuid>)> = Vec::new();
+    for i in all.iter().filter(|l| printed(l)) {
+        // У «прочего» — своя строка у каждой услуги (ADR-131).
+        let other = i.service_id.filter(|_| i.slot == "other");
         // Строка товара — «название · количество»; строка услуги без товара — масло клиента. Услуга
         // при товаре той же строки строки не даёт (товар её подписывает).
         filled.push(SaleBookFill {
             slot: i.slot.clone(),
-            label: label.clone(),
-            product: if i.category_id.is_some() || i.slot.ends_with("_filter") {
-                i.text
+            label: i.title.clone(),
+            product: if i.category_id.is_some() || !is_fluid(&i.slot) {
+                i.text.clone()
             } else {
                 own_fluid(&i.slot).to_string()
             },
+            service_id: other,
+            group: i.group.clone(),
         });
-        if decided.contains(&i.slot) {
+        let key = (i.slot.clone(), other);
+        if decided.contains(&key) {
             continue;
         }
-        decided.push(i.slot.clone());
+        decided.push(key.clone());
         let next = if i.target_set {
-            i.next_value.map(|v| {
+            i.next_mileage.map(|v| {
                 (
                     v,
-                    i.next_unit.unwrap_or_else(|| h.mileage_unit.clone()),
+                    i.next_unit
+                        .clone()
+                        .unwrap_or_else(|| h.mileage_unit.clone()),
                     i.next_date,
                 )
             })
@@ -1066,12 +1219,18 @@ pub async fn sale_book(conn: &mut PgConnection, sale_id: Uuid) -> AppResult<Opti
             }
         };
         if let Some((next_mileage, unit, next_date)) = next {
+            // Подпись — все товары этой строки чека: «Mobil ATF 3309 · 1 л, Shell ATF · 1 л».
+            let same = all.iter().filter(|l| {
+                printed(l) && l.slot == key.0 && (other.is_none() || l.service_id == other)
+            });
             lines.push(SaleBookLine {
-                label,
+                label: titles(same),
                 next_mileage,
                 unit,
                 next_date,
-                slot: i.slot,
+                slot: key.0,
+                service_id: other,
+                group: i.group.clone(),
             });
         }
     }
@@ -1200,6 +1359,7 @@ pub async fn books_with_removed(
             next_unit: i.next_unit,
             next_km: i.next_km,
             next_date: i.next_date,
+            ..BookLine::default()
         });
     }
     let overrides = sqlx::query!(
@@ -1232,10 +1392,12 @@ pub async fn books_with_removed(
                 oil_text: r.oil_text.clone(),
                 filter_text: r.filter_text.clone(),
                 // Запись без строк (заведена в обход книжки) — по прежним полям масла и фильтра.
-                lines: items_by
-                    .get(&r.id)
-                    .cloned()
-                    .unwrap_or_else(|| legacy_lines(&r.oil_text, &r.filter_text)),
+                lines: with_titles(
+                    items_by
+                        .get(&r.id)
+                        .cloned()
+                        .unwrap_or_else(|| legacy_lines(&r.oil_text, &r.filter_text)),
+                ),
                 comment: r.comment.clone(),
                 declined: r.declined.clone(),
                 sale_id: r.sale_id,
@@ -1351,7 +1513,7 @@ pub fn next_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
         .iter()
         .filter_map(|n| {
             let t = next_text(n);
-            (!t.is_empty()).then(|| format!("{indent}{}: {t}", n.label))
+            (!t.is_empty()).then(|| format!("{indent}{}: {t}", n.title))
         })
         .collect()
 }
@@ -1384,37 +1546,24 @@ fn last_line<'a>(b: &'a VehicleBook, key: SlotKey) -> Option<(&'a OilRecord, &'a
     })
 }
 
-/// Масло клиента: в строке масла только услуга, товара-масла в чеке не было (SPEC-16).
-pub fn client_oil(l: &BookLine) -> bool {
-    matches!(l.slot.as_str(), "oil" | "gear_oil") && l.service.as_deref() == Some(l.text.as_str())
-}
-
 /// «Сейчас в машине» для бота (SPEC-36 §6): по каждой строке книжки, где уже была замена, —
-/// что залито или поставлено, дата, пробег и следующая замена (только пробег, ADR-115).
-/// «  Масло двигателя: Масло 5W-30 · 1 кан. × 4 л — 26.10.2026, 250 000 км → следующая на 258 000 км»;
-/// услуга «прочее» — своим названием: «  Замена ГУР — 27.10.2026, 217 000 км → следующая на 150 000 км».
+/// что залито или поставлено (подпись товаром, задача 003 Н5), дата, пробег и следующая замена
+/// (только пробег, ADR-115).
+/// «  Mobil ATF 3309 · 1 л — 26.10.2026, 250 000 км → следующая на 290 000 км»; услуга «прочее» —
+/// своим названием: «  Замена ГУР — 27.10.2026, 217 000 км → следующая на 150 000 км».
 pub fn now_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
     b.slots
         .iter()
         .filter_map(|n| {
             let date = n.last_date?;
             let last = last_line(b, (&n.slot, n.service_id));
-            let what = match last {
-                Some((_, l)) if client_oil(l) => "масло клиента".to_string(),
-                Some((_, l)) => l.text.clone(),
-                None => n.last_text.clone().unwrap_or_default(),
-            };
             let mut when = vec![date.format("%d.%m.%Y").to_string()];
             if let Some((r, _)) = last
                 && let Some(m) = r.mileage
             {
                 when.push(crate::domain::mileage::text(m, &r.mileage_unit));
             }
-            let mut line = if what == n.label {
-                format!("{indent}{} — {}", n.label, when.join(", "))
-            } else {
-                format!("{indent}{}: {what} — {}", n.label, when.join(", "))
-            };
+            let mut line = format!("{indent}{} — {}", n.title, when.join(", "));
             let next = next_text(n);
             if !next.is_empty() {
                 line.push_str(&format!(" → следующая {next}"));
@@ -1424,16 +1573,16 @@ pub fn now_lines(b: &VehicleBook, indent: &str) -> Vec<String> {
         .collect()
 }
 
-/// Строки замены для бота: «Масло двигателя: …», «Фильтр воздушный: …».
+/// Строки замены для бота: что залито или поставлено (подпись товаром, задача 003 Н5) и цель.
 pub fn record_lines(r: &OilRecord, indent: &str) -> Vec<String> {
     r.lines
         .iter()
         .map(|l| {
             let next = line_next_text(l);
             if next.is_empty() {
-                format!("{indent}{}: {}", slot_label(&l.slot), l.text)
+                format!("{indent}{}", line_title(l))
             } else {
-                format!("{indent}{}: {} — {next}", slot_label(&l.slot), l.text)
+                format!("{indent}{} — {next}", line_title(l))
             }
         })
         .collect()
@@ -1564,6 +1713,20 @@ fn slot_next(
         (Some(_), Some((_, l))) => l.service.clone().unwrap_or_else(|| l.text.clone()),
         _ => slot_label(slot).to_string(),
     };
+    // Что залито или поставлено в последнюю замену строки — все её товары (задача 003 Н5).
+    let (title, products) = match &last {
+        Some((r, _)) if service.is_none() => {
+            let mine = || r.lines.iter().filter(|l| line_of(l, key));
+            let mut products: Vec<String> = Vec::new();
+            for p in mine().filter_map(product_name) {
+                if !products.contains(&p) {
+                    products.push(p);
+                }
+            }
+            (titles(mine()), products)
+        }
+        _ => (label.clone(), Vec::new()),
+    };
     let in_unit = |k: Option<i32>| k.and_then(|k| crate::domain::mileage::from_km(k, unit));
     // Цель, которую поставил сервер (ADR-144), — тот же расчёт по интервалу: владелец поменял
     // интервал машины или категории — следующая замена пересчитывается, как без цели.
@@ -1600,6 +1763,8 @@ fn slot_next(
         slot: slot.to_string(),
         service_id: service,
         label,
+        title,
+        products,
         interval_km: interval.map(|i| i.0),
         interval_days: interval.map(|i| i.1),
         own_interval: own.is_some(),

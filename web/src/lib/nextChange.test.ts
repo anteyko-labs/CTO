@@ -140,7 +140,7 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     // доливка: ни строк, ни «+ ещё».
     const rows = rowsOf(sample)
     expect(rows.map((r) => [r.key, r.label, r.value])).toEqual([['oil', 'Замена со своим маслом', '258000']])
-    expect(rows[0].filters).toEqual(['воздушный'])
+    expect(rows[0].filters).toEqual(['Фильтр воздушный MANN C-110'])
     expect(extraChoices(cartSources(sample), rows).map((c) => c.label)).toEqual(['Замена ГУР', 'Смазка кардана, 1 точка'])
     // Выбрали «Замена ГУР» — строка с её названием; интервала у неё нет — поле пустое. У кардана
     // интервал задан — заполнено заранее.
@@ -172,7 +172,8 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     const rows = rowsOf(lines, [], { air_filter: '230000' })
     // Услуга воздушного фильтра своей строки не даёт; топливный фильтр — товар без услуги: строки нет.
     expect(rows.map((r) => [r.key, r.value])).toEqual([['oil', '258000']])
-    expect(filtersNote(rows[0])).toBe('и фильтры: масляный, воздушный, салонный на тот же пробег')
+    // Фильтр товаром — его подписью (задача 003 Н5), услуга без товара — видом.
+    expect(filtersNote(rows[0])).toBe('и фильтры: Фильтр W712 (масляный), воздушный, Фильтр салонный CU-2 на тот же пробег')
     expect(nextPayload(rows)).toEqual([{ service_id: 's1', slot: 'oil', next_mileage: 258000 }])
     expect(filtersNote({ filters: ['воздушный'] })).toBe('и фильтр: воздушный на тот же пробег')
     expect(filtersNote({})).toBe('')
@@ -250,7 +251,7 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     expect(snapshotCategories(undefined)).toBeNull()
   })
 
-  it('книжка для чека из очереди — как отдаст сервер: только жидкости, что залито и непустые строки (ADR-116)', () => {
+  it('книжка для чека из очереди — как отдаст сервер: подпись товаром, вид замены, фильтры и «прочее» (задача 003 Н5)', () => {
     const lines = [
       { service: oil },
       { service: anti },
@@ -262,21 +263,33 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     ]
     const rows = nextRows({ sources: cartSources(lines), goods: cartGoods(lines, categories), extra: ['s6'], edits: { antifreeze: '', 'svc:s6': '300000' }, mileage: '217000', unit: 'km', own: {} })
     const b = receiptBook({ brand: 'Toyota', model: 'Camry', plate: '01KG123ABC' }, '217000', 'km', rows, '2026-10-26', cartGoods(lines, categories))
-    // «Прочее» (ГУР) в печатный чек не идёт (ADR-116).
-    expect(b.lines).toEqual([{ label: 'Масло двигателя', slot: 'oil', next_mileage: 225000, unit: 'km', next_date: '2026-11-26' }])
-    expect(b.filled).toEqual([
-      { slot: 'oil', label: 'Масло двигателя', product: 'Totachi 5W-30 4 л · 1 кан. × 4 л' },
-      { slot: 'oil', label: 'Масло двигателя', product: 'Totachi 5W-30 розлив · 0,5 л' },
-      { slot: 'antifreeze', label: 'Антифриз', product: 'Felix G12 5 кг · 2 шт' },
+    const motor = 'Замена масла в моторе'
+    // Два товара строки масла — оба; воздушный фильтр — под заменой масла, на её пробег; ГУР — своим
+    // названием и сроком; у антифриза «не напоминать» — без следующей замены.
+    expect(b.lines).toEqual([
+      { label: 'Totachi 5W-30 4 л · 1 кан. × 4 л, Totachi 5W-30 розлив · 0,5 л', slot: 'oil', service_id: null, group: motor, next_mileage: 225000, unit: 'km', next_date: '2026-11-26' },
+      { label: 'Замена ГУР', slot: 'other', service_id: 's6', group: 'Замена ГУР', next_mileage: 300000, unit: 'km', next_date: null },
+      { label: 'Фильтр воздушный MANN C-110 · 1 шт', slot: 'air_filter', service_id: null, group: motor, next_mileage: 225000, unit: 'km', next_date: '2026-11-26' },
+    ])
+    expect(b.filled?.map((f) => [f.label, f.group])).toEqual([
+      ['Totachi 5W-30 4 л · 1 кан. × 4 л', motor],
+      ['Totachi 5W-30 розлив · 0,5 л', motor],
+      ['Felix G12 5 кг · 2 шт', 'Замена антифриза'],
+      ['Замена ГУР', 'Замена ГУР'],
+      ['Фильтр воздушный MANN C-110 · 1 шт', motor],
     ])
     expect(b.mileage).toBe(217000)
+    // Настройка «только масла и жидкости» — без фильтра.
+    const fluids = receiptBook({ brand: '', model: '', plate: '1' }, '217000', 'km', rows, '2026-10-26', cartGoods(lines, categories), { withFilters: false })
+    expect(fluids.filled?.map((f) => f.slot)).toEqual(['oil', 'oil', 'antifreeze', 'other'])
     // Масло клиента — услуга без товара.
     const own = nextRows({ sources: cartSources([{ service: oil }]), extra: [], edits: {}, mileage: '217000', unit: 'km', own: {} })
-    expect(receiptBook({ brand: '', model: '', plate: '1' }, '217000', 'km', own, '2026-10-26').filled).toEqual([{ slot: 'oil', label: 'Масло двигателя', product: 'масло клиента' }])
-    // Только «прочее» — печатать нечего.
+    expect(receiptBook({ brand: '', model: '', plate: '1' }, '217000', 'km', own, '2026-10-26').filled).toEqual([
+      { slot: 'oil', label: 'масло клиента (двигатель)', product: 'масло клиента', service_id: null, group: motor },
+    ])
+    // Только «прочее» — работа своим названием и сроком.
     const other = nextRows({ sources: cartSources([{ service: gur }]), extra: ['s6'], edits: { 'svc:s6': '300000' }, mileage: '217000', unit: 'km', own: {} })
-    const empty = receiptBook({ brand: '', model: '', plate: '1' }, '217000', 'km', other, '2026-10-26')
-    expect([empty.lines, empty.filled]).toEqual([[], []])
+    expect(receiptBook({ brand: '', model: '', plate: '1' }, '217000', 'km', other, '2026-10-26').lines.map((l) => [l.label, l.next_mileage])).toEqual([['Замена ГУР', 300000]])
     // На кассе под строкой — товар коротко.
     expect(cartGoods(lines, categories).map(goodShort)).toEqual([
       'Фильтр воздушный MANN C-110 × 1',
@@ -312,7 +325,7 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     expect(goods.map((g) => g.slot)).toEqual(['antifreeze'])
     const rows = nextRows({ sources: cartSources(lines), extra: [], edits: {}, mileage: '120000', unit: 'km', own: {} })
     const b = receiptBook({ brand: '', model: '', plate: '1' }, '120000', 'km', rows, '2026-10-27', goods)
-    expect(b.filled).toEqual([{ slot: 'antifreeze', label: 'Антифриз', product: 'Антифриз Sintec G12 красный 5 кг · 1 шт' }])
+    expect(b.filled).toEqual([{ slot: 'antifreeze', label: 'Антифриз Sintec G12 красный 5 кг · 1 шт', product: 'Антифриз Sintec G12 красный 5 кг · 1 шт', service_id: null, group: 'Замена антифриза' }])
   })
 
   it('проданное масло без услуги своей строки — замена; доливка этой строки, ГУР и мост — нет (ADR-136)', () => {
@@ -325,7 +338,8 @@ describe('следующая замена в чеке (SPEC-34)', () => {
       ['oil', 's5', '138000'],
       ['gear_oil', '', '170000'],
     ])
-    expect(r17[1].label).toBe('Масло в коробке')
+    // Подпись строки по товару — товар, а не «Масло в коробке» (задача 003 Н5).
+    expect(r17[1].label).toBe('ATF Dexron III')
     // Цель по строке без услуги — `service_id: null`; очищенная — «не напоминать».
     expect(nextPayload(rows([{ product: atf }, { service: wash }], { gear_oil: '' }))).toEqual([{ service_id: null, slot: 'gear_oil', next_mileage: null }])
     expect(nextPayload(rows([{ product: motorOil }, { service: wash }]))).toEqual([{ service_id: null, slot: 'oil', next_mileage: 138000 }])
@@ -373,14 +387,14 @@ describe('следующая замена в чеке (SPEC-34)', () => {
     expect(goodBook(cartGoods([{ product: can4, kind: 'container', qtyText: '2' }], categories)[0])).toBe('Totachi 5W-30 4 л · 2 кан. × 4 л')
     const rows = nextRows({ sources: cartSources([{ service: oil }]), goods, extra: [], edits: {}, mileage: '130000', unit: 'km', own: {} })
     const book = receiptBook({ brand: 'Toyota', model: 'Camry', plate: '01KG' }, '130000', 'km', rows, '2026-10-31', goods)
-    expect(book.filled).toEqual([{ slot: 'oil', label: 'Масло двигателя', product: 'Totachi 5W-30 4 л · 4,5 л' }])
+    expect(book.filled).toEqual([{ slot: 'oil', label: 'Totachi 5W-30 4 л · 4,5 л', product: 'Totachi 5W-30 4 л · 4,5 л', service_id: null, group: 'Замена масла в моторе' }])
   })
 
   it('фильтры с маслом — своими строками, если владелец выключил «на пробег масла»; чек книжки с фильтрами', () => {
     const lines = [{ service: oil }, { product: airFilter }, { product: oilFilter }]
     const on = nextRows({ sources: cartSources(lines), goods: cartGoods(lines, categories), extra: [], edits: {}, mileage: '130000', unit: 'km', own: {} })
     expect(on.map((r) => r.slot)).toEqual(['oil'])
-    expect(on[0].filters).toEqual(['масляный', 'воздушный'])
+    expect(on[0].filters).toEqual(['Фильтр W712 (масляный)', 'Фильтр воздушный MANN C-110'])
     const off = nextRows({ sources: cartSources(lines), goods: cartGoods(lines, categories), extra: [], edits: {}, mileage: '130000', unit: 'km', own: {}, filtersFollowOil: false })
     expect(off[0].filters).toBeUndefined()
     const book = receiptBook({ brand: '', model: '', plate: '01KG' }, '130000', 'km', on, '2026-10-31', cartGoods(lines, categories), { withFilters: true })
@@ -390,5 +404,29 @@ describe('следующая замена в чеке (SPEC-34)', () => {
       ['oil_filter', 138000],
     ])
     expect(book.filled?.map((f) => f.product)).toEqual(['масло клиента', 'Фильтр воздушный MANN C-110 · 1 шт', 'Фильтр W712 · 1 шт'])
+  })
+
+  it('топливный фильтр в чеке из очереди — свой срок, не пробег масла (задача 003 Н5, ADR-117)', () => {
+    const fuel = product('p9', 'Фильтр топливный WK-842', 'c-filters', { filter_type: 'топливный' })
+    const lines = [{ service: oil }, { product: oilFilter }, { product: fuel }]
+    const goods = cartGoods(lines, categories)
+    expect(goods.map((g) => g.slot)).toEqual(['oil_filter', 'fuel_filter'])
+    const rows = nextRows({ sources: cartSources(lines), goods, extra: [], edits: {}, mileage: '130000', unit: 'km', own: {} })
+    const book = receiptBook({ brand: '', model: '', plate: '01KG' }, '130000', 'km', rows, '2026-10-31', goods)
+    // Масляный — с маслом (138 000), топливный — 30 000 км по умолчанию (160 000), без вида замены.
+    expect(book.lines.map((l) => [l.label, l.next_mileage, l.group])).toEqual([
+      ['масло клиента (двигатель)', 138000, 'Замена масла в моторе'],
+      ['Фильтр W712 (масляный) · 1 шт', 138000, 'Замена масла в моторе'],
+      ['Фильтр топливный WK-842 · 1 шт', 160000, null],
+    ])
+    // Свой интервал машины — по нему; с услугой топливного фильтра — по её строке и под ней.
+    const own = receiptBook({ brand: '', model: '', plate: '01KG' }, '130000', 'km', rows, '2026-10-31', goods, { own: { fuel_filter: { km: 45000, days: 730 } } })
+    expect(own.lines.find((l) => l.slot === 'fuel_filter')?.next_mileage).toBe(175000)
+    const fuelSvc = svc('s12', 'Замена топливного фильтра', 'fuel_filter', 30000, 730)
+    const withSvc = [...lines, { service: fuelSvc }]
+    const rows2 = nextRows({ sources: cartSources(withSvc), goods, extra: [], edits: { fuel_filter: '161000' }, mileage: '130000', unit: 'km', own: {} })
+    expect(rows2.map((r) => r.slot)).toEqual(['oil', 'fuel_filter'])
+    const book2 = receiptBook({ brand: '', model: '', plate: '01KG' }, '130000', 'km', rows2, '2026-10-31', goods)
+    expect(book2.lines.find((l) => l.slot === 'fuel_filter')).toMatchObject({ next_mileage: 161000, group: 'Замена топливного фильтра' })
   })
 })

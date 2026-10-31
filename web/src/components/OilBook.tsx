@@ -6,7 +6,7 @@ import { activeNotes, cashierNotesText, type ClientNote } from '../lib/clientNot
 import { formatDate, formatDateTime, formatSom, todayBishkek } from '../lib/format'
 import { useAction, useLoad } from '../lib/hooks'
 import { fromKm, mileageText, toKm, unitLabel, type MileageUnit } from '../lib/mileage'
-import { lineNextText, nextText, overdueSlots, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, type SlotNext, type VehicleBook } from '../lib/oilBook'
+import { lineNextText, lineTitle, nextText, overdueSlots, recordLines, recordMileage, recordText, slotKey, slotLabel, slotNextText, slotsWithNext, slotTitle, type SlotNext, type VehicleBook } from '../lib/oilBook'
 import { printOilBook } from '../lib/oilBookPrint'
 import { BOOK_SLOT_LABELS, type BookSlot } from '../lib/types'
 import { Pager, usePager } from './Pager'
@@ -38,7 +38,7 @@ export function OilHint({ book: b }: { book: VehicleBook | null }) {
         <ul className="mt-1">
           {next.map((n) => (
             <li key={slotKey(n)} className={overdue.includes(n) ? 'font-medium' : ''}>
-              {n.label}: следующая {slotNextText(n)}
+              {slotTitle(n)}: следующая {slotNextText(n)}
               {overdue.includes(n) && ' — пора менять'}
             </li>
           ))}
@@ -153,7 +153,11 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
               const late = n.next_date !== null && n.next_date < todayBishkek()
               return (
                 <tr key={slotKey(n)}>
-                  <td className="py-1 pr-2 font-medium">{n.label}</td>
+                  <td className="py-1 pr-2">
+                    {/* Что залили в последний раз (задача 003 Н5); строка книжки — мелко: интервал у неё. */}
+                    <span className="font-medium">{slotTitle(n)}</span>
+                    {slotTitle(n) !== n.label && <span className="block text-xs text-slate-500">{n.label}</span>}
+                  </td>
                   <td className={`py-1 pr-2 ${late ? 'font-medium text-amber-800' : ''}`}>
                     {slotNextText(n) || '—'}
                     {late && ' — пора менять'}
@@ -203,7 +207,7 @@ function VehicleCard({ b, editable, partyId, onChanged }: { b: VehicleBook; edit
                 <span className="block text-slate-600">
                   {recordLines(r).map((l, i) => (
                     <span key={i} className="mr-3 inline-block">
-                      <span className="text-slate-500">{slotLabel(l.slot)}:</span> {l.text}
+                      {lineTitle(l)}
                       {lineNextText(l) && <span className="text-sky-800"> — {lineNextText(l)}</span>}
                     </span>
                   ))}

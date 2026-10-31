@@ -361,9 +361,11 @@ async fn point_service(p: &mut Point, key: &'static str, body: Value) -> Value {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn sale_check_has_only_fluids_and_filters_follow_oil(pool: PgPool) {
+async fn sale_check_has_goods_and_filters_follow_oil(pool: PgPool) {
     // П. 5, 14, 19: чек с маслом, антифризом и четырьмя фильтрами. Масло — 258 000 по услуге,
     // антифриз — 280 000 по услуге «Замена антифриза» (товар без услуги — доливка, ADR-131).
+    // Задача 003 Н5: чек книжки по умолчанию — и фильтры; подпись — товар, а не строка книжки;
+    // фильтры с маслом — под заменой масла и на её пробег, топливный — по своему сроку.
     let mut p = Point::new(pool).await;
     point_service(&mut p, "anti", json!({ "name": "Замена антифриза" })).await;
     let sale = p
@@ -387,14 +389,48 @@ async fn sale_check_has_only_fluids_and_filters_follow_oil(pool: PgPool) {
             ]),
         )
         .await;
-    // Чек книжки: «Залито» — масло и антифриз с товаром и количеством; следующая — по ним.
     let book = &sale["book"];
+    let oil_service = p.services["oil"]["name"].clone();
+    let filled: Vec<(Value, Value, Value)> = book["filled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["slot"].clone(), f["label"].clone(), f["group"].clone()))
+        .collect();
     assert_eq!(
-        book["filled"],
-        json!([
-            { "slot": "oil", "label": "Масло двигателя", "product": "Масло 5W-30 4л · 1 кан. × 4 л" },
-            { "slot": "antifreeze", "label": "Антифриз", "product": "Sintec G12 красный 5 кг · 2 шт" },
-        ])
+        filled,
+        vec![
+            (
+                json!("oil"),
+                json!("Масло 5W-30 4л · 1 кан. × 4 л"),
+                oil_service.clone()
+            ),
+            (
+                json!("antifreeze"),
+                json!("Sintec G12 красный 5 кг · 2 шт"),
+                json!("Замена антифриза")
+            ),
+            (
+                json!("oil_filter"),
+                json!("Фильтр W712 (масляный) · 1 шт"),
+                oil_service.clone()
+            ),
+            (
+                json!("air_filter"),
+                json!("Фильтр C-110 (воздушный) · 1 шт"),
+                oil_service.clone()
+            ),
+            (
+                json!("cabin_filter"),
+                json!("Фильтр CU-2 (салонный) · 1 шт"),
+                oil_service.clone()
+            ),
+            (
+                json!("fuel_filter"),
+                json!("Фильтр WK-842 (топливный) · 1 шт"),
+                Value::Null
+            ),
+        ]
     );
     let next: Vec<(Value, Value, Value)> = book["lines"]
         .as_array()
@@ -411,10 +447,57 @@ async fn sale_check_has_only_fluids_and_filters_follow_oil(pool: PgPool) {
     assert_eq!(
         next,
         vec![
-            (json!("oil"), json!("Масло двигателя"), json!(258_000)),
-            (json!("antifreeze"), json!("Антифриз"), json!(280_000)),
+            (
+                json!("oil"),
+                json!("Масло 5W-30 4л · 1 кан. × 4 л"),
+                json!(258_000)
+            ),
+            (
+                json!("antifreeze"),
+                json!("Sintec G12 красный 5 кг · 2 шт"),
+                json!(280_000)
+            ),
+            (
+                json!("oil_filter"),
+                json!("Фильтр W712 (масляный) · 1 шт"),
+                json!(258_000)
+            ),
+            (
+                json!("air_filter"),
+                json!("Фильтр C-110 (воздушный) · 1 шт"),
+                json!(258_000)
+            ),
+            (
+                json!("cabin_filter"),
+                json!("Фильтр CU-2 (салонный) · 1 шт"),
+                json!(258_000)
+            ),
+            // Топливный — свой срок: 250 000 + 30 000, а не пробег масла (ADR-117).
+            (
+                json!("fuel_filter"),
+                json!("Фильтр WK-842 (топливный) · 1 шт"),
+                json!(280_000)
+            ),
         ]
     );
+    // «Только масла и жидкости» — как было (ADR-116).
+    book_settings(&p, json!({ "with_filters": false })).await;
+    let (status, again) = call(
+        &p.app,
+        "GET",
+        &format!("/api/v1/sales/{}", sale["id"].as_str().unwrap()),
+        &p.owner,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    let slots: Vec<Value> = again["book"]["filled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["slot"].clone())
+        .collect();
+    assert_eq!(slots, vec![json!("oil"), json!("antifreeze")]);
     // Книжка: масляный, воздушный, салонный — на пробег и дату масла; топливный — по своему сроку.
     let rec = p.record(&sale).await.unwrap();
     let oil = slot(&rec, "oil").clone();
@@ -450,9 +533,27 @@ async fn oil_without_reminder_leaves_filters_without_it(pool: PgPool) {
     let rec = p.record(&sale).await.unwrap();
     let air = slot(&rec, "air_filter");
     assert_eq!((air.1, &air.2), (true, &Value::Null));
+    // Масло клиента — «масло клиента (двигатель)»; фильтр с ним — под той же заменой, без срока.
+    let filled: Vec<(Value, Value, Value)> = sale["book"]["filled"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["slot"].clone(), f["label"].clone(), f["product"].clone()))
+        .collect();
     assert_eq!(
-        sale["book"]["filled"],
-        json!([{ "slot": "oil", "label": "Масло двигателя", "product": "масло клиента" }])
+        filled,
+        vec![
+            (
+                json!("oil"),
+                json!("масло клиента (двигатель)"),
+                json!("масло клиента")
+            ),
+            (
+                json!("air_filter"),
+                json!("Фильтр C-110 (воздушный) · 1 шт"),
+                json!("Фильтр C-110 · 1 шт")
+            ),
+        ]
     );
     assert_eq!(sale["book"]["lines"], json!([]));
 }
@@ -1052,7 +1153,8 @@ async fn container_and_pour_one_line(pool: PgPool) {
     let sale = p.sell(130_000, &goods, &["oil"], json!([])).await;
     assert_eq!(
         sale["book"]["filled"],
-        json!([{ "slot": "oil", "label": "Масло двигателя", "product": "Масло 5W-30 4л · 4,5 л" }])
+        json!([{ "slot": "oil", "label": "Масло 5W-30 4л · 4,5 л", "product": "Масло 5W-30 4л · 4,5 л",
+                 "service_id": null, "group": p.services["oil"]["name"] }])
     );
     let b = p.book().await;
     let rec = &b["records"][0];
@@ -1203,8 +1305,162 @@ async fn server_target_follows_interval_changed_later(pool: PgPool) {
         None,
     )
     .await;
+    // Печатный чек не меняется: масло и воздушный фильтр с ним — на 138 000 (I4).
     assert_eq!(
         next_of(&again["book"]),
-        vec![("oil".to_string(), json!(138_000))]
+        vec![
+            ("oil".to_string(), json!(138_000)),
+            ("air_filter".to_string(), json!(138_000))
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn titles_are_goods_and_fuel_filter_keeps_its_term(pool: PgPool) {
+    // Задача 003 Н5 (жалоба 31.10.2026): в книжке и чеке — что залили и поставили, а не «Масло в
+    // коробке»; два товара одной строки — оба; топливный фильтр в чеке с заменой масла — на свой
+    // срок (30 000 км), не на пробег масла (ADR-117), под своей услугой.
+    let mut p = Point::new(pool).await;
+    point_service(
+        &mut p,
+        "fuel",
+        json!({ "name": "Замена топливного фильтра", "book_slot": "fuel_filter" }),
+    )
+    .await;
+    let (_, cats) = call(&p.app, "GET", "/api/v1/categories", &p.owner, None).await;
+    let gear_cat = cats
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Трансмиссионные масла")
+        .unwrap()["id"]
+        .clone();
+    let shell = ok(
+        &p.app,
+        "POST",
+        "/api/v1/products",
+        &p.owner,
+        json!({ "op_id": Uuid::now_v7(), "category_id": gear_cat, "name": "Shell ATF 134",
+                "container_ml": 1000, "sale_price_tyiyn": 50_000 }),
+    )
+    .await;
+    p.goods.insert("shell", (shell["id"].clone(), 50_000));
+    let sale = p
+        .sell(
+            130_000,
+            &[
+                ("oil", "container", 1),
+                ("atf", "container", 1),
+                ("shell", "container", 1),
+                ("fuel_f", "piece", 1),
+            ],
+            &["oil", "gear", "fuel"],
+            json!([
+                { "service_id": p.services["oil"]["id"], "next_mileage": 138_000 },
+                { "service_id": p.services["gear"]["id"], "next_mileage": 170_000 },
+            ]),
+        )
+        .await;
+    let book = &sale["book"];
+    let line = |slot: &str| {
+        book["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["slot"] == slot)
+            .cloned()
+            .unwrap_or_else(|| panic!("нет {slot}: {book}"))
+    };
+    let gear = line("gear_oil");
+    assert_eq!(
+        gear["label"],
+        json!("ATF Dexron III · 1 кан. × 4 л, Shell ATF 134 · 1 кан. × 1 л")
+    );
+    assert_eq!(gear["next_mileage"], json!(170_000));
+    assert_eq!(gear["group"], json!("Замена масла в коробке"));
+    let fuel = line("fuel_filter");
+    assert_eq!(fuel["label"], json!("Фильтр WK-842 (топливный) · 1 шт"));
+    assert_eq!(fuel["next_mileage"], json!(160_000));
+    assert_eq!(fuel["group"], json!("Замена топливного фильтра"));
+    assert_eq!(line("oil")["next_mileage"], json!(138_000));
+    for l in book["lines"].as_array().unwrap() {
+        let label = l["label"].as_str().unwrap();
+        assert!(
+            !["Масло в коробке", "Масло двигателя", "Фильтр топливный"].contains(&label),
+            "{l}"
+        );
+    }
+    // Книжка клиента: подпись следующей замены — товар; название строки — для интервала.
+    let b = p.book().await;
+    let slot_of = |s: &str| {
+        b["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["slot"] == s)
+            .cloned()
+            .unwrap()
+    };
+    let gear = slot_of("gear_oil");
+    assert_eq!(gear["label"], json!("Масло в коробке"));
+    assert_eq!(
+        gear["title"],
+        json!("ATF Dexron III · 1 кан. × 4 л, Shell ATF 134 · 1 кан. × 1 л")
+    );
+    assert_eq!(gear["products"], json!(["ATF Dexron III", "Shell ATF 134"]));
+    let fuel = slot_of("fuel_filter");
+    assert_eq!(fuel["title"], json!("Фильтр WK-842 (топливный) · 1 шт"));
+    assert_eq!(fuel["next_km"], json!(160_000));
+    let rec = &b["records"][0];
+    let titles: Vec<&str> = rec["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["title"].as_str().unwrap())
+        .collect();
+    assert!(
+        titles.contains(&"Фильтр WK-842 (топливный) · 1 шт"),
+        "{titles:?}"
+    );
+    assert!(
+        titles.contains(&"Shell ATF 134 · 1 кан. × 1 л"),
+        "{titles:?}"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn fuel_filter_category_without_slot_gets_it_by_name(pool: PgPool) {
+    // Задача 003 Н5: «Фильтры топливные», заведённые до строки по названию, — строка «Фильтр
+    // топливный» (миграция 0085): выключили у неё «Тип» — топливный фильтр не становится масляным.
+    let fuel = Uuid::now_v7();
+    let plain = Uuid::now_v7();
+    let chosen = Uuid::now_v7();
+    for (id, name, slot) in [
+        (fuel, "Фильтры топливные", None),
+        (plain, "Фильтры", None),
+        (chosen, "Фильтры топливные грузовые", Some("oil_filter")),
+    ] {
+        sqlx::query(
+            "insert into categories (id, name, kind, book_slot) values ($1, $2, 'filter', $3)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(slot)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    for m in avtodom_server::MIGRATOR.iter().filter(|m| m.version == 80) {
+        sqlx::raw_sql(m.sql.as_ref()).execute(&pool).await.unwrap();
+    }
+    assert_eq!(
+        stored_book_slot(&pool, fuel).await.as_deref(),
+        Some("fuel_filter")
+    );
+    // Без подсказки в названии и выбранная владельцем — как были.
+    assert_eq!(stored_book_slot(&pool, plain).await, None);
+    assert_eq!(
+        stored_book_slot(&pool, chosen).await.as_deref(),
+        Some("oil_filter")
     );
 }

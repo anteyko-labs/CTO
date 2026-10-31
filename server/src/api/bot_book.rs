@@ -10,7 +10,7 @@ use chrono::NaiveDate;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::api::oil_book::{OilRecord, VehicleBook, books, now_lines, slot_label};
+use crate::api::oil_book::{OilRecord, VehicleBook, books, line_title, now_lines};
 use crate::error::AppResult;
 
 /// Машин в общем ответе; остальные — по номеру или кнопкой «🚗 Мои машины» (ADR-063).
@@ -134,12 +134,13 @@ pub fn past_visit(b: &VehicleBook, date: NaiveDate, x: &HashMap<Uuid, Extras>) -
     let mut declined: Vec<&str> = Vec::new();
     for r in &recs {
         for l in &r.lines {
-            lines.push(format!("  {}: {}", slot_label(&l.slot), l.text));
+            lines.push(format!("  {}", line_title(l)));
         }
         if let Some(e) = r.sale_id.and_then(|s| x.get(&s)) {
-            // Услуга замены масла без своего масла уже стоит строкой «Масло двигателя».
+            // Услуга, которая сама подписывает строку (работа без товара), уже стоит строкой; у
+            // масла клиента строка — «масло клиента (двигатель)», услуга — в «Услугах».
             for sv in &e.services {
-                if !r.lines.iter().any(|l| l.text == *sv) && !services.contains(sv) {
+                if !r.lines.iter().any(|l| line_title(l) == *sv) && !services.contains(sv) {
                     services.push(sv.clone());
                 }
             }

@@ -17,6 +17,10 @@ export interface BookLine {
   next_unit?: MileageUnit | null
   next_km?: number | null
   next_date?: string | null
+  /** Подпись — что залито или поставлено (сервер, `oil_book::title_of`, задача 003 Н5). */
+  title?: string
+  /** Вид замены: услуга строки, у фильтров с маслом — услуга масла (`oil_book::line_group`). */
+  group?: string | null
 }
 
 /** Следующая замена по строке книжки; у «прочего» — по каждой услуге, с её названием (ADR-131). */
@@ -24,7 +28,13 @@ export interface SlotNext {
   slot: BookSlot
   /** Услуга «прочее», чья это следующая замена; у остальных строк — нет. */
   service_id?: string | null
+  /** Название строки книжки («Масло в коробке»), у «прочего» — услуги: для интервала и выбора строки. */
   label: string
+  /** Что залито или поставлено в последнюю замену строки: «Mobil ATF 3309 · 1 л» (задача 003 Н5) —
+   *  под этой подписью следующая замена; у старого ответа нет — `label`. */
+  title?: string
+  /** Товары последней замены без количества. */
+  products?: string[]
   interval_km: number | null
   interval_days: number | null
   /** Интервал задан у этой машины, а не у категории. */
@@ -106,11 +116,108 @@ export function lineNextText(l: BookLine): string {
 /** Жидкости книжки (ADR-116, ADR-117): масло двигателя, масло в коробке, антифриз, тормозная. */
 export const isFluid = (slot: BookSlot): boolean => slot === 'oil' || slot === 'gear_oil' || slot === 'antifreeze' || slot === 'brake_fluid'
 
-/** Чем залили строку книжки: товар с количеством; строка по услуге без товара — своё у клиента. */
-export function fluidText(l: BookLine): string {
-  const own = l.text === (l.service ?? '') || l.text === slotLabel(l.slot)
-  if (!own) return l.text
-  return l.slot === 'oil' || l.slot === 'gear_oil' ? 'масло клиента' : 'жидкость клиента'
+/** Своё у клиента: строка жидкости по услуге без товара. */
+export const ownFluid = (slot: BookSlot): string => (slot === 'oil' || slot === 'gear_oil' ? 'масло клиента' : 'жидкость клиента')
+
+/** Пометка строки книжки в скобках — когда без неё непонятно: «масло клиента (коробка)». */
+const SLOT_NOTE: Partial<Record<BookSlot, string>> = {
+  oil: 'двигатель',
+  gear_oil: 'коробка',
+  oil_filter: 'масляный',
+  air_filter: 'воздушный',
+  cabin_filter: 'салонный',
+  fuel_filter: 'топливный',
+  antifreeze: 'антифриз',
+  brake_fluid: 'тормозная',
+}
+
+/** Вид фильтра в названии: «Фильтр топливный WK 820», «Замена топливного фильтра». */
+const FILTER_STEM: Partial<Record<BookSlot, string>> = { oil_filter: 'масл', air_filter: 'воздуш', cabin_filter: 'салон', fuel_filter: 'топлив' }
+
+/**
+ * Подпись строки книжки — что залито или поставлено (задача 003 Н5), как `oil_book::title_of` на
+ * сервере: товар с количеством («Mobil ATF 3309 · 1 л»); фильтр без вида в названии — с видом в
+ * скобках («W712 (масляный) · 1 шт»); жидкость по услуге без товара — «масло клиента (коробка)»;
+ * работа без товара — название услуги. Название строки книжки вместо товара не пишется.
+ */
+export function titleOf(slot: BookSlot, text: string, service?: string | null): string {
+  const note = SLOT_NOTE[slot] ?? ''
+  if (isFluid(slot) && service != null && service === text) return `${ownFluid(slot)} (${note})`
+  const stem = FILTER_STEM[slot]
+  if (stem && !text.toLowerCase().includes(stem)) {
+    const at = text.lastIndexOf(' · ')
+    return at >= 0 ? `${text.slice(0, at)} (${note}) · ${text.slice(at + 3)}` : `${text} (${note})`
+  }
+  return text
+}
+
+/** Подпись строки замены: от сервера, у старого ответа — по тому же правилу. */
+export const lineTitle = (l: BookLine): string => l.title || titleOf(l.slot, l.text, l.service)
+
+/** Подпись следующей замены строки книжки: что залили в последний раз (задача 003 Н5). */
+export const slotTitle = (n: Pick<SlotNext, 'title' | 'label'>): string => n.title || n.label
+
+/** Фильтры, которые меняют с маслом двигателя (ADR-117): в чеке книжки — под заменой масла. */
+export const followsOil = (slot: BookSlot): boolean => slot === 'oil_filter' || slot === 'air_filter' || slot === 'cabin_filter'
+
+/** Вид замены строки: от сервера; у старого ответа — услуга строки, у фильтра с маслом — услуга масла. */
+export function lineGroup(l: BookLine, all: readonly BookLine[]): string | null {
+  if (l.group !== undefined) return l.group
+  if (l.service) return l.service
+  return followsOil(l.slot) ? (all.find((o) => o.slot === 'oil' && o.service)?.service ?? null) : null
+}
+
+/** Строка чека книжки: подпись, вид замены и следующая замена («на 138 000 км»; '' — без срока). */
+export interface BookItem {
+  title: string
+  group: string | null
+  next: string
+}
+
+/** Вид замены в чеке книжки: услуга, её строки и общая следующая замена (если у всех строк одна). */
+export interface BookGroup {
+  head: string | null
+  items: BookItem[]
+  next: string | null
+}
+
+/**
+ * Чек книжки по видам замены (задача 003 Н5): строки одной услуги — вместе под её названием
+ * («Замена масла в моторе»: масло и фильтры с ним), следующая замена — одной строкой, если у всех
+ * она одна, иначе у каждой; строка без вида — сама по себе.
+ */
+export function bookGroups(items: readonly BookItem[]): BookGroup[] {
+  const out: BookGroup[] = []
+  for (const it of items) {
+    const g = it.group ? out.find((x) => x.head === it.group) : undefined
+    if (g) g.items.push(it)
+    else out.push({ head: it.group, items: [it], next: null })
+  }
+  for (const g of out) {
+    const first = g.items[0]?.next ?? ''
+    if (first && g.items.every((i) => i.next === first)) g.next = first
+  }
+  return out
+}
+
+const escHtml = (s: string) =>
+  s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
+
+/** Виды замены в HTML для печати (чек книжки и блок книжки товарного чека): `.bk` — вид, `.grp` —
+ *  его название, `.it` — что залито или поставлено, `.nx` — следующая замена. Строка, которая
+ *  повторяет название вида (работа без товара), отдельно не пишется. */
+export function bookGroupsHtml(groups: readonly BookGroup[]): string {
+  return groups
+    .map((g) => {
+      const head = g.head ? `<div class="grp">${escHtml(g.head)}</div>` : ''
+      const items = g.items
+        .filter((i) => i.title !== g.head)
+        .map((i) => `<div class="it">${escHtml(i.title)}${!g.next && i.next ? ` — ${escHtml(i.next)}` : ''}</div>`)
+        .join('')
+      const next = g.next ? `<div class="nx">Следующая замена — ${escHtml(g.next)}</div>` : ''
+      return `<div class="bk">${head}${items}${next}</div>`
+    })
+    .join('')
 }
 
 /** Что сделали одной строкой: «Масло 5W-30 · Фильтр W712». */

@@ -177,7 +177,8 @@ test('масляная книжка по каждому фильтру: стро
   const airRow = slots.getByRole('row', { name: /Фильтр воздушный/ })
   // Воздушный с заменой масла — на пробег масла (ADR-117, ADR-144), а не на интервал своей категории.
   await expect(airRow).toContainText(/на 93\s000 км/)
-  await expect(page.getByText(`Фильтр A1 ${RUN} · 1 шт`)).toBeVisible()
+  // Подпись — товар, вид фильтра в скобках, если его нет в названии (задача 003 Н5).
+  await expect(page.getByText(`Фильтр A1 ${RUN} (воздушный) · 1 шт`).last()).toBeVisible()
 
   // Свой интервал воздушного фильтра у этой машины.
   await airRow.getByRole('button', { name: 'Интервал' }).click()
@@ -191,8 +192,8 @@ test('масляная книжка по каждому фильтру: стро
   await page.getByRole('button', { name: 'Печать книжки' }).click()
   await expect.poll(async () => (await prints(page)).some((h) => h.includes('Масляная книжка'))).toBe(true)
   const html = (await prints(page)).find((h) => h.includes('Масляная книжка')) ?? ''
-  expect(html).toContain('Фильтр воздушный')
-  expect(html).toContain(`Фильтр A1 ${RUN}`)
+  expect(html).toContain(`Фильтр A1 ${RUN} (воздушный) · 1 шт`)
+  expect(html).not.toContain('Фильтр воздушный')
   expect(html).toMatch(/на 95\s000 км/)
 
   // Касса: под выбранной машиной — следующая замена по строкам.
@@ -201,5 +202,5 @@ test('масляная книжка по каждому фильтру: стро
   await page.locator('[data-client-input]').fill(plate)
   await page.getByRole('button', { name: new RegExp(`Фильтров ${RUN}`) }).first().click()
   const hint = page.getByTestId('oil-hint')
-  await expect(hint).toContainText(/Фильтр воздушный: следующая на 95\s000 км/)
+  await expect(hint).toContainText(new RegExp(`Фильтр A1 ${RUN} \\(воздушный\\) · 1 шт: следующая на 95\\s000 км`))
 })

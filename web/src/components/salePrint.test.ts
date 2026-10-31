@@ -20,48 +20,65 @@ const sale = (over: Partial<Sale>): Sale =>
     ...over,
   }) as unknown as Sale
 
+const MOTOR = 'Замена масла в моторе'
 const book = {
   brand: 'Toyota',
   model: 'Camry',
   plate: '01KG123ABC',
-  mileage: 217000,
+  mileage: 130000,
   mileage_unit: 'km' as const,
   lines: [
-    { label: 'Масло двигателя', slot: 'oil' as const, next_mileage: 225000, unit: 'km' as const, next_date: '2026-11-26' },
-    { label: 'Антифриз', slot: 'antifreeze' as const, next_mileage: 250000, unit: 'km' as const, next_date: null },
+    { label: 'Mobil 1 5W-30 · 4 л', slot: 'oil' as const, next_mileage: 138000, unit: 'km' as const, next_date: '2026-12-01', group: MOTOR },
+    { label: 'W712 (масляный) · 1 шт', slot: 'oil_filter' as const, next_mileage: 138000, unit: 'km' as const, next_date: null, group: MOTOR },
+    { label: 'C2201 (воздушный) · 1 шт', slot: 'air_filter' as const, next_mileage: 138000, unit: 'km' as const, next_date: null, group: MOTOR },
+    { label: 'Mobil ATF 3309 · 1 л', slot: 'gear_oil' as const, next_mileage: 170000, unit: 'km' as const, next_date: null, group: null },
+    { label: 'Фильтр топливный WK 820 · 1 шт', slot: 'fuel_filter' as const, next_mileage: 160000, unit: 'km' as const, next_date: null, group: 'Замена топливного фильтра' },
+    { label: 'жидкость клиента (антифриз)', slot: 'antifreeze' as const, next_mileage: 190000, unit: 'km' as const, next_date: null, group: 'Замена антифриза' },
   ],
   filled: [
-    { slot: 'oil' as const, label: 'Масло двигателя', product: 'масло клиента' },
-    { slot: 'antifreeze' as const, label: 'Антифриз', product: 'Sintec G12 красный 5 кг · 2 шт' },
+    { slot: 'oil' as const, label: 'Mobil 1 5W-30 · 4 л', product: 'Mobil 1 5W-30 · 4 л', group: MOTOR },
+    { slot: 'oil_filter' as const, label: 'W712 (масляный) · 1 шт', product: 'W712 · 1 шт', group: MOTOR },
+    { slot: 'air_filter' as const, label: 'C2201 (воздушный) · 1 шт', product: 'C2201 · 1 шт', group: MOTOR },
+    { slot: 'gear_oil' as const, label: 'Mobil ATF 3309 · 1 л', product: 'Mobil ATF 3309 · 1 л', group: null },
+    { slot: 'fuel_filter' as const, label: 'Фильтр топливный WK 820 · 1 шт', product: 'Фильтр топливный WK 820 · 1 шт', group: 'Замена топливного фильтра' },
+    { slot: 'antifreeze' as const, label: 'жидкость клиента (антифриз)', product: 'жидкость клиента', group: 'Замена антифриза' },
   ],
 }
 
 const plain = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
-describe('печать чека «В сервис» с масляной книжкой (SPEC-34 §4, ADR-115, ADR-116)', () => {
-  it('машина, пробег, что залито и следующая замена — только пробег', () => {
+describe('печать чека «В сервис» с масляной книжкой (SPEC-34 §4, ADR-115, ADR-116, задача 003 Н5)', () => {
+  it('машина, пробег и что поменяли по видам замены — товаром, со следующей заменой только по пробегу', () => {
     const t = plain(saleHtml(sale({ book }), null))
     expect(t).toContain('Масляная книжка')
     expect(t).toContain('Машина: Toyota Camry, 01KG123ABC')
-    expect(t).toContain('Пробег сейчас: 217 000 км')
-    expect(t).toContain('Залито: Масло двигателя: масло клиента Антифриз: Sintec G12 красный 5 кг · 2 шт')
-    expect(t).toContain('Следующая замена: Масло двигателя: на 225 000 км Антифриз: на 250 000 км')
-    expect(t).not.toContain('или до')
-    expect(t).not.toContain('26.11.2026')
+    expect(t).toContain('Пробег сейчас: 130 000 км')
+    // Масло и фильтры с ним — под заменой масла, следующая — одной строкой.
+    expect(t).toContain(`${MOTOR} Mobil 1 5W-30 · 4 л W712 (масляный) · 1 шт C2201 (воздушный) · 1 шт Следующая замена — на 138 000 км`)
+    // Масло без услуги — само, с товаром; топливный фильтр — свой срок под своей услугой.
+    expect(t).toContain('Mobil ATF 3309 · 1 л Следующая замена — на 170 000 км')
+    expect(t).toContain('Замена топливного фильтра Фильтр топливный WK 820 · 1 шт Следующая замена — на 160 000 км')
+    expect(t).toContain('Замена антифриза жидкость клиента (антифриз) Следующая замена — на 190 000 км')
+    for (const no of ['Масло двигателя', 'Масло в коробке', 'Фильтр масляный', 'Антифриз:', 'или до', '01.12.2026']) expect(t).not.toContain(no)
     // Настройка «Блок книжки в товарном чеке» выключена (задача 003 Н5) — блока нет.
     expect(plain(saleHtml(sale({ book }), null, { bookBlock: false }))).not.toContain('Масляная книжка')
   })
 
   it('мили; без книжки, на вынос и в возврате — блока нет', () => {
-    const mi = plain(bookHtml(sale({ book: { ...book, mileage: 60000, mileage_unit: 'mi', filled: undefined, lines: [{ label: 'Масло двигателя', next_mileage: 65001, unit: 'mi', next_date: null }] } })))
+    const mi = plain(bookHtml(sale({ book: { ...book, mileage: 60000, mileage_unit: 'mi', filled: undefined, lines: [{ label: 'Mobil 1 5W-30 · 4 л', next_mileage: 65001, unit: 'mi', next_date: null }] } })))
     expect(mi).toContain('Пробег сейчас: 60 000 миль')
-    expect(mi).toContain('Масло двигателя: на 65 001 миля')
-    expect(mi).not.toContain('Залито')
+    expect(mi).toContain('Mobil 1 5W-30 · 4 л Следующая замена — на 65 001 миля')
     expect(bookHtml(sale({ book: null }))).toBe('')
     expect(bookHtml(sale({ book, sale_type: 'takeaway' }))).toBe('')
     expect(bookHtml(sale({ book, kind: 'return' }))).toBe('')
-    // Ни жидкостей, ни следующей замены (только «прочее» или фильтр) — пустого блока нет (ADR-131).
+    // Печатать нечего — пустого блока нет.
     expect(bookHtml(sale({ book: { ...book, lines: [], filled: [] } }))).toBe('')
+  })
+
+  it('у строк вида замены разный срок — у каждой свой', () => {
+    const lines = book.lines.map((l) => (l.slot === 'air_filter' ? { ...l, next_mileage: 145000 } : l))
+    const t = plain(bookHtml(sale({ book: { ...book, lines } })))
+    expect(t).toContain(`${MOTOR} Mobil 1 5W-30 · 4 л — на 138 000 км W712 (масляный) · 1 шт — на 138 000 км C2201 (воздушный) · 1 шт — на 145 000 км`)
   })
 })
 

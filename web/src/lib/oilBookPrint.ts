@@ -1,14 +1,32 @@
 // Печать масляной книжки на ленте 80 мм (SPEC-16, SPEC-27) и QR-код на Телеграм-бот.
-// После чека — «чек книжки»: только этот чек и только жидкости — что залито и следующая замена по
-// пробегу; без фильтров, мастера, «Рекомендовано» и истории (ADR-115, ADR-116). Из карточки
+// После чека — «чек книжки»: только этот чек — что поменяли по видам замены (услугам) и следующая
+// замена по пробегу; без мастера, «Рекомендовано» и истории (ADR-115, ADR-116). Подпись — товар, а
+// не строка книжки; фильтры — по настройке, по умолчанию с ними (задача 003 Н5). Из карточки
 // клиента — прежняя выписка: последняя замена по строкам, следующая по каждой строке и история.
 import { printInFrame } from './printFrame'
 import QRCode from 'qrcode'
 import { get } from './api'
 import { formatDate } from './format'
-import type { OilBookSettings } from './oilBookSettings'
-import type { BookSlot } from './types'
-import { fluidText, isFluid, recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
+import { OIL_BOOK_DEFAULTS, type OilBookSettings } from './oilBookSettings'
+import {
+  bookGroups,
+  bookGroupsHtml,
+  isFluid,
+  lineGroup,
+  lineTitle,
+  recordLines,
+  recordMileage,
+  recordText,
+  slotKey,
+  slotNextText,
+  slotsOfSale,
+  slotsWithNext,
+  slotTitle,
+  type BookLine,
+  type OilRecord,
+  type SlotNext,
+  type VehicleBook,
+} from './oilBook'
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
@@ -47,6 +65,9 @@ const STYLE = `<style>
     .qr { text-align: center; margin-top: 3mm; }
     .qr svg { width: 32mm; height: 32mm; }
     .muted { color: #333; font-size: 8.5pt; text-align: center; }
+    .bk { border-top: 1px dashed #000; padding: 1mm 0; }
+    .bk .grp { font-weight: bold; }
+    .bk .nx { font-weight: bold; margin-top: 0.5mm; }
   </style>`
 
 const row = (label: string, value: string) => `<div class="row"><span>${esc(label)}</span><b>${esc(value)}</b></div>`
@@ -60,39 +81,36 @@ async function qrHtml(link: string | null): Promise<string> {
 const plateHtml = (b: VehicleBook) =>
   `<div class="plate">${esc(b.plate)}${b.brand || b.model ? ` · ${esc([b.brand, b.model].filter(Boolean).join(' '))}` : ''}</div>`
 
-/** Что печатает чек книжки (задача 003 Н5): `with_filters` — жидкости и фильтры; `print_filters_only` —
- *  запись только с фильтрами тоже печатается. По умолчанию — только жидкости (ADR-116). */
+/** Что печатает чек книжки (задача 003 Н5): `with_filters` — и фильтры (по умолчанию — да);
+ *  `print_filters_only` — запись только с фильтрами печатается и при выключенных фильтрах. Нет
+ *  поля — как по умолчанию (`OIL_BOOK_DEFAULTS`). */
 export type BookPrint = Partial<Pick<OilBookSettings, 'with_filters' | 'print_filters_only'>>
 
 const isFilter = (slot: string) => slot.endsWith('_filter')
 
-/** Строки, которые идут в чек книжки этой записи: жидкости, а фильтры — по настройке. */
-function printedSlot(r: OilRecord, s: BookPrint): (slot: BookSlot) => boolean {
+/** Строки, которые идут в чек книжки этой записи: жидкости, фильтры — по настройке, работы
+ *  «прочее» по услуге — своим названием и сроком (задача 003 Н5). Как `oil_book::sale_book`. */
+function printedLine(r: OilRecord, s: BookPrint): (l: BookLine) => boolean {
   const fluids = recordLines(r).some((l) => isFluid(l.slot))
-  const filters = Boolean(s.with_filters) || (!fluids && Boolean(s.print_filters_only))
-  return (slot) => isFluid(slot) || (filters && isFilter(slot))
+  const filters = (s.with_filters ?? OIL_BOOK_DEFAULTS.with_filters) || (!fluids && Boolean(s.print_filters_only))
+  return (l) => isFluid(l.slot) || (filters && isFilter(l.slot)) || (l.slot === 'other' && Boolean(l.service_id ?? l.service))
 }
 
-/** Чек книжки после чека (ADR-116): машина, дата, пробег, «Залито» и «Следующая замена» по
- *  жидкостям этого чека — только пробег; фильтры — по настройке. */
+/** Чек книжки после чека (ADR-116, задача 003 Н5): машина, дата, пробег и что поменяли по видам
+ *  замены — товаром («Mobil 1 5W-30 · 4 л», «W712 (масляный) · 1 шт») — со следующей заменой по
+ *  пробегу. */
 async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link: string | null, s: BookPrint): Promise<string> {
-  const printed = printedSlot(r, s)
-  const filled = recordLines(r)
-    .filter((l) => printed(l.slot))
-    .map((l) => row(slotLabel(l.slot), isFluid(l.slot) ? fluidText(l) : l.text))
-    .join('')
-  const next = slotsOfSale(b, saleId)
-    .filter((n) => printed(n.slot))
-    .map((n) => row(n.label, slotNextText(n)))
-    .join('')
+  const printed = printedLine(r, s)
+  const all = recordLines(r)
+  const next = new Map(slotsOfSale(b, saleId).map((n) => [slotKey(n), slotNextText(n)]))
+  const items = all.filter(printed).map((l) => ({ title: lineTitle(l), group: lineGroup(l, all), next: next.get(slotKey(l)) ?? '' }))
   return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title>${STYLE}</head><body>
     <h1>Avtodom</h1>
     <h2>Масляная книжка</h2>
     ${plateHtml(b)}
     ${row('Дата', formatDate(r.change_date))}
     ${recordMileage(r) !== null ? row('Пробег', recordMileage(r) ?? '') : ''}
-    ${filled ? `<h3>Залито:</h3>${filled}` : ''}
-    ${next ? `<div class="next">Следующая замена:${next}</div>` : ''}
+    ${bookGroupsHtml(bookGroups(items))}
     ${await qrHtml(link)}
   </body></html>`
 }
@@ -103,15 +121,13 @@ export function saleRecordOf(b: VehicleBook | null | undefined, saleId: string):
   return b?.records.find((r) => r.sale_id === saleId) ?? null
 }
 
-/** Запись этого чека, если в ней есть масла или жидкости, — её печатает «чек книжки» (ADR-116); с
- *  настройкой «печатать запись только с фильтрами» — и такую. Записи нет (ADR-130) или в ней только
- *  «прочее» (ADR-131) — null: на ленте остались бы госномер, дата и QR. */
+/** Запись этого чека, если в ней есть что печатать (`printedLine`: масла и жидкости, фильтры по
+ *  настройке, работы «прочее»), — её печатает «чек книжки» (задача 003 Н5). Записи нет (ADR-130) или
+ *  в ней только фильтры при выключенных фильтрах — null: на ленте остались бы госномер, дата и QR. */
 export function saleCheckOf(b: VehicleBook, saleId: string, s: BookPrint = {}): OilRecord | null {
   const own = saleRecordOf(b, saleId)
   if (!own) return null
-  const lines = recordLines(own)
-  if (lines.some((l) => isFluid(l.slot))) return own
-  return s.print_filters_only && lines.some((l) => isFilter(l.slot)) ? own : null
+  return recordLines(own).some(printedLine(own, s)) ? own : null
 }
 
 /** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); печатать нечего
@@ -125,9 +141,10 @@ export async function oilBookHtml(
     return own ? saleCheckHtml(b, own, opts.saleId, opts.link, opts.print ?? {}) : null
   }
   const last = b.records[0]
-  // Следующая замена по каждой строке книжки (SPEC-27), масло первым; только пробег (ADR-115).
+  // Следующая замена по каждой строке книжки (SPEC-27), масло первым; только пробег (ADR-115);
+  // подпись — что залили в последний раз (задача 003 Н5).
   const next = slotsWithNext(b)
-    .map((n: SlotNext) => row(n.label, slotNextText(n)))
+    .map((n: SlotNext) => row(slotTitle(n), slotNextText(n)))
     .join('')
   const history = b.records
     .slice(1, 4)
@@ -146,7 +163,7 @@ export async function oilBookHtml(
         ? `${row('Замена', formatDate(last.change_date))}
     ${recordMileage(last) !== null ? row('Пробег', recordMileage(last) ?? '') : ''}
     ${recordLines(last)
-      .map((l) => row(slotLabel(l.slot), l.text))
+      .map((l) => `<div class="row"><span>${esc(lineTitle(l))}</span></div>`)
       .join('')}
     ${opts.master ? row('Мастер', opts.master) : ''}
     ${last.declined?.trim() ? row('Рекомендовано', last.declined.trim()) : ''}`

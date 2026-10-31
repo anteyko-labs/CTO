@@ -1417,7 +1417,7 @@ pub async fn party(
                 for n in b.slots.iter().filter(|n| n.slot != "oil") {
                     let next = crate::api::oil_book::next_text(n);
                     if !next.is_empty() {
-                        lines.push(format!("  {}: {next}", n.label));
+                        lines.push(format!("  {}: {next}", n.title));
                     }
                 }
                 for r in b.records.iter().take(3) {

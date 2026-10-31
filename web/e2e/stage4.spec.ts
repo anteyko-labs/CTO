@@ -229,7 +229,9 @@ test('масляная книжка: замена с пробегом, след�
   await expect(page.getByText(plate).first()).toBeVisible()
   // Следующая — в строках книжки; у строки записи — та же цель, что в чеке (ADR-144).
   await expect(page.getByTestId('book-slots').getByText(/на 93\s000 км/)).toBeVisible()
-  await expect(page.getByText(`Totachi книжка ${RUN} · 1 кан. × 4 л`)).toBeVisible()
+  // Подпись строки — товар (задача 003 Н5): и в строках книжки, и в записи замены.
+  await expect(page.getByTestId('book-slots').getByText(`Totachi книжка ${RUN} · 1 кан. × 4 л`)).toBeVisible()
+  await expect(page.getByText(`Totachi книжка ${RUN} · 1 кан. × 4 л`).last()).toBeVisible()
   // Интервал машины 10 000 км — следующая замена пересчитывается.
   await page.getByRole('button', { name: 'Интервал' }).click()
   await page.getByLabel('Каждые, км').fill('10000')

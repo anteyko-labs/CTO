@@ -530,6 +530,9 @@ pub struct SlotDue {
     /// Услуга «прочее» и её название (ADR-131): у каждой такой услуги своё напоминание.
     pub service_id: Option<Uuid>,
     pub service: Option<String>,
+    /// Товары последней замены строки: «Mobil ATF 3309» — в скобках после того, что менять (задача
+    /// 003 Н5). Текст шаблона не меняется — только переменная.
+    pub products: Vec<String>,
     /// Цель в км (ключ повода) и в единице машины (текст).
     pub target_km: i32,
     pub target: i32,
@@ -547,12 +550,14 @@ impl SlotDue {
         }
     }
 
-    /// Что менять: «масло», «воздушный фильтр»; у услуги «прочее» — её название со строчной
-    /// буквы: «замена ГУР».
+    /// Что менять: «масло», «воздушный фильтр»; товар последней замены известен — он в скобках:
+    /// «масло в коробке (Mobil ATF 3309)» (задача 003 Н5); у услуги «прочее» — её название со
+    /// строчной буквы: «замена ГУР».
     fn noun(&self) -> String {
         match &self.service {
             Some(name) => lower_first(name),
-            None => slot_noun(&self.slot).to_string(),
+            None if self.products.is_empty() => slot_noun(&self.slot).to_string(),
+            None => format!("{} ({})", slot_noun(&self.slot), self.products.join(", ")),
         }
     }
 }
@@ -597,6 +602,7 @@ pub fn slot_dues(b: &VehicleBook, today: NaiveDate, default_km_per_day: i32) -> 
                 slot: n.slot.clone(),
                 service_id: n.service_id,
                 service: n.service_id.map(|_| n.label.clone()),
+                products: n.products.clone(),
                 target_km,
                 target: n.next_mileage.unwrap_or(target_km),
                 unit: n.unit.clone(),
@@ -2312,6 +2318,7 @@ async fn test_send(
                         slot: "oil".into(),
                         service_id: None,
                         service: None,
+                        products: Vec::new(),
                         target_km: 201_748,
                         target: 201_748,
                         unit: "km".into(),
@@ -2711,6 +2718,7 @@ mod tests {
             slot: slot.into(),
             service_id: None,
             service: None,
+            products: Vec::new(),
             target_km: target,
             target,
             unit: "km".into(),
@@ -2878,6 +2886,7 @@ mod tests {
                 slot: "oil".into(),
                 service_id: None,
                 service: None,
+                products: Vec::new(),
                 target_km: 96_561,
                 target: 60_000,
                 unit: "mi".into(),
