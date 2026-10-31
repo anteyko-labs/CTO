@@ -668,7 +668,14 @@ async fn salary_line(
     else {
         return Ok(None);
     };
-    let Some(r) = payroll::salary_row(conn, e.branch_id, se, on, false).await? else {
+    // Сегодня — период «к выплате», как в окне «Выплата» (ADR-155, дополнено).
+    let today = today(conn).await?;
+    let row = if on == today {
+        payroll::salary_now_of(conn, e.branch_id, se.id, today).await?
+    } else {
+        payroll::salary_row(conn, e.branch_id, se, on, false).await?
+    };
+    let Some(r) = row else {
         return Ok(None);
     };
     let mut parts = vec![match (r.accrued_tyiyn, r.rule_tyiyn) {
@@ -688,9 +695,20 @@ async fn salary_line(
             format_som_signed(r.carry_tyiyn)
         ));
     }
+    if r.paid_after_tyiyn != 0 {
+        parts.push(format!(
+            "выдано с {} — {}",
+            r.pay_date.format("%d.%m"),
+            format_som(r.paid_after_tyiyn)
+        ));
+    }
+    let when = if on == today && r.pay_date <= today {
+        "сегодня".to_string()
+    } else {
+        r.pay_date.format("%d.%m").to_string()
+    };
     parts.push(format!(
-        "к выплате {} — {}",
-        r.pay_date.format("%d.%m"),
+        "к выплате {when} — {}",
         format_som(r.expected_tyiyn)
     ));
     Ok(Some(format!(

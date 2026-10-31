@@ -10,7 +10,7 @@ import { useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import { useNumField, useTouchMode } from '../lib/cashierMode'
 import { advanceOnly, initialLines, payoutLines, PURPOSE_LABELS, type PayoutLineDraft } from '../lib/payouts'
-import { earliestPayDate, payDateHint, salaryText, shortDate } from '../lib/payrollPeriod'
+import { dueWhen, earliestPayDate, payDateHint, salaryText, shortDate } from '../lib/payrollPeriod'
 import type { CashAccount, PayoutRemains } from '../lib/types'
 import { FIX_SUBMIT, FixBanner, type FixMode } from './FixDraft'
 import { Button, ErrorBox, Field, Loading, Money, toast } from './ui'
@@ -222,7 +222,7 @@ function PayoutLinesForm({
       )}
       {salary && (
         <div className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-900" data-testid="payout-salary">
-          Оклад: {salaryText(salary)}
+          Оклад: {salaryText(salary, today)}
         </div>
       )}
       {lines.length === 0 ? (
@@ -236,7 +236,7 @@ function PayoutLinesForm({
           total={result.total}
           numProps={num('decimal')}
           advanceHint={`в счёт ${rem.data?.advance_to === 'salary' ? 'оклада' : 'оплаты за услуги'}${owner ? '; можно сверх заработанного' : ''}${
-            salary ? ` · по окладу к выплате ${shortDate(salary.pay_date)} — ${formatSom(salary.expected_tyiyn)}` : ''
+            salary ? ` · по окладу к выплате ${dueWhen(salary, today)} — ${formatSom(salary.expected_tyiyn)}` : ''
           }`}
         />
       )}

@@ -11,7 +11,7 @@ import { BranchScope } from './BranchScope'
 import { formatDate, somInput, todayBishkek } from '../lib/format'
 import { useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
-import { addMonths, isCalendar, periodLabel, shortDate } from '../lib/payrollPeriod'
+import { addMonths, dueWhen, isCalendar, periodLabel } from '../lib/payrollPeriod'
 import type { SalaryNow } from '../lib/types'
 import { PayoutForm, SalaryForm } from './PayrollForms'
 import { ExportButton } from './ExportButton'
@@ -110,11 +110,18 @@ export function PayrollSalary() {
                   {r.accrued_tyiyn !== null ? cell(r.accrued_tyiyn) : <Badge tone="amber">не начислен</Badge>}
                 </td>
                 <td className="px-2 py-2 md:text-right">{cell(r.advance_tyiyn)}</td>
-                <td className="px-2 py-2 md:text-right">{cell(r.paid_salary_tyiyn)}</td>
+                <td className="px-2 py-2 md:text-right">
+                  {cell(r.paid_salary_tyiyn)}
+                  {Boolean(r.paid_after_tyiyn) && (
+                    <div className="text-xs font-normal text-slate-500">
+                      после конца <Money value={r.paid_after_tyiyn ?? 0} />
+                    </div>
+                  )}
+                </td>
                 <td className="px-2 py-2 md:text-right">{cell(r.carry_tyiyn)}</td>
                 <td className="px-2 py-2 font-semibold whitespace-nowrap md:text-right">
                   <Money value={r.expected_tyiyn} tone="negative" />
-                  <div className="text-xs font-normal text-slate-500">{shortDate(r.pay_date)}</div>
+                  <div className="text-xs font-normal text-slate-500">{date === today ? dueWhen(r, today) : dueWhen(r)}</div>
                   {r.to_date_tyiyn !== undefined && (
                     <div className="text-xs font-normal text-slate-500">
                       на сегодня ≈ <Money value={r.to_date_tyiyn} />

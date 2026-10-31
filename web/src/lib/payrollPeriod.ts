@@ -69,10 +69,17 @@ export function payDateHint(payDate: string, today: string, where: string): stri
 }
 
 /**
- * Строка оклада в окне «Выплата» и во вкладке «Оклад»: «ставка 30 000 с за 20.10–19.11, не начислен;
- * авансом 5 000 с; к выплате 20.11 — 25 000 с».
+ * Когда к выплате: «сегодня», если день расчёта настал (закончившийся период «к выплате», ADR-155),
+ * иначе — дата дня расчёта.
  */
-export function salaryText(s: SalaryNow): string {
+export const dueWhen = (s: Pick<SalaryNow, 'pay_date'>, today?: string): string =>
+  today && s.pay_date <= today ? 'сегодня' : shortDate(s.pay_date)
+
+/**
+ * Строка оклада в окне «Выплата» и во вкладке «Оклад»: «ставка 30 000 с за 20.10–19.11, не начислен;
+ * авансом 5 000 с; к выплате 20.11 — 25 000 с»; в день расчёта — «к выплате сегодня».
+ */
+export function salaryText(s: SalaryNow, today?: string): string {
   const parts = [
     s.accrued_tyiyn !== null
       ? `начислено ${formatSom(s.accrued_tyiyn)} за ${periodLabel(s.period_from, s.period_to)}`
@@ -81,6 +88,7 @@ export function salaryText(s: SalaryNow): string {
   if (s.advance_tyiyn !== 0) parts.push(`авансом ${formatSom(s.advance_tyiyn)}`)
   if (s.paid_salary_tyiyn !== 0) parts.push(`выдано ${formatSom(s.paid_salary_tyiyn)}`)
   if (s.carry_tyiyn !== 0) parts.push(`с прошлых периодов ${s.carry_tyiyn > 0 ? '+' : '−'}${formatSom(Math.abs(s.carry_tyiyn))}`)
-  parts.push(`к выплате ${shortDate(s.pay_date)} — ${formatSom(s.expected_tyiyn)}`)
+  if (s.paid_after_tyiyn) parts.push(`выдано с ${shortDate(s.pay_date)} ${formatSom(s.paid_after_tyiyn)}`)
+  parts.push(`к выплате ${dueWhen(s, today)} — ${formatSom(s.expected_tyiyn)}`)
   return parts.join('; ')
 }

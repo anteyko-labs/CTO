@@ -476,6 +476,12 @@ async fn payout_date_rules(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn salary_now_shows_rate_before_accrual(pool: PgPool) {
     let w = world(pool, true).await;
+    // Ставка — с начала этого месяца: 1-го числа прошлый месяц иначе был бы «к выплате сегодня».
+    sqlx::query("update employee_pay_rules set active_from = date_trunc('month', $1::date)::date")
+        .bind(w.today)
+        .execute(&w.pool)
+        .await
+        .unwrap();
     let till = w.account("register").await;
     let (s, out) = w
         .pay(
@@ -870,5 +876,128 @@ async fn month_marks_salary_by_employee_period(pool: PgPool) {
         row["salary_to"],
         cur.with_day(19).unwrap().to_string(),
         "{row}"
+    );
+}
+
+/// День расчёта (задача 003 Н11; ADR-155, дополнено): «сегодня» — день D, D−1 и D+1. Окно
+/// «Выплата» и «Оклад» показывают закончившийся период «к выплате», пока его оклад не выдан.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn salary_due_period_on_pay_day(pool: PgPool) {
+    use avtodom_server::api::payroll::salary_now_of;
+    let w = world(pool, false).await;
+    let (branch, emp): (Uuid, Uuid) =
+        sqlx::query_as("select branch_id, id from employees where id = $1::uuid")
+            .bind(&w.cashier)
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let uri = format!("/api/v1/employees/{}/salary-day", w.cashier);
+    ok(&w.app, &w.owner, "PUT", &uri, json!({ "salary_day": 20 })).await;
+    // Последний день расчёта не позже сегодня: закончившийся период — до вчера от него.
+    let pay = {
+        let this = w.today.with_day(20).unwrap();
+        if this <= w.today {
+            this
+        } else {
+            this.checked_sub_months(Months::new(1)).unwrap()
+        }
+    };
+    let ended = salary::period_of(20, pay.pred_opt().unwrap()).unwrap();
+    let current = salary::period_of(20, pay).unwrap();
+    let (dm1, d, dp1) = (pay.pred_opt().unwrap(), pay, pay.succ_opt().unwrap());
+    let safe = w.account("safe").await;
+    let now = |date: NaiveDate| {
+        let pool = w.pool.clone();
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            salary_now_of(&mut conn, branch, emp, date)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    // Аванс 5 000 в закончившемся периоде.
+    let (s, out) = w
+        .pay(
+            &w.owner,
+            json!({ "employee_id": w.cashier, "account_id": safe, "pay_date": dm1,
+                    "lines": [{ "purpose": "advance", "amount_tyiyn": 500_000 }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+
+    // D−1: период ещё идёт — «к выплате D» 25 000.
+    let r = now(dm1).await;
+    assert_eq!(r.period_from, ended.from);
+    assert_eq!(r.pay_date, d);
+    assert_eq!(r.expected_tyiyn, 2_500_000);
+    // D, не начислен: закончившийся период «к выплате сегодня» по ставке.
+    let r = now(d).await;
+    assert_eq!((r.period_from, r.period_to), (ended.from, ended.to));
+    assert_eq!(r.accrued_tyiyn, None);
+    assert_eq!(r.expected_tyiyn, 2_500_000);
+    // D+1, не начислен: дальше — текущий период (оклад ждёт начисления, «начислен не всем»).
+    assert_eq!(now(dp1).await.period_from, current.from);
+
+    // Начислили закончившийся период — D и D+1 показывают его, пока не выдан.
+    ok(
+        &w.app,
+        &w.owner,
+        "POST",
+        "/api/v1/payroll/salary",
+        json!({ "op_id": Uuid::now_v7(), "employee_id": w.cashier, "period_from": ended.from }),
+    )
+    .await;
+    assert_eq!(now(dm1).await.period_from, ended.from);
+    for date in [d, dp1] {
+        let r = now(date).await;
+        assert_eq!(r.period_from, ended.from, "{date}");
+        assert_eq!(r.accrued_tyiyn, Some(3_000_000));
+        assert_eq!(r.expected_tyiyn, 2_500_000, "{date}");
+    }
+    // Выдали 10 000 в день расчёта — у закончившегося «выдано с D» и к выплате 15 000.
+    let (s, out) = w
+        .pay(
+            &w.owner,
+            json!({ "employee_id": w.cashier, "account_id": safe, "pay_date": d,
+                    "lines": [{ "purpose": "salary", "amount_tyiyn": 1_000_000 }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let r = now(d).await;
+    assert_eq!(r.period_from, ended.from);
+    assert_eq!(r.paid_after_tyiyn, 1_000_000);
+    assert_eq!(r.expected_tyiyn, 1_500_000);
+    // Выдали остаток — закончившийся закрыт: текущий период со ставкой и без долга прошлых.
+    let (s, out) = w
+        .pay(
+            &w.owner,
+            json!({ "employee_id": w.cashier, "account_id": safe, "pay_date": d,
+                    "lines": [{ "purpose": "salary", "amount_tyiyn": 1_500_000 }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    for date in [d, dp1] {
+        let r = now(date).await;
+        assert_eq!(r.period_from, current.from, "{date}");
+        assert_eq!(r.expected_tyiyn, 3_000_000, "{date}");
+    }
+    // Вкладка «Оклад» на сегодня и окно «Выплата» — то же правило, что `salary_now_of`.
+    let mut conn = w.pool.acquire().await.unwrap();
+    let today_row = salary_now_of(&mut conn, branch, emp, w.today)
+        .await
+        .unwrap()
+        .unwrap();
+    let row = w.salary_of(&w.cashier, None).await;
+    assert_eq!(row["period_from"], today_row.period_from.to_string());
+    let rem = get(
+        &w.app,
+        &w.owner,
+        &format!("/api/v1/payroll/remains?employee_id={}", w.cashier),
+    )
+    .await;
+    assert_eq!(
+        rem["salary"]["period_from"],
+        today_row.period_from.to_string()
     );
 }

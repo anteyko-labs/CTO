@@ -2408,8 +2408,13 @@ pub struct SalaryRow {
     /// Заработано на сегодня по ставке — ориентир, только с настройкой.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_date_tyiyn: Option<i64>,
+    /// Оклад, выданный после конца периода (с дня расчёта по сегодня), — у закончившегося
+    /// периода «к выплате» (`salary_row_now`); `expected_tyiyn` уже за его вычетом.
+    #[serde(default)]
+    pub paid_after_tyiyn: i64,
 }
 
+#[derive(Clone)]
 pub(crate) struct SalaryEmployee {
     pub(crate) id: Uuid,
     pub(crate) full_name: String,
@@ -2479,7 +2484,63 @@ pub(crate) async fn salary_row(
             (true, Some(rate)) => Some(salary::earned_to_date(rate, p.from, p.to, date)),
             _ => None,
         },
+        paid_after_tyiyn: 0,
     }))
+}
+
+/// Строка «Оклад» на сегодня — период «к выплате» (задача 003 Н11; ADR-155, дополнено):
+/// закончившийся период — в день расчёта, пока по нему остаётся к выплате (не начислен — по
+/// ставке), и после дня расчёта, пока начисленный за него оклад выдан не весь; иначе — текущий
+/// период. Оклад, выданный с дня расчёта по `today`, вычитается из «к выплате» закончившегося.
+pub(crate) async fn salary_row_now(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    e: SalaryEmployee,
+    today: NaiveDate,
+    to_date: bool,
+) -> AppResult<Option<SalaryRow>> {
+    let day = salary_day_u32(e.salary_day);
+    let cur = effective_period(&mut *conn, e.id, period_of(day, today)?).await?;
+    let before = cur.from.pred_opt().ok_or_else(crate::error::overflow)?;
+    if let Some(mut row) = salary_row(&mut *conn, branch_id, e.clone(), before, false).await? {
+        let from = row
+            .period_to
+            .succ_opt()
+            .ok_or_else(crate::error::overflow)?;
+        let after = sqlx::query_scalar!(
+            r#"select coalesce(sum(amount_tyiyn), 0)::bigint as "v!" from payouts
+               where employee_id = $1 and purpose = 'salary' and pay_date between $2 and $3"#,
+            e.id,
+            from,
+            today
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        let owed = row.expected_tyiyn.saturating_sub(after);
+        if owed > 0 && (today == row.pay_date || row.accrual_id.is_some()) {
+            row.paid_after_tyiyn = after;
+            row.expected_tyiyn = owed;
+            return Ok(Some(row));
+        }
+    }
+    salary_row(conn, branch_id, e, today, to_date).await
+}
+
+/// «Оклад» работника на сегодня для бота и тестов: период «к выплате» (`salary_row_now`).
+pub async fn salary_now_of(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    employee_id: Uuid,
+    today: NaiveDate,
+) -> AppResult<Option<SalaryRow>> {
+    match salary_employees(&mut *conn, branch_id, Some(employee_id))
+        .await?
+        .into_iter()
+        .next()
+    {
+        Some(e) => salary_row_now(conn, branch_id, e, today, false).await,
+        None => Ok(None),
+    }
 }
 
 /// Работники филиала для вкладки «Оклад»; `employee` — один.
@@ -2639,15 +2700,14 @@ async fn salary_data(
         if !see_all && (e.is_cashier || !e.is_master) {
             continue;
         }
-        if let Some(r) = salary_row(
-            &mut *conn,
-            branch_id,
-            e,
-            date,
-            settings.salary_show_to_date && date >= today,
-        )
-        .await?
-        {
+        let to_date = settings.salary_show_to_date && date >= today;
+        // «Сейчас» — период «к выплате»: в день расчёта и пока не выдан — закончившийся.
+        let row = if date == today {
+            salary_row_now(&mut *conn, branch_id, e, today, to_date).await?
+        } else {
+            salary_row(&mut *conn, branch_id, e, date, to_date).await?
+        };
+        if let Some(r) = row {
             rows.push(r);
         }
     }
@@ -3093,7 +3153,7 @@ async fn remains(
         .into_iter()
         .next()
     {
-        Some(se) => salary_row(&mut conn, user.branch_id, se, today, false).await?,
+        Some(se) => salary_row_now(&mut conn, user.branch_id, se, today, false).await?,
         None => None,
     };
     let till = cash::default_account(&mut conn, user.branch_id).await?;
