@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { get, newOpId, post, put } from '../lib/api'
 import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
+import { retrySame } from '../lib/retrySame'
 import { useUser } from '../lib/auth'
 import { canisterPourPrice } from '../lib/money'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
@@ -168,9 +169,14 @@ export function RevisionNewProduct({
         }),
       )
       if (r.taken) {
+        // Товар с этим кодом — из другой категории: в эту ревизию он не входит, прибавлять некуда.
+        if (categoryId && r.product.category_id !== categoryId)
+          throw new Error(`Код ${form.barcode.trim()} уже у товара «${r.product.name}» из другой категории — в эту ревизию он не входит`)
+        // Тот же товар в этом окне — тот же op_id: повторное «Завести» после обрыва не прибавит дважды.
         const key = `${r.product.id}:${count}`
         if (addOp.current?.key !== key) addOp.current = { key, id: newOpId() }
-        await put(`/revisions/${revisionId}/lines`, { product_id: r.product.id, counted_qty: count, mode: 'add', op_id: addOp.current.id })
+        const body = { product_id: r.product.id, counted_qty: count, mode: 'add', op_id: addOp.current.id }
+        await retrySame(() => put(`/revisions/${revisionId}/lines`, body))
         toast(TAKEN_ADDED)
       } else toast(`Заведён и посчитан: ${r.created.product.name}`)
       onDone()

@@ -6,6 +6,7 @@ import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money, Notice, PageHeader, toast } from '../components/ui'
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
 import { createOrTaken, TAKEN_ADDED, TAKEN_EXISTS } from '../lib/barcodeTaken'
+import { retrySame } from '../lib/retrySame'
 import { useUser } from '../lib/auth'
 import { OilCountInput } from '../components/OilCountInput'
 import { stockText } from '../components/ProductPicker'
@@ -243,25 +244,19 @@ export default function ProductIntake() {
     return (await get<{ counted_qty: number | null }>(`/revisions/${id}/lines/${productId}`)).counted_qty
   }
 
-  const countAttempt = useRef<{ key: string; opId: string } | null>(null)
-
   /**
    * Записывает пересчёт в ревизию. По умолчанию прибавляет: товар на двух полках — 5 и 3 — это 8,
-   * а не 3 (ADR-059). «Заменить» — только явным выбором. Возвращает итог строки.
+   * а не 3 (ADR-059). «Заменить» — только явным выбором, с итогом, который был на экране
+   * (`expected`): пока выбирали, другие прибавили — сервер ответит 409, чужое не затрётся.
+   * Возвращает итог строки.
    */
-  const saveCount = async (productId: string, qty: number | null, mode: 'add' | 'set' = 'add'): Promise<number | null> => {
+  const saveCount = async (productId: string, qty: number | null, mode: 'add' | 'set' = 'add', expected = 0): Promise<number | null> => {
     if (qty === null) return null
     const id = await ensureRevision()
-    // Повтор того же ввода после обрыва связи идёт с тем же op_id: сервер не прибавит полку дважды (ADR-062).
-    const key = `${id}:${productId}:${qty}:${mode}`
-    if (countAttempt.current?.key !== key) countAttempt.current = { key, opId: newOpId() }
-    const r = await put<{ counted_qty: number }>(`/revisions/${id}/lines`, {
-      product_id: productId,
-      counted_qty: qty,
-      mode,
-      op_id: countAttempt.current.opId,
-    })
-    countAttempt.current = null
+    // Каждый ввод — свой op_id: следующий настоящий скан того же товара с тем же числом — новая
+    // прибавка. Тем же op_id уходит только автоматический повтор после обрыва (ADR-062, Н14).
+    const body = { product_id: productId, counted_qty: qty, mode, op_id: newOpId(), ...(mode === 'set' ? { expected_qty: expected } : {}) }
+    const r = await retrySame(() => put<{ counted_qty: number }>(`/revisions/${id}/lines`, body))
     return r.counted_qty
   }
 
@@ -344,7 +339,14 @@ export default function ProductIntake() {
   const saveFoundCount = (qty: number, mode: 'add' | 'set') =>
     void act.run(async () => {
       if (!found) return
-      const total = await saveCount(found.id, qty, mode)
+      let total: number | null
+      try {
+        total = await saveCount(found.id, qty, mode, already ?? 0)
+      } catch (e) {
+        // Пока выбирали «Заменить», другие прибавили: показываем новый итог и переспрашиваем.
+        if (e instanceof ApiError && e.code === 'count_changed') setAlready(await countedBefore(found.id))
+        throw e
+      }
       setRecent((r) => [{ name: found.name, at: new Date().toISOString(), count: countText(found, qty), isNew: false }, ...r].slice(0, 15))
       toast(total === null ? 'Записано в ревизию' : `Записано в ревизию: всего ${countText(found, total)}`)
       reset()

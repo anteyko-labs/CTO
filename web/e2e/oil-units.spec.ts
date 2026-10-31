@@ -97,19 +97,20 @@ test('ревизия масла: «кан. + л», скан канистры, «
   const scanner = page.getByPlaceholder('Сканируйте штрихкод')
   await scanner.fill(codeA)
   await scanner.press('Enter')
-  const cans = page.locator(`[data-count="${a.id}"]`)
+  // Масло в таре — поле «+ добавить»: общий итог строки — рядом (задача 003, Н14).
+  const totalA = page.locator(`[data-total="${a.id}"]`)
   const liters = page.locator(`[data-count-l="${a.id}"]`)
-  await expect(cans).toHaveValue('1')
-  await expect(rowA.getByTestId('oil-count-total')).toHaveText(money('= 4 л'))
+  await expect(totalA).toHaveText(money('итого 1 кан.'))
   await expect(scanner).toBeFocused()
   await scanner.fill(codeA)
   await scanner.press('Enter')
-  await expect(cans).toHaveValue('2')
+  await expect(totalA).toHaveText(money('итого 2 кан.'))
 
-  // Початая тара — литрами: «2 кан. + 1,5 л» = 9 500 мл.
+  // Початая тара — литрами, прибавкой: «2 кан. + 1,5 л» = 9 500 мл.
   await liters.fill('1,5')
-  await expect(rowA.getByTestId('oil-count-total')).toHaveText(money('= 9,5 л'))
+  await expect(rowA.getByTestId('oil-count-total')).toHaveText(money('= 1,5 л'))
   await scanner.focus()
+  await expect(totalA).toHaveText(money('итого 2 кан. + 1,5 л'))
   await expect(rowA).toContainText(money('−6 кан. + 1 л'))
   const list = await apiGet<{ id: string; status: string; category_id: string | null }[]>(page.request, '/revisions')
   const mine = list.find((r) => r.status === 'draft' && r.category_id === cat.id)

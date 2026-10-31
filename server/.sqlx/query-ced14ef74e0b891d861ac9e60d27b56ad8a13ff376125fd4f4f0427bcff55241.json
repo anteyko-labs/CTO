@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select unit from products where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "unit",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ced14ef74e0b891d861ac9e60d27b56ad8a13ff376125fd4f4f0427bcff55241"
+}

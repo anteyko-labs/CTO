@@ -20,6 +20,10 @@ pub enum AppError {
     Validation(String),
     #[error("{0}")]
     Conflict(String),
+    /// 409 со своим кодом: экран по коду понимает, что делать дальше (перечитать строку ревизии,
+    /// присоединиться к открытой ревизии — задача 003, Н14).
+    #[error("{1}")]
+    ConflictCode(&'static str, String),
     #[error("{0}")]
     TooManyRequests(String),
     /// Банк не ответил или отказал (SPEC-31): касса отмечает оплату вручную (424).
@@ -49,6 +53,7 @@ impl AppError {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            Self::ConflictCode(code, _) => (StatusCode::CONFLICT, code),
             Self::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
             Self::Bank(_) => (StatusCode::FAILED_DEPENDENCY, "bank"),
             Self::Db(e) if bad_text(e) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),

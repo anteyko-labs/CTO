@@ -6,6 +6,8 @@ const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
 const RUN = Date.now().toString().slice(-8)
 const DEVICE = { 'X-Device-Id': '00000000-0000-4000-8000-00000000e2f1' }
+/** Текст с неразрывными пробелами: «2 кан. + 1,5 л» — как на экране. */
+const text = (t: string) => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s'))
 
 /** Отдельное устройство: свой контекст браузера, свой вход. */
 async function device(browser: Browser): Promise<Page> {
@@ -30,6 +32,15 @@ async function openRevision(page: Page, category: string) {
   await expect(page.getByRole('heading', { name: new RegExp(`Ревизия № \\d+ · ${category}`) })).toBeVisible()
 }
 
+/** Черновик категории не оставляем: «Весь склад» в других проверках получил бы «Идёт ревизия». */
+async function cancelDraft(request: APIRequestContext, categoryId: string) {
+  const list = (await (await request.get('/api/v1/revisions')).json()) as { id: string; status: string; category_id: string | null }[]
+  for (const r of list.filter((x) => x.status === 'draft' && x.category_id === categoryId)) await apiPost(request, `/revisions/${r.id}/cancel`, {})
+}
+
+/** Общий итог строки на экране устройства. */
+const total = (page: Page, id: string) => page.locator(`[data-total="${id}"]`)
+
 async function scan(page: Page, code: string) {
   const scanner = page.getByPlaceholder('Сканируйте штрихкод')
   await scanner.fill(code)
@@ -49,7 +60,7 @@ test('ревизия: два устройства сканируют один т
     barcodes: [code],
     sale_price_tyiyn: 30_000,
   })
-  await apiPost(a.request, '/revisions', { category_id: cat.id })
+  await apiPost(a.request, '/revisions', { category_id: cat.id, reuse_draft: true })
   await openRevision(a, category)
   await openRevision(b, category)
 
@@ -57,21 +68,41 @@ test('ревизия: два устройства сканируют один т
   await Promise.all([scan(a, code), scan(b, code)])
   // Свой скан виден сразу, чужой — при перечитывании (раз в 5 с): у обоих 2, а не 1.
   for (const page of [a, b]) {
-    await expect(page.locator(`[data-count="${p.id}"]`)).toHaveValue('2', { timeout: 15_000 })
-    await expect(page.getByTestId('counted-by').first()).toContainText('последним считал')
+    await expect(total(page, p.id)).toHaveText(text('итого 2 шт'), { timeout: 15_000 })
+    await expect(page.getByTestId('counted-by').first()).toContainText('считали:')
   }
 
-  // Ещё скан на первом — второй увидит 3, не трогая своё поле.
+  // Ещё скан на первом — второй увидит 3.
   await scan(a, code)
-  await expect(a.locator(`[data-count="${p.id}"]`)).toHaveValue('3')
-  await expect(b.locator(`[data-count="${p.id}"]`)).toHaveValue('3', { timeout: 15_000 })
+  await expect(total(a, p.id)).toHaveText(text('итого 3 шт'))
+  await expect(total(b, p.id)).toHaveText(text('итого 3 шт'), { timeout: 15_000 })
 
-  // Ручной ввод — итог строки («set»): второй вписал 5 — у обоих 5.
+  // Строку уже считали — поле второго «+ добавить»: он нашёл 2 в своём месте — у обоих 5.
+  const rowB = b.getByRole('row', { name: new RegExp(`Свеча два устройства ${RUN}`) })
+  await expect(rowB.locator('[data-mode="add"]')).toHaveAttribute('aria-pressed', 'true')
   const field = b.locator(`[data-count="${p.id}"]`)
-  await field.fill('5')
+  await expect(field).toHaveValue('')
+  await field.fill('2')
   await field.press('Enter')
+  await expect(total(b, p.id)).toHaveText(text('итого 5 шт'))
+  await expect(field).toHaveValue('')
+  await expect(total(a, p.id)).toHaveText(text('итого 5 шт'), { timeout: 15_000 })
+
+  // «= итог»: второй начал вписывать итог 10, а первый тем временем отсканировал ещё — итог не
+  // затирается молча: «сейчас 6 шт. Записать итог 10 шт?».
+  await rowB.locator('[data-mode="set"]').click()
   await expect(field).toHaveValue('5')
-  await expect(a.locator(`[data-count="${p.id}"]`)).toHaveValue('5', { timeout: 15_000 })
+  await field.fill('10')
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 6 шт'))
+  await field.press('Enter')
+  await expect(b.getByTestId('count-changed')).toContainText(text('сейчас 6 шт'))
+  await b.getByRole('button', { name: text('Записать итог 10 шт') }).click()
+  await expect(total(b, p.id)).toHaveText(text('итого 10 шт'))
+  await expect(total(a, p.id)).toHaveText(text('итого 10 шт'), { timeout: 15_000 })
+  // Кто сколько посчитал — в строке.
+  await expect(b.getByTestId('counted-by').first()).toContainText(text('= 10 шт'), { timeout: 15_000 })
+  await cancelDraft(a.request, cat.id)
 })
 
 test('ревизия: незнакомый код завёл другой — второй прибавляет к его товару', async ({ browser }) => {
@@ -80,7 +111,7 @@ test('ревизия: незнакомый код завёл другой — в
   const category = `Кат новый код ${RUN}`
   const code = `27${RUN}402`
   const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'other' })
-  await apiPost(a.request, '/revisions', { category_id: cat.id })
+  await apiPost(a.request, '/revisions', { category_id: cat.id, reuse_draft: true })
   await openRevision(a, category)
   await openRevision(b, category)
 
@@ -102,6 +133,70 @@ test('ревизия: незнакомый код завёл другой — в
   const found = (await rows.json()) as { id: string }[]
   expect(found).toHaveLength(1)
   for (const page of [a, b]) {
-    await expect(page.locator(`[data-count="${found[0].id}"]`)).toHaveValue('2', { timeout: 15_000 })
+    await expect(total(page, found[0].id)).toHaveText(text('итого 2 шт'), { timeout: 15_000 })
   }
+  await cancelDraft(a.request, cat.id)
+})
+
+test('ревизия масла: один сканирует канистры, другой вписывает вскрытую литрами — итог сложился', async ({ browser }) => {
+  const a = await device(browser)
+  const b = await device(browser)
+  const category = `Кат масло два устройства ${RUN}`
+  const code = `27${RUN}403`
+  const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'oil' })
+  const p = await apiPost<{ id: string }>(a.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Масло два устройства ${RUN} 5W-30`,
+    container_ml: 4000,
+    barcodes: [code],
+    sale_price_tyiyn: 250_000,
+  })
+  await apiPost(a.request, '/revisions', { category_id: cat.id, reuse_draft: true })
+  await openRevision(a, category)
+  await openRevision(b, category)
+
+  // Второй открыл строку раньше, чем первый что-то отсканировал: у масла в таре поле — прибавка.
+  const rowB = b.getByRole('row', { name: new RegExp(`Масло два устройства ${RUN}`) })
+  await expect(rowB.locator('[data-mode="add"]')).toHaveAttribute('aria-pressed', 'true')
+  const liters = b.locator(`[data-count-l="${p.id}"]`)
+  await liters.fill('1,5')
+  // Пока второй вписывает литры, первый сканирует две канистры.
+  await scan(a, code)
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 2 кан.'))
+  await b.getByPlaceholder('Сканируйте штрихкод').focus()
+  for (const page of [a, b]) await expect(total(page, p.id)).toHaveText(text('итого 2 кан. + 1,5 л'), { timeout: 15_000 })
+  const list = await (await a.request.get('/api/v1/revisions')).json()
+  const rev = (list as { id: string; status: string; category_id: string | null }[]).find((r) => r.status === 'draft' && r.category_id === cat.id)!
+  const line = await (await a.request.get(`/api/v1/revisions/${rev.id}/lines/${p.id}`)).json()
+  expect(line.counted_qty).toBe(9500)
+  await cancelDraft(a.request, cat.id)
+})
+
+test('ревизия: двое начинают одну ревизию — один черновик; «весь склад» при открытой категории — присоединиться', async ({ browser }) => {
+  const a = await device(browser)
+  const b = await device(browser)
+  const category = `Кат одна ревизия ${RUN}`
+  const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'other' })
+  for (const page of [a, b]) {
+    await page.goto('/revision')
+    await page.getByLabel('Что пересчитываем').selectOption({ label: category })
+  }
+  await Promise.all([a, b].map((page) => page.getByRole('button', { name: 'Начать ревизию' }).click()))
+  const heading = (page: Page) => page.getByRole('heading', { name: new RegExp(`Ревизия № \\d+ · ${category}`) })
+  await expect(heading(a)).toBeVisible()
+  await expect(heading(b)).toBeVisible()
+  expect(await heading(a).textContent()).toBe(await heading(b).textContent())
+
+  // Третий начинает «Весь склад»: открыта ревизия категории — предлагают присоединиться.
+  const c = await device(browser)
+  await c.goto('/revision')
+  await c.getByLabel('Что пересчитываем').selectOption({ label: 'Весь склад' })
+  await c.getByRole('button', { name: 'Начать ревизию' }).click()
+  await expect(c.getByTestId('revision-busy')).toContainText('Идёт ревизия')
+  await c.getByRole('button', { name: 'Присоединиться' }).click()
+  await expect(c.getByRole('heading', { name: /Ревизия № \d+ · / })).toBeVisible()
+
+  await cancelDraft(a.request, cat.id)
 })

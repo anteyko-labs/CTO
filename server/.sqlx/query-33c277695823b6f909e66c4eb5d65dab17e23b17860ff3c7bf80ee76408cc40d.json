@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.id, r.category_id, c.name as \"category_name?\"\n               from revisions r left join categories c on c.id = r.category_id\n               where r.branch_id = $1 and r.status = 'draft'\n                 and (r.category_id is null or $2::uuid is null or r.category_id = $2)\n               order by (r.category_id is not distinct from $2) desc, (r.category_id is null) desc,\n                        r.created_at desc\n               limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "category_name?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "33c277695823b6f909e66c4eb5d65dab17e23b17860ff3c7bf80ee76408cc40d"
+}

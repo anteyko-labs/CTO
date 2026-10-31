@@ -304,7 +304,8 @@ async fn four_people_open_one_whole_warehouse_draft(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(drafts, 1);
-    // По категории — свой черновик, «весь склад» его не подхватывает.
+    // Ревизия категории при открытом «весь склад» присоединяется к нему: товар категории
+    // входит в оба охвата, и две ревизии вычли бы один остаток дважды.
     let cat = w.category("filter").await;
     let by_cat = ok(
         &w.app,
@@ -314,7 +315,7 @@ async fn four_people_open_one_whole_warehouse_draft(pool: PgPool) {
         json!({ "category_id": cat, "reuse_draft": true }),
     )
     .await;
-    assert_ne!(by_cat["head"]["id"], json!(ids[0]));
+    assert_eq!(by_cat["head"]["id"], json!(ids[0]));
     // Без флага — как раньше: новый черновик.
     let plain = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
     assert_ne!(plain["head"]["id"], json!(ids[0]));
@@ -480,4 +481,236 @@ async fn four_stock_ins_of_one_product_at_once_add_up(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!((qty, value), (4, 20_000));
+}
+
+/// Код ответа ошибки.
+fn code(v: &Value) -> &str {
+    v["error"]["code"].as_str().unwrap_or_default()
+}
+
+/// Ручной ввод «= итог» несёт итог, который человек видел на экране (`expected_qty`): пока он
+/// вводил, другие прибавили — 409 «сейчас N», и чужие сканы не затираются. Кто сколько прибавил —
+/// журнал строки («Айбек +2, Нурлан +1, Владелец = 5»).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn set_with_stale_expected_qty_does_not_wipe_scans(pool: PgPool) {
+    let w = World::new(pool).await;
+    let item = w.product("Свеча NGK").await;
+    let rev = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/revisions/{rid}/lines");
+    let add = |who: usize| {
+        let (app, cookie, uri, item) = (
+            w.app.clone(),
+            w.people[who].clone(),
+            uri.clone(),
+            item.clone(),
+        );
+        async move {
+            ok(
+                &app,
+                "PUT",
+                &uri,
+                &cookie,
+                json!({ "product_id": item, "counted_qty": 1, "mode": "add", "op_id": Uuid::now_v7() }),
+            )
+            .await
+        }
+    };
+    // Владелец открыл строку (пусто) и вводит итог; тем временем Айбек дважды сканирует, Нурлан — раз.
+    add(1).await;
+    add(1).await;
+    add(2).await;
+    let (s, v) = call(
+        &w.app,
+        "PUT",
+        &uri,
+        Some(w.owner()),
+        None,
+        Some(
+            json!({ "product_id": item, "counted_qty": 5, "mode": "set", "expected_qty": 0, "op_id": Uuid::now_v7() }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "count_changed", "{v}");
+    let m = v["error"]["message"].as_str().unwrap();
+    assert!(m.contains("сейчас 3 шт"), "{m}");
+    assert!(m.contains("Записать итог 5 шт"), "{m}");
+    let full = get(&w.app, &format!("/api/v1/revisions/{rid}"), w.owner()).await;
+    assert_eq!(
+        line(&full, &item)["counted_qty"],
+        json!(3),
+        "чужие сканы целы"
+    );
+    // Перечитал — видит 3 и подтверждает итог 5.
+    let set = ok(
+        &w.app,
+        "PUT",
+        &uri,
+        w.owner(),
+        json!({ "product_id": item, "counted_qty": 5, "mode": "set", "expected_qty": 3, "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(set["counted_qty"], json!(5));
+    // Повтор того же «= итог» (обрыв связи) — прежний ответ, а не 409.
+    let op = Uuid::now_v7();
+    let body = json!({ "product_id": item, "counted_qty": 6, "mode": "set", "expected_qty": 5, "op_id": op });
+    ok(&w.app, "PUT", &uri, w.owner(), body.clone()).await;
+    let again = ok(&w.app, "PUT", &uri, w.owner(), body).await;
+    assert_eq!(again["counted_qty"], json!(6));
+    // Убрать строку с устаревшим итогом — тоже 409; с верным — убирается.
+    add(3).await;
+    let (s, v) = call(
+        &w.app,
+        "DELETE",
+        &format!("/api/v1/revisions/{rid}/lines/{item}?expected_qty=6"),
+        Some(w.owner()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "count_changed", "{v}");
+    // Кто сколько прибавил: подряд идущие прибавки одного человека — одной записью.
+    let full = get(&w.app, &format!("/api/v1/revisions/{rid}"), w.owner()).await;
+    let log: Vec<(String, String, i64)> = line(&full, &item)["counted_log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["by"].as_str().unwrap().to_string(),
+                e["mode"].as_str().unwrap().to_string(),
+                e["qty"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        log,
+        vec![
+            ("Айбек".into(), "add".into(), 2),
+            ("Нурлан".into(), "add".into(), 1),
+            ("Владелец".into(), "set".into(), 5),
+            ("Владелец".into(), "set".into(), 6),
+            ("Эрмек".into(), "add".into(), 1),
+        ]
+    );
+    // Журнал только пополняется (инвариант 5).
+    let r = sqlx::query("update revision_line_adds set qty = 100")
+        .execute(&w.pool)
+        .await;
+    assert!(r.is_err(), "журнал прибавок не правится");
+    ok(
+        &w.app,
+        "DELETE",
+        &format!("/api/v1/revisions/{rid}/lines/{item}?expected_qty=7"),
+        w.owner(),
+        Value::Null,
+    )
+    .await;
+    let n: i64 = sqlx::query_scalar(
+        "select count(*) from revision_line_adds where revision_id = $1 and mode = 'clear'",
+    )
+    .bind(Uuid::parse_str(&rid).unwrap())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+}
+
+/// Число открытых черновиков филиала.
+async fn drafts(w: &World) -> i64 {
+    sqlx::query_scalar("select count(*) from revisions where status = 'draft' and branch_id = $1")
+        .bind(w.branch)
+        .fetch_one(&w.pool)
+        .await
+        .unwrap()
+}
+
+/// Двое нажали «Начать ревизию» одной категории — один черновик. «Весь склад» и категория —
+/// пересекаются: двух черновиков, вычитающих один остаток, не бывает (категория присоединяется к
+/// «весь склад», «весь склад» при открытой категории — 409 «Идёт ревизия «…»»).
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn overlapping_revision_starts_share_one_draft(pool: PgPool) {
+    let w = World::new(pool).await;
+    let cat = w.category("filter").await;
+    let other = w.category("filter").await;
+    let res = w
+        .all_at_once(
+            "POST",
+            "/api/v1/revisions",
+            |_| json!({ "category_id": cat, "reuse_draft": true }),
+        )
+        .await;
+    let mut ids: Vec<String> = res
+        .iter()
+        .map(|(s, v)| {
+            assert_eq!(*s, StatusCode::OK, "{v}");
+            v["head"]["id"].as_str().unwrap().to_string()
+        })
+        .collect();
+    ids.dedup();
+    assert_eq!(ids.len(), 1, "один черновик категории");
+    assert_eq!(drafts(&w).await, 1);
+    // Другая категория — не пересекается: свой черновик.
+    let other_rev = ok(
+        &w.app,
+        "POST",
+        "/api/v1/revisions",
+        w.owner(),
+        json!({ "category_id": other, "reuse_draft": true }),
+    )
+    .await;
+    assert_ne!(other_rev["head"]["id"], json!(ids[0]));
+    // «Весь склад» при открытой категории — 409 с её названием, черновик не заводится.
+    let (s, v) = call(
+        &w.app,
+        "POST",
+        "/api/v1/revisions",
+        Some(w.owner()),
+        None,
+        Some(json!({ "category_id": null, "reuse_draft": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "revision_open", "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Идёт ревизия «Кат"),
+        "{v}"
+    );
+    assert_eq!(drafts(&w).await, 2);
+    for id in [
+        ids[0].clone(),
+        other_rev["head"]["id"].as_str().unwrap().to_string(),
+    ] {
+        ok(
+            &w.app,
+            "POST",
+            &format!("/api/v1/revisions/{id}/cancel"),
+            w.owner(),
+            json!({}),
+        )
+        .await;
+    }
+    // Одновременно: двое — «весь склад», двое — категорию. Какой бы ни пришёл первым, открытый
+    // черновик один (категория присоединилась к «весь склад» или «весь склад» получил 409).
+    let res = w
+        .all_at_once("POST", "/api/v1/revisions", |i| {
+            if i % 2 == 0 {
+                json!({ "category_id": null, "reuse_draft": true })
+            } else {
+                json!({ "category_id": cat, "reuse_draft": true })
+            }
+        })
+        .await;
+    for (s, v) in &res {
+        assert!(
+            *s == StatusCode::OK || (*s == StatusCode::CONFLICT && code(v) == "revision_open"),
+            "{v}"
+        );
+    }
+    assert_eq!(drafts(&w).await, 1, "{res:?}");
 }

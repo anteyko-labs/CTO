@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.product_id, a.mode, a.qty, u.full_name\n           from revision_line_adds a join users u on u.id = a.user_id\n           where a.revision_id = $1 order by a.created_at, a.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "qty",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b092b1f222f9b2a0162e5eb56be146ca36582b27ed934e91d9815d2ecb062884"
+}
