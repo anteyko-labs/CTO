@@ -57,7 +57,8 @@ test('прибыль и убытки: раскрытие до документо
   await page.getByRole('link', { name: 'Прибыль и убытки' }).click()
   await expect(page.getByRole('heading', { name: 'Прибыль и убытки' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Этот месяц' })).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByText(/^С 1 /)).toBeVisible()
+  // 1-го числа «этот месяц» — один день: «За 1 ноября …», иначе «С 1 … по …».
+  await expect(page.getByText(/^(С|За) 1 /)).toBeVisible()
   const tree = page.getByTestId('pnl-tree')
   for (const line of ['Выручка', 'Себестоимость', 'Валовая прибыль', 'Операционные расходы', 'Чистая прибыль']) {
     await expect(tree.getByRole('button', { name: new RegExp(`^.?${line}`) }).first()).toBeVisible()
