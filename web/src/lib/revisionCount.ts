@@ -155,6 +155,33 @@ export class InputOps {
   }
 }
 
+/** Ключ ввода поля строки для `InputOps`: режим и число. Enter в поле и «Прибавить» из окна
+ *  «пока вы вводили» с тем же числом — один ввод, один op_id. */
+export const inputKey = (mode: CountMode, qty: number | null): string => `${mode}|${qty ?? ''}`
+
+/**
+ * Нажатия, на которые не пришёл ответ (обрыв связи): записались они или нет — неизвестно. Человек
+ * изменил ввод и нажал снова — новый op_id, а прошлые уходят с ним (`prev_op_ids`): если одно из
+ * них уже записалось, сервер ответит им, а не заведёт товар второй раз (задача 003, Н14).
+ */
+export class LostOps {
+  private ids: string[] = []
+
+  lost(opId: string): void {
+    if (!this.ids.includes(opId)) this.ids.push(opId)
+  }
+
+  /** Прошлые нажатия без ответа — кроме этого. */
+  before(opId: string): string[] {
+    return this.ids.filter((x) => x !== opId)
+  }
+
+  /** Ответ пришёл: прошлые нажатия больше не нужны. */
+  clear(): void {
+    this.ids = []
+  }
+}
+
 interface VersionedLine {
   product_id: string
   /** Номер последней записи строки на сервере; без него (старый сервер) — показываем как есть. */
@@ -178,6 +205,24 @@ export function mergeLines<L extends VersionedLine>(shown: L[], incoming: L[], i
     if (!has.has(s.product_id) && s.version !== undefined && incomingVersion !== undefined && s.version > incomingVersion) out.push(s)
   }
   return out
+}
+
+interface ShownRevision<L extends VersionedLine> {
+  head: { id: string; status: 'draft' | 'posted' | 'cancelled' }
+  lines: L[]
+  version?: number
+}
+
+/**
+ * Перечитанная ревизия на экран. Проведённая или отменённая в черновик не возвращается: ответ
+ * перечитывания черновика, пришедший позже «проведена», — старый. Черновик поверх черновика —
+ * строки по версиям (`mergeLines`).
+ */
+export function freshRevision<L extends VersionedLine, R extends ShownRevision<L>>(cur: R | null, r: R): R {
+  if (!cur || cur.head.id !== r.head.id) return r
+  if (r.head.status !== 'draft') return r
+  if (cur.head.status !== 'draft') return cur
+  return { ...r, lines: mergeLines(cur.lines, r.lines, r.version) }
 }
 
 /** Ответ своей записи — на экран, только если он новее показанной строки. */

@@ -1,7 +1,18 @@
 // Совместный пересчёт строки ревизии с нескольких устройств (задача 003, Н14): итог для сверки
 // «= итог», op_id ввода, свежесть показа, единицы найденного товара.
 import { describe, expect, it } from 'vitest'
-import { expectedBody, expectedQuery, InputOps, mergeLines, OwnWrites, patchIfNewer, qtyInUnits } from './revisionCount'
+import {
+  expectedBody,
+  expectedQuery,
+  freshRevision,
+  InputOps,
+  inputKey,
+  LostOps,
+  mergeLines,
+  OwnWrites,
+  patchIfNewer,
+  qtyInUnits,
+} from './revisionCount'
 
 describe('итог для сверки «= итог» и очистки', () => {
   it('видел 3, свой скан ещё шёл, другой прибавил 5 — сверка с 4, а не с 9 из ответа', () => {
@@ -138,5 +149,59 @@ describe('количество в единицах найденного това
     expect(qtyInUnits({ cans: 1, ml: 500 }, piece)).toBeNull()
     expect(qtyInUnits({ cans: 2, ml: 0 }, bulk)).toBeNull()
     expect(qtyInUnits({ cans: 2, ml: 0 }, weight)).toBeNull()
+  })
+})
+
+describe('перечитывание после проведения', () => {
+  const rev = (status: 'draft' | 'posted' | 'cancelled', counted: number, version: number) => ({
+    head: { id: 'r', status },
+    lines: [{ product_id: 'p', counted_qty: counted, version }],
+    version,
+  })
+
+  it('ответ черновика, пришедший после «проведена», не возвращает экран в черновик', () => {
+    const posted = rev('posted', 5, 3)
+    expect(freshRevision(posted, rev('draft', 4, 2))).toBe(posted)
+    const cancelled = rev('cancelled', 5, 3)
+    expect(freshRevision(cancelled, rev('draft', 5, 3))).toBe(cancelled)
+  })
+
+  it('черновик провели — показывается проведённая; черновик поверх черновика — по версиям строк', () => {
+    const posted = rev('posted', 5, 3)
+    expect(freshRevision(rev('draft', 5, 3), posted)).toBe(posted)
+    const merged = freshRevision(rev('draft', 6, 4), rev('draft', 5, 3))
+    expect(merged.lines[0].counted_qty).toBe(6)
+    expect(freshRevision(null, posted)).toBe(posted)
+  })
+
+  it('другая ревизия — как пришла', () => {
+    const other = { ...rev('draft', 1, 1), head: { id: 'x', status: 'draft' as const } }
+    expect(freshRevision(rev('posted', 5, 3), other)).toBe(other)
+  })
+})
+
+describe('прошлые нажатия без ответа', () => {
+  it('ответа не было — нажатие в списке; другой ввод несёт его как прошлое; ответ пришёл — список пуст', () => {
+    const lost = new LostOps()
+    lost.lost('a')
+    lost.lost('a')
+    expect(lost.before('a')).toEqual([])
+    lost.lost('b')
+    expect(lost.before('c')).toEqual(['a', 'b'])
+    expect(lost.before('b')).toEqual(['a'])
+    lost.clear()
+    expect(lost.before('c')).toEqual([])
+  })
+})
+
+describe('ключ ввода поля', () => {
+  it('«Прибавить» из окна «пока вы вводили» — тот же ключ, что у Enter в поле «+ добавить»', () => {
+    let n = 0
+    const ops = new InputOps(() => `op-${++n}`)
+    const fromAsk = ops.take('p', inputKey('add', 20))
+    // Ответ потерян, человек жмёт Enter в поле с тем же числом — тот же op_id.
+    expect(ops.take('p', inputKey('add', 20))).toBe(fromAsk)
+    expect(inputKey('set', null)).toBe('set|')
+    expect(inputKey('add', 20)).not.toBe(inputKey('set', 20))
   })
 })

@@ -169,6 +169,94 @@ test('ревизия: обрыв связи после того, как серв
   await field.press('Enter')
   await expect(total(a, p.id)).toHaveText(text('итого 8 шт'))
   expect(await counted()).toBe(8)
+
+  // «= итог 20», а пока вводили, другой прибавил 1: «Прибавить 20 — будет 29». Все ответы
+  // потеряны — поле переходит в «+ добавить» с тем же числом; Enter уходит с тем же op_id: 29, а не 49.
+  const row = a.getByRole('row', { name: new RegExp(`Свеча обрыв ${RUN}`) })
+  await row.locator('[data-mode="set"]').click()
+  await expect(field).toHaveValue('8')
+  await field.fill('20')
+  const other = await a.request.put(`/api/v1/revisions/${rev.head.id}/lines`, {
+    data: { product_id: p.id, counted_qty: 1, mode: 'add', op_id: crypto.randomUUID() },
+    headers: { 'X-Device-Id': '00000000-0000-4000-8000-00000000e2f2' },
+  })
+  expect(other.ok()).toBeTruthy()
+  await field.press('Enter')
+  await expect(a.getByTestId('count-changed')).toContainText(text('сейчас 9 шт'))
+  drops = 3
+  reached = 0
+  await a.getByRole('button', { name: text('Прибавить 20 шт — будет 29 шт') }).click()
+  await expect(a.getByText('Нет связи с сервером', { exact: true })).toBeVisible({ timeout: 10_000 })
+  expect(reached).toBe(3)
+  expect(await counted()).toBe(29)
+  await expect(row.locator('[data-mode="add"]')).toHaveAttribute('aria-pressed', 'true')
+  await expect(field).toHaveValue('20')
+  await field.focus()
+  await field.press('Enter')
+  await expect(total(a, p.id)).toHaveText(text('итого 29 шт'))
+  await expect(field).toHaveValue('')
+  expect(await counted()).toBe(29)
+  await a.unroute(lines)
+  await cancelDraft(a.request, cat.id)
+})
+
+test('ревизия: связь пропала на 3 скана — отметка ⏳, связь вернулась — итог +3 ровно', async ({ browser }) => {
+  const a = await device(browser)
+  const category = `Кат без связи ${RUN}`
+  const code = `27${RUN}406`
+  const cat = await apiPost<{ id: string }>(a.request, '/categories', { name: category, kind: 'other' })
+  const p = await apiPost<{ id: string }>(a.request, '/products', {
+    op_id: crypto.randomUUID(),
+    category_id: cat.id,
+    name: `Свеча без связи ${RUN}`,
+    barcodes: [code],
+    sale_price_tyiyn: 30_000,
+  })
+  const rev = await apiPost<{ head: { id: string } }>(a.request, '/revisions', { category_id: cat.id })
+  const counted = async () =>
+    ((await (await a.request.get(`/api/v1/revisions/${rev.head.id}/lines/${p.id}`)).json()) as { counted_qty: number | null }).counted_qty
+  await openRevision(a, category)
+  await scan(a, code)
+  await expect(total(a, p.id)).toHaveText(text('итого 1 шт'))
+
+  // Wi-Fi на складе пропал: первый скан доходит до сервера, но ответы теряются (и на повторы);
+  // два следующих не доходят вовсе.
+  const lines = /\/api\/v1\/revisions\/[0-9a-f-]+\/lines$/
+  let offline = true
+  let lostOp: string | null = null
+  await a.route(lines, async (route) => {
+    if (route.request().method() !== 'PUT' || !offline) return route.continue()
+    const op = (route.request().postDataJSON() as { op_id: string }).op_id
+    lostOp ??= op
+    if (op === lostOp) {
+      await route.fetch()
+      return route.abort('connectionreset')
+    }
+    return route.abort('connectionrefused')
+  })
+  for (let i = 0; i < 3; i++) await scan(a, code)
+  // Ни один скан не пропал молча: у строки — отметка, вверху — сколько не отправлено.
+  const banner = a.getByTestId('unsent')
+  await expect(banner).toContainText('Не отправлено: 3 — отправится при связи', { timeout: 20_000 })
+  const mark = a.locator(`[data-unsent="${p.id}"]`)
+  await expect(mark).toHaveText(text('⏳ +3 шт не отправлено'))
+  expect(await counted()).toBe(2)
+
+  // Перезагрузка страницы — очередь на месте (localStorage по ревизии).
+  await openRevision(a, category)
+  await expect(banner).toContainText('Не отправлено: 3')
+  await expect(mark).toHaveText(text('⏳ +3 шт не отправлено'))
+  // Проводить с неотправленными сканами — предупреждение.
+  await a.getByRole('button', { name: 'Провести' }).click()
+  await expect(a.getByTestId('unsent-on-post')).toContainText('не отправлено сканов: 3')
+  await a.getByRole('button', { name: 'Отмена' }).click()
+
+  // Связь вернулась — очередь уходит сама с теми же op_id: дошедший без ответа не задвоился.
+  offline = false
+  await expect(banner).toBeHidden({ timeout: 20_000 })
+  await expect(mark).toBeHidden()
+  await expect(total(a, p.id)).toHaveText(text('итого 4 шт'))
+  expect(await counted()).toBe(4)
   await a.unroute(lines)
   await cancelDraft(a.request, cat.id)
 })

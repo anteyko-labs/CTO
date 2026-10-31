@@ -6,12 +6,12 @@ import { useSearchParams } from 'react-router-dom'
 import { Pager, usePager } from '../components/Pager'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
-import { ApiError, del, get, newOpId, post, put } from '../lib/api'
+import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
 import { OilCountInput, type OilCount } from '../components/OilCountInput'
 import { formatDateTime, formatSom, litersInput, parseLiters } from '../lib/format'
 import { countText, kgInput, oilFields, parseKg, parseOil, viscosityFromName, viscosityKey } from '../lib/units'
-import { useAction, useLoad } from '../lib/hooks'
+import { errorText, useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
 import type { Category, Product } from '../lib/types'
 import { sameCode } from '../lib/umagCodes'
@@ -22,14 +22,28 @@ import {
   defaultCountMode,
   expectedBody,
   expectedQuery,
+  freshRevision,
   InputOps,
-  mergeLines,
+  inputKey,
   OwnWrites,
   patchIfNewer,
   type CountEntry,
   type CountMode,
   type Seen,
 } from '../lib/revisionCount'
+import {
+  queueAdd,
+  queueAfterSend,
+  queueToSend,
+  readQueue,
+  sendOutcome,
+  unsentByLine,
+  unsentCount,
+  unsentText,
+  writeQueue,
+  type QueuedScan,
+  type SendOutcome,
+} from '../lib/revisionQueue'
 import ProductIntake from './ProductIntake'
 
 interface Head {
@@ -274,51 +288,39 @@ function Draft({
   // загруженном сервере первая могла дойти позже и затереть вторую (12,5 вместо 12,6).
   const writes = useRef(new Map<string, Promise<Saved>>())
 
-  // Общий итог с других устройств: перечитываем, пока ничего не пишется; поле, которое сейчас
-  // правят, не затирается — правка живёт в `edits`, пока её не запишут. Строка, показанная новее
-  // ответа, не заменяется (`reload` сверяет версии строк).
+  /** Неотправленные сканы этой ревизии на устройстве: в памяти и в localStorage, переживают
+   *  перезагрузку; уходят при связи с теми же op_id (задача 003, Н14). */
   const revId = rev.head.id
-  useEffect(() => {
-    if (!draft) return
-    const refresh = () => {
-      if (document.visibilityState !== 'visible' || writes.current.size > 0) return
-      void reload()
-    }
-    const t = setInterval(refresh, REFRESH_MS)
-    document.addEventListener('visibilitychange', refresh)
-    return () => {
-      clearInterval(t)
-      document.removeEventListener('visibilitychange', refresh)
-    }
-  }, [revId, draft, reload])
+  const [queue, setQueue] = useState<QueuedScan[]>(() => readQueue(localStorage, revId))
+  const queueNow = useRef(queue)
+  const putQueue = (f: (q: QueuedScan[]) => QueuedScan[]) => {
+    queueNow.current = f(queueNow.current)
+    writeQueue(localStorage, revId, queueNow.current)
+    setQueue(queueNow.current)
+  }
 
   /**
-   * `add` — прибавить к общему итогу строки (скан, «+ добавить»): 4 человека отсканировали по разу
-   * — 4, а не 1. `set` — «= итог», сверка с тем, что человек видел, когда начал ввод, плюс его
-   * собственные записи после этого (`own`): пока вводили, другие прибавили — сервер отвечает 409,
-   * строка перечитывается и человека переспрашивают. `qty === null` в `set` — убрать строку.
-   * `opId` — op_id ввода: повтор того же ввода (автоматический после обрыва или ещё одно нажатие
-   * с тем же числом в поле) не прибавит дважды. На экране — итог из ответа сервера (задача 003, Н14).
+   * Запись строки — по очереди с прошлыми записями этой строки; `null` — этот ввод уже
+   * отправляется. `shown` — итог на экране, если ввод не начинали (сверка «= итог»). Ответа нет —
+   * тот же запрос повторяется сам (`tries` раз) с тем же op_id.
    */
-  const save = (l: Line, qty: number | null, mode: CountMode, opId: string) => {
-    // Записанный ввод убирается из правок, только если его не успели поменять, пока шёл запрос:
-    // иначе новое число пропало бы, не записавшись.
-    const id = l.product_id
-    if (inflight.current.has(opId)) return
+  const send = (id: string, shown: Seen, qty: number | null, mode: CountMode, opId: string, tries = 2): Promise<Saved> | null => {
+    if (inflight.current.has(opId)) return null
     inflight.current.add(opId)
-    const was = { text: editsNow.current[id], oil: oilEditsNow.current[id] }
     const prev = writes.current.get(id)
     const seq = own.start(id, qty === null ? 'clear' : mode, qty ?? 0)
-    const path = `/revisions/${rev.head.id}/lines`
+    const path = `/revisions/${revId}/lines`
     const write = (prev ?? Promise.resolve(null))
       .catch(() => null)
       .then(() => {
         // С чем сверять — когда своя прошлая запись строки уже ответила; ввод не начинали — что на экране.
-        const base = own.baseOr(id, seq, l.counted_qty)
-        return retrySame(() =>
-          qty === null
-            ? del<Saved>(`${path}/${id}?${expectedQuery(base)}&op_id=${opId}`)
-            : put<Saved>(path, { product_id: id, counted_qty: qty, mode, op_id: opId, ...(mode === 'set' ? expectedBody(base) : {}) }),
+        const base = own.baseOr(id, seq, shown)
+        return retrySame(
+          () =>
+            qty === null
+              ? del<Saved>(`${path}/${id}?${expectedQuery(base)}&op_id=${opId}`)
+              : put<Saved>(path, { product_id: id, counted_qty: qty, mode, op_id: opId, ...(mode === 'set' ? expectedBody(base) : {}) }),
+          tries,
         )
       })
       .then(
@@ -332,6 +334,43 @@ function Draft({
         },
       )
     writes.current.set(id, write)
+    const done = () => {
+      inflight.current.delete(opId)
+      if (writes.current.get(id) === write) writes.current.delete(id)
+    }
+    write.then(done, done)
+    return write
+  }
+
+  /** Своя запись записана: итог строки — из ответа, в журнале строки — своя запись. */
+  const applySaved = (id: string, qty: number | null, mode: CountMode, res: Saved) => {
+    const total = res.counted_qty
+    const entry: CountEntry = qty === null ? { by: me.full_name, mode: 'clear', qty: 0 } : { by: me.full_name, mode, qty }
+    setLine(id, res.version, (x) => ({
+      ...x,
+      counted_qty: total,
+      counted_by: total === null ? null : me.full_name,
+      counted_log: appendCount(x.counted_log ?? [], entry),
+    }))
+    // Строки не было в загруженном списке — перечитываем, чтобы она стала настоящей.
+    if (!rev.lines.some((x) => x.product_id === id)) void reload()
+  }
+
+  /**
+   * `add` — прибавить к общему итогу строки («+ добавить»): 4 человека нашли по одному — 4, а не 1.
+   * `set` — «= итог», сверка с тем, что человек видел, когда начал ввод, плюс его собственные
+   * записи после этого (`own`): пока вводили, другие прибавили — сервер отвечает 409, строка
+   * перечитывается и человека переспрашивают. `qty === null` в `set` — убрать строку.
+   * `opId` — op_id ввода: повтор того же ввода (автоматический после обрыва или ещё одно нажатие
+   * с тем же числом в поле) не прибавит дважды. На экране — итог из ответа сервера (задача 003, Н14).
+   */
+  const save = (l: Line, qty: number | null, mode: CountMode, opId: string) => {
+    // Записанный ввод убирается из правок, только если его не успели поменять, пока шёл запрос:
+    // иначе новое число пропало бы, не записавшись.
+    const id = l.product_id
+    const was = { text: editsNow.current[id], oil: oilEditsNow.current[id] }
+    const write = send(id, l.counted_qty, qty, mode, opId)
+    if (!write) return
     void act.run(async () => {
       let res: Saved | null = null
       try {
@@ -340,31 +379,96 @@ function Draft({
         // Ревизию провели или отменили, пока считали: сообщение — с сервера, экран — заново.
         if (e instanceof ApiError && e.code === 'revision_closed') void reload()
         if (!(e instanceof ApiError && e.code === 'count_changed')) throw e
-      } finally {
-        inflight.current.delete(opId)
-        if (writes.current.get(id) === write) writes.current.delete(id)
       }
       if (!res) {
         // Пока вводили, итог изменился: перечитываем строку и переспрашиваем.
-        const now = await get<Saved>(`/revisions/${rev.head.id}/lines/${id}`)
+        const now = await get<Saved>(`/revisions/${revId}/lines/${id}`)
         setLine(id, now.version, (x) => ({ ...x, counted_qty: now.counted_qty }))
         setAsk({ line: l, qty, now: now.counted_qty })
         return
       }
       ops.done(id, opId)
-      const total = res.counted_qty
-      const entry: CountEntry = qty === null ? { by: me.full_name, mode: 'clear', qty: 0 } : { by: me.full_name, mode, qty }
-      setLine(id, res.version, (x) => ({
-        ...x,
-        counted_qty: total,
-        counted_by: total === null ? null : me.full_name,
-        counted_log: appendCount(x.counted_log ?? [], entry),
-      }))
+      applySaved(id, qty, mode, res)
       dropEdit(id, was)
-      // Строки не было в загруженном списке — перечитываем, чтобы она стала настоящей.
-      if (!rev.lines.some((x) => x.product_id === id)) void reload()
+      void flush()
     })
   }
+
+  /**
+   * Скан из очереди на сервер (тот же op_id). Записан — уходит из очереди; ответа нет — остаётся с
+   * отметкой «не отправлено»; сервер отказал (ревизию провели) — уходит, причина — на экране.
+   */
+  const sendScan = async (s: QueuedScan, tries: number): Promise<SendOutcome | 'busy'> => {
+    const write = send(s.productId, null, s.qty, 'add', s.opId, tries)
+    if (!write) return 'busy'
+    let outcome: SendOutcome = 'ok'
+    let res: Saved | null = null
+    try {
+      res = await write
+    } catch (e) {
+      outcome = sendOutcome(e)
+      if (outcome === 'refused') {
+        if (e instanceof ApiError && e.code === 'revision_closed') void reload()
+        act.setError(errorText(e))
+      }
+    }
+    putQueue((q) => queueAfterSend(q, s.opId, outcome))
+    if (res) applySaved(s.productId, s.qty, 'add', res)
+    return outcome
+  }
+
+  /** Неотправленные сканы — на сервер по порядку; связи по-прежнему нет — до следующего раза. */
+  const flushing = useRef(false)
+  const flush = async () => {
+    if (flushing.current) return
+    flushing.current = true
+    try {
+      for (const s of queueToSend(queueNow.current, inflight.current)) {
+        if ((await sendScan(s, 0)) === 'no_answer') break
+      }
+    } finally {
+      flushing.current = false
+    }
+  }
+  const flushNow = useRef(flush)
+  useEffect(() => {
+    flushNow.current = flush
+  })
+
+  /** Скан: штука или канистра — прибавка в очередь (сразу в localStorage) и на сервер. Ответа нет
+   *  и после повторов — скан остаётся в очереди с отметкой у строки, а не пропадает молча. */
+  const scanAdd = (l: Line, qty: number) => {
+    const s: QueuedScan = { opId: newOpId(), productId: l.product_id, qty, unsent: false }
+    putQueue((q) => queueAdd(q, s))
+    void sendScan(s, 2).then((r) => {
+      // Связь есть — заодно уходят сканы, не отправленные раньше.
+      if (r === 'ok') void flush()
+    })
+  }
+
+  // Общий итог с других устройств: перечитываем, пока ничего не пишется; поле, которое сейчас
+  // правят, не затирается — правка живёт в `edits`, пока её не запишут. Строка, показанная новее
+  // ответа, не заменяется (`reload` сверяет версии строк). Неотправленные сканы уходят раз в 5 с,
+  // при возврате связи и при следующем ответе сервера.
+  useEffect(() => {
+    if (!draft) return
+    const refresh = () => {
+      if (queueNow.current.some((x) => x.unsent)) void flushNow.current()
+      if (document.visibilityState !== 'visible' || writes.current.size > 0) return
+      void reload()
+    }
+    const online = () => void flushNow.current()
+    const t = setInterval(refresh, REFRESH_MS)
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('online', online)
+    const stop = watchServerReachable((up) => up && online())
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('online', online)
+      stop()
+    }
+  }, [revId, draft, reload])
 
   /** Поле ушло из фокуса: «+ добавить» прибавляет набранное, «= итог» записывает итог строки.
    *  Тот же не записанный ввод (после обрыва в поле осталось то же число) — с тем же op_id. */
@@ -374,7 +478,7 @@ function Draft({
     if (mode === 'add' && (qty === null || qty === 0)) return dropEdit(id)
     // Пустую строку очистили, своих записей в пути нет — убирать нечего.
     if (mode === 'set' && qty === null && own.base(id, Number.MAX_SAFE_INTEGER) === null && !writes.current.has(id)) return dropEdit(id)
-    save(l, qty, mode, ops.take(id, `${mode}|${qty ?? ''}`))
+    save(l, qty, mode, ops.take(id, inputKey(mode, qty)))
   }
 
   /** Поля масла ушли из фокуса: «кан. + л» → мл; оба пустые — в «= итог» строка не посчитана. */
@@ -414,9 +518,10 @@ function Draft({
     act.setError(null)
     const tare = oilTare(l)
     // Прибавка, а не «своё число + 1»: другие устройства считают ту же строку (задача 003, Н14).
-    // Каждый скан — новый ввод со своим op_id; его автоматический повтор после обрыва — тот же.
-    if (l.unit === 'piece') save(l, 1, 'add', newOpId())
-    else if (tare) save(l, tare, 'add', newOpId())
+    // Каждый скан — новый ввод со своим op_id; его повтор (автоматический после обрыва и из
+    // очереди неотправленных) — тот же.
+    if (l.unit === 'piece') scanAdd(l, 1)
+    else if (tare) scanAdd(l, tare)
     else {
       if (editsNow.current[l.product_id] === undefined) switchMode(l, 'add')
       const at = lines.findIndex((x) => x.product_id === l.product_id)
@@ -468,12 +573,42 @@ function Draft({
   }
 
   const counted = allLines.filter((l) => l.counted_qty !== null)
+  const unsent = unsentCount(queue)
+  const unsentLines = unsentByLine(queue)
+  const sendNow = (
+    <Button variant="secondary" onClick={() => void flush()}>
+      Отправить сейчас
+    </Button>
+  )
   const diffs = counted.filter((l) => l.counted_qty !== l.expected_qty)
   const overs = counted.filter((l) => overNorm(l, rev.oil_norm_bp))
   const valueTotal = rev.lines.reduce((acc, l) => acc + (l.value_delta_tyiyn ?? 0), 0)
 
   return (
     <div className="flex flex-col gap-4">
+      {!draft && queue.length > 0 && (
+        <Notice tone="rose">
+          <div className="flex flex-wrap items-center gap-3">
+            <span data-testid="unsent-closed">
+              На этом устройстве остались неотправленные сканы: {queue.length}. Ревизия уже {rev.head.status === 'posted' ? 'проведена' : 'отменена'} — они не
+              учтены; найденное проведите оприходованием или новой ревизией.
+            </span>
+            <Button variant="secondary" onClick={() => putQueue(() => [])}>
+              Понятно
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {draft && unsent > 0 && (
+        <Notice>
+          <div className="flex flex-wrap items-center gap-3">
+            <span data-testid="unsent">
+              ⏳ {unsentText(unsent)}. Сканы не потеряны — повторно не сканируйте.
+            </span>
+            {sendNow}
+          </div>
+        </Notice>
+      )}
       {draft && (
         <Card className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-2">
@@ -613,6 +748,15 @@ function Draft({
                             итого {countText(l, l.counted_qty)}
                           </div>
                         )}
+                        {unsentLines.has(l.product_id) && (
+                          <div
+                            className="text-xs font-medium text-amber-700"
+                            data-unsent={l.product_id}
+                            title="Скан не дошёл до сервера — отправится сам, когда появится связь"
+                          >
+                            ⏳ +{countText(l, unsentLines.get(l.product_id) ?? 0)} не отправлено
+                          </div>
+                        )}
                       </div>
                     ) : l.counted_qty === null ? (
                       '—'
@@ -703,7 +847,11 @@ function Draft({
                   variant="secondary"
                   onClick={() => {
                     setAsk(null)
-                    save(ask.line, ask.qty, 'add', newOpId())
+                    // Поле переходит в «+ добавить» с тем же числом: ответ потеряли — Enter в поле
+                    // уходит тем же op_id, а не прибавляет второй раз; записано — поле очищается.
+                    const id = ask.line.product_id
+                    putMode(id, 'add')
+                    save(ask.line, ask.qty, 'add', ops.take(id, inputKey('add', ask.qty)))
                   }}
                 >
                   Прибавить {countText(ask.line, ask.qty)} — будет {countText(ask.line, (ask.now ?? 0) + ask.qty)}
@@ -714,7 +862,7 @@ function Draft({
                   setAsk(null)
                   // Человек увидел «сейчас N» и подтвердил: сверка — с ним.
                   own.see(ask.line.product_id, ask.now)
-                  save(ask.line, ask.qty, 'set', newOpId())
+                  save(ask.line, ask.qty, 'set', ops.take(ask.line.product_id, inputKey('set', ask.qty)))
                 }}
               >
                 {ask.qty === null ? 'Убрать строку' : `Записать итог ${countText(ask.line, ask.qty)}`}
@@ -733,6 +881,16 @@ function Draft({
             <Field label="Кто пересчитывал, причина" required>
               <input autoFocus value={posting.comment} onChange={(e) => setPosting({ ...posting, comment: e.target.value })} />
             </Field>
+            {unsent > 0 && (
+              <Notice tone="rose">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span data-testid="unsent-on-post">
+                    На этом устройстве не отправлено сканов: {unsent} — без связи они не войдут в ревизию. Отправьте их перед проведением.
+                  </span>
+                  {sendNow}
+                </div>
+              </Notice>
+            )}
             {posting.warn && (
               <Notice>
                 <span data-testid="still-counting">{posting.warn}</span> Скан, который придёт после проведения, не учтётся.
@@ -837,7 +995,9 @@ function Revision() {
     try {
       const r = await get<RevisionOut>(`/revisions/${id}`)
       if (openNow.current !== id) return
-      setRev((cur) => (cur && cur.head.id === r.head.id && r.head.status === 'draft' ? { ...r, lines: mergeLines(cur.lines, r.lines, r.version) } : r))
+      // Проведённая или отменённая ревизия в черновик не возвращается: ответ перечитывания,
+      // ушедшего до проведения, мог прийти позже.
+      setRev((cur) => freshRevision(cur, r))
     } catch {
       // Следующее перечитывание покажет.
     }

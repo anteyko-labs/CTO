@@ -1,10 +1,10 @@
 // В ревизию — товар, которого нет в программе (SPEC-29 §10): карточка заводится сразу с найденным
 // количеством одной операцией; подсказки из старой программы заполняют карточку.
 import { useEffect, useMemo, useState } from 'react'
-import { get, newOpId, post, put } from '../lib/api'
+import { ApiError, get, newOpId, noServerAnswer, post, put } from '../lib/api'
 import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
-import { InputOps, qtyInUnits, type ShelfInput } from '../lib/revisionCount'
+import { InputOps, LostOps, qtyInUnits, type ShelfInput } from '../lib/revisionCount'
 import { useUser } from '../lib/auth'
 import { canisterPourPrice } from '../lib/money'
 import { formatSom, parseLiters, parseSom } from '../lib/format'
@@ -14,10 +14,17 @@ import { presetFromHit } from '../lib/oldCatalog'
 import { can } from '../lib/permissions'
 import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { searchUmag, umagStep } from '../lib/umagLink'
-import { parseOil } from '../lib/units'
+import { countText, parseOil } from '../lib/units'
 import { OilCountInput } from './OilCountInput'
 import { ProductPicker } from './ProductPicker'
 import { Button, ErrorBox, Field, Missing, Modal, Notice, toast } from './ui'
+
+/** Ответ «Завести и посчитать»; `earlier` — карточку завело прошлое нажатие, ответ того нажатия. */
+interface NewProductOut {
+  product: Product
+  counted_qty: number
+  earlier?: boolean
+}
 
 interface Form {
   barcode: string
@@ -94,10 +101,13 @@ export function RevisionNewProduct({
   const [form, setForm] = useState<Form | null>(() =>
     presetBarcode ? { ...empty(presetBarcode), categoryId: categoryId ?? '' } : null,
   )
-  const [opId] = useState(newOpId)
-  /** Прибавка к товару, который в ту же минуту завёл другой: тот же не записанный ввод — тот же
-   *  op_id, повтор после обрыва не прибавит дважды (правило ввода, как в строке ревизии). */
+  /** op_id — по вводу (правило ввода, как в строке ревизии): «Завести» с теми же данными после
+   *  обрыва — тот же op_id; изменили данные (найденное 5 → 6) — новый. Прибавка к товару, который
+   *  в ту же минуту завёл другой, и исправление найденного — тоже по своему вводу. */
   const [ops] = useState(() => new InputOps(newOpId))
+  /** Нажатия «Завести» без ответа: новое нажатие несёт их серверу — заведённое тогда не
+   *  заводится второй раз (задача 003, Н14). */
+  const [lost] = useState(() => new LostOps())
   const act = useAction()
   // Связать новую карточку со строкой Умага — право «Товары и штрихкоды» (SPEC-35 §4).
   const mayLink = can(useUser(), 'products')
@@ -164,21 +174,55 @@ export function RevisionNewProduct({
     void act.run(async () => {
       if (!form || count === null) return
       // Тот же код в ту же минуту завёл другой: найденное прибавляем к его товару (задача 003, Н14).
-      const r = await createOrTaken(form.barcode.trim(), () =>
-        post<{ product: Product }>(`/revisions/${revisionId}/new-product`, {
-          op_id: opId,
-          counted_qty: count,
-          category_id: form.categoryId,
-          name: form.name.trim(),
-          brand: form.brand.trim(),
-          article: form.article.trim(),
-          container_ml: oil ? ml : null,
-          barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
-          sale_price_tyiyn: parseSom(form.price) ?? 0,
-          initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
-          ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
-        }),
-      )
+      const body = {
+        counted_qty: count,
+        category_id: form.categoryId,
+        name: form.name.trim(),
+        brand: form.brand.trim(),
+        article: form.article.trim(),
+        container_ml: oil ? ml : null,
+        barcodes: form.barcode.trim() ? [form.barcode.trim()] : [],
+        sale_price_tyiyn: parseSom(form.price) ?? 0,
+        initial_cost_tyiyn: form.cost.trim() ? parseSom(form.cost) : null,
+        ...(form.umagId && mayLink ? { old_catalog_id: form.umagId } : {}),
+      }
+      const opId = ops.take('new', JSON.stringify(body))
+      let r: Awaited<ReturnType<typeof createOrTaken<NewProductOut>>>
+      try {
+        r = await createOrTaken(form.barcode.trim(), () =>
+          retrySame(() =>
+            post<NewProductOut>(`/revisions/${revisionId}/new-product`, { ...body, op_id: opId, prev_op_ids: lost.before(opId) }),
+          ),
+        )
+      } catch (e) {
+        // Ответа нет — записалось ли, неизвестно: следующее нажатие несёт это с собой.
+        if (noServerAnswer(e)) lost.lost(opId)
+        throw e
+      }
+      ops.done('new', opId)
+      lost.clear()
+      if (!r.taken && r.created.earlier) {
+        // Карточку завело прошлое нажатие (его ответ не дошёл) с прежним найденным; найденное
+        // исправили — записываем исправленный итог, сверяясь с записанным тогда.
+        const p = r.created.product
+        if (r.created.counted_qty !== count) {
+          const fix = ops.take('fix', `${p.id}|${count}`)
+          try {
+            await retrySame(() =>
+              put(`/revisions/${revisionId}/lines`, { product_id: p.id, counted_qty: count, mode: 'set', expected_qty: r.created.counted_qty, op_id: fix }),
+            )
+          } catch (e) {
+            if (!(e instanceof ApiError && e.code === 'count_changed')) throw e
+            toast(`«${p.name}» уже заведён прошлым нажатием, строку с тех пор считали другие — впишите найденное в строке`)
+            onExisting(p)
+            return
+          }
+          ops.done('fix', fix)
+        }
+        toast(`Заведён прошлым нажатием (ответ не дошёл): ${p.name} — посчитано ${countText(p, count)}`)
+        onDone()
+        return
+      }
       if (r.taken) {
         // Товар с этим кодом — из другой категории: в эту ревизию он не входит, прибавлять некуда.
         if (categoryId && r.product.category_id !== categoryId)

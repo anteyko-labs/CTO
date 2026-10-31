@@ -335,8 +335,21 @@ async fn get_one(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<RevisionOut>> {
-    let mut conn = state.pool.acquire().await?;
-    Ok(Json(load(&mut conn, &user, id).await?))
+    // Один снимок базы: итог строки и её версия (журнал) — на один момент, иначе показ мог бы
+    // получить итог с чужой записью и версию до своей (задача 003, Н14).
+    let mut tx = state.pool.begin().await?;
+    snapshot(&mut tx).await?;
+    let out = load(&mut tx, &user, id).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Чтение на один момент: все запросы транзакции видят одно и то же состояние базы.
+async fn snapshot(conn: &mut PgConnection) -> AppResult<()> {
+    sqlx::query!("set transaction isolation level repeatable read, read only")
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -552,7 +565,9 @@ async fn get_line(
     user: CurrentUser,
     Path((id, product_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let mut conn = state.pool.acquire().await?;
+    let mut conn = state.pool.begin().await?;
+    // Итог и версия — из одного снимка: устаревший итог не получит свежую версию.
+    snapshot(&mut conn).await?;
     // Чужой филиал — как будто строки нет.
     let mine = sqlx::query_scalar!(
         "select id from revisions where id = $1 and branch_id = $2",
@@ -566,6 +581,7 @@ async fn get_line(
     }
     let counted = counted_now(&mut conn, id, product_id).await?;
     let version = line_version(&mut conn, id, product_id).await?;
+    conn.commit().await?;
     Ok(Json(json!({ "counted_qty": counted, "version": version })))
 }
 
@@ -707,6 +723,11 @@ struct NewProductReq {
     /// Карточка товара — те же поля, что `POST /products`; `op_id` — операции целиком.
     #[serde(flatten)]
     product: crate::api::catalog::CreateProductReq,
+    /// Прошлые нажатия «Завести» в этом окне, на которые не пришёл ответ (обрыв связи), а ввод
+    /// потом изменили: если одно из них уже завело карточку — ответ того нажатия с `earlier`,
+    /// второй товар не заводится (задача 003, Н14).
+    #[serde(default)]
+    prev_op_ids: Vec<Uuid>,
 }
 
 /// Товара нет в программе, а на полке он есть (SPEC-29 §10): карточка заводится и сразу
@@ -731,6 +752,17 @@ async fn new_product(
     crate::auth::require_permission(&mut tx, &ctx.user, "revision").await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, op_id, KIND).await? {
         return Ok(Json(done));
+    }
+    if req.prev_op_ids.len() > 50 {
+        return Err(invalid("слишком много прошлых нажатий"));
+    }
+    for prev in req.prev_op_ids.iter().filter(|p| **p != op_id) {
+        if let Some(mut done) =
+            ops::begin_op::<serde_json::Value>(&mut tx, &ctx, *prev, KIND).await?
+        {
+            done["earlier"] = json!(true);
+            return Ok(Json(done));
+        }
     }
     lock_draft_for_count(&mut tx, ctx.user.branch_id, id).await?;
     let mut product = req.product;
@@ -804,6 +836,9 @@ async fn delete_line(
                 .unwrap_or_default();
             return Err(count_changed(Some(now), None, &unit));
         }
+    } else {
+        // Без сверки очищает только экран до обновления: свежие чужие прибавки он стёр бы.
+        outdated_screen(&mut tx, &ctx, id, product_id).await?;
     }
     let removed = sqlx::query_scalar!(
         "delete from revision_lines where revision_id = $1 and product_id = $2 returning counted_qty",

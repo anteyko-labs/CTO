@@ -1158,3 +1158,195 @@ async fn posting_while_others_count_asks_first(pool: PgPool) {
         "{m}"
     );
 }
+
+/// Показ не откатывается назад: `GET /revisions/{id}` и `GET …/lines/{product_id}` читают итог
+/// строки и её версию из одного снимка — итог ровно тот, что был после записи с этой версией.
+/// Пока четыре человека сканируют, перечитывания идут непрерывно; каждый ответ сверяется с
+/// журналом: прибавок по 1 с номером не больше версии — столько, сколько в итоге.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn reread_counted_and_version_come_from_one_snapshot(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча снимок").await;
+    let mut writers = JoinSet::new();
+    for who in 0..4 {
+        let app = w.app.clone();
+        let cookie = w.people[who].clone();
+        let uri = uri.clone();
+        let item = item.clone();
+        writers.spawn(async move {
+            for _ in 0..15 {
+                let body = json!({ "product_id": item, "counted_qty": 1, "mode": "add", "op_id": Uuid::now_v7() });
+                let (s, v) = call(&app, "PUT", &uri, Some(&cookie), None, Some(body)).await;
+                assert_eq!(s, StatusCode::OK, "{v}");
+            }
+        });
+    }
+    let mut readers = JoinSet::new();
+    for r in 0..4 {
+        let app = w.app.clone();
+        let cookie = w.owner().to_string();
+        let full = format!("/api/v1/revisions/{rid}");
+        let one = format!("/api/v1/revisions/{rid}/lines/{item}");
+        let item = item.clone();
+        readers.spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..25 {
+                let (s, v) = if r % 2 == 0 {
+                    call(&app, "GET", &full, Some(&cookie), None, None).await
+                } else {
+                    call(&app, "GET", &one, Some(&cookie), None, None).await
+                };
+                assert_eq!(s, StatusCode::OK, "{v}");
+                let l = if r % 2 == 0 {
+                    // Строки ещё нет (никто не отсканировал): сверять нечего.
+                    let Some(l) = v["lines"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|l| l["product_id"] == json!(item))
+                    else {
+                        continue;
+                    };
+                    l.clone()
+                } else {
+                    v
+                };
+                seen.push((
+                    l["counted_qty"].as_i64().unwrap_or(0),
+                    l["version"].as_i64().unwrap(),
+                ));
+            }
+            seen
+        });
+    }
+    while let Some(r) = writers.join_next().await {
+        r.unwrap();
+    }
+    let mut seen = Vec::new();
+    while let Some(r) = readers.join_next().await {
+        seen.extend(r.unwrap());
+    }
+    let seqs: Vec<i64> = sqlx::query_scalar(
+        "select seq from revision_line_adds where revision_id = $1 and product_id = $2 order by seq",
+    )
+    .bind(Uuid::parse_str(&rid).unwrap())
+    .bind(Uuid::parse_str(&item).unwrap())
+    .fetch_all(&w.pool)
+    .await
+    .unwrap();
+    assert_eq!(seqs.len(), 60);
+    for (counted, version) in seen {
+        let by_version = i64::try_from(seqs.iter().filter(|s| **s <= version).count()).unwrap();
+        assert_eq!(
+            counted, by_version,
+            "итог {counted} при версии {version}: по журналу {by_version}"
+        );
+    }
+}
+
+/// Экран до обновления очищает строку без `expected_*`: строку, которую за последние 10 минут
+/// прибавляли с других устройств, он стёр бы вместе с чужими сканами — 409 «обновите страницу»,
+/// как у «= итог». Без чужих прибавок — как раньше.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn old_screen_delete_does_not_wipe_fresh_adds(pool: PgPool) {
+    let w = World::new(pool).await;
+    let (rid, item, uri) = draft_with_item(&w, "Свеча старый экран убрать").await;
+    let tablet = Uuid::now_v7();
+    let (s, v) = put_line(
+        &w,
+        &uri,
+        1,
+        json!({ "product_id": item, "counted_qty": 2, "mode": "add", "op_id": Uuid::now_v7() }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let del = format!("/api/v1/revisions/{rid}/lines/{item}");
+    let (s, v) = call_from(&w.app, "DELETE", &del, Some(w.owner()), None, None, tablet).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(code(&v), "client_outdated", "{v}");
+    assert_eq!(counted(&w, &rid, &item).await, Some(2));
+    // Свою строку без чужих прибавок старый экран убирает как раньше.
+    let other = w.product("Свеча старый экран своя").await;
+    let (s, v) = call_from(
+        &w.app,
+        "PUT",
+        &uri,
+        Some(w.owner()),
+        None,
+        Some(json!({ "product_id": other, "counted_qty": 4 })),
+        tablet,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = call_from(
+        &w.app,
+        "DELETE",
+        &format!("/api/v1/revisions/{rid}/lines/{other}"),
+        Some(w.owner()),
+        None,
+        None,
+        tablet,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(counted(&w, &rid, &other).await, None);
+}
+
+/// «Товар не из программы»: «Завести» с 5 записалось, ответ потерян; человек исправил найденное
+/// на 6 и нажал снова — это новый ввод (новый `op_id`), но прошлое нажатие (`prev_op_ids`) уже
+/// завело карточку: сервер отвечает тем, что записано тогда (`earlier`), а не заводит второй
+/// товар — и с кодом, и без кода (код выдаёт система). Прошлое нажатие не дошло — заводится.
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn new_product_retry_with_changed_count_does_not_create_twice(pool: PgPool) {
+    let w = World::new(pool).await;
+    let cat = w.category("filter").await;
+    let rev = ok(&w.app, "POST", "/api/v1/revisions", w.owner(), json!({})).await;
+    let rid = rev["head"]["id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/revisions/{rid}/new-product");
+    let products = |name: &'static str| {
+        let pool = w.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("select count(*) from products where name = $1")
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    for (name, codes) in [
+        ("Щётка с кодом", json!(["4600000000031"])),
+        ("Щётка без кода", json!([])),
+    ] {
+        let first = Uuid::now_v7();
+        let body = |op: Uuid, qty: i64, prev: Value| {
+            json!({ "op_id": op, "counted_qty": qty, "category_id": cat, "name": name,
+                    "barcodes": codes, "sale_price_tyiyn": 10_000, "prev_op_ids": prev })
+        };
+        let a = ok(&w.app, "POST", &uri, w.owner(), body(first, 5, json!([]))).await;
+        let b = ok(
+            &w.app,
+            "POST",
+            &uri,
+            w.owner(),
+            body(Uuid::now_v7(), 6, json!([first])),
+        )
+        .await;
+        assert_eq!(b["earlier"], json!(true), "{b}");
+        assert_eq!(b["product"]["id"], a["product"]["id"], "{b}");
+        assert_eq!(b["counted_qty"], json!(5), "{b}");
+        assert_eq!(products(name).await, 1, "{name}");
+    }
+    // Прошлое нажатие не дошло до сервера — заводится как обычно.
+    let c = ok(
+        &w.app,
+        "POST",
+        &uri,
+        w.owner(),
+        json!({ "op_id": Uuid::now_v7(), "counted_qty": 3, "category_id": cat, "name": "Щётка не дошла",
+                "barcodes": [], "sale_price_tyiyn": 10_000, "prev_op_ids": [Uuid::now_v7()] }),
+    )
+    .await;
+    assert!(c["earlier"].is_null(), "{c}");
+    assert_eq!(c["counted_qty"], json!(3));
+    assert_eq!(products("Щётка не дошла").await, 1);
+}

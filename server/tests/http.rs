@@ -3483,7 +3483,7 @@ async fn revision_add_is_idempotent_and_delete_is_logged(pool: PgPool) {
     let (s, _, _) = call(
         &app,
         "DELETE",
-        &format!("/api/v1/revisions/{id}/lines/{item}"),
+        &format!("/api/v1/revisions/{id}/lines/{item}?expected_qty=7"),
         Some(&owner),
         None,
     )
