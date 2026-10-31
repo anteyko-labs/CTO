@@ -79,7 +79,8 @@ fn day(d: NaiveDate) -> String {
 }
 
 /// Кто ведёт долги в этом чате: активный владелец (филиал, выбранный в чате) или администратор
-/// своего филиала с правом «Старые долги из тетради»; второе — кто в Телеграме привязывал чат.
+/// своего филиала с правами «Старые долги из тетради» и «Долги» (раздел, ADR-{B7.1}: список
+/// должников без него не показывается); второе — кто в Телеграме привязывал чат.
 pub async fn chat_user(
     conn: &mut PgConnection,
     chat_id: i64,
@@ -89,7 +90,8 @@ pub async fn chat_user(
         return Ok(None);
     };
     if user.role == Role::Owner
-        || crate::auth::has_permission(&mut *conn, &user, "old_debts").await?
+        || (crate::auth::has_permission(&mut *conn, &user, "old_debts").await?
+            && crate::auth::has_permission(&mut *conn, &user, "view_debts").await?)
     {
         return Ok(Some((user, tg)));
     }
