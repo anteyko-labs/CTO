@@ -23,6 +23,7 @@ export type Permission =
   | 'clients'
   | 'payroll_advance'
   | 'old_debts'
+  | 'till_pay_fix'
 
 /** Филиал (SPEC-33). */
 export interface Branch {
@@ -699,7 +700,8 @@ export interface BankSplit {
   debt_tyiyn?: number
   /** За смену: упало на счёт — итог минус комиссия. */
   landed_tyiyn?: number
-  /** За смену: перенесено из наличных на этот счёт (SPEC-37 §3). */
+  /** Наличные ↔ QR на этот счёт (SPEC-37 §3, задача 003 Н1): + из наличных, − в наличные. За смену —
+   *  входит в итог, за учётные дни — отдельно (итог — только чеки). */
   cash_to_bank_tyiyn?: number
 }
 
@@ -707,6 +709,10 @@ export interface BankSplit {
 export interface ShiftSettings {
   /** Печатать чек смены сам после «Сдать кассу» или «Оставить в кассе». */
   print_on_close: boolean
+  /** Кнопка «Наличные ↔ QR» в окне «Закрыть смену» (задача 003 Н1); нет в ответе — да. */
+  pay_fix_on_close?: boolean
+  /** Наибольшая сумма переноса администратором за смену, тыйыны; пусто — без своего предела. */
+  admin_pay_fix_max_tyiyn?: number | null
 }
 
 export interface Shift {
@@ -973,7 +979,19 @@ export interface BankReport {
   other_in_tyiyn: number
   outgoing_tyiyn: number
   kinds: KindRow[]
-  days: { date: string; card_tyiyn: number; transfer_tyiyn: number; invoice_tyiyn?: number; fee_tyiyn: number; other_tyiyn: number; net_tyiyn: number }[]
+  days: {
+    date: string
+    card_tyiyn: number
+    transfer_tyiyn: number
+    invoice_tyiyn?: number
+    fee_tyiyn: number
+    other_tyiyn: number
+    /** Наличные ↔ QR за смену (задача 003 Н1): + из наличных, − в наличные. */
+    cash_to_bank_tyiyn?: number
+    net_tyiyn: number
+  }[]
+  /** Наличные ↔ QR за период: + из наличных, − в наличные. */
+  cash_to_bank_tyiyn?: number
   movements: CashMovement[]
   movements_count: number
 }

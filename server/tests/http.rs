@@ -10765,7 +10765,7 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _, _) = call(
+    let (s, _, shift) = call(
         &app,
         "POST",
         "/api/v1/shifts/open",
@@ -10774,6 +10774,7 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+    let shift = shift["id"].as_str().unwrap().to_string();
     let (s, _, _) = call(
         &app,
         "POST",
@@ -10891,6 +10892,15 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
                 move || json!({ "op_id": op(), "from_account_id": till, "to_account_id": safe, "amount_tyiyn": 1_000 }),
             )
         }),
+        // Наличные ↔ QR в открытой смене (задача 003 Н1): пробное проведение — без следа.
+        (
+            "till_pay_fix",
+            "POST",
+            format!("/api/v1/shifts/{shift}/cash-to-bank"),
+            Box::new(
+                move || json!({ "op_id": op(), "amount_tyiyn": 1_000, "comment": "QR", "dry_run": true }),
+            ),
+        ),
         ("expenses", "POST", "/api/v1/expenses".into(), {
             let article = household.clone();
             Box::new(

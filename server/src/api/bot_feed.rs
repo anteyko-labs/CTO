@@ -219,15 +219,11 @@ const EVENTS: [(&str, &str, &str); 89] = [
         "Излишек после переоткрытия смены",
     ),
     ("shift.pin_locked", "shift", "PIN кассира заблокирован"),
-    (
-        "shift.cash_to_bank",
-        "shift",
-        "Наличные смены переведены в QR",
-    ),
+    ("shift.cash_to_bank", "shift", "Наличные ↔ QR за смену"),
     (
         "shift.cash_to_bank_reverse",
         "shift",
-        "Отменён перевод наличных в QR",
+        "Отменён перенос наличные ↔ QR",
     ),
     // Прочее
     ("user.create", "other", "Создан пользователь"),

@@ -20,6 +20,8 @@ export const MOVEMENT_LABELS: Record<string, string> = {
   battery_intake: 'Приём аккумуляторов',
   count_diff: 'Пересчёт',
   reversal: 'Сторно',
+  // Перенос за смену в обе стороны (SPEC-37 §3, задача 003 Н1).
+  cash_to_bank: 'Наличные ↔ QR',
 }
 
 /** Способы оплаты чека словами. */

@@ -107,6 +107,13 @@ export default function Bank() {
               hint={`чеки ${formatSom(data.transfer.sales_tyiyn)} · долги ${formatSom(data.transfer.repayments_tyiyn)}`}
             />
             {(data.invoice?.total_tyiyn ?? 0) !== 0 && <Tile label="По счёту" value={data.invoice?.total_tyiyn ?? 0} tone="text-emerald-700" hint="перечисления юрлиц по чекам" />}
+            {(data.cash_to_bank_tyiyn ?? 0) !== 0 && (
+              <Tile
+                label="Наличные ↔ QR"
+                value={data.cash_to_bank_tyiyn ?? 0}
+                hint={(data.cash_to_bank_tyiyn ?? 0) > 0 ? 'из наличных в QR за смены' : 'из QR в наличные за смены'}
+              />
+            )}
             <Tile label="Комиссия банка" value={data.fee_tyiyn} tone="text-rose-700" />
             <Tile label="Списания" value={data.outgoing_tyiyn} hint={data.other_in_tyiyn ? `прочие поступления ${formatSom(data.other_in_tyiyn)}` : undefined} />
             <Tile label="На начало → на конец" value={data.closing_tyiyn} hint={`на начало ${formatSom(data.opening_tyiyn)}`} />
@@ -134,7 +141,7 @@ export default function Bank() {
           {data.days.length > 1 && (
             <Card>
               <CardTitle>По дням</CardTitle>
-              <Table head={['День', 'Картой', 'Переводом', 'По счёту', 'Комиссия', 'Прочее', 'Итог дня']}>
+              <Table head={['День', 'Картой', 'Переводом', 'По счёту', 'Наличные ↔ QR', 'Комиссия', 'Прочее', 'Итог дня']}>
                 {data.days.map((d) => (
                   <tr key={d.date}>
                     <td className="px-2 py-2">{formatDate(d.date)}</td>
@@ -146,6 +153,9 @@ export default function Bank() {
                     </td>
                     <td className="px-2 py-2 text-right">
                       <Money value={d.invoice_tyiyn ?? 0} zero="—" />
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      <Money value={d.cash_to_bank_tyiyn ?? 0} tone="sign" zero="—" />
                     </td>
                     <td className="px-2 py-2 text-right">
                       <Money value={d.fee_tyiyn} zero="—" />

@@ -313,13 +313,25 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                 format!("{details}{}", comment(data)),
             )
         }
+        // Наличные ↔ QR за смену (задача 003 Н1): направление — `direction`, у прежних записей его
+        // нет — «из наличных в QR».
         "shift.cash_to_bank" | "shift.cash_to_bank_reverse" => {
-            let mut details = format!(
-                "{} → {}, комиссия {}",
-                money(num("amount")),
-                text("account"),
-                money(num("fee"))
-            );
+            let to_cash = text("direction") == "to_cash";
+            let mut details = if to_cash {
+                format!(
+                    "{} {} → Касса, комиссия возвращена {}",
+                    money(num("amount")),
+                    text("account"),
+                    money(num("fee"))
+                )
+            } else {
+                format!(
+                    "{} → {}, комиссия {}",
+                    money(num("amount")),
+                    text("account"),
+                    money(num("fee"))
+                )
+            };
             if let (Some(b), Some(a)) = (num("diff_before"), num("diff_after")) {
                 details.push_str(&format!(
                     ". Расхождение {} → {}",
@@ -335,10 +347,11 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
             (
                 format!(
                     "{}: смена № {}",
-                    if action == "shift.cash_to_bank" {
-                        "Из наличных в QR"
-                    } else {
-                        "Отменён перенос из наличных в QR"
+                    match (action == "shift.cash_to_bank", to_cash) {
+                        (true, false) => "Из наличных в QR",
+                        (true, true) => "Из QR в наличные",
+                        (false, false) => "Отменён перенос из наличных в QR",
+                        (false, true) => "Отменён перенос из QR в наличные",
                     },
                     num("number").unwrap_or(0)
                 ),

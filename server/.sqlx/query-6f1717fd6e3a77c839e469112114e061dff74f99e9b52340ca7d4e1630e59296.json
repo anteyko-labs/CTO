@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.sale_id, p.method, p.account_id, a.name as \"account_name?\",\n                  sum(p.amount_tyiyn)::bigint as \"amount!\", bool_or(p.bank_qr_id is not null) as \"qr!\"\n           from sale_payments p left join cash_accounts a on a.id = p.account_id\n           where p.sale_id = any($1)\n           group by p.sale_id, p.method, p.account_id, a.name\n           order by p.sale_id, min(p.id::text)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sale_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "account_name?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "amount!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "qr!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "6f1717fd6e3a77c839e469112114e061dff74f99e9b52340ca7d4e1630e59296"
+}

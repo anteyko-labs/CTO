@@ -170,7 +170,9 @@ pub struct BankSplit {
     /// Только за смену: упало на счёт — итог минус комиссия.
     #[serde(default)]
     pub landed_tyiyn: i64,
-    /// Только за смену: перенесено из наличных на этот счёт (SPEC-37 §3), за вычетом отмен.
+    /// Перенесено «Наличные ↔ QR» на этот счёт (SPEC-37 §3, задача 003 Н1), за вычетом отмен: + из
+    /// наличных, − в наличные. За смену — входит в итог; за учётные дни — отдельно, днём смены
+    /// (итог по счёту — только чеки).
     #[serde(default)]
     pub cash_to_bank_tyiyn: i64,
 }
@@ -241,7 +243,7 @@ pub async fn bank_split(
         .map(|r| (r.account_id, r.name, r.card, r.transfer, r.invoice, r.fee))
         .collect()
     };
-    Ok(rows
+    let mut out: Vec<BankSplit> = rows
         .into_iter()
         .map(
             |(account_id, name, card, transfer, invoice, fee)| BankSplit {
@@ -255,7 +257,37 @@ pub async fn bank_split(
                 ..BankSplit::default()
             },
         )
-        .collect())
+        .collect();
+    // Наличные ↔ QR за учётные дни — днём смены переноса, отдельной строкой (задача 003 Н1).
+    if let Some((from, to)) = days {
+        let moved = sqlx::query!(
+            r#"select f.account_id as "account_id!", a.name,
+                      coalesce(sum(f.amount_tyiyn), 0)::bigint as "v!"
+               from pay_fixes f
+               join shifts s on s.id = f.shift_id
+               join cash_accounts a on a.id = f.account_id
+               where f.branch_id = $1 and f.kind = 'shift' and s.business_date between $2 and $3
+               group by f.account_id, a.name, a.default_card
+               order by a.default_card desc, a.name"#,
+            branch_id,
+            from,
+            to
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        for m in moved.into_iter().filter(|m| m.v != 0) {
+            match out.iter_mut().find(|b| b.account_id == m.account_id) {
+                Some(b) => b.cash_to_bank_tyiyn = m.v,
+                None => out.push(BankSplit {
+                    account_id: m.account_id,
+                    name: m.name,
+                    cash_to_bank_tyiyn: m.v,
+                    ..BankSplit::default()
+                }),
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Безнал за время смены по движениям безналичных счетов (SPEC-36 §9, ADR-120): продажи по
@@ -494,6 +526,9 @@ pub struct BankDay {
     pub fee_tyiyn: i64,
     /// Прочее: перемещения, оплаты поставщикам, расходы, сторно — со знаком.
     pub other_tyiyn: i64,
+    /// Наличные ↔ QR за смену (задача 003 Н1): + из наличных, − в наличные, с отменами.
+    #[serde(default)]
+    pub cash_to_bank_tyiyn: i64,
     /// Изменение остатка за день.
     pub net_tyiyn: i64,
 }
@@ -516,6 +551,8 @@ pub(crate) struct BankOut {
     pub fee_tyiyn: i64,
     /// Прочие поступления: перемещения в счёт, внесения, возмещения.
     pub other_in_tyiyn: i64,
+    /// Наличные ↔ QR за смену за период: + из наличных, − в наличные (задача 003 Н1).
+    pub cash_to_bank_tyiyn: i64,
     /// Списания: перемещения со счёта, оплаты поставщикам, расходы, сторно.
     pub outgoing_tyiyn: i64,
     /// Все виды движений за период — сверка с движениями кассы «Счёт».
@@ -656,7 +693,7 @@ pub(crate) async fn bank_data(
     let mut card = BankIncome::default();
     let mut transfer = BankIncome::default();
     let mut invoice = BankIncome::default();
-    let (mut fee, mut other_in, mut outgoing) = (0i64, 0i64, 0i64);
+    let (mut fee, mut other_in, mut outgoing, mut moved) = (0i64, 0i64, 0i64, 0i64);
     let mut kinds: BTreeMap<String, KindRow> = BTreeMap::new();
     let mut days: BTreeMap<NaiveDate, BankDay> = BTreeMap::new();
     // Сумма движений чека на счёт: часть картой и «По счёту» — по оплатам чека, остальное —
@@ -700,6 +737,10 @@ pub(crate) async fn bank_data(
             ("bank_fee", _, _) => {
                 fee = fee.saturating_sub(r.amount_tyiyn);
                 d.fee_tyiyn = d.fee_tyiyn.saturating_sub(r.amount_tyiyn);
+            }
+            ("cash_to_bank", _, _) => {
+                moved = moved.saturating_add(r.amount_tyiyn);
+                d.cash_to_bank_tyiyn = d.cash_to_bank_tyiyn.saturating_add(r.amount_tyiyn);
             }
             _ => {
                 if r.amount_tyiyn >= 0 {
@@ -747,6 +788,7 @@ pub(crate) async fn bank_data(
         invoice,
         fee_tyiyn: fee,
         other_in_tyiyn: other_in,
+        cash_to_bank_tyiyn: moved,
         outgoing_tyiyn: outgoing,
         kinds: kinds.into_values().collect(),
         days: days.into_values().rev().collect(),

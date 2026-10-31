@@ -122,12 +122,14 @@ export function shiftHtml(r: ShiftReport): string {
         .map(
           (i) =>
             `<tr class="sub"><td colspan="2">${esc(formatDateTime(i.created_at))} ${esc(
-              i.kind === 'sale' ? `чек № ${i.original_number ?? ''} → № ${i.new_number ?? ''}` : i.reversal ? 'отмена переноса' : 'перенос',
+              i.kind === 'sale' ? `чек № ${i.original_number ?? ''} → № ${i.new_number ?? ''}` : i.reversal ? 'отмена переноса' : 'наличные ↔ QR',
             )}: ${esc(i.old_text)} → ${esc(i.new_text)}. ${esc(i.comment)}</td></tr>`,
         )
         .join('') +
       row('Наличными по чекам', a.after.cash_sales_tyiyn) +
-      (a.after.cash_to_bank_tyiyn ? row('Из наличных в QR', a.after.cash_to_bank_tyiyn) : '') +
+      // Наличные ↔ QR (задача 003 Н1): по знаку — направление.
+      (a.after.cash_to_bank_tyiyn > 0 ? row('Из наличных в QR', a.after.cash_to_bank_tyiyn) : '') +
+      (a.after.cash_to_bank_tyiyn < 0 ? row('Из QR в наличные', -a.after.cash_to_bank_tyiyn) : '') +
       row('Расхождение было', a.before.diff_tyiyn, { sign: true }) +
       row('Расхождение сейчас', a.after.diff_tyiyn, { sign: true, strong: true }) +
       row('Удержано с кассира', a.after.withheld_tyiyn) +

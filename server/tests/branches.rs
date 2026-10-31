@@ -597,6 +597,8 @@ fn kitchen_sink(ids: &BTreeMap<String, Vec<Uuid>>, route: &str, item: &str) -> V
             "payments": [{ "method": "cash", "amount_tyiyn": 50_000 }],
         }),
         "/defects/{id}/resolve" => json!({ "kind": "write_off" }),
+        // Наличные ↔ QR чужой смены — и «из QR в наличные» (задача 003 Н1).
+        "/shifts/{id}/cash-to-bank" => json!({ "direction": "to_cash" }),
         "/revisions/{id}/lines" => json!({ "product_id": item, "counted_qty": 1 }),
         // Строка Умага по id: тело проходит проверку, ответ решает поиск строки (SPEC-35).
         "/old-catalog/{id}/link" | "/old-catalog/{id}/reject" => json!({ "product_id": item }),
