@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select x.line_no,\n                  coalesce(sum(x.amount_tyiyn) filter (where x.amount_tyiyn > 0), 0)::bigint as \"accrued!\",\n                  coalesce(-sum(x.amount_tyiyn) filter (where x.amount_tyiyn < 0), 0)::bigint as \"taken!\",\n                  min(x.source) as \"source!\"\n           from loyalty_lines x where x.sale_id = $1 group by x.line_no",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_no",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "accrued!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "taken!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "source!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f1685228de1ee6f0a655ef6be2ca74b7d851a2f024a84b2f823f91166c20a3d4"
+}

@@ -71,6 +71,39 @@ struct CategoryOut {
     book_slot: String,
     book_interval_km: Option<i32>,
     book_interval_days: Option<i32>,
+    /// Баллы товаров категории (ADR-{B1.2}): `inherit` — по общей ставке.
+    points_mode: String,
+    points_value: i64,
+}
+
+/// Правило баллов товара или категории (задача 002, П1): `inherit` — как выше (у товара —
+/// категория, у категории — общая ставка), `none`, `percent` (сотые доли процента), `fixed`
+/// (тыйыны за штуку, литр или кг). Меняет только владелец.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct PointsReq {
+    pub mode: String,
+    #[serde(default)]
+    pub value: i64,
+}
+
+fn check_points(p: &PointsReq) -> AppResult<()> {
+    match p.mode.as_str() {
+        "inherit" | "none" => Ok(()),
+        "percent" if (1..=10_000).contains(&p.value) => Ok(()),
+        "percent" => Err(invalid("процент баллов — от 0,01 до 100")),
+        "fixed" if (1..=100_000_000).contains(&p.value) => Ok(()),
+        "fixed" => Err(invalid("баллы за единицу — от 0,01 до 1 000 000")),
+        _ => Err(invalid("неизвестное правило баллов")),
+    }
+}
+
+/// Значение правила в базе: «как выше» и «нет» хранят 0.
+fn points_value(p: &PointsReq) -> i64 {
+    if matches!(p.mode.as_str(), "percent" | "fixed") {
+        p.value
+    } else {
+        0
+    }
 }
 
 /// Строка книжки у категории: `none` — товары в книжку не идут. Интервал — оба числа или ничего.
@@ -228,7 +261,7 @@ async fn list_categories(
     let rows = sqlx::query_as!(
         CategoryOut,
         r#"select c.id, c.name, c.kind, c.attributes, coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                  c.book_interval_km, c.book_interval_days
+                  c.book_interval_km, c.book_interval_days, c.points_mode, c.points_value
            from categories c order by c.name"#
     )
     .fetch_all(&state.pool)
@@ -315,6 +348,8 @@ async fn create_category(
         book_slot: book.slot,
         book_interval_km: book.interval_km,
         book_interval_days: book.interval_days,
+        points_mode: "inherit".into(),
+        points_value: 0,
     }))
 }
 
@@ -323,6 +358,8 @@ struct CategoryPatch {
     name: Option<String>,
     attributes: Option<Vec<AttributeDef>>,
     book: Option<BookReq>,
+    /// Баллы товаров категории (ADR-{B1.2}) — только владелец.
+    points: Option<PointsReq>,
 }
 
 async fn update_category(
@@ -348,11 +385,14 @@ async fn update_category(
         }
         check_book(b)?;
     }
+    if let Some(p) = &req.points {
+        check_points(p)?;
+    }
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let before = sqlx::query!(
         r#"select coalesce(c.book_slot, case c.kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!", c.book_interval_km, c.book_interval_days,
-                  c.kind, c.name
+                  c.kind, c.name, c.points_mode, c.points_value
            from categories c where c.id = $1 for update"#,
         id
     )
@@ -366,16 +406,25 @@ async fn update_category(
         .as_deref()
         .filter(|n| *n != before.name)
         .and_then(|n| book_slot_by_name(&before.kind, n));
+    // Баллы меняет владелец (ADR-{B1.2}); прислали прежнее — не правка.
+    let points = req
+        .points
+        .as_ref()
+        .filter(|p| p.mode != before.points_mode || points_value(p) != before.points_value);
+    if points.is_some() && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
+    }
     let out = sqlx::query_as!(
         CategoryOut,
         r#"update categories set name = coalesce($2, name), attributes = coalesce($3, attributes),
              book_slot = case when $4 then $5 when book_slot is null then coalesce($8, book_slot) else book_slot end,
              book_interval_km = case when $4 then $6 else book_interval_km end,
-             book_interval_days = case when $4 then $7 else book_interval_days end
+             book_interval_days = case when $4 then $7 else book_interval_days end,
+             points_mode = coalesce($9, points_mode), points_value = coalesce($10, points_value)
            where id = $1
            returning id, name, kind, attributes,
                      coalesce(book_slot, case kind when 'oil' then 'oil' when 'filter' then 'oil_filter' else 'none' end) as "book_slot!",
-                     book_interval_km, book_interval_days"#,
+                     book_interval_km, book_interval_days, points_mode, points_value"#,
         id,
         name,
         attributes,
@@ -383,7 +432,9 @@ async fn update_category(
         req.book.as_ref().map_or("none", |b| b.slot.as_str()),
         req.book.as_ref().and_then(|b| b.interval_km),
         req.book.as_ref().and_then(|b| b.interval_days),
-        by_name
+        by_name,
+        points.map(|p| p.mode.as_str()),
+        points.map(points_value)
     )
     .fetch_optional(&mut *tx)
     .await?
@@ -400,6 +451,10 @@ async fn update_category(
             "book": ops::changes(
                 &json!({ "slot": before.book_slot, "km": before.book_interval_km, "days": before.book_interval_days }),
                 &json!({ "slot": out.book_slot, "km": out.book_interval_km, "days": out.book_interval_days }),
+            ),
+            "points": ops::changes(
+                &json!({ "mode": before.points_mode, "value": before.points_value }),
+                &json!({ "mode": out.points_mode, "value": out.points_value }),
             ),
         }),
     )
@@ -444,6 +499,15 @@ pub struct ProductOut {
     pub avg_cost_tyiyn: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stock_value_tyiyn: Option<i64>,
+    /// Баллы товара (ADR-{B1.2}): `inherit` — как в категории.
+    #[serde(default = "inherit")]
+    pub points_mode: String,
+    #[serde(default)]
+    pub points_value: i64,
+}
+
+fn inherit() -> String {
+    "inherit".into()
 }
 
 #[derive(Default)]
@@ -502,7 +566,7 @@ async fn query_products_raw(
     let q = exact.as_deref().map(escape_like);
     let rows = sqlx::query!(
         r#"select p.id, p.category_id, c.kind as category_kind, p.name, p.brand, p.article, p.unit,
-                  p.container_ml, p.attrs, p.archived,
+                  p.container_ml, p.attrs, p.archived, p.points_mode, p.points_value,
                   coalesce(bp.sale_price_tyiyn, p.sale_price_tyiyn) as "sale_price_tyiyn!",
                   p.sale_price_tyiyn as shared_sale_price_tyiyn,
                   coalesce(bp.own_price, false) as "own_price!",
@@ -608,6 +672,8 @@ async fn query_products_raw(
                     .flatten(),
                 avg_cost_tyiyn: if owner { average(&pool, per) } else { None },
                 stock_value_tyiyn: owner.then_some(r.stock_value_tyiyn),
+                points_mode: r.points_mode,
+                points_value: r.points_value,
             };
             (out, raw)
         })
@@ -1309,6 +1375,13 @@ pub struct CreateProductReq {
     /// получает все её коды в той же операции (SPEC-35 §2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_catalog_id: Option<Uuid>,
+    /// Единица учёта (задача 002, П4): `ml` — литрами (канистра и розлив), `piece` — штуками.
+    /// Без поля — по виду категории: масло в литрах, остальное в штуках.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Баллы товара (ADR-{B1.2}) — только владелец.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<PointsReq>,
 }
 
 pub(crate) async fn insert_barcode(
@@ -1384,7 +1457,13 @@ pub async fn create_product_tx(
     if name.is_empty() {
         return Err(invalid("название обязательно"));
     }
-    let (unit, container_ml) = if kind == "oil" {
+    let liters = match req.unit.as_deref() {
+        None => kind == "oil",
+        Some("ml") => true,
+        Some("piece") => false,
+        Some(_) => return Err(invalid("единица товара — литры или штуки")),
+    };
+    let (unit, container_ml) = if liters {
         match req.container_ml {
             // Бочка 200 л — уже много; тысяча литров — предел, дальше явная ошибка ввода.
             Some(v) if (1..=1_000_000).contains(&v) => ("ml", Some(v)),
@@ -1411,13 +1490,21 @@ pub async fn create_product_tx(
         }));
     }
     let attrs = clean_attrs(req.attrs, &defs)?;
+    // Баллы товара задаёт владелец (ADR-{B1.2}).
+    let points = req.points.as_ref().filter(|p| p.mode != "inherit");
+    if let Some(p) = points {
+        if !ctx.user.is_owner() {
+            return Err(AppError::Forbidden);
+        }
+        check_points(p)?;
+    }
     let id = new_id();
     // Цена новой карточки — общая для всех филиалов (SPEC-33 §2): строка остатка заводится
     // каждому филиалу, минимальный остаток — только этому.
     sqlx::query!(
         r#"insert into products (id, category_id, name, brand, article, unit, container_ml, attrs,
-                                 sale_price_tyiyn)
-           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+                                 sale_price_tyiyn, points_mode, points_value)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10, 'inherit'), coalesce($11::bigint, 0))"#,
         id,
         req.category_id,
         name,
@@ -1426,7 +1513,9 @@ pub async fn create_product_tx(
         unit,
         container_ml,
         attrs,
-        req.sale_price_tyiyn
+        req.sale_price_tyiyn,
+        points.map(|p| p.mode.as_str()),
+        points.map(points_value)
     )
     .execute(&mut *tx)
     .await?;
@@ -1493,7 +1582,8 @@ pub async fn create_product_tx(
 async fn product_fields(conn: &mut PgConnection, id: Uuid) -> AppResult<Value> {
     Ok(sqlx::query_scalar!(
         r#"select jsonb_build_object('name', name, 'brand', brand, 'article', article,
-                                     'category_id', category_id, 'attrs', attrs, 'archived', archived) as "v!"
+                                     'category_id', category_id, 'attrs', attrs, 'archived', archived,
+                                     'points_mode', points_mode, 'points_value', points_value) as "v!"
            from products where id = $1"#,
         id
     )
@@ -1509,6 +1599,8 @@ struct UpdateProductReq {
     category_id: Option<Uuid>,
     attrs: Option<Value>,
     archived: Option<bool>,
+    /// Баллы товара (ADR-{B1.2}) — только владелец.
+    points: Option<PointsReq>,
 }
 
 async fn update_product(
@@ -1520,7 +1612,7 @@ async fn update_product(
     let mut tx = state.pool.begin().await?;
     crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
     let cur = sqlx::query!(
-        "select category_id, unit, archived, merged_into from products where id = $1 for update",
+        "select category_id, unit, archived, merged_into, points_mode, points_value from products where id = $1 for update",
         id
     )
     .fetch_optional(&mut *tx)
@@ -1577,11 +1669,18 @@ async fn update_product(
         }
     }
     let category_id = req.category_id.unwrap_or(cur.category_id);
-    let (kind, defs) = category_info(&mut tx, category_id).await?;
-    if (kind == "oil") != (cur.unit == "ml") {
-        return Err(invalid(
-            "нельзя перенести товар между маслом и штучным товаром",
-        ));
+    // Единица — у товара, а не у вида категории (задача 002, П4): товар в литрах переносится и в
+    // категорию штучных, и наоборот; сама единица меняется `POST /products/{id}/unit`.
+    let (_, defs) = category_info(&mut tx, category_id).await?;
+    if let Some(p) = &req.points {
+        check_points(p)?;
+    }
+    let points = req
+        .points
+        .as_ref()
+        .filter(|p| p.mode != cur.points_mode || points_value(p) != cur.points_value);
+    if points.is_some() && !ctx.user.is_owner() {
+        return Err(AppError::Forbidden);
     }
     let attrs = match req.attrs {
         Some(a) => Some(clean_attrs(Some(a), &defs)?),
@@ -1595,7 +1694,8 @@ async fn update_product(
     sqlx::query!(
         r#"update products set name = coalesce($2, name), brand = coalesce($3, brand),
              article = coalesce($4, article), category_id = $5, attrs = coalesce($6, attrs),
-             archived = coalesce($7, archived)
+             archived = coalesce($7, archived),
+             points_mode = coalesce($8, points_mode), points_value = coalesce($9, points_value)
            where id = $1"#,
         id,
         name,
@@ -1603,7 +1703,9 @@ async fn update_product(
         req.article.map(|s| s.trim().to_string()),
         category_id,
         attrs,
-        req.archived
+        req.archived,
+        points.map(|p| p.mode.as_str()),
+        points.map(points_value)
     )
     .execute(&mut *tx)
     .await?;

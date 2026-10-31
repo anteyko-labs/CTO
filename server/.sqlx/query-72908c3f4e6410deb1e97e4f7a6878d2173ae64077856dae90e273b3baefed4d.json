@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select number from defects where product_id = $1 and status = 'pending' order by number limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "72908c3f4e6410deb1e97e4f7a6878d2173ae64077856dae90e273b3baefed4d"
+}

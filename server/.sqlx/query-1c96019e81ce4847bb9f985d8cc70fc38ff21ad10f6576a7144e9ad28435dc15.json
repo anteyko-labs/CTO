@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select p.id, p.unit, p.points_mode, p.points_value,\n                  c.points_mode as cat_mode, c.points_value as cat_value\n           from products p join categories c on c.id = p.category_id\n           where p.id = any($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "points_mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "points_value",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "cat_mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "cat_value",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1c96019e81ce4847bb9f985d8cc70fc38ff21ad10f6576a7144e9ad28435dc15"
+}

@@ -1728,9 +1728,31 @@ pub async fn post_sale_core(
     )
     .await?;
     crate::api::bank_qr::link_sale(conn, id, &bank_qrs).await?;
-    // Баллы: списание оплатой «bonus» (в любом чеке) и начисление с денег — только за замену
-    // масла (SPEC-19, ADR-124).
-    crate::api::loyalty::on_sale(conn, ctx, id, req.party_id, &req.payments, oil_change).await?;
+    // Баллы: списание оплатой «bonus» (в любом чеке) и начисление с денег по строкам — правило
+    // товара → категории → общая ставка, по умолчанию только за замену масла (SPEC-19, ADR-124,
+    // ADR-{B1.2}).
+    let points_lines = prepared
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            Ok(crate::api::loyalty::PointsLine {
+                line_no: i32::try_from(i + 1).map_err(|_| invalid("слишком много строк"))?,
+                product_id: p.product_id,
+                units: p.units,
+                amount: p.amount,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    crate::api::loyalty::on_sale(
+        conn,
+        ctx,
+        id,
+        req.party_id,
+        &req.payments,
+        oil_change,
+        &points_lines,
+    )
+    .await?;
     if debt_total > 0 {
         let party_id = req
             .party_id
@@ -2367,7 +2389,7 @@ pub async fn return_sale_core(
     .execute(&mut *conn)
     .await?;
     let orig = sqlx::query!(
-        r#"select kind, sale_type, cashier_id, master_id, master_fee_tyiyn, business_date,
+        r#"select kind, sale_type, cashier_id, master_id, master_fee_tyiyn, business_date, created_at,
                   party_id as "party_id?", contact_id as "contact_id?", vehicle_id as "vehicle_id?"
            from sales where id = $1 and branch_id = $2"#,
         id,
@@ -2389,6 +2411,8 @@ pub async fn return_sale_core(
         /// Себестоимость строки чека была неизвестна (ADR-062) и сколько в строке было всего.
         cost_unknown: bool,
         orig_qty: i64,
+        /// Сколько из строки вернули раньше — для баллов строки (ADR-{B1.2}).
+        done_qty: i64,
         /// Сколько из возвращаемых единиц ушли без цены закупки (себестоимость 0).
         unknown_units: i64,
     }
@@ -2470,6 +2494,7 @@ pub async fn return_sale_core(
             fee,
             cost_unknown: o.cost_unknown,
             orig_qty: o.qty,
+            done_qty: done.qty,
             unknown_units,
         });
     }
@@ -2754,14 +2779,27 @@ pub async fn return_sale_core(
     .await?;
     for x in &planned {
         if let Some(pid) = x.p.product_id {
+            // После чека единица товара менялась (ADR-{B1.1}): строка возврата — в единицах чека,
+            // на склад — в нынешних.
+            let stock_units =
+                crate::api::product_units::units_now(conn, pid, orig.created_at, x.p.units).await?;
+            let unknown_units = if stock_units == x.p.units || x.p.units == 0 {
+                x.unknown_units
+            } else {
+                div_round(
+                    i128::from(x.unknown_units) * i128::from(stock_units),
+                    i128::from(x.p.units),
+                )
+                .ok_or_else(overflow)?
+            };
             let pool = ops::lock_pool(conn, branch_id, pid).await?;
             // Единицы, проданные без цены закупки, вернулись, а цена уже есть (приход закрыл минус
             // с переоценкой или владелец её указал): они возвращаются по последней закупочной,
             // разница — обратной переоценкой. Иначе себестоимость этих единиц списана дважды:
             // переоценкой при приходе и снова при следующей продаже (ADR-092).
-            if x.unknown_units > 0 && pool.last_qty > 0 && pool.qty.saturating_add(x.p.units) != 0 {
+            if unknown_units > 0 && pool.last_qty > 0 && pool.qty.saturating_add(stock_units) != 0 {
                 let back = div_round(
-                    i128::from(x.unknown_units) * i128::from(pool.last_cost),
+                    i128::from(unknown_units) * i128::from(pool.last_cost),
                     i128::from(pool.last_qty),
                 )
                 .ok_or_else(overflow)?;
@@ -2785,7 +2823,7 @@ pub async fn return_sale_core(
                 Movement {
                     branch_id,
                     product_id: pid,
-                    qty_delta: x.p.units,
+                    qty_delta: stock_units,
                     value_delta: x.cost,
                     doc_type: "sale_return",
                     doc_id: rid,
@@ -2870,7 +2908,25 @@ pub async fn return_sale_core(
         mode.pay_change,
     )
     .await?;
-    crate::api::loyalty::on_return(conn, ctx, id, rid, orig.party_id, &req.payments).await?;
+    let points_back: Vec<crate::api::loyalty::ReturnPoints> = planned
+        .iter()
+        .map(|x| crate::api::loyalty::ReturnPoints {
+            line_no: x.line_no,
+            qty: x.p.qty,
+            orig_qty: x.orig_qty,
+            done_qty: x.done_qty,
+        })
+        .collect();
+    crate::api::loyalty::on_return(
+        conn,
+        ctx,
+        id,
+        rid,
+        orig.party_id,
+        &req.payments,
+        &points_back,
+    )
+    .await?;
     let debt_back: i64 = req
         .payments
         .iter()

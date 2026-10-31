@@ -338,6 +338,8 @@ pub async fn reverse_transfer_tx(
     .execute(&mut *conn)
     .await?;
     for (product_id, sign) in [(to_id, -1i64), (from_id, 1)] {
+        // Единица товара менялась после перелива — его литры в прежних единицах (ADR-{B1.1}).
+        crate::api::product_units::forbid_after_doc(conn, product_id, id).await?;
         ops::apply_movement(
             conn,
             Movement {

@@ -1,5 +1,6 @@
 //! Бонусные баллы клиентов, подключённых к Телеграм-боту (SPEC-19, ADR-053).
-//! 1 балл = 1 сом; начисление — процент от оплаченного деньгами за чек с заменой масла (ADR-124),
+//! 1 балл = 1 сом; начисление — по строкам чека с оплаченного деньгами: правило товара →
+//! категории → общая ставка, по умолчанию только за чек с заменой масла (ADR-124, ADR-{B1.2});
 //! списание — оплата чека баллами.
 
 use axum::extract::{Path, Query, State};
@@ -13,6 +14,7 @@ use uuid::Uuid;
 use crate::api::sales::PaymentReq;
 use crate::auth::{Ctx, CurrentUser};
 use crate::domain::money::{div_round, format_som};
+use crate::domain::points;
 use crate::error::{AppError, AppResult, invalid, overflow};
 use crate::ops::{self, new_id};
 use crate::state::AppState;
@@ -30,19 +32,47 @@ pub fn routes() -> Router<AppState> {
 /// Процент начисления по умолчанию — 0,5 % (решение заказчика).
 const DEFAULT_RATE_BP: i32 = 50;
 
-pub async fn rate_bp(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i32> {
+/// Настройка баллов филиала: общая ставка и «только в чеке с заменой масла» (ADR-{B1.2}).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settings {
+    pub rate_bp: i32,
+    /// По умолчанию — да, как было (ADR-124): чек без замены масла баллов не даёт.
+    #[serde(default = "yes")]
+    pub oil_change_only: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+pub async fn settings(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Settings> {
     let v = sqlx::query_scalar!(
         "select value from settings where branch_id = $1 and key = 'loyalty'",
         branch_id
     )
     .fetch_optional(&mut *conn)
     .await?;
-    Ok(
-        v.and_then(|v| v.get("rate_bp").and_then(serde_json::Value::as_i64))
-            .and_then(|d| i32::try_from(d).ok())
-            .filter(|d| (0..=1000).contains(d))
-            .unwrap_or(DEFAULT_RATE_BP),
-    )
+    let rate_bp = v
+        .as_ref()
+        .and_then(|v| v.get("rate_bp").and_then(serde_json::Value::as_i64))
+        .and_then(|d| i32::try_from(d).ok())
+        .filter(|d| (0..=1000).contains(d))
+        .unwrap_or(DEFAULT_RATE_BP);
+    let oil_change_only = v
+        .as_ref()
+        .and_then(|v| {
+            v.get("oil_change_only")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(true);
+    Ok(Settings {
+        rate_bp,
+        oil_change_only,
+    })
+}
+
+pub async fn rate_bp(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i32> {
+    Ok(settings(conn, branch_id).await?.rate_bp)
 }
 
 pub async fn balance(conn: &mut PgConnection, party_id: Uuid) -> AppResult<i64> {
@@ -97,14 +127,15 @@ struct Entry<'a> {
     doc_id: Uuid,
 }
 
-async fn add(conn: &mut PgConnection, e: Entry<'_>) -> AppResult<()> {
+async fn add(conn: &mut PgConnection, e: Entry<'_>) -> AppResult<Option<Uuid>> {
     if e.amount == 0 {
-        return Ok(());
+        return Ok(None);
     }
+    let id = new_id();
     sqlx::query!(
         r#"insert into loyalty_ledger (id, branch_id, party_id, kind, amount_tyiyn, rate_bp, doc_type, doc_id)
            values ($1, $2, $3, $4, $5, $6, $7, $8)"#,
-        new_id(),
+        id,
         e.branch_id,
         e.party_id,
         e.kind,
@@ -112,6 +143,35 @@ async fn add(conn: &mut PgConnection, e: Entry<'_>) -> AppResult<()> {
         e.rate_bp,
         e.doc_type,
         e.doc_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(Some(id))
+}
+
+/// Из чего сложилась запись начисления или снятия: строки исходного чека (ADR-{B1.2}).
+async fn add_lines(
+    conn: &mut PgConnection,
+    ledger_id: Uuid,
+    sale_id: Uuid,
+    rows: &[(i32, i64, &str)],
+) -> AppResult<()> {
+    let rows: Vec<&(i32, i64, &str)> = rows.iter().filter(|r| r.1 != 0).collect();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let line_nos: Vec<i32> = rows.iter().map(|r| r.0).collect();
+    let amounts: Vec<i64> = rows.iter().map(|r| r.1).collect();
+    let sources: Vec<String> = rows.iter().map(|r| r.2.to_string()).collect();
+    sqlx::query!(
+        r#"insert into loyalty_lines (ledger_id, sale_id, line_no, amount_tyiyn, source)
+           select $1, $2, x.line_no, x.amount, x.source
+           from unnest($3::int[], $4::bigint[], $5::text[]) as x(line_no, amount, source)"#,
+        ledger_id,
+        sale_id,
+        &line_nos,
+        &amounts,
+        &sources
     )
     .execute(&mut *conn)
     .await?;
@@ -140,9 +200,65 @@ fn is_money(method: &str) -> bool {
     matches!(method, "cash" | "card" | "transfer" | "invoice")
 }
 
+/// Строка чека для начисления баллов (ADR-{B1.2}).
+pub struct PointsLine {
+    pub line_no: i32,
+    pub product_id: Option<Uuid>,
+    /// Единицы учёта строки: штуки, мл, граммы.
+    pub units: i64,
+    /// Сумма строки после скидок; подарок — 0.
+    pub amount: i64,
+}
+
+/// Правила баллов строк: товар → категория → общая ставка; услуга — общая ставка.
+async fn line_rules(
+    conn: &mut PgConnection,
+    lines: &[PointsLine],
+    common_bp: i32,
+) -> AppResult<Vec<(points::LineIn, points::Source)>> {
+    let ids: Vec<Uuid> = lines.iter().filter_map(|l| l.product_id).collect();
+    let rows = sqlx::query!(
+        r#"select p.id, p.unit, p.points_mode, p.points_value,
+                  c.points_mode as cat_mode, c.points_value as cat_value
+           from products p join categories c on c.id = p.category_id
+           where p.id = any($1)"#,
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let common = i64::from(common_bp);
+    Ok(lines
+        .iter()
+        .map(|l| {
+            let found = l.product_id.and_then(|id| rows.iter().find(|r| r.id == id));
+            let (rule, source) = match found {
+                Some(r) => points::pick(
+                    points::rule_of(&r.points_mode, r.points_value),
+                    points::rule_of(&r.cat_mode, r.cat_value),
+                    common,
+                ),
+                None => points::pick(None, None, common),
+            };
+            let per_unit = match found.map(|r| r.unit.as_str()) {
+                Some("ml" | "g") => 1000,
+                _ => 1,
+            };
+            (
+                points::LineIn {
+                    amount: l.amount,
+                    units: l.units,
+                    per_unit,
+                    rule,
+                },
+                source,
+            )
+        })
+        .collect())
+}
+
 /// Чек: списание баллов (оплата «bonus», в любом чеке) и начисление с оплаченного деньгами —
-/// только за замену масла (`oil_change`, ADR-124). Долг и баллы не начисляют: начисление — только
-/// с реально полученных денег.
+/// по строкам (ADR-{B1.2}); по умолчанию только за замену масла (`oil_change`, ADR-124). Долг и
+/// баллы не начисляют: начисление — только с реально полученных денег.
 pub async fn on_sale(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -150,6 +266,7 @@ pub async fn on_sale(
     party_id: Option<Uuid>,
     payments: &[PaymentReq],
     oil_change: bool,
+    lines: &[PointsLine],
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let redeem = sum_of(payments, |m| m == "bonus")?;
@@ -191,31 +308,59 @@ pub async fn on_sale(
         )
         .await?;
     }
-    if member && oil_change {
-        let rate = rate_bp(conn, branch_id).await?;
-        let money = sum_of(payments, is_money)?;
-        let accrual =
-            div_round(i128::from(money) * i128::from(rate), 10_000).ok_or_else(overflow)?;
-        add(
-            conn,
-            Entry {
-                branch_id,
-                party_id,
-                kind: "accrual",
-                amount: accrual,
-                rate_bp: Some(rate),
-                doc_type: "sale",
-                doc_id: sale_id,
-            },
-        )
-        .await?;
+    if !member {
+        return Ok(());
+    }
+    let s = settings(conn, branch_id).await?;
+    if s.oil_change_only && !oil_change {
+        return Ok(());
+    }
+    let rules = line_rules(conn, lines, s.rate_bp).await?;
+    let money = sum_of(payments, is_money)?;
+    let ins: Vec<points::LineIn> = rules.iter().map(|r| r.0).collect();
+    let per_line = points::accrue(money, &ins).ok_or_else(overflow)?;
+    let accrual = per_line
+        .iter()
+        .try_fold(0i64, |acc, v| acc.checked_add(*v))
+        .ok_or_else(overflow)?;
+    let ledger = add(
+        conn,
+        Entry {
+            branch_id,
+            party_id,
+            kind: "accrual",
+            amount: accrual,
+            rate_bp: Some(s.rate_bp),
+            doc_type: "sale",
+            doc_id: sale_id,
+        },
+    )
+    .await?;
+    if let Some(ledger_id) = ledger {
+        let rows: Vec<(i32, i64, &str)> = lines
+            .iter()
+            .zip(per_line.iter())
+            .zip(rules.iter())
+            .map(|((l, v), r)| (l.line_no, *v, r.1.as_str()))
+            .collect();
+        add_lines(conn, ledger_id, sale_id, &rows).await?;
     }
     Ok(())
 }
 
-/// Возврат: баллы, которыми платили, возвращаются на счёт; начисленное снимается с
-/// возвращённых денег по той же ставке, но не больше начисленного по чеку. У чека без
-/// начисления (не замена масла, ADR-124) снимать нечего.
+/// Строка возврата для баллов: сколько возвращают из строки исходного чека и сколько из неё
+/// уже вернули раньше.
+pub struct ReturnPoints {
+    pub line_no: i32,
+    pub qty: i64,
+    pub orig_qty: i64,
+    pub done_qty: i64,
+}
+
+/// Возврат: баллы, которыми платили, возвращаются на счёт; возвращённая строка снимает свои
+/// начисленные баллы в доле возвращённого (ADR-{B1.2}), последняя часть — точный остаток. Чек,
+/// проведённый до баллов по строкам, — как раньше: с возвращённых денег по той же ставке, не
+/// больше начисленного. У чека без начисления снимать нечего.
 pub async fn on_return(
     conn: &mut PgConnection,
     ctx: &Ctx,
@@ -223,6 +368,7 @@ pub async fn on_return(
     return_id: Uuid,
     party_id: Option<Uuid>,
     payments: &[PaymentReq],
+    lines: &[ReturnPoints],
 ) -> AppResult<()> {
     let branch_id = ctx.user.branch_id;
     let back = sum_of(payments, |m| m == "bonus")?;
@@ -265,10 +411,26 @@ pub async fn on_return(
         },
     )
     .await?;
-    if let Some(rate) = done.rate {
+    let Some(rate) = done.rate else {
+        return Ok(());
+    };
+    let room = done.accrued.max(0);
+    // Начислено и уже снято по строкам исходного чека, источник правила строки.
+    let by_line = sqlx::query!(
+        r#"select x.line_no,
+                  coalesce(sum(x.amount_tyiyn) filter (where x.amount_tyiyn > 0), 0)::bigint as "accrued!",
+                  coalesce(-sum(x.amount_tyiyn) filter (where x.amount_tyiyn < 0), 0)::bigint as "taken!",
+                  min(x.source) as "source!"
+           from loyalty_lines x where x.sale_id = $1 group by x.line_no"#,
+        orig_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    if by_line.is_empty() {
+        // Чек до баллов по строкам: с возвращённых денег по ставке чека.
         let take = div_round(i128::from(money) * i128::from(rate), 10_000)
             .ok_or_else(overflow)?
-            .min(done.accrued.max(0));
+            .min(room);
         add(
             conn,
             Entry {
@@ -282,6 +444,46 @@ pub async fn on_return(
             },
         )
         .await?;
+        return Ok(());
+    }
+    let mut rows: Vec<(i32, i64, &str)> = Vec::new();
+    let mut total: i64 = 0;
+    for l in lines {
+        let Some(b) = by_line.iter().find(|b| b.line_no == l.line_no) else {
+            continue;
+        };
+        let rest = (b.accrued - b.taken).max(0);
+        let take = if l.done_qty + l.qty >= l.orig_qty {
+            rest
+        } else {
+            div_round(
+                i128::from(b.accrued) * i128::from(l.qty),
+                i128::from(l.orig_qty),
+            )
+            .ok_or_else(overflow)?
+            .clamp(0, rest)
+        }
+        .min(room - total);
+        if take > 0 {
+            total += take;
+            rows.push((l.line_no, -take, b.source.as_str()));
+        }
+    }
+    let ledger = add(
+        conn,
+        Entry {
+            branch_id,
+            party_id,
+            kind: "accrual_back",
+            amount: -total,
+            rate_bp: Some(rate),
+            doc_type: "sale_return",
+            doc_id: return_id,
+        },
+    )
+    .await?;
+    if let Some(ledger_id) = ledger {
+        add_lines(conn, ledger_id, orig_id, &rows).await?;
     }
     Ok(())
 }
@@ -398,9 +600,11 @@ async fn party_history(
 
 // ---------- Настройка ----------
 
-#[derive(Serialize, Deserialize)]
-struct Settings {
+/// Изменение настройки: без `oil_change_only` — прежнее значение.
+#[derive(Deserialize)]
+struct SettingsReq {
     rate_bp: i32,
+    oil_change_only: Option<bool>,
 }
 
 async fn get_settings(
@@ -408,15 +612,13 @@ async fn get_settings(
     user: CurrentUser,
 ) -> AppResult<Json<Settings>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(Settings {
-        rate_bp: rate_bp(&mut conn, user.branch_id).await?,
-    }))
+    Ok(Json(settings(&mut conn, user.branch_id).await?))
 }
 
 async fn put_settings(
     State(state): State<AppState>,
     ctx: Ctx,
-    Json(req): Json<Settings>,
+    Json(req): Json<SettingsReq>,
 ) -> AppResult<Json<Settings>> {
     if !ctx.user.is_owner() {
         return Err(AppError::Forbidden);
@@ -425,7 +627,12 @@ async fn put_settings(
         return Err(invalid("процент начисления от 0 до 10"));
     }
     let mut tx = state.pool.begin().await?;
-    let value = json!({ "rate_bp": req.rate_bp });
+    let before = settings(&mut tx, ctx.user.branch_id).await?;
+    let out = Settings {
+        rate_bp: req.rate_bp,
+        oil_change_only: req.oil_change_only.unwrap_or(before.oil_change_only),
+    };
+    let value = json!({ "rate_bp": out.rate_bp, "oil_change_only": out.oil_change_only });
     sqlx::query!(
         r#"insert into settings (branch_id, key, value) values ($1, 'loyalty', $2)
            on conflict (branch_id, key) do update set value = excluded.value"#,
@@ -436,5 +643,5 @@ async fn put_settings(
     .await?;
     ops::audit(&mut tx, &ctx, "settings.loyalty", "settings", None, value).await?;
     tx.commit().await?;
-    Ok(Json(req))
+    Ok(Json(out))
 }

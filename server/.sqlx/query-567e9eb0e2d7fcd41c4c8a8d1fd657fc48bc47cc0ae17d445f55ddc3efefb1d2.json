@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.number, b.name from revisions r join branches b on b.id = r.branch_id\n           where r.status = 'draft'\n             and (r.category_id is null or r.category_id = $2\n                  or exists (select 1 from revision_lines l where l.revision_id = r.id and l.product_id = $1))\n           order by r.created_at limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "567e9eb0e2d7fcd41c4c8a8d1fd657fc48bc47cc0ae17d445f55ddc3efefb1d2"
+}

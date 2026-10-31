@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, unit, container_ml, category_id, merged_into, sale_price_tyiyn\n           from products where id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "unit",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "container_ml",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "category_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "merged_into",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "sale_price_tyiyn",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1ace17d899d7d5b31bbe3eb563aaa966cb15431fcc820d0dbfdeb4381404fed3"
+}

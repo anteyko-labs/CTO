@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update branch_products set min_stock = $3, sale_price_tyiyn = $4,\n                      last_cost_qty = $5, last_cost_tyiyn = $6, owner_cost_qty = $7, owner_cost_tyiyn = $8\n               where branch_id = $1 and product_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6165159f3c8724e716a8faa926b4754015806ea03923ef82a3f12dda8d00c8d5"
+}

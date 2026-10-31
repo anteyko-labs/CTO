@@ -12,6 +12,10 @@ import { KIND_LABELS, type Category, type CategoryKind, type OldCatalogHit, type
 import { hitMeasureCodes, hitProductCodes, umagUnitWord } from '../lib/umagLink'
 import { Badge, Button, Checkbox, Empty, ErrorBox, Field, Missing, Modal, toast } from './ui'
 import { UmagCard } from './UmagCard'
+import { PointsRuleField } from './PointsRuleField'
+import { ProductUnitModal } from './ProductUnitModal'
+import { parsePointsRule, pointsChanged, pointsDraft, type PointsDraft } from '../lib/points'
+import { unitText } from '../lib/unitChange'
 
 interface Form {
   category_id: string
@@ -100,8 +104,14 @@ export function ProductFormModal({
     () => categories.data?.find((c) => c.id === form.category_id),
     [categories.data, form.category_id],
   )
-  const isOil = category?.kind === 'oil'
+  // Единица — у товара (задача 002, П4): новый товар — по виду категории, пока не выбрали другую;
+  // у заведённого — его единица, меняется окном «Единица и объём канистры» (только владелец).
+  const [unitChoice, setUnitChoice] = useState<'ml' | 'piece' | null>(null)
+  const [unitOpen, setUnitOpen] = useState(false)
+  const isOil = product ? product.unit === 'ml' : (unitChoice ?? (category?.kind === 'oil' ? 'ml' : 'piece')) === 'ml'
   const isFilter = category?.kind === 'filter'
+  // Баллы товара (задача 002, П1): меняет владелец.
+  const [points, setPoints] = useState<PointsDraft>(() => pointsDraft(product?.points_mode, product?.points_value))
   // Кросс-номера фильтра: по ним касса находит товар и предлагает аналоги (SPEC-17).
   const [cross, setCross] = useState<string | null>(null)
   useEffect(() => {
@@ -141,7 +151,9 @@ export function ProductFormModal({
     if (sale === null) throw new Error('Неверная цена продажи')
     if (isOil && (!container || container <= 0)) throw new Error('Укажите объём канистры в литрах')
     if (min === null) throw new Error('Неверный минимальный остаток')
-    return { sale, container, min }
+    const rule = parsePointsRule(points.mode, points.text)
+    if (typeof rule === 'string') throw new Error(rule)
+    return { sale, container, min, rule }
   }
 
   /** Новая категория создаётся здесь же и сразу выбирается в товаре. */
@@ -183,6 +195,8 @@ export function ProductFormModal({
           sale_price_tyiyn: v.sale,
           min_stock: v.min,
           ...(umagRow ? { old_catalog_id: umagRow.id } : {}),
+          ...(unitChoice ? { unit: unitChoice } : {}),
+          ...(owner && v.rule.mode !== 'inherit' ? { points: v.rule } : {}),
         })
       } else {
         await patch<Product>(`/products/${product.id}`, {
@@ -191,6 +205,7 @@ export function ProductFormModal({
           brand: form.brand,
           article: form.article,
           attrs: form.attrs,
+          ...(owner && pointsChanged(points, product.points_mode, product.points_value) ? { points: v.rule } : {}),
         })
         const prices: Record<string, number | boolean> = {}
         const wasOwn = Boolean(product.own_price)
@@ -265,6 +280,10 @@ export function ProductFormModal({
     )
   }
 
+  if (unitOpen && product) {
+    return <ProductUnitModal product={product} onClose={() => setUnitOpen(false)} onSaved={onSaved} />
+  }
+
   if (newCategory) {
     return (
       <Modal title="Новая категория" onClose={() => setNewCategory(null)}>
@@ -282,7 +301,7 @@ export function ProductFormModal({
               }}
             />
           </Field>
-          <Field label="Вид" hint="Масло учитывается в литрах, остальное — в штуках">
+          <Field label="Вид" hint="Масло по умолчанию в литрах, остальное — в штуках; у товара можно выбрать другое">
             <select
               value={newCategory.kind}
               onChange={(e) => setNewCategory({ ...newCategory, kind: e.target.value as CategoryKind })}
@@ -433,8 +452,7 @@ export function ProductFormModal({
           >
             <option value="">— выберите —</option>
             {categories.data
-              ?.filter((c) => !editing || (c.kind === 'oil') === (product?.unit === 'ml'))
-              .map((c) => (
+              ?.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
@@ -467,12 +485,40 @@ export function ProductFormModal({
             <textarea rows={2} value={cross ?? ''} onChange={(e) => setCross(e.target.value)} placeholder="90915-YZZE1, W 712/75, OC 217" />
           </Field>
         )}
-        {isOil && (
+        {!editing && category && (
+          <Field label="Учитывать" hint="Масло — в литрах; что продаётся только целиком — в штуках">
+            <select
+              data-testid="product-unit"
+              value={isOil ? 'ml' : 'piece'}
+              onChange={(e) => setUnitChoice(e.target.value as 'ml' | 'piece')}
+            >
+              <option value="ml">в литрах (канистра и розлив)</option>
+              <option value="piece">в штуках</option>
+            </select>
+          </Field>
+        )}
+        {editing && product && product.unit !== 'g' && (
+          <Field
+            label="Учитывается"
+            hint={owner ? 'Единицу и объём канистры меняет владелец: остаток пересчитается' : 'Единицу меняет владелец'}
+          >
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 text-sm text-slate-700" data-testid="product-unit-text">
+                {unitText(product.unit, product.container_ml)}
+              </span>
+              {owner && !inRevision && (
+                <Button variant="secondary" data-testid="product-unit-change" onClick={() => setUnitOpen(true)}>
+                  Изменить
+                </Button>
+              )}
+            </div>
+          </Field>
+        )}
+        {isOil && !editing && (
           <Field label="Объём канистры, л" required>
             <input
               id="product-container"
               inputMode="decimal"
-              disabled={editing}
               value={form.container_l}
               onChange={(e) => set('container_l', e.target.value)}
             />
@@ -532,6 +578,14 @@ export function ProductFormModal({
         <Field label={isOil ? 'Минимальный остаток, л' : 'Минимальный остаток, шт'}>
           <input inputMode="decimal" value={form.min_stock} onChange={(e) => set('min_stock', e.target.value)} />
         </Field>
+        <PointsRuleField
+          inheritLabel="как в категории"
+          unit={product?.unit ?? (isOil ? 'ml' : 'piece')}
+          draft={points}
+          onChange={setPoints}
+          disabled={!owner}
+          hint={owner ? 'Порядок: товар → категория → общая ставка в «Телеграм и баллы»' : 'Баллы задаёт владелец'}
+        />
       </div>
       </fieldset>
       {/* Связанная строка старой базы Умаг (SPEC-35 §3): после связывания у товара новые коды. */}
