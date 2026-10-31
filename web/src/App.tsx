@@ -62,6 +62,8 @@ const StockInView = lazyPage(() => import('./pages/StockInView'))
 const SupplierReturnsPage = lazyPage(() => import('./pages/SupplierReturns'))
 const TelegramSettings = lazyPage(() => import('./pages/TelegramSettings'))
 const BotFeedSettings = lazyPage(() => import('./pages/BotFeedSettings'))
+const OilBookSettings = lazyPage(() => import('./pages/OilBookSettings'))
+const CrossPickSettings = lazyPage(() => import('./pages/CrossPickSettings'))
 const ClientMessages = lazyPage(() => import('./pages/ClientMessages'))
 const ExpenseArticles = lazyPage(() => import('./pages/ExpenseArticles'))
 const SupplierCard = lazyPage(() => import('./pages/SupplierCard'))
@@ -381,6 +383,8 @@ function Shell() {
           {owner && <Route path="/settings/documents" element={<DebtDocsSettings />} />}
           {owner && <Route path="/settings/telegram" element={<TelegramSettings />} />}
           {owner && <Route path="/settings/bot-feed" element={<BotFeedSettings />} />}
+          {owner && <Route path="/settings/oil-book" element={<OilBookSettings />} />}
+          {owner && <Route path="/settings/cross-pick" element={<CrossPickSettings />} />}
           {owner && <Route path="/settings/optima" element={<OptimaSettings />} />}
           {owner && <Route path="/settings/client-messages" element={<ClientMessages />} />}
           {owner && <Route path="/settings/expense-articles" element={<ExpenseArticles />} />}

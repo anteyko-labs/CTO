@@ -7,6 +7,7 @@ pub mod auth;
 pub mod bank_qr;
 pub mod bank_recon;
 pub mod batteries;
+pub mod book_settings;
 pub mod bot_book;
 pub mod bot_cars;
 pub mod bot_debt;
@@ -22,6 +23,7 @@ pub mod cash;
 pub mod catalog;
 pub mod client_messages;
 pub mod corrections;
+pub mod cross_pick;
 pub mod defects;
 pub mod deliveries;
 pub mod expenses;
@@ -66,6 +68,7 @@ pub fn routes() -> Router<AppState> {
         .merge(bank_qr::routes())
         .merge(bank_recon::routes())
         .merge(batteries::routes())
+        .merge(book_settings::routes())
         .merge(bot_feed::routes())
         .merge(branches::routes())
         .merge(cabinet::routes())
@@ -75,6 +78,7 @@ pub fn routes() -> Router<AppState> {
         .merge(catalog::routes())
         .merge(client_messages::routes())
         .merge(corrections::routes())
+        .merge(cross_pick::routes())
         .merge(defects::routes())
         .merge(deliveries::routes())
         .merge(expenses::routes())

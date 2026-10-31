@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select book_interval_km, book_interval_days from services where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "book_interval_km",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "book_interval_days",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "fb5c171b36754f5717c361b1b534214fdf44ee54b98d00ff958d47018bdc1c94"
+}

@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
 import { StockBackLink } from '../components/StockBackLink'
+import { CrossPickCategory } from '../components/CrossPickCategory'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { Button, Card, Checkbox, Empty, ErrorBox, Field, Loading, Missing, Modal, PageHeader, Table, toast } from '../components/ui'
 import { get, patch, post } from '../lib/api'
@@ -30,6 +31,8 @@ interface AttrRow {
   type: AttributeDef['type']
   options: string
   filterable: boolean
+  /** Выключатель (задача 002 П10): выключенная не видна в карточке и фильтрах, значения остаются. */
+  enabled: boolean
 }
 
 const toRow = (a: AttributeDef): AttrRow => ({
@@ -38,10 +41,11 @@ const toRow = (a: AttributeDef): AttrRow => ({
   type: a.type,
   options: (a.options ?? []).join(', '),
   filterable: a.filterable,
+  enabled: a.enabled !== false,
 })
 
 function toDef(r: AttrRow): AttributeDef {
-  const def: AttributeDef = { key: r.key.trim(), label: r.label.trim(), type: r.type, filterable: r.filterable }
+  const def: AttributeDef = { key: r.key.trim(), label: r.label.trim(), type: r.type, filterable: r.filterable, enabled: r.enabled }
   if (!def.key) throw new Error('Укажите ключ каждой характеристики')
   if (!def.label) throw new Error(`Укажите название характеристики «${def.key}»`)
   if (r.type === 'select') {
@@ -162,6 +166,9 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
                     ))}
                   </select>
                 </Field>
+                {r.key === 'filter_type' && !r.enabled && (
+                  <div className="text-xs text-amber-800 sm:col-span-3">«Тип» выключен — строка книжки у всех товаров категории: «{book.slot === 'none' ? '—' : BOOK_SLOT_LABELS[book.slot]}»</div>
+                )}
                 {r.type === 'select' && (
                   <div className="sm:col-span-3">
                     <Field label="Варианты через запятую">
@@ -170,7 +177,21 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
                   </div>
                 )}
                 <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-3">
-                  <Checkbox label="Фильтр в списке товаров" checked={r.filterable} onChange={(v) => setRow(i, { filterable: v })} />
+                  <span className="flex flex-wrap items-center gap-4">
+                    <label className="inline-flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        data-testid={`attr-enabled-${r.key}`}
+                        checked={r.enabled}
+                        // «Тип» фильтра решает строку книжки (ADR-072) — его включает и выключает владелец.
+                        disabled={r.key === 'filter_type' && !owner}
+                        onChange={(e) => setRow(i, { enabled: e.target.checked })}
+                      />
+                      Показывать в карточке товара
+                    </label>
+                    <Checkbox label="Фильтр в списке товаров" checked={r.filterable} onChange={(v) => setRow(i, { filterable: v })} />
+                  </span>
                   <Button variant="ghost" className="px-2 py-1 text-xs" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>
                     Удалить
                   </Button>
@@ -181,7 +202,7 @@ function EditModal({ category, onClose, onSaved }: { category: Category; onClose
           <Button
             variant="secondary"
             className="mt-3"
-            onClick={() => setRows((rs) => [...rs, { key: '', label: '', type: 'text', options: '', filterable: true }])}
+            onClick={() => setRows((rs) => [...rs, { key: '', label: '', type: 'text', options: '', filterable: true, enabled: true }])}
           >
             Добавить характеристику
           </Button>
@@ -210,6 +231,8 @@ export default function Categories() {
   const [adding, setAdding] = useState(false)
   // «+ Товар»: форма товара с уже выбранной категорией (SPEC-27).
   const [newProductIn, setNewProductIn] = useState<Category | null>(null)
+  // «Подобрать кросс-номера» для всей категории фильтров (задача 002 П10).
+  const [crossIn, setCrossIn] = useState<Category | null>(null)
   const { busy, error, setError, run } = useAction()
 
   const create = (e: FormEvent) => {
@@ -270,6 +293,19 @@ export default function Categories() {
                 </td>
                 <td className="px-2 py-2">{c.attributes.length}</td>
                 <td className="px-2 py-2 text-right">
+                  {mayEdit && c.kind === 'filter' && (
+                    <Button
+                      variant="secondary"
+                      className="mr-2 px-2 py-1 text-xs"
+                      aria-label={`Подобрать кросс-номера в категории ${c.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setCrossIn(c)
+                      }}
+                    >
+                      Кросс-номера
+                    </Button>
+                  )}
                   {mayEdit && (
                     <Button
                       variant="secondary"
@@ -329,6 +365,8 @@ export default function Categories() {
           }}
         />
       )}
+
+      {crossIn && <CrossPickCategory category={crossIn} onClose={() => setCrossIn(null)} />}
 
       {editing && (
         <EditModal

@@ -19,7 +19,7 @@
 - PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0075). Применённые не правятся; номер — следующий за последним в main.
 - Деньги — `*_tyiyn BIGINT`; объёмы — мл; пробег — `mileage_km` + как вписан (`mileage_value`, `mileage_unit`).
 - Долги — `party_ledger` (append-only, сторно — `reversal_of`); касса/счета — движения; склад — движения.
-- Книжка ТО: `oil_changes` + `oil_change_items` (строка = `slot`, `next_km`/`next_date`); фильтры масляный/воздушный/салонный идут на срок масла (ADR-117); итог чека — только строки этого чека (ADR-111).
+- Книжка ТО: `oil_changes` + `oil_change_items` (строка = `slot`, `next_km`/`next_date`); фильтры масляный/воздушный/салонный идут на срок масла (ADR-117); итог чека — только строки этого чека (ADR-111); цель, которую кассир не прислал, ставит сервер — пробег + интервал, `target_auto` (ADR-{B3.1}).
 - SQL в Rust — макросы `sqlx::query!`; после правки SQL — `cargo sqlx prepare -- --all-targets` на базе `avtodom_e2e*`, коммит `server/.sqlx`.
 
 ## Уведомления владельцу

@@ -191,7 +191,9 @@ for (const mode of [
       expect(plain((await prints(page)).find((h) => h.includes('Товарный чек')) ?? '')).not.toContain('Фильтр воздушный')
       if (mode.touch) await hit(page.getByRole('button', { name: 'Выйти из режима кассы' }))
       await page.goto(`/clients/${s.party.id}`)
-      await expect(page.getByTestId('book-slots').getByRole('row', { name: /Фильтр воздушный/ })).toContainText(/на 231\s000 км/)
+      // Прошлая замена (216 000) пришла без цели кассира: сервер поставил маслу 224 000, фильтр с ним — на
+      // тот же пробег (ADR-117, ADR-{B3.1}).
+      await expect(page.getByTestId('book-slots').getByRole('row', { name: /Фильтр воздушный/ })).toContainText(/на 224\s000 км/)
     })
 
     test('чек книжки: только жидкости с товаром; фильтр — на пробег масла; доливка — не замена; без сети — то же', async ({ page }) => {

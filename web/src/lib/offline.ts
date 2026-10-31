@@ -7,6 +7,7 @@ import { ApiError, api, deviceId, noServerAnswer, randomId, serverReachable, set
 import { branchHeaders, selectedBranch } from './branch'
 import { cartIsEmpty } from './cartDraft'
 import { searchRank } from './pickerResults'
+import type { OilBookSettings } from './oilBookSettings'
 import type { CategoryKind, Party, PartyContact, PartyVehicle, Product, Sale, Service, Shift } from './types'
 import { sameCode } from './umagLink'
 
@@ -30,12 +31,14 @@ export interface Snapshot {
   services?: Service[]
   /** У категории — строка книжки и интервал: «+ ещё строку» по товарам чека (SPEC-34); у снимка до
    *  26.10.2026 их нет. */
-  categories?: { id: string; name: string; kind: CategoryKind; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null }[]
+  categories?: { id: string; name: string; kind: CategoryKind; book_slot?: string; book_interval_km?: number | null; book_interval_days?: number | null; by_type?: boolean }[]
   clients?: SnapshotClient[]
   /** Безналичные счета для карты, перевода и «По счёту» без сети (ADR-076, ADR-095); у старого
    *  снимка — нет. */
   bank_accounts?: { id: string; name: string; default_card?: boolean; default_transfer?: boolean; default_invoice?: boolean; fee_rate_bp?: number }[]
   oil_change_master_fee_tyiyn: number
+  /** «Масляная книжка и печать» (задача 003 Н5): что касса печатает без сети; у старого снимка — нет. */
+  oil_book?: Partial<OilBookSettings>
   saved_at: string
 }
 

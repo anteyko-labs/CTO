@@ -69,6 +69,8 @@ export interface AttributeDef {
   type: 'text' | 'number' | 'select'
   options?: string[]
   filterable: boolean
+  /** Выключатель у категории (задача 002 П10): выключенная не видна в карточке и фильтрах; нет поля — включена. */
+  enabled?: boolean
 }
 
 /** Строка масляной книжки (SPEC-27): масло, фильтры по видам, прочие работы; `none` — не в книжку. */
@@ -104,6 +106,8 @@ export interface Category {
   book_slot: BookSlot | 'none'
   book_interval_km: number | null
   book_interval_days: number | null
+  /** Строка книжки фильтра — по «Типу» товара; «Тип» выключен у категории — от неё (задача 002 П10). */
+  by_type?: boolean
 }
 
 export interface Product {
@@ -440,6 +444,8 @@ export interface Sale {
   party_name: string | null
   contact_name: string | null
   vehicle_plate: string | null
+  /** Машина чека «В сервис»: по ней экран чека печатает её книжку (задача 003 Н5). */
+  vehicle_id?: string | null
   /** Баланс клиента после чека: сколько он теперь должен. */
   party_balance_tyiyn: number | null
   /** Адрес доставки; пусто — забрали сами. */

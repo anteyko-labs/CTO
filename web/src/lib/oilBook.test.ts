@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { categorySlotText, fluidText, lineNextText, overdueSlots, recordLines, recordText, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
-import { oilBookHtml, saleCheckOf } from './oilBookPrint'
+import { oilBookHtml, saleCheckOf, saleRecordOf } from './oilBookPrint'
 
 const rec = (over: Partial<OilRecord>): OilRecord => ({
   id: '1',
@@ -156,6 +156,26 @@ describe('чек книжки после чека — только этот че
     for (const no of ['Фильтр', 'Бакыт', 'Мастер', 'Рекомендовано', 'салонный', 'По прошлым заменам', 'Прошлые замены', 'наступит раньше', 'или до', '17.10.2026']) {
       expect(text).not.toContain(no)
     }
+  })
+
+  it('настройка «Масляная книжка и печать»: фильтры в чеке книжки, запись только с фильтрами (задача 003 Н5)', async () => {
+    const withFilters = plain(await oilBookHtml(book, { link: null, saleId: 's8', print: { with_filters: true } }))
+    expect(withFilters).toContain('Фильтр масляный Фильтр W712 · 1 шт')
+    expect(withFilters).toContain('Фильтр масляный на 258 000 км')
+    const onlyFilter: VehicleBook = {
+      ...book,
+      records: [rec({ id: 'r10', change_date: '2026-10-29', mileage_km: 252_000, sale_id: 's10', sale_number: 10, lines: [{ slot: 'air_filter', text: 'Фильтр A1 · 1 шт' }] }), ...book.records],
+    }
+    // По умолчанию запись только с фильтрами не печатается; с настройкой — печатается с фильтром.
+    expect(saleCheckOf(onlyFilter, 's10')).toBeNull()
+    expect(saleCheckOf(onlyFilter, 's10', { print_filters_only: true })?.id).toBe('r10')
+    expect(plain(await oilBookHtml(onlyFilter, { link: null, saleId: 's10', print: { print_filters_only: true } }))).toContain('Фильтр воздушный Фильтр A1 · 1 шт')
+    expect(saleRecordOf(onlyFilter, 's10')?.id).toBe('r10')
+  })
+
+  it('«Тип» выключен у категории фильтров — строка книжки категории (задача 002 П10)', () => {
+    expect(categorySlotText({ book_slot: 'oil_filter', attributes: [{ key: 'filter_type' }] }).main).toBe('По типу фильтра')
+    expect(categorySlotText({ book_slot: 'oil_filter', attributes: [{ key: 'filter_type', enabled: false }] }).main).toBe('Фильтр масляный')
   })
 
   it('печать из карточки клиента — прежняя выписка с историей, только пробег', async () => {

@@ -6,6 +6,8 @@ import { printInFrame } from './printFrame'
 import QRCode from 'qrcode'
 import { get } from './api'
 import { formatDate } from './format'
+import type { OilBookSettings } from './oilBookSettings'
+import type { BookSlot } from './types'
 import { fluidText, isFluid, recordLines, recordMileage, recordText, slotLabel, slotNextText, slotsOfSale, slotsWithNext, type OilRecord, type SlotNext, type VehicleBook } from './oilBook'
 
 const esc = (s: string) =>
@@ -58,15 +60,29 @@ async function qrHtml(link: string | null): Promise<string> {
 const plateHtml = (b: VehicleBook) =>
   `<div class="plate">${esc(b.plate)}${b.brand || b.model ? ` · ${esc([b.brand, b.model].filter(Boolean).join(' '))}` : ''}</div>`
 
+/** Что печатает чек книжки (задача 003 Н5): `with_filters` — жидкости и фильтры; `print_filters_only` —
+ *  запись только с фильтрами тоже печатается. По умолчанию — только жидкости (ADR-116). */
+export type BookPrint = Partial<Pick<OilBookSettings, 'with_filters' | 'print_filters_only'>>
+
+const isFilter = (slot: string) => slot.endsWith('_filter')
+
+/** Строки, которые идут в чек книжки этой записи: жидкости, а фильтры — по настройке. */
+function printedSlot(r: OilRecord, s: BookPrint): (slot: BookSlot) => boolean {
+  const fluids = recordLines(r).some((l) => isFluid(l.slot))
+  const filters = Boolean(s.with_filters) || (!fluids && Boolean(s.print_filters_only))
+  return (slot) => isFluid(slot) || (filters && isFilter(slot))
+}
+
 /** Чек книжки после чека (ADR-116): машина, дата, пробег, «Залито» и «Следующая замена» по
- *  жидкостям этого чека — только пробег. */
-async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link: string | null): Promise<string> {
+ *  жидкостям этого чека — только пробег; фильтры — по настройке. */
+async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link: string | null, s: BookPrint): Promise<string> {
+  const printed = printedSlot(r, s)
   const filled = recordLines(r)
-    .filter((l) => isFluid(l.slot))
-    .map((l) => row(slotLabel(l.slot), fluidText(l)))
+    .filter((l) => printed(l.slot))
+    .map((l) => row(slotLabel(l.slot), isFluid(l.slot) ? fluidText(l) : l.text))
     .join('')
   const next = slotsOfSale(b, saleId)
-    .filter((n) => isFluid(n.slot))
+    .filter((n) => printed(n.slot))
     .map((n) => row(n.label, slotNextText(n)))
     .join('')
   return `<!doctype html><html><head><meta charset="utf-8"><title>Масляная книжка ${esc(b.plate)}</title>${STYLE}</head><body>
@@ -81,23 +97,32 @@ async function saleCheckHtml(b: VehicleBook, r: OilRecord, saleId: string, link:
   </body></html>`
 }
 
-/** Запись этого чека, если в ней есть масла или жидкости, — её печатает «чек книжки» (ADR-116).
- *  Записи нет (ADR-130) или в ней только «прочее» (ADR-131) — null: на ленте остались бы госномер,
- *  дата и QR. */
-export function saleCheckOf(b: VehicleBook, saleId: string): OilRecord | null {
-  const own = b.records.find((r) => r.sale_id === saleId)
-  return own && recordLines(own).some((l) => isFluid(l.slot)) ? own : null
+/** Запись этого чека в книжке — её панель «Записано в масляную книжку» на кассе видна всегда
+ *  (задача 003 Н5), даже если печатать нечего. */
+export function saleRecordOf(b: VehicleBook | null | undefined, saleId: string): OilRecord | null {
+  return b?.records.find((r) => r.sale_id === saleId) ?? null
+}
+
+/** Запись этого чека, если в ней есть масла или жидкости, — её печатает «чек книжки» (ADR-116); с
+ *  настройкой «печатать запись только с фильтрами» — и такую. Записи нет (ADR-130) или в ней только
+ *  «прочее» (ADR-131) — null: на ленте остались бы госномер, дата и QR. */
+export function saleCheckOf(b: VehicleBook, saleId: string, s: BookPrint = {}): OilRecord | null {
+  const own = saleRecordOf(b, saleId)
+  if (!own) return null
+  const lines = recordLines(own)
+  if (lines.some((l) => isFluid(l.slot))) return own
+  return s.print_filters_only && lines.some((l) => isFilter(l.slot)) ? own : null
 }
 
 /** `saleId` — книжка печатается после этого чека: «чек книжки» (ADR-116); печатать нечего
  *  (`saleCheckOf`) — null, после чека прошлые замены не печатаются (ADR-130). Без `saleId` — выписка. */
 export async function oilBookHtml(
   b: VehicleBook,
-  opts: { client?: string | null; master?: string | null; link: string | null; saleId?: string | null },
+  opts: { client?: string | null; master?: string | null; link: string | null; saleId?: string | null; print?: BookPrint },
 ): Promise<string | null> {
   if (opts.saleId) {
-    const own = saleCheckOf(b, opts.saleId)
-    return own ? saleCheckHtml(b, own, opts.saleId, opts.link) : null
+    const own = saleCheckOf(b, opts.saleId, opts.print)
+    return own ? saleCheckHtml(b, own, opts.saleId, opts.link, opts.print ?? {}) : null
   }
   const last = b.records[0]
   // Следующая замена по каждой строке книжки (SPEC-27), масло первым; только пробег (ADR-115).
@@ -134,7 +159,10 @@ export async function oilBookHtml(
 }
 
 /** Печать на чековом принтере через диалог браузера; `saleId` — после этого чека (ADR-116). */
-export async function printOilBook(b: VehicleBook, opts: { client?: string | null; master?: string | null; saleId?: string | null } = {}): Promise<void> {
+export async function printOilBook(
+  b: VehicleBook,
+  opts: { client?: string | null; master?: string | null; saleId?: string | null; print?: BookPrint } = {},
+): Promise<void> {
   const html = await oilBookHtml(b, { ...opts, link: await botLink() })
   if (html) printInFrame(html)
 }
