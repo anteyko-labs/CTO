@@ -87,6 +87,7 @@ export function RevisionNewProduct({
   revisionId,
   categoryId,
   presetBarcode,
+  presetHit,
   onClose,
   onDone,
   onExisting,
@@ -95,6 +96,9 @@ export function RevisionNewProduct({
   /** Ревизия по категории — новая карточка в ней же. */
   categoryId: string | null
   presetBarcode?: string
+  /** Строка Умага, выбранная в поиске ревизии по названию или артикулу: карточка сразу заполнена
+   *  из неё, курсор — в «На полке» (задача 005, Н7). */
+  presetHit?: OldCatalogHit
   onClose: () => void
   onDone: () => void
   /** Товар уже есть в программе — его считают в строке ревизии. */
@@ -124,6 +128,11 @@ export function RevisionNewProduct({
   // Скан незнакомого кода — сразу ищем его в старой базе Умаг: связанная строка — её товар
   // считают в строке ревизии, несвязанная — заполняет карточку (SPEC-35 §2).
   const ready = cats.length > 0
+  // Строку Умага выбрали в поиске ревизии — как выбор в списке этого окна.
+  useEffect(() => {
+    if (presetHit && ready) fromOld(presetHit, '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetHit, ready])
   useEffect(() => {
     if (!presetBarcode || !ready) return
     let alive = true
@@ -254,7 +263,7 @@ export function RevisionNewProduct({
   return (
     <Modal title="Товар, которого нет в программе" wide onClose={onClose}>
       <div className="flex flex-col gap-3">
-        {!form && (
+        {!form && !presetHit && (
           <>
             <p className="text-sm text-slate-600">
               Напишите название или отсканируйте код. Если товар уже есть — посчитайте его в строке; из старой программы — карточка

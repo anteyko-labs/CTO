@@ -7,31 +7,58 @@ export type CountMode = 'add' | 'set'
 /** Запись журнала строки с сервера: прибавил, записал итог, убрал строку. */
 export interface CountEntry {
   by: string
+  /** Вход, который записал (у сотрудников свои входы — задача 005, Н7): одинаковые имена не сливаются. */
+  user_id?: string | null
   mode: 'add' | 'set' | 'clear'
   qty: number
 }
 
-interface CountLine {
-  unit: string
-  container_ml: number | null
-  counted_qty: number | null
-}
-
 /**
- * Режим поля, пока человек его не выбрал сам. Строку уже кто-то считал — «+ добавить»: человек
- * вводит то, что нашёл в своём месте; не считали — «= итог». Масло в таре — всегда прибавка:
- * канистры считают сканом, вскрытую канистру вписывают литрами.
+ * Режим поля, пока человек его не выбрал сам, — всегда «+ добавить»: ревизию ведут несколько
+ * человек со своими входами, каждый вписывает найденное в своём месте, и итог складывается на
+ * сервере («я занёс 6, Алексей 4 — в итоге 10», задача 005, Н7). «= итог» (в том числе 0 — «не
+ * нашли») — только явным выбором; выбранный режим строки сам не сбрасывается.
  */
-export function defaultCountMode(l: CountLine): CountMode {
-  if (l.unit === 'ml' && l.container_ml) return 'add'
-  return (l.counted_qty ?? 0) > 0 ? 'add' : 'set'
+export function defaultCountMode(): CountMode {
+  return 'add'
 }
 
 /** Своя запись — сразу в журнал на экране: прибавки одного человека подряд — одной записью. */
 export function appendCount(log: CountEntry[], e: CountEntry): CountEntry[] {
   const last = log[log.length - 1]
-  if (last && e.mode === 'add' && last.mode === 'add' && last.by === e.by) return [...log.slice(0, -1), { ...last, qty: last.qty + e.qty }]
+  if (last && e.mode === 'add' && last.mode === 'add' && sameWriter(last, e)) return [...log.slice(0, -1), { ...last, qty: last.qty + e.qty }]
   return [...log, e]
+}
+
+/** Одна и та же запись одного входа: по входу, а у прежних ответов без входа — по имени. */
+const sameWriter = (a: CountEntry, b: CountEntry): boolean => (a.user_id && b.user_id ? a.user_id === b.user_id : a.by === b.by)
+
+/**
+ * Кто сколько добавил к итогу строки: «Азиз +6, Алексей +4 = 10» (задача 005, Н7). Считается с
+ * последнего «= итог» или «убрал» — записи до него итог уже не составляют; прибавки одного входа
+ * складываются, в порядке первой прибавки. Последний «= итог» — первым: «Азиз = 5, Алексей +4 = 9».
+ * Один «= итог» без прибавок — без повтора «= 5». `total` — итог строки с сервера.
+ */
+export function countSummary(log: CountEntry[], total: number | null, fmt: (qty: number) => string): string {
+  let from = 0
+  for (let i = log.length - 1; i >= 0; i--)
+    if (log[i].mode !== 'add') {
+      from = i
+      break
+    }
+  const head = log[from]
+  const parts: string[] = []
+  if (head && head.mode === 'set') parts.push(`${head.by} = ${fmt(head.qty)}`)
+  const adds: CountEntry[] = []
+  for (const e of log.slice(head && head.mode !== 'add' ? from + 1 : 0)) {
+    const same = adds.find((a) => sameWriter(a, e))
+    if (same) same.qty += e.qty
+    else adds.push({ ...e })
+  }
+  for (const a of adds) parts.push(`${a.by} +${fmt(a.qty)}`)
+  if (parts.length === 0) return ''
+  if (total === null || (adds.length === 0 && parts.length === 1)) return parts.join(', ')
+  return `${parts.join(', ')} = ${fmt(total)}`
 }
 
 /** «Айбек +2 шт, Нурлан +1 шт, Азиз = 5 шт»; `fmt` — количество в единицах товара. */

@@ -8,6 +8,7 @@ import { ExportButton } from '../components/ExportButton'
 import { colsIf, listSheet, totalBy, unitName, xl, type ExportCol } from '../lib/exportTable'
 import { ProductFormModal } from '../components/ProductFormModal'
 import { RevisionNewProduct } from '../components/RevisionNewProduct'
+import { RevisionSearchHits } from '../components/RevisionSearchHits'
 import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Modal, Notice, PageHeader, Table, toast } from '../components/ui'
 import { ApiError, del, get, newOpId, post, put, watchServerReachable } from '../lib/api'
 import { useUser } from '../lib/auth'
@@ -16,12 +17,13 @@ import { formatDateTime, formatSom, litersInput, parseLiters, plural } from '../
 import { countText, kgInput, oilFields, parseKg, parseOil, viscosityFromName, viscosityKey } from '../lib/units'
 import { errorText, useAction, useLoad } from '../lib/hooks'
 import { useCan } from '../lib/permissions'
-import type { Category, Product } from '../lib/types'
+import type { Category, OldCatalogHit, Product } from '../lib/types'
 import { sameCode } from '../lib/umagCodes'
 import { retrySame } from '../lib/retrySame'
 import {
   appendCount,
   countLogText,
+  countSummary,
   defaultCountMode,
   expectedBody,
   expectedQuery,
@@ -183,8 +185,11 @@ function Draft({
   const [visc, setVisc] = useState('')
   /** Окно проведения; `warn` — «Ещё считают: …» с сервера, проведение — после подтверждения. */
   const [posting, setPosting] = useState<{ comment: string; opId: string; warn?: string } | null>(null)
-  /** «Товар не из программы»: окно новой карточки, с кодом, если его отсканировали. */
-  const [adding, setAdding] = useState<{ barcode?: string } | null>(null)
+  /** «Товар не из программы»: окно новой карточки, с кодом, если его отсканировали, или из строки
+   *  Умага, выбранной в поиске по названию (задача 005, Н7). */
+  const [adding, setAdding] = useState<{ barcode?: string; hit?: OldCatalogHit } | null>(null)
+  /** Заводить из строки Умага в поиске — право «Товары и штрихкоды» (SPEC-35 §4). */
+  const mayUmag = useCan()('products')
   /** Карточка товара из строки (задача 002, П5): с правом «Товары и штрихкоды» — правка, иначе просмотр. */
   const [card, setCard] = useState<Product | null>(null)
   const act = useAction()
@@ -246,7 +251,7 @@ function Draft({
   const [ops] = useState(() => new InputOps(newOpId))
   /** op_id записей, которые ещё идут: тот же ввод второй раз не отправляется. */
   const inflight = useRef(new Set<string>())
-  const modeOf = (l: Line): CountMode => modesNow.current[l.product_id] ?? defaultCountMode(l)
+  const modeOf = (l: Line): CountMode => modesNow.current[l.product_id] ?? defaultCountMode()
   const putMode = (id: string, m: CountMode) => {
     modesNow.current = { ...modesNow.current, [id]: m }
     setModes(modesNow.current)
@@ -390,7 +395,7 @@ function Draft({
   /** Своя запись записана: итог строки — из ответа, в журнале строки — своя запись. */
   const applySaved = (id: string, qty: number | null, mode: CountMode, res: Saved) => {
     const total = res.counted_qty
-    const entry: CountEntry = qty === null ? { by: me.full_name, mode: 'clear', qty: 0 } : { by: me.full_name, mode, qty }
+    const entry: CountEntry = qty === null ? { by: me.full_name, user_id: me.id, mode: 'clear', qty: 0 } : { by: me.full_name, user_id: me.id, mode, qty }
     setLine(id, res.version, (x) => ({
       ...x,
       counted_qty: total,
@@ -828,10 +833,21 @@ function Draft({
           <div className="text-sm text-slate-600">
             Пересчитано {counted.length} из {allLines.length}, расхождений {diffs.length}
             {overs.length > 0 && <span className="font-medium text-rose-700">, масло сверх нормы {percentText(rev.oil_norm_bp)}: {overs.length}</span>}.
-            Непересчитанные товары не меняются; не нашли товар — впишите 0 в «= итог». «+ добавить» — то, что нашли в своём месте:
-            товар в нескольких местах считают разные люди, итог складывается.
+            Непересчитанные товары не меняются. Число в строке — «+ добавить»: то, что вы нашли в своём месте, прибавится к общему
+            итогу (считают несколько человек со своих входов — итог складывается). Записать итог строки целиком или 0 «не нашли» —
+            выберите «= итог».
           </div>
         </Card>
+      )}
+      {draft && (
+        <RevisionSearchHits
+          text={filter}
+          shown={new Set(allLines.map((l) => l.product_id))}
+          fits={fitsRevision}
+          mayUmag={mayUmag}
+          onCount={goTo}
+          onUmag={(hit) => setAdding({ hit })}
+        />
       )}
       {viscOptions.length > 0 && (
         <label className="flex items-center gap-2 self-start text-sm text-slate-600">
@@ -873,7 +889,7 @@ function Draft({
               const diff = l.counted_qty === null ? null : l.counted_qty - l.expected_qty
               const edit = edits[l.product_id]
               const tare = oilTare(l)
-              const mode = modes[l.product_id] ?? defaultCountMode(l)
+              const mode = modes[l.product_id] ?? defaultCountMode()
               const v = viscosityOf(l)
               return (
                 <tr key={l.product_id}>
@@ -988,9 +1004,14 @@ function Draft({
                     )}
                     {l.counted_qty !== null && (l.counted_log?.length || l.counted_by) && (
                       <div className="mt-0.5 whitespace-normal text-xs text-slate-400" data-testid="counted-by">
-                        {l.counted_log?.length
-                          ? `считали: ${countLogText(l.counted_log, (n) => countText(l, n))}`
-                          : `последним считал: ${l.counted_by}`}
+                        {l.counted_log?.length ? (
+                          // Кто сколько добавил к итогу; весь журнал — подсказкой.
+                          <span title={`Весь журнал: ${countLogText(l.counted_log, (n) => countText(l, n))}`}>
+                            {countSummary(l.counted_log, l.counted_qty, (n) => countText(l, n))}
+                          </span>
+                        ) : (
+                          `последним считал: ${l.counted_by}`
+                        )}
                       </div>
                     )}
                   </td>
@@ -1045,6 +1066,7 @@ function Draft({
           revisionId={rev.head.id}
           categoryId={rev.head.category_id}
           presetBarcode={adding.barcode}
+          presetHit={adding.hit}
           onClose={() => setAdding(null)}
           onExisting={goTo}
           onDone={() => {

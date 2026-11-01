@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from revision_line_adds\n                         where revision_id = $1 and product_id = $2 and mode = 'add'\n                           and (device_id <> $3 or user_id <> $4)\n                           and created_at > clock_timestamp() - interval '10 minutes') as \"fresh!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fresh!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f9fd42ef254027e30a3b2385b9e555b8a6aa3717760db9168a51be3cd2d07962"
+}
