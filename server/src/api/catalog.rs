@@ -959,7 +959,9 @@ pub struct ProductListTotals {
     /// По закупке — только владельцу.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchase_tyiyn: Option<i64>,
-    pub sale_tyiyn: i64,
+    /// По продаже — тоже только владельцу: общая стоимость склада (ADR-{n2}, I13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale_tyiyn: Option<i64>,
     /// Числа отборов по складу — при тех же поиске и категории (SPEC-30 §11).
     #[serde(default)]
     pub counts: StockCounts,
@@ -990,13 +992,16 @@ pub struct CategoryTotal {
     /// По закупке — только владельцу (ADR-008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purchase_tyiyn: Option<i64>,
-    pub sale_tyiyn: i64,
+    /// По продаже — только владельцу (ADR-{n2}).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale_tyiyn: Option<i64>,
 }
 
 /// Подытог категории, пока складываются строки: тара — одна на всё масло или разная.
 struct GroupAcc {
     total: CategoryTotal,
     purchase: i64,
+    sale: i64,
     tare: Option<Option<i64>>,
 }
 
@@ -1017,7 +1022,7 @@ impl GroupAcc {
                 Some(_) => Some(None),
             };
         }
-        t.sale_tyiyn = t.sale_tyiyn.checked_add(v.stock_sale)?;
+        self.sale = self.sale.checked_add(v.stock_sale)?;
         self.purchase = self.purchase.checked_add(v.stock_purchase)?;
         Some(())
     }
@@ -1031,7 +1036,8 @@ pub struct ProductList {
 
 /// Список товаров с суммами остатка и итогами по всему отбору. Итоги считает сервер: клиент
 /// дробей не складывает. Администратору закупка и стоимость остатка не отдаются, и сортировать
-/// по ним он не может (ADR-008).
+/// по ним он не может (ADR-008); итог по продаже за отбор и в подытогах — тоже только владельцу
+/// (ADR-{n2}): цена и сумма строки товара видны всем.
 pub async fn product_list(
     conn: &mut PgConnection,
     user: &CurrentUser,
@@ -1101,9 +1107,10 @@ pub async fn product_list(
                         grams: 0,
                         container_ml: None,
                         purchase_tyiyn: None,
-                        sale_tyiyn: 0,
+                        sale_tyiyn: None,
                     },
                     purchase: 0,
+                    sale: 0,
                     tare: None,
                 })
                 .add(&p, &v)
@@ -1178,6 +1185,7 @@ pub async fn product_list(
                 t.name = names.get(&t.category_id).cloned().unwrap_or_default();
                 t.container_ml = g.tare.flatten();
                 t.purchase_tyiyn = owner.then_some(g.purchase);
+                t.sale_tyiyn = owner.then_some(g.sale);
                 t
             })
             .collect();
@@ -1199,7 +1207,7 @@ pub async fn product_list(
         totals: ProductListTotals {
             count,
             purchase_tyiyn: owner.then_some(purchase),
-            sale_tyiyn: sale,
+            sale_tyiyn: owner.then_some(sale),
             counts,
             stale_days,
             category_totals,

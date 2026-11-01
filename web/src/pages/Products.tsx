@@ -366,7 +366,7 @@ export default function Products() {
           parts={list.data?.branches}
           columns={[
             ...(owner ? [{ label: 'По закупке', value: (x: ProductList) => x.totals.purchase_tyiyn ?? 0 }] : []),
-            { label: 'По продаже', value: (x: ProductList) => x.totals.sale_tyiyn },
+            { label: 'По продаже', value: (x: ProductList) => x.totals.sale_tyiyn ?? 0 },
           ]}
         />
       )}
@@ -634,9 +634,12 @@ export default function Products() {
                       · по закупке <span className="tabular-nums">{formatSom(totals.purchase_tyiyn)}</span>
                     </span>
                   )}
-                  <span>
-                    · по продаже <span className="tabular-nums">{formatSom(totals.sale_tyiyn)}</span>
-                  </span>
+                  {/* Итог по продаже — только владельцу: сервер его не отдаёт остальным (ADR-{n2}). */}
+                  {totals.sale_tyiyn !== undefined && (
+                    <span>
+                      · по продаже <span className="tabular-nums">{formatSom(totals.sale_tyiyn)}</span>
+                    </span>
+                  )}
                 </div>
               )}
               <Pager page={pager.page} size={pager.size} total={totals?.count ?? items.length} onPage={pager.setPage} onSize={pager.setSize} label="Страницы товаров" />

@@ -68,13 +68,13 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 /**
  * Лист остатков на дату и время (A4): группы с подытогами и итог склада. Закупка — только если её отдал
- * сервер (владельцу, ADR-008).
+ * сервер (владельцу, ADR-008); суммы по продаже в подытогах и итоге — тоже по наличию (ADR-{n2}).
  */
 export function stockSheetHtml(o: {
   /** Время листа (ISO). */
   at: string
   groups: readonly StockGroup[]
-  total: { count: number; sale_tyiyn: number; purchase_tyiyn?: number }
+  total: { count: number; sale_tyiyn?: number; purchase_tyiyn?: number }
   filter?: string
 }): string {
   const owner = o.total.purchase_tyiyn != null

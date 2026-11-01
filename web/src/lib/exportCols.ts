@@ -60,10 +60,13 @@ function groupQtyCell(t: Pick<CategoryTotal, 'pieces' | 'ml' | 'grams' | 'contai
   return xl.int(t.pieces)
 }
 
-/** «Остатки»: категория у каждой строки, подытоги — строками «Итого по категории»; закупка — владельцу. */
+/**
+ * «Остатки»: категория у каждой строки, подытоги — строками «Итого по категории»; закупка — владельцу.
+ * Суммы по продаже в подытогах и итоге — по наличию поля (сервер отдаёт только владельцу, ADR-{n2}).
+ */
 export function stockSheet(o: {
   groups: readonly StockGroup[]
-  total: { count: number; sale_tyiyn: number; purchase_tyiyn?: number }
+  total: { count: number; sale_tyiyn?: number; purchase_tyiyn?: number }
   owner: boolean
   filter?: (string | false | null | undefined)[]
   now?: Date
@@ -107,12 +110,12 @@ export function stockSheet(o: {
     all.ml += t.ml
     all.grams += t.grams
     rows.push({
-      cells: [g.total.name, `Итого по категории: ${t.count} поз.`, null, groupQtyCell(t), null, null, null, null, xl.money(t.sale_tyiyn), ...(owner ? [xl.maybeMoney(t.purchase_tyiyn)] : [])],
+      cells: [g.total.name, `Итого по категории: ${t.count} поз.`, null, groupQtyCell(t), null, null, null, null, xl.maybeMoney(t.sale_tyiyn), ...(owner ? [xl.maybeMoney(t.purchase_tyiyn)] : [])],
       bold: true,
     })
   }
   rows.push({
-    cells: ['', `Итого по складу: ${o.total.count} поз.`, null, groupQtyCell(all), null, null, null, null, xl.money(o.total.sale_tyiyn), ...(owner ? [xl.maybeMoney(o.total.purchase_tyiyn)] : [])],
+    cells: ['', `Итого по складу: ${o.total.count} поз.`, null, groupQtyCell(all), null, null, null, null, xl.maybeMoney(o.total.sale_tyiyn), ...(owner ? [xl.maybeMoney(o.total.purchase_tyiyn)] : [])],
     bold: true,
   })
   return { name: 'Остатки', columns, rows, title: exportTitle('Остатки на складе', o.filter, o.now) }

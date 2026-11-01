@@ -9414,7 +9414,7 @@ mod point_feedback_stock {
             .sum();
         let sale: i64 = list.items.iter().map(|r| r.stock_sale_tyiyn).sum();
         assert_eq!(list.totals.purchase_tyiyn, Some(purchase));
-        assert_eq!(list.totals.sale_tyiyn, sale);
+        assert_eq!(list.totals.sale_tyiyn, Some(sale));
         // По убыванию суммы по продаже: масло (10,5 л × 2000 с / 4 л = 5250 с), потом фильтр в минусе.
         assert_eq!(list.items[0].product.id, w.oil);
         let oil = &list.items[0];
@@ -9432,12 +9432,18 @@ mod point_feedback_stock {
         assert_eq!(filter.purchase_price_tyiyn, Some(10_000));
         assert_eq!(filter.stock_sale_tyiyn, -100_000);
 
-        // Администратор: по продаже — те же суммы, закупки и стоимости остатка нет.
+        // Администратор: суммы строк по продаже те же; итога по продаже, закупки и стоимости
+        // остатка нет (ADR-008, ADR-{n2}).
         let admin = product_list(&mut conn, &w.admin.user, f(), "purchase", false, 0)
             .await
             .unwrap();
         assert_eq!(admin.totals.purchase_tyiyn, None);
-        assert_eq!(admin.totals.sale_tyiyn, sale);
+        assert_eq!(admin.totals.sale_tyiyn, None);
+        assert_eq!(admin.totals.count, 2);
+        assert_eq!(
+            admin.items.iter().map(|r| r.stock_sale_tyiyn).sum::<i64>(),
+            sale
+        );
         for r in &admin.items {
             assert_eq!(r.purchase_price_tyiyn, None);
             assert_eq!(r.stock_purchase_tyiyn, None);
@@ -9451,6 +9457,7 @@ mod point_feedback_stock {
         assert!(first.get("purchase_price_tyiyn").is_none());
         assert!(first.get("stock_purchase_tyiyn").is_none());
         assert!(json["totals"].get("purchase_tyiyn").is_none());
+        assert!(json["totals"].get("sale_tyiyn").is_none());
         assert_eq!(admin.items[0].product.name, "Масло 5W-30 4л");
 
         // Отбор по категории: итоги только по нему.
@@ -9479,7 +9486,7 @@ mod point_feedback_stock {
                 only.totals.purchase_tyiyn,
                 only.totals.sale_tyiyn
             ),
-            (1, Some(-20_000), -100_000)
+            (1, Some(-20_000), Some(-100_000))
         );
     }
 

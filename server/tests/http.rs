@@ -6206,7 +6206,7 @@ async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
     assert_eq!(list["items"][0]["stock_purchase_tyiyn"], 120_000);
     assert_eq!(list["totals"]["purchase_tyiyn"], 120_000);
     assert_eq!(list["totals"]["sale_tyiyn"], 200_000);
-    // Администратору — только по продаже.
+    // Администратору — без закупки и без итога по продаже (ADR-{n2}); цена и сумма строки видны.
     let (status, _, list) = call(&app, "GET", "/api/v1/products/list", Some(&admin), None).await;
     assert_eq!(status, StatusCode::OK);
     let row = &list["items"][0];
@@ -6220,7 +6220,9 @@ async fn product_list_and_invoice_payment_over_http(pool: PgPool) {
     }
     assert!(row["last_purchase_price_tyiyn"].is_null());
     assert!(list["totals"].get("purchase_tyiyn").is_none());
-    assert_eq!(list["totals"]["sale_tyiyn"], 200_000);
+    assert!(list["totals"].get("sale_tyiyn").is_none(), "{list}");
+    assert_eq!(list["totals"]["count"], 1);
+    assert_eq!(row["stock_sale_tyiyn"], 200_000);
 
     // Прошлая закупка видна в приходе и администратору (ADR-008).
     let (status, _, last) = call(

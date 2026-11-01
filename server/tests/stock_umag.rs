@@ -256,8 +256,11 @@ async fn stock_list_keeps_nonzero_and_sums_groups(pool: PgPool) {
     assert!(list["totals"].get("purchase_tyiyn").is_none(), "{list}");
     for g in list["totals"]["category_totals"].as_array().unwrap() {
         assert!(g.get("purchase_tyiyn").is_none(), "{g}");
-        assert!(g["sale_tyiyn"].as_i64().is_some());
+        // Суммы по продаже в подытоге тоже нет (ADR-{n2}); количество и позиции — есть.
+        assert!(g.get("sale_tyiyn").is_none(), "{g}");
+        assert!(g["count"].as_i64().is_some(), "{g}");
     }
+    assert!(list["totals"].get("sale_tyiyn").is_none(), "{list}");
     for r in list["items"].as_array().unwrap() {
         assert!(r.get("stock_purchase_tyiyn").is_none(), "{r}");
         assert!(r.get("purchase_price_tyiyn").is_none(), "{r}");

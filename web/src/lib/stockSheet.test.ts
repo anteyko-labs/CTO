@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { groupQty, groupRows, rowQty, rowViscosity, stockSheetHtml, stockTotal } from './stockSheet'
 import type { CategoryTotal, ProductRow } from './types'
+import { formatSomExact } from './format'
 
 const row = (o: Partial<ProductRow>): ProductRow =>
   ({
@@ -72,12 +73,17 @@ describe('«Склад → Остатки» (SPEC-36 §14)', () => {
   })
 
   it('лист: минус помечен «проверить», закупка — только если её дал сервер', () => {
-    const groups = [{ total: total({ count: 1, pieces: -2, sale_tyiyn: -20_000 }), rows: [row({ name: 'Лампа <H4>', stock_qty: -2, stock_sale_tyiyn: -20_000 })] }]
-    const admin = stockSheetHtml({ at: '2026-10-27T08:00:00Z', groups, total: { count: 1, sale_tyiyn: -20_000 } })
+    const groups = [{ total: total({ count: 1, pieces: -2, sale_tyiyn: -20_000 }), rows: [row({ name: 'Лампа <H4>', stock_qty: -2, stock_sale_tyiyn: -12_345 })] }]
+    const owner = stockSheetHtml({ at: '2026-10-27T08:00:00Z', groups, total: { count: 1, sale_tyiyn: -20_000, purchase_tyiyn: -15_000 } })
+    expect(owner).toContain('Сумма (закупка)')
+    expect(owner).toContain(formatSomExact(-20_000))
+    // Не владельцу сервер сумм по продаже в подытоге и итоге не отдаёт (ADR-{n2}): строка — с суммой.
+    const bare = [{ total: total({ count: 1, pieces: -2, sale_tyiyn: undefined }), rows: groups[0].rows }]
+    const admin = stockSheetHtml({ at: '2026-10-27T08:00:00Z', groups: bare, total: { count: 1 } })
     expect(admin).toContain('Лампа &lt;H4&gt; <b>(проверить)</b>')
     expect(admin).not.toContain('закупка')
     expect(admin).toContain('Итого по складу: 1 поз.')
-    const owner = stockSheetHtml({ at: '2026-10-27T08:00:00Z', groups, total: { count: 1, sale_tyiyn: -20_000, purchase_tyiyn: -15_000 } })
-    expect(owner).toContain('Сумма (закупка)')
+    expect(admin).toContain(formatSomExact(-12_345))
+    expect(admin).not.toContain(formatSomExact(-20_000))
   })
 })

@@ -365,7 +365,9 @@ async fn products_list_takes_over_stock_filters(pool: PgPool) {
     )
     .await;
     assert_eq!(stale["items"][0]["id"], plenty["id"]);
-    assert_eq!(stale["totals"]["sale_tyiyn"], 100_000);
+    // Итог по продаже — тоже только владельцу (ADR-{n2}); сумма строки видна.
+    assert!(stale["totals"].get("sale_tyiyn").is_none(), "{stale}");
+    assert_eq!(stale["items"][0]["stock_sale_tyiyn"], 100_000);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]

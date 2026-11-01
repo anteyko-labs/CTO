@@ -8,6 +8,7 @@ export type Permission =
   | 'sale_debt'
   | 'discount'
   | 'debt_payment'
+  | 'till_barcode'
   | 'cash_moves'
   | 'expenses'
   | 'payroll_pay'
@@ -358,7 +359,8 @@ export interface ProductList {
   totals: {
     count: number
     purchase_tyiyn?: number
-    sale_tyiyn: number
+    /** Итог по продаже — только владельцу (общая стоимость склада, ADR-{n2}). */
+    sale_tyiyn?: number
     /** Сколько товаров в каждом отборе по складу — при тех же поиске и категории. */
     counts?: Record<StockChip, number>
     /** Срок залежалости, дней. */
@@ -382,7 +384,8 @@ export interface CategoryTotal {
   container_ml: number | null
   /** Только владельцу. */
   purchase_tyiyn?: number
-  sale_tyiyn: number
+  /** Только владельцу (ADR-{n2}). */
+  sale_tyiyn?: number
 }
 
 export interface TopProduct {
