@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/icons'
 import { Badge, Button, Card, CardTitle, Empty, ErrorBox, Field, Missing, Money, Notice, PageHeader, toast } from '../components/ui'
 import { ApiError, get, newOpId, post, put, qs } from '../lib/api'
+import { postBarcodeAsking } from '../lib/linkCode'
 import { createOrTaken, TAKEN_ADDED, TAKEN_EXISTS } from '../lib/barcodeTaken'
 import { retrySame } from '../lib/retrySame'
 import { expectedBody, InputOps, qtyInUnits, type Seen, type ShelfInput } from '../lib/revisionCount'
@@ -380,7 +381,7 @@ export default function ProductIntake() {
     void act.run(async () => {
       if (!form) return
       const code = form.barcode.trim()
-      if (code) await post(`/products/${p.id}/barcodes`, { code })
+      if (code && (await postBarcodeAsking(p.id, code)) === false) return
       // Данные из строки Умага — связываем её с этим товаром: остальные её коды тоже станут его (SPEC-35).
       if (form.from && !form.from.product_id) await linkUmag(form.from.id, p.id, newOpId())
       // Карточка уже была — её могли посчитать под другим кодом: прибавляем и показываем итог.

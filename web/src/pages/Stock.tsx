@@ -159,7 +159,7 @@ function StockPage() {
                 <td className="px-2 py-2 text-right tabular-nums">{groupQty(g.total)}</td>
                 <td />
                 <td />
-                <td className="px-2 py-2 text-right tabular-nums">{formatSom(g.total.sale_tyiyn)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{money(g.total.sale_tyiyn)}</td>
                 {owner && <td className="px-2 py-2 text-right tabular-nums">{money(g.total.purchase_tyiyn)}</td>}
               </tr>,
             ])}
@@ -170,7 +170,7 @@ function StockPage() {
                 <td className="px-2 py-2 text-right tabular-nums">{groupQty(stockTotal(totals.category_totals ?? []))}</td>
                 <td />
                 <td />
-                <td className="px-2 py-2 text-right tabular-nums">{formatSom(totals.sale_tyiyn)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{money(totals.sale_tyiyn)}</td>
                 {owner && <td className="px-2 py-2 text-right tabular-nums">{money(totals.purchase_tyiyn)}</td>}
               </tr>
             )}

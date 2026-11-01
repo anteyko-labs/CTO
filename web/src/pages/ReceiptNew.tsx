@@ -1272,6 +1272,7 @@ function ReceiptForm({ fix }: { fix?: ReceiptFix }) {
             setUnknownCode(null)
             addProduct(p)
           }}
+          pickLabel="Добавить в приход"
           onCreateNew={() => {
             setNewProductCode(unknownCode)
             setUnknownCode(null)

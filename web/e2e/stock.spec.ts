@@ -146,8 +146,23 @@ test('«Склад → Остатки»: ненулевые остатки по 
   await expect(t.getByTestId('stock-row')).toHaveCount(3)
   await expect(t).not.toContainText('Сумма (закупка)')
   await expect(t.getByTestId('stock-subtotal').nth(1)).not.toContainText(money('14 737,50 с'))
+  // Общая стоимость склада — только владельцу (ADR-{n2}): в подытогах и итоге — позиции и
+  // количество без денег, сумма строки товара видна.
+  await expect(t.getByTestId('stock-subtotal').nth(1)).toContainText('Итого: 2 поз.')
+  await expect(t.getByTestId('stock-subtotal').nth(1)).toContainText('38,5 л · 9 кан. + 2,5 л')
+  await expect(t.getByTestId('stock-subtotal').nth(1)).not.toContainText(money('19 650 с'))
+  await expect(t.getByTestId('stock-total')).toContainText('Итого по складу: 3 поз.')
+  await expect(t.getByTestId('stock-total')).not.toContainText(money('19 450 с'))
+  await expect(t.getByTestId('stock-row').filter({ hasText: `Масло остатков 5W-30 ${RUN}` })).toContainText(money('17 250 с'))
   await a.getByTestId('stock-print').click()
   await expect.poll(async () => (await prints(a)).length).toBe(1)
-  expect((await prints(a))[0]).not.toContain('закупка')
+  const adminSheet = (await prints(a))[0]
+  expect(adminSheet).not.toContain('закупка')
+  expect(adminSheet).toContain('Итого по складу: 3 поз.')
+  expect(adminSheet).not.toMatch(money('19 450'))
+  // «Товары»: итог по отбору — число товаров, без «по продаже».
+  await a.goto(`/products?q=${encodeURIComponent(RUN)}`)
+  await expect(a.getByTestId('product-totals')).toContainText('Итого по отбору')
+  await expect(a.getByTestId('product-totals')).not.toContainText('по продаже')
   await ctx.close()
 })

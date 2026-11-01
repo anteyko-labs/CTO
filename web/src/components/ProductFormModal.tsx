@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { del, get, newOpId, patch, post, qs, put } from '../lib/api'
+import { postBarcodeAsking } from '../lib/linkCode'
 import { useUser } from '../lib/auth'
 import { createOrTaken, TAKEN_ADDED } from '../lib/barcodeTaken'
 import { can } from '../lib/permissions'
@@ -308,7 +309,9 @@ export function ProductFormModal({
       if (!product) return
       const code = generate ? undefined : form.barcode.trim()
       if (!generate && !code) throw new Error('Введите штрихкод')
-      const res = await post<{ code: string }>(`/products/${product.id}/barcodes`, { code })
+      // `op_id` (I8); код литра из Умага — сначала вопрос (задача 005 Н3).
+      const res = await postBarcodeAsking<{ code: string }>(product.id, code)
+      if (res === false) return
       setCodes((c) => [...c, res.code])
       set('barcode', '')
     })

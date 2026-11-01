@@ -10,13 +10,16 @@ describe('права администратора', () => {
   })
 
   it('по умолчанию — всё, кроме скидки, перелива, аванса, старых долгов, «Наличные ↔ QR», цен, архива и заработка кассиров (SPEC-30 §5, задача 003 Н1 и Н8, ADR-149)', () => {
-    expect(PERMISSIONS).toHaveLength(33)
-    expect(new Set(PERMISSIONS.map((p) => p.key)).size).toBe(33)
-    expect(DEFAULT_PERMISSIONS).toHaveLength(25)
+    expect(PERMISSIONS).toHaveLength(34)
+    expect(new Set(PERMISSIONS.map((p) => p.key)).size).toBe(34)
+    expect(DEFAULT_PERMISSIONS).toHaveLength(26)
     for (const off of ['discount', 'oil_transfer', 'payroll_advance', 'old_debts', 'till_pay_fix', 'prices', 'products_archive', 'payroll_view_all'] as const) {
       expect(DEFAULT_PERMISSIONS).not.toContain(off)
     }
     expect(DEFAULT_PERMISSIONS).toContain('acceptance')
+    // Коды на кассе — любой кассир (задача 005 Н3): группа «Касса», по умолчанию включено.
+    expect(PERMISSIONS.find((p) => p.key === 'till_barcode')).toMatchObject({ group: 'Касса', default: true })
+    expect(DEFAULT_PERMISSIONS).toContain('till_barcode')
     expect(PERMISSIONS.every((p) => PERMISSION_GROUPS.includes(p.group))).toBe(true)
   })
 

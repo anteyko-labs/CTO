@@ -33,6 +33,14 @@ export const PERMISSIONS: readonly PermissionDef[] = [
   { key: 'sale_debt', label: 'Продажа в долг', opens: 'Оплата «В долг» на кассе', group: 'Касса', default: true },
   { key: 'discount', label: 'Скидка в чеке', hint: 'Цена в чеке ниже цены по каталогу', opens: 'Изменение цены строки на кассе', group: 'Касса', default: false },
   { key: 'debt_payment', label: 'Оплата долга клиента', hint: 'Принять от клиента деньги в счёт долга', opens: 'Кнопка «Оплата долга»', group: 'Касса', default: true },
+  {
+    key: 'till_barcode',
+    label: 'Привязывать коды на кассе',
+    hint: 'Незнакомый штрихкод — добавить к уже заведённому товару; карточку товара не правит',
+    opens: 'Окно «Код … не найден» на кассе',
+    group: 'Касса',
+    default: true,
+  },
   { key: 'cash_moves', label: 'Внести, изъять, перевести деньги', hint: 'Только касса смены; сейфы и счета — владелец', opens: 'Кнопки «Внести / Изъять» и «Перевести»', group: 'Деньги', default: true },
   { key: 'expenses', label: 'Расходы', hint: 'Выплаты работникам в списке — с правом «Расчёт сотрудников»', opens: 'Меню «Расходы», расход с кассы', group: 'Деньги', default: true },
   { key: 'payroll_pay', label: 'Выплаты мастерам', hint: 'Кассирам выплачивает владелец', opens: 'Кнопка «Выплатить» в «Расчёте» и при закрытии смены', group: 'Деньги', default: true },
@@ -79,8 +87,8 @@ export const PERMISSION_PRESETS: readonly { key: string; label: string; hint: st
   {
     key: 'till',
     label: 'Только касса',
-    hint: 'Продажа, возврат, долг и оплата долга, клиенты; без денег, склада и разделов',
-    permissions: ['sale_return', 'sale_debt', 'debt_payment', 'clients'],
+    hint: 'Продажа, возврат, долг и оплата долга, коды на кассе, клиенты; без денег, склада и разделов',
+    permissions: ['sale_return', 'sale_debt', 'debt_payment', 'till_barcode', 'clients'],
   },
   { key: 'senior', label: 'Старший администратор', hint: 'Всё, что можно выдать правом', permissions: PERMISSIONS.map((p) => p.key) },
 ]

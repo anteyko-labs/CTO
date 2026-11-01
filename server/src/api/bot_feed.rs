@@ -46,7 +46,7 @@ const GROUPS: [(&str, &str); 7] = [
 
 /// Событие ленты: действие журнала, группа и подпись для владельца. Все события `WATCHED` и
 /// `FEED`, кроме чеков (`SALE_ACTIONS`) — тест сверяет.
-const EVENTS: [(&str, &str, &str); 92] = [
+const EVENTS: [(&str, &str, &str); 93] = [
     // Касса
     ("sale.price_override", "sales", "Цена изменена прямо в чеке"),
     (
@@ -124,6 +124,7 @@ const EVENTS: [(&str, &str, &str); 92] = [
     ("product.prices", "stock", "Изменены цены товара"),
     ("product.create", "stock", "Новый товар"),
     ("product.merge", "stock", "Объединены карточки товара"),
+    ("product.barcode", "stock", "К товару привязан код"),
     ("revision.post", "stock", "Проведена ревизия"),
     ("revision.cancel", "stock", "Ревизия отменена"),
     ("oil.transfer", "stock", "Перелив масла"),
@@ -271,7 +272,7 @@ const EVENTS: [(&str, &str, &str); 92] = [
 /// Настройка ленты владельца: выключенные события, режим чеков и прибыль в сообщениях о чеках.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Feed {
-    #[serde(default)]
+    #[serde(default = "default_off")]
     pub off: Vec<String>,
     #[serde(default = "no_sales")]
     pub sales: String,
@@ -289,10 +290,18 @@ fn yes() -> bool {
     true
 }
 
+/// События, которые по умолчанию в бот не идут — владелец включает сам (I21): привязка кода к
+/// товару (задача 005 Н3) бывает часто. Прежним настройкам их добавила миграция 0982.
+const OFF_BY_DEFAULT: [&str; 1] = ["product.barcode"];
+
+fn default_off() -> Vec<String> {
+    OFF_BY_DEFAULT.iter().map(|a| (*a).to_string()).collect()
+}
+
 impl Default for Feed {
     fn default() -> Self {
         Self {
-            off: Vec::new(),
+            off: default_off(),
             sales: no_sales(),
             profit: true,
         }
@@ -351,7 +360,7 @@ fn out(feed: Feed) -> FeedOut {
     FeedOut { feed, groups }
 }
 
-/// Настройка ленты владельца; нет записи — по умолчанию (всё, кроме чеков).
+/// Настройка ленты владельца; нет записи — по умолчанию (всё, кроме чеков и `OFF_BY_DEFAULT`).
 async fn load(conn: &mut sqlx::PgConnection, user_id: Uuid) -> AppResult<Feed> {
     let v = sqlx::query_scalar!(
         r#"select s.value from settings s join users u on u.id = $1
@@ -524,6 +533,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(Feed::default().sales, "none");
+        assert_eq!(Feed::default().off, vec!["product.barcode"]);
         assert!(Feed::default().profit);
         let parsed: Feed = serde_json::from_value(json!({})).unwrap();
         assert_eq!(parsed, Feed::default());

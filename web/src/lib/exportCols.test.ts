@@ -87,6 +87,17 @@ describe('Остатки', () => {
     expect(labels(owner.columns)).toContain('Сумма (закупка)')
   })
 
+  it('без суммы по продаже от сервера (не владелец) — подытог и итог без денег, строки с суммой', () => {
+    const { sale_tyiyn: _g, ...bare } = group
+    const s = stockSheet({ groups: [{ total: bare, rows: [oil] }], total: { count: 1 }, owner: false })
+    const sale = labels(s.columns).indexOf('Сумма (продажа)')
+    expect(cells(s.rows[0])[sale]).toEqual({ money: 3_018_750 })
+    expect(cells(s.rows[1])[sale]).toBeNull()
+    expect(cells(s.rows[2])[sale]).toBeNull()
+    expect(cells(s.rows[2])[1]).toBe('Итого по складу: 1 поз.')
+    expect(cells(s.rows[2])[3]).toEqual({ qty: 34_500, scale: 3 })
+  })
+
   it('категория у строки, подытог категории и итог склада — жирными строками', () => {
     const s = stockSheet({ ...args, owner: true })
     expect(s.rows.length).toBe(3)

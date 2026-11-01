@@ -905,16 +905,27 @@ pub async fn stock(
                 },
             )
             .await?;
+            // Стоимость остатков — только владельцу, и в строках, и в итоге (I13, ADR-{n2}):
+            // бот сотрудника видит количество и цену продажи.
+            let owner = user.is_owner();
             let value = list.iter().fold(0i64, |acc, p| {
                 acc.saturating_add(p.stock_value_tyiyn.unwrap_or(0))
             });
             let mut have: Vec<_> = list.iter().filter(|p| p.stock_qty != 0).collect();
-            have.sort_by_key(|p| std::cmp::Reverse(p.stock_value_tyiyn.unwrap_or(0)));
+            if owner {
+                have.sort_by_key(|p| std::cmp::Reverse(p.stock_value_tyiyn.unwrap_or(0)));
+            } else {
+                have.sort_by_key(|p| p.name.to_lowercase());
+            }
             let mut lines = vec![format!(
-                "Склад на сейчас{}: товаров с остатком {}, стоимость остатков {}{}",
+                "Склад на сейчас{}: товаров с остатком {}{}{}",
                 query.map(|q| format!(" по «{q}»")).unwrap_or_default(),
                 have.len(),
-                format_som(value),
+                if owner {
+                    format!(", стоимость остатков {}", format_som(value))
+                } else {
+                    String::new()
+                },
                 if list.len() >= 500 {
                     " (первые 500 карточек)"
                 } else {
@@ -925,11 +936,14 @@ pub async fn stock(
                 &mut lines,
                 have.iter()
                     .map(|p| {
+                        let value = match p.stock_value_tyiyn {
+                            Some(v) if owner => format!(", стоимость {}", format_som(v)),
+                            _ => String::new(),
+                        };
                         format!(
-                            "— {}: {}, стоимость {}, цена продажи {}",
+                            "— {}: {}{value}, цена продажи {}",
                             p.name,
                             crate::domain::qty::stock_text(p.stock_qty, &p.unit, p.container_ml),
-                            format_som(p.stock_value_tyiyn.unwrap_or(0)),
                             format_som(p.sale_price_tyiyn)
                         )
                     })

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (select 1 from old_catalog\n                          where branch_id = $1 and keys_bare @> array[umag_bare($2)]\n                            and umag_measure_code($2, unit)) as \"v!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a98a32d00a282a505ac0a5e76ac39c16ef9ce3189ac50b1aa22dcd22824de4bf"
+}
