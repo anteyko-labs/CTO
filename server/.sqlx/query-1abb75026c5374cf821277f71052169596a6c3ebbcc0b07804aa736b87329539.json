@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select e.full_name as \"n?\" from shifts s\n                       left join employees e on e.id = s.cashier_employee_id where s.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1abb75026c5374cf821277f71052169596a6c3ebbcc0b07804aa736b87329539"
+}

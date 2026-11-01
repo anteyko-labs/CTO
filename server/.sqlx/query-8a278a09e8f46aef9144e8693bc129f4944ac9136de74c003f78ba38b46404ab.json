@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.id, v.plate, p.name as party from party_vehicles v\n           join parties p on p.id = v.party_id\n           where v.active and p.active and v.plate_norm like '%' || $1 || '%'\n           order by (v.plate_norm = $2) desc, v.plate\n           limit 6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "plate",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "party",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8a278a09e8f46aef9144e8693bc129f4944ac9136de74c003f78ba38b46404ab"
+}

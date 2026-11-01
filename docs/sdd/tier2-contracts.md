@@ -16,7 +16,7 @@
 - Новый маршрут попадает в обход филиалов `server/tests/branches.rs`. Список «Все филиалы» владельца — `?branch=all` (SPEC-33 §3): строки с `branch_id`/`branch_name`, правка — только у строк своего филиала. Задача 003: `POST /debts/old-supplier` — старый долг поставщику (ADR-163; `POST /debts/old` для поставщика — 422); `GET /expenses/all` и `/expenses/all/summary` с `?branch=all` — владельцу все филиалы, строки с `branch_id`/`branch_name`, администратору 404 (ADR-161, ADR-164).
 
 ## Данные
-- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0090). Применённые не правятся; номер — следующий за последним в main.
+- PostgreSQL 16, миграции `server/migrations/NNNN_*.sql` (последняя — 0091). Применённые не правятся; номер — следующий за последним в main.
 - Деньги — `*_tyiyn BIGINT`; объёмы — мл; пробег — `mileage_km` + как вписан (`mileage_value`, `mileage_unit`).
 - Долги — `party_ledger` (append-only, сторно — `reversal_of`); касса/счета — движения; склад — движения.
 - Книжка ТО: `oil_changes` + `oil_change_items` (строка = `slot`, `next_km`/`next_date`); фильтры масляный/воздушный/салонный идут на срок масла (ADR-117); итог чека — только строки этого чека (ADR-111); цель, которую кассир не прислал, ставит сервер — пробег + интервал, `target_auto` (ADR-144).
@@ -27,6 +27,7 @@
 
 ## Уведомления владельцу
 - `WATCHED` в `server/src/api/notifications.rs` (длина массива = число событий) + текст в `describe`; уходят и в бот владельца. Новое событие — SPEC-13 и выключатель в `server/src/api/bot_feed.rs` (`EVENTS`, тест сверяет); что приходит в бот, каждый владелец выбирает сам, чеки по умолчанию не приходят (ADR-138). Сейчас событий 79; последнее — `debt.old_supplier` «Старый долг поставщику» (ADR-163).
+- Бот администратора (SPEC-40): меню — по его правам (`bot_admin::ITEMS`), лента — только включённое владельцем из `bot_admin::EVENTS` (без денег владельца, свои тексты `bot_admin::event_text`), каждый ответ его чату — через `bot_admin::guard` (I13). Новое событие в ленту администратора — только без прибыли, себестоимости, закупочных сумм и безнала, с текстом в `event_text`.
 
 ## Проверки (команда — `scripts/sdd-review.sh`)
 - Быстрый набор (каждая задача): сервер — `cargo fmt --check`, `clippy --all-targets -D warnings`, `cargo test`; клиент — `tsc -b`, `oxlint src`, `npm test`, `vite build`.

@@ -622,18 +622,23 @@ async fn owner_links_admin_chat_for_invoice_photos_only(pool: PgPool) {
         .find(|u| u["login"] == "admin")
         .unwrap();
     assert!(admin["telegram_linked_at"].is_string(), "{admin}");
-    // Чат администратора — не владельца: на текст только подсказка про фото накладной.
+    // Чат администратора — не владельца: на текст — подсказка по его меню (SPEC-40), отчётов
+    // владельца нет.
     let r =
         avtodom_server::api::telegram::handle_message(&mut conn, 7001, 7001, Some("/day"), None)
             .await
             .unwrap();
-    assert_eq!(r.text, avtodom_server::api::telegram::ADMIN_HELP);
-    // Кнопки внизу — «📷 Накладная» и «📄 Мои накладные» (задача 003, Н6); без права «Старые
-    // долги из тетради» — без кнопок долгов.
+    assert!(r.text.starts_with("Что можно в боте:"), "{}", r.text);
+    // Кнопки внизу — по правам: первым рядом «📷 Накладная» и «📄 Мои накладные» (задача 003,
+    // Н6); без права «Старые долги из тетради» — без «➕ Занести долг».
     use avtodom_server::api::telegram::{BTN_INVOICE, BTN_MY_INVOICES, Keys};
-    assert_eq!(r.keys, Keys::Admin);
+    let Keys::Admin(menu) = r.keys else {
+        panic!("не кнопки администратора: {:?}", r.keys)
+    };
+    assert!(menu.has("invoice") && !menu.has("add_debt"), "{menu:?}");
     let rows = r.keys.markup()["keyboard"].clone();
-    assert_eq!(rows, json!([[BTN_INVOICE, BTN_MY_INVOICES]]));
+    assert_eq!(rows[0], json!([BTN_INVOICE, BTN_MY_INVOICES]));
+    assert!(!rows.to_string().contains("Занести долг"), "{rows}");
     let hint = avtodom_server::api::telegram::handle_message(
         &mut conn,
         7001,

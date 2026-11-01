@@ -355,7 +355,7 @@ const BTN_ADD_DEBT: &str = crate::api::bot_debtors::BTN_ADD_DEBT;
 pub const BTN_INVOICE: &str = "📷 Накладная";
 pub const BTN_MY_INVOICES: &str = "📄 Мои накладные";
 /// Кнопки владельца и администратора, которые не вопрос и отменяют ввод долга.
-const STAFF_BUTTONS: [&str; 7] = [
+const STAFF_BUTTONS: [&str; 11] = [
     BTN_TODAY,
     BTN_SHIFT,
     BTN_DEBTS,
@@ -363,6 +363,11 @@ const STAFF_BUTTONS: [&str; 7] = [
     BTN_ADD_DEBT,
     BTN_INVOICE,
     BTN_MY_INVOICES,
+    // Меню администратора (SPEC-40).
+    crate::api::bot_admin::BUTTONS[0],
+    crate::api::bot_admin::BUTTONS[1],
+    crate::api::bot_admin::BUTTONS[2],
+    crate::api::bot_admin::BUTTONS[3],
 ];
 
 /// Строка подсказки владельцу, когда сервис разбора вопросов задан.
@@ -403,10 +408,8 @@ pub enum Keys {
     /// Номер и у работника, и у клиента: «Мой заработок» и кнопки клиента.
     Both,
     ConfirmLeave,
-    /// Чат администратора (ADR-135, ADR-142): «📷 Накладная» и «📄 Мои накладные».
-    Admin,
-    /// Администратор с правом «Старые долги из тетради»: ещё «📋 Должники» и «➕ Занести долг».
-    AdminDebts,
+    /// Чат администратора (ADR-135, ADR-142, SPEC-40): пункты меню по его правам.
+    Admin(crate::api::bot_admin::Menu),
 }
 
 impl Keys {
@@ -447,8 +450,11 @@ impl Keys {
                 vec![json!(BTN_LEAVE)],
             ],
             Keys::ConfirmLeave => vec![vec![json!(BTN_LEAVE_YES), json!(BTN_BACK)]],
-            Keys::Admin => vec![vec![json!(BTN_INVOICE), json!(BTN_MY_INVOICES)]],
-            Keys::AdminDebts => vec![vec![json!(BTN_INVOICE), json!(BTN_MY_INVOICES)], debts()],
+            Keys::Admin(menu) => menu
+                .rows()
+                .into_iter()
+                .map(|r| r.into_iter().map(|b| json!(b)).collect())
+                .collect(),
         };
         json!({ "keyboard": rows, "resize_keyboard": true, "is_persistent": true })
     }
@@ -857,7 +863,7 @@ fn is_menu(text: &str) -> bool {
 }
 
 /// Код привязки цифрами: ровно шесть цифр.
-fn is_code(text: &str) -> bool {
+pub(crate) fn is_code(text: &str) -> bool {
     text.len() == 6 && text.chars().all(|c| c.is_ascii_digit())
 }
 
@@ -1022,32 +1028,23 @@ pub async fn handle_message(
     handle_message_with(conn, None, chat_id, from_id, text, contact).await
 }
 
-/// Подсказка в чате администратора: бот принимает от него фото накладных (ADR-135, ADR-142).
-pub const ADMIN_HELP: &str = "Пришлите фото накладной — как снять, подскажет кнопка «📷 Накладная». Ваши накладные — «📄 Мои накладные». Остальное — в программе.";
-
 /// Чат привязан к активному администратору (ADR-135).
 async fn chat_admin(conn: &mut PgConnection, chat_id: i64) -> AppResult<bool> {
-    Ok(sqlx::query_scalar!(
-        r#"select exists (select 1 from telegram_links t join users u on u.id = t.user_id
-                          where t.chat_id = $1 and u.active and u.role = 'admin') as "e!""#,
-        chat_id
-    )
-    .fetch_one(&mut *conn)
-    .await?)
+    crate::api::bot_admin::is_admin_chat(conn, chat_id).await
 }
 
-/// Кнопки чата администратора: накладные, а с правом «Старые долги из тетради» — ещё долги.
+/// Кнопки чата администратора — по его правам сейчас (SPEC-40).
 async fn admin_keys(conn: &mut PgConnection, chat_id: i64) -> AppResult<Keys> {
-    Ok(
-        if crate::api::bot_debtors::chat_user(conn, chat_id)
-            .await?
-            .is_some()
-        {
-            Keys::AdminDebts
-        } else {
-            Keys::Admin
-        },
-    )
+    crate::api::bot_admin::keys(conn, chat_id).await
+}
+
+/// Ответ чату администратора — через защиту от денег владельца (I13, SPEC-40 §3).
+async fn guarded(conn: &mut PgConnection, chat_id: i64, r: Reply) -> AppResult<Reply> {
+    Ok(if chat_admin(conn, chat_id).await? {
+        crate::api::bot_admin::guard(r)
+    } else {
+        r
+    })
 }
 
 /// Кнопки не владельцу: разделы клиента и работника, а чату одного администратора — его кнопки.
@@ -1121,7 +1118,8 @@ pub async fn handle_message_with(
     contact: Option<SharedContact>,
 ) -> AppResult<Reply> {
     let r = message(conn, assistant, chat_id, from_id, text, contact).await?;
-    fit_keys(conn, chat_id, r).await
+    let r = fit_keys(conn, chat_id, r).await?;
+    guarded(conn, chat_id, r).await
 }
 
 async fn message(
@@ -1195,8 +1193,16 @@ async fn message(
         let t = text.trim();
         let menu =
             t.starts_with('/') || STAFF_BUTTONS.contains(&t) || [BTN_ASK, BTN_END].contains(&t);
+        if menu {
+            crate::api::bot_admin::clear(conn, chat_id).await?;
+        }
         if let Some(mut r) = crate::api::bot_debtors::on_message(conn, chat_id, raw, menu).await? {
             r.keys = chat_keys(conn, assistant, chat_id).await?;
+            return Ok(r);
+        }
+        // Чат администратора (ADR-135, ADR-142, SPEC-40): меню по его правам, поиск, расход;
+        // код привязки и `/start` решает дальше `handle_text`.
+        if !owner && let Some(r) = crate::api::bot_admin::on_message(conn, chat_id, raw).await? {
             return Ok(r);
         }
     }
@@ -1212,22 +1218,13 @@ async fn message(
         reply.follow = draft.as_ref().map(Follow::draft);
         return Ok(reply);
     }
-    // Чат администратора (ADR-135, ADR-142): фото накладных, «📷 Накладная» — как снять,
-    // «📄 Мои накладные» — его последние накладные без сумм.
-    if !linked
-        && chat_admin(conn, chat_id).await?
-        && let Some((user, _)) = crate::api::receipt_drafts::chat_sender(conn, chat_id).await?
-    {
-        let keys = admin_keys(conn, chat_id).await?;
-        let exact = text.trim();
-        let answer = if exact == BTN_INVOICE || command(text) == "накладная" {
-            crate::api::receipt_drafts::invoice_hint_text(conn, user.branch_id).await?
-        } else if exact == BTN_MY_INVOICES || command(text) == "мои" {
-            crate::api::receipt_drafts::my_drafts(conn, &user).await?
-        } else {
-            ADMIN_HELP.to_string()
-        };
-        return Ok(Reply::new(answer, keys));
+    // Чат администратора, `handle_text` не ответил: подсказка по его меню.
+    if !linked && let Some((user, _)) = crate::api::bot_admin::chat_user(conn, chat_id).await? {
+        let menu = crate::api::bot_admin::menu(conn, &user).await?;
+        return Ok(Reply::new(
+            crate::api::bot_admin::help(menu),
+            Keys::Admin(menu),
+        ));
     }
     // Отключение — только кнопкой подтверждения или ровно «/стоп»: фраза, начатая со «стоп»
     // или «да», — обычный текст (ADR-063). Отключается всё, к чему подключён чат.
@@ -1334,7 +1331,8 @@ pub async fn handle_callback_from(
     data: &str,
 ) -> AppResult<Reply> {
     let r = callback(conn, assistant, chat_id, from_id, data).await?;
-    fit_keys(conn, chat_id, r).await
+    let r = fit_keys(conn, chat_id, r).await?;
+    guarded(conn, chat_id, r).await
 }
 
 async fn callback(
@@ -1362,6 +1360,18 @@ async fn callback(
         let mut r = crate::api::bot_debtors::callback(conn, chat_id, from_id, data).await?;
         r.keys = chat_keys(conn, assistant, chat_id).await?;
         return Ok(r);
+    }
+    // Чат администратора (SPEC-40): шаги «💸 Расход» и «✅ Провести» / «✖ Отмена» под его
+    // черновиком расхода — чат, кто нажал и право сверяют `bot_admin` и `bot_drafts::press`.
+    if chat_admin(conn, chat_id).await? {
+        if data.starts_with("ax:") {
+            return crate::api::bot_admin::callback(conn, chat_id, data).await;
+        }
+        if data.starts_with("d:") {
+            let text = crate::api::bot_drafts::press(conn, chat_id, from_id, data).await?;
+            let keys = admin_keys(conn, chat_id).await?;
+            return Ok(Reply::new(text, keys));
+        }
     }
     if let Some((user_id, branch_id)) = chat_owner(conn, chat_id).await? {
         // Нажатие в открытом режиме вопросов — тоже сообщение владельца: режим продлевается.
@@ -2248,10 +2258,27 @@ async fn link(
     .await?;
     tx.commit().await?;
     if admin {
+        // Меню — по правам администратора (SPEC-40).
+        let user = crate::auth::CurrentUser {
+            id: o.id,
+            branch_id: o.branch_id,
+            login: o.login.clone(),
+            full_name: o.full_name.clone(),
+            role: crate::auth::Role::Admin,
+        };
+        let menu = crate::api::bot_admin::menu(conn, &user).await?;
+        let photo = if menu.has("invoice") {
+            format!(
+                " Фото накладной, распознанное точно, кнопкой «{}» отправите на приёмку — кассир примет товар на планшете.",
+                crate::api::receipt_drafts::BTN_ACCEPTANCE
+            )
+        } else {
+            String::new()
+        };
         return Ok(format!(
-            "Готово, {}: присылайте сюда фото накладных — как снять, подскажет кнопка «{BTN_INVOICE}», ваши накладные — «{BTN_MY_INVOICES}». Распознанную точно — кнопкой «{}» отправите на приёмку, кассир примет товар на планшете. Остальное — в программе.",
+            "Готово, {}: бот подключён.{photo}\n\n{}",
             o.full_name,
-            crate::api::receipt_drafts::BTN_ACCEPTANCE
+            crate::api::bot_admin::help(menu)
         ));
     }
     Ok(format!(
@@ -2631,7 +2658,9 @@ fn watched_actions() -> Vec<String> {
 
 /// Нижняя граница поиска и начало рассылки. Первый запуск начинает с «сейчас»: прошлое не
 /// присылаем пачкой. `None` — это и был первый запуск.
-async fn feed_bounds(conn: &mut PgConnection) -> AppResult<Option<(DateTime<Utc>, DateTime<Utc>)>> {
+pub(crate) async fn feed_bounds(
+    conn: &mut PgConnection,
+) -> AppResult<Option<(DateTime<Utc>, DateTime<Utc>)>> {
     let now = sqlx::query_scalar!(r#"select now() as "n!""#)
         .fetch_one(&mut *conn)
         .await?;
@@ -2885,6 +2914,8 @@ pub async fn advance_cursor(conn: &mut PgConnection) -> AppResult<()> {
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Неотправленное администраторам тоже держит курсор (SPEC-40 §2).
+    let low = low.min(crate::api::bot_admin::feed_low(conn, cursor, since).await?);
     set_state(conn, "cursor", json!(low.to_rfc3339())).await?;
     sqlx::query!("delete from telegram_sent where sent_at < now() - interval '2 days'")
         .execute(&mut *conn)
@@ -4058,7 +4089,19 @@ async fn file_task(
     };
     let rows = photo_buttons(&answer);
     let markup = (!rows.is_empty()).then(|| inline_markup(&rows));
-    api.send_with(chat_id, &answer.text, markup).await;
+    // Ответ администратору — без денег владельца (I13, SPEC-40 §3).
+    let admin = match pool.acquire().await {
+        Ok(mut conn) => crate::api::bot_admin::is_admin_chat(&mut conn, chat_id)
+            .await
+            .unwrap_or(true),
+        Err(_) => true,
+    };
+    let text = if admin {
+        crate::api::bot_admin::scrub(&answer.text)
+    } else {
+        answer.text.clone()
+    };
+    api.send_with(chat_id, &text, markup).await;
 }
 
 /// Кнопки под ответом на фото накладной: «📦 На приёмку» — распознано точно (SPEC-39 §2);
@@ -4806,7 +4849,10 @@ impl PassOutcome {
 pub async fn feed_pass(conn: &mut PgConnection, api: &Api) -> AppResult<PassOutcome> {
     let mut out = PassOutcome::default();
     let mut blocked: HashSet<i64> = HashSet::new();
-    for m in pending(conn).await? {
+    // Владельцам — их лента; администраторам — включённое им владельцем (SPEC-40 §2).
+    let mut all = pending(conn).await?;
+    all.extend(crate::api::bot_admin::pending(conn).await?);
+    for m in all {
         if blocked.contains(&m.chat_id) {
             continue;
         }

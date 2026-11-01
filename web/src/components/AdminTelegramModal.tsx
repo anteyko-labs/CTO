@@ -1,7 +1,8 @@
-// Телеграм администратора (ADR-135, задача 003 Н6): код на 15 минут, ссылка и QR; «Отвязать».
-// Его чат принимает фото накладных; кнопки «📷 Накладная» и «📄 Мои накладные». Открывается из
+// Телеграм администратора (ADR-135, задача 003 Н6, SPEC-40): код на 15 минут, ссылка и QR;
+// «Отвязать»; «Что видит в боте» по его правам и события, которые ему приходят. Открывается из
 // «Пользователей» и из «Телеграм и баллы» → «Накладные в бот присылают». Только владелец.
 import { useState } from 'react'
+import { AdminBotPanel } from './AdminBotPanel'
 import { BotStartLink, startLink } from './BotStartLink'
 import { Button, ErrorBox, Modal, toast } from './ui'
 import { del, get, post } from '../lib/api'
@@ -19,16 +20,18 @@ export function AdminTelegramModal({ user, onClose, onChanged }: { user: UserRow
   const bot = useLoad(() => get<{ username: string | null }>('/telegram/bot'), [])
   const [code, setCode] = useState<{ code: string; expires_at: string } | null>(null)
   return (
-    <Modal title={`Телеграм: ${user.full_name}`} onClose={onClose}>
+    <Modal title={`Телеграм: ${user.full_name}`} onClose={onClose} wide>
       <div className="flex flex-col gap-3 text-sm" data-testid="user-telegram-modal">
         <div className="text-slate-600">
-          Администратор с правом «Приход товара» присылает в бот фото накладных — они становятся черновиками прихода. В его чате кнопки «📷 Накладная» (как
-          снять) и «📄 Мои накладные».
+          В чате администратора — кнопки по его правам: с правом «Приход товара» он присылает фото накладных («📷 Накладная», «📄 Мои накладные»), смотрит
+          смену, остаток, должников, книжку машины, проводит расход из кассы смены. Прибыли и себестоимости бот ему не показывает.
         </div>
         {noReceiptsRight(user) && (
           <div className="rounded bg-amber-50 p-2 text-amber-800">Нет права «Приход товара» — фото не примутся. Выдайте его в «Что можно».</div>
         )}
-        {user.telegram_linked_at && <div>Привязан {formatDateTime(user.telegram_linked_at)}</div>}
+        <div data-testid="user-telegram-state">
+          {user.telegram_linked_at ? `Привязан ${formatDateTime(user.telegram_linked_at)}` : 'Телеграм не привязан — дайте код ниже'}
+        </div>
         {code ? (
           <div className="flex flex-col gap-2">
             <div className="text-3xl font-bold tracking-widest" data-testid="user-telegram-code">
@@ -50,6 +53,7 @@ export function AdminTelegramModal({ user, onClose, onChanged }: { user: UserRow
           </Button>
         )}
         <ErrorBox error={act.error} />
+        <AdminBotPanel userId={user.id} />
         <div className="flex justify-between gap-2">
           {user.telegram_linked_at ? (
             <Button

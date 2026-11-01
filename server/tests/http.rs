@@ -12551,6 +12551,92 @@ async fn bot_feed_settings_are_owner_only(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn admin_bot_screen_and_feed_are_owner_only(pool: PgPool) {
+    // «Пользователи → Телеграм» администратора (SPEC-40): что видит в боте и его лента — только
+    // владелец; владелец — не администратор (422), чужой id — 404; чужое событие — 422; повтор
+    // `op_id` — без второй записи журнала.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let admin_id: Uuid = sqlx::query_scalar("select id from users where login = 'admin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let owner_id: Uuid = sqlx::query_scalar("select id from users where login = 'owner'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let screen = format!("/api/v1/users/{admin_id}/bot");
+    let feed = format!("/api/v1/users/{admin_id}/bot-feed");
+    let body = json!({ "op_id": Uuid::now_v7(), "on": ["shift.open", "receipt.post"] });
+    let (s, _, _) = call(&app, "GET", &screen, Some(&admin), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(&app, "PUT", &feed, Some(&admin), Some(body.clone())).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/users/{owner_id}/bot"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/users/{}/bot", Uuid::now_v7()),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _, v) = call(&app, "GET", &screen, Some(&owner), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["linked"], false);
+    assert_eq!(
+        v["on"],
+        json!([]),
+        "по умолчанию лента администратору не идёт"
+    );
+    // Права по умолчанию: «➕ Занести долг» — без права «Старые долги из тетради».
+    let add = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["key"] == "add_debt")
+        .unwrap();
+    assert_eq!(add["on"], false);
+    assert_eq!(add["need"], "Нет права: Старые долги из тетради");
+    for _ in 0..2 {
+        let (s, _, v) = call(&app, "PUT", &feed, Some(&owner), Some(body.clone())).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["on"], json!(["shift.open", "receipt.post"]));
+    }
+    let logged: i64 =
+        sqlx::query_scalar("select count(*) from audit_log where action = 'user.bot_feed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(logged, 1, "изменение — одна запись журнала");
+    let (_, _, v) = call(&app, "GET", &screen, Some(&owner), None).await;
+    assert_eq!(v["on"], json!(["shift.open", "receipt.post"]));
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        &feed,
+        Some(&owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "on": ["sale.post"] })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "чек с прибылью — не администратору"
+    );
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn cashier_settings_owner_only_checked_and_in_snapshot(pool: PgPool) {
     // «Настройки → Касса» (задача 003 Н2–Н4): читают все вошедшие, меняет только владелец; неизвестная
     // кнопка, недопустимое место и процент больше 100 — 422; повтор `op_id` — тот же ответ без
