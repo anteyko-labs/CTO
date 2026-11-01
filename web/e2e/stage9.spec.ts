@@ -2,6 +2,7 @@
 import { expect, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
 import { test } from '@playwright/test'
+import { ensureShift } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -61,6 +62,8 @@ async function sellNoncash(request: APIRequestContext) {
     lines: [{ product_id: p.id, qty: 4, cost_tyiyn: 80_000 }],
   })
   const cashier = await apiPost<{ id: string }>(request, '/employees', { full_name: `Кассир отчётов ${RUN}`, is_cashier: true, pin: '1234' })
+  // Онлайн-чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(request, cashier.id)
   await apiPost(request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'takeaway',

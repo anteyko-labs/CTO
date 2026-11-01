@@ -166,6 +166,15 @@ async fn world(pool: PgPool) -> W {
         json!({ "full_name": "Кассир Доливки", "is_cashier": true, "pin": "1234" }),
     )
     .await;
+    // Онлайн-чек — только при открытой смене (задача 005 Н4).
+    send(
+        &app,
+        "POST",
+        &owner,
+        "/api/v1/shifts/open",
+        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier["id"], "cashier_pin": "1234" }),
+    )
+    .await;
     let master = send(
         &app,
         "POST",

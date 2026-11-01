@@ -1369,7 +1369,14 @@ pub async fn post_sale_core(
     // Кассир чека — кассир открытой смены (ADR-071): касса при смене кассира не спрашивает,
     // а присланный другой кассир не учитывается. Чек без сети — по смене, открытой в момент
     // чека на устройстве; если смены тогда не было, остаётся кассир, выбранный на устройстве.
-    let register = cash::default_account(conn, branch_id).await?;
+    let register = match cash::find_default_account(conn, branch_id).await? {
+        Some(r) => r,
+        // Онлайн — понятный отказ; чек без сети остаётся в очереди, пока кассу не отметят.
+        None if !offline && req.correction.is_none() => {
+            return Err(AppError::Conflict(cash::NO_DEFAULT_REGISTER.into()));
+        }
+        None => return Err(AppError::Internal("нет кассы по умолчанию".into())),
+    };
     let at_shift = if req.correction.is_some() {
         // Исправление: кассир — тот, кого указал владелец (обычно кассир исходного чека).
         None
@@ -1382,6 +1389,22 @@ pub async fn post_sale_core(
         )
         .await?
     };
+    // Продажа только при открытой смене (задача 005 Н4, ADR-{n4}): онлайн-чек без смены — отказ,
+    // для всех, включая владельца. Чек без сети уже состоялся (I9, I10): проводится, владелец
+    // получает причину. «Исправить» и «Изменить оплату» идут с `correction` — не ограничиваются.
+    // Проверка после `begin_op`: повтор проведённого чека возвращает прежний ответ (I8).
+    if req.correction.is_none()
+        && at_shift.is_none()
+        && crate::api::cashier_settings::load(conn, branch_id)
+            .await?
+            .sale_requires_shift
+    {
+        if offline {
+            bypass.push("чек без открытой смены".into());
+        } else {
+            return Err(cash::no_shift_for_sale(conn, branch_id, register).await?);
+        }
+    }
     let cashier_id = at_shift
         .as_ref()
         .map_or(req.cashier_id, |s| s.cashier_employee_id);

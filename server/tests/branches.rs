@@ -1281,6 +1281,15 @@ async fn new_branch_gets_own_accounts_settings_numbers_and_closed_branch_does_no
             json!({ "full_name": "Кассир В", "is_cashier": true, "pin": "1234" }),
         )
         .await);
+    // Онлайн-чек — только при открытой смене своего филиала (задача 005 Н4).
+    api.ok(
+        "POST",
+        "/api/v1/shifts/open",
+        &w.owner,
+        Some(c),
+        json!({ "op_id": op(), "cashier_employee_id": cashier, "cashier_pin": "1234" }),
+    )
+    .await;
     let sale = |branch: Uuid| {
         json!({ "op_id": op(), "sale_type": "takeaway", "cashier_id": cashier, "branch": branch,
                 "lines": [{ "kind": "piece", "product_id": w.item, "qty": 1, "unit_price_tyiyn": 50_000 }],

@@ -236,6 +236,15 @@ impl Point {
             json!({ "plate": "01KG258ABC", "brand": "Toyota", "model": "Camry" }),
         )
         .await;
+        // Онлайн-чек — только при открытой смене (задача 005 Н4).
+        ok(
+            &app,
+            "POST",
+            "/api/v1/shifts/open",
+            &owner,
+            json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier["id"], "cashier_pin": "1234" }),
+        )
+        .await;
         Point {
             app,
             owner,
@@ -717,15 +726,7 @@ async fn correction_keeps_next_changes(pool: PgPool) {
             ]),
         )
         .await;
-    // Исправление чека за наличные возвращает их в кассу — нужна открытая смена.
-    ok(
-        &p.app,
-        "POST",
-        "/api/v1/shifts/open",
-        &p.owner,
-        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": p.cashier["id"], "cashier_pin": "1234" }),
-    )
-    .await;
+    // Исправление чека за наличные возвращает их в кассу — смена открыта с начала (Point::new).
     let (s, draft) = call(
         &p.app,
         "GET",
@@ -1092,14 +1093,6 @@ async fn receipt_book_next_without_cashier_target(pool: PgPool) {
     // Экран чека открывает книжку машины по `vehicle_id` чека.
     assert_eq!(sale["vehicle_id"], p.vehicle["id"]);
     // «Исправить» серверную цель не переносит: новый чек считает её заново.
-    ok(
-        &p.app,
-        "POST",
-        "/api/v1/shifts/open",
-        &p.owner,
-        json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": p.cashier["id"], "cashier_pin": "1234" }),
-    )
-    .await;
     let (s, draft) = call(
         &p.app,
         "GET",

@@ -171,17 +171,64 @@ pub async fn ensure_accounts(conn: &mut PgConnection, branch_id: Uuid) -> AppRes
 
 /// Касса по умолчанию: в неё идут наличные чека, к ней привязана смена.
 pub async fn default_account(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Uuid> {
+    find_default_account(conn, branch_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("нет кассы по умолчанию".into()))
+}
+
+/// Касса по умолчанию, если она есть (её могли отправить в архив или снять отметку).
+pub async fn find_default_account(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+) -> AppResult<Option<Uuid>> {
     ensure_accounts(conn, branch_id).await?;
-    sqlx::query_scalar!(
+    Ok(sqlx::query_scalar!(
         r#"select id from cash_accounts
            where branch_id = $1 and kind = 'register' and is_default and active
            order by created_at limit 1"#,
         branch_id
     )
     .fetch_optional(&mut *conn)
-    .await?
-    .ok_or_else(|| AppError::Internal("нет кассы по умолчанию".into()))
+    .await?)
 }
+
+/// Отказ онлайн-чеку без кассы по умолчанию (задача 005 Н4).
+pub const NO_DEFAULT_REGISTER: &str =
+    "нет кассы по умолчанию: отметьте кассу смены «по умолчанию» на экране «Счета»";
+
+/// Отказ онлайн-чеку без открытой смены (задача 005 Н4, ADR-{n4}). Чек идёт в кассу по умолчанию
+/// и в её смену; если смену открыли на другой кассе — так и сказать, а не «смена не открыта».
+pub async fn no_shift_for_sale(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    register: Uuid,
+) -> AppResult<AppError> {
+    let other = sqlx::query!(
+        r#"select a.name as "other!", d.name as "till!" from shifts s
+           join cash_accounts a on a.id = s.account_id
+           join cash_accounts d on d.id = $2
+           where s.branch_id = $1 and s.account_id <> $2
+             and not exists (
+               select 1 from shift_closes c
+               where c.shift_id = s.id
+                 and not exists (select 1 from shift_reopens r where r.close_id = c.id))
+           order by s.opened_at desc limit 1"#,
+        branch_id,
+        register
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(AppError::Conflict(match other {
+        Some(r) => format!(
+            "Смена открыта на кассе «{}», а чеки идут в кассу «{}»: закройте ту смену и откройте смену на «{}»",
+            r.other, r.till, r.till
+        ),
+        None => SALE_NEEDS_SHIFT.into(),
+    }))
+}
+
+/// Текст отказа онлайн-чеку без открытой смены; касса ищет его в ответе, чтобы перечитать смену.
+pub const SALE_NEEDS_SHIFT: &str = "Смена не открыта: откройте её на экране «Смена»";
 
 /// Безналичный счёт по умолчанию для способа оплаты: карта — отмеченный «по умолчанию для
 /// карты», перевод — «по умолчанию для перевода» (ADR-077), «По счёту» — «по умолчанию для
@@ -537,7 +584,8 @@ pub async fn shift_open_at(
 }
 
 /// Деньги через кассу с наличными — только в открытой смене: иначе их не с чем сверить
-/// при закрытии (SPEC-05, SPEC-06, SPEC-07). Продажи и сдача кассы этим не ограничены (ADR-021).
+/// при закрытии (SPEC-05, SPEC-06, SPEC-07). Сдача кассы этим не ограничена (ADR-021); онлайн-чек
+/// без смены отклоняет сам `post_sale_core` по настройке кассы (задача 005 Н4, ADR-{n4}).
 pub async fn require_open_shift(
     conn: &mut PgConnection,
     branch_id: Uuid,

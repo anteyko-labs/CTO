@@ -247,22 +247,35 @@ async fn owner_safe(pool: &PgPool, branch: Uuid) -> Uuid {
     .unwrap()
 }
 
-/// Открытая смена на «Кассе»: возврат наличными без неё не проводится (ADR-065).
+/// Открытая смена на «Кассе»: возврат наличными без неё не проводится (ADR-065). Смена уже
+/// открыта (её открыл первый онлайн-чек, см. `sell`) — она и остаётся.
 async fn open_till(pool: &PgPool, w: &World) -> Uuid {
+    ensure_shift(pool, w.owner.user.branch_id, w.cashier, w.owner.user.id).await
+}
+
+/// Открытая смена на «Кассе» с кассиром `cashier`, если ещё не открыта; касса смены.
+async fn ensure_shift(pool: &PgPool, branch: Uuid, cashier: Uuid, by: Uuid) -> Uuid {
     let mut conn = pool.acquire().await.unwrap();
-    let till = avtodom_server::api::cash::default_account(&mut conn, w.owner.user.branch_id)
+    let till = avtodom_server::api::cash::default_account(&mut conn, branch)
         .await
         .unwrap();
+    if avtodom_server::api::cash::open_shift_id(&mut conn, branch, till)
+        .await
+        .unwrap()
+        .is_some()
+    {
+        return till;
+    }
     sqlx::query(
         "insert into shifts (id, branch_id, number, business_date, account_id, cashier_employee_id, opened_by, opened_device, opening_expected_tyiyn)
          values ($1, $2, (select coalesce(max(number), 0) + 1 from shifts where branch_id = $2),
                  (now() at time zone 'Asia/Bishkek')::date, $3, $4, $5, $1, 0)",
     )
     .bind(Uuid::now_v7())
-    .bind(w.owner.user.branch_id)
+    .bind(branch)
     .bind(till)
-    .bind(w.cashier)
-    .bind(w.owner.user.id)
+    .bind(cashier)
+    .bind(by)
     .execute(&mut *conn)
     .await
     .unwrap();
@@ -327,7 +340,20 @@ fn takeaway(w: &World, lines: Vec<SaleLineReq>, payments: Vec<PaymentReq>) -> Sa
     }
 }
 
+/// Чек, как его проводит касса: онлайн-чек — в открытой смене (задача 005 Н4), поэтому смена
+/// открывается первой, если её нет. Чек без смены — `sell_raw`.
 async fn sell(
+    pool: &PgPool,
+    ctx: &Ctx,
+    req: SaleReq,
+) -> Result<avtodom_server::api::sales::SaleOut, AppError> {
+    if !req.offline && req.correction.is_none() {
+        ensure_shift(pool, ctx.user.branch_id, req.cashier_id, ctx.user.id).await;
+    }
+    sell_raw(pool, ctx, req).await
+}
+
+async fn sell_raw(
     pool: &PgPool,
     ctx: &Ctx,
     req: SaleReq,
@@ -1590,9 +1616,29 @@ async fn offline_sale_survives_changed_references(pool: PgPool) {
         req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(20));
         req
     };
-    // Онлайн отключённым кассиром не продать.
+    // Онлайн отключённым кассиром не продать: без смены онлайн-чек не проводится (задача 005 Н4),
+    // а при выключенной настройке кассир с устройства должен быть действующим.
     assert!(matches!(
-        sell(&pool, &w.owner, make(false)).await,
+        sell_raw(&pool, &w.owner, make(false)).await,
+        Err(AppError::Conflict(_))
+    ));
+    let mut conn = pool.acquire().await.unwrap();
+    let off = avtodom_server::api::cashier_settings::CashierSettings {
+        sale_requires_shift: false,
+        ..Default::default()
+    };
+    sqlx::query(
+        "insert into settings (branch_id, key, value) values ($1, 'cashier', $2)
+         on conflict (branch_id, key) do update set value = excluded.value",
+    )
+    .bind(w.owner.user.branch_id)
+    .bind(serde_json::to_value(&off).unwrap())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    assert!(matches!(
+        sell_raw(&pool, &w.owner, make(false)).await,
         Err(AppError::Validation(_))
     ));
     let sale = sell(&pool, &w.owner, make(true)).await.unwrap();
@@ -2969,14 +3015,18 @@ async fn offline_sale_after_shift_close_notifies_owner(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    // Смена закрыта: онлайн-чек — обычная продажа без смены, уведомления нет.
-    sell(
+    // Смена закрыта: онлайн-чек не проводится — сначала откройте смену (задача 005 Н4).
+    let refused = sell_raw(
         &pool,
         &w.admin,
         takeaway(&w, vec![line("piece", w.filter, 1, 15_000)], cash(15_000)),
     )
-    .await
-    .unwrap();
+    .await;
+    assert!(
+        matches!(&refused, Err(AppError::Conflict(m)) if m.contains("Смена не открыта")),
+        "{:?}",
+        refused.err()
+    );
     assert!(events().await.unwrap().is_empty());
     // Чек без сети того же дня после закрытия — уведомление с суммой наличных.
     let late = sell(&pool, &w.admin, offline(30_000)).await.unwrap();
@@ -3052,6 +3102,39 @@ async fn offline_sale_finds_its_shift_by_time(pool: PgPool) {
     let between = sell(&pool, &w.admin, offline(10)).await.unwrap();
     assert_eq!(between.cashier_id, w.cashier);
     assert_eq!(events().await.unwrap().len(), 1);
+    // Чек между сменами проведён, а владелец узнал, что он без открытой смены (задача 005 Н4).
+    let bypass: Vec<(serde_json::Value,)> = sqlx::query_as(
+        "select data from audit_log where action = 'sale.offline_bypass' and entity_id = $1",
+    )
+    .bind(between.id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bypass.len(), 1);
+    assert!(
+        bypass[0].0["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "чек без открытой смены")
+    );
+    // Чек, пробитый в смене № 3, — без этой причины.
+    let during_reasons: Vec<(serde_json::Value,)> = sqlx::query_as(
+        "select data->'reasons' from audit_log where action = 'sale.offline_bypass' and entity_id = $1",
+    )
+    .bind(during.id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        during_reasons.iter().all(|r| !r
+            .0
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "чек без открытой смены")),
+        "{during_reasons:?}"
+    );
 }
 
 // ---------- Машины клиента в боте (SPEC-22) ----------
@@ -4629,12 +4712,14 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         .iter()
         .map(|r| r.as_str().unwrap().to_string())
         .collect();
-    assert_eq!(reasons.len(), 3, "{reasons:?}");
-    assert!(reasons[0].starts_with("кассир «Кассир» отключён"));
-    assert!(reasons[1].contains("в долг отключённому клиенту"));
-    assert!(reasons[2].starts_with("проведён задним числом"));
+    // Вчера смены не было — и это причина (задача 005 Н4).
+    assert_eq!(reasons.len(), 4, "{reasons:?}");
+    assert_eq!(reasons[0], "чек без открытой смены");
+    assert!(reasons[1].starts_with("кассир «Кассир» отключён"));
+    assert!(reasons[2].contains("в долг отключённому клиенту"));
+    assert!(reasons[3].starts_with("проведён задним числом"));
 
-    // Обычный чек без сети, без обходов — без уведомления.
+    // Обычный чек без сети, без обходов (в открытой смене) — без уведомления.
     sqlx::query("update employees set active = true where id = $1")
         .bind(w.cashier)
         .execute(&pool)
@@ -4642,7 +4727,7 @@ async fn offline_sale_bypassing_checks_is_reported(pool: PgPool) {
         .unwrap();
     let mut req = takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
     req.offline = true;
-    req.client_time = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+    req.client_time = Some(chrono::Utc::now());
     sell(&pool, &w.admin, req).await.unwrap();
     assert_eq!(audit_data(&pool, "sale.offline_bypass").await.len(), 1);
 }
@@ -12060,6 +12145,8 @@ async fn offline_clock_ahead_is_named_as_such(pool: PgPool) {
     // больше чем на 2 дня».
     let w = seed(&pool).await;
     receive(&pool, &w.admin, w.filter, 10, 20_000).await;
+    // Смена открыта: чек без сети — в ней, без причины «без открытой смены» (задача 005 Н4).
+    open_till(&pool, &w).await;
     let sale = || takeaway(&w, vec![line("piece", w.filter, 1, 50_000)], cash(50_000));
     let mut req = sale();
     req.offline = true;

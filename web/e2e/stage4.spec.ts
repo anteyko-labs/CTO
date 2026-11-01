@@ -1,7 +1,7 @@
 // Расчёт сотрудника за день и месяц, ревизия склада сканером (SPEC-07, SPEC-15).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickCashier } from './cashier'
+import { ensureShift, pickCashier } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -209,6 +209,8 @@ test('масляная книжка: замена с пробегом, след�
   const vehicle = await apiPost<{ id: string }>(page.request, `/parties/${party.id}/vehicles`, { plate })
   // Чек «В сервис» — с видом замены (ADR-096).
   const kind = await apiPost<{ id: string }>(page.request, '/services', { name: `Замена масла книжки ${RUN}`, price_tyiyn: 0, master_fee_tyiyn: 3000, free_with_oil: true })
+  // Онлайн-чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(page.request, emp.id)
   await apiPost(page.request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'service',

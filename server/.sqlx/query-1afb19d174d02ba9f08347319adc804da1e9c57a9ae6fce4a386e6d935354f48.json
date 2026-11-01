@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.name as \"other!\", d.name as \"till!\" from shifts s\n           join cash_accounts a on a.id = s.account_id\n           join cash_accounts d on d.id = $2\n           where s.branch_id = $1 and s.account_id <> $2\n             and not exists (\n               select 1 from shift_closes c\n               where c.shift_id = s.id\n                 and not exists (select 1 from shift_reopens r where r.close_id = c.id))\n           order by s.opened_at desc limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "other!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "till!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1afb19d174d02ba9f08347319adc804da1e9c57a9ae6fce4a386e6d935354f48"
+}

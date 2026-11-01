@@ -2,6 +2,7 @@
 // категориям с подытогами, итог склада, поиск, отбор по категории, печать листа; администратору —
 // без закупки. Старые ссылки «Остатков» с отбором ведут в «Товары».
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { ensureShift } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -73,6 +74,8 @@ test('«Склад → Остатки»: ненулевые остатки по 
     ],
   })
   const cashier = await apiPost<{ id: string }>(page.request, '/employees', { full_name: `Кассир остатков ${RUN}`, is_cashier: true, pin: '1234' })
+  // Онлайн-чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(page.request, cashier.id)
   await apiPost(page.request, '/sales', {
     op_id: crypto.randomUUID(),
     sale_type: 'takeaway',

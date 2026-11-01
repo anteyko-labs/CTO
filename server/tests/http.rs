@@ -1490,6 +1490,7 @@ async fn new_product_purchase_price_and_cost_in_card(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let (_, _, cat) = call(
         &app,
         "POST",
@@ -3157,6 +3158,33 @@ async fn product(app: &Router, owner: &str, name: &str, price: i64, min_stock: i
     p["id"].as_str().unwrap().to_string()
 }
 
+/// Открыть смену на кассира (PIN 1234): онлайн-чек — только при открытой смене (задача 005 Н4).
+async fn open_shift(app: &Router, cookie: &str, cashier: &str) {
+    let (s, _, out) = call(
+        app,
+        "POST",
+        "/api/v1/shifts/open",
+        Some(cookie),
+        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+}
+
+/// Выключить «Продажа только при открытой смене» (задача 005 Н4): тест нарочно продаёт без смены.
+async fn allow_sale_without_shift(app: &Router, owner: &str) {
+    let (s, _, out) = call(
+        app,
+        "PUT",
+        "/api/v1/settings/cashier",
+        Some(owner),
+        Some(json!({ "op_id": Uuid::now_v7(), "sale_requires_shift": false })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["sale_requires_shift"], false);
+}
+
 async fn cashier_employee(app: &Router, owner: &str) -> String {
     let (status, _, e) = call(
         app,
@@ -3345,6 +3373,7 @@ async fn sale_without_purchase_price_waits_for_owner(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let fresh = product(&app, &owner, "Новый фильтр", 50_000, 0).await;
     let known = product(&app, &owner, "Старый фильтр", 50_000, 0).await;
     let (s, _, _) = call(
@@ -3443,16 +3472,7 @@ async fn sale_without_purchase_price_waits_for_owner(pool: PgPool) {
     assert!(stock[0]["last_purchase_price_tyiyn"] == 30_000);
 
     // Возврат одной штуки после цены снимает ровно её процент: 2 % от (500 − 300) с.
-    // Наличные возвращаются только в открытую смену (ADR-065).
-    let (s, _, _) = call(
-        &app,
-        "POST",
-        "/api/v1/shifts/open",
-        Some(&admin),
-        Some(json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    // Наличные возвращаются только в открытую смену (ADR-065) — она открыта до первого чека.
     let sid = sale["id"].as_str().unwrap();
     let (s, _, _) = call(
         &app,
@@ -3808,6 +3828,7 @@ async fn posted_sale_is_found_by_op_id(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
     let op = Uuid::now_v7();
     let body = json!({
@@ -4214,7 +4235,8 @@ async fn cash_refund_needs_open_shift(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    // Продажа без смены разрешена, как прежде.
+    // Продажа без смены — только с выключенной настройкой (задача 005 Н4).
+    allow_sale_without_shift(&app, &owner).await;
     let (s, _, sale) = call(
         &app,
         "POST",
@@ -4270,6 +4292,7 @@ async fn bank_fee_rate_has_history_by_business_date(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
     let (s, _, _) = call(
         &app,
@@ -5827,7 +5850,8 @@ async fn sale_takes_the_cashier_of_the_open_shift(pool: PgPool) {
         }
         body
     };
-    // Без смены — кассир, выбранный на кассе.
+    // Без смены (настройка выключена, задача 005 Н4) — кассир, выбранный на кассе.
+    allow_sale_without_shift(&app, &owner).await;
     let (s, _, before) = call(
         &app,
         "POST",
@@ -6432,6 +6456,7 @@ async fn bank_screen_income_report_and_dashboard_period(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
     let post = |cookie: &str, uri: &str, body: Value| {
         let app = app.clone();
@@ -6811,6 +6836,7 @@ async fn bot_customer_debt_matches_client_card(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
     let (s, _, _) = call(
         &app,
@@ -7198,6 +7224,7 @@ async fn top_products_by_profit_is_owner_only(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     // Дешёвый, но частый — и дорогой с большой прибылью.
     let cheap = product(&app, &owner, "Частый товар", 10_000, 0).await;
     let rich = product(&app, &owner, "Прибыльный товар", 500_000, 0).await;
@@ -7288,6 +7315,7 @@ async fn mixed_sale_cash_and_debt_shows_in_repayment_window(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр в долг", 100_000, 0).await;
     let (_, _, party) = call(
         &app,
@@ -7659,6 +7687,7 @@ async fn card_sale_goes_to_chosen_bank_with_fee_and_refund_returns_there(pool: P
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
     let req = |cookie: &str, method: &str, uri: &str, body: Option<Value>| {
         let app = app.clone();
@@ -8027,6 +8056,7 @@ async fn bank_fee_per_account_and_default_bank_per_method(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр", 50_000, 0).await;
     let req = |cookie: &str, method: &str, uri: &str, body: Option<Value>| {
         let app = app.clone();
@@ -9676,6 +9706,7 @@ async fn car_from_dictionary_miles_and_interval_in_sale(pool: PgPool) {
 
     // Замена в сервисе: пробег 50 000 миль, интервал масла 3 000 миль (= 4 828 км) из чека.
     let cashier = named_cashier(&app, &owner, "Айбек").await;
+    open_shift(&app, &owner, &cashier).await;
     let (_, _, master) = call(
         &app,
         "POST",
@@ -10340,6 +10371,7 @@ async fn purchase_reversals_keep_stock_value_sane(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let safe = owner_safe(&app, &owner).await;
     let receipt = |p: &str, qty: i64, cost: i64| {
         json!({ "op_id": Uuid::now_v7(), "paid_from": safe,
@@ -10440,6 +10472,7 @@ async fn refunds_fees_and_forgiveness_reverse_exactly(pool: PgPool) {
     let app = setup(pool.clone()).await;
     let owner = login(&app, "owner", "owner-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let safe = owner_safe(&app, &owner).await;
     let post = |path: String, body: Value| {
         let app = app.clone();
@@ -10718,6 +10751,7 @@ async fn offline_queue_rules_adr_093(pool: PgPool) {
     let owner = login(&app, "owner", "owner-pass-1").await;
     let admin = login(&app, "admin", "admin-pass-1").await;
     let cashier = cashier_employee(&app, &owner).await;
+    open_shift(&app, &owner, &cashier).await;
     let item = product(&app, &owner, "Фильтр ADR-093", 50_000, 0).await;
     let (_, _, master) = call(
         &app,

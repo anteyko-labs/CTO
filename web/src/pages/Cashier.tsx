@@ -379,7 +379,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   const bankList = banks.data ?? []
   const bankFor = (method: NoncashMethod): string =>
     bankList.some((b) => b.id === bankPick[method]) ? bankPick[method] : defaultBankId(bankList, method)
-  // Плашка смены: продавать можно и без неё, но деньги потом не с чем сверить (SPEC-05).
+  // Плашка смены: при связи без смены чек не пробить (задача 005 Н4, настройка кассы); без неё —
+  // продавать можно, но деньги потом не с чем сверить (SPEC-05).
   // Без связи остаётся последняя известная смена: касса не начнёт спрашивать кассира посреди смены.
   // Она переживает и перезагрузку страницы: хранится на устройстве (SPEC-09).
   const lastShift = useRef<Shift | null | undefined>(fix ? undefined : knownShift())
@@ -611,6 +612,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
   // Выбор кассира показывается, только когда уже известно, что смены нет: иначе он мелькнёт
   // на время загрузки и исчезнет.
   const [shiftKnown, setShiftKnown] = useState(false)
+  // Выбор кассира без смены нужен чеку без связи, если продажа только при открытой смене (задача 005 Н4).
+  const cashierHint = cashierCfg.data?.sale_requires_shift === false ? 'Запомнится на этом устройстве до открытия смены' : 'Для чека без связи: запомнится на этом устройстве до открытия смены'
   useEffect(() => {
     if (!shift.loading) setShiftKnown(true)
   }, [shift.loading])
@@ -1166,6 +1169,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     saleType === 'service' ? serviceClientMissing({ party, contactChosen: Boolean(contactId), vehicleChosen: Boolean(vehicleId), mileage }) : []
   // Скидка без права (ADR-097): например, чек отложил владелец, а проводит администратор.
   const discountLines = canDiscount ? [] : lines.filter((l) => isDiscount(parseSom(l.priceText), lineList(l), l.gift))
+  // Продажа только при открытой смене (задача 005 Н4, ADR-{n4}): при связи и без смены вместо
+  // «Провести чек» — «Открыть смену». Без связи касса продаёт, как прежде (I9): чек уйдёт позже,
+  // владельцу придёт «чек без открытой смены». Проверяет и сервер (409), кнопка — удобство.
+  const needShift = !fix && cs.sale_requires_shift && online && shiftKnown && shift.data === null
   // Короткое название (четвёртое) — для строки «Не хватает: …» в режиме кассы.
   const blockers = missingWithFocus(
     [lines.length > 0, 'товары', '[data-picker]', 'товары'],
@@ -1209,6 +1216,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     [debtAmount === 0 || !party || Boolean(party.inn.trim()), 'ПИН / ИНН клиента для документа о долге', '#debt-inn', 'ПИН / ИНН'],
     [!fix || Boolean(fixComment.trim()), 'что и почему исправляете', '#correction-comment'],
     [!fix || Boolean(businessDate), 'учётный день', '#correction-date'],
+    // В режиме кассы плашки нет (строки не сдвигаются): «Не хватает: … открытая смена».
+    [!(touch && needShift), 'открытая смена — без неё чек не пробить', undefined, 'открытая смена'],
   )
 
   const submit = () =>
@@ -1329,8 +1338,10 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
       // продажи не создаст (ADR-013, ADR-062).
       const noAnswer = e instanceof ApiError ? keepInQueue(e) : !navigator.onLine
       if (!noAnswer) {
-        // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт.
+        // Сервер ответил отказом: кассир видит ошибку, сам чек позже не уйдёт. Отказ «смена не
+        // открыта» (задача 005 Н4) — смену перечитать: кнопка станет «Открыть смену».
         await removeSale(opId).catch(() => undefined)
+        if (e instanceof ApiError && e.status === 409) shift.reload()
         throw e
       }
       await markPending(opId, e instanceof Error ? e.message : 'нет связи').catch(() => undefined)
@@ -1397,7 +1408,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
 
   // QR банка ждёт оплаты — чек ждёт его (панель QR сама говорит «Ждём оплату»); без связи с
   // сервером не ждёт: кассир отмечает оплату вручную (ADR-130).
-  const canSubmit = !busy && blockers.length === 0 && (bankQr.qr?.status !== 'waiting' || bankQr.lost)
+  const canSubmit = !needShift && !busy && blockers.length === 0 && (bankQr.qr?.status !== 'waiting' || bankQr.lost)
+  // Кнопка чека: при `needShift` — «Открыть смену» (она всегда доступна).
+  const submitDisabled = !needShift && !canSubmit
   // На вынос с канистрой моторного масла — сначала «Это замена масла?» (SPEC-29 §18, ADR-118): один
   // раз на чек; 0,5–1 л — доливка, без вопроса.
   const askOil = !fix && saleType === 'takeaway' && !oilAsked && askOilChange(ourOil, categories.data)
@@ -1427,6 +1440,23 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
     void get<CashAccount[]>('/cash/accounts')
       .then((accs) => setShiftOpen({ till: accs.find((a) => isTill(a)) }))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Нет связи с сервером: смена открывается только при связи'))
+  // «Открыть смену» вместо «Провести чек»: смена перечитывается раз в 30 секунд — её могли уже
+  // открыть на другом устройстве, тогда сразу можно пробивать.
+  const openShiftForSale = () =>
+    void get<Shift | null>('/shifts/current')
+      .then((s) => {
+        if (!s) return startShift()
+        shift.reload()
+        toast(`Смена № ${s.number} уже открыта — можно пробить чек`)
+      })
+      .catch(() => startShift())
+  const onSubmitClick = needShift ? openShiftForSale : trySubmit
+  // Начали чек без смены — смену перечитать сразу, а не ждать 30 секунд.
+  const hasLines = lines.length > 0
+  useEffect(() => {
+    if (needShift && hasLines) shift.reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needShift, hasLines])
 
   const pickParty = (p: Party | null) => {
     setParty(p)
@@ -2104,11 +2134,12 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
           {!fix && lines.length > 0 && <div className="flex gap-1.5">{parkClear}</div>}
           <Button
             className="min-h-[76px]! w-full flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
-            disabled={!canSubmit}
-            onClick={trySubmit}
+            data-testid="sale-submit"
+            disabled={submitDisabled}
+            onClick={onSubmitClick}
           >
-            {fix ? 'Сохранить исправление' : 'Провести чек'}
-            {due > 0 && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
+            {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
+            {due > 0 && !needShift && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
           </Button>
         </div>
       ) : touch ? (
@@ -2117,18 +2148,19 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <div className="flex shrink-0 items-stretch gap-2">
           <Button
             className="min-h-[76px]! min-w-0 flex-1 flex-wrap gap-x-2! gap-y-0! py-2 text-xl! font-bold! shadow-md sm:text-2xl!"
-            disabled={!canSubmit}
-            onClick={trySubmit}
+            data-testid="sale-submit"
+            disabled={submitDisabled}
+            onClick={onSubmitClick}
           >
-            {fix ? 'Сохранить исправление' : 'Провести чек'}
-            {due > 0 && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
+            {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
+            {due > 0 && !needShift && <span className="font-semibold whitespace-nowrap tabular-nums">· {formatSom(due)}</span>}
           </Button>
           {!fix && lines.length > 0 && <div className="grid w-[38%] shrink-0 grid-rows-2 gap-1.5">{parkClear}</div>}
         </div>
       ) : (
         <>
-          <Button className="min-h-14! py-3 text-lg!" disabled={!canSubmit} onClick={trySubmit}>
-            {fix ? 'Сохранить исправление' : 'Провести чек'}
+          <Button className="min-h-14! py-3 text-lg!" data-testid="sale-submit" disabled={submitDisabled} onClick={onSubmitClick}>
+            {fix ? 'Сохранить исправление' : needShift ? 'Открыть смену' : 'Провести чек'}
           </Button>
           <div className="hidden text-center text-xs text-slate-400 lg:block">Ctrl + Enter — {fix ? 'сохранить' : 'провести'}</div>
           {!fix && lines.length > 0 && <div className="flex gap-2">{parkClear}</div>}
@@ -2151,8 +2183,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
         <div className="lg:col-span-2">
           <CashierModeBar
             shift={shift.loading && !shiftKnown ? undefined : shift.data}
-            onOpenShift={startShift}
+            onOpenShift={openShiftForSale}
             onShiftChanged={shift.reload}
+            saleBlocked={needShift}
             buttons={at('bar')}
             exitGrey={cs.exit_grey}
           />
@@ -2218,17 +2251,43 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             (или установите программу на рабочий стол).
           </div>
         )}
-        {!fix && !touch && shift.data === null && (
-          <div
-            className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
-            title="Продавать можно, но наличные будет не с чем сверить"
-          >
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Смена не открыта — наличные будет не с чем сверить</span>
-            <Link to="/shift" className="shrink-0 font-medium underline">
-              Открыть смену
-            </Link>
-          </div>
+        {needShift ? (
+          // Продажа только при открытой смене (задача 005 Н4). В режиме кассы то же пишет полоса
+          // сверху (`saleBlocked`): лишняя плашка сдвинула бы строки чека под пальцем.
+          !touch && (
+            <div
+              className="flex items-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-1 text-sm text-rose-900"
+              role="status"
+              data-testid="shift-needed"
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-500" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">Смена не открыта — пробить чек нельзя</span>
+              <button type="button" className="shrink-0 font-medium underline" onClick={openShiftForSale}>
+                Открыть смену
+              </button>
+            </div>
+          )
+        ) : (
+          !fix &&
+          !touch &&
+          shift.data === null && (
+            <div
+              className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-900"
+              title={
+                cs.sale_requires_shift
+                  ? 'Нет связи: чек уйдёт, когда связь появится, а владельцу придёт «чек без открытой смены»'
+                  : 'Продавать можно, но наличные будет не с чем сверить'
+              }
+            >
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">
+                {cs.sale_requires_shift ? 'Смена не открыта, нет связи — чек уйдёт позже' : 'Смена не открыта — наличные будет не с чем сверить'}
+              </span>
+              <Link to="/shift" className="shrink-0 font-medium underline">
+                Открыть смену
+              </Link>
+            </div>
+          )
         )}
         <Card className={touch ? `${serviceLeft ? 'p-2!' : 'p-3'} lg:shrink-0` : ''}>
           <div className="flex items-start gap-2">
@@ -2717,7 +2776,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 id="cashier-select"
                 label="Кассир"
                 required
-                hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : 'Запомнится на этом устройстве до открытия смены'}
+                hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : cashierHint}
                 value={cashierId}
                 people={cashiers}
                 onChange={(id) => {
@@ -2726,7 +2785,7 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
                 }}
               />
             ) : (
-              <Field label="Кассир" required hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : 'Запомнится на этом устройстве до открытия смены'}>
+              <Field label="Кассир" required hint={fix ? 'Кассир исходного чека: ему начислится процент с исправленного' : cashierHint}>
                 <select
                   id="cashier-select"
                   value={cashierId}
@@ -3276,8 +3335,8 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
               <Money value={due} />
             </div>
           </div>
-          <Button className="min-h-12 shrink-0 px-6 py-3 text-base" disabled={!canSubmit} onClick={trySubmit}>
-            {fix ? 'Сохранить' : 'Провести чек'}
+          <Button className="min-h-12 shrink-0 px-6 py-3 text-base" disabled={submitDisabled} onClick={onSubmitClick}>
+            {fix ? 'Сохранить' : needShift ? 'Открыть смену' : 'Провести чек'}
           </Button>
         </div>
       )}

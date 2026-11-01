@@ -6,7 +6,7 @@
 // Н5): подпись — товар, а не строка книжки; по видам замены; фильтры в чеке книжки по умолчанию.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, pickMaster } from './cashier'
+import { choosePerson, ensureShift, pickMaster, shiftOnTill } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -92,7 +92,8 @@ async function setup(request: APIRequestContext) {
   const party = await api<{ id: string }>(request, '/parties', { kind: 'person', first_name: 'Азиз', last_name: last, phone: `0701${tag.slice(-6)}` })
   const plate = `09KG${tag.slice(-3)}ZXZ`
   const vehicle = await api<{ id: string }>(request, `/parties/${party.id}/vehicles`, { plate, brand: 'Toyota', model: 'Camry' })
-  // Прошлая замена: масло, воздушный фильтр и услуга.
+  // Прошлая замена: масло, воздушный фильтр и услуга. Онлайн-чек — при открытой смене (задача 005 Н4).
+  await ensureShift(request, csh.id)
   await api(request, '/sales', {
     op_id: crypto.randomUUID(),
     client_time: new Date().toISOString(),
@@ -146,6 +147,7 @@ for (const mode of [
       await page.keyboard.type(s.oilCode, { delay: 5 })
       await page.keyboard.press('Enter')
       await expect(page.getByTestId('cart').getByRole('listitem')).toHaveCount(2)
+      await shiftOnTill(page, s.cashier)
       const select = page.locator('#cashier-select')
       if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
       await pickMaster(page, s.master)
@@ -232,6 +234,7 @@ for (const mode of [
         }
         await hit(kinds.getByRole('button', { name: 'Готово' }))
         for (const [i, code] of codes.entries()) await scan(code, i + 1 + services.length)
+        await shiftOnTill(page, s.cashier)
         const select = page.locator('#cashier-select')
         if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
         await pickMaster(page, s.master)

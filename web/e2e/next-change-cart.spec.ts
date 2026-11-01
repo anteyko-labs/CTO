@@ -6,7 +6,7 @@
 // (печатный чек — только жидкости); удалили услугу из чека — строка ушла.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, pickMaster } from './cashier'
+import { choosePerson, pickMaster, shiftOnTill } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -166,6 +166,7 @@ async function addKinds(page: Page, names: string[], hit: (l: Locator) => Promis
 
 /** Кассир, мастер, клиент с машиной и пробег 217 000 в чеке «В сервис». */
 async function serviceDetails(page: Page, s: Setup, touch: boolean, hit: (l: Locator) => Promise<void>) {
+  await shiftOnTill(page, s.cashier)
   const select = page.locator('#cashier-select')
   if (await select.isVisible()) await choosePerson(page, 'cashier-select', s.cashier)
   await pickMaster(page, s.master)

@@ -3,7 +3,7 @@
 // прокручивается.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { pickMaster } from './cashier'
+import { ensureShift, pickMaster } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -133,6 +133,8 @@ test.describe('режим кассы 1366×768', () => {
     await apiPost(page.request, '/employees', { full_name: `Мастер слева ${RUN}`, is_master: true })
     const party = await apiPost<{ id: string }>(page.request, '/parties', { kind: 'person', first_name: 'Слева', last_name: `Клиент${RUN}`, phone: '0700123456' })
     await apiPost(page.request, `/parties/${party.id}/vehicles`, { plate: `01KG${RUN.slice(-3)}SLV` })
+    // Смена открыта: без неё вместо «Провести чек» — «Открыть смену» (задача 005 Н4).
+    await ensureShift(page.request)
 
     await page.goto('/')
     await page.evaluate(() => localStorage.setItem('avtodom.cashier_mode', '1'))

@@ -4,7 +4,7 @@
 // печатается сама; «Настройки → Масляная книжка и печать» убирает блок книжки из товарного чека.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import { ownerSafe } from './safe'
-import { choosePerson, pickMaster } from './cashier'
+import { choosePerson, ensureShift, pickMaster, shiftOnTill } from './cashier'
 
 const OWNER = process.env.E2E_LOGIN ?? 'owner'
 const OWNER_PASSWORD = process.env.E2E_PASSWORD ?? 'owner-pass-1'
@@ -57,6 +57,8 @@ async function login(page: Page) {
 /** Чек «В сервис» через API, как его прислало бы старое устройство: без следующей замены. */
 async function serviceSale(request: APIRequestContext) {
   const { body, oilName, vehicle } = await serviceBody(request, RUN)
+  // Онлайн-чек — только при открытой смене (задача 005 Н4).
+  await ensureShift(request, body.cashier_id)
   const sale = await api<{ id: string; number: number; vehicle_id: string }>(request, 'POST', '/sales', body)
   expect(sale.vehicle_id).toBe(vehicle)
   return { sale, oilName }
@@ -275,6 +277,7 @@ test('«В сервис» с маслом и фильтрами: чек книж
     await page.keyboard.press('Enter')
     await expect(cart).toHaveCount(i + 2)
   }
+  await shiftOnTill(page, cashier)
   if (await page.locator('#cashier-select').isVisible()) await choosePerson(page, 'cashier-select', cashier)
   await pickMaster(page, master)
   await page.locator('[data-client-input]').fill(plate)
