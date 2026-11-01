@@ -1,7 +1,9 @@
 // Окно «Открыть смену» (SPEC-05, SPEC-29 §15–16): кассир, PIN кассира или пароль владельца,
-// пересчёт по остатку кассы. Общее для экрана «Смена» и режима кассы.
+// пересчёт по остатку кассы. Общее для экрана «Смена» и режима кассы. Кассир, вошедший своим
+// логином, открывает смену на себя без PIN (задача 005 Н1, ADR-{n1}).
 import { useState } from 'react'
 import { newOpId, post } from '../lib/api'
+import { useUser } from '../lib/auth'
 import { useNumField } from '../lib/cashierMode'
 import { formatSom, parseSom, somInput } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
@@ -28,10 +30,13 @@ export function ShiftOpenModal({
 }) {
   const num = useNumField()
   const act = useAction()
+  // Личный вход кассира: смена — на него по умолчанию, пароль входа уже подтвердил его.
+  const me = useUser().employee_id ?? null
+  const mine = me !== null && cashiers.some((e) => e.id === me)
   // Пересчёт по умолчанию — остаток кассы: что оставили с прошлой смены и что было после её
   // закрытия; кассир правит, если насчитал другое.
   const [open, setOpen] = useState<Opening>(() => ({
-    cashier: cashiers.length === 1 ? cashiers[0].id : '',
+    cashier: mine && me ? me : cashiers.length === 1 ? cashiers[0].id : '',
     counted: till ? somInput(Math.max(till.balance_tyiyn, 0)) : '',
     opId: newOpId(),
     pin: '',
@@ -39,9 +44,10 @@ export function ShiftOpenModal({
     password: '',
   }))
 
+  const self = mine && open.cashier === me && !open.byOwner
   const missing = missingWithFocus(
     [Boolean(open.cashier), 'кассира', '#shift-cashier'],
-    [open.byOwner || /^\d{4}$/.test(open.pin), 'PIN кассира — 4 цифры', '#shift-pin'],
+    [self || open.byOwner || /^\d{4}$/.test(open.pin), 'PIN кассира — 4 цифры', '#shift-pin'],
     [!open.byOwner || Boolean(open.password), 'ваш пароль', '#shift-owner-password'],
     [!open.counted.trim() || parseSom(open.counted) !== null, 'сумму пересчёта числом', '#shift-counted'],
   )
@@ -55,8 +61,9 @@ export function ShiftOpenModal({
         op_id: open.opId,
         cashier_employee_id: open.cashier,
         counted_tyiyn: counted,
-        // Кассир подтверждает PIN; владелец может открыть своим паролем (ADR-081).
-        ...(open.byOwner ? { owner_password: open.password } : { cashier_pin: open.pin }),
+        // Кассир подтверждает PIN; владелец может открыть своим паролем (ADR-081); на себя со
+        // своего входа — без PIN (ADR-{n1}).
+        ...(open.byOwner ? { owner_password: open.password } : self ? {} : { cashier_pin: open.pin }),
       })
       toast('Смена открыта')
       onOpened()
@@ -75,7 +82,11 @@ export function ShiftOpenModal({
             ))}
           </select>
         </Field>
-        {open.byOwner ? (
+        {self ? (
+          <p className="text-sm text-slate-600" data-testid="shift-self">
+            Смена откроется на вас — вы вошли своим логином, PIN не нужен.
+          </p>
+        ) : open.byOwner ? (
           <Field label="Ваш пароль" required hint="Владелец открывает смену своим паролем вместо PIN кассира">
             <input
               id="shift-owner-password"

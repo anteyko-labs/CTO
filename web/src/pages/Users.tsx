@@ -1,4 +1,6 @@
 // Пользователи со входом: владельцы и администраторы; экран только для владельца (SPEC-01).
+// Личный вход сотрудника (задача 005 Н1, ADR-{n1}) заводится в карточке сотрудника; здесь видно,
+// чей это вход.
 // «Что можно» — права администратора, которые выбирает владелец (SPEC-30 §5, ADR-097, задача 003 Н8).
 import { useState, type FormEvent } from 'react'
 import { Icon } from '../components/icons'
@@ -45,13 +47,17 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
     password: '',
     branch_id: me.branch_id,
   })
+  // Своя операция на каждое сохранение: повтор после потерянного ответа — прежний ответ (I8).
+  const [opId, setOpId] = useState(newOpId)
   const { busy, error, run } = useAction()
   const moving = form.role === 'admin' && form.branch_id !== me.branch_id
+  const employee = Boolean(user.employee_id)
 
   const save = () =>
     run(async () => {
       if (form.password && [...form.password].length < MIN_PASSWORD) throw new Error(`Пароль не короче ${MIN_PASSWORD} символов`)
       await patch<UserRow>(`/users/${user.id}`, {
+        op_id: opId,
         full_name: form.full_name,
         role: form.role,
         active: form.active,
@@ -60,6 +66,7 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
         ...(form.password ? { password: form.password } : {}),
         ...(moving ? { branch_id: form.branch_id } : {}),
       })
+      setOpId(newOpId())
       toast(moving ? 'Администратор переведён в другой филиал' : 'Сохранено')
       onSaved()
     })
@@ -73,10 +80,16 @@ function EditModal({ user, onClose, onSaved }: { user: UserRow; onClose: () => v
         <Field label="Имя">
           <input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
         </Field>
-        <Field label="Роль">
-          <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
-        </Field>
-        {me.several_branches && form.role === 'admin' && branches.length > 1 && (
+        {employee ? (
+          <p className="text-sm text-slate-600" data-testid="user-edit-employee">
+            Вход сотрудника <b>{user.employee_name}</b> — администратор со своими правами. Отключают его и в карточке сотрудника.
+          </p>
+        ) : (
+          <Field label="Роль">
+            <RoleSelect value={form.role} onChange={(role) => setForm({ ...form, role })} />
+          </Field>
+        )}
+        {!employee && me.several_branches && form.role === 'admin' && branches.length > 1 && (
           <Field label="Филиал" hint={moving ? 'Права переходят вместе с ним; Телеграм нужно привязать заново' : 'Где работает администратор'}>
             <select data-testid="user-edit-branch" value={form.branch_id} onChange={(e) => setForm({ ...form, branch_id: e.target.value })}>
               {branches.map((b) => (
@@ -226,6 +239,20 @@ function rightsText(u: UserRow): string {
 
 const EMPTY = { login: '', full_name: '', password: '', role: 'admin' as Role }
 
+/** Имя входа; у личного входа — и сотрудник, с которым он связан (задача 005 Н1). */
+function UserName({ u }: { u: UserRow }) {
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {u.full_name}
+      {u.employee_name && (
+        <span data-testid="user-employee">
+          <Badge tone="sky">сотрудник: {u.employee_name}</Badge>
+        </span>
+      )}
+    </span>
+  )
+}
+
 export default function Users() {
   const list = useLoad(() => get<UserRow[]>('/users'), [])
   const [form, setForm] = useState(EMPTY)
@@ -233,6 +260,8 @@ export default function Users() {
   const [editing, setEditing] = useState<UserRow | null>(null)
   const [rights, setRights] = useState<UserRow | null>(null)
   const [telegram, setTelegram] = useState<UserRow | null>(null)
+  // Двойное нажатие «Добавить» — тот же ответ, а не «логин занят» (I8).
+  const [opId, setOpId] = useState(newOpId)
   const { busy, error, run } = useAction()
   const toggle = useAction()
 
@@ -240,7 +269,8 @@ export default function Users() {
     e.preventDefault()
     void run(async () => {
       if ([...form.password].length < MIN_PASSWORD) throw new Error(`Пароль не короче ${MIN_PASSWORD} символов`)
-      await post<UserRow>('/users', form)
+      await post<UserRow>('/users', { ...form, op_id: opId })
+      setOpId(newOpId())
       setForm(EMPTY)
       setAdding(false)
       list.reload()
@@ -249,7 +279,7 @@ export default function Users() {
 
   const setActive = (u: UserRow, active: boolean) =>
     void toggle.run(async () => {
-      await patch<UserRow>(`/users/${u.id}`, { full_name: u.full_name, role: u.role, active })
+      await patch<UserRow>(`/users/${u.id}`, { op_id: newOpId(), full_name: u.full_name, role: u.role, active })
       toast(active ? 'Вход включён' : 'Вход отключён')
       list.reload()
     })
@@ -291,7 +321,9 @@ export default function Users() {
                 onClick={() => setEditing(u)}
               >
                 <td className="px-2 py-2 font-medium">{u.login}</td>
-                <td className="px-2 py-2">{u.full_name}</td>
+                <td className="px-2 py-2">
+                  <UserName u={u} />
+                </td>
                 <td className="px-2 py-2">
                   <Badge tone={u.role === 'owner' ? 'amber' : 'sky'}>{ROLE_LABELS[u.role].toLowerCase()}</Badge>
                 </td>
@@ -414,6 +446,7 @@ export default function Users() {
 const USER_COLS: ExportCol<UserRow>[] = [
   { label: 'Логин', value: (u) => u.login },
   { label: 'Имя', value: (u) => u.full_name },
+  { label: 'Сотрудник', value: (u) => u.employee_name ?? '' },
   { label: 'Роль', value: (u) => ROLE_LABELS[u.role] },
   { label: 'Что можно', value: (u) => rightsText(u) },
   { label: 'Телеграм', value: (u) => (u.telegram_linked_at ? 'привязан' : '') },

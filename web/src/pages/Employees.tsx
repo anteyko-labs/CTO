@@ -1,4 +1,5 @@
-// Справочник сотрудников: кассиры и мастера без входа в систему (SPEC-02, инвариант 15).
+// Справочник сотрудников: кассиры и мастера (SPEC-02). Личный вход в программу заводит владелец в
+// карточке сотрудника — «Вход в программу» (задача 005 Н1, ADR-{n1}, отступление от I15).
 // Владелец меняет в одной карточке всё: ФИО, роли, телефон, активность и правила оплаты (SPEC-27).
 // Карточка сотрудника у владельца — ещё и правила оплаты с историей (SPEC-07) и телефон, по которому
 // работник видит свой заработок в Телеграм-боте (SPEC-23).
@@ -15,7 +16,7 @@ import { useCan } from '../lib/permissions'
 import { formatDate, formatPercentBp, formatSom, parsePercentBp, parseSom } from '../lib/format'
 import { missingWithFocus } from '../lib/forms'
 import { useAction, useLoad } from '../lib/hooks'
-import type { Employee } from '../lib/types'
+import type { Employee, EmployeeLogin, UserRow } from '../lib/types'
 
 type RuleKind = 'revenue_percent' | 'monthly_salary' | 'per_shift'
 
@@ -194,15 +195,109 @@ function PayRules({ employee }: { employee: Employee }) {
   )
 }
 
-/** Роли сотрудника значками: «кассир», «мастер»; у кассира без PIN — «без PIN» (ADR-081). */
+/** Роли сотрудника значками: «кассир», «мастер»; у кассира без PIN — «без PIN» (ADR-081);
+ *  личный вход — «вход: логин» (задача 005 Н1, только владельцу). */
 function Roles({ e }: { e: Employee }) {
-  if (!e.is_cashier && !e.is_master) return <span className="text-slate-400">—</span>
+  if (!e.is_cashier && !e.is_master && !e.login) return <span className="text-slate-400">—</span>
   return (
     <span className="flex flex-wrap gap-1">
       {e.is_cashier && <Badge tone="sky">кассир</Badge>}
       {e.is_cashier && e.has_pin === false && <Badge tone="rose">без PIN</Badge>}
       {e.is_master && <Badge tone="amber">мастер</Badge>}
+      {e.login && <Badge tone={e.login.active ? 'green' : 'slate'}>вход: {e.login.login}</Badge>}
     </span>
+  )
+}
+
+const MIN_PASSWORD = 8
+
+/** «Вход в программу» (задача 005 Н1, ADR-{n1}): логин и пароль сотрудника, включить и отключить.
+ *  Заводит и меняет только владелец; вход — администратор со своими правами, набор по умолчанию —
+ *  как у нового администратора, править — «Пользователи и права». Отключили сотрудника — вход
+ *  отключается сам. */
+function LoginBox({ employee }: { employee: Employee }) {
+  const [login, setLogin] = useState<EmployeeLogin | null>(employee.login ?? null)
+  const [form, setForm] = useState({ login: employee.login?.login ?? '', password: '' })
+  // Своя операция на каждое сохранение: двойное нажатие — тот же ответ, а не «логин занят» (I8).
+  const [opId, setOpId] = useState(newOpId)
+  const act = useAction()
+  const short = form.password !== '' && [...form.password].length < MIN_PASSWORD
+  const done = (u: UserRow, msg: string) => {
+    setLogin({ user_id: u.id, login: u.login, active: u.active })
+    setForm({ login: u.login, password: '' })
+    setOpId(newOpId())
+    toast(msg)
+  }
+  const create = () =>
+    void act.run(async () => {
+      if ([...form.password].length < MIN_PASSWORD) throw new Error(`Пароль не короче ${MIN_PASSWORD} символов`)
+      const u = await post<UserRow>('/users', { op_id: opId, login: form.login.trim(), password: form.password, employee_id: employee.id, role: 'admin' })
+      done(u, 'Вход заведён')
+    })
+  const save = (active?: boolean) =>
+    void act.run(async () => {
+      if (!login) return
+      if (short) throw new Error(`Пароль не короче ${MIN_PASSWORD} символов`)
+      const u = await patch<UserRow>(`/users/${login.user_id}`, {
+        op_id: opId,
+        ...(form.login.trim() !== login.login ? { login: form.login.trim() } : {}),
+        ...(form.password ? { password: form.password } : {}),
+        ...(active !== undefined ? { active } : {}),
+      })
+      done(u, active === undefined ? 'Вход сохранён' : active ? 'Вход включён' : 'Вход отключён')
+    })
+  return (
+    <div className="flex flex-col gap-2 border-t border-slate-200 pt-3" data-testid="login-box">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold">Вход в программу</h3>
+        {login ? login.active ? <Badge tone="green">включён</Badge> : <Badge>отключён</Badge> : <Badge>нет</Badge>}
+      </div>
+      <div className="text-xs text-slate-500">
+        Свой логин и пароль: сотрудник входит сам, видит «Мой заработок», кассир открывает смену на себя без PIN. Права — как у нового
+        администратора; изменить —{' '}
+        <Link to="/users" className="underline">
+          «Пользователи и права»
+        </Link>
+        .
+      </div>
+      {!employee.active && !login?.active && <div className="text-xs text-rose-700">Сотрудник отключён — сначала включите его.</div>}
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Логин">
+          <input id="employee-login" className="w-40" autoComplete="off" value={form.login} onChange={(e) => setForm({ ...form, login: e.target.value })} />
+        </Field>
+        <Field label={login ? 'Новый пароль' : 'Пароль'} hint={login ? 'пусто — не менять' : `не короче ${MIN_PASSWORD} символов`}>
+          <input
+            id="employee-password"
+            className="w-44"
+            type="password"
+            autoComplete="new-password"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+          />
+        </Field>
+        {login ? (
+          <>
+            <Button disabled={act.busy || !form.login.trim() || short} onClick={() => save()}>
+              Сохранить вход
+            </Button>
+            {login.active ? (
+              <Button variant="ghost" disabled={act.busy} onClick={() => save(false)}>
+                Отключить вход
+              </Button>
+            ) : (
+              <Button variant="secondary" disabled={act.busy || !employee.active} onClick={() => save(true)}>
+                Включить вход
+              </Button>
+            )}
+          </>
+        ) : (
+          <Button disabled={act.busy || !employee.active || !form.login.trim() || [...form.password].length < MIN_PASSWORD} onClick={create}>
+            Завести вход
+          </Button>
+        )}
+      </div>
+      <ErrorBox error={act.error} />
+    </div>
   )
 }
 
@@ -325,6 +420,7 @@ function EditModal({ employee, onClose, onSaved }: { employee: Employee; onClose
             Сохранить
           </Button>
         </div>
+        {owner && <LoginBox employee={employee} />}
         {owner && employee.is_cashier && <PinBox employee={employee} pin={pin} setPin={setPin} />}
         {owner && employee.is_cashier && <CashierRights employee={employee} />}
         {owner && <PayRules employee={employee} />}
@@ -537,7 +633,10 @@ function employeeCols(owner: boolean): ExportCol<Employee>[] {
     { label: 'ФИО', value: (e) => e.full_name },
     { label: 'Роли', value: (e) => [e.is_cashier && 'кассир', e.is_master && 'мастер'].filter(Boolean).join(', ') },
     { label: 'PIN', value: (e) => (e.is_cashier ? (e.has_pin === false ? 'без PIN' : 'задан') : '') },
-    ...colsIf<Employee>(owner, [{ label: 'Телефон', value: (e) => e.phone ?? '' }]),
+    ...colsIf<Employee>(owner, [
+      { label: 'Телефон', value: (e) => e.phone ?? '' },
+      { label: 'Вход', value: (e) => (e.login ? `${e.login.login}${e.login.active ? '' : ' (отключён)'}` : '') },
+    ]),
     { label: 'Статус', value: (e) => (e.active ? 'активен' : 'отключён') },
   ]
 }

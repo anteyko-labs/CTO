@@ -76,6 +76,8 @@ const SupplierCard = lazyPage(() => import('./pages/SupplierCard'))
 const Suppliers = lazyPage(() => import('./pages/Suppliers'))
 const Users = lazyPage(() => import('./pages/Users'))
 const Branches = lazyPage(() => import('./pages/Branches'))
+const Profile = lazyPage(() => import('./pages/Profile'))
+const MyEarnings = lazyPage(() => import('./pages/MyEarnings'))
 
 interface NavItem {
   to: string
@@ -85,6 +87,8 @@ interface NavItem {
   adminOnly?: boolean
   /** Пункт для владельца и администратора с этим правом (ADR-082, ADR-097); список — с любым из прав. */
   permission?: Permission | Permission[]
+  /** Только у личного входа сотрудника (задача 005 Н1, ADR-{n1}). */
+  employeeOnly?: boolean
 }
 
 // Меню: рабочие экраны сверху, справочники и настройки ниже. Категории живут внутри «Товаров»,
@@ -105,6 +109,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     items: [
       { to: '/expenses', label: 'Расходы', icon: 'expenses', permission: 'expenses' },
       { to: '/payroll', label: 'Расчёт', icon: 'payroll', permission: 'view_payroll' },
+      // Своё — без права «Расчёт» (задача 005 Н1): заработал, выплачено, должны.
+      { to: '/my-earnings', label: 'Мой заработок', icon: 'payroll', employeeOnly: true },
       { to: '/profit', label: 'Прибыль и убытки', icon: 'profit', ownerOnly: true },
       { to: '/income', label: 'Поступления', icon: 'income', permission: 'view_income' },
       { to: '/accounts', label: 'Счета', icon: 'wallet', permission: 'view_accounts' },
@@ -242,7 +248,7 @@ function Shell() {
   // Пункт по праву (ADR-097): без права администратор его не видит.
   const allowed = (p?: Permission | Permission[]) => !p || (Array.isArray(p) ? p : [p]).some((x) => can(user, x))
   const items = (list: NavItem[]) =>
-    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && allowed(it.permission))
+    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.employeeOnly || Boolean(user.employee_id)) && allowed(it.permission))
   const badge = (to: string) =>
     to === '/notifications' && unseen > 0 ? (
       <span className="ml-auto rounded-full bg-rose-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{unseen > 99 ? '99+' : unseen}</span>
@@ -297,7 +303,9 @@ function Shell() {
         </div>
         {nav}
         <div className="mt-6 border-t border-slate-700 px-3 pt-4 text-sm text-slate-300">
-          <div className="font-medium text-white">{user.full_name}</div>
+          <NavLink to="/profile" className="font-medium text-white hover:underline" title="Профиль: сменить свой пароль">
+            {user.full_name}
+          </NavLink>
           <div className="text-xs">
             {user.login}
             {user.full_name !== roleLabel && ` · ${roleLabel}`}
@@ -409,6 +417,9 @@ function Shell() {
           <Route path="/settings/labels" element={<LabelSettingsPage />} />
           {owner && <Route path="/users" element={<Users />} />}
           {owner && <Route path="/settings/branches" element={<Branches />} />}
+          {/* Профиль и смена своего пароля — у любого входа; «Мой заработок» — у входа с сотрудником (задача 005 Н1). */}
+          <Route path="/profile" element={<Profile />} />
+          {user.employee_id && <Route path="/my-earnings" element={<MyEarnings />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </Suspense>
@@ -450,7 +461,9 @@ function Shell() {
             <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-slate-300" />
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm">
-                <div className="font-semibold">{user.full_name}</div>
+                <NavLink to="/profile" className="font-semibold text-sky-700" onClick={() => setOpen(false)}>
+                  {user.full_name}
+                </NavLink>
                 {user.full_name !== roleLabel && <div className="text-xs text-slate-500">{roleLabel}</div>}
                 <div className="mt-1">
                   <BranchSwitch user={user} tone="light" />
