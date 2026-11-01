@@ -179,6 +179,21 @@ impl W {
         v
     }
 
+    /// «Продажа только при открытой смене» (задача 005 Н4) — включить или выключить.
+    async fn sale_needs_shift(&self, on: bool) {
+        let body = json!({ "op_id": Uuid::now_v7(), "sale_requires_shift": on });
+        let (s, _, v) = call(
+            &self.app,
+            "PUT",
+            "/api/v1/settings/cashier",
+            Some(&self.owner),
+            Some(body),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["sale_requires_shift"], on);
+    }
+
     async fn get(&self, uri: &str) -> Value {
         let (s, _, v) = call(&self.app, "GET", uri, Some(&self.owner), None).await;
         assert_eq!(s, StatusCode::OK, "{uri}: {v}");
@@ -685,8 +700,12 @@ async fn cash_to_bank_in_open_and_closed_shift(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn no_shift_then_counted_at_open_and_cost_from_original(pool: PgPool) {
     let w = W::new(pool).await;
+    // Чек без смены — только с выключенной «Продажа только при открытой смене» (задача 005 Н4).
+    w.sale_needs_shift(false).await;
     // Чек без смены: пересчёта не было — меняется «Касса».
     let (a, _) = w.sale(json!([cash(100_000)])).await;
+    // «Изменить оплату» настройка не ограничивает: дальше — с включённой, смены всё ещё нет.
+    w.sale_needs_shift(true).await;
     let cost: i64 =
         sqlx::query_scalar("select cost_tyiyn from sale_lines where sale_id = $1::uuid")
             .bind(&a)
@@ -727,6 +746,7 @@ async fn no_shift_then_counted_at_open_and_cost_from_original(pool: PgPool) {
 
     // Ещё чек без смены, потом смена открыта с «Пересчитал» — поправка пересчёта при открытии,
     // удержания нет, «Касса» не меняется.
+    w.sale_needs_shift(false).await;
     let (b, _) = w.sale(json!([cash(100_000)])).await;
     let balance = w.balance(&w.till).await;
     w.ok(

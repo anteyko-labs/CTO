@@ -287,6 +287,15 @@ impl World {
         )
         .await;
         let cashier = e["id"].as_str().unwrap().to_string();
+        // Онлайн-чек — только при открытой смене (задача 005 Н4).
+        ok(
+            &app,
+            "POST",
+            "/api/v1/shifts/open",
+            &owner,
+            json!({ "op_id": Uuid::now_v7(), "cashier_employee_id": cashier, "cashier_pin": "1234" }),
+        )
+        .await;
         let accounts = get(&app, "/api/v1/cash/accounts", &owner).await;
         let safe = accounts
             .as_array()
@@ -1387,6 +1396,16 @@ async fn debtor_texts_settings_and_send_to_self(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn payment_switch_of_one_branch_keeps_others_pending(pool: PgPool) {
     let w = World::new(pool, None).await;
+    // Ежемесячное «ваш долг» (1-го числа, со 2-го — догоняет) к этой проверке не относится:
+    // без выключения тест зависел от дня месяца.
+    ok(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/client-messages",
+        &w.owner,
+        json!({ "monthly_enabled": false }),
+    )
+    .await;
     let azis = w.person("Азиз", "Касымов", "0555 11 22 33").await;
     w.link_chat(801, azis, "0555 11 22 33").await;
     w.debt(azis, 600_000).await;
