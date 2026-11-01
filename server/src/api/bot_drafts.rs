@@ -886,10 +886,8 @@ pub async fn store_draft(
     kind: &'static str,
     summary: String,
 ) -> AppResult<Prepared> {
-    if user.role != Role::Owner && !matches!(op, DraftOp::Expense(_)) {
-        return Ok(Prepared::Refused(
-            "Администратору через бот — только расход из кассы смены.".into(),
-        ));
+    if user.role != Role::Owner && !admin_may(&op) {
+        return Ok(Prepared::Refused(ADMIN_ONLY.into()));
     }
     if posted_today(conn, user.branch_id).await? >= DAILY_LIMIT {
         return Ok(Prepared::Refused(LIMIT_TEXT.into()));
@@ -899,6 +897,50 @@ pub async fn store_draft(
         kind,
         summary,
         hint: String::new(),
+    };
+    check_and_store(conn, user, chat_id, op_id, built).await
+}
+
+const ADMIN_ONLY: &str =
+    "Администратору через бот — только расход из кассы смены и старый долг клиента.";
+
+/// Черновики администратора: расход из кассы смены (SPEC-40 §4) и старый долг клиента из
+/// тетради (помощник, SPEC-40 «Дополнено: помощник»). Остальные — только владельцу.
+fn admin_may(op: &DraftOp) -> bool {
+    matches!(op, DraftOp::Expense(_) | DraftOp::OldDebt(_))
+}
+
+/// Черновик администратора из вопроса своими словами (SPEC-40 «Дополнено: помощник»): расход из
+/// кассы смены (`draft_expense`) или старый долг клиента из тетради (`draft_old_debt`) — только
+/// администратору, чей это чат. Права на инструмент проверяет `bot_admin::helper_call`, ещё раз —
+/// проверка той же функцией, что проводит. Без остатка кассы в тексте (I13).
+pub async fn prepare_admin(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    chat_id: i64,
+    tool: &str,
+    input: &Value,
+) -> AppResult<Prepared> {
+    let mine = crate::api::bot_admin::chat_user(conn, chat_id)
+        .await?
+        .is_some_and(|(u, _)| u.id == user.id && u.branch_id == user.branch_id);
+    if user.role != Role::Admin || !mine {
+        return Ok(Prepared::Refused(
+            "Черновик готовится только администратору в его чате.".into(),
+        ));
+    }
+    if posted_today(conn, user.branch_id).await? >= DAILY_LIMIT {
+        return Ok(Prepared::Refused(LIMIT_TEXT.into()));
+    }
+    let op_id = ops::new_id();
+    let built = match tool {
+        "draft_expense" => admin_expense(conn, user, op_id, input).await?,
+        "draft_old_debt" => admin_old_debt(conn, user, op_id, input).await?,
+        _ => Err(ADMIN_ONLY.to_string()),
+    };
+    let built = match built {
+        Ok(b) => b,
+        Err(why) => return Ok(Prepared::Refused(why)),
     };
     check_and_store(conn, user, chat_id, op_id, built).await
 }
@@ -969,6 +1011,101 @@ macro_rules! take {
             Err(why) => return Ok(Err(why)),
         }
     };
+}
+
+/// Расход администратора: статья — действующая и не «только владельцу», откуда — касса смены,
+/// дата — сегодня (ADR-037), как «💸 Расход» по шагам.
+async fn admin_expense(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    op_id: Uuid,
+    input: &Value,
+) -> Step {
+    let branch_id = user.branch_id;
+    let article_q = take!(need(input, "article", "статья расхода"));
+    let sum = take!(amount(input, "amount"));
+    crate::api::expenses::ensure_articles(conn, branch_id).await?;
+    let all = sqlx::query!(
+        "select id, name from expense_articles where branch_id = $1 and active and not owner_only order by name",
+        branch_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let names = all
+        .iter()
+        .map(|a| a.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let wanted = norm(&article_q);
+    let found: Vec<_> = all
+        .into_iter()
+        .filter(|a| norm(&a.name) == wanted || sounds_like(&a.name, &article_q))
+        .collect();
+    let article = take!(choose(
+        found,
+        |a| a.name.clone(),
+        |a| norm(&a.name) == wanted,
+        format!("Статья «{article_q}» не найдена. Статьи: {names}."),
+        format!("По «{article_q}» подходит несколько статей"),
+    ));
+    let text = comment(input, "comment");
+    let payee: String = comment(input, "payee").chars().take(100).collect();
+    if payee.is_empty()
+        && crate::api::pnl::profit_settings(conn, branch_id)
+            .await?
+            .expense_payee
+            == "required"
+    {
+        return Ok(Err("укажите, кому отдали деньги (поле «Кому»)".into()));
+    }
+    let till = crate::api::cash::default_account(conn, branch_id).await?;
+    let till_name = sqlx::query_scalar!("select name from cash_accounts where id = $1", till)
+        .fetch_one(&mut *conn)
+        .await?;
+    let day = today(conn).await?;
+    let to_whom = if payee.is_empty() {
+        String::new()
+    } else {
+        format!("\nКому: {}", quoted(&payee))
+    };
+    let summary = format!(
+        "Расход\nСтатья: {}\nСумма: {}{to_whom}\nОткуда: касса смены «{}»\nДата: {}\nКомментарий: {}",
+        one_line(&article.name),
+        format_som(sum),
+        one_line(&till_name),
+        day.format("%d.%m.%Y"),
+        quoted(&text)
+    );
+    Ok(Ok(Built {
+        op: DraftOp::Expense(ExpenseReq {
+            op_id,
+            article_id: article.id,
+            amount_tyiyn: sum,
+            source: Some("account".into()),
+            account_id: Some(till),
+            expense_date: None,
+            comment: text,
+            payee,
+        }),
+        kind: "expense",
+        summary,
+        hint: String::new(),
+    }))
+}
+
+/// Старый долг клиента из тетради — администратору: тот же черновик, что у владельца (SPEC-38),
+/// только клиент (не поставщик) и только существующая карточка.
+async fn admin_old_debt(
+    conn: &mut PgConnection,
+    user: &CurrentUser,
+    op_id: Uuid,
+    input: &Value,
+) -> Step {
+    let who = take!(need(input, "client", "клиент"));
+    let sum = take!(amount(input, "amount"));
+    let text = comment(input, "comment");
+    let p = take!(find_party(conn, user.branch_id, Some("customer"), &who).await?);
+    old_debt(conn, op_id, input, p, sum, text).await
 }
 
 fn balance_hint(src: &Source) -> String {
@@ -2037,8 +2174,8 @@ async fn decide(
     }
     let op: DraftOp =
         serde_json::from_value(d.payload).map_err(|e| AppError::Internal(e.to_string()))?;
-    // Администратору — только расход (черновики других видов готовятся только владельцу).
-    if owner.role != Role::Owner && !matches!(op, DraftOp::Expense(_)) {
+    // Администратору — только расход и старый долг клиента (остальные черновики — владельцу).
+    if owner.role != Role::Owner && !admin_may(&op) {
         return Ok(NOT_YOURS.into());
     }
     // За 10 минут сотрудника или клиента могли отключить, товар — убрать в архив: такой черновик

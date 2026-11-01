@@ -86,6 +86,8 @@ async fn status(State(state): State<AppState>, Owner(user): Owner) -> AppResult<
 #[derive(Serialize)]
 struct UsageOut {
     questions: i64,
+    /// Из них — вопросы администраторов помощнику (SPEC-40 «Дополнено: помощник»).
+    admin_questions: i64,
     input_tokens: i64,
     output_tokens: i64,
 }
@@ -95,6 +97,8 @@ struct QuestionsOut {
     /// Вопросы текстом включены: на сервере заданы ключи бота и сервиса разбора вопросов.
     enabled: bool,
     daily_limit: Option<i64>,
+    /// Помощник администраторов филиала не выключен всем (SPEC-40 «Дополнено: помощник»).
+    admins_on: bool,
     today: UsageOut,
     month: UsageOut,
 }
@@ -111,26 +115,34 @@ async fn questions_usage(
            select count(*) filter (where q.asked_at >= b.day) as "day_n!",
                   coalesce(sum(q.input_tokens) filter (where q.asked_at >= b.day), 0)::bigint as "day_in!",
                   coalesce(sum(q.output_tokens) filter (where q.asked_at >= b.day), 0)::bigint as "day_out!",
+                  count(*) filter (where q.asked_at >= b.day and u.role = 'admin') as "day_admin!",
                   count(q.id) as "month_n!",
+                  count(q.id) filter (where u.role = 'admin') as "month_admin!",
                   coalesce(sum(q.input_tokens), 0)::bigint as "month_in!",
                   coalesce(sum(q.output_tokens), 0)::bigint as "month_out!"
            from b left join bot_questions q
-             on q.branch_id = $1 and q.asked_at >= b.month and q.error is distinct from $2"#,
+             on q.branch_id = $1 and q.asked_at >= b.month and q.error is distinct from $2
+           left join users u on u.id = q.user_id"#,
         user.branch_id,
         assistant::LIMIT_ERROR
     )
     .fetch_one(&state.pool)
     .await?;
+    let mut conn = state.pool.acquire().await?;
+    let admins_on = crate::api::bot_admin::helper_common(&mut conn, user.branch_id).await?;
     Ok(Json(QuestionsOut {
         enabled: state.telegram_bot && state.assistant_daily_limit.is_some(),
         daily_limit: state.assistant_daily_limit,
+        admins_on,
         today: UsageOut {
             questions: r.day_n,
+            admin_questions: r.day_admin,
             input_tokens: r.day_in,
             output_tokens: r.day_out,
         },
         month: UsageOut {
             questions: r.month_n,
+            admin_questions: r.month_admin,
             input_tokens: r.month_in,
             output_tokens: r.month_out,
         },
@@ -787,7 +799,7 @@ pub struct Follow {
 
 impl Follow {
     /// Черновик операции с кнопками подтверждения.
-    fn draft(d: &crate::api::bot_drafts::Shown) -> Self {
+    pub(crate) fn draft(d: &crate::api::bot_drafts::Shown) -> Self {
         Self {
             text: d.summary.clone(),
             inline: vec![
@@ -1202,7 +1214,10 @@ async fn message(
         }
         // Чат администратора (ADR-135, ADR-142, SPEC-40): меню по его правам, поиск, расход;
         // код привязки и `/start` решает дальше `handle_text`.
-        if !owner && let Some(r) = crate::api::bot_admin::on_message(conn, chat_id, raw).await? {
+        if !owner
+            && let Some(r) =
+                crate::api::bot_admin::on_message(conn, assistant, chat_id, raw).await?
+        {
             return Ok(r);
         }
     }
@@ -4789,10 +4804,17 @@ async fn store_offset(pool: &PgPool, offset: i64) {
     }
 }
 
-/// Чат владельца в режиме вопросов. Ошибка базы — «нет»: сообщение обработается обычным путём.
+/// Чат владельца в режиме вопросов или чат администратора с включённым помощником (SPEC-40
+/// «Дополнено: помощник»). Ошибка базы — «нет»: сообщение обработается обычным путём.
 async fn is_asking_chat(pool: &PgPool, chat_id: i64) -> bool {
     match pool.acquire().await {
-        Ok(mut conn) => matches!(owner_asking(&mut conn, chat_id).await, Ok(true)),
+        Ok(mut conn) => {
+            matches!(owner_asking(&mut conn, chat_id).await, Ok(true))
+                || matches!(
+                    crate::api::bot_admin::helper_chat(&mut conn, chat_id).await,
+                    Ok(true)
+                )
+        }
         Err(_) => false,
     }
 }

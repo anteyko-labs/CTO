@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from bot_questions q join users u on u.id = q.user_id\n           where q.branch_id = $1 and u.role = 'admin'\n             and q.asked_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'\n             and q.error is distinct from $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cc0f519d8fb153c0b63767d5f30570070bef9b5b45e4a733aef784b55bca40b3"
+}

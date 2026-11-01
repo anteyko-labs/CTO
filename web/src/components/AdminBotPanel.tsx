@@ -2,10 +2,88 @@
 // правам и выключатели событий, которые владелец ему присылает. По умолчанию лента не идёт; в
 // списке — только события без денег владельца (I13). Только владелец, в окне «Телеграм» из
 // «Пользователей».
-import { ErrorBox, Loading, toast } from './ui'
-import { type AdminBot, applyAdminFeed, enabledCount, switchAdminEvent } from '../lib/adminBot'
+import { useState } from 'react'
+import { Button, ErrorBox, Loading, toast } from './ui'
+import { type AdminBot, type AdminBotHelper, applyAdminFeed, enabledCount, helperLimit, helperStatus, switchAdminEvent } from '../lib/adminBot'
 import { get, newOpId, put } from '../lib/api'
 import { useAction, useLoad } from '../lib/hooks'
+
+/** Помощник в боте (SPEC-40 «Дополнено: помощник»): выключатель и лимит вопросов в день. */
+function HelperBlock({
+  userId,
+  helper,
+  onSaved,
+  reload,
+}: {
+  userId: string
+  helper: AdminBotHelper
+  onSaved: (h: AdminBotHelper) => void
+  reload: () => void
+}) {
+  const act = useAction()
+  const [limit, setLimit] = useState(String(helper.daily_limit))
+  const parsed = helperLimit(limit)
+  // Выключатель меняется сразу; не сохранилось — настройка перечитывается с сервера.
+  const save = (on: boolean, daily: number, done: string) => {
+    onSaved({ ...helper, on, daily_limit: daily })
+    void act.run(async () => {
+      try {
+        const saved = await put<{ on: boolean; daily_limit: number }>(`/users/${userId}/bot-helper`, { op_id: newOpId(), on, daily_limit: daily })
+        onSaved({ ...helper, ...saved })
+        toast(done)
+      } catch (e) {
+        reload()
+        throw e
+      }
+    })
+  }
+  return (
+    <div data-testid="admin-bot-helper">
+      <div className="font-medium">Помощник в боте</div>
+      <div className="text-slate-500">
+        Администратор пишет своими словами («сколько осталось Mobil 5W-30», «кто должен больше всех», «запиши расход 500 на воду») — отвечает помощник, только
+        по пунктам выше, которые у него есть, и только по его филиалу. Прибыли, себестоимости, сводки и денег владельца у помощника нет. Расход и старый долг —
+        только черновиком с «✅ Провести».
+      </div>
+      <label className="mt-1 inline-flex items-center gap-2">
+        <input
+          type="checkbox"
+          className="h-4 w-4"
+          data-testid="admin-bot-helper-on"
+          checked={helper.on}
+          disabled={act.busy}
+          onChange={(e) =>
+            save(e.target.checked, helper.daily_limit, e.target.checked ? 'Помощник в боте включён' : 'Помощник в боте выключен')
+          }
+        />
+        <span>Включить помощника этому администратору</span>
+      </label>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <label htmlFor={`helper-limit-${userId}`}>Вопросов в день, не больше</label>
+        <input
+          id={`helper-limit-${userId}`}
+          data-testid="admin-bot-helper-limit"
+          className="w-20 rounded-md border border-slate-300 px-2 py-1"
+          inputMode="numeric"
+          value={limit}
+          onChange={(e) => setLimit(e.target.value)}
+        />
+        <Button
+          variant="secondary"
+          disabled={act.busy || parsed === null || parsed === helper.daily_limit}
+          onClick={() => parsed !== null && save(helper.on, parsed, 'Лимит вопросов сохранён')}
+        >
+          Сохранить
+        </Button>
+        {parsed === null && <span className="text-rose-700">от 1 до 500</span>}
+      </div>
+      <div className="mt-1 text-slate-600" data-testid="admin-bot-helper-status">
+        {helperStatus(helper)}
+      </div>
+      <ErrorBox error={act.error} />
+    </div>
+  )
+}
 
 export function AdminBotPanel({ userId }: { userId: string }) {
   const st = useLoad(() => get<AdminBot>(`/users/${userId}/bot`), [userId])
@@ -47,6 +125,7 @@ export function AdminBotPanel({ userId }: { userId: string }) {
           ))}
         </ul>
       </div>
+      <HelperBlock userId={userId} helper={bot.helper} onSaved={(helper) => st.setData((prev) => prev && { ...prev, helper })} reload={st.reload} />
       <div>
         <div className="flex items-baseline justify-between gap-2">
           <span className="font-medium">События в бот</span>

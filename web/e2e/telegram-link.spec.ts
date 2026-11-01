@@ -123,6 +123,26 @@ test('Телеграм администратора: «Что видит в бо
   await row.getByTestId('user-telegram-btn').click()
   await expect(page.getByTestId('admin-bot-event-shift.open')).toBeChecked()
   await expect(page.getByTestId('admin-bot-event-receipt.post')).not.toBeChecked()
+
+  // SPEC-40 «Дополнено: помощник»: по умолчанию выключен; владелец включает и ставит лимит.
+  const helper = page.getByTestId('admin-bot-helper')
+  await expect(helper.getByTestId('admin-bot-helper-on')).not.toBeChecked()
+  await expect(helper.getByTestId('admin-bot-helper-status')).toContainText('Выключен')
+  await expect(helper.getByTestId('admin-bot-helper-limit')).toHaveValue('50')
+  await expect(helper).not.toContainText('прибыль владельца')
+  await helper.getByTestId('admin-bot-helper-on').check()
+  await expect(page.getByText('Помощник в боте включён')).toBeVisible()
+  await expect(helper.getByTestId('admin-bot-helper-status')).toContainText(/сегодня 0 из 50|не настроен/)
+  await helper.getByTestId('admin-bot-helper-limit').fill('501')
+  await expect(helper.getByText('от 1 до 500')).toBeVisible()
+  await helper.getByTestId('admin-bot-helper-limit').fill('20')
+  await helper.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(page.getByText('Лимит вопросов сохранён')).toBeVisible()
+  await page.getByTestId('user-telegram-modal').getByRole('button', { name: 'Закрыть' }).click()
+  await row.getByTestId('user-telegram-btn').click()
+  await expect(page.getByTestId('admin-bot-helper-on')).toBeChecked()
+  await expect(page.getByTestId('admin-bot-helper-limit')).toHaveValue('20')
+  await expect(page.getByTestId('admin-bot-helper-status')).toContainText(/из 20|не настроен/)
 })
 
 // ADR-{h18}, SPEC-40 §10–§11: сотрудник со входом сам привязывает свой Телеграм в «Мой Телеграм»;
