@@ -1387,6 +1387,16 @@ async fn debtor_texts_settings_and_send_to_self(pool: PgPool) {
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn payment_switch_of_one_branch_keeps_others_pending(pool: PgPool) {
     let w = World::new(pool, None).await;
+    // Рассылка «раз в месяц» 1–3 числа досылается при любом проходе — здесь проверяется только
+    // «Получили оплату», иначе тест падал бы в эти дни.
+    ok(
+        &w.app,
+        "PUT",
+        "/api/v1/settings/client-messages",
+        &w.owner,
+        json!({ "monthly_enabled": false }),
+    )
+    .await;
     let azis = w.person("Азиз", "Касымов", "0555 11 22 33").await;
     w.link_chat(801, azis, "0555 11 22 33").await;
     w.debt(azis, 600_000).await;
