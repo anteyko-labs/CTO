@@ -910,11 +910,17 @@ pub async fn stock(
             });
             let mut have: Vec<_> = list.iter().filter(|p| p.stock_qty != 0).collect();
             have.sort_by_key(|p| std::cmp::Reverse(p.stock_value_tyiyn.unwrap_or(0)));
+            // Стоимость склада — только владельцу, на уровне функции (задача 005, Н2; I13).
+            let owner = user.role == crate::auth::Role::Owner;
             let mut lines = vec![format!(
-                "Склад на сейчас{}: товаров с остатком {}, стоимость остатков {}{}",
+                "Склад на сейчас{}: товаров с остатком {}{}{}",
                 query.map(|q| format!(" по «{q}»")).unwrap_or_default(),
                 have.len(),
-                format_som(value),
+                if owner {
+                    format!(", стоимость остатков {}", format_som(value))
+                } else {
+                    String::new()
+                },
                 if list.len() >= 500 {
                     " (первые 500 карточек)"
                 } else {
@@ -926,10 +932,17 @@ pub async fn stock(
                 have.iter()
                     .map(|p| {
                         format!(
-                            "— {}: {}, стоимость {}, цена продажи {}",
+                            "— {}: {}{}, цена продажи {}",
                             p.name,
                             crate::domain::qty::stock_text(p.stock_qty, &p.unit, p.container_ml),
-                            format_som(p.stock_value_tyiyn.unwrap_or(0)),
+                            if owner {
+                                format!(
+                                    ", стоимость {}",
+                                    format_som(p.stock_value_tyiyn.unwrap_or(0))
+                                )
+                            } else {
+                                String::new()
+                            },
                             format_som(p.sale_price_tyiyn)
                         )
                     })

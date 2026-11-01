@@ -29,7 +29,8 @@ use crate::ops;
 
 /// Черновик живёт 10 минут.
 pub const DRAFT_MINUTES: i32 = 10;
-/// Не больше 30 проведённых через бот операций в сутки на филиал.
+/// Не больше 30 проведённых через бот операций в сутки: у владельцев филиала — общий предел, у
+/// каждого сотрудника — свой (задача 005, Н6: операции сотрудников предел владельца не съедают).
 pub const DAILY_LIMIT: i64 = 30;
 /// Строк в приходе через бот — не больше.
 const MAX_LINES: usize = 30;
@@ -378,23 +379,36 @@ pub async fn expire_drafts(conn: &mut PgConnection) -> AppResult<u64> {
 
 /// Сколько операций через бот проведено сегодня — под блокировкой филиала: два нажатия
 /// одновременно не превысят предел (ADR-070). Блокировка держится до конца транзакции.
-async fn posted_today_locked(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+async fn posted_today_locked(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<i64> {
     sqlx::query!(
         "select pg_advisory_xact_lock(hashtextextended($1::text, 7))",
-        format!("bot_daily:{branch_id}")
+        format!("bot_daily:{}", limit_key(user))
     )
     .execute(&mut *conn)
     .await?;
-    posted_today(conn, branch_id).await
+    posted_today(conn, user).await
 }
 
-/// Сколько операций проведено через бот сегодня (по Бишкеку) в филиале.
-async fn posted_today(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
+/// Чей предел: владельцев филиала — филиал, сотрудника — он сам.
+fn limit_key(user: &CurrentUser) -> Uuid {
+    if user.role == Role::Owner {
+        user.branch_id
+    } else {
+        user.id
+    }
+}
+
+/// Сколько операций проведено через бот сегодня (по Бишкеку): у владельца — владельцами филиала,
+/// у сотрудника — им самим.
+async fn posted_today(conn: &mut PgConnection, user: &CurrentUser) -> AppResult<i64> {
+    let staff = (user.role != Role::Owner).then_some(user.id);
     Ok(sqlx::query_scalar!(
-        r#"select count(*) as "n!" from bot_drafts
-           where branch_id = $1 and status = 'posted'
-             and finished_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'"#,
-        branch_id
+        r#"select count(*) as "n!" from bot_drafts d join users u on u.id = d.user_id
+           where d.branch_id = $1 and d.status = 'posted'
+             and d.finished_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'
+             and case when $2::uuid is null then u.role <> 'admin' else d.user_id = $2 end"#,
+        user.branch_id,
+        staff
     )
     .fetch_one(&mut *conn)
     .await?)
@@ -855,7 +869,7 @@ pub async fn prepare(
             "Черновики операций готовятся только владельцу в режиме «💬 Спросить».".into(),
         ));
     }
-    if posted_today(conn, user.branch_id).await? >= DAILY_LIMIT {
+    if posted_today(conn, user).await? >= DAILY_LIMIT {
         return Ok(Prepared::Refused(LIMIT_TEXT.into()));
     }
     let op_id = ops::new_id();
@@ -889,7 +903,7 @@ pub async fn store_draft(
     if user.role != Role::Owner && !admin_may(&op) {
         return Ok(Prepared::Refused(ADMIN_ONLY.into()));
     }
-    if posted_today(conn, user.branch_id).await? >= DAILY_LIMIT {
+    if posted_today(conn, user).await? >= DAILY_LIMIT {
         return Ok(Prepared::Refused(LIMIT_TEXT.into()));
     }
     let built = Built {
@@ -929,7 +943,7 @@ pub async fn prepare_admin(
             "Черновик готовится только администратору в его чате.".into(),
         ));
     }
-    if posted_today(conn, user.branch_id).await? >= DAILY_LIMIT {
+    if posted_today(conn, user).await? >= DAILY_LIMIT {
         return Ok(Prepared::Refused(LIMIT_TEXT.into()));
     }
     let op_id = ops::new_id();
@@ -2168,7 +2182,7 @@ async fn decide(
                 .into(),
         );
     }
-    if posted_today_locked(&mut *conn, owner.branch_id).await? >= DAILY_LIMIT {
+    if posted_today_locked(&mut *conn, &owner).await? >= DAILY_LIMIT {
         finish(&mut *conn, id, "rejected", json!({ "reason": LIMIT_TEXT })).await?;
         return Ok(LIMIT_TEXT.into());
     }

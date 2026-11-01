@@ -124,12 +124,15 @@ test('Телеграм администратора: «Что видит в бо
   await expect(page.getByTestId('admin-bot-event-shift.open')).toBeChecked()
   await expect(page.getByTestId('admin-bot-event-receipt.post')).not.toBeChecked()
 
-  // SPEC-40 «Дополнено: помощник»: по умолчанию выключен; владелец включает и ставит лимит.
+  // SPEC-40 «Дополнено: помощник»: по умолчанию включён (задача 005, ответ 9б); владелец
+  // выключает каждому и ставит лимит.
   const helper = page.getByTestId('admin-bot-helper')
-  await expect(helper.getByTestId('admin-bot-helper-on')).not.toBeChecked()
-  await expect(helper.getByTestId('admin-bot-helper-status')).toContainText('Выключен')
+  await expect(helper.getByTestId('admin-bot-helper-on')).toBeChecked()
   await expect(helper.getByTestId('admin-bot-helper-limit')).toHaveValue('50')
   await expect(helper).not.toContainText('прибыль владельца')
+  await helper.getByTestId('admin-bot-helper-on').uncheck()
+  await expect(page.getByText('Помощник в боте выключен')).toBeVisible()
+  await expect(helper.getByTestId('admin-bot-helper-status')).toContainText('Выключен')
   await helper.getByTestId('admin-bot-helper-on').check()
   await expect(page.getByText('Помощник в боте включён')).toBeVisible()
   await expect(helper.getByTestId('admin-bot-helper-status')).toContainText(/сегодня 0 из 50|не настроен/)

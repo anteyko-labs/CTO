@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"n!\" from bot_drafts d join users u on u.id = d.user_id\n           where d.branch_id = $1 and d.status = 'posted'\n             and d.finished_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'\n             and case when $2::uuid is null then u.role <> 'admin' else d.user_id = $2 end",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "45c75aef723f0406fc81340f702aceee274b12f792858cba26f09b0172391227"
+}

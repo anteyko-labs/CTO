@@ -332,25 +332,16 @@ pub async fn answer(
     text: &str,
 ) -> AppResult<Answer> {
     let question: String = text.trim().chars().take(MAX_QUESTION_CHARS).collect();
+    // Вопросы сотрудников (у каждого свой дневной и часовой предел, SPEC-40 «Дополнено:
+    // помощник») в пределы владельца не входят (задача 005, Н6).
     let used = sqlx::query!(
         r#"with b as (select ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek' as day)
            select count(*) filter (where q.asked_at >= b.day) as "day!",
                   count(*) filter (where q.asked_at > now() - interval '1 hour') as "hour!"
            from b join bot_questions q
              on q.branch_id = $1 and q.asked_at >= least(b.day, now() - interval '1 hour')
-            and q.error is distinct from $2"#,
-        branch_id,
-        LIMIT_ERROR
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    // Вопросы администраторов (у них свой дневной лимит, SPEC-40 «Дополнено: помощник») в
-    // дневной лимит владельца не входят; часовой — общий на филиал.
-    let admins_today = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from bot_questions q join users u on u.id = q.user_id
-           where q.branch_id = $1 and u.role = 'admin'
-             and q.asked_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'
-             and q.error is distinct from $2"#,
+            and q.error is distinct from $2
+           join users u on u.id = q.user_id and u.role <> 'admin'"#,
         branch_id,
         LIMIT_ERROR
     )
@@ -358,7 +349,7 @@ pub async fn answer(
     .await?;
     // Часовой лимит общий с накладными по фото (ADR-098); дневной — только вопросы.
     let invoices = invoices_last_hour(conn, branch_id).await?;
-    let limit_text = if used.day.saturating_sub(admins_today) >= a.daily_limit {
+    let limit_text = if used.day >= a.daily_limit {
         Some(LIMIT_TEXT)
     } else if used.hour.saturating_add(invoices) >= HOURLY_LIMIT {
         Some(HOUR_LIMIT_TEXT)
@@ -585,7 +576,7 @@ const ADMIN_SYSTEM: &str = "Ты — помощник администратор
 /// правам этого администратора (`bot_admin::helper_tools`) и только его филиал; денег владельца
 /// нет ни в инструментах, ни в их результатах, а ответ ещё раз проходит `bot_admin::scrub`.
 /// Включён ли помощник, решает `bot_admin`; здесь — дневной лимит этого администратора
-/// (`daily_limit`) и общий часовой лимит филиала (ADR-098).
+/// (`daily_limit`) и его собственный часовой предел (`HOURLY_LIMIT`, задача 005, Н6).
 pub async fn answer_admin(
     conn: &mut PgConnection,
     a: &Assistant,
@@ -596,19 +587,22 @@ pub async fn answer_admin(
 ) -> AppResult<Answer> {
     let question: String = text.trim().chars().take(MAX_QUESTION_CHARS).collect();
     let branch_id = user.branch_id;
-    let day = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from bot_questions
-           where user_id = $1
-             and asked_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek'
+    // Пределы — его собственные: дневной из настройки и часовой (задача 005, Н6); пределы
+    // владельца и других сотрудников его вопросы не съедают.
+    let used = sqlx::query!(
+        r#"select count(*) filter (where asked_at >= ((now() at time zone 'Asia/Bishkek')::date)::timestamp at time zone 'Asia/Bishkek') as "day!",
+                  count(*) filter (where asked_at > now() - interval '1 hour') as "hour!"
+           from bot_questions
+           where user_id = $1 and asked_at >= now() - interval '2 days'
              and error is distinct from $2"#,
         user.id,
         LIMIT_ERROR
     )
     .fetch_one(&mut *conn)
     .await?;
-    let limit_text = if day >= daily_limit {
+    let limit_text = if used.day >= daily_limit {
         Some(ADMIN_LIMIT_TEXT)
-    } else if used_last_hour(conn, branch_id).await? >= HOURLY_LIMIT {
+    } else if used.hour >= HOURLY_LIMIT {
         Some(HOUR_LIMIT_TEXT)
     } else {
         None
@@ -692,13 +686,14 @@ async fn invoices_last_hour(conn: &mut PgConnection, branch_id: Uuid) -> AppResu
     .await?)
 }
 
-/// Сколько обращений к сервису за последний час у филиала: вопросы (кроме отказов по лимиту)
-/// и накладные по фото — общий часовой лимит (ADR-098).
+/// Сколько обращений к сервису за последний час у филиала: вопросы владельца (кроме отказов по
+/// лимиту) и накладные по фото — общий часовой лимит (ADR-098). Вопросы сотрудников — в их
+/// собственном пределе (задача 005, Н6).
 pub async fn used_last_hour(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<i64> {
     let questions = sqlx::query_scalar!(
-        r#"select count(*) as "n!" from bot_questions
-           where branch_id = $1 and asked_at > now() - interval '1 hour'
-             and error is distinct from $2"#,
+        r#"select count(*) as "n!" from bot_questions q join users u on u.id = q.user_id
+           where q.branch_id = $1 and q.asked_at > now() - interval '1 hour'
+             and q.error is distinct from $2 and u.role <> 'admin'"#,
         branch_id,
         LIMIT_ERROR
     )

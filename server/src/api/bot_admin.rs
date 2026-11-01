@@ -454,8 +454,9 @@ pub async fn on_message(
     if !crate::api::telegram::is_question(t) {
         return Ok(answer(help_with_helper(menu)));
     }
+    // Ключа сервиса на сервере нет — как без помощника (I21); владельцу на экране «не настроен».
     let Some(a) = assistant else {
-        return Ok(answer(format!("{NO_HELPER}\n\n{}", help(menu))));
+        return Ok(answer(help(menu)));
     };
     let said = crate::api::assistant::answer_admin(conn, a, chat_id, &user, setting.daily_limit, t)
         .await?;
@@ -464,27 +465,29 @@ pub async fn on_message(
     Ok(Some(r))
 }
 
-/// Помощник включён, а ключа сервиса разбора на сервере нет.
-pub const NO_HELPER: &str = "Помощник в боте не настроен: на сервере нет ключа сервиса разбора вопросов. Скажите владельцу.";
-
 // ---------- Помощник (SPEC-40 «Дополнено: помощник») ----------
 
 /// Вопросов помощнику в день у администратора по умолчанию и самое большее.
 pub const HELPER_DAILY_LIMIT: i64 = 50;
 pub const HELPER_MAX_LIMIT: i64 = 500;
-/// Общий выключатель помощника администраторов филиала (`settings`), по умолчанию — включён:
-/// каждому администратору его включает владелец отдельно.
+/// Общий выключатель помощника администраторов филиала (`settings`), по умолчанию — включён;
+/// каждому входу владелец ещё выключает его отдельно.
 const HELPER_COMMON_KEY: &str = "bot_helper_admins";
 
 const fn default_helper_limit() -> i64 {
     HELPER_DAILY_LIMIT
 }
 
-/// Помощник администратора: включён ли (по умолчанию — нет, включает владелец) и сколько
-/// вопросов в день. Хранится в `settings` филиала администратора, ключ `bot_helper_admin:<id>`.
+const fn default_helper_on() -> bool {
+    true
+}
+
+/// Помощник администратора: включён ли (по умолчанию — да у каждого входа, владелец выключает
+/// каждому; задача 005, ответ 9б) и сколько вопросов в день. Хранится в `settings` филиала
+/// администратора, ключ `bot_helper_admin:<id>`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HelperSetting {
-    #[serde(default)]
+    #[serde(default = "default_helper_on")]
     pub on: bool,
     #[serde(default = "default_helper_limit")]
     pub daily_limit: i64,
@@ -493,7 +496,7 @@ pub struct HelperSetting {
 impl Default for HelperSetting {
     fn default() -> Self {
         Self {
-            on: false,
+            on: true,
             daily_limit: HELPER_DAILY_LIMIT,
         }
     }
@@ -2386,11 +2389,11 @@ mod tests {
             .filter(|n| n.starts_with("draft_"))
             .collect();
         assert_eq!(drafts, ["draft_expense", "draft_old_debt"]);
-        assert!(!leaks(NO_HELPER));
         assert!(!leaks(&help_with_helper(Menu::all())));
         let s: HelperSetting = serde_json::from_value(json!({})).unwrap();
         assert_eq!(s, HelperSetting::default());
-        assert_eq!((s.on, s.daily_limit), (false, HELPER_DAILY_LIMIT));
+        // Задача 005, ответ 9б: включён у каждого входа, владелец выключает.
+        assert_eq!((s.on, s.daily_limit), (true, HELPER_DAILY_LIMIT));
     }
 
     #[test]

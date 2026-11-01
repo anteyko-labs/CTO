@@ -965,18 +965,14 @@ fn ok_button(r: &Reply) -> String {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
-async fn admin_helper_is_off_by_default_and_follows_both_switches(pool: PgPool) {
+async fn admin_helper_is_on_by_default_and_follows_both_switches(pool: PgPool) {
     let w = world(pool).await;
     let (a, f) = fake().await;
-    // По умолчанию выключен: свободный текст — «Что можно в боте», сервис не вызывается.
-    let r = w.ask(&a, "сколько осталось присадки").await;
+    // По умолчанию включён (задача 005, ответ 9б); ключа сервиса на сервере нет — как без
+    // помощника: «Что можно в боте», без строки о помощнике.
+    let r = w.say("сколько осталось присадки").await;
     assert!(r.text.starts_with("Что можно в боте:"), "{}", r.text);
     assert!(!r.text.contains("помощник"), "{}", r.text);
-    assert!(f.requests().is_empty());
-    // Включён, но ключа сервиса на сервере нет — «не настроен».
-    w.helper(true, None).await;
-    let r = w.say("сколько осталось присадки").await;
-    assert!(r.text.starts_with(bot_admin::NO_HELPER), "{}", r.text);
     assert_eq!(w.questions().await, 0);
     // Включён: вопрос уходит помощнику, ответ — в журнале вопросов (кто, что, ответ).
     f.push(vec![Step::Reply(said("Смена открыта."))]);
@@ -1048,11 +1044,16 @@ async fn admin_helper_is_off_by_default_and_follows_both_switches(pool: PgPool) 
         json!({ "op_id": Uuid::now_v7(), "on": true }),
     )
     .await;
-    // Выключили администратору — снова подсказка.
+    // Выключили администратору — подсказка, сервис не вызывается.
     w.helper(false, None).await;
     let r = w.ask(&a, "что со сменой").await;
     assert!(r.text.starts_with("Что можно в боте:"), "{}", r.text);
     assert_eq!(f.requests().len(), 1);
+    // Включили снова — вопрос опять уходит помощнику.
+    w.helper(true, None).await;
+    f.push(vec![Step::Reply(said("Смена открыта."))]);
+    assert_eq!(w.ask(&a, "что со сменой").await.text, "Смена открыта.");
+    assert_eq!(f.requests().len(), 2);
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
@@ -1242,7 +1243,7 @@ async fn admin_helper_daily_limit_and_screen_are_owner_only(pool: PgPool) {
     let (_, _, v) = call(&w.app, "GET", &screen, Some(&w.owner), None).await;
     assert_eq!(
         v["helper"],
-        json!({ "on": false, "daily_limit": 50, "common_on": true, "configured": false, "today": 0 })
+        json!({ "on": true, "daily_limit": 50, "common_on": true, "configured": false, "today": 0 })
     );
     let (s, _, _) = call(
         &w.app,
@@ -1319,4 +1320,165 @@ async fn admin_helper_daily_limit_and_screen_are_owner_only(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn staff_limits_do_not_eat_owner_limits(pool: PgPool) {
+    // Задача 005, Н6: пределы вопросов и операций через бот — по пользователю: вопросы и
+    // проведённые черновики сотрудника не съедают пределы владельца, и наоборот.
+    let w = world(pool).await;
+    let (a, f) = fake().await;
+    let (branch, owner_id): (Uuid, Uuid) =
+        sqlx::query_as("select branch_id, id from users where login = 'owner'")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let questions = |user: Uuid, n: i32| {
+        let pool = w.pool.clone();
+        async move {
+            sqlx::query(
+                "insert into bot_questions (id, chat_id, user_id, branch_id, question, answer)
+                 select gen_random_uuid(), 1, $1, $2, 'вопрос', 'ответ' from generate_series(1, $3)",
+            )
+            .bind(user)
+            .bind(branch)
+            .bind(n)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    let posted = |user: Uuid, n: i32| {
+        let pool = w.pool.clone();
+        async move {
+            sqlx::query(
+                "insert into bot_drafts (id, chat_id, user_id, branch_id, kind, payload, summary, op_id, status, finished_at, expires_at)
+                 select gen_random_uuid(), 1, $1, $2, 'expense', '{}', 'Расход', gen_random_uuid(), 'posted', now(), now()
+                 from generate_series(1, $3)",
+            )
+            .bind(user)
+            .bind(branch)
+            .bind(n)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    let admin = avtodom_server::auth::CurrentUser {
+        id: w.admin_id,
+        branch_id: branch,
+        login: "admin".into(),
+        full_name: "Админ".into(),
+        role: avtodom_server::auth::Role::Admin,
+    };
+    let draft_expense = || {
+        f.push(vec![
+            Step::Reply(calls(
+                "draft_expense",
+                json!({ "article": "Хозтовары", "amount": "500" }),
+            )),
+            Step::Reply(said("Проверьте черновик.")),
+        ]);
+    };
+
+    // Владельцы провели через бот 30 операций — у сотрудника черновик расхода готовится.
+    posted(owner_id, 30).await;
+    draft_expense();
+    let mut conn = w.pool.acquire().await.unwrap();
+    let out = avtodom_server::api::assistant::answer_admin(
+        &mut conn,
+        &a,
+        ADMIN_CHAT,
+        &admin,
+        500,
+        "запиши расход 500 на хозтовары",
+    )
+    .await
+    .unwrap();
+    assert!(out.draft.is_some(), "{}", out.text);
+    // Свои 30 у сотрудника — черновика нет.
+    posted(w.admin_id, 30).await;
+    draft_expense();
+    let out = avtodom_server::api::assistant::answer_admin(
+        &mut conn,
+        &a,
+        ADMIN_CHAT,
+        &admin,
+        500,
+        "запиши расход 500 на хозтовары",
+    )
+    .await
+    .unwrap();
+    assert!(out.draft.is_none(), "{}", out.text);
+    // Модели ушёл отказ предела, а не черновик.
+    let last = f.requests().pop().unwrap();
+    assert!(results_of(&last).contains("30 операций"), "{last}");
+
+    // Сотрудник исчерпал часовой предел (20) — владелец спрашивает дальше.
+    questions(w.admin_id, 20).await;
+    f.push(vec![Step::Reply(said("Смена открыта."))]);
+    let before = f.requests().len();
+    let out = avtodom_server::api::assistant::answer(
+        &mut conn,
+        &a,
+        OWNER_CHAT,
+        owner_id,
+        branch,
+        "что со сменой",
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.text, "Смена открыта.");
+    assert_eq!(f.requests().len(), before + 1);
+    drop(conn);
+    // У сотрудника — свой час: исчерпан, сервис не вызывается.
+    let r = w.ask(&a, "что со сменой").await;
+    assert!(
+        r.text.starts_with("Лимит вопросов на этот час"),
+        "{}",
+        r.text
+    );
+    assert_eq!(f.requests().len(), before + 1);
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn bot_stock_report_value_is_owner_only(pool: PgPool) {
+    // Задача 005, Н2: стоимость склада в отчёте бота — только владельцу, на уровне функции.
+    let w = world(pool).await;
+    let (branch, owner_id): (Uuid, Uuid) =
+        sqlx::query_as("select branch_id, id from users where login = 'owner'")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
+    let user = |id: Uuid, role: avtodom_server::auth::Role| avtodom_server::auth::CurrentUser {
+        id,
+        branch_id: branch,
+        login: String::new(),
+        full_name: String::new(),
+        role,
+    };
+    let day = chrono::Utc::now().date_naive();
+    let mut conn = w.pool.acquire().await.unwrap();
+    let owner = avtodom_server::api::bot_reports::stock(
+        &mut conn,
+        &user(owner_id, avtodom_server::auth::Role::Owner),
+        "stock",
+        None,
+        (day, day),
+    )
+    .await
+    .unwrap();
+    assert!(owner.contains("стоимость остатков"), "{owner}");
+    let admin = avtodom_server::api::bot_reports::stock(
+        &mut conn,
+        &user(w.admin_id, avtodom_server::auth::Role::Admin),
+        "stock",
+        None,
+        (day, day),
+    )
+    .await
+    .unwrap();
+    assert!(admin.contains("товаров с остатком"), "{admin}");
+    assert!(!admin.contains("стоимость"), "{admin}");
+    assert!(!admin.contains(COST_TOTAL), "{admin}");
 }
