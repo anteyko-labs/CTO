@@ -1,6 +1,7 @@
 //! «Настройки → Касса» (задача 003 Н2–Н4, ADR-146, ADR-147, ADR-148): раскладка кнопок
 //! режима кассы, высота плиток ходового и купюры у «Получено»; скидка на кассе (быстрые проценты,
-//! предел скидки администратора); прибыль на бумаге и на экране чека в режиме кассы.
+//! предел скидки администратора); прибыль на бумаге и на экране чека в режиме кассы; продажа только
+//! при открытой смене (задача 005 Н4, ADR-{n4}).
 //! Хранение — `settings` филиала, ключ `cashier`; читают все вошедшие (касса без сети — из снимка),
 //! меняет только владелец, каждое изменение — в журнал (I5), повтор `op_id` — тот же ответ (I8).
 //! Права на кнопки не меняются: кнопка без права не показывается, где бы она ни стояла (I12).
@@ -93,6 +94,10 @@ pub struct CashierSettings {
     pub print_shift_profit: bool,
     /// Себестоимость и прибыль на экране чека на устройстве в режиме кассы (по умолчанию нет).
     pub sale_cost_on_till: bool,
+    /// «Продажа только при открытой смене» (задача 005 Н4, ADR-{n4}): онлайн-чек без смены —
+    /// отказ, чек без сети проводится с уведомлением владельцу. По умолчанию включено — прямая
+    /// просьба заказчика (I21).
+    pub sale_requires_shift: bool,
 }
 
 impl Default for CashierSettings {
@@ -116,6 +121,7 @@ impl Default for CashierSettings {
             print_discount: false,
             print_shift_profit: false,
             sale_cost_on_till: false,
+            sale_requires_shift: true,
         }
     }
 }
@@ -276,6 +282,7 @@ mod tests {
         );
         assert!(!d.print_shift_profit);
         assert!(!d.sale_cost_on_till);
+        assert!(d.sale_requires_shift);
         let parsed: CashierSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(normalize(parsed).unwrap(), d);
     }
