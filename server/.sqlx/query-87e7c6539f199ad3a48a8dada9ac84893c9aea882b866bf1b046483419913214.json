@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from sessions where user_id = $1 and token_hash is distinct from $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87e7c6539f199ad3a48a8dada9ac84893c9aea882b866bf1b046483419913214"
+}

@@ -86,6 +86,17 @@ describe('права кассира без входа (задача 003 Н10)', 
     expect(cashierDenied({ role: 'owner' }, 'discount', nurlan)).toBeNull()
   })
 
+  it('личный вход сотрудника — по своим правам: снятое у кассира смены его не урезает (задача 005 Н1)', () => {
+    const nurlan = { name: 'Нурлан', denied: ['discount'] }
+    const personal = { ...admin, permissions: [...admin.permissions], employee_id: 'e-1' }
+    expect(cashierDenied(personal, 'discount', nurlan)).toBeNull()
+    expect(can(personal, 'discount', nurlan)).toBe(true)
+    // Своих прав не добавляет: чего нет у входа — нет.
+    expect(can(personal, 'oil_transfer', nurlan)).toBe(false)
+    // Общий вход кассы (без сотрудника) — пересечение, как раньше.
+    expect(can({ ...personal, employee_id: null }, 'discount', nurlan)).toBe(false)
+  })
+
   it('смена с ограничением запоминается, закрытая или без ограничений — снимает его', () => {
     const user = { ...admin, permissions: [...admin.permissions] }
     rememberShiftCashier({ cashier_name: 'Нурлан', cashier_denied: ['expenses'], closed_at: null })

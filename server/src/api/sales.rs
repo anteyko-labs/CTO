@@ -779,6 +779,8 @@ async fn check_discounts(
                 login: u.login,
                 full_name: u.full_name,
                 role: crate::auth::Role::parse(&u.role)?,
+                employee_id: None,
+                employee_name: None,
             }
         }
         None => ctx.user.clone(),
@@ -1408,6 +1410,31 @@ pub async fn post_sale_core(
     let cashier_id = at_shift
         .as_ref()
         .map_or(req.cashier_id, |s| s.cashier_employee_id);
+    // Кассир, вошедший своим логином, пробивает онлайн-чек только в своей смене (задача 005 Н1,
+    // ADR-{n1}): иначе чек и процент ушли бы кассиру чужой смены. Владелец и вход без сотрудника —
+    // как раньше; чек без сети уже состоялся и не отклоняется (I9, I10).
+    if !lenient
+        && req.correction.is_none()
+        && let (Some(me), Some(shift)) = (ctx.user.employee_id, at_shift.as_ref())
+        && shift.cashier_employee_id != me
+    {
+        let names = sqlx::query!(
+            r#"select (select is_cashier from employees where id = $1) as "me_cashier?",
+                      (select full_name from employees where id = $2) as "shift_cashier?""#,
+            me,
+            shift.cashier_employee_id
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if names.me_cashier == Some(true) {
+            return Err(AppError::Conflict(format!(
+                "Смена открыта на {}: закройте её и откройте свою",
+                names
+                    .shift_cashier
+                    .unwrap_or_else(|| "другого кассира".into())
+            )));
+        }
+    }
     // Кассира смены могли отключить посреди смены — чек смены всё равно его. Исправление
     // сохраняет кассира исходного чека, даже если его уже отключили.
     check_employee(

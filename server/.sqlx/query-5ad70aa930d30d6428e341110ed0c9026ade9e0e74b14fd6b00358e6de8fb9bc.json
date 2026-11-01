@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name, active from employees where id = $1 and branch_id = $2 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "active",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5ad70aa930d30d6428e341110ed0c9026ade9e0e74b14fd6b00358e6de8fb9bc"
+}

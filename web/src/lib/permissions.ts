@@ -143,20 +143,22 @@ export function rememberShiftCashier(
   listeners.forEach((l) => l())
 }
 
-/** Право снято у кассира открытой смены — его имя (для подписи «Нет права у кассира …»). */
+/** Право снято у кассира открытой смены — его имя (для подписи «Нет права у кассира …»).
+ *  Урезает только вход без сотрудника (общий вход кассы); личный вход сотрудника — по своим
+ *  правам (задача 005 Н1, ADR-{n1}). */
 export function cashierDenied(
-  user: Pick<User, 'role'>,
+  user: Pick<User, 'role' | 'employee_id'>,
   permission: Permission,
   cashier: ShiftCashier | null = shiftCashier,
 ): string | null {
-  return user.role !== 'owner' && cashier?.denied.includes(permission) ? cashier.name : null
+  return user.role !== 'owner' && !user.employee_id && cashier?.denied.includes(permission) ? cashier.name : null
 }
 
 /** Может ли пользователь: владелец — всё, администратор — если владелец выдал право и не снял
  *  его у кассира открытой смены (ADR-152). Проверяет сервер; здесь — только какие пункты меню
  *  и кнопки показать. */
 export function can(
-  user: Pick<User, 'role' | 'permissions'>,
+  user: Pick<User, 'role' | 'permissions' | 'employee_id'>,
   permission: Permission,
   cashier: ShiftCashier | null = shiftCashier,
 ): boolean {

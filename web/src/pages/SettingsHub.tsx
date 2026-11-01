@@ -10,6 +10,8 @@ import { useAction } from '../lib/hooks'
 import { saveUmagSwitch, useUmagSwitch } from '../lib/umagSwitch'
 
 const ITEMS: { to: string; title: string; text: string; icon: IconName; ownerOnly?: boolean; permission?: Permission }[] = [
+  // Любому входу (задача 005 Н1, ADR-{n1}).
+  { to: '/profile', title: 'Профиль', text: 'Сменить свой пароль; у входа сотрудника — «Мой заработок»', icon: 'employees' },
   { to: '/settings/cashier', title: 'Касса', text: 'Кнопки режима кассы и их место, скидка и её предел, прибыль в чеке смены, продажа только при смене', icon: 'cashier', ownerOnly: true },
   { to: '/settings/sales', title: 'Продажи', text: 'Кто задаёт цену новой услуги; уведомление об услуге от администратора', icon: 'cashier', ownerOnly: true },
   { to: '/settings/labels', title: 'Этикетки', text: 'Размер этикетки, что печатать: название, цена, штрихкод', icon: 'products' },

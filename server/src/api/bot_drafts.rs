@@ -339,6 +339,8 @@ async fn linked_owner(
                 login: r.login,
                 full_name: r.full_name,
                 role: Role::Owner,
+                employee_id: None,
+                employee_name: None,
             },
             r.tg_user_id,
         )

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select role, login, branch_id from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
+  "query": "select role, login, branch_id, active, employee_id from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,16 @@
         "ordinal": 2,
         "name": "branch_id",
         "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "employee_id",
+        "type_info": "Uuid"
       }
     ],
     "parameters": {
@@ -28,8 +38,10 @@
     "nullable": [
       false,
       false,
-      false
+      false,
+      false,
+      true
     ]
   },
-  "hash": "36c64f42de40605ac5985f2ca0747e975770daf9cc1a2c45522445933f6dc652"
+  "hash": "7c5d87a0a47793f0a0f579d82746a317ffe89c06f37a6b45166c6b0a6b2cc985"
 }

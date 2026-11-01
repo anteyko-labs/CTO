@@ -929,6 +929,8 @@ async fn owner_ctx(conn: &mut PgConnection, branch_id: Uuid) -> AppResult<Option
             login: r.login,
             full_name: r.full_name,
             role: Role::Owner,
+            employee_id: None,
+            employee_name: None,
         },
         device_id: optima::SERVER_DEVICE,
         bot_chat: None,

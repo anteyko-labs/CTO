@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.id, u.branch_id, u.login, u.full_name, u.role\n               from sessions s join users u on u.id = s.user_id\n               where s.token_hash = $1 and s.expires_at > now() and u.active",
+  "query": "select u.id, u.branch_id, u.login, u.full_name, u.role, u.employee_id,\n                      e.full_name as \"employee_name?\"\n               from sessions s join users u on u.id = s.user_id\n               left join employees e on e.id = u.employee_id\n               where s.token_hash = $1 and s.expires_at > now() and u.active",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,16 @@
         "ordinal": 4,
         "name": "role",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "employee_name?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -39,8 +49,10 @@
       false,
       false,
       false,
+      false,
+      true,
       false
     ]
   },
-  "hash": "01b8d418208678cbabdb68fa37df1519e9255e3aabb61962614160f6e162bd2b"
+  "hash": "67dbc9a1cb6322d943328901ad6f5b2362bd4e30590e9d3ef82a49562cb8c038"
 }

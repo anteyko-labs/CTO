@@ -76,6 +76,8 @@ const SupplierCard = lazyPage(() => import('./pages/SupplierCard'))
 const Suppliers = lazyPage(() => import('./pages/Suppliers'))
 const Users = lazyPage(() => import('./pages/Users'))
 const Branches = lazyPage(() => import('./pages/Branches'))
+const Profile = lazyPage(() => import('./pages/Profile'))
+const MyEarnings = lazyPage(() => import('./pages/MyEarnings'))
 
 interface NavItem {
   to: string
@@ -85,6 +87,8 @@ interface NavItem {
   adminOnly?: boolean
   /** Пункт для владельца и администратора с этим правом (ADR-082, ADR-097); список — с любым из прав. */
   permission?: Permission | Permission[]
+  /** Только у личного входа сотрудника (задача 005 Н1, ADR-{n1}). */
+  employeeOnly?: boolean
 }
 
 // Меню: рабочие экраны сверху, справочники и настройки ниже. Категории живут внутри «Товаров»,
@@ -105,6 +109,8 @@ const NAV: { title?: string; items: NavItem[] }[] = [
     items: [
       { to: '/expenses', label: 'Расходы', icon: 'expenses', permission: 'expenses' },
       { to: '/payroll', label: 'Расчёт', icon: 'payroll', permission: 'view_payroll' },
+      // Своё — без права «Расчёт» (задача 005 Н1): заработал, выплачено, должны.
+      { to: '/my-earnings', label: 'Мой заработок', icon: 'payroll', employeeOnly: true },
       { to: '/profit', label: 'Прибыль и убытки', icon: 'profit', ownerOnly: true },
       { to: '/income', label: 'Поступления', icon: 'income', permission: 'view_income' },
       { to: '/accounts', label: 'Счета', icon: 'wallet', permission: 'view_accounts' },
@@ -242,7 +248,7 @@ function Shell() {
   // Пункт по праву (ADR-097): без права администратор его не видит.
   const allowed = (p?: Permission | Permission[]) => !p || (Array.isArray(p) ? p : [p]).some((x) => can(user, x))
   const items = (list: NavItem[]) =>
-    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && allowed(it.permission))
+    list.filter((it) => (owner || !it.ownerOnly) && (!owner || !it.adminOnly) && (!it.employeeOnly || Boolean(user.employee_id)) && allowed(it.permission))
   const badge = (to: string) =>
     to === '/notifications' && unseen > 0 ? (
       <span className="ml-auto rounded-full bg-rose-600 px-1.5 text-[11px] font-semibold leading-5 text-white">{unseen > 99 ? '99+' : unseen}</span>
@@ -303,6 +309,10 @@ function Shell() {
             {user.full_name !== roleLabel && ` · ${roleLabel}`}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-4">
+            {/* Профиль — сменить свой пароль, у сотрудника — «Мой заработок» (задача 005 Н1). */}
+            <NavLink to="/profile" className="text-xs text-sky-300 hover:underline">
+              Профиль
+            </NavLink>
             <button type="button" className="text-xs text-sky-300 hover:underline" onClick={askLogout}>
               Выйти
             </button>
@@ -409,6 +419,9 @@ function Shell() {
           <Route path="/settings/labels" element={<LabelSettingsPage />} />
           {owner && <Route path="/users" element={<Users />} />}
           {owner && <Route path="/settings/branches" element={<Branches />} />}
+          {/* Профиль и смена своего пароля — у любого входа; «Мой заработок» — у входа с сотрудником (задача 005 Н1). */}
+          <Route path="/profile" element={<Profile />} />
+          {user.employee_id && <Route path="/my-earnings" element={<MyEarnings />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         </Suspense>
@@ -485,9 +498,14 @@ function Shell() {
               </div>
             ))}
             <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-sm">
-              <button type="button" className="text-sky-700" onClick={askLogout}>
-                Выйти
-              </button>
+              <span className="flex gap-4">
+                <NavLink to="/profile" className="text-sky-700" onClick={() => setOpen(false)}>
+                  Профиль
+                </NavLink>
+                <button type="button" className="text-sky-700" onClick={askLogout}>
+                  Выйти
+                </button>
+              </span>
               <button
                 type="button"
                 className="inline-flex items-center gap-1.5 text-slate-600"

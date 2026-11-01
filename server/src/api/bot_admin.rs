@@ -1213,6 +1213,8 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
                         login: r.login.clone(),
                         full_name: r.full_name.clone(),
                         role: Role::Admin,
+                        employee_id: None,
+                        employee_name: None,
                     };
                     let a = crate::auth::has_permission(conn, &user, key).await?;
                     rights.insert((r.user_id, key), a);
@@ -1625,6 +1627,8 @@ async fn branch_admin(
         login: u.login,
         full_name: u.full_name,
         role: Role::Admin,
+        employee_id: None,
+        employee_name: None,
     })
 }
 

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update users set full_name = $2 where employee_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "34cf638836dd1f40a4e297306d6a30c16fc0e0de551317f8cf7ae0c5749e37ef"
+}

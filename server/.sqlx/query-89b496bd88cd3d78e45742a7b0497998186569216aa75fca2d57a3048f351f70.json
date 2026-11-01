@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pay_date as date, amount_tyiyn, purpose, reversal_of is not null as \"reversal!\"\n           from payouts\n           where employee_id = $1 and branch_id = $2 and pay_date between $3 and $4\n           order by pay_date, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "date",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_tyiyn",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "purpose",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "reversal!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "89b496bd88cd3d78e45742a7b0497998186569216aa75fca2d57a3048f351f70"
+}

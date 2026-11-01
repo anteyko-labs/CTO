@@ -968,7 +968,9 @@ pub(crate) async fn shifts_data(
 struct OpenReq {
     op_id: Uuid,
     account_id: Option<Uuid>,
-    cashier_employee_id: Uuid,
+    /// Кассир смены; без него — сотрудник личного входа (задача 005 Н1, ADR-{n1}).
+    #[serde(default)]
+    cashier_employee_id: Option<Uuid>,
     counted_tyiyn: Option<i64>,
     /// PIN кассира смены (ADR-081).
     #[serde(default)]
@@ -1011,9 +1013,20 @@ async fn verify_owner_password(
 }
 
 /// Открытие смены подтверждает кассир своим PIN или владелец своим паролем (ADR-081).
-/// Проверка — до транзакции: неверная попытка записывается и тогда, когда смену не открыли.
-/// Пять неверных подряд за 15 минут — блокировка на 15 минут (как у входа, ADR-016).
-async fn confirm_opener(state: &AppState, ctx: &Ctx, req: &OpenReq) -> AppResult<&'static str> {
+/// Кассир, вошедший своим логином, открывает смену на себя без PIN: пароль при входе — уже
+/// подтверждение (ADR-{n1}). Проверка — до транзакции: неверная попытка записывается и тогда,
+/// когда смену не открыли. Пять неверных подряд за 15 минут — блокировка на 15 минут (ADR-016).
+async fn confirm_opener(
+    state: &AppState,
+    ctx: &Ctx,
+    req: &OpenReq,
+    cashier: Uuid,
+) -> AppResult<&'static str> {
+    let pin = req.cashier_pin.as_deref().unwrap_or("").trim();
+    let password = req.owner_password.as_deref().unwrap_or("");
+    if ctx.user.employee_id == Some(cashier) && pin.is_empty() && password.is_empty() {
+        return Ok("login");
+    }
     if let Some(password) = req.owner_password.as_deref().filter(|p| !p.is_empty()) {
         verify_owner_password(
             state,
@@ -1029,7 +1042,7 @@ async fn confirm_opener(state: &AppState, ctx: &Ctx, req: &OpenReq) -> AppResult
         state,
         ctx,
         crate::api::auth::CashierPin {
-            employee_id: req.cashier_employee_id,
+            employee_id: cashier,
             pin: req.cashier_pin.as_deref().unwrap_or(""),
             no_pin_hint: if ctx.user.is_owner() {
                 " (или откройте смену своим паролем)"
@@ -1056,7 +1069,11 @@ async fn open_shift(
     if let Some(c) = req.counted_tyiyn {
         ops::check_balance(c)?;
     }
-    let confirmed = confirm_opener(&state, &ctx, &req).await?;
+    let cashier_id = req
+        .cashier_employee_id
+        .or(ctx.user.employee_id)
+        .ok_or_else(|| invalid("выберите кассира смены"))?;
+    let confirmed = confirm_opener(&state, &ctx, &req, cashier_id).await?;
     let mut tx = state.pool.begin().await?;
     if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
         return Ok(Json(done));
@@ -1084,7 +1101,7 @@ async fn open_shift(
     }
     let cashier = sqlx::query!(
         "select is_cashier, active from employees where id = $1 and branch_id = $2",
-        req.cashier_employee_id,
+        cashier_id,
         branch_id
     )
     .fetch_optional(&mut *tx)
@@ -1109,7 +1126,7 @@ async fn open_shift(
         number,
         today,
         account_id,
-        req.cashier_employee_id,
+        cashier_id,
         ctx.user.id,
         ctx.device_id,
         acc.balance_tyiyn,

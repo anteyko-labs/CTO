@@ -75,6 +75,36 @@ struct EmployeeOut {
     phone: Option<String>,
     /// PIN кассира задан (ADR-081); сам PIN не отдаётся никому.
     has_pin: bool,
+    /// Вход в программу этого сотрудника (задача 005 Н1, ADR-{n1}) — только владельцу: он заводит
+    /// и меняет вход.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login: Option<EmployeeLogin>,
+}
+
+/// Вход сотрудника в карточке: логин и включён ли он.
+#[derive(Serialize)]
+struct EmployeeLogin {
+    user_id: Uuid,
+    login: String,
+    active: bool,
+}
+
+/// Вход сотрудника для карточки владельца; у других — `None`.
+async fn login_of(
+    conn: &mut PgConnection,
+    owner: bool,
+    employee_id: Uuid,
+) -> AppResult<Option<EmployeeLogin>> {
+    if !owner {
+        return Ok(None);
+    }
+    Ok(sqlx::query_as!(
+        EmployeeLogin,
+        "select id as user_id, login, active from users where employee_id = $1",
+        employee_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?)
 }
 
 async fn list_employees(
@@ -83,7 +113,11 @@ async fn list_employees(
 ) -> AppResult<Json<Vec<EmployeeOut>>> {
     let owner = user.is_owner();
     let rows = sqlx::query!(
-        "select id, full_name, is_cashier, is_master, active, phone, pin_hash is not null as \"has_pin!\" from employees where branch_id = $1 order by full_name",
+        r#"select e.id, e.full_name, e.is_cashier, e.is_master, e.active, e.phone,
+                  e.pin_hash is not null as "has_pin!",
+                  u.id as "user_id?", u.login as "login?", u.active as "login_active?"
+           from employees e left join users u on u.employee_id = e.id
+           where e.branch_id = $1 order by e.full_name"#,
         user.branch_id
     )
     .fetch_all(&state.pool)
@@ -97,6 +131,14 @@ async fn list_employees(
         active: r.active,
         phone: owner.then_some(r.phone),
         has_pin: r.has_pin,
+        login: match (owner, r.user_id, r.login, r.login_active) {
+            (true, Some(user_id), Some(login), Some(active)) => Some(EmployeeLogin {
+                user_id,
+                login,
+                active,
+            }),
+            _ => None,
+        },
     })
     .collect();
     Ok(Json(rows))
@@ -213,6 +255,7 @@ async fn create_employee(
         active: true,
         phone: ctx.user.is_owner().then_some(phone),
         has_pin,
+        login: None,
     }))
 }
 
@@ -295,9 +338,21 @@ async fn update_employee(
     let new_key = crate::api::telegram::phone_key(&r.phone);
     if prev.active && !r.active {
         crate::api::bot_staff::drop_for_employee(&mut tx, &ctx, id, "сотрудник отключён").await?;
+        // Отключили сотрудника — его вход в программу тоже, сессии сброшены (ADR-{n1}).
+        crate::api::auth::disable_employee_login(&mut tx, &ctx, id).await?;
     } else if new_key.is_none() || new_key != crate::api::telegram::phone_key(&prev.phone) {
         crate::api::bot_staff::drop_for_employee(&mut tx, &ctx, id, "телефон в карточке изменён")
             .await?;
+    }
+    // Имя входа сотрудника — как в карточке: журнал и списки показывают одно имя (ADR-{n1}).
+    if r.full_name != prev.full_name {
+        sqlx::query!(
+            "update users set full_name = $2 where employee_id = $1",
+            id,
+            r.full_name
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     let out = EmployeeOut {
         id: r.id,
@@ -307,6 +362,7 @@ async fn update_employee(
         active: r.active,
         phone: ctx.user.is_owner().then(|| r.phone.clone()),
         has_pin: r.has_pin,
+        login: login_of(&mut tx, ctx.user.is_owner(), id).await?,
     };
     // Правила по умолчанию — только когда сотрудник становится кассиром и правил кассира у него
     // никогда не было: правка имени и повторное назначение не возвращают закрытый оклад (ADR-062).
@@ -399,6 +455,7 @@ async fn set_pin(
         active: r.active,
         phone: Some(r.phone),
         has_pin: hash.is_some(),
+        login: None,
     }))
 }
 

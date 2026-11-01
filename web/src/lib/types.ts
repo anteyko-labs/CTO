@@ -65,6 +65,10 @@ export interface User {
   several_branches?: boolean
   /** Чат Телеграма привязан к этому пользователю (задача 003, Н6); у старого ответа сервера — нет. */
   telegram_linked?: boolean
+  /** Личный вход сотрудника (задача 005 Н1, ADR-{n1}): карточка сотрудника входа; у общего входа
+   *  кассы и владельца — пусто. */
+  employee_id?: string | null
+  employee_name?: string | null
 }
 
 export interface UserRow {
@@ -76,6 +80,9 @@ export interface UserRow {
   permissions?: Permission[]
   /** Когда привязан чат в Телеграме (ADR-063, ADR-135); пусто — не привязан. */
   telegram_linked_at?: string | null
+  /** Сотрудник входа (задача 005 Н1, ADR-{n1}); пусто — вход без сотрудника. */
+  employee_id?: string | null
+  employee_name?: string | null
 }
 
 export type CategoryKind = 'oil' | 'filter' | 'battery' | 'other'
@@ -184,6 +191,15 @@ export interface Employee {
   phone?: string
   /** PIN кассира задан (ADR-081); сам PIN сервер не отдаёт. */
   has_pin?: boolean
+  /** Вход в программу сотрудника (задача 005 Н1, ADR-{n1}); сервер отдаёт его только владельцу. */
+  login?: EmployeeLogin
+}
+
+/** Вход сотрудника в его карточке: логин и включён ли он. */
+export interface EmployeeLogin {
+  user_id: string
+  login: string
+  active: boolean
 }
 
 export interface Service {

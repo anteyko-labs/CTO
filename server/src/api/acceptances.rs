@@ -1068,6 +1068,8 @@ async fn sender(conn: &mut PgConnection, user_id: Uuid, branch_id: Uuid) -> AppR
         login: u.login,
         full_name: u.full_name,
         role,
+        employee_id: None,
+        employee_name: None,
     };
     if !u.active || !crate::auth::has_permission(conn, &user, "receipts").await? {
         return Err(AppError::Conflict(AGAIN.into()));

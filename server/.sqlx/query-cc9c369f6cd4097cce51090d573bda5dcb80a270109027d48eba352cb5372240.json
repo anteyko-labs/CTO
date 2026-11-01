@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select password_hash from users where id = $1 for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "password_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cc9c369f6cd4097cce51090d573bda5dcb80a270109027d48eba352cb5372240"
+}

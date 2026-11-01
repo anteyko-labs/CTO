@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as \"user_name?\"\n           from audit_log a\n           left join users u on u.id = a.user_id\n           where a.branch_id = $1 and a.action = any($2)\n           order by a.created_at desc, a.id desc\n           limit $3 offset $4",
+  "query": "select a.id, a.action, a.data, a.entity_id, a.created_at,\n                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-{n1}).\n                  case when ue.id is not null then u.login || ' (' || ue.full_name || ')'\n                       else u.full_name end as \"user_name?\"\n           from audit_log a\n           left join users u on u.id = a.user_id\n           left join employees ue on ue.id = u.employee_id\n           where a.branch_id = $1 and a.action = any($2)\n           order by a.created_at desc, a.id desc\n           limit $3 offset $4",
   "describe": {
     "columns": [
       {
@@ -48,8 +48,8 @@
       false,
       true,
       false,
-      false
+      null
     ]
   },
-  "hash": "cb1192b478d41fb2cb6e64c668d80609bb925f30bc57de757672321c939afd6d"
+  "hash": "cf07316990ef25e8c89aeccf3e35a9f50be66bfd2235c60bc720bdd9874ebc1f"
 }

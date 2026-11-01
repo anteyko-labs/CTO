@@ -413,6 +413,8 @@ pub async fn answer(
             login: String::new(),
             full_name: String::new(),
             role: Role::Owner,
+            employee_id: None,
+            employee_name: None,
         },
         branch_id,
         chat_id,
