@@ -46,6 +46,13 @@ pub struct CurrentUser {
     pub login: String,
     pub full_name: String,
     pub role: Role,
+    /// Карточка сотрудника, с которой связан вход (задача 005 Н1, ADR-981): личный вход кассира,
+    /// мастера или администратора. `None` — общий вход кассы и владелец.
+    #[serde(default)]
+    pub employee_id: Option<Uuid>,
+    /// Имя сотрудника входа — для экрана и журнала «вход (сотрудник)».
+    #[serde(default)]
+    pub employee_name: Option<String>,
 }
 
 impl CurrentUser {
@@ -205,6 +212,8 @@ pub fn no_permission(key: &str) -> AppError {
 }
 
 /// Группы прав, которые владелец может снять у кассира без входа (задача 003 Н10, ADR-152).
+/// Урезание действует только на вход без сотрудника (общий вход кассы); личный вход сотрудника —
+/// по своим правам (ADR-981).
 pub const CASHIER_GROUPS: [&str; 2] = ["Касса", "Деньги"];
 
 /// Право можно ограничить у кассира открытой смены: оно из групп «Касса» и «Деньги».
@@ -303,8 +312,11 @@ pub async fn has_permission(
 }
 
 /// Проверка права одной выборкой (без N+1). Владелец не ограничивается правами кассира: он сам
-/// их задаёт. Администратору — пересечение прав входа и кассира открытой смены кассы филиала
-/// по умолчанию (та же смена, что `GET /shifts/current`; кассир чека — кассир смены, ADR-071).
+/// их задаёт. Администратору без сотрудника (общий вход кассы) — пересечение прав входа и
+/// кассира открытой смены кассы филиала по умолчанию (та же смена, что `GET /shifts/current`;
+/// кассир чека — кассир смены, ADR-071). Личный вход сотрудника — только свои права: снятое у
+/// кассира другой смены его не урезает (ADR-981). Связь читается из базы, а не из `user`: так же
+/// для входа из сессии и для администратора в боте.
 pub async fn access(
     conn: &mut sqlx::PgConnection,
     user: &CurrentUser,
@@ -316,7 +328,7 @@ pub async fn access(
     let r = sqlx::query!(
         r#"select exists (select 1 from user_permissions
                           where user_id = $1 and branch_id = $2 and permission = $3) as "granted!",
-                  (case when $4 then
+                  (case when $4 and (select u.employee_id from users u where u.id = $1) is null then
                      (select e.full_name from employees e
                       where $3 = any(e.cashier_denied)
                         and e.id = (select s.cashier_employee_id from shifts s
@@ -540,8 +552,10 @@ impl FromRequestParts<AppState> for CurrentUser {
         let token = session_token(parts).ok_or(AppError::Unauthorized)?;
         let hash = token_hash(token);
         let row = sqlx::query!(
-            r#"select u.id, u.branch_id, u.login, u.full_name, u.role
+            r#"select u.id, u.branch_id, u.login, u.full_name, u.role, u.employee_id,
+                      e.full_name as "employee_name?"
                from sessions s join users u on u.id = s.user_id
+               left join employees e on e.id = u.employee_id
                where s.token_hash = $1 and s.expires_at > now() and u.active"#,
             hash
         )
@@ -556,6 +570,8 @@ impl FromRequestParts<AppState> for CurrentUser {
             login: row.login,
             full_name: row.full_name,
             role,
+            employee_id: row.employee_id,
+            employee_name: row.employee_name,
         })
     }
 }

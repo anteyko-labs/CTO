@@ -1,41 +1,34 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select login, full_name, role, active from users where id = $1 and branch_id = $2 for update",
+  "query": "update users set active = false where employee_id = $1 and active returning id, login, role",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "login",
-        "type_info": "Text"
+        "name": "id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 1,
-        "name": "full_name",
+        "name": "login",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
         "name": "role",
         "type_info": "Text"
-      },
-      {
-        "ordinal": 3,
-        "name": "active",
-        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "5ae7d9c3a1951e994f8bd7b9c4a978ac86a56677fa27f25143bffbe934162492"
+  "hash": "56cf38f895704a3a1653466c67150b32f181c7676268a6f2d9085dea42e8d812"
 }

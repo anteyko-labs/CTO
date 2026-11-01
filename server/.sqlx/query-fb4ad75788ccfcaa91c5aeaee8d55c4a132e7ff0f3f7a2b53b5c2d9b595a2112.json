@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select login from users where employee_id = $1 and id is distinct from $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "login",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fb4ad75788ccfcaa91c5aeaee8d55c4a132e7ff0f3f7a2b53b5c2d9b595a2112"
+}

@@ -2265,6 +2265,8 @@ async fn link(
             login: o.login.clone(),
             full_name: o.full_name.clone(),
             role: crate::auth::Role::Admin,
+            employee_id: None,
+            employee_name: None,
         };
         let menu = crate::api::bot_admin::menu(conn, &user).await?;
         let photo = if menu.has("invoice") {
@@ -2378,6 +2380,8 @@ async fn services_month(
         login: String::new(),
         full_name: String::new(),
         role: crate::auth::Role::Owner,
+        employee_id: None,
+        employee_name: None,
     };
     crate::api::bot_reports::services_text(conn, &user, day.with_day(1).unwrap_or(day), day).await
 }
@@ -2691,7 +2695,9 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     let watched = watched_actions();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.created_at, a.entity_id, a.branch_id,
-                  w.full_name as "who?", t.chat_id,
+                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-981).
+                  case when we.id is not null then w.login || ' (' || we.full_name || ')'
+                       else w.full_name end as "who?", t.chat_id,
                   e.full_name as "employee?", b.name as branch_name,
                   -- Себестоимость и прибыль в сообщениях о чеках (задача 003 Н4), по умолчанию — да.
                   coalesce((f.value ->> 'profit')::boolean, true) as "profit!"
@@ -2703,6 +2709,7 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
            -- Что этот владелец выключил в «Уведомлениях в бот» (ADR-138).
            left join settings f on f.branch_id = o.branch_id and f.key = 'bot_feed:' || o.id::text
            left join users w on w.id = a.user_id
+           left join employees we on we.id = w.employee_id
            left join employees e on e.id = a.entity_id
            where a.created_at > greatest($1::timestamptz - interval '15 minutes', $2::timestamptz,
                                          now() - interval '1 day')
@@ -4008,6 +4015,8 @@ pub async fn file_reply(
             login: s.login,
             full_name: s.full_name,
             role: crate::auth::Role::Admin,
+            employee_id: None,
+            employee_name: None,
         };
         if !crate::auth::has_permission(conn, &user, "receipts").await? {
             return Ok((Reply::new(drafts::NO_RIGHT, keys), false));

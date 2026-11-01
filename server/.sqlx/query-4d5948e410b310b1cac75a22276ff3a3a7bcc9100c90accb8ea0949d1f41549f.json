@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select ceil(extract(epoch from locked_until - now()) / 60)::bigint as \"m!\"\n           from login_attempts where login = $1 and locked_until > now()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "m!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4d5948e410b310b1cac75a22276ff3a3a7bcc9100c90accb8ea0949d1f41549f"
+}

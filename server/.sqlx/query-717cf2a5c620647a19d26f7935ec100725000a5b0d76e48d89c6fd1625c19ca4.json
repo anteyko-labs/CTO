@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select u.id, u.login, u.full_name, u.role, u.active,\n                  array(select p.permission from user_permissions p\n                        where p.user_id = u.id order by p.permission) as \"permissions!\",\n                  (select t.linked_at from telegram_links t where t.user_id = u.id) as telegram_linked_at\n           from users u where u.branch_id = $1 or u.role = 'owner'\n           order by u.role = 'owner' desc, u.full_name",
+  "query": "select u.id, u.login, u.full_name, u.role, u.active,\n                  array(select p.permission from user_permissions p\n                        where p.user_id = u.id order by p.permission) as \"permissions!\",\n                  (select t.linked_at from telegram_links t where t.user_id = u.id) as telegram_linked_at,\n                  u.employee_id, e.full_name as \"employee_name?\"\n           from users u left join employees e on e.id = u.employee_id\n           where u.branch_id = $1 or u.role = 'owner'\n           order by u.role = 'owner' desc, u.full_name",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,16 @@
         "ordinal": 6,
         "name": "telegram_linked_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "employee_name?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -51,8 +61,10 @@
       false,
       false,
       null,
-      null
+      null,
+      true,
+      false
     ]
   },
-  "hash": "d6ffdfa490ad3549fbcb327d11a5d8cc06593ff41820ebc05fbf9eace3d0c045"
+  "hash": "717cf2a5c620647a19d26f7935ec100725000a5b0d76e48d89c6fd1625c19ca4"
 }

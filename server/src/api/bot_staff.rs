@@ -399,7 +399,7 @@ fn parse_month(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(&format!("{s}-01"), "%Y-%m-%d").ok()
 }
 
-fn first_of(d: NaiveDate) -> NaiveDate {
+pub(crate) fn first_of(d: NaiveDate) -> NaiveDate {
     d.with_day(1).unwrap_or(d)
 }
 
@@ -407,7 +407,7 @@ fn month_name(d: NaiveDate) -> &'static str {
     MONTHS.get(d.month0() as usize).copied().unwrap_or("")
 }
 
-async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
+pub(crate) async fn today(conn: &mut PgConnection) -> AppResult<NaiveDate> {
     Ok(
         sqlx::query_scalar!(r#"select (now() at time zone 'Asia/Bishkek')::date as "d!""#)
             .fetch_one(&mut *conn)
@@ -427,7 +427,7 @@ const KIND_ORDER: [&str; 7] = [
 ];
 
 /// Начисления сотрудника за дни учёта — та же выборка, что «кто сколько заработал» владельца.
-async fn mine(
+pub(crate) async fn mine(
     conn: &mut PgConnection,
     e: &Employee,
     from: NaiveDate,
@@ -474,7 +474,7 @@ fn item_line(i: &PayItem) -> String {
 }
 
 /// Виды начислений; под «за замены» — заработок мастера по услугам (SPEC-30 §2).
-async fn push_items(
+pub(crate) async fn push_items(
     conn: &mut PgConnection,
     e: &Employee,
     (from, to): (NaiveDate, NaiveDate),
@@ -656,7 +656,7 @@ async fn month(
 
 /// Строка оклада для работника (задача 003 Н11): «Оклад за 20.10–19.11: 30 000 с (не начислен —
 /// начислит владелец), авансом 5 000 с, к выплате 20.11 — 25 000 с». Без оклада — `None`.
-async fn salary_line(
+pub(crate) async fn salary_line(
     conn: &mut PgConnection,
     e: &Employee,
     on: NaiveDate,

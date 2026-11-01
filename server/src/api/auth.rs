@@ -22,6 +22,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/login", routing::post(login))
         .route("/auth/logout", routing::post(logout))
         .route("/auth/me", routing::get(me))
+        .route("/auth/password", routing::post(change_own_password))
         .route("/users", routing::get(list_users).post(create_user))
         .route("/users/{id}", routing::patch(update_user))
         .route("/users/{id}/permissions", routing::put(put_permissions))
@@ -254,15 +255,29 @@ pub(crate) async fn check_cashier_pin(
 /// Попытка входа: жёсткий предел — только на «логин + адрес» (ADR-016, ADR-049). Общий счётчик
 /// на логин вход не закрывает: иначе любой мог бы неверными паролями запереть владельца
 /// (ADR-059). Он лишь сообщает владельцу о подборе, см. `note_failure`.
+/// Логин с этого адреса уже заблокирован — ответ сразу, счётчик адреса не растёт: кассир,
+/// который ошибся паролем и жмёт «Войти» дальше, не закрывает вход остальным кассирам того же
+/// моноблока. Адрес закрывается только неудачами по многим разным логинам (ADR-981).
 pub(crate) async fn reserve_login(
     state: &AppState,
     login: &str,
     addr: &str,
 ) -> AppResult<Option<i64>> {
+    let own = format!("{login}|{addr}");
+    let locked = sqlx::query_scalar!(
+        r#"select ceil(extract(epoch from locked_until - now()) / 60)::bigint as "m!"
+           from login_attempts where login = $1 and locked_until > now()"#,
+        own
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    if let Some(m) = locked.filter(|m| *m > 0) {
+        return Ok(Some(m));
+    }
     if let Some(m) = reserve_with_limit(state, &addr_key(addr), MAX_FAILURES_ADDR).await? {
         return Ok(Some(m));
     }
-    reserve_with_limit(state, &format!("{login}|{addr}"), MAX_FAILURES).await
+    reserve_with_limit(state, &own, MAX_FAILURES).await
 }
 
 /// Успешный вход снимает счётчик своего адреса. Общий счётчик остаётся: он только для
@@ -417,7 +432,10 @@ async fn login(
         )));
     }
     let row = sqlx::query!(
-        "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = $1 and active",
+        r#"select u.id, u.branch_id, u.login, u.full_name, u.role, u.password_hash, u.employee_id,
+                  e.full_name as "employee_name?"
+           from users u left join employees e on e.id = u.employee_id
+           where lower(u.login) = $1 and u.active"#,
         login
     )
     .fetch_optional(&state.pool)
@@ -447,6 +465,8 @@ async fn login(
         login: row.login,
         full_name: row.full_name,
         role: Role::parse(&row.role)?,
+        employee_id: row.employee_id,
+        employee_name: row.employee_name,
     };
     let device_id = auth::device_id(&parts);
     let (token, token_hash) = new_token();
@@ -562,6 +582,11 @@ struct UserOut {
     /// Когда привязан чат в Телеграме (ADR-063, ADR-135); пусто — не привязан. Только в списке.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telegram_linked_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Сотрудник входа (задача 005 Н1, ADR-981); пусто — вход без сотрудника.
+    #[serde(default)]
+    employee_id: Option<Uuid>,
+    #[serde(default)]
+    employee_name: Option<String>,
 }
 
 async fn list_users(
@@ -573,8 +598,10 @@ async fn list_users(
         r#"select u.id, u.login, u.full_name, u.role, u.active,
                   array(select p.permission from user_permissions p
                         where p.user_id = u.id order by p.permission) as "permissions!",
-                  (select t.linked_at from telegram_links t where t.user_id = u.id) as telegram_linked_at
-           from users u where u.branch_id = $1 or u.role = 'owner'
+                  (select t.linked_at from telegram_links t where t.user_id = u.id) as telegram_linked_at,
+                  u.employee_id, e.full_name as "employee_name?"
+           from users u left join employees e on e.id = u.employee_id
+           where u.branch_id = $1 or u.role = 'owner'
            order by u.role = 'owner' desc, u.full_name"#,
         user.branch_id
     )
@@ -585,10 +612,23 @@ async fn list_users(
 
 #[derive(Deserialize)]
 struct CreateUserReq {
+    /// Повтор того же `op_id` — прежний ответ, а не 409 «логин занят» (I8).
+    #[serde(default)]
+    op_id: Option<Uuid>,
     login: String,
     password: String,
+    /// У входа сотрудника имя берётся из карточки, если не прислано.
+    #[serde(default)]
     full_name: String,
+    #[serde(default = "admin_role")]
     role: String,
+    /// Вход из карточки сотрудника (задача 005 Н1, ADR-981): сотрудник того же филиала.
+    #[serde(default)]
+    employee_id: Option<Uuid>,
+}
+
+fn admin_role() -> String {
+    Role::Admin.as_str().into()
 }
 
 fn check_password(p: &str) -> AppResult<()> {
@@ -599,50 +639,118 @@ fn check_password(p: &str) -> AppResult<()> {
     }
 }
 
+/// Сотрудник, к которому привязывают вход: тот же филиал, действующий, без другого входа
+/// (ADR-981). Строка сотрудника блокируется до конца операции. Ответ — имя сотрудника.
+async fn employee_for_login(
+    conn: &mut sqlx::PgConnection,
+    employee_id: Uuid,
+    branch_id: Uuid,
+    user_id: Option<Uuid>,
+) -> AppResult<String> {
+    let e = sqlx::query!(
+        "select full_name, active from employees where id = $1 and branch_id = $2 for update",
+        employee_id,
+        branch_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| invalid("сотрудник не найден в этом филиале"))?;
+    if !e.active {
+        return Err(invalid(format!(
+            "сотрудник {} отключён: сначала включите его в «Сотрудниках»",
+            e.full_name
+        )));
+    }
+    let other = sqlx::query_scalar!(
+        "select login from users where employee_id = $1 and id is distinct from $2",
+        employee_id,
+        user_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(login) = other {
+        return Err(AppError::Conflict(format!(
+            "у сотрудника {} уже есть вход «{login}»",
+            e.full_name
+        )));
+    }
+    Ok(e.full_name)
+}
+
+/// Конфликт уникальности при записи входа: логин или сотрудник уже заняты.
+fn user_conflict(e: sqlx::Error) -> AppError {
+    let employee = e
+        .as_database_error()
+        .and_then(|d| d.constraint())
+        .is_some_and(|c| c == "users_employee_uq");
+    if employee {
+        AppError::Conflict("у сотрудника уже есть вход".into())
+    } else if is_unique_violation(&e) {
+        AppError::Conflict("логин занят".into())
+    } else {
+        e.into()
+    }
+}
+
 async fn create_user(
     State(state): State<AppState>,
     ctx: Ctx,
     Json(req): Json<CreateUserReq>,
 ) -> AppResult<Json<UserOut>> {
+    const KIND: &str = "user.create";
     ctx.user.require_owner()?;
     let login = req.login.trim().to_string();
-    let full_name = req.full_name.trim().to_string();
-    if login.is_empty() || full_name.is_empty() {
+    let mut full_name = req.full_name.trim().to_string();
+    if login.is_empty() || (full_name.is_empty() && req.employee_id.is_none()) {
         return Err(invalid("логин и имя обязательны"));
     }
     check_password(&req.password)?;
     let role = Role::parse(&req.role)?;
+    if req.employee_id.is_some() && role != Role::Admin {
+        return Err(invalid(
+            "вход сотрудника — администратор со своими правами, не владелец",
+        ));
+    }
     let hash = hash_password(req.password).await?;
-    let id = new_id();
     let mut tx = state.pool.begin().await?;
+    // Двойное нажатие «Завести вход» — тот же ответ, а не «логин занят» (I8).
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let employee_name = match req.employee_id {
+        Some(e) => Some(employee_for_login(&mut tx, e, ctx.user.branch_id, None).await?),
+        None => None,
+    };
+    if full_name.is_empty() {
+        full_name = employee_name.clone().unwrap_or_default();
+    }
+    let id = new_id();
     sqlx::query!(
-        "insert into users (id, branch_id, login, password_hash, role, full_name) values ($1, $2, $3, $4, $5, $6)",
+        "insert into users (id, branch_id, login, password_hash, role, full_name, employee_id) values ($1, $2, $3, $4, $5, $6, $7)",
         id,
         ctx.user.branch_id,
         login,
         hash,
         role.as_str(),
-        full_name
+        full_name,
+        req.employee_id
     )
     .execute(&mut *tx)
     .await
-    .map_err(|e| if is_unique_violation(&e) { AppError::Conflict("логин занят".into()) } else { e.into() })?;
+    .map_err(user_conflict)?;
     // Новому администратору — права по умолчанию, дальше их правит владелец (SPEC-30 §5).
+    // Входу сотрудника — тот же набор (задача 005, ответ 2б).
     if role == Role::Admin {
         auth::grant_default_permissions(&mut tx, id, ctx.user.branch_id, ctx.user.id).await?;
     }
     let permissions = auth::permissions(&mut tx, id).await?;
-    ops::audit(
-        &mut tx,
-        &ctx,
-        "user.create",
-        "user",
-        Some(id),
-        json!({ "login": login, "role": role.as_str(), "permissions": permissions }),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Json(UserOut {
+    let mut data = json!({ "login": login, "role": role.as_str(), "permissions": permissions });
+    if let (Some(e), Some(name)) = (req.employee_id, &employee_name) {
+        data["employee_id"] = json!(e);
+        data["employee_name"] = json!(name);
+    }
+    ops::audit(&mut tx, &ctx, KIND, "user", Some(id), data).await?;
+    let out = UserOut {
         id,
         login,
         full_name,
@@ -650,11 +758,28 @@ async fn create_user(
         active: true,
         permissions,
         telegram_linked_at: None,
-    }))
+        employee_id: req.employee_id,
+        employee_name,
+    };
+    ops::finish_opt(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Поле, где важно отличить «не прислано» от `null`: `Some(None)` — снять значение.
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
 struct UpdateUserReq {
+    /// Повтор того же `op_id` — прежний ответ (I8).
+    #[serde(default)]
+    op_id: Option<Uuid>,
     full_name: Option<String>,
     role: Option<String>,
     active: Option<bool>,
@@ -663,6 +788,9 @@ struct UpdateUserReq {
     login: Option<String>,
     /// Филиал администратора (задача 003 Н8, SPEC-33): права переходят вместе с ним.
     branch_id: Option<Uuid>,
+    /// Сотрудник входа (задача 005 Н1, ADR-981): id — связать, `null` — отвязать, нет поля — как было.
+    #[serde(default, deserialize_with = "present")]
+    employee_id: Option<Option<Uuid>>,
     // Права меняются отдельной операцией `PUT /users/{id}/permissions` (ADR-097): поле
     // `permissions` от старого экрана не принимается, чтобы он не снял права, которых не знает.
 }
@@ -673,6 +801,7 @@ async fn update_user(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateUserReq>,
 ) -> AppResult<Json<UserOut>> {
+    const KIND: &str = "user.update";
     ctx.user.require_owner()?;
     let role = req.role.as_deref().map(Role::parse).transpose()?;
     let hash = match req.password {
@@ -691,6 +820,9 @@ async fn update_user(
         return Err(invalid("логин обязателен"));
     }
     let mut tx = state.pool.begin().await?;
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     // Блокируем владельцев, чтобы проверка «последнего владельца» была надёжной. Владелец —
     // всех филиалов (SPEC-33): его правят из любого филиала, администратора — из его филиала.
     let owners =
@@ -698,7 +830,7 @@ async fn update_user(
             .fetch_all(&mut *tx)
             .await?;
     let before = sqlx::query!(
-        "select role, login, branch_id from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
+        "select role, login, branch_id, active, employee_id from users where id = $1 and (branch_id = $2 or role = 'owner') for update",
         id,
         ctx.user.branch_id
     )
@@ -706,12 +838,27 @@ async fn update_user(
     .await?
     .ok_or(AppError::NotFound)?;
     let before_role = before.role;
+    // Сотрудник после правки: прислан — новый (или никакого), нет поля — прежний (ADR-981).
+    let employee_id = req.employee_id.unwrap_or(before.employee_id);
+    let employee_changed = employee_id != before.employee_id;
+    let new_role = role.map_or(before_role.clone(), |r| r.as_str().to_string());
+    if employee_id.is_some() && new_role != Role::Admin.as_str() {
+        return Err(invalid(
+            "вход сотрудника — администратор со своими правами: сначала отвяжите сотрудника",
+        ));
+    }
     // Филиал меняют только администратору и только на открытый филиал (SPEC-33): владелец видит
     // все филиалы, его филиал — лишь «домашний».
     let new_branch = req.branch_id.filter(|b| *b != before.branch_id);
     if let Some(b) = new_branch {
         if !role.map_or(before_role == "admin", |r| r == Role::Admin) {
             return Err(invalid("филиал меняется только у администратора"));
+        }
+        // Сотрудник — в своём филиале: вход сотрудника в другой филиал не переводится (ADR-981).
+        if employee_id.is_some() {
+            return Err(invalid(
+                "вход сотрудника работает в филиале сотрудника: сначала отвяжите сотрудника",
+            ));
         }
         let open = sqlx::query_scalar!(
             r#"select not archived as "open!" from branches where id = $1"#,
@@ -723,6 +870,19 @@ async fn update_user(
             return Err(invalid("нет такого открытого филиала"));
         }
     }
+    // Новый сотрудник — того же филиала, действующий, без другого входа; включить вход
+    // отключённого сотрудника нельзя.
+    let employee_name = match employee_id {
+        Some(e) if employee_changed || (req.active == Some(true) && !before.active) => {
+            Some(employee_for_login(&mut tx, e, before.branch_id, Some(id)).await?)
+        }
+        Some(e) => {
+            sqlx::query_scalar!("select full_name from employees where id = $1", e)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
+        None => None,
+    };
     let row = sqlx::query!(
         r#"update users set
              full_name = coalesce($3, full_name),
@@ -730,7 +890,8 @@ async fn update_user(
              active = coalesce($5, active),
              password_hash = coalesce($6, password_hash),
              login = coalesce($7, login),
-             branch_id = coalesce($8, branch_id)
+             branch_id = coalesce($8, branch_id),
+             employee_id = $9
            where id = $1 and (branch_id = $2 or role = 'owner')
            returning id, login, full_name, role, active, branch_id"#,
         id,
@@ -740,17 +901,12 @@ async fn update_user(
         req.active,
         hash,
         login,
-        new_branch
+        new_branch,
+        employee_id
     )
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| {
-        if is_unique_violation(&e) {
-            AppError::Conflict("логин занят".into())
-        } else {
-            e.into()
-        }
-    })?
+    .map_err(user_conflict)?
     .ok_or(AppError::NotFound)?;
     // Права администратора хранятся с филиалом (I16): переходят в новый филиал той же операцией.
     if new_branch.is_some() {
@@ -786,6 +942,8 @@ async fn update_user(
         active: row.active,
         permissions: auth::permissions(&mut tx, id).await?,
         telegram_linked_at: None,
+        employee_id,
+        employee_name,
     };
     let still_owner = out.active && out.role == "owner";
     if owners.len() == 1 && owners.contains(&id) && !still_owner {
@@ -818,7 +976,135 @@ async fn update_user(
         data["old_branch_id"] = json!(before.branch_id);
         data["branch_id"] = json!(row.branch_id);
     }
-    ops::audit(&mut tx, &ctx, "user.update", "user", Some(id), data).await?;
+    // Сотрудник входа — «было → стало» (ADR-981).
+    if employee_changed {
+        data["old_employee_id"] = json!(before.employee_id);
+        data["employee_id"] = json!(out.employee_id);
+        data["employee_name"] = json!(out.employee_name);
+    }
+    ops::audit(&mut tx, &ctx, KIND, "user", Some(id), data).await?;
+    ops::finish_opt(&mut tx, &ctx, req.op_id, KIND, &out).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+/// Отключили сотрудника — отключается и его вход: сессии сброшены, чат в Телеграме отвязан, в
+/// журнал — `user.update` с причиной (задача 005 Н1, ADR-981). Включают вход снова отдельно.
+pub(crate) async fn disable_employee_login(
+    conn: &mut sqlx::PgConnection,
+    ctx: &Ctx,
+    employee_id: Uuid,
+) -> AppResult<()> {
+    let rows = sqlx::query!(
+        "update users set active = false where employee_id = $1 and active returning id, login, role",
+        employee_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for r in rows {
+        sqlx::query!("delete from sessions where user_id = $1", r.id)
+            .execute(&mut *conn)
+            .await?;
+        crate::api::telegram::drop_owner_link(&mut *conn, ctx, r.id).await?;
+        ops::audit(
+            &mut *conn,
+            ctx,
+            "user.update",
+            "user",
+            Some(r.id),
+            json!({
+                "login": r.login,
+                "role": r.role,
+                "active": false,
+                "password_changed": false,
+                "reason": "сотрудник отключён",
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct OwnPasswordReq {
+    op_id: Uuid,
+    old_password: String,
+    new_password: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OwnPasswordOut {
+    changed: bool,
+    /// Сколько других сессий этого входа закрыто.
+    sessions_closed: u64,
+}
+
+/// «Сменить свой пароль» (задача 005 Н1, ADR-981) — любому входу: прежний пароль, новый не
+/// короче 8 символов, `op_id`; в журнал `user.password_self`; прочие сессии этого входа
+/// закрываются, эта остаётся. Неверный прежний пароль — пять за 15 минут, потом блокировка.
+async fn change_own_password(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    parts: Parts,
+    Json(req): Json<OwnPasswordReq>,
+) -> AppResult<Json<OwnPasswordOut>> {
+    const KIND: &str = "user.password_self";
+    check_password(&req.new_password)?;
+    if req.old_password.len() > 200 || req.new_password.len() > 200 {
+        return Err(invalid("пароль не длиннее 200 символов"));
+    }
+    let mut tx = state.pool.begin().await?;
+    // Повтор после потерянного ответа — тот же ответ, хотя прежний пароль уже другой.
+    if let Some(done) = ops::begin_op(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
+    let key = format!("self-password|{}", ctx.user.id);
+    if let Some(minutes) = reserve_with_limit(&state, &key, MAX_FAILURES).await? {
+        return Err(AppError::TooManyRequests(format!(
+            "слишком много неверных паролей, повторите через {minutes} мин"
+        )));
+    }
+    let old_hash = sqlx::query_scalar!(
+        "select password_hash from users where id = $1 for update",
+        ctx.user.id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if !auth::verify_password(req.old_password, old_hash).await {
+        return Err(invalid("неверный текущий пароль"));
+    }
+    clear_attempts(&state, &key).await?;
+    let hash = hash_password(req.new_password).await?;
+    sqlx::query!(
+        "update users set password_hash = $2 where id = $1",
+        ctx.user.id,
+        hash
+    )
+    .execute(&mut *tx)
+    .await?;
+    let current = auth::session_token(&parts).map(auth::token_hash);
+    let closed = sqlx::query!(
+        "delete from sessions where user_id = $1 and token_hash is distinct from $2",
+        ctx.user.id,
+        current
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    ops::audit(
+        &mut tx,
+        &ctx,
+        KIND,
+        "user",
+        Some(ctx.user.id),
+        json!({ "login": ctx.user.login, "sessions_closed": closed }),
+    )
+    .await?;
+    let out = OwnPasswordOut {
+        changed: true,
+        sessions_closed: closed,
+    };
+    ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
     Ok(Json(out))
 }
@@ -888,7 +1174,9 @@ async fn put_permissions(
         return Ok(Json(done));
     }
     let row = sqlx::query!(
-        "select login, full_name, role, active from users where id = $1 and branch_id = $2 for update",
+        r#"select u.login, u.full_name, u.role, u.active, u.employee_id, e.full_name as "employee_name?"
+           from users u left join employees e on e.id = u.employee_id
+           where u.id = $1 and u.branch_id = $2 for update of u"#,
         id,
         ctx.user.branch_id
     )
@@ -936,6 +1224,8 @@ async fn put_permissions(
         active: row.active,
         permissions: after,
         telegram_linked_at: None,
+        employee_id: row.employee_id,
+        employee_name: row.employee_name,
     };
     ops::finish_op(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;

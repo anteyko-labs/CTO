@@ -708,6 +708,8 @@ async fn bot_does_not_post_in_closed_branch(pool: PgPool) {
             login,
             full_name,
             role: Role::Owner,
+            employee_id: None,
+            employee_name: None,
         },
         970_001,
     );

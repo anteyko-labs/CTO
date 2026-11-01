@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.login, u.full_name, u.role, u.active, u.employee_id, e.full_name as \"employee_name?\"\n           from users u left join employees e on e.id = u.employee_id\n           where u.id = $1 and u.branch_id = $2 for update of u",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "login",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "full_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "employee_name?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "343769b6b2155975ba781940954772bdbea76f6647b460a3cd901fc675c156fa"
+}

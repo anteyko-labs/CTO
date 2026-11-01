@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select full_name from employees where id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f2e9e9741cd185b9041564dc9dfb13220c17f60bdd5ddab4e43632f5ac696206"
+}

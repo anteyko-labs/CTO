@@ -74,6 +74,8 @@ async fn seed(pool: &PgPool) -> World {
                 login: login.into(),
                 full_name: login.into(),
                 role: Role::parse(role).unwrap(),
+                employee_id: None,
+                employee_name: None,
             },
             device_id: Uuid::now_v7(),
             bot_chat: None,

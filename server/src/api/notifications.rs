@@ -1479,9 +1479,13 @@ async fn page(
 ) -> AppResult<Vec<NotificationOut>> {
     let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
     let rows = sqlx::query!(
-        r#"select a.id, a.action, a.data, a.entity_id, a.created_at, u.full_name as "user_name?"
+        r#"select a.id, a.action, a.data, a.entity_id, a.created_at,
+                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-981).
+                  case when ue.id is not null then u.login || ' (' || ue.full_name || ')'
+                       else u.full_name end as "user_name?"
            from audit_log a
            left join users u on u.id = a.user_id
+           left join employees ue on ue.id = u.employee_id
            where a.branch_id = $1 and a.action = any($2)
            order by a.created_at desc, a.id desc
            limit $3 offset $4"#,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select id, branch_id, login, full_name, role, password_hash from users where lower(login) = $1 and active",
+  "query": "select u.id, u.branch_id, u.login, u.full_name, u.role, u.password_hash, u.employee_id,\n                  e.full_name as \"employee_name?\"\n           from users u left join employees e on e.id = u.employee_id\n           where lower(u.login) = $1 and u.active",
   "describe": {
     "columns": [
       {
@@ -32,6 +32,16 @@
         "ordinal": 5,
         "name": "password_hash",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "employee_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "employee_name?",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -45,8 +55,10 @@
       false,
       false,
       false,
+      false,
+      true,
       false
     ]
   },
-  "hash": "83ed98518b7f3a417c5ba5b32eb439b65513b822a34ab73e8fdba3ce581214b1"
+  "hash": "aac188480142f7a4bb331b407b47aaba3e163ec5759e56f1432c2d132a338622"
 }

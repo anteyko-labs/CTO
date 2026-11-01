@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select (select is_cashier from employees where id = $1) as \"me_cashier?\",\n                      (select full_name from employees where id = $2) as \"shift_cashier?\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "me_cashier?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "shift_cashier?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "b9c9f2a3bed7d4cfb4646c22e25b5ec6884f5d7edbee2e695169c55ac8462a1c"
+}

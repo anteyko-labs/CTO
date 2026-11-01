@@ -433,6 +433,8 @@ async fn admin_menu_follows_rights_and_hides_owner_money(pool: PgPool) {
         login: "admin".into(),
         full_name: "Эрбол".into(),
         role: avtodom_server::auth::Role::Admin,
+        employee_id: None,
+        employee_name: None,
     };
     clean(
         "смена без защиты",
