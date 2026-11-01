@@ -699,6 +699,7 @@ export default function Products() {
             toast(`Код привязан к «${p.name}»`)
             list.reload()
           }}
+          pickLabel="Понятно"
           onCreateNew={() => {
             setNewCode(unknownCode)
             setUnknownCode(null)

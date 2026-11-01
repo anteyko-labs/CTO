@@ -463,6 +463,129 @@ async fn every_product_has_a_barcode(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn till_links_unknown_code_once_and_by_its_own_right(pool: PgPool) {
+    // Незнакомый код на кассе (задача 005 Н3): повтор `op_id` — прежний ответ без второй записи
+    // журнала (I8); чужой код — 409 с названием товара; право «Привязывать коды на кассе»
+    // добавляет код без «Товаров и штрихкодов», но карточку не правит (ADR-{n3}); код литра из
+    // Умага — сначала предупреждение.
+    let app = setup(pool.clone()).await;
+    let owner = login(&app, "owner", "owner-pass-1").await;
+    let admin = login(&app, "admin", "admin-pass-1").await;
+    let oil = product(&app, &owner, "Масло Mobil", 300_000, 0).await;
+    let filter = product(&app, &owner, "Фильтр Mann", 50_000, 0).await;
+    let link = |id: &str, body: Value| {
+        let app = app.clone();
+        let admin = admin.clone();
+        let uri = format!("/api/v1/products/{id}/barcodes");
+        async move { call(&app, "POST", &uri, Some(&admin), Some(body)).await }
+    };
+
+    // Привязка и повтор того же запроса после обрыва связи.
+    let op = Uuid::now_v7();
+    let (s, _, first) = link(&oil, json!({ "op_id": op, "code": "4006381333931" })).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    let (s, _, again) = link(&oil, json!({ "op_id": op, "code": "4006381333931" })).await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(again, first);
+    let linked = actions(&pool, "product.barcode").await;
+    assert_eq!(linked.len(), 1, "{linked:?}");
+    assert_eq!(linked[0]["name"], "Масло Mobil");
+    assert_eq!(linked[0]["code"], "4006381333931");
+
+    // Тот же код другому товару — 409 с названием того, у кого он есть.
+    let (s, _, err) = link(
+        &filter,
+        json!({ "op_id": Uuid::now_v7(), "code": "4006381333931" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("«Масло Mobil»"),
+        "{err}"
+    );
+
+    // Только право кассы: код добавляется, карточка не правится и коды не отвязываются.
+    let defaults = avtodom_server::auth::default_permissions();
+    assert!(defaults.contains(&"till_barcode"));
+    let till: Vec<&str> = defaults
+        .iter()
+        .copied()
+        .filter(|p| *p != "products")
+        .collect();
+    set_admin_permissions(&app, &owner, &till).await;
+    let (s, _, out) = link(
+        &filter,
+        json!({ "op_id": Uuid::now_v7(), "code": "5012345678900" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, _, _) = call(
+        &app,
+        "PATCH",
+        &format!("/api/v1/products/{filter}"),
+        Some(&admin),
+        Some(json!({ "name": "Фильтр другой" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _, _) = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/products/{filter}/barcodes/5012345678900"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Ни одного из двух прав — 403 с названием права кассы.
+    let none: Vec<&str> = till
+        .iter()
+        .copied()
+        .filter(|p| *p != "till_barcode")
+        .collect();
+    set_admin_permissions(&app, &owner, &none).await;
+    let (s, _, err) = link(
+        &filter,
+        json!({ "op_id": Uuid::now_v7(), "code": "4601234567893" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(
+        err["error"]["message"],
+        "Нет права: Привязывать коды на кассе"
+    );
+    set_admin_permissions(&app, &owner, &till).await;
+
+    // Наклейка «1 литр» строки Умага «литр» — предупреждение; подтвердили — привязан.
+    sqlx::query(
+        "insert into old_catalog (id, branch_id, name, barcode, unit, price_tyiyn)
+         select $1, branch_id, 'Масло на розлив', '2760275010002', 'л', 75_000
+         from users where login = 'admin'",
+    )
+    .bind(Uuid::now_v7())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, _, warn) = link(
+        &oil,
+        json!({ "op_id": Uuid::now_v7(), "code": "2760275010002" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{warn}");
+    assert_eq!(warn["error"]["code"], "umag_measure_code", "{warn}");
+    let (s, _, ok) = link(
+        &oil,
+        json!({ "op_id": Uuid::now_v7(), "code": "2760275010002", "measure_ok": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+}
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
 async fn oil_change_fee_is_a_setting(pool: PgPool) {
     // Ставку замены меняет только владелец (ADR-019, ADR-027).
     let app = setup(pool).await;
@@ -10882,7 +11005,7 @@ async fn migration_gives_existing_admins_default_permissions(pool: PgPool) {
         .map(String::from)
         .collect();
     defaults.sort();
-    assert_eq!(defaults.len(), 25);
+    assert_eq!(defaults.len(), 26);
     assert!(
         !defaults
             .iter()
@@ -10940,7 +11063,7 @@ async fn owner_sets_admin_permissions_with_journal(pool: PgPool) {
     assert_eq!(s, StatusCode::OK, "{u}");
     let got: Vec<String> = serde_json::from_value(u["permissions"].clone()).unwrap();
     assert!(got.contains(&"discount".to_string()) && !got.contains(&"expenses".to_string()));
-    assert_eq!(got.len(), 24);
+    assert_eq!(got.len(), 25);
     // Повтор того же запроса — тот же ответ, вторая запись в журнал не пишется.
     let (s, _, again) = call(&app, "PUT", &uri, Some(&owner), Some(body)).await;
     assert_eq!((s, &again), (StatusCode::OK, &u));
@@ -11340,12 +11463,6 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         (
             "products",
             "POST",
-            format!("/api/v1/products/{item}/barcodes"),
-            Box::new(|| json!({})),
-        ),
-        (
-            "products",
-            "POST",
             "/api/v1/categories".into(),
             Box::new(move || json!({ "name": format!("Кат {}", op()), "kind": "filter" })),
         ),
@@ -11561,14 +11678,20 @@ async fn every_admin_permission_closes_its_actions(pool: PgPool) {
         let (s, _, out) = call(&app, method, uri, Some(&admin), Some(body())).await;
         assert_eq!(s, StatusCode::OK, "{perm} {uri}: {out}");
     }
-    // Каждое право, кроме скидки (её проверяет чек), перелива, аванса, приёмки и заработка
-    // кассиров (свои проверки: аванс — в tests/payouts.rs, приёмка — в tests/acceptance.rs,
-    // заработок кассиров — admin_sections_keep_the_till_working), закрывает хотя бы одно
-    // действие из списка.
+    // Каждое право, кроме скидки (её проверяет чек), перелива, аванса, приёмки, заработка
+    // кассиров и кодов на кассе (свои проверки: аванс — в tests/payouts.rs, приёмка — в
+    // tests/acceptance.rs, заработок кассиров — admin_sections_keep_the_till_working, привязка
+    // кода — «Товары» или «Коды на кассе», till_links_unknown_code_once_and_by_its_own_right),
+    // закрывает хотя бы одно действие из списка.
     for p in avtodom_server::auth::PERMISSIONS {
         if !matches!(
             p.key,
-            "discount" | "oil_transfer" | "payroll_advance" | "acceptance" | "payroll_view_all"
+            "discount"
+                | "oil_transfer"
+                | "payroll_advance"
+                | "acceptance"
+                | "payroll_view_all"
+                | "till_barcode"
         ) {
             assert!(cases.iter().any(|c| c.0 == p.key), "{} без проверки", p.key);
         }
@@ -12523,7 +12646,8 @@ async fn bot_feed_settings_are_owner_only(pool: PgPool) {
     let (s, _, v) = call(&app, "GET", "/api/v1/settings/bot-feed", Some(&owner), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["sales"], "none", "чеки по умолчанию не присылаются");
-    assert_eq!(v["off"], json!([]));
+    // Привязка кода к товару (задача 005 Н3) по умолчанию выключена.
+    assert_eq!(v["off"], json!(["product.barcode"]));
     for _ in 0..2 {
         let (s, _, v) = call(
             &app,

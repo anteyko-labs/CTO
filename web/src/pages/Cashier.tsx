@@ -2235,7 +2235,9 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             <div className="min-w-0 flex-1">
               <ProductPicker
                 onPick={addProduct}
-                onUnknownCode={can(user, 'products') ? setUnknownCode : undefined}
+                // Незнакомый код — окно привязки: право «Товары и штрихкоды» или «Привязывать коды
+                // на кассе» (задача 005 Н3); «Новый товар» в окне — только с первым.
+                onUnknownCode={can(user, 'products') || can(user, 'till_barcode') ? setUnknownCode : undefined}
                 onCreate={can(user, 'products') ? setNewProductName : undefined}
               />
             </div>
@@ -3494,10 +3496,15 @@ export default function Cashier({ fix }: { fix?: CashierFix }) {
             addProduct(p)
             focusPicker()
           }}
-          onCreateNew={() => {
-            setNewProductCode(unknownCode)
-            setUnknownCode(null)
-          }}
+          pickLabel="Положить в чек"
+          onCreateNew={
+            can(user, 'products')
+              ? () => {
+                  setNewProductCode(unknownCode)
+                  setUnknownCode(null)
+                }
+              : undefined
+          }
         />
       )}
       {newProductName !== null && (

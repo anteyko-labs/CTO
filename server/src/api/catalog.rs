@@ -2142,10 +2142,17 @@ pub(crate) async fn set_price_from_receipt(
 
 #[derive(Deserialize)]
 struct BarcodeReq {
+    /// Повтор запроса с тем же `op_id` — прежний ответ (I8). Без него — как раньше.
+    #[serde(default)]
+    op_id: Option<Uuid>,
     code: Option<String>,
+    /// Код меры строки Умага (литр, кг, метр) привязать всё равно: кассир подтвердил
+    /// предупреждение (задача 005 Н3).
+    #[serde(default)]
+    measure_ok: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct BarcodeOut {
     code: String,
     internal: bool,
@@ -2159,14 +2166,43 @@ pub(crate) async fn next_internal_code(tx: &mut sqlx::PgConnection) -> AppResult
     barcode::internal_code(seq).ok_or_else(|| AppError::Internal("кончились коды".into()))
 }
 
+/// Код — код меры строки Умага этого филиала (литр, кг, метр: PLU и наклейки магазина, ADR-113):
+/// у товара учёта такой код положил бы на кассе всю тару.
+async fn umag_measure_code(
+    conn: &mut PgConnection,
+    branch_id: Uuid,
+    code: &str,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"select exists (select 1 from old_catalog
+                          where branch_id = $1 and keys_bare @> array[umag_bare($2)]
+                            and umag_measure_code($2, unit)) as "v!""#,
+        branch_id,
+        code
+    )
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// Привязать код к товару: право «Товары и штрихкоды» или «Привязывать коды на кассе»
+/// (задача 005 Н3, ADR-{n3}) — второе только добавляет код, карточку не правит.
 async fn add_barcode(
     State(state): State<AppState>,
     ctx: Ctx,
     Path(id): Path<Uuid>,
     Json(req): Json<BarcodeReq>,
 ) -> AppResult<Json<BarcodeOut>> {
+    const KIND: &str = "product.barcode";
     let mut tx = state.pool.begin().await?;
-    crate::auth::require_permission(&mut tx, &ctx.user, "products").await?;
+    if !crate::auth::access(&mut tx, &ctx.user, "products")
+        .await?
+        .allowed()
+    {
+        crate::auth::require_permission(&mut tx, &ctx.user, "till_barcode").await?;
+    }
+    if let Some(done) = ops::begin_opt(&mut tx, &ctx, req.op_id, KIND).await? {
+        return Ok(Json(done));
+    }
     let archived = sqlx::query_scalar!("select archived from products where id = $1", id)
         .fetch_optional(&mut *tx)
         .await?
@@ -2191,21 +2227,36 @@ async fn add_barcode(
     };
     // Замок списка Умага — до записи кода (SPEC-35 §1).
     crate::api::old_catalog::lock_branch(&mut tx, ctx.user.branch_id).await?;
+    // Код литра (кг, метра) из Умага — не код упаковки: сначала предупредить (задача 005 Н3).
+    if !internal && !req.measure_ok && umag_measure_code(&mut tx, ctx.user.branch_id, &code).await?
+    {
+        return Err(AppError::ConflictCode(
+            "umag_measure_code",
+            format!(
+                "Код {code} в Умаге — код литра (кг, метра), а не упаковки: скан этой наклейки положит в чек весь товар. Точно привязать?"
+            ),
+        ));
+    }
     insert_barcode(&mut tx, id, &code, internal).await?;
+    let name = sqlx::query_scalar!("select name from products where id = $1", id)
+        .fetch_one(&mut *tx)
+        .await?;
     ops::audit(
         &mut tx,
         &ctx,
-        "product.barcode",
+        KIND,
         "product",
         Some(id),
-        json!({ "code": code }),
+        json!({ "code": code, "name": name }),
     )
     .await?;
     // «Это он — привязать код» (SPEC-20): строка Умага с этим кодом — тот же товар, её
     // остальные коды тоже переходят ему.
     crate::api::old_catalog::link_product_rows(&mut tx, &ctx, id, None).await?;
+    let out = BarcodeOut { code, internal };
+    ops::finish_opt(&mut tx, &ctx, req.op_id, KIND, &out).await?;
     tx.commit().await?;
-    Ok(Json(BarcodeOut { code, internal }))
+    Ok(Json(out))
 }
 
 async fn remove_barcode(

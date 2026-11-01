@@ -98,7 +98,7 @@ const fn perm(
 /// сводка и безнал (I13), «Исправить» документов (ADR-085), отмена перелива, ставка мастера,
 /// начисления, бонусы и удержания — это только владелец (ADR-097). Цены товаров и услуг —
 /// правом `prices` (ADR-151, уточняет ADR-032 и ADR-047).
-pub const PERMISSIONS: [PermissionDef; 33] = [
+pub const PERMISSIONS: [PermissionDef; 34] = [
     // Разделы меню и отчёты разделов (задача 003 Н8, ADR-151): без права пункта меню нет,
     // сервер на отчёт раздела отвечает 403. По умолчанию «да» — как было.
     perm("view_sales", "Чеки прошлых дней", "Разделы", true),
@@ -123,6 +123,9 @@ pub const PERMISSIONS: [PermissionDef; 33] = [
     perm("sale_debt", "Продажа в долг", "Касса", true),
     perm("discount", "Скидка в чеке", "Касса", false),
     perm("debt_payment", "Оплата долга клиента", "Касса", true),
+    // Незнакомый код на кассе — привязать к заведённому товару, без правки карточки (задача 005
+    // Н3, ADR-{n3}): «любой кассир», поэтому «да» по умолчанию.
+    perm("till_barcode", "Привязывать коды на кассе", "Касса", true),
     perm(
         "cash_moves",
         "Внести, изъять, перевести деньги",
@@ -644,8 +647,8 @@ mod tests {
     fn permissions_match_the_screen_list() {
         // Список прав (SPEC-30 §5) — на сервере и на экране; ключ, подпись и «по умолчанию»
         // должны совпадать, иначе «Нет права: …» и флажок назовут право по-разному.
-        assert_eq!(PERMISSIONS.len(), 33);
-        assert_eq!(default_permissions().len(), 25);
+        assert_eq!(PERMISSIONS.len(), 34);
+        assert_eq!(default_permissions().len(), 26);
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/src/lib/permissions.ts");
         let Ok(ts) = std::fs::read_to_string(path) else {
             // Сборка одного сервера без клиента: сверять не с чем.

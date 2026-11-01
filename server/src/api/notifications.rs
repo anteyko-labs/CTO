@@ -19,7 +19,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Действия, о которых владелец должен знать: деньги, цены, отмены и доступы.
-pub(crate) const WATCHED: [&str; 79] = [
+pub(crate) const WATCHED: [&str; 80] = [
     "party.limit_request",
     "sale.return_no_receipt",
     "gift.rule",
@@ -103,6 +103,8 @@ pub(crate) const WATCHED: [&str; 79] = [
     "service.create_admin",
     // Старый долг поставщику из тетради (задача 003 Н15).
     "debt.old_supplier",
+    // К товару привязан код — на кассе или в карточке (задача 005 Н3); в бот по умолчанию не идёт.
+    "product.barcode",
 ];
 
 #[derive(Serialize)]
@@ -642,6 +644,10 @@ pub(crate) fn describe(action: &str, data: &Value) -> (String, String) {
                     .unwrap_or_default(),
                 comment(data)
             ),
+        ),
+        "product.barcode" => (
+            "К товару привязан код".into(),
+            format!("{}: код {}", text("name"), text("code")),
         ),
         "service.create_admin" => (
             format!("Администратор завёл услугу «{}»", text("name")),
@@ -1662,6 +1668,12 @@ mod tests {
             text,
             "включено: Скидка в чеке; выключено: Расходы, Внести, изъять, перевести деньги"
         );
+        let (title, text) = describe(
+            "product.barcode",
+            &json!({ "name": "Масло Mobil", "code": "4006381333931" }),
+        );
+        assert_eq!(title, "К товару привязан код");
+        assert_eq!(text, "Масло Mobil: код 4006381333931");
         for action in WATCHED {
             assert_ne!(
                 describe(action, &json!({})).0,
