@@ -951,7 +951,9 @@ async fn update_user(
             "нельзя отключить последнего владельца".into(),
         ));
     }
-    if hash.is_some() || out.active.eq(&false) {
+    // Вход перевели на другого сотрудника (или отвязали) — прежний держатель входа не видит
+    // чужого заработка и не открывает смену за другого: сессии и чат — заново (ADR-170).
+    if hash.is_some() || out.active.eq(&false) || employee_changed {
         sqlx::query!("delete from sessions where user_id = $1", id)
             .execute(&mut *tx)
             .await?;
@@ -959,7 +961,7 @@ async fn update_user(
     // Отключённый или сменивший роль — его чат в Телеграме отвязывается (ADR-063); чат
     // администратора — так же (ADR-135).
     // Сменил филиал — чат администратора тоже: в нём запомнен прежний филиал (SPEC-33 §3).
-    if !out.active || out.role != before_role || new_branch.is_some() {
+    if !out.active || out.role != before_role || new_branch.is_some() || employee_changed {
         crate::api::telegram::drop_owner_link(&mut tx, &ctx, id).await?;
     }
     let mut data = json!({

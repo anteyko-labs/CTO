@@ -318,6 +318,22 @@ async fn update_employee(
             "сотрудника с телефоном включает владелец: телефон открывает ему кабинет в боте".into(),
         ));
     }
+    // Отключение сотрудника выключает и его вход в программу, а вход заводит и меняет только
+    // владелец (задача 005, ADR-170): иначе любой с правом «Сотрудники» выключал бы коллегу.
+    if req.active == Some(false) && prev.active && !ctx.user.is_owner() {
+        let has_login = sqlx::query_scalar!(
+            r#"select exists(select 1 from users where employee_id = $1 and active) as "e!""#,
+            id
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if has_login {
+            return Err(AppError::ForbiddenWith(
+                "сотрудника со входом в программу отключает владелец: вместе с ним выключается вход"
+                    .into(),
+            ));
+        }
+    }
     let r = sqlx::query!(
         r#"update employees set full_name = coalesce($3, full_name), is_cashier = coalesce($4, is_cashier),
              is_master = coalesce($5, is_master), active = coalesce($6, active), phone = coalesce($7, phone)

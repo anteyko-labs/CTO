@@ -1048,3 +1048,76 @@ async fn personal_login_chat_has_rights_and_own_earnings(pool: PgPool) {
     .unwrap();
     assert!(!r.text.starts_with("💼 Сегодня"), "{}", r.text);
 }
+
+/// Вход перевели на другого сотрудника — прежний держатель входа не видит чужого заработка:
+/// его сессии сброшены, чат в Телеграме отвязан (ADR-170).
+#[sqlx::test(migrations = "./migrations")]
+async fn moving_login_to_another_employee_cuts_sessions_and_chat(pool: PgPool) {
+    let w = W::new(pool).await;
+    let ivan = w.employee("Иван", false, None).await;
+    let petr = w.employee("Пётр", false, None).await;
+    let u = w.personal(&ivan, "ivan").await;
+    let uid = u["id"].as_str().unwrap().to_string();
+    let s = login(&w.app, "ivan", "ivan-pass-1").await;
+    sqlx::query("insert into telegram_links (chat_id, user_id, branch_id) select 740100, id, branch_id from users where id = $1::uuid")
+        .bind(&uid)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+
+    w.ok(
+        "PATCH",
+        &w.owner,
+        &format!("/api/v1/users/{uid}"),
+        json!({ "op_id": Uuid::now_v7(), "employee_id": petr }),
+    )
+    .await;
+    let (st, _) = w.req("GET", &s, "/api/v1/me/earnings", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        w.scalar(&format!(
+            "select count(*) from telegram_links where user_id = '{uid}'"
+        ))
+        .await,
+        0
+    );
+    assert_eq!(
+        w.scalar(&format!(
+            "select count(*) from sessions where user_id = '{uid}'"
+        ))
+        .await,
+        0
+    );
+}
+
+/// Вход заводит и меняет только владелец: сотрудник с правом «Сотрудники» не отключает
+/// карточку коллеги со входом — иначе выключил бы ей вход (ADR-170).
+#[sqlx::test(migrations = "./migrations")]
+async fn only_owner_disables_employee_with_login(pool: PgPool) {
+    let w = W::new(pool).await;
+    let bakyt = w.employee("Бакыт", false, None).await;
+    let aigul = w.employee("Айгуль", false, None).await;
+    let plain = w.employee("Эрлан", false, None).await;
+    w.personal(&bakyt, "bakyt").await;
+    w.personal(&aigul, "aigul").await;
+    let master = login(&w.app, "bakyt", "bakyt-pass-1").await;
+    let her = login(&w.app, "aigul", "aigul-pass-1").await;
+    let (st, e) = w
+        .req(
+            "PATCH",
+            &master,
+            &format!("/api/v1/employees/{aigul}"),
+            Some(json!({ "active": false })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{e}");
+    w.get(&her, "/api/v1/auth/me").await;
+    // Сотрудника без входа отключает и не-владелец — как раньше.
+    w.ok(
+        "PATCH",
+        &master,
+        &format!("/api/v1/employees/{plain}"),
+        json!({ "active": false }),
+    )
+    .await;
+}
