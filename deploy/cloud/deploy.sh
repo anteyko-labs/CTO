@@ -4,17 +4,23 @@
 #                                    CARGO_BUILD_JOBS=2, npm) и выкатить; ревизия — коммит, ветка
 #                                    или метка;
 #   deploy.sh --bundle <архив.tar.gz> выкатить собранное в другом месте: bin/avtodom-server (Linux),
-#                                    web/index.html…, по желанию commit.txt и migrations.txt;
+#                                    web/index.html…, migrations.txt (обязательно), commit.txt;
 #   deploy.sh --activate <версия>    снова включить уже лежащую версию (имя из --status);
 #   deploy.sh --rollback [--yes]     вернуть прежнюю версию, если нужно — вместе с базой;
-#   deploy.sh --status               что работает, какие версии и копии есть.
-# Порядок выкатки: копия базы «before-deploy» (не вышла — выкатка отменена) → новая версия в
-# /opt/avtodom/releases/<дата>-<коммит> → ссылка current на неё (атомарно) → перезапуск → проверка
-# (страница / — 200, /api/v1/auth/me — 401) до 5 минут: сервер при запуске применяет миграции.
-# Не ответил — сервер останавливается, база возвращается из копии, если миграции её изменили
-# (прежняя программа не запускается на базе с чужими миграциями), и запускается прежняя версия.
+#   deploy.sh --status [--wait]      что работает, какие версии и копии есть; --wait — ждать ответа
+#                                    сервера до 5 минут (миграции при запуске); не ответил — код 1.
+# Порядок выкатки: сборка (или архив) в /opt/avtodom/releases/<дата>-<коммит> и проверка версии →
+# остановка сервера → копия базы «before-deploy» (не вышла — прежняя версия запускается снова,
+# выкатка отменена) → ссылка current на новую версию (атомарно) → запуск → проверка (страница / —
+# 200, /api/v1/auth/me — 401) до 5 минут: сервер при запуске применяет миграции. Не ответил —
+# сервер останавливается, база возвращается из копии, если миграции её изменили (прежняя
+# программа не запускается на базе с чужими миграциями), и запускается прежняя версия.
+# Служба выключена (systemctl disable avtodom — работает Мак) — выкатка отказывается.
 # --no-systemd — проверка в контейнере: сервер запускается в фоне, а не службой.
 set -euo pipefail
+# Язык: ssh с Мака передаёт LANG и LC_*, которых на сервере может не быть.
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
+unset LANGUAGE
 
 ROOT=/opt/avtodom
 REL=$ROOT/releases
@@ -26,15 +32,17 @@ KEEP_RELEASES=5
 
 systemd=1
 yes=0
+wait=0
 args=()
 for a in "$@"; do
   case "$a" in
     --no-systemd) systemd=0 ;;
     --yes) yes=1 ;;
+    --wait) wait=1 ;;
     *) args+=("$a") ;;
   esac
 done
-set -- "${args[@]}"
+set -- "${args[@]+"${args[@]}"}"
 
 die() { echo "ОШИБКА: $*" >&2; exit 1; }
 say() { printf '== %s\n' "$*"; }
@@ -70,10 +78,15 @@ svc_start() {
   if [ "$systemd" = 1 ]; then
     systemctl start avtodom
   else
-    local vars=()
-    mapfile -t vars < <(grep -E '^[A-Z_]+=' /etc/avtodom/env)
-    runuser -u avtodom -- env "${vars[@]}" BIND_ADDR=127.0.0.1:8080 WEB_DIR="$ROOT/web" TZ=Asia/Bishkek \
-      setsid "$ROOT/bin/avtodom-server" >> /var/lib/avtodom/server.log 2>&1 < /dev/null 9>&- &
+    # Настройки — через окружение, не в командной строке (в ps не виден пароль базы).
+    (
+      set -a
+      # shellcheck source=/dev/null
+      . /etc/avtodom/env
+      set +a
+      export BIND_ADDR=127.0.0.1:8080 WEB_DIR="$ROOT/web" TZ=Asia/Bishkek
+      exec runuser -u avtodom -- setsid "$ROOT/bin/avtodom-server" >> /var/lib/avtodom/server.log 2>&1 < /dev/null 9>&-
+    ) &
   fi
 }
 svc_log() {
@@ -143,21 +156,38 @@ prune() {
   done < <(find "$REL" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' | sort -r)
 }
 
+# Выключенная служба — сервер работает на Маке (README 2.9): бот и банк — только в одном месте.
+require_enabled() {
+  if [ "$systemd" = 1 ] && [ "$(systemctl is-enabled avtodom 2> /dev/null || true)" != enabled ]; then
+    die "служба avtodom выключена (systemctl disable — сервер работает на Маке?). Снова здесь: systemctl enable avtodom"
+  fi
+}
+
 # --- выкатка ---------------------------------------------------------------------------------
 activate() {
   local new=$1 cur dump='' mig_before mig_after
   check_release "$new"
   cur=$(current)
   [ "$new" != "$cur" ] || die "версия $new уже работает"
+  require_enabled
+  say "Включаю $new (коммит $(commit_of "$new")), было: ${cur:-ничего}"
+  # Сначала остановка, потом копия: после копии в базу не попадёт ни один чек.
+  if [ -n "$cur" ]; then
+    say "Останавливаю сервер"
+    svc_stop
+  fi
   if db_has_data; then
     say "Копия базы перед выкаткой"
-    dump=$("$SCRIPTS/backup.sh" "before-deploy-$(commit_of "$new" | tr -cd 'A-Za-z0-9' | cut -c1-12)" | tail -n 1) \
-      || die "копия базы не создана — выкатка отменена, ничего не изменено"
+    if ! dump=$("$SCRIPTS/backup.sh" "before-deploy-$(commit_of "$new" | tr -cd 'A-Za-z0-9' | cut -c1-12)" | tail -n 1); then
+      if [ -n "$cur" ]; then
+        svc_start
+        healthy || svc_log
+      fi
+      die "копия базы не создана — выкатка отменена, работает прежняя версия ${cur:-(нет)}"
+    fi
     echo "$dump" > "$REL/$new/dump-before.txt"
   fi
   mig_before=$(db_migrations)
-  say "Включаю $new (коммит $(commit_of "$new")), было: ${cur:-ничего}"
-  [ -z "$cur" ] || svc_stop
   point current "$new"
   svc_start
   if healthy; then
@@ -229,6 +259,7 @@ build_rev() {
   echo "$commit" > "$dir/commit.txt"
   find "$src/server/migrations" -maxdepth 1 -name '*.sql' -printf '%f\n' \
     | sed -nE 's/^0*([0-9]+)_.*/\1/p' | sort -n | tr '\n' ' ' > "$dir/migrations.txt"
+  check_release ".$name"
   publish "$name"
   activate "$name"
 }
@@ -237,7 +268,12 @@ from_bundle() {
   local file=$1 tmp name dir commit
   [ -f "$file" ] || die "нет файла $file"
   tmp=$(mktemp -d)
-  tar -xzf "$file" -C "$tmp"
+  tar -xzf "$file" -C "$tmp" || { rm -rf "$tmp"; die "архив $file не распаковался"; }
+  # Список миграций обязателен: без него откат не знает, подходит ли база прежней версии.
+  if [ ! -f "$tmp/migrations.txt" ] || ! grep -qE '^[0-9 ]*[0-9][0-9 ]*$' "$tmp/migrations.txt"; then
+    rm -rf "$tmp"
+    die "в архиве нет migrations.txt (номера миграций через пробел, README 2.8) — ничего не изменено"
+  fi
   commit=$(head -n 1 "$tmp/commit.txt" 2> /dev/null | tr -cd 'A-Za-z0-9')
   commit=${commit:-bundle}
   name="$(date +%Y%m%d-%H%M%S)-${commit:0:12}"
@@ -246,8 +282,9 @@ from_bundle() {
   chmod 755 "$dir/bin/avtodom-server" 2> /dev/null || true
   [ ! -d "$tmp/web" ] || cp -R "$tmp/web/." "$dir/web/"
   echo "$commit" > "$dir/commit.txt"
-  [ ! -f "$tmp/migrations.txt" ] || cp "$tmp/migrations.txt" "$dir/"
+  cp "$tmp/migrations.txt" "$dir/"
   rm -rf "$tmp"
+  check_release ".$name"
   publish "$name"
   activate "$name"
 }
@@ -259,6 +296,7 @@ rollback() {
   if [ -z "$prev" ] || [ ! -d "$REL/$prev" ]; then die "прежней версии нет — откатывать не к чему"; fi
   [ "$prev" != "$cur" ] || die "откат уже выполнен"
   check_release "$prev"
+  require_enabled
   [ ! -f "$REL/$cur/dump-before.txt" ] || dump=$(cat "$REL/$cur/dump-before.txt")
   if db_ahead_of "$prev"; then restore=1; fi
   echo "Сейчас:   $cur (коммит $(commit_of "$cur"))"
@@ -289,11 +327,18 @@ rollback() {
 }
 
 status() {
-  local cur prev d mark
+  local cur prev d mark ok=0
   cur=$(current)
   prev=$(previous)
-  if [ "$systemd" = 1 ]; then echo "Служба: $(systemctl is-active avtodom || true)"; fi
-  if healthy_once; then echo "Сервер отвечает: да"; else echo "Сервер отвечает: НЕТ"; fi
+  if [ "$systemd" = 1 ]; then
+    echo "Служба: $(systemctl is-active avtodom || true), автозапуск: $(systemctl is-enabled avtodom 2> /dev/null || true)"
+  fi
+  if [ "$wait" = 1 ]; then
+    if healthy; then ok=1; fi
+  elif healthy_once; then
+    ok=1
+  fi
+  if [ "$ok" = 1 ]; then echo "Сервер отвечает: да"; else echo "Сервер отвечает: НЕТ"; fi
   echo "Версии (новые сверху):"
   while read -r d; do
     mark='  '
@@ -304,6 +349,11 @@ status() {
   echo "  (* — работает, < — прежняя для отката)"
   echo "Последние копии базы:"
   find /var/backups/avtodom -maxdepth 1 -name 'avtodom-*.dump' -printf '  %TY-%Tm-%Td %TH:%TM  %s байт  %f\n' | sort -r | head -n 5
+  if [ "$ok" != 1 ] && [ "$wait" = 1 ]; then
+    echo "Сервер не ответил за $WAIT с. Журнал:" >&2
+    svc_log
+  fi
+  [ "$ok" = 1 ]
 }
 healthy_once() { WAIT=1 healthy > /dev/null; }
 

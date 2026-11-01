@@ -8,6 +8,9 @@
 # (verify.sql) → запуск сервера; новая версия сама доведёт базу своими миграциями.
 # --no-start — сервер не запускать (переезд: сначала сверить числа с Маком).
 set -euo pipefail
+# Язык: ssh с Мака передаёт LANG и LC_*, которых на сервере может не быть.
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
+unset LANGUAGE
 
 DB=avtodom
 HERE=$(cd "$(dirname "$0")" && pwd)

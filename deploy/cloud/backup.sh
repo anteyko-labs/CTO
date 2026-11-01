@@ -10,6 +10,9 @@
 # и владельцу событием backup.failed («Уведомления» и Телеграм), как на точке (deploy/windows).
 # Мак точки забирает копии к себе: deploy/cloud/pull-backup-to-mac.sh.
 set -euo pipefail
+# Язык: ssh с Мака передаёт LANG и LC_*, которых на сервере может не быть.
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
+unset LANGUAGE
 # Программы PostgreSQL от имени postgres не могут войти в каталог root.
 cd /
 
