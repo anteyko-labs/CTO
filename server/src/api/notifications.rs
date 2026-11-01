@@ -1480,7 +1480,7 @@ async fn page(
     let watched: Vec<String> = WATCHED.iter().map(|s| (*s).to_string()).collect();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.entity_id, a.created_at,
-                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-981).
+                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-{n1}).
                   case when ue.id is not null then u.login || ' (' || ue.full_name || ')'
                        else u.full_name end as "user_name?"
            from audit_log a

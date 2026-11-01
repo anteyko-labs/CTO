@@ -2695,7 +2695,7 @@ pub async fn pending(conn: &mut PgConnection) -> AppResult<Vec<Outgoing>> {
     let watched = watched_actions();
     let rows = sqlx::query!(
         r#"select a.id, a.action, a.data, a.created_at, a.entity_id, a.branch_id,
-                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-981).
+                  -- Личный вход сотрудника — «вход (сотрудник)» (задача 005 Н1, ADR-{n1}).
                   case when we.id is not null then w.login || ' (' || we.full_name || ')'
                        else w.full_name end as "who?", t.chat_id,
                   e.full_name as "employee?", b.name as branch_name,
