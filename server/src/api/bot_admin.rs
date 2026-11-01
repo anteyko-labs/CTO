@@ -154,12 +154,25 @@ impl Menu {
             .map(|(_, i)| i)
     }
 
-    /// Кнопки внизу чата: по две в ряд в порядке [`ITEMS`].
+    /// Кнопки внизу чата: по две в ряд в порядке [`ITEMS`]; в чате, где он ещё и работник по
+    /// телефону, первым рядом — «💼 Мой заработок» (один чат, задача 005, ответ 8а).
     pub fn rows(self) -> Vec<Vec<&'static str>> {
         let buttons: Vec<&'static str> = self.items().map(|i| i.button).collect();
-        buttons.chunks(2).map(<[&str]>::to_vec).collect()
+        let mut rows: Vec<Vec<&'static str>> = buttons.chunks(2).map(<[&str]>::to_vec).collect();
+        if self.0 & EARNINGS != 0 {
+            rows.insert(0, vec![crate::api::bot_staff::BTN_EARNINGS]);
+        }
+        rows
+    }
+
+    /// Чат ещё и кабинет работника (SPEC-23): в меню — «💼 Мой заработок».
+    pub fn with_earnings(self) -> Self {
+        Self(self.0 | EARNINGS)
     }
 }
+
+/// Бит «чат ещё и кабинет работника» — вне битов пунктов [`ITEMS`].
+const EARNINGS: u16 = 1 << 15;
 
 /// Отказ в праве словами — как ответ сервера 403 (ADR-097, ADR-152).
 fn denied_text(a: &Access, key: &str) -> String {

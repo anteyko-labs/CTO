@@ -1193,12 +1193,27 @@ async fn message(
             return Ok(r);
         }
     }
+    // Сотрудник со входом и кабинетом работника по телефону в одном чате (задача 005, ответ 8а):
+    // и заработок, и кнопки по его правам; кнопки внизу — меню администратора с «💼 Мой заработок».
+    let staff_admin = if !owner && customer.is_none() && employee.is_some() {
+        crate::api::bot_admin::chat_user(conn, chat_id).await?
+    } else {
+        None
+    };
     if let Some(e) = &employee
         && let Some(s) = bot_staff::section(text)
     {
-        return bot_staff::show(conn, e, s, both).await;
+        let mut r = bot_staff::show(conn, e, s, both || staff_admin.is_some()).await?;
+        if let Some((user, _)) = &staff_admin {
+            r.keys = Keys::Admin(
+                crate::api::bot_admin::menu(conn, user)
+                    .await?
+                    .with_earnings(),
+            );
+        }
+        return Ok(r);
     }
-    let linked = customer.is_some() || employee.is_some();
+    let linked = customer.is_some() || (employee.is_some() && staff_admin.is_none());
     // «📋 Должники», «➕ Занести долг» и шаги ввода долга (задача 002, П8) — владельцу и
     // администратору с правом «Старые долги из тетради»; кнопка внизу или команда ввод отменяет.
     if !linked {
@@ -1215,9 +1230,14 @@ async fn message(
         // Чат администратора (ADR-135, ADR-142, SPEC-40): меню по его правам, поиск, расход;
         // код привязки и `/start` решает дальше `handle_text`.
         if !owner
-            && let Some(r) =
+            && let Some(mut r) =
                 crate::api::bot_admin::on_message(conn, assistant, chat_id, raw).await?
         {
+            if staff_admin.is_some()
+                && let Keys::Admin(m) = r.keys
+            {
+                r.keys = Keys::Admin(m.with_earnings());
+            }
             return Ok(r);
         }
     }
@@ -1235,7 +1255,10 @@ async fn message(
     }
     // Чат администратора, `handle_text` не ответил: подсказка по его меню.
     if !linked && let Some((user, _)) = crate::api::bot_admin::chat_user(conn, chat_id).await? {
-        let menu = crate::api::bot_admin::menu(conn, &user).await?;
+        let mut menu = crate::api::bot_admin::menu(conn, &user).await?;
+        if staff_admin.is_some() {
+            menu = menu.with_earnings();
+        }
         return Ok(Reply::new(
             crate::api::bot_admin::help(menu),
             Keys::Admin(menu),

@@ -622,3 +622,65 @@ async fn relink_forgets_previous_owner_dialog_and_draft(pool: PgPool) {
         .unwrap();
     assert_eq!(status, "cancelled", "открытый черновик владельца снят");
 }
+
+#[sqlx::test(migrator = "avtodom_server::MIGRATOR")]
+async fn employee_cabinet_and_login_share_one_chat(pool: PgPool) {
+    // Задача 005, ответ 8а: работник уже смотрел заработок в боте по телефону, теперь у него вход —
+    // в том же чате и заработок, и кнопки по его правам.
+    let w = world(pool).await;
+    let branch: Uuid = sqlx::query_scalar("select id from branches")
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+    let employee = Uuid::now_v7();
+    sqlx::query("insert into employees (id, branch_id, full_name, is_master, phone) values ($1, $2, 'Эрбол', true, '+996700123456')")
+        .bind(employee)
+        .bind(branch)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into telegram_employees (chat_id, employee_id, branch_id, phone) values ($1, $2, $3, '+996700123456')")
+        .bind(CHAT)
+        .bind(employee)
+        .bind(branch)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+    let code = ok(
+        &w.app,
+        &w.admin,
+        "POST",
+        "/api/v1/me/telegram/code",
+        Some(json!({ "op_id": Uuid::now_v7() })),
+    )
+    .await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = start(&w.pool, CHAT, &code).await;
+    assert!(r.text.starts_with("Готово, Эрбол"), "{}", r.text);
+    assert_eq!(w.linked_user(CHAT).await, Some(w.admin_id));
+    let say = |text: &'static str| {
+        let pool = w.pool.clone();
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            avtodom_server::api::telegram::handle_message(&mut conn, CHAT, CHAT, Some(text), None)
+                .await
+                .unwrap()
+        }
+    };
+    // Свободный текст — меню администратора, и в нём «💼 Мой заработок».
+    let r = say("привет").await;
+    let Keys::Admin(menu) = r.keys else {
+        panic!("не кнопки администратора: {:?} {}", r.keys, r.text)
+    };
+    assert!(menu.has("shift"), "{menu:?}");
+    assert_eq!(menu.rows()[0], vec!["💼 Мой заработок"]);
+    // «💼 Мой заработок» — заработок работника, кнопки остаются администраторские.
+    let r = say("💼 Мой заработок").await;
+    assert!(r.text.starts_with("💼 Сегодня"), "{}", r.text);
+    assert!(matches!(r.keys, Keys::Admin(_)), "{:?}", r.keys);
+    // Кнопка меню по правам работает.
+    let r = say("🧾 Смена сейчас").await;
+    assert!(r.text.starts_with("🧾 Смена"), "{}", r.text);
+}

@@ -174,6 +174,12 @@ test('«Мой Телеграм»: сотрудник берёт код сам, 
     headers: { 'X-Device-Id': '00000000-0000-4000-8000-00000000e36d' },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
+  // Повторный прогон после сбоя: выключатель — в исходное «да».
+  const reset = await page.request.put('/api/v1/settings/telegram/admins', {
+    data: { op_id: crypto.randomUUID(), self_link: true },
+    headers: { 'X-Device-Id': '00000000-0000-4000-8000-00000000e36d' },
+  })
+  expect(reset.ok(), await reset.text()).toBeTruthy()
 
   // Сотрудник входит: подсказка «Подключите бот», по ней — «Мой Телеграм».
   await page.context().clearCookies()
@@ -196,10 +202,13 @@ test('«Мой Телеграм»: сотрудник берёт код сам, 
   await page.goto('/settings/telegram')
   const self = page.getByTestId('telegram-admins-self').getByRole('checkbox')
   await expect(self).toBeChecked()
-  await self.uncheck()
+  // Флажок меняется по ответу сервера — щелчок, затем ожидание.
+  await self.click()
   await expect(page.getByText('Привязку сотрудникам делаете вы')).toBeVisible()
+  await expect(self).not.toBeChecked()
   await page.context().clearCookies()
   await login(LOGIN, PASSWORD)
+  await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
   await page.goto('/my-telegram')
   await expect(page.getByTestId('my-telegram-owner')).toContainText('Привязку делает владелец')
   await expect(page.getByTestId('my-telegram-code-btn')).toHaveCount(0)
@@ -209,7 +218,7 @@ test('«Мой Телеграм»: сотрудник берёт код сам, 
   await login(OWNER, OWNER_PASSWORD)
   await expect(page.getByRole('link', { name: 'Касса' })).toBeVisible()
   await page.goto('/settings/telegram')
-  await page.getByTestId('telegram-admins-self').getByRole('checkbox').check()
-  await expect(page.getByText('Сотрудники привязывают Телеграм сами').first()).toBeVisible()
+  await page.getByTestId('telegram-admins-self').getByRole('checkbox').click()
+  await expect(page.getByTestId('telegram-admins-self').getByRole('checkbox')).toBeChecked()
 })
 
