@@ -77,7 +77,8 @@ export async function ensureShift(request: APIRequestContext, cashier?: string):
   return (await opened.json()) as OpenShift
 }
 
-/** Закрыть открытую смену (пересчитано ровно «должно быть»): проверка кассы без смены. */
+/** Закрыть открытую смену (пересчитано ровно «должно быть») и сдать кассу с остатком в ней:
+ *  проверка кассы без смены. Без сдачи плашка «касса не сдана» осталась бы следующим проверкам. */
 export async function closeShiftIfOpen(request: APIRequestContext): Promise<void> {
   const cur = await request.get('/api/v1/shifts/current', { headers: DEVICE })
   const now = (await cur.json()) as OpenShift | null
@@ -87,6 +88,11 @@ export async function closeShiftIfOpen(request: APIRequestContext): Promise<void
     data: { op_id: crypto.randomUUID(), counted_tyiyn: now.expected_tyiyn, comment: '' },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
+  const handover = await request.post(`/api/v1/shifts/${now.id}/handover`, {
+    headers: DEVICE,
+    data: { op_id: crypto.randomUUID(), amount_tyiyn: 0 },
+  })
+  expect(handover.ok(), await handover.text()).toBeTruthy()
 }
 
 /** Касса со связью без смены (плашка «пробить чек нельзя», задача 005 Н4): открыть смену на кассира
